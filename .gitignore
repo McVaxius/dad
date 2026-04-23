@@ -1,0 +1,35 @@
+# Build outputs
+bin/
+obj/
+.vs/
+.idea/
+
+# Dalamud/local packaging output
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+
+# Local backups and generated snapshots
+backups/
+**/backups/
+*.bak
+*.orig
+*.tmp
+images/prompts.txt
+
+# Local/editor files
+*.user
+*.suo
+*.swp
+*.log
+.DS_Store
+Thumbs.db
+
+# Planning/status markdown stays out of source, except readmes.
+*.md
+!README.md
+!README.MD
+!readme.md
+!**/README.md
+!**/README.MD
+!**/readme.md
