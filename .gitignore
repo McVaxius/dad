@@ -15,7 +15,6 @@ backups/
 *.bak
 *.orig
 *.tmp
-images/prompts.txt
 
 # Local/editor files
 *.user
