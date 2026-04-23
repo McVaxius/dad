@@ -27,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
+    [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
@@ -48,6 +49,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadPlannerService PlannerService { get; }
     public DadPartyAssemblyService PartyAssemblyService { get; }
     public DadDutyQueueService DutyQueueService { get; }
+    public DadDutySupportQueueService DutySupportQueueService { get; }
+    public DadDutySupportAdsService DutySupportAdsService { get; }
+    public DadCombatRotationService CombatRotationService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
     public DadCoordinatorService RunCoordinatorService { get; }
     public WindowSystem WindowSystem { get; } = new(PluginInfo.InternalName);
@@ -64,6 +68,9 @@ public sealed class Plugin : IDalamudPlugin
     private string lastLoggedAuthorityEndpointKey = string.Empty;
     private string lastLoggedAuthorityRefreshKey = string.Empty;
     private string lastLoggedAuthorityViewKey = string.Empty;
+    private string cachedPlannerPreviewSignature = string.Empty;
+    private string cachedPlannerPreviewRequestId = string.Empty;
+    private DateTime cachedPlannerPreviewRequestedAtUtc = DateTime.MinValue;
 
     public Plugin()
     {
@@ -81,7 +88,16 @@ public sealed class Plugin : IDalamudPlugin
         PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry);
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
-        QueueExecutionService = new DadQueueExecutionService(ModuleRegistry, DutyQueueService, ExternalPluginCapabilityService);
+        DutySupportAdsService = new DadDutySupportAdsService(Log);
+        DutySupportQueueService = new DadDutySupportQueueService(Log);
+        CombatRotationService = new DadCombatRotationService(Configuration, Log);
+        QueueExecutionService = new DadQueueExecutionService(
+            ModuleRegistry,
+            DutyQueueService,
+            ExternalPluginCapabilityService,
+            DutySupportQueueService,
+            DutySupportAdsService,
+            CombatRotationService);
         RunCoordinatorService = new DadCoordinatorService(
             Configuration,
             ConfigManager,
@@ -107,6 +123,10 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(this);
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
+
+        var plannerLaneCount = PresetProviderService.GetPlannerLaneDefinitions().Count();
+        var buildVersion = GetType().Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
+        Log.Information("[dad] Planner lane panel enabled with {LaneCount} planner lanes. Build {BuildVersion}.", plannerLaneCount, buildVersion);
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
@@ -144,6 +164,7 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(PluginInfo.Command);
         WindowSystem.RemoveAllWindows();
         dadIpcService.Dispose();
+        DutySupportQueueService.Dispose();
         TransportService.Dispose();
         dtrEntry?.Remove();
     }
@@ -175,7 +196,18 @@ public sealed class Plugin : IDalamudPlugin
         => PresetProviderService.BuildPlannerSummary(CharacterIntelligenceService.CurrentPool, PlannerOptions);
 
     public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview()
-        => PresetProviderService.BuildPlannerRunRequestPreview(CharacterIntelligenceService.CurrentPool, PlannerOptions);
+    {
+        var pool = CharacterIntelligenceService.CurrentPool;
+        var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions);
+        var signature = BuildPlannerPreviewSignature(PlannerOptions, plannerPreview);
+        var identity = ResolvePlannerPreviewIdentity(signature);
+        return PresetProviderService.BuildPlannerRunRequestPreview(
+            pool,
+            PlannerOptions,
+            identity.RequestId,
+            identity.RequestedAtUtc,
+            plannerPreview);
+    }
 
     public string BuildPlannerRequestJson()
     {
@@ -218,7 +250,66 @@ public sealed class Plugin : IDalamudPlugin
             return result;
         }
 
-        return StartDemoRunFromShell("Planner run", requestPreview.Request);
+        var startResult = StartDemoRunFromShell("Planner run", requestPreview.Request);
+        if (startResult.Status != DadRunStatus.Rejected)
+            InvalidatePlannerPreviewIdentity();
+
+        return startResult;
+    }
+
+    private (string RequestId, DateTime RequestedAtUtc) ResolvePlannerPreviewIdentity(string signature)
+    {
+        if (!string.Equals(cachedPlannerPreviewSignature, signature, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(cachedPlannerPreviewRequestId))
+        {
+            cachedPlannerPreviewSignature = signature;
+            cachedPlannerPreviewRequestId = Guid.NewGuid().ToString("N");
+            cachedPlannerPreviewRequestedAtUtc = DateTime.UtcNow;
+        }
+
+        return (cachedPlannerPreviewRequestId, cachedPlannerPreviewRequestedAtUtc);
+    }
+
+    private void InvalidatePlannerPreviewIdentity()
+    {
+        cachedPlannerPreviewSignature = string.Empty;
+        cachedPlannerPreviewRequestId = string.Empty;
+        cachedPlannerPreviewRequestedAtUtc = DateTime.MinValue;
+    }
+
+    private static string BuildPlannerPreviewSignature(DadPresetPlannerOptions options, DadActivityPreset plannerPreview)
+    {
+        var accountKeys = string.Join(",", options.IncludedAccountKeys
+            .Select(static key => key.Value.Trim())
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase));
+        var selectedSlots = string.Join(",", plannerPreview.SelectedCharacters.Select(static slot =>
+            $"{slot.SlotId}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.CharacterKey}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
+        var selectedCharacters = string.Join(",", plannerPreview.SelectedCharacters
+            .Select(static slot => slot.CharacterKey.Trim())
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase));
+
+        return string.Join("|", new[]
+        {
+            $"activity={options.ActivityMode}",
+            $"operator={options.OperatorMode}",
+            $"transport={options.TransportOwner}",
+            $"queue={options.QueueAuthority}",
+            $"invite={options.InviteAuthority}",
+            $"connected={options.ConnectedOnly}",
+            $"datacenter={options.SameDatacenterOnly}",
+            $"stale={options.AllowStaleForPlanning}",
+            $"accounts={accountKeys}",
+            $"duty={options.DutyContentFinderConditionId}:{options.DutyDisplayName.Trim()}:{options.DutyUnsynced}:{options.DutyExpectedPartySize}",
+            $"mogtome={options.MogtomePreset.Trim()}",
+            "blunderville=emote-run",
+            $"leader={plannerPreview.LeaderCharacterKey}",
+            $"slots={selectedSlots}",
+            $"selected={selectedCharacters}",
+        });
     }
 
     public bool HasServerDadAuthority()

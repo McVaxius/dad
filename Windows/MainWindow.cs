@@ -190,7 +190,7 @@ public sealed class MainWindow : Window, IDisposable
 
             if (ImGui.BeginTabItem("Preset Planner"))
             {
-                DrawPresetPlannerTab(characterPool);
+                DrawPresetPlannerTab(characterPool, runState);
                 ImGui.EndTabItem();
             }
 
@@ -443,22 +443,32 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Planner", selectedCharacter.Blockers.Count == 0 ? "No blockers recorded." : FormatOperatorText(string.Join(" | ", selectedCharacter.Blockers), "(none)"));
     }
 
-    private void DrawPresetPlannerTab(DadCharacterPool characterPool)
+    private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         var plannerOptions = plugin.PlannerOptions;
-        var plannerPreview = plugin.BuildPlannerPreview();
         var requestPreview = plugin.BuildPlannerRunRequestPreview();
+        var plannerPreview = requestPreview.PlannerPreview;
+        var plannerLocked = IsPlannerLocked(runState);
 
-        if (!ImGui.BeginTable("dad-planner-layout", 2, ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        if (!ImGui.BeginTable(
+                "dad-planner-layout-v2",
+                2,
+                ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoSavedSettings))
             return;
 
-        ImGui.TableSetupColumn("Lanes", ImGuiTableColumnFlags.WidthFixed, 250f);
+        ImGui.TableSetupColumn("Lanes", ImGuiTableColumnFlags.WidthFixed, 320f);
         ImGui.TableSetupColumn("Plan", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
+        ImGui.BeginDisabled(plannerLocked);
         DrawPlannerLanePanel(plannerOptions, requestPreview);
+        ImGui.EndDisabled();
 
         ImGui.TableNextColumn();
+        if (plannerLocked)
+            DrawStatusRow("Planner locked", "Dad run active. Cancel or wait for final state before editing plan.");
+
+        ImGui.BeginDisabled(plannerLocked);
         DrawPlannerOperatorModeSelector(plannerOptions);
         ImGui.SameLine();
         DrawPlannerAccountFilterSelector(characterPool, plannerOptions);
@@ -492,6 +502,8 @@ public sealed class MainWindow : Window, IDisposable
             plugin.SavePlannerOptions();
         }
 
+        ImGui.EndDisabled();
+
         ImGui.SameLine();
         if (ImGui.SmallButton("Planner to chat"))
             plugin.PrintStatus(plugin.BuildPlannerSummary());
@@ -504,11 +516,18 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
+        ImGui.BeginDisabled(plannerLocked);
         if (ImGui.SmallButton("Load Local Sastasha test"))
             LoadPlannerTestDuty(plannerOptions, DadPlannerActivityMode.LocalDuty);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Load Duty Support Sastasha test"))
+            LoadPlannerDutySupportTest(plannerOptions);
+        ImGui.EndDisabled();
 
         ImGui.Separator();
+        ImGui.BeginDisabled(plannerLocked);
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition);
+        ImGui.EndDisabled();
 
         ImGui.Separator();
         DrawStatusRow("Lane", $"{plannerPreview.LaneDefinition.DisplayName} | {plannerPreview.LaneDefinition.MaturityLabel}");
@@ -543,7 +562,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(!requestPreview.CanStart);
+        ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
         if (ImGui.SmallButton("Start planner run"))
             plugin.StartPlannerRunFromShell();
         ImGui.EndDisabled();
@@ -569,7 +588,17 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPlannerLanePanel(DadPresetPlannerOptions plannerOptions, DadPlannerRunRequestPreview requestPreview)
     {
-        ImGui.TextUnformatted("Plan lanes");
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, 0.03f));
+        if (!ImGui.BeginChild("dad-planner-lane-rail", new Vector2(0f, 0f), true))
+        {
+            ImGui.PopStyleColor();
+            return;
+        }
+
+        ImGui.TextUnformatted("Planner lanes");
+        ImGui.TextDisabled("Vertical lane rail restored");
+        ImGui.Separator();
+
         foreach (var lane in plugin.PresetProviderService.GetPlannerLaneDefinitions())
         {
             var selected = IsSelectedPlannerLane(plannerOptions.ActivityMode, lane.ActivityMode);
@@ -579,7 +608,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.PushStyleColor(ImGuiCol.Button, accent);
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hovered);
             ImGui.PushStyleColor(ImGuiCol.ButtonActive, active);
-            if (ImGui.Button($"{lane.DisplayName}##dad-lane-{lane.ActivityMode}", new Vector2(-1f, 30f)))
+            if (ImGui.Button($"{lane.DisplayName}##dad-lane-{lane.ActivityMode}", new Vector2(-1f, 34f)))
                 SelectPlannerLane(plannerOptions, lane);
             ImGui.PopStyleColor(3);
 
@@ -589,6 +618,9 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TextWrapped(requestPreview.BlockedReason);
             ImGui.Spacing();
         }
+
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
     }
 
     private void DrawPlannerLaneInputs(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
@@ -655,12 +687,7 @@ public sealed class MainWindow : Window, IDisposable
 
         if (lane.ActivityMode == DadPlannerActivityMode.Blunderville)
         {
-            var mode = plannerOptions.BlundervilleMode;
-            if (ImGui.InputText("Blunderville mode", ref mode, 128))
-            {
-                plannerOptions.BlundervilleMode = mode;
-                plugin.SavePlannerOptions();
-            }
+            DrawStatusRow("Blunderville policy", "Fixed emote run. Dad will enter, run configured per-character emote, then fail/leave.");
         }
     }
 
@@ -812,8 +839,26 @@ public sealed class MainWindow : Window, IDisposable
         plugin.PrintStatus($"Loaded Dad planner test duty: {plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId} for {lane.DisplayName}.");
     }
 
+    private void LoadPlannerDutySupportTest(DadPresetPlannerOptions plannerOptions)
+    {
+        var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(DadPlannerActivityMode.DutySupport);
+        plannerOptions.ActivityMode = lane.ActivityMode;
+        plannerOptions.OperatorMode = DadPlannerOperatorMode.RemotePartyPlan;
+        plannerOptions.TransportOwner = lane.DefaultTransportOwner;
+        plannerOptions.QueueAuthority = lane.DefaultQueueAuthority;
+        plannerOptions.DutyContentFinderConditionId = 4;
+        plannerOptions.DutyDisplayName = "Sastasha";
+        plannerOptions.DutyUnsynced = false;
+        plannerOptions.DutyExpectedPartySize = 1;
+        plugin.SavePlannerOptions();
+        plugin.PrintStatus($"Loaded Dad Duty Support test: {plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId}.");
+    }
+
     private static bool HasPlannerDutySelector(DadPresetPlannerOptions plannerOptions)
         => plannerOptions.DutyContentFinderConditionId != 0 && !string.IsNullOrWhiteSpace(plannerOptions.DutyDisplayName);
+
+    private static bool IsPlannerLocked(DadVisibleRunState runState)
+        => Plugin.IsBusy(runState.LocalRun) || Plugin.IsBusy(runState.AuthorityRun) || Plugin.IsBusy(runState.VisibleRun);
 
     private static bool IsSelectedPlannerLane(DadPlannerActivityMode selectedMode, DadPlannerActivityMode laneMode)
         => NormalizePlannerLane(selectedMode) == NormalizePlannerLane(laneMode);

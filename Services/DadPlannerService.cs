@@ -169,7 +169,7 @@ public sealed class DadPlannerService
                 OwnerLabel = capability.OwnerLabel,
                 ExpectedPartySize = 1,
                 RequiresPeers = false,
-                Summary = $"Blunderville mode '{request.Blunderville.Mode}'",
+                Summary = "Blunderville emote run",
             });
         }
 

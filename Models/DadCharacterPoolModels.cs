@@ -288,7 +288,6 @@ public sealed class DadPresetPlannerOptions
     public bool DutyUnsynced { get; set; }
     public int DutyExpectedPartySize { get; set; } = 4;
     public string MogtomePreset { get; set; } = "Daily MSQ";
-    public string BlundervilleMode { get; set; } = "Standard";
     public List<DadAccountKey> IncludedAccountKeys { get; set; } = [];
 }
 

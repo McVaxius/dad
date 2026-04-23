@@ -3,6 +3,7 @@ using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using dad.Models;
+using dad.Services;
 
 namespace dad.Windows;
 
@@ -90,6 +91,12 @@ public sealed class ConfigWindow : Window, IDisposable
             if (ImGui.BeginTabItem("Profiles"))
             {
                 DrawProfilesTab(account, profile);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Combat Rotation"))
+            {
+                DrawCombatRotationTab(configuration);
                 ImGui.EndTabItem();
             }
 
@@ -293,6 +300,81 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextWrapped("Dad now owns Server Dad authority, Client Dad worker coordination, readiness waits, leases, party assembly, and module routing. VERMAXION remains caller-only. Daily MSQ uses Dad's internal premade lane; commendation and Astrope use Dad's internal aura lane.");
     }
 
+    private void DrawCombatRotationTab(Configuration configuration)
+    {
+        ImGui.TextWrapped("Select what Dad does when it starts a duty operation. Use FrenRider is the default: Dad sends /fr on once before queue/routing begins, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Selecting the menu option does not send commands, and Dad does not send a FrenRider disable command.");
+        ImGui.Separator();
+
+        DrawCombatRotationModeRadio(
+            configuration,
+            DadCombatRotationMode.ForceCommands,
+            "Force \"BMRAI ON\" and \"ROTATION AUTO\"");
+        DrawCombatRotationModeRadio(
+            configuration,
+            DadCombatRotationMode.UseFrenRider,
+            "Use FrenRider (default)");
+        DrawCombatRotationModeRadio(
+            configuration,
+            DadCombatRotationMode.DoNothing,
+            "Do nothing; leave it up to user");
+
+        ImGui.Separator();
+        switch (configuration.CombatRotationMode)
+        {
+            case DadCombatRotationMode.UseFrenRider:
+                DrawFrenRiderModeStatus();
+                break;
+            case DadCombatRotationMode.ForceCommands:
+                DrawForceCommandsModeStatus();
+                break;
+            case DadCombatRotationMode.DoNothing:
+                ImGui.TextWrapped("Dad queues duty operations only. It does not send FrenRider, ADS, or rotation commands; user-owned play and leave behavior is expected.");
+                break;
+        }
+    }
+
+    private static void DrawCombatRotationModeRadio(
+        Configuration configuration,
+        DadCombatRotationMode mode,
+        string label)
+    {
+        if (ImGui.RadioButton(label, configuration.CombatRotationMode == mode))
+        {
+            configuration.CombatRotationMode = mode;
+            configuration.Save();
+        }
+    }
+
+    private void DrawFrenRiderModeStatus()
+    {
+        var frenRiderState = plugin.CombatRotationService.GetFrenRiderPluginState();
+        var color = frenRiderState switch
+        {
+            DadFrenRiderPluginState.Loaded => new Vector4(0.35f, 0.95f, 0.45f, 1f),
+            DadFrenRiderPluginState.InstalledNotLoaded => new Vector4(1f, 0.85f, 0.25f, 1f),
+            _ => new Vector4(1f, 0.45f, 0.35f, 1f),
+        };
+        var statusText = frenRiderState switch
+        {
+            DadFrenRiderPluginState.Loaded => "FrenRider installed and loaded. Dad will send /fr on before starting a duty operation.",
+            DadFrenRiderPluginState.InstalledNotLoaded => "FrenRider installed but not loaded. Dad will block Use FrenRider duty operations until it is loaded.",
+            _ => "FrenRider not installed or not found. Dad will block Use FrenRider duty operations until it is installed and loaded.",
+        };
+        ImGui.TextColored(
+            color,
+            statusText);
+        ImGui.TextWrapped("Status color uses Dalamud installed-plugin state only: green means installed and loaded, yellow means installed but not loaded, red means not installed/found.");
+        ImGui.TextWrapped("Dad does not send a FrenRider disable command on completion or cancel because it cannot know whether the user had FrenRider enabled before this run.");
+    }
+
+    private static void DrawForceCommandsModeStatus()
+    {
+        ImGui.TextWrapped("Compatibility mode. Dad preserves the current Dad+ADS flow: /ads outside before queue, fixed rotation commands after entry, and /ads leave after DutyCompleted. Rotation command failures are warning-only.");
+        ImGui.TextUnformatted("Fixed commands after entry");
+        ImGui.BulletText(DadCombatRotationService.BossModRotationCommand);
+        ImGui.BulletText(DadCombatRotationService.AutoRotationCommand);
+    }
+
     private static void DrawAboutTab()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
@@ -305,7 +387,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.BulletText(item);
 
         ImGui.Separator();
-        ImGui.TextUnformatted("Bootstrap tests");
+        ImGui.TextUnformatted("Operator checks");
         foreach (var item in PluginInfo.Tests)
             ImGui.BulletText(item);
     }

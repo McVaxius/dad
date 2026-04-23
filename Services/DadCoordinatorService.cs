@@ -552,6 +552,18 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
+        if (activeModuleIndex >= 0 && activeModuleIndex < activePlan.Modules.Count)
+        {
+            var activeStatus = queueExecutionService.GetActiveExecutorStatus();
+            if (activeStatus.IsActive)
+            {
+                var activeModule = activePlan.Modules[activeModuleIndex];
+                var updateResult = queueExecutionService.UpdateActiveExecutor();
+                ApplyModuleRoutingResult(activeModule, updateResult, replaceExisting: true);
+                return;
+            }
+        }
+
         activeModuleIndex++;
         if (activeModuleIndex >= activePlan.Modules.Count)
         {
@@ -564,24 +576,43 @@ public sealed class DadCoordinatorService
 
         var module = activePlan.Modules[activeModuleIndex];
         var result = queueExecutionService.ExecuteModule(activePlan, module, activeParticipants);
-        stepResults.Add(result);
+        ApplyModuleRoutingResult(module, result, replaceExisting: false);
+    }
+
+    private void ApplyModuleRoutingResult(DadPlannedModuleExecution module, DadRunStepResultDto result, bool replaceExisting)
+    {
+        if (activePlan == null)
+            return;
+
+        if (replaceExisting && activeModuleIndex >= 0 && activeModuleIndex < stepResults.Count)
+            stepResults[activeModuleIndex] = result;
+        else if (replaceExisting && stepResults.Count > 0)
+            stepResults[^1] = result;
+        else
+            stepResults.Add(result);
+
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
         CurrentResult.CurrentExecutorStatus = result.ExecutorStatus.Clone();
         if (result.ExecutorStatus.Phase != DadRunPhase.Idle)
             CurrentResult.Phase = result.ExecutorStatus.Phase;
+        CurrentResult.Status = DadRunStatus.Running;
         CurrentResult.ActiveTaskIndex = activeModuleIndex + 1;
         CurrentResult.ActiveTaskName = module.DisplayName;
         CurrentResult.ActiveTaskStatus = result.Summary;
-        CurrentResult.CompletedTaskCount = Math.Max(CurrentResult.CompletedTaskCount, activeModuleIndex + (result.Success ? 1 : 0));
+        CurrentResult.CompletedTaskCount = stepResults.Count(static step =>
+            step.Success &&
+            step.ExecutorStatus.Status == DadRunStatus.Completed &&
+            !step.ExecutorStatus.IsActive);
         CurrentResult.BlockedReason = string.Join(" | ", stepResults
             .Where(static step => !string.IsNullOrWhiteSpace(step.BlockedReason))
             .Select(static step => step.BlockedReason)
             .Distinct(StringComparer.OrdinalIgnoreCase));
 
+        var participantState = ResolveModuleParticipantState(result);
         foreach (var participant in activeParticipants)
-            participant.State = result.Deferred ? DadParticipantState.QueuePending : DadParticipantState.Running;
+            participant.State = participantState;
 
-        presenceService.SetLeaderState(activePlan.Request.RequestId, DadParticipantState.Running, result.Summary);
+        presenceService.SetLeaderState(activePlan.Request.RequestId, participantState, result.Summary);
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         CurrentResult.Leases = claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
 
@@ -594,7 +625,35 @@ public sealed class DadCoordinatorService
             return;
         }
 
+        if (!result.ExecutorStatus.IsActive && result.ExecutorStatus.Status == DadRunStatus.Completed)
+        {
+            if (activeModuleIndex + 1 >= activePlan.Modules.Count)
+            {
+                Transition(DadRunPhase.Finalizing, DadRunStatus.Running, "Dad module routing complete.");
+                return;
+            }
+
+            CurrentResult.Phase = DadRunPhase.RoutingModules;
+            Publish();
+            return;
+        }
+
         Publish();
+    }
+
+    private static DadParticipantState ResolveModuleParticipantState(DadRunStepResultDto result)
+    {
+        if (result.ParticipantState != DadParticipantState.Unknown)
+            return result.ParticipantState;
+
+        return result.ExecutorStatus.Phase switch
+        {
+            DadRunPhase.InDutyOrTask => DadParticipantState.Running,
+            DadRunPhase.Finalizing when result.ExecutorStatus.Status == DadRunStatus.Completed => DadParticipantState.Completed,
+            DadRunPhase.Finalizing when result.ExecutorStatus.Status == DadRunStatus.Cancelled => DadParticipantState.Cancelled,
+            DadRunPhase.Finalizing => DadParticipantState.Failed,
+            _ => result.Deferred ? DadParticipantState.QueuePending : DadParticipantState.Running,
+        };
     }
 
     private void CompleteRun()

@@ -4,6 +4,7 @@ namespace dad.Services;
 
 public sealed class DadQueueExecutionService
 {
+    private readonly DadCombatRotationService combatRotationService;
     private readonly DadLocalDutyExecutor localDutyExecutor;
     private readonly DadPremadeDutyExecutor premadeDutyExecutor;
     private readonly DadMsqExecutor msqExecutor;
@@ -20,8 +21,12 @@ public sealed class DadQueueExecutionService
     public DadQueueExecutionService(
         DadModuleRegistry moduleRegistry,
         DadDutyQueueService dutyQueueService,
-        DadExternalPluginCapabilityService externalPluginCapabilityService)
+        DadExternalPluginCapabilityService externalPluginCapabilityService,
+        DadDutySupportQueueService dutySupportQueueService,
+        DadDutySupportAdsService dutySupportAdsService,
+        DadCombatRotationService combatRotationService)
     {
+        this.combatRotationService = combatRotationService;
         localDutyExecutor = new DadLocalDutyExecutor(
             moduleRegistry,
             plan => plan.Request.Dungeon == null
@@ -35,11 +40,7 @@ public sealed class DadQueueExecutionService
             _ => moduleRegistry.GetCapability(DadModuleId.Msq).Blockers
                 .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
                  ?? moduleRegistry.GetCapability(DadModuleId.Msq).Notes);
-        dutySupportExecutor = new DadDutySupportExecutor(
-            moduleRegistry,
-            _ => moduleRegistry.GetCapability(DadModuleId.DutySupport).Blockers
-                .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
-                 ?? moduleRegistry.GetCapability(DadModuleId.DutySupport).Notes);
+        dutySupportExecutor = new DadDutySupportExecutor(dutySupportQueueService, dutySupportAdsService, combatRotationService);
         trustExecutor = new DadTrustExecutor(
             moduleRegistry,
             _ => moduleRegistry.GetCapability(DadModuleId.Trust).Blockers
@@ -74,6 +75,13 @@ public sealed class DadQueueExecutionService
     public DadRunStepResultDto ExecuteModule(DadRunPlan plan, DadPlannedModuleExecution module, IReadOnlyList<DadParticipantSnapshot> participants)
     {
         activeExecutor = ResolveExecutor(plan, module);
+
+        if (ShouldPrepareFrenRiderBeforeQueue(module.ModuleId) &&
+            !combatRotationService.TryPrepareFrenRiderForDutyOperation(module.ModuleId, out var frenRiderFailure))
+        {
+            return BuildFrenRiderPreQueueFailure(plan, module, frenRiderFailure);
+        }
+
         return activeExecutor.Start(plan, participants);
     }
 
@@ -103,4 +111,59 @@ public sealed class DadQueueExecutionService
             DadModuleId.CustomDuty => customDutyExecutor,
             _ => localDutyExecutor,
         };
+
+    private bool ShouldPrepareFrenRiderBeforeQueue(DadModuleId moduleId)
+        => combatRotationService.CombatRotationMode == DadCombatRotationMode.UseFrenRider &&
+           moduleId is not DadModuleId.None and not DadModuleId.Mixed;
+
+    private static DadRunStepResultDto BuildFrenRiderPreQueueFailure(
+        DadRunPlan plan,
+        DadPlannedModuleExecution module,
+        string reason)
+    {
+        var now = DateTime.UtcNow;
+        var blocker = new DadModuleBlockerDto
+        {
+            ModuleId = module.ModuleId,
+            Capability = "FrenRiderPreQueue",
+            Severity = DadModuleBlockerSeverity.Blocked,
+            Summary = reason,
+        };
+        var status = new DadModuleExecutionStatusDto
+        {
+            RunId = plan.Request.RequestId,
+            ModuleId = module.ModuleId,
+            DisplayName = module.DisplayName,
+            Phase = DadRunPhase.QueuePreparing,
+            Status = DadRunStatus.Failed,
+            StepName = "FrenRider pre-queue",
+            IsActive = false,
+            CanStart = false,
+            Deferred = false,
+            StartedAtUtc = now,
+            UpdatedAtUtc = now,
+            CompletedAtUtc = now,
+            Summary = reason,
+            FailureReason = reason,
+            BlockedReason = reason,
+            Blockers = [blocker],
+        };
+
+        return new DadRunStepResultDto
+        {
+            RunId = plan.Request.RequestId,
+            ModuleId = module.ModuleId,
+            StepName = module.DisplayName,
+            ParticipantState = DadParticipantState.Failed,
+            Success = false,
+            Deferred = false,
+            TimedOut = false,
+            Summary = reason,
+            FailureReason = reason,
+            BlockedReason = reason,
+            ExecutorStatus = status,
+            ModuleBlockers = [blocker.Clone()],
+            ReportedAtUtc = now,
+        };
+    }
 }

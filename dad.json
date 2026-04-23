@@ -2,10 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/goatcorp/Dalamud/master/Dalamud/Configuration/PluginManifest/pluginmanifest.schema.json",
   "Author": "DhogGPT",
   "Name": "dad",
-  "Punchline": "Private dad task bootstrap shell.",
-  "Description": "Private bootstrap shell for VERMAXION dad tasks, local status, and future duty transport seams.",
+  "Punchline": "Private Dad duty operations shell.",
+  "Description": "Private Dad duty operations shell with multiplayer status, preset planning, queue routing, and Duty Support automation.",
   "InternalName": "dad",
-  "AssemblyVersion": "0.0.0.1",
+  "AssemblyVersion": "0.0.0.2",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 14,
   "Tags": [

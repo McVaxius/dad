@@ -12,7 +12,7 @@ public sealed class DadModuleRegistry
         {
             [DadModuleId.Duty] = BuildCapability(DadModuleId.Duty, "Duty", 1, false, true, true, "Duty planning and lane selection ready.", "Guarded Duty Finder queue start is not enabled yet."),
             [DadModuleId.Msq] = BuildCapability(DadModuleId.Msq, "MSQ", 4, true, false, true, "MSQ lane planning ready.", "MSQ queue executor is not enabled yet."),
-            [DadModuleId.DutySupport] = BuildCapability(DadModuleId.DutySupport, "Duty Support", 1, false, true, false, "Duty Support lane planning ready.", "Duty Support queue executor is not enabled yet."),
+            [DadModuleId.DutySupport] = BuildCapability(DadModuleId.DutySupport, "Duty Support", 1, false, true, false, "Duty Support native queue enabled with selectable FrenRider, ADS force-command, or user-owned in-duty mode.", string.Empty, canStartQueue: true, canTrackCompletion: true, canExecuteLiveQueue: true),
             [DadModuleId.Trust] = BuildCapability(DadModuleId.Trust, "Trust", 1, false, true, false, "Trust lane planning ready.", "Trust queue executor is not enabled yet."),
             [DadModuleId.PremadeDuty] = BuildCapability(DadModuleId.PremadeDuty, "Premade Duty", 4, true, false, true, "Premade duty planning ready.", "Premade duty queue executor is not enabled yet."),
             [DadModuleId.DailyMsq] = BuildCapability(DadModuleId.DailyMsq, "Daily MSQ", 4, true, false, true, "Premade Daily MSQ orchestration ready.", "Premade Daily MSQ queue start is not enabled yet."),
@@ -88,8 +88,23 @@ public sealed class DadModuleRegistry
         bool supportsLocalOnly,
         bool supportsPremade,
         string currentStatus,
-        string queueBlocker)
-        => new()
+        string queueBlocker,
+        bool canStartQueue = false,
+        bool canTrackCompletion = false,
+        bool canRequeue = false,
+        bool canExecuteLiveQueue = false)
+    {
+        var blockers = new List<DadModuleBlockerDto>();
+        if (!canStartQueue && !string.IsNullOrWhiteSpace(queueBlocker))
+            blockers.Add(BuildBlocker(moduleId, "CanStartQueue", queueBlocker));
+
+        if (!canTrackCompletion)
+            blockers.Add(BuildBlocker(moduleId, "CanTrackCompletion", $"{displayName} completion tracking is not enabled yet."));
+
+        if (!canRequeue)
+            blockers.Add(BuildBlocker(moduleId, "CanRequeue", $"{displayName} requeue/retry loop is not enabled yet."));
+
+        return new DadModuleCapabilitySnapshot
         {
             ModuleId = moduleId,
             DisplayName = displayName,
@@ -100,17 +115,15 @@ public sealed class DadModuleRegistry
             SupportsPremade = supportsPremade,
             CanPlan = true,
             CanAssembleParty = true,
-            CanStartQueue = false,
-            CanTrackCompletion = false,
-            CanRequeue = false,
-            CanExecuteLiveQueue = false,
+            CanStartQueue = canStartQueue,
+            CanTrackCompletion = canTrackCompletion,
+            CanRequeue = canRequeue,
+            CanExecuteLiveQueue = canExecuteLiveQueue,
             CurrentStatus = currentStatus,
-            Notes = "Dad owns planning, authority, and routing for this lane. Guarded live execution remains deferred until the lane executor is enabled.",
-            Blockers =
-            [
-                BuildBlocker(moduleId, "CanStartQueue", queueBlocker),
-                BuildBlocker(moduleId, "CanTrackCompletion", $"{displayName} completion tracking is not enabled yet."),
-                BuildBlocker(moduleId, "CanRequeue", $"{displayName} requeue/retry loop is not enabled yet."),
-            ],
+            Notes = canExecuteLiveQueue
+                ? "Dad owns planning, authority, routing, and native live execution for this guarded local lane."
+                : "Dad owns planning, authority, and routing for this lane. Guarded live execution remains deferred until the lane executor is enabled.",
+            Blockers = blockers,
         };
+    }
 }

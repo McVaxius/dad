@@ -72,7 +72,12 @@ public sealed class DadRunRequest
         }
 
         if (Blunderville != null)
-            parts.Add($"Blunderville mode '{Blunderville.Mode}' ({Blunderville.Attempts} attempt(s))");
+        {
+            var emote = string.IsNullOrWhiteSpace(Blunderville.EmoteCommand)
+                ? "configured emote"
+                : Blunderville.EmoteCommand;
+            parts.Add($"Blunderville emote run ({emote}, {Blunderville.Attempts} attempt(s))");
+        }
 
         if (Mogtome != null)
             parts.Add($"MOGTOME preset '{Mogtome.Preset}' ({Mogtome.Attempts} attempt(s))");
@@ -251,7 +256,7 @@ public sealed class DadPremadeDutyTask
 
 public sealed class DadBlundervilleTask
 {
-    public string Mode { get; set; } = "Standard";
+    public string EmoteCommand { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
 }
 

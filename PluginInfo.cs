@@ -5,7 +5,7 @@ internal static class PluginInfo
     public const string DisplayName = "dad";
     public const string InternalName = "dad";
     public const string Command = "/dad";
-    public const string Summary = "Private Dad orchestrator with Server Dad authority, Client Dad workers, and account-aware duty, Daily MSQ, commendation, and Astrope planning.";
+    public const string Summary = "Private Dad duty operations shell with Server Dad authority, Client Dad workers, preset planning, queue routing, and Duty Support automation.";
     public const string SupportUrl = "https://ko-fi.com/mcvaxius";
 
     public static readonly string[] Services =
@@ -30,7 +30,7 @@ internal static class PluginInfo
 
     public static readonly string[] Phases =
     [
-        "Shell and profile bootstrap",
+        "Shell and profile startup",
         "Character pool acquisition",
         "Presence and localhost transport",
         "Server authority, leases, and party assembly",

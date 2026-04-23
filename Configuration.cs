@@ -3,6 +3,13 @@ using dad.Models;
 
 namespace dad;
 
+public enum DadCombatRotationMode
+{
+    UseFrenRider = 0,
+    ForceCommands = 1,
+    DoNothing = 2,
+}
+
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
@@ -25,6 +32,7 @@ public sealed class Configuration : IPluginConfiguration
     public int HeartbeatStaleSeconds { get; set; } = 12;
     public int LeaseDurationSeconds { get; set; } = 20;
     public int CancelAckTimeoutSeconds { get; set; } = 6;
+    public DadCombatRotationMode CombatRotationMode { get; set; } = DadCombatRotationMode.UseFrenRider;
     public DadPresetPlannerOptions PlannerOptions { get; set; } = new();
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);

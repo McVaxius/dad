@@ -44,15 +44,15 @@ public sealed class DadPresetProviderService
             ModuleId = DadModuleId.DutySupport,
             DisplayName = "Duty Support",
             Summary = "Solo Duty Support lane with selected Duty Finder content.",
-            Maturity = DadLaneMaturity.MissingContract,
-            MaturityLabel = "Needs duty selector",
-            AccentColorHex = "#EF4444",
+            Maturity = DadLaneMaturity.LocalTestable,
+            MaturityLabel = "Local test",
+            AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select Duty Finder duty, then enable guarded Duty Support start.",
+            NextAction = "Select Duty Support duty, then wire guarded RequestDutySupport/SendDutySupport submit.",
         },
         new()
         {
@@ -92,7 +92,7 @@ public sealed class DadPresetProviderService
             ActivityMode = DadPlannerActivityMode.Blunderville,
             ModuleId = DadModuleId.Blunderville,
             DisplayName = "Blunderville",
-            Summary = "Gold Saucer Blunderville lane with mode/attempt policy.",
+            Summary = "Gold Saucer Blunderville lane for configured per-character emote runs.",
             Maturity = DadLaneMaturity.PreviewOnly,
             MaturityLabel = "Preview",
             AccentColorHex = "#F59E0B",
@@ -101,7 +101,7 @@ public sealed class DadPresetProviderService
             DefaultQueueAuthority = DadQueueAuthority.Blunderville,
             ExpectedPartySize = 1,
             UsesExternalHelper = true,
-            NextAction = "Wire Blunderville join/start/complete detector.",
+            NextAction = "Enter Blunderville, run configured emote, then fail/leave per character.",
         },
         new()
         {
@@ -361,13 +361,18 @@ public sealed class DadPresetProviderService
     public string BuildPlannerSummary(DadCharacterPool pool, DadPresetPlannerOptions? options = null)
         => BuildPlannerPreview(pool, options).PlannerSummary;
 
-    public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview(DadCharacterPool pool, DadPresetPlannerOptions? options = null)
+    public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview(
+        DadCharacterPool pool,
+        DadPresetPlannerOptions? options = null,
+        string? requestId = null,
+        DateTime? requestedAtUtc = null,
+        DadActivityPreset? plannerPreviewOverride = null)
     {
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
         var lane = ResolveLaneDefinition(options.ActivityMode);
 
-        var plannerPreview = BuildPlannerPreview(pool, options);
+        var plannerPreview = plannerPreviewOverride ?? BuildPlannerPreview(pool, options);
         var result = new DadPlannerRunRequestPreview
         {
             PlannerPreview = plannerPreview,
@@ -402,6 +407,8 @@ public sealed class DadPresetProviderService
         var previewOnly = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine;
         var request = new DadRunRequest
         {
+            RequestId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId,
+            RequestedAtUtc = requestedAtUtc ?? DateTime.UtcNow,
             RequestedBy = previewOnly ? "planner-preview" : "planner",
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly),
         };
@@ -451,7 +458,6 @@ public sealed class DadPresetProviderService
             case DadPlannerActivityMode.Blunderville:
                 request.Blunderville = new DadBlundervilleTask
                 {
-                    Mode = options.BlundervilleMode,
                     Attempts = 1,
                 };
                 break;

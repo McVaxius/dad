@@ -62,10 +62,10 @@ public static class DadAuthorityViewBuilder
                       utcNow - lastSuccessfulRefreshUtc.Value <= staleThreshold;
 
         var kind = ResolveKind(localRun, authorityRun, localOnlyModeEnabled, hasRemoteAuthority, isFresh);
-        var timelineText = BuildTimelineText(kind, localRun, authorityRun, payloadText, clientPerspective);
-        var dtrText = BuildDtrText(kind, localRun);
-        var ownershipText = $"{DadStatusText.FormatAuthorityStatus(authorityRole, authorityWorker, authorityEndpoint, authorityRun.AuthorityMode)} | {freshnessText}";
         var preferredRun = ResolvePreferredRun(kind, localRun, authorityRun);
+        var dtrText = BuildDtrText(kind, preferredRun);
+        var timelineText = BuildTimelineText(kind, localRun, authorityRun, preferredRun, payloadText, clientPerspective, dtrText);
+        var ownershipText = $"{DadStatusText.FormatAuthorityStatus(authorityRole, authorityWorker, authorityEndpoint, authorityRun.AuthorityMode)} | {freshnessText}";
 
         return new DadAuthorityViewState
         {
@@ -160,9 +160,12 @@ public static class DadAuthorityViewBuilder
         DadAuthorityViewKind kind,
         DadRunResult localRun,
         DadRunResult authorityRun,
+        DadRunResult preferredRun,
         string payloadText,
-        string clientPerspective)
-        => kind switch
+        string clientPerspective,
+        string dtrText)
+    {
+        var timeline = kind switch
         {
             DadAuthorityViewKind.LocalOnly => "Local-only mode enabled. This client is isolated from Server Dad authority.",
             DadAuthorityViewKind.NoRemoteAuthority when localRun.WorkerRole == DadWorkerRole.ServerDad && localRun.Role == DadOrchestrationRole.Leader
@@ -179,15 +182,20 @@ public static class DadAuthorityViewBuilder
             _ => "Authority view unavailable.",
         };
 
-    private static string BuildDtrText(DadAuthorityViewKind kind, DadRunResult localRun)
+        return IsDadRunStage(dtrText) && preferredRun.Status != DadRunStatus.Idle
+            ? $"DAD: {dtrText} - {timeline}"
+            : timeline;
+    }
+
+    private static string BuildDtrText(DadAuthorityViewKind kind, DadRunResult preferredRun)
     {
-        if (localRun.LocalOnlyEnabled && localRun.Status != DadRunStatus.Idle)
-            return "LocalRun";
+        var runStage = BuildDadRunStageText(preferredRun);
+        if (!string.IsNullOrWhiteSpace(runStage))
+            return runStage;
 
         return kind switch
         {
             DadAuthorityViewKind.LocalOnly => "LocalOnly",
-            DadAuthorityViewKind.NoRemoteAuthority when localRun.Status != DadRunStatus.Idle => "LocalRun",
             DadAuthorityViewKind.NoRemoteAuthority => "NoAuth",
             DadAuthorityViewKind.RemoteIdle => "RIdle",
             DadAuthorityViewKind.RemoteQueued => "RQueue",
@@ -200,6 +208,41 @@ public static class DadAuthorityViewBuilder
             _ => "DAD",
         };
     }
+
+    private static string BuildDadRunStageText(DadRunResult run)
+    {
+        if (run.Status == DadRunStatus.Idle)
+            return string.Empty;
+
+        if (run.Status is DadRunStatus.Rejected or DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut)
+            return "Blocked";
+
+        if (!string.IsNullOrWhiteSpace(run.BlockedReason))
+            return "Blocked";
+
+        if (run.Status is DadRunStatus.Completed or DadRunStatus.Cancelled)
+            return "Done";
+
+        return run.Phase switch
+        {
+            DadRunPhase.DiscoveringParticipants or
+                DadRunPhase.WaitingForReadiness or
+                DadRunPhase.ClaimingSlots or
+                DadRunPhase.AssemblingParty or
+                DadRunPhase.RoutingModules or
+                DadRunPhase.QueuePreparing or
+                DadRunPhase.QueueStarting or
+                DadRunPhase.WaitingForQueuePop => "Queue",
+            DadRunPhase.InDutyOrTask => "Duty",
+            DadRunPhase.PostRunStabilizing or DadRunPhase.RequeueOrComplete or DadRunPhase.Finalizing => "Done",
+            _ => run.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running
+                ? "Queue"
+                : string.Empty,
+        };
+    }
+
+    private static bool IsDadRunStage(string value)
+        => value is "Queue" or "Duty" or "Done" or "Blocked";
 
     private static DadRunResult ResolvePreferredRun(DadAuthorityViewKind kind, DadRunResult localRun, DadRunResult authorityRun)
     {
