@@ -135,6 +135,12 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.SmallButton("Status to chat"))
             plugin.PrintStatusReport();
 
+        ImGui.SameLine();
+        if (ImGui.SmallButton(plugin.KrangleService.Enabled ? "Un-Krangle" : "Krangle Names"))
+            plugin.ToggleKrangleOperatorNames();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Toggle Dad's local operator-name krangle display. Run contracts stay raw.");
+
         var canStartLocalDemo = CanStartLocalDemo(profile, localRun);
         var canStartRemoteDemo = canStartLocalDemo &&
                                  !configuration.LocalOnlyModeEnabled &&
@@ -163,6 +169,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
 
         ImGui.TextWrapped(PluginInfo.Summary);
+        DrawStatusRow("Krangle", plugin.KrangleService.BuildStatus(characterPool));
         DrawStatusRow("Character pool", characterPool.LastSummary);
         DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
         DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
@@ -243,9 +250,9 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Authority warnings", string.Join(" | ", authorityRun.Warnings));
         DrawStatusRow("Authority request id", string.IsNullOrWhiteSpace(authorityRun.RequestId) ? "(none)" : authorityRun.RequestId);
         DrawStatusRow("Authority requested by", string.IsNullOrWhiteSpace(authorityRun.RequestedBy) ? "(unknown)" : authorityRun.RequestedBy);
-        DrawStatusRow("Account", plugin.ConfigManager.GetCurrentAccount()?.AccountAlias ?? "(waiting for login)");
-        DrawStatusRow("Profile", string.IsNullOrWhiteSpace(plugin.ConfigManager.SelectedCharacterKey) ? "(Account default)" : plugin.ConfigManager.SelectedCharacterKey);
-        DrawStatusRow("Profile notes", string.IsNullOrWhiteSpace(profile.TargetNotes) ? "(none)" : profile.TargetNotes);
+        DrawStatusRow("Account", FormatOperatorAccountLabel(plugin.ConfigManager.GetCurrentAccount()?.AccountAlias, plugin.ConfigManager.CurrentAccountId));
+        DrawStatusRow("Profile", FormatOperatorCharacterKey(plugin.ConfigManager.SelectedCharacterKey, "(Account default)"));
+        DrawStatusRow("Profile notes", FormatOperatorText(profile.TargetNotes, "(none)"));
 
         ImGui.Separator();
         ImGui.TextUnformatted("Bootstrap scope");
@@ -347,9 +354,9 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(DadStatusText.FormatParticipantOwner(participant));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatText($"{participant.ManagedAccountAlias} ({participant.ManagedAccountKey})", "(unknown)"));
+                ImGui.TextUnformatted(FormatOperatorAccountLabel(participant.ManagedAccountAlias, participant.ManagedAccountKey.ToString()));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatText(participant.ActiveCharacterKey.ToString(), "(unknown)"));
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(participant.ActiveCharacterKey.ToString(), "(unknown)"));
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(participant.WorkerSessionId.ToString());
                 ImGui.TableNextColumn();
@@ -359,9 +366,9 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(participant.PostArReady ? "post-AR ready" : "waiting");
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(participant.AvailableCharacterKeys.Count == 0 ? "-" : string.Join(", ", participant.AvailableCharacterKeys.Select(static key => key.ToString())));
+                ImGui.TextUnformatted(participant.AvailableCharacterKeys.Count == 0 ? "-" : plugin.KrangleService.FormatCharacterKeys(participant.AvailableCharacterKeys));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatText(participant.StatusText, "(none)"));
+                ImGui.TextUnformatted(FormatOperatorText(participant.StatusText, "(none)"));
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatText(participant.Endpoint, participant.IsLocalClient ? "(local)" : "(none)"));
             }
@@ -397,14 +404,14 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TextUnformatted(FormatFreshness(character));
 
                 ImGui.TableNextColumn();
-                if (ImGui.Selectable(character.CharacterKey, string.Equals(selectedCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase), ImGuiSelectableFlags.SpanAllColumns))
+                if (ImGui.Selectable($"{FormatOperatorCharacterKey(character.CharacterKey, "-")}##pool-{character.CharacterKey}", string.Equals(selectedCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase), ImGuiSelectableFlags.SpanAllColumns))
                     selectedCharacterKey = character.CharacterKey;
 
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatContentId(character.ContentId));
 
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(string.IsNullOrWhiteSpace(character.AccountAlias) ? "-" : character.AccountAlias);
+                ImGui.TextUnformatted(FormatOperatorAccountLabel(character.AccountAlias, character.AccountId));
 
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatJobAndLevel(character));
@@ -427,13 +434,13 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.Separator();
         ImGui.TextUnformatted("Selected character detail");
-        DrawStatusRow("Identity", $"{selectedCharacter.CharacterKey} | CID {FormatContentId(selectedCharacter.ContentId)} | Account {selectedCharacter.AccountAlias}");
+        DrawStatusRow("Identity", $"{FormatOperatorCharacterKey(selectedCharacter.CharacterKey, "-")} | CID {FormatContentId(selectedCharacter.ContentId)} | Account {FormatOperatorAccountLabel(selectedCharacter.AccountAlias, selectedCharacter.AccountId)}");
         DrawStatusRow("World", $"{selectedCharacter.WorldName} | {selectedCharacter.DataCenterName}");
         DrawStatusRow("Live", $"{FormatReadiness(selectedCharacter.Readiness)} | {selectedCharacter.TerritoryName} | party {FormatParty(selectedCharacter)}");
         DrawStatusRow("XADB", selectedCharacter.XadbReady
             ? $"{FormatTime(selectedCharacter.XadbSnapshotUtc)} | quality {FormatText(selectedCharacter.SnapshotQuality, "(unknown)")}"
             : "Unavailable");
-        DrawStatusRow("Planner", selectedCharacter.Blockers.Count == 0 ? "No blockers recorded." : string.Join(" | ", selectedCharacter.Blockers));
+        DrawStatusRow("Planner", selectedCharacter.Blockers.Count == 0 ? "No blockers recorded." : FormatOperatorText(string.Join(" | ", selectedCharacter.Blockers), "(none)"));
     }
 
     private void DrawPresetPlannerTab(DadCharacterPool characterPool)
@@ -496,6 +503,10 @@ public sealed class MainWindow : Window, IDisposable
             plugin.PrintStatus("Copied dad planner summary.");
         }
 
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Load Local Sastasha test"))
+            LoadPlannerTestDuty(plannerOptions, DadPlannerActivityMode.LocalDuty);
+
         ImGui.Separator();
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition);
 
@@ -507,18 +518,18 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Transport", plugin.PresetProviderService.GetTransportOwnerLabel(plannerPreview.TransportOwner));
         DrawStatusRow("Queue authority", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerPreview.QueueAuthority));
         DrawStatusRow("Invite owner", plugin.PresetProviderService.GetInviteAuthorityLabel(plannerPreview.InviteAuthority));
-        DrawStatusRow("Account filter", plannerPreview.AccountFilterSummary);
+        DrawStatusRow("Account filter", FormatOperatorText(plannerPreview.AccountFilterSummary, "(none)"));
         DrawStatusRow("Roster source", plugin.PresetProviderService.GetRosterSourceLabel(plannerPreview.RosterSource));
-        DrawStatusRow("Leader", FormatText(plannerPreview.LeaderStatusText, "(none)"));
+        DrawStatusRow("Leader", FormatOperatorText(plannerPreview.LeaderStatusText, "(none)"));
         DrawStatusRow("Preview scope", plannerPreview.PreviewScope);
         DrawStatusRow("Validation", $"{FormatReadiness(plannerPreview.ValidationState)} | {plannerPreview.ValidationSummary}");
         DrawStatusRow("Filters", plannerPreview.FilterSummary);
-        DrawStatusRow("Summary", plannerPreview.PlannerSummary);
+        DrawStatusRow("Summary", FormatOperatorText(plannerPreview.PlannerSummary, "(none)"));
         DrawStatusRow("Planner request", requestPreview.StatusSummary);
         DrawStatusRow("Request id", FormatText(requestPreview.RequestId, "(none)"));
         DrawStatusRow("Request module", requestPreview.ModuleId.ToString());
-        DrawStatusRow("Required characters", FormatKeys(requestPreview.RequiredCharacterKeys));
-        DrawStatusRow("Required accounts", FormatKeys(requestPreview.RequiredAccountKeys));
+        DrawStatusRow("Required characters", plugin.KrangleService.FormatCharacterKeys(requestPreview.RequiredCharacterKeys));
+        DrawStatusRow("Required accounts", FormatOperatorAccountKeys(requestPreview.RequiredAccountKeys));
         DrawStatusRow("Request queue", requestPreview.QueueAuthority.ToString());
         DrawStatusRow("Expected party size", requestPreview.ExpectedPartySize <= 0 ? "?" : requestPreview.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Local-only mode", plugin.Configuration.LocalOnlyModeEnabled ? "Enabled" : "Disabled");
@@ -536,6 +547,11 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.SmallButton("Start planner run"))
             plugin.StartPlannerRunFromShell();
         ImGui.EndDisabled();
+
+        var requestJson = string.IsNullOrWhiteSpace(requestPreview.RequestJson)
+            ? requestPreview.StatusSummary
+            : requestPreview.RequestJson;
+        ImGui.InputTextMultiline("Request JSON (raw contract)", ref requestJson, 8192, new Vector2(-1f, 160f), ImGuiInputTextFlags.ReadOnly);
 
         ImGui.Separator();
         DrawPlannerValidation(plannerPreview, requestPreview);
@@ -608,6 +624,23 @@ public sealed class MainWindow : Window, IDisposable
                 plannerOptions.DutyExpectedPartySize = Math.Clamp(partySize, 1, 8);
                 plugin.SavePlannerOptions();
             }
+
+            if (ImGui.SmallButton("Use Sastasha test duty"))
+                LoadPlannerTestDuty(plannerOptions, lane.ActivityMode);
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Clear duty selector"))
+            {
+                plannerOptions.DutyContentFinderConditionId = 0;
+                plannerOptions.DutyDisplayName = string.Empty;
+                plannerOptions.DutyUnsynced = false;
+                plugin.SavePlannerOptions();
+                plugin.PrintStatus("Cleared Dad planner duty selector.");
+            }
+
+            DrawStatusRow("Duty selector state", HasPlannerDutySelector(plannerOptions)
+                ? $"{plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId} | party {plannerOptions.DutyExpectedPartySize} | {(plannerOptions.DutyUnsynced ? "unsynced" : "synced")}"
+                : "Missing. Local Duty / Unsync blocks until duty id and name are set.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Mogtome)
@@ -699,7 +732,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatText(slot.AssignmentSummary, "-"));
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(string.IsNullOrWhiteSpace(slot.CharacterKey) ? "-" : slot.CharacterKey);
+            ImGui.TextUnformatted(FormatOperatorCharacterKey(slot.CharacterKey, "-"));
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(slot.SelectedSource.HasValue
                 ? plugin.PresetProviderService.GetCharacterSourceLabel(slot.SelectedSource.Value)
@@ -709,7 +742,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatReadiness(slot.SelectedReadiness));
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatText(slot.BlockerSummary, slot.StatusText));
+            ImGui.TextUnformatted(FormatOperatorText(FormatText(slot.BlockerSummary, slot.StatusText), "(none)"));
         }
 
         ImGui.EndTable();
@@ -737,7 +770,7 @@ public sealed class MainWindow : Window, IDisposable
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(character.CharacterKey);
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(character.CharacterKey, "-"));
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatJobAndLevel(character));
                 ImGui.TableNextColumn();
@@ -749,7 +782,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatReadiness(character.Readiness));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatBlockers(character.Blockers));
+                ImGui.TextUnformatted(FormatOperatorText(FormatBlockers(character.Blockers), "(none)"));
             }
 
             ImGui.EndTable();
@@ -764,6 +797,23 @@ public sealed class MainWindow : Window, IDisposable
         plannerOptions.DutyExpectedPartySize = Math.Clamp(lane.ExpectedPartySize, 1, 8);
         plugin.SavePlannerOptions();
     }
+
+    private void LoadPlannerTestDuty(DadPresetPlannerOptions plannerOptions, DadPlannerActivityMode activityMode)
+    {
+        var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(activityMode);
+        plannerOptions.ActivityMode = lane.ActivityMode;
+        plannerOptions.TransportOwner = lane.DefaultTransportOwner;
+        plannerOptions.QueueAuthority = lane.DefaultQueueAuthority;
+        plannerOptions.DutyContentFinderConditionId = 4;
+        plannerOptions.DutyDisplayName = "Sastasha";
+        plannerOptions.DutyUnsynced = lane.ActivityMode == DadPlannerActivityMode.LocalDuty;
+        plannerOptions.DutyExpectedPartySize = Math.Clamp(lane.ExpectedPartySize, 1, 8);
+        plugin.SavePlannerOptions();
+        plugin.PrintStatus($"Loaded Dad planner test duty: {plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId} for {lane.DisplayName}.");
+    }
+
+    private static bool HasPlannerDutySelector(DadPresetPlannerOptions plannerOptions)
+        => plannerOptions.DutyContentFinderConditionId != 0 && !string.IsNullOrWhiteSpace(plannerOptions.DutyDisplayName);
 
     private static bool IsSelectedPlannerLane(DadPlannerActivityMode selectedMode, DadPlannerActivityMode laneMode)
         => NormalizePlannerLane(selectedMode) == NormalizePlannerLane(laneMode);
@@ -931,22 +981,46 @@ public sealed class MainWindow : Window, IDisposable
     private static string FormatText(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
-    private static string FormatRunSnapshot(DadRunResult run)
+    private string FormatOperatorCharacterKey(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        return plugin.KrangleService.FormatCharacterKey(value);
+    }
+
+    private string FormatOperatorAccountLabel(string? alias, string? accountKey)
+        => plugin.KrangleService.FormatAccountLabel(alias, accountKey);
+
+    private string FormatOperatorAccountKeys(IReadOnlyList<DadAccountKey> keys)
+    {
+        if (keys.Count == 0)
+            return "(none)";
+
+        return string.Join(", ", keys.Select(key => plugin.KrangleService.Enabled
+            ? plugin.KrangleService.FormatAccountLabel("Account", key.Value)
+            : key.ToString()));
+    }
+
+    private string FormatOperatorText(string? value, string fallback)
+        => plugin.KrangleService.FormatOperatorText(FormatText(value, fallback), plugin.CharacterIntelligenceService.CurrentPool);
+
+    private string FormatRunSnapshot(DadRunResult run)
     {
         var requestId = string.IsNullOrWhiteSpace(run.RequestId) ? "(none)" : run.RequestId;
         var taskDetail = string.IsNullOrWhiteSpace(run.ActiveTaskStatus) ? run.Summary : run.ActiveTaskStatus;
         var blocker = string.IsNullOrWhiteSpace(run.BlockedReason) ? string.Empty : $" | Blocker {run.BlockedReason}";
-        return $"{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail}{blocker} | Request {requestId}";
+        return FormatOperatorText($"{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail}{blocker} | Request {requestId}", "(none)");
     }
 
-    private static string FormatExecutorStatus(DadModuleExecutionStatusDto status)
+    private string FormatExecutorStatus(DadModuleExecutionStatusDto status)
     {
         if (status.ModuleId == DadModuleId.None && string.IsNullOrWhiteSpace(status.DisplayName))
             return "(none)";
 
         var blocker = string.IsNullOrWhiteSpace(status.BlockedReason) ? string.Empty : $" | Blocker {status.BlockedReason}";
         var retry = status.MaxRetryAttempts <= 0 ? string.Empty : $" | Retry {status.RetryAttempt}/{status.MaxRetryAttempts}";
-        return $"{status.DisplayName} / {status.Status} / {status.Phase}{retry} | {status.Summary}{blocker}";
+        return FormatOperatorText($"{status.DisplayName} / {status.Status} / {status.Phase}{retry} | {status.Summary}{blocker}", "(none)");
     }
 
     private void DrawPlannerActivityModeSelector(DadPresetPlannerOptions plannerOptions)
@@ -1115,16 +1189,14 @@ public sealed class MainWindow : Window, IDisposable
             plannerOptions.IncludedAccountKeys.Add(accountKey);
     }
 
-    private static string FormatAccount(DadAcquiredCharacter character)
+    private string FormatAccount(DadAcquiredCharacter character)
     {
         if (!string.IsNullOrWhiteSpace(character.AccountAlias) && !string.IsNullOrWhiteSpace(character.AccountId))
-            return string.Equals(character.AccountAlias, character.AccountId, StringComparison.OrdinalIgnoreCase)
-                ? character.AccountAlias
-                : $"{character.AccountAlias} ({character.AccountId})";
+            return FormatOperatorAccountLabel(character.AccountAlias, character.AccountId);
 
         if (!string.IsNullOrWhiteSpace(character.AccountAlias))
-            return character.AccountAlias;
+            return FormatOperatorAccountLabel(character.AccountAlias, string.Empty);
 
-        return string.IsNullOrWhiteSpace(character.AccountId) ? "-" : character.AccountId;
+        return string.IsNullOrWhiteSpace(character.AccountId) ? "-" : FormatOperatorAccountLabel("Account", character.AccountId);
     }
 }

@@ -10,6 +10,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = true;
     public bool LocalOnlyModeEnabled { get; set; }
+    public bool KrangleOperatorNamesEnabled { get; set; }
     public bool DtrBarEnabled { get; set; } = true;
     public int DtrBarMode { get; set; } = 1;
     public string DtrIconEnabled { get; set; } = "\uE044";

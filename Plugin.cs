@@ -41,6 +41,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
+    public DadKrangleService KrangleService { get; }
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
     public DadPresetProviderService PresetProviderService { get; }
     public DadModuleRegistry ModuleRegistry { get; }
@@ -74,6 +75,7 @@ public sealed class Plugin : IDalamudPlugin
         ClaimService = new DadClaimService();
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
+        KrangleService = new DadKrangleService(Configuration);
         PresetProviderService = new DadPresetProviderService();
         ModuleRegistry = new DadModuleRegistry();
         PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry);
@@ -108,7 +110,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, and account-aware readiness/lease status.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -183,6 +185,13 @@ public sealed class Plugin : IDalamudPlugin
 
     public void SavePlannerOptions()
         => Configuration.Save();
+
+    public string ToggleKrangleOperatorNames()
+    {
+        var status = KrangleService.Toggle(CharacterIntelligenceService.CurrentPool);
+        PrintStatus(status);
+        return status;
+    }
 
     public DadRunResult StartDemoRunFromShell()
         => StartLocalDemoRunFromShell();
@@ -556,15 +565,15 @@ public sealed class Plugin : IDalamudPlugin
             $"Profile {(profile.Enabled ? "armed" : "off")} | " +
             $"IPC starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
             $"Pool {characterPool.Characters.Count} row(s) / XADB {characterPool.XadbStatus.Availability} / peers {characterPool.PeerTransport.ConnectedPeerCount}");
-        PrintStatus($"Authority timeline: {authorityView.TimelineText}");
-        PrintStatus($"Authority owner: {authorityView.OwnershipText}");
-        PrintStatus($"Local run: {FormatRunStatusForChat(localRun)} | Payload {FormatTaskPayload(localRun)}");
-        PrintStatus($"Authority run: {FormatRunStatusForChat(authorityRun)} | Payload {authorityView.PayloadText}");
-        PrintStatus($"Planner: {plannerPreview.PlannerSummary}");
+        PrintStatus($"Authority timeline: {FormatOperatorTextForChat(authorityView.TimelineText)}");
+        PrintStatus($"Authority owner: {FormatOperatorTextForChat(authorityView.OwnershipText)}");
+        PrintStatus($"Local run: {FormatRunStatusForChat(localRun)} | Payload {FormatOperatorTextForChat(FormatTaskPayload(localRun))}");
+        PrintStatus($"Authority run: {FormatRunStatusForChat(authorityRun)} | Payload {FormatOperatorTextForChat(authorityView.PayloadText)}");
+        PrintStatus($"Planner: {FormatOperatorTextForChat(plannerPreview.PlannerSummary)}");
         PrintStatus($"Planner request: {BuildPlannerRunRequestPreview().StatusSummary}");
     }
 
-    private static string FormatRunStatusForChat(DadRunResult run)
+    private string FormatRunStatusForChat(DadRunResult run)
     {
         var requestId = string.IsNullOrWhiteSpace(run.RequestId) ? "(none)" : run.RequestId;
         var taskName = string.IsNullOrWhiteSpace(run.ActiveTaskName)
@@ -572,11 +581,14 @@ public sealed class Plugin : IDalamudPlugin
             : $"{run.ActiveTaskIndex}/{run.TotalTaskCount} {run.ActiveTaskName}";
         var taskDetail = string.IsNullOrWhiteSpace(run.ActiveTaskStatus) ? run.Summary : run.ActiveTaskStatus;
         var blocker = string.IsNullOrWhiteSpace(run.BlockedReason) ? string.Empty : $" | Blocker {run.BlockedReason}";
-        return $"{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail} | Task {taskName}{blocker} | Request {requestId}";
+        return FormatOperatorTextForChat($"{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail} | Task {taskName}{blocker} | Request {requestId}");
     }
 
     private static string FormatTaskPayload(DadRunResult run)
         => run.Request?.DescribeRequestedWork() ?? "No active dad task payload.";
+
+    private string FormatOperatorTextForChat(string value)
+        => KrangleService.FormatOperatorText(value, CharacterIntelligenceService.CurrentPool);
 
     private string BuildShellRunSummary(string label, DadRunRequest request, DadRunResult result)
         => $"{label}: {BuildShellRoutingText(request, result)} | Payload {request.DescribeRequestedWork()} | Result {result.Status}/{result.Phase}/{result.ModuleId} | {result.Summary}";
@@ -648,6 +660,12 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("status", StringComparison.OrdinalIgnoreCase))
         {
             PrintStatusReport();
+            return;
+        }
+
+        if (trimmed.Equals("krangle", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleKrangleOperatorNames();
             return;
         }
 

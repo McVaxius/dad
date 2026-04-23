@@ -133,6 +133,13 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.UpdateDtrBar();
         }
 
+        var krangle = configuration.KrangleOperatorNamesEnabled;
+        if (ImGui.Checkbox("Krangle operator names", ref krangle))
+        {
+            configuration.KrangleOperatorNamesEnabled = krangle;
+            configuration.Save();
+        }
+
         var mode = configuration.DtrBarMode;
         if (ImGui.Combo("DTR mode", ref mode, DtrModes, DtrModes.Length))
         {
@@ -230,6 +237,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText("/dad ws -> reset both windows to 1,1");
         ImGui.BulletText("/dad j -> jump both windows somewhere visible");
         ImGui.BulletText("/dad status -> print the live shell summary to chat");
+        ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
         ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
         ImGui.BulletText("/dad run server -> start a Server Dad Sastasha premade demo");
         ImGui.BulletText("/dad run msq -> start a Server Dad Daily MSQ demo");
