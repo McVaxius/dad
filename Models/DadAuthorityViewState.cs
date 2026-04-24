@@ -28,8 +28,85 @@ public sealed record DadAuthorityViewState
     public string PayloadText { get; init; } = "No active dad task payload.";
     public string AuthorityWorkerText { get; init; } = "(none)";
     public string AuthorityEndpointText { get; init; } = "(none)";
-    public string DtrText { get; init; } = "NoAuth";
+    public string DtrText { get; init; } = "Plan";
     public DadRunResult PreferredRun { get; init; } = DadRunResult.Idle();
+}
+
+public static class DadOperatorPhaseText
+{
+    private static readonly HashSet<string> KnownPhaseLabels = new(StringComparer.Ordinal)
+    {
+        "Plan",
+        "Party",
+        "Queue",
+        "Duty",
+        "Task",
+        "Blocked",
+        "Done",
+    };
+
+    public static string GetPhaseLabel(DadRunResult run)
+    {
+        if (run.Status == DadRunStatus.Idle)
+            return "Plan";
+
+        if (HasBlockingFailure(run))
+            return "Blocked";
+
+        if (run.Status is DadRunStatus.Completed or DadRunStatus.Cancelled)
+            return "Done";
+
+        var phase = run.CurrentExecutorStatus.IsActive && run.CurrentExecutorStatus.Phase != DadRunPhase.Idle
+            ? run.CurrentExecutorStatus.Phase
+            : run.Phase;
+        var moduleId = run.CurrentExecutorStatus.ModuleId != DadModuleId.None
+            ? run.CurrentExecutorStatus.ModuleId
+            : run.ModuleId;
+
+        return phase switch
+        {
+            DadRunPhase.Planning or DadRunPhase.RoutingModules => "Plan",
+            DadRunPhase.DiscoveringParticipants or DadRunPhase.WaitingForReadiness or DadRunPhase.ClaimingSlots or DadRunPhase.AssemblingParty => "Party",
+            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => "Queue",
+            DadRunPhase.InDutyOrTask => IsTaskLane(moduleId) ? "Task" : "Duty",
+            DadRunPhase.PostRunStabilizing or DadRunPhase.RequeueOrComplete or DadRunPhase.Finalizing => "Done",
+            _ => run.Status switch
+            {
+                DadRunStatus.WaitingForParticipants => "Party",
+                DadRunStatus.Queued => "Queue",
+                DadRunStatus.Running => IsTaskLane(moduleId) ? "Task" : "Duty",
+                _ => "Plan",
+            },
+        };
+    }
+
+    public static bool IsNamedPhase(string? value)
+        => !string.IsNullOrWhiteSpace(value) && KnownPhaseLabels.Contains(value);
+
+    public static string FormatPhaseLabel(DadRunResult run)
+        => $"DAD: {GetPhaseLabel(run)}";
+
+    public static bool HasBlockingFailure(DadRunResult run)
+    {
+        if (run.Status is DadRunStatus.Rejected or DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut)
+            return true;
+
+        if (run.CurrentExecutorStatus.Status == DadRunStatus.Failed)
+            return true;
+
+        if (HasHardBlocker(run.CurrentExecutorStatus.Blockers))
+            return true;
+
+        return run.StepResults.Any(step =>
+            step.ExecutorStatus.Status == DadRunStatus.Failed ||
+            HasHardBlocker(step.ModuleBlockers));
+    }
+
+    private static bool IsTaskLane(DadModuleId moduleId)
+        => moduleId == DadModuleId.Blunderville;
+
+    private static bool HasHardBlocker(IEnumerable<DadModuleBlockerDto> blockers)
+        => blockers.Any(blocker => blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
 }
 
 public static class DadAuthorityViewBuilder
@@ -63,7 +140,7 @@ public static class DadAuthorityViewBuilder
 
         var kind = ResolveKind(localRun, authorityRun, localOnlyModeEnabled, hasRemoteAuthority, isFresh);
         var preferredRun = ResolvePreferredRun(kind, localRun, authorityRun);
-        var dtrText = BuildDtrText(kind, preferredRun);
+        var dtrText = BuildDtrText(preferredRun);
         var timelineText = BuildTimelineText(kind, localRun, authorityRun, preferredRun, payloadText, clientPerspective, dtrText);
         var ownershipText = $"{DadStatusText.FormatAuthorityStatus(authorityRole, authorityWorker, authorityEndpoint, authorityRun.AuthorityMode)} | {freshnessText}";
 
@@ -187,62 +264,11 @@ public static class DadAuthorityViewBuilder
             : timeline;
     }
 
-    private static string BuildDtrText(DadAuthorityViewKind kind, DadRunResult preferredRun)
-    {
-        var runStage = BuildDadRunStageText(preferredRun);
-        if (!string.IsNullOrWhiteSpace(runStage))
-            return runStage;
-
-        return kind switch
-        {
-            DadAuthorityViewKind.LocalOnly => "LocalOnly",
-            DadAuthorityViewKind.NoRemoteAuthority => "NoAuth",
-            DadAuthorityViewKind.RemoteIdle => "RIdle",
-            DadAuthorityViewKind.RemoteQueued => "RQueue",
-            DadAuthorityViewKind.RemoteWaiting => "RWait",
-            DadAuthorityViewKind.RemoteRunning => "RRun",
-            DadAuthorityViewKind.RemoteCompleted => "RDone",
-            DadAuthorityViewKind.RemoteCancelled => "RCancel",
-            DadAuthorityViewKind.RemoteRejected => "RReject",
-            DadAuthorityViewKind.RemoteStale => "RStale",
-            _ => "DAD",
-        };
-    }
-
-    private static string BuildDadRunStageText(DadRunResult run)
-    {
-        if (run.Status == DadRunStatus.Idle)
-            return string.Empty;
-
-        if (run.Status is DadRunStatus.Rejected or DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut)
-            return "Blocked";
-
-        if (!string.IsNullOrWhiteSpace(run.BlockedReason))
-            return "Blocked";
-
-        if (run.Status is DadRunStatus.Completed or DadRunStatus.Cancelled)
-            return "Done";
-
-        return run.Phase switch
-        {
-            DadRunPhase.DiscoveringParticipants or
-                DadRunPhase.WaitingForReadiness or
-                DadRunPhase.ClaimingSlots or
-                DadRunPhase.AssemblingParty or
-                DadRunPhase.RoutingModules or
-                DadRunPhase.QueuePreparing or
-                DadRunPhase.QueueStarting or
-                DadRunPhase.WaitingForQueuePop => "Queue",
-            DadRunPhase.InDutyOrTask => "Duty",
-            DadRunPhase.PostRunStabilizing or DadRunPhase.RequeueOrComplete or DadRunPhase.Finalizing => "Done",
-            _ => run.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running
-                ? "Queue"
-                : string.Empty,
-        };
-    }
+    private static string BuildDtrText(DadRunResult preferredRun)
+        => DadOperatorPhaseText.GetPhaseLabel(preferredRun);
 
     private static bool IsDadRunStage(string value)
-        => value is "Queue" or "Duty" or "Done" or "Blocked";
+        => DadOperatorPhaseText.IsNamedPhase(value);
 
     private static DadRunResult ResolvePreferredRun(DadAuthorityViewKind kind, DadRunResult localRun, DadRunResult authorityRun)
     {

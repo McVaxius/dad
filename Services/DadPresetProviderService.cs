@@ -1,4 +1,5 @@
 using dad.Models;
+using Lumina.Excel.Sheets;
 
 namespace dad.Services;
 
@@ -202,11 +203,32 @@ public sealed class DadPresetProviderService
 
     private readonly record struct PlannerSlotDefinition(string SlotId, DadPartyRole RequiredRole, bool AllowSubstitution);
 
+    private readonly DadModuleRegistry moduleRegistry;
+    private IReadOnlyList<DadPlannerDutyOption>? plannerDutyCatalog;
+    private IReadOnlyDictionary<uint, DadPlannerDutyOption>? plannerDutyCatalogById;
+
+    public DadPresetProviderService(DadModuleRegistry moduleRegistry)
+    {
+        this.moduleRegistry = moduleRegistry;
+    }
+
     public IReadOnlyList<string> GetLanPartyPresets()
         => DadRunRequestOptions.LanPartyPresetStubs;
 
     public IReadOnlyList<string> GetSupportedJobHints()
         => DadRunRequestOptions.JobHintExamples;
+
+    public IReadOnlyList<string> GetMogtomeDutyPolicies()
+        => DadMogtomeDutyPolicies.All;
+
+    public string GetMogtomeDutyPolicyLabel(string policy)
+        => policy switch
+        {
+            DadMogtomeDutyPolicies.PresetHandoff => "Preset handoff",
+            DadMogtomeDutyPolicies.PreservePresetDuty => "Preset duty policy",
+            DadMogtomeDutyPolicies.PinnedDutySelection => "Pinned duty selection",
+            _ => policy,
+        };
 
     public IReadOnlyList<string> GetPlannerActivityModes()
         => PlannerActivityModes.Select(GetPlannerActivityModeLabel).ToArray();
@@ -250,6 +272,54 @@ public sealed class DadPresetProviderService
             .ToList();
     }
 
+    public IReadOnlyList<DadPlannerDutyOption> SearchPlannerDutyOptions(
+        DadPlannerActivityMode activityMode,
+        string search,
+        int maxResults = 96)
+    {
+        var normalizedSearch = search?.Trim() ?? string.Empty;
+        var tokens = string.IsNullOrWhiteSpace(normalizedSearch)
+            ? []
+            : normalizedSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var results = GetPlannerDutyCatalog()
+            .Where(option => MatchesPlannerLaneDuty(option, activityMode))
+            .Where(option => tokens.Length == 0 || tokens.All(token =>
+                option.SearchText.Contains(token, StringComparison.OrdinalIgnoreCase)))
+            .Take(Math.Max(1, maxResults))
+            .ToList();
+
+        return results;
+    }
+
+    public DadPlannerDutyOption? GetPlannerDutyOption(uint contentFinderConditionId)
+    {
+        if (contentFinderConditionId == 0)
+            return null;
+
+        return GetPlannerDutyCatalogById().TryGetValue(contentFinderConditionId, out var duty)
+            ? duty
+            : null;
+    }
+
+    public DadPlannerDutyOption? GetPlannerSelectedDuty(DadPresetPlannerOptions options)
+    {
+        NormalizePlannerOptions(options);
+        if (options.DutyContentFinderConditionId == 0)
+            return null;
+
+        if (!GetPlannerDutyCatalogById().TryGetValue(options.DutyContentFinderConditionId, out var duty))
+            return null;
+
+        if (!string.Equals(options.DutyDisplayName, duty.DutyDisplayName, StringComparison.Ordinal))
+            options.DutyDisplayName = duty.DutyDisplayName;
+
+        if (options.DutyExpectedPartySize <= 0)
+            options.DutyExpectedPartySize = Math.Max(1, duty.QueueSize);
+
+        return duty;
+    }
+
     public string GetPlannerAccountFilterLabel(DadCharacterPool pool, DadPresetPlannerOptions options)
     {
         NormalizePlannerOptions(options);
@@ -261,6 +331,8 @@ public sealed class DadPresetProviderService
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
         var lane = ResolveLaneDefinition(options.ActivityMode);
+        var selectedDuty = GetPlannerSelectedDuty(options);
+        var dutySelectorBlocker = BuildDutySelectorBlocker(lane, selectedDuty);
 
         var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
         var effectiveInviteAuthority = ResolveEffectiveInviteAuthority(options);
@@ -279,8 +351,13 @@ public sealed class DadPresetProviderService
             .Where(static slot => string.IsNullOrWhiteSpace(slot.CharacterKey))
             .Select(static slot => slot.SlotId)
             .ToList();
-        var missingDutySelector = lane.RequiresDutySelector && !HasDutySelector(options);
-        var blocked = string.IsNullOrWhiteSpace(leaderCandidate?.CharacterKey) || missingRoleSlots.Count > 0 || missingDutySelector;
+        var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
+        var missingDutySelector = !string.IsNullOrWhiteSpace(dutySelectorBlocker);
+        var insufficientPlannerPartyShell = lane.RequiresRemoteParty && requestedPartySize > selectedCharacters.Count;
+        var blocked = string.IsNullOrWhiteSpace(leaderCandidate?.CharacterKey)
+                      || missingRoleSlots.Count > 0
+                      || missingDutySelector
+                      || insufficientPlannerPartyShell;
         var localCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.LocalRuntime);
         var remoteCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.PeerRuntime);
 
@@ -319,7 +396,10 @@ public sealed class DadPresetProviderService
             preset.Blockers.Add($"Missing role slots: {string.Join(", ", missingRoleSlots)}.");
 
         if (missingDutySelector)
-            preset.Blockers.Add("Missing Duty Finder selector.");
+            preset.Blockers.Add(dutySelectorBlocker);
+
+        if (insufficientPlannerPartyShell)
+            preset.Blockers.Add($"Selected duty needs party size {requestedPartySize}, but planner shell currently exposes only {selectedCharacters.Count} typed slot(s).");
 
         if (blocked)
         {
@@ -342,6 +422,9 @@ public sealed class DadPresetProviderService
                 ? "Preview-only: remote participants are still missing; this mode validates local worker state, route selection, and queue/transport choices only."
                 : "Preview-only: this mode focuses on what the local machine can validate before a full remote party retest.");
         }
+
+        if (selectedDuty != null && lane.RequiresDutySelector)
+            preset.Notes.Add($"Typed duty: {selectedDuty.SelectionLabel} | {selectedDuty.MetadataSummary}");
 
         if (filterStats.ExcludedByConnectedFilter > 0)
             preset.Notes.Add($"Connected filter removed {filterStats.ExcludedByConnectedFilter} candidate(s).");
@@ -371,54 +454,122 @@ public sealed class DadPresetProviderService
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
         var lane = ResolveLaneDefinition(options.ActivityMode);
+        var requestModuleId = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane);
+        var selectedDuty = GetPlannerSelectedDuty(options);
+        var dutySelectorBlocker = BuildDutySelectorBlocker(lane, selectedDuty);
+        var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
+        var capability = moduleRegistry.GetCapability(requestModuleId);
 
         var plannerPreview = plannerPreviewOverride ?? BuildPlannerPreview(pool, options);
-        var result = new DadPlannerRunRequestPreview
-        {
-            PlannerPreview = plannerPreview,
-            ModuleId = lane.ModuleId,
-            QueueAuthority = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
-                ? DadQueueAuthority.LocalOnly
-                : options.QueueAuthority,
-            ExpectedPartySize = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
-                ? 1
-                : lane.ExpectedPartySize,
-        };
-
-        if (lane.RequiresDutySelector && !HasDutySelector(options))
-        {
-            result.ModuleBlockers.Add(new DadModuleBlockerDto
-            {
-                ModuleId = lane.ModuleId,
-                Capability = "DutySelector",
-                Severity = DadModuleBlockerSeverity.Blocked,
-                Summary = $"{lane.DisplayName} planner start needs content finder condition id, duty name, sync mode, expected party size, and queue lane.",
-            });
-            return BlockRequest(result, $"{lane.DisplayName} planner start needs a concrete duty selector first.");
-        }
-
-        if (plannerPreview.ValidationState == DadReadinessState.Blocked)
-            return BlockRequest(result, BuildPlannerBlockerSummary(plannerPreview));
-
         var selectedCharacters = ResolveSelectedCharacters(plannerPreview);
-        if (selectedCharacters.Count == 0)
-            return BlockRequest(result, "Planner request needs at least one selected typed character.");
-
         var previewOnly = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine;
         var request = new DadRunRequest
         {
             RequestId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId,
             RequestedAtUtc = requestedAtUtc ?? DateTime.UtcNow,
             RequestedBy = previewOnly ? "planner-preview" : "planner",
-            Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly),
+            Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty),
         };
 
+        PopulatePlannerRequestTask(request, options, selectedDuty, requestedPartySize);
+        request.ApplyOrchestrationDefaults();
+
+        var result = new DadPlannerRunRequestPreview
+        {
+            PlannerPreview = plannerPreview,
+            Request = request,
+            ModuleId = requestModuleId,
+            QueueAuthority = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
+                ? DadQueueAuthority.LocalOnly
+                : options.QueueAuthority,
+            ExpectedPartySize = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
+                ? 1
+                : requestedPartySize,
+            ModuleBlockers = capability.Blockers.Select(static blocker => blocker.Clone()).ToList(),
+        };
+
+        if (!string.IsNullOrWhiteSpace(dutySelectorBlocker))
+        {
+            result.ModuleBlockers.Add(new DadModuleBlockerDto
+            {
+                ModuleId = requestModuleId,
+                Capability = "DutySelector",
+                Severity = DadModuleBlockerSeverity.Blocked,
+                Summary = dutySelectorBlocker,
+            });
+            BlockRequest(result, dutySelectorBlocker);
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        if (plannerPreview.ValidationState == DadReadinessState.Blocked)
+        {
+            BlockRequest(result, BuildPlannerBlockerSummary(plannerPreview));
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        if (selectedCharacters.Count == 0)
+        {
+            BlockRequest(result, "Planner request needs at least one selected typed character.");
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        if (previewOnly)
+        {
+            result.CanStart = false;
+            result.StatusSummary = "Preview-only request built. Local validation only; remote start remains disabled.";
+            result.BlockedReason = plannerPreview.Blockers.Count == 0
+                ? "Preview-only mode keeps remote start disabled."
+                : BuildPlannerBlockerSummary(plannerPreview);
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        var startCapabilityBlocker = capability.Blockers.FirstOrDefault(static blocker =>
+            string.Equals(blocker.Capability, "CanStartQueue", StringComparison.OrdinalIgnoreCase));
+        if (startCapabilityBlocker != null)
+        {
+            result.CanStart = false;
+            result.StatusSummary = $"Planner request built, but start is blocked by module capability: {startCapabilityBlocker.Summary}";
+            result.BlockedReason = startCapabilityBlocker.Summary;
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        var nonLiveSelections = selectedCharacters
+            .Where(static character => !IsConnectedForPlanning(character))
+            .Select(static character => character.CharacterKey)
+            .ToList();
+        if (nonLiveSelections.Count > 0)
+        {
+            result.CanStart = false;
+            result.StatusSummary = $"Planner request built, but start is blocked by non-live selection(s): {string.Join(", ", nonLiveSelections)}.";
+            result.BlockedReason = result.StatusSummary;
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        result.CanStart = true;
+        result.StatusSummary = "Planner request ready to start.";
+        PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+        return result;
+    }
+
+    private static void PopulatePlannerRequestTask(
+        DadRunRequest request,
+        DadPresetPlannerOptions options,
+        DadPlannerDutyOption? selectedDuty,
+        int requestedPartySize)
+    {
         switch (options.ActivityMode)
         {
             case DadPlannerActivityMode.Msq:
                 request.Msq = new DadMsqTask
                 {
                     Preset = "MSQ",
+                    LegacyQueuePreset = "Daily MSQ",
                     Attempts = 1,
                 };
                 break;
@@ -431,16 +582,16 @@ public sealed class DadPresetProviderService
             case DadPlannerActivityMode.DutySupport:
                 request.DutySupport = new DadDutySupportTask
                 {
-                    ContentFinderConditionId = options.DutyContentFinderConditionId,
-                    DutyName = options.DutyDisplayName,
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Attempts = 1,
                 };
                 break;
             case DadPlannerActivityMode.Trust:
                 request.Trust = new DadTrustTask
                 {
-                    ContentFinderConditionId = options.DutyContentFinderConditionId,
-                    DutyName = options.DutyDisplayName,
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Attempts = 1,
                 };
                 break;
@@ -448,16 +599,18 @@ public sealed class DadPresetProviderService
             case DadPlannerActivityMode.DutyPremade:
                 request.PremadeDuty = new DadPremadeDutyTask
                 {
-                    ContentFinderConditionId = options.DutyContentFinderConditionId,
-                    DutyName = options.DutyDisplayName,
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Unsynced = options.DutyUnsynced,
-                    ExpectedPartySize = Math.Max(1, options.DutyExpectedPartySize),
+                    ExpectedPartySize = requestedPartySize,
                     Attempts = 1,
                 };
                 break;
             case DadPlannerActivityMode.Blunderville:
                 request.Blunderville = new DadBlundervilleTask
                 {
+                    Mode = DadBlundervilleModes.FixedEmoteRun,
+                    CompletionPolicy = DadBlundervillePolicies.FailOrLeaveAfterEmote,
                     Attempts = 1,
                 };
                 break;
@@ -465,6 +618,9 @@ public sealed class DadPresetProviderService
                 request.Mogtome = new DadMogtomeTask
                 {
                     Preset = string.IsNullOrWhiteSpace(options.MogtomePreset) ? "Daily MSQ" : options.MogtomePreset,
+                    DutyPolicy = string.IsNullOrWhiteSpace(options.MogtomeDutyPolicy)
+                        ? DadMogtomeDutyPolicies.PresetHandoff
+                        : options.MogtomeDutyPolicy,
                     Attempts = 1,
                 };
                 break;
@@ -485,8 +641,8 @@ public sealed class DadPresetProviderService
                 {
                     Count = 1,
                     Frequency = DadRunRequestOptions.FrequencyPerArRun,
-                    ContentFinderConditionId = options.DutyContentFinderConditionId,
-                    SelectedDungeon = options.DutyDisplayName,
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    SelectedDungeon = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     ExecutionPreference = DadRunRequestOptions.TrustThenDutySupport,
                     Unsynced = options.DutyUnsynced,
                 };
@@ -494,40 +650,12 @@ public sealed class DadPresetProviderService
             case DadPlannerActivityMode.CustomDuty:
                 request.CustomDuty = new DadCustomDutyTask
                 {
-                    ContentFinderConditionId = options.DutyContentFinderConditionId,
-                    DutyName = options.DutyDisplayName,
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Attempts = 1,
                 };
                 break;
         }
-
-        request.ApplyOrchestrationDefaults();
-        result.Request = request;
-        PopulateRequestPreviewDetails(result, request);
-
-        if (previewOnly)
-        {
-            result.CanStart = false;
-            result.StatusSummary = "Preview-only request built. Full remote roster still required before planner start.";
-            result.BlockedReason = BuildPlannerBlockerSummary(plannerPreview);
-            return result;
-        }
-
-        var nonLiveSelections = selectedCharacters
-            .Where(static character => !IsConnectedForPlanning(character))
-            .Select(static character => character.CharacterKey)
-            .ToList();
-        if (nonLiveSelections.Count > 0)
-        {
-            result.CanStart = false;
-            result.StatusSummary = $"Planner request built, but start is blocked by non-live selection(s): {string.Join(", ", nonLiveSelections)}.";
-            result.BlockedReason = result.StatusSummary;
-            return result;
-        }
-
-        result.CanStart = true;
-        result.StatusSummary = "Planner request ready to start.";
-        return result;
     }
 
     public string GetLanPartyPresetsJson()
@@ -632,7 +760,7 @@ public sealed class DadPresetProviderService
         };
     }
 
-    private static void NormalizePlannerOptions(DadPresetPlannerOptions options)
+    private void NormalizePlannerOptions(DadPresetPlannerOptions options)
     {
         options.ActivityName = options.ActivityMode switch
         {
@@ -663,8 +791,10 @@ public sealed class DadPresetProviderService
             _ => "Dad Planner",
         };
         var lane = ResolveLaneDefinition(options.ActivityMode);
-        if (lane.ExpectedPartySize > 0 && options.DutyExpectedPartySize <= 0)
+        if (options.DutyExpectedPartySize <= 0 && options.DutyContentFinderConditionId == 0 && lane.ExpectedPartySize > 0)
             options.DutyExpectedPartySize = lane.ExpectedPartySize;
+        if (string.IsNullOrWhiteSpace(options.MogtomeDutyPolicy))
+            options.MogtomeDutyPolicy = DadMogtomeDutyPolicies.PresetHandoff;
         options.IncludedAccountKeys = options.IncludedAccountKeys
             .Where(static key => !key.IsEmpty)
             .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
@@ -854,7 +984,11 @@ public sealed class DadPresetProviderService
         return result;
     }
 
-    private static void PopulateRequestPreviewDetails(DadPlannerRunRequestPreview result, DadRunRequest request)
+    private void PopulateRequestPreviewDetails(
+        DadPlannerRunRequestPreview result,
+        DadRunRequest request,
+        DadPlannerLaneDefinition lane,
+        DadPlannerDutyOption? selectedDuty)
     {
         result.RequestId = request.RequestId;
         result.ModuleId = request.Orchestration.ModuleTarget;
@@ -863,13 +997,378 @@ public sealed class DadPresetProviderService
         result.RequiredCharacterKeys = [..request.Orchestration.RequiredCharacterKeys];
         result.RequiredAccountKeys = [..request.Orchestration.RequiredAccountKeys];
         result.RequestJson = DadIpcJson.Serialize(request);
+        result.ContractPreview = BuildContractPreview(result, request, lane, selectedDuty);
+        result.ContractPreviewJson = DadIpcJson.Serialize(result.ContractPreview);
     }
 
-    private static DadModuleId ResolvePlannerModuleId(DadPlannerActivityMode activityMode)
-        => ResolveLaneDefinition(activityMode).ModuleId;
+    private DadPlannerRequestContractPreview BuildContractPreview(
+        DadPlannerRunRequestPreview result,
+        DadRunRequest request,
+        DadPlannerLaneDefinition lane,
+        DadPlannerDutyOption? selectedDuty)
+        => new()
+        {
+            RequestId = request.RequestId,
+            Lane = lane.DisplayName,
+            ModuleId = request.Orchestration.ModuleTarget,
+            TaskConfig = BuildContractTaskConfig(request, selectedDuty),
+            RequiredCharacterKeys = [..result.RequiredCharacterKeys],
+            RequiredAccountKeys = [..result.RequiredAccountKeys],
+            PartySize = request.Orchestration.RosterIntent.ExpectedPartySize,
+            AuthorityMode = request.Orchestration.AuthorityMode,
+            QueueAuthority = request.Orchestration.QueueAuthority,
+            Startability = BuildStartabilityLabel(result, request),
+            CanStart = result.CanStart,
+            Blockers = BuildContractBlockers(result),
+        };
 
-    private static bool HasDutySelector(DadPresetPlannerOptions options)
-        => options.DutyContentFinderConditionId != 0 && !string.IsNullOrWhiteSpace(options.DutyDisplayName);
+    private object? BuildContractTaskConfig(DadRunRequest request, DadPlannerDutyOption? selectedDuty)
+    {
+        var dutyMetadata = BuildDutyMetadataPreview(selectedDuty);
+        if (request.Msq != null)
+        {
+            return new
+            {
+                surfacedTask = nameof(DadMsqTask),
+                request.Msq.Preset,
+                legacyTask = nameof(DadDailyMsqTask),
+                request.Msq.LegacyQueuePreset,
+                request.Msq.Attempts,
+                request.Msq.PreferTrustThenDutySupport,
+            };
+        }
+
+        if (request.DailyMsq != null)
+        {
+            return new
+            {
+                surfacedLane = "MSQ",
+                legacyTask = "DailyMsqPremade",
+                request.DailyMsq.LanPartyPreset,
+            };
+        }
+
+        if (request.DutySupport != null)
+        {
+            return new
+            {
+                request.DutySupport.ContentFinderConditionId,
+                request.DutySupport.DutyName,
+                execution = "DutySupportOnly",
+                request.DutySupport.Attempts,
+                dutyMetadata,
+            };
+        }
+
+        if (request.Trust != null)
+        {
+            return new
+            {
+                request.Trust.ContentFinderConditionId,
+                request.Trust.DutyName,
+                execution = "TrustOnly",
+                request.Trust.Attempts,
+                dutyMetadata,
+            };
+        }
+
+        if (request.PremadeDuty != null)
+        {
+            return new
+            {
+                request.PremadeDuty.ContentFinderConditionId,
+                request.PremadeDuty.DutyName,
+                syncMode = request.PremadeDuty.Unsynced ? "Unsynced" : "Synced",
+                request.PremadeDuty.ExpectedPartySize,
+                selectedDutyQueueSize = selectedDuty?.QueueSize ?? 0,
+                queueLane = GetQueueAuthorityLabel(request.Orchestration.QueueAuthority),
+                request.PremadeDuty.Attempts,
+                dutyMetadata,
+            };
+        }
+
+        if (request.Blunderville != null)
+        {
+            return new
+            {
+                request.Blunderville.Mode,
+                emoteCommand = string.IsNullOrWhiteSpace(request.Blunderville.EmoteCommand)
+                    ? "ConfiguredByCharacter"
+                    : request.Blunderville.EmoteCommand,
+                request.Blunderville.CompletionPolicy,
+                request.Blunderville.Attempts,
+            };
+        }
+
+        if (request.Mogtome != null)
+        {
+            return new
+            {
+                request.Mogtome.Preset,
+                request.Mogtome.DutyPolicy,
+                dutyPolicyLabel = GetMogtomeDutyPolicyLabel(request.Mogtome.DutyPolicy),
+                queueLane = GetQueueAuthorityLabel(request.Orchestration.QueueAuthority),
+                request.Mogtome.Attempts,
+            };
+        }
+
+        if (request.Commendation != null)
+        {
+            return new
+            {
+                request.Commendation.Attempts,
+                loopPolicy = "ShortDutyLoop",
+                queueLane = GetQueueAuthorityLabel(request.Orchestration.QueueAuthority),
+            };
+        }
+
+        if (request.Astrope != null)
+        {
+            return new
+            {
+                request.Astrope.Attempts,
+                request.Astrope.ValidLocalTimeWindow,
+                queueWindow = request.Astrope.ValidLocalTimeWindow.Describe(),
+            };
+        }
+
+        if (request.CustomDuty != null)
+        {
+            return new
+            {
+                request.CustomDuty.ContentFinderConditionId,
+                request.CustomDuty.DutyName,
+                request.CustomDuty.Attempts,
+                policy = "TypedCustomDuty",
+                dutyMetadata,
+            };
+        }
+
+        if (request.Dungeon != null)
+        {
+            return new
+            {
+                request.Dungeon.ContentFinderConditionId,
+                dutyName = request.Dungeon.SelectedDungeon,
+                syncMode = request.Dungeon.Unsynced ? "Unsynced" : "Synced",
+                request.Dungeon.ExecutionPreference,
+                request.Dungeon.Frequency,
+                request.Dungeon.Count,
+                dutyMetadata,
+            };
+        }
+
+        return null;
+    }
+
+    private static object? BuildDutyMetadataPreview(DadPlannerDutyOption? selectedDuty)
+        => selectedDuty == null
+            ? null
+            : new
+            {
+                selectedDuty.ShortCode,
+                queueSize = selectedDuty.QueueSize,
+                jobLevelRequired = selectedDuty.JobLevelRequired,
+                jobLevelSync = selectedDuty.JobLevelSync,
+                itemLevelRequired = selectedDuty.ItemLevelRequired,
+                itemLevelSync = selectedDuty.ItemLevelSync,
+                selectedDuty.FixedItemLevelSync,
+                selectedDuty.AllowUndersized,
+                selectedDuty.SupportsDutySupport,
+                selectedDuty.IsHighEndDuty,
+            };
+
+    private static string BuildStartabilityLabel(DadPlannerRunRequestPreview result, DadRunRequest request)
+        => result.CanStart
+            ? "Startable"
+            : request.Orchestration.LocalOnlyOverride
+                ? "PreviewOnly"
+                : "Blocked";
+
+    private static List<string> BuildContractBlockers(DadPlannerRunRequestPreview result)
+    {
+        var blockers = new List<string>();
+        if (!string.IsNullOrWhiteSpace(result.BlockedReason))
+            blockers.Add(result.BlockedReason);
+
+        blockers.AddRange(result.PlannerPreview.Blockers);
+        blockers.AddRange(result.ModuleBlockers
+            .Select(static blocker => blocker.Summary)
+            .Where(static summary => !string.IsNullOrWhiteSpace(summary)));
+        return blockers
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private IReadOnlyList<DadPlannerDutyOption> GetPlannerDutyCatalog()
+    {
+        if (plannerDutyCatalog != null)
+            return plannerDutyCatalog;
+
+        plannerDutyCatalog = BuildPlannerDutyCatalog();
+        return plannerDutyCatalog;
+    }
+
+    private IReadOnlyDictionary<uint, DadPlannerDutyOption> GetPlannerDutyCatalogById()
+    {
+        if (plannerDutyCatalogById != null)
+            return plannerDutyCatalogById;
+
+        plannerDutyCatalogById = GetPlannerDutyCatalog()
+            .ToDictionary(static option => option.ContentFinderConditionId);
+        return plannerDutyCatalogById;
+    }
+
+    private static string BuildDutySelectorBlocker(DadPlannerLaneDefinition lane, DadPlannerDutyOption? selectedDuty)
+    {
+        if (!lane.RequiresDutySelector)
+            return string.Empty;
+
+        if (selectedDuty == null)
+            return $"{lane.DisplayName} requires a typed Duty Finder selection.";
+
+        if (MatchesPlannerLaneDuty(selectedDuty, lane.ActivityMode))
+            return string.Empty;
+
+        return lane.ActivityMode == DadPlannerActivityMode.DutySupport
+            ? $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Duty Support content."
+            : $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not valid for {lane.DisplayName}.";
+    }
+
+    private static int ResolveRequestedPartySize(
+        DadPresetPlannerOptions options,
+        DadPlannerDutyOption? selectedDuty,
+        DadPlannerLaneDefinition lane)
+        => lane.ActivityMode switch
+        {
+            DadPlannerActivityMode.PremadeDuty or DadPlannerActivityMode.DutyPremade
+                => Math.Max(2, options.DutyExpectedPartySize > 0
+                    ? options.DutyExpectedPartySize
+                    : selectedDuty?.QueueSize ?? lane.ExpectedPartySize),
+            _ when lane.RequiresRemoteParty => Math.Max(1, lane.ExpectedPartySize),
+            _ => 1,
+        };
+
+    private static bool MatchesPlannerLaneDuty(DadPlannerDutyOption option, DadPlannerActivityMode activityMode)
+        => activityMode switch
+        {
+            DadPlannerActivityMode.DutySupport => option.SupportsDutySupport,
+            _ => true,
+        };
+
+    private static string BuildDutyMetadataSummary(
+        string shortCode,
+        int queueSize,
+        int jobLevelRequired,
+        int jobLevelSync,
+        int itemLevelRequired,
+        int itemLevelSync,
+        bool fixedItemLevelSync,
+        bool allowUndersized,
+        bool supportsDutySupport,
+        bool isHighEndDuty)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(shortCode))
+            parts.Add(shortCode);
+
+        parts.Add($"queue {queueSize}");
+
+        if (jobLevelRequired > 0)
+            parts.Add($"lvl {jobLevelRequired}");
+
+        if (jobLevelSync > 0)
+            parts.Add($"sync {jobLevelSync}");
+
+        if (itemLevelRequired > 0)
+            parts.Add($"ilvl {itemLevelRequired}");
+
+        if (itemLevelSync > 0)
+            parts.Add(fixedItemLevelSync ? $"fixed ilvl {itemLevelSync}" : $"ilvl sync {itemLevelSync}");
+
+        if (allowUndersized)
+            parts.Add("undersized");
+
+        if (supportsDutySupport)
+            parts.Add("duty support");
+
+        if (isHighEndDuty)
+            parts.Add("high-end");
+
+        return string.Join(" | ", parts);
+    }
+
+    private IReadOnlyList<DadPlannerDutyOption> BuildPlannerDutyCatalog()
+    {
+        var contentFinderSheet = Plugin.DataManager.GetExcelSheet<ContentFinderCondition>();
+        var dawnContentSheet = Plugin.DataManager.GetExcelSheet<DawnContent>();
+        var participableSheet = Plugin.DataManager.GetSubrowExcelSheet<DawnContentParticipable>();
+
+        var dutySupportContentIds = dawnContentSheet
+            .Where(static row => row.Content.RowId != 0)
+            .Where(row => participableSheet.GetSubrowCount(row.RowId) > 1)
+            .Select(static row => row.Content.RowId)
+            .ToHashSet();
+
+        return contentFinderSheet
+            .Where(static condition => condition.RowId != 0
+                                       && condition.IsInDutyFinder
+                                       && !condition.PvP
+                                       && condition.TerritoryType.ValueNullable != null)
+            .Select(condition =>
+            {
+                var dutyName = condition.Name.ToString().Trim();
+                if (string.IsNullOrWhiteSpace(dutyName))
+                    return null;
+
+                var shortCode = condition.ShortCode.ToString().Trim();
+                var queueSize = condition.QueueMaxPlayers > 0
+                    ? condition.QueueMaxPlayers
+                    : condition.ContentMemberType.ValueNullable?.MembersPerParty ?? (byte)1;
+                var queueSizeInt = Math.Max(1, (int)queueSize);
+                return new DadPlannerDutyOption
+                {
+                    ContentFinderConditionId = condition.RowId,
+                    DutyDisplayName = dutyName,
+                    ShortCode = shortCode,
+                    QueueSize = queueSizeInt,
+                    JobLevelRequired = condition.ClassJobLevelRequired,
+                    JobLevelSync = condition.ClassJobLevelSync,
+                    ItemLevelRequired = condition.ItemLevelRequired,
+                    ItemLevelSync = condition.ItemLevelSync,
+                    FixedItemLevelSync = condition.FixedItemLevelSync,
+                    AllowUndersized = condition.AllowUndersized,
+                    SupportsDutySupport = dutySupportContentIds.Contains(condition.RowId),
+                    IsHighEndDuty = condition.HighEndDuty,
+                    SearchText = string.Join(" ", new[]
+                    {
+                        dutyName,
+                        shortCode,
+                        condition.RowId.ToString(),
+                        queueSizeInt.ToString(),
+                    }),
+                    SelectionLabel = string.IsNullOrWhiteSpace(shortCode)
+                        ? $"{dutyName} #{condition.RowId}"
+                        : $"{dutyName} [{shortCode}] #{condition.RowId}",
+                    MetadataSummary = BuildDutyMetadataSummary(
+                        shortCode,
+                        queueSizeInt,
+                        condition.ClassJobLevelRequired,
+                        condition.ClassJobLevelSync,
+                        condition.ItemLevelRequired,
+                        condition.ItemLevelSync,
+                        condition.FixedItemLevelSync,
+                        condition.AllowUndersized,
+                        dutySupportContentIds.Contains(condition.RowId),
+                        condition.HighEndDuty),
+                };
+            })
+            .Where(static option => option != null)
+            .Select(static option => option!)
+            .OrderBy(static option => option.DutyDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static option => option.ContentFinderConditionId)
+            .ToList();
+    }
 
     private static DadPlannerLaneDefinition ResolveLaneDefinition(DadPlannerActivityMode activityMode)
     {
@@ -917,18 +1416,21 @@ public sealed class DadPresetProviderService
             .DistinctBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    private static DadOrchestrationIntent BuildPlannerOrchestration(
+    private DadOrchestrationIntent BuildPlannerOrchestration(
         DadPresetPlannerOptions options,
         DadActivityPreset plannerPreview,
         IReadOnlyList<DadAcquiredCharacter> selectedCharacters,
-        bool previewOnly)
+        bool previewOnly,
+        DadPlannerDutyOption? selectedDuty)
     {
         var lane = ResolveLaneDefinition(options.ActivityMode);
         var selectedCharacterKeys = selectedCharacters
             .Select(static character => new DadCharacterKey(character.CharacterKey))
             .Where(static key => !key.IsEmpty)
             .ToList();
-        var expectedPartySize = previewOnly ? 1 : Math.Max(1, lane.ExpectedPartySize);
+        var expectedPartySize = previewOnly
+            ? 1
+            : ResolveRequestedPartySize(options, selectedDuty, lane);
 
         return new DadOrchestrationIntent
         {

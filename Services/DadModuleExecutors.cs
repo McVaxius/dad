@@ -408,8 +408,7 @@ public sealed class DadDutySupportExecutor(
             return BuildStatusStep(status, DadParticipantState.Running);
         }
 
-        if (adsOutsideArmed && !string.IsNullOrWhiteSpace(status.Summary))
-            status.Summary = $"Force Commands mode: ADS outside armed; {status.Summary}";
+        status.Summary = BuildPreDutySummary(status.Summary);
 
         return BuildStatusStep(status, pulse.ParticipantState);
     }
@@ -473,7 +472,7 @@ public sealed class DadDutySupportExecutor(
         {
             SetActiveStatus(
                 DadRunPhase.InDutyOrTask,
-                $"ADS running duty; duty complete, leave blocked ({leaveBlocker}).",
+                BuildAdsLeaveBlockedSummary(leaveBlocker),
                 $"Leave blocked: {leaveBlocker}",
                 [BuildBlocker("LeaveSafety", $"Leave blocked: {leaveBlocker}", DadModuleBlockerSeverity.Deferred)]);
             return BuildStatusStep(status, DadParticipantState.Running);
@@ -484,17 +483,15 @@ public sealed class DadDutySupportExecutor(
             adsService.TryObserveLeaveEvidence(out var evidence))
         {
             leaveConfirmationObserved = true;
-            status.Summary = $"ADS leave requested; observed {evidence}, waiting for duty exit.";
+            status.Summary = BuildAdsLeaveWaitingSummary(now, $" Observed {evidence}.");
         }
 
         if (!leaveRequested || now >= nextLeaveAttemptUtc)
             return RequestAdsLeave(now);
 
-        var remaining = Math.Max(0, (nextLeaveAttemptUtc - now).TotalSeconds);
-        var evidenceText = leaveConfirmationObserved ? " Leave evidence observed." : string.Empty;
         SetActiveStatus(
             DadRunPhase.InDutyOrTask,
-            $"ADS leave requested; waiting for duty exit ({remaining:F0}s to retry).{evidenceText}");
+            BuildAdsLeaveWaitingSummary(now));
         return BuildStatusStep(status, DadParticipantState.Running);
     }
 
@@ -522,13 +519,9 @@ public sealed class DadDutySupportExecutor(
         leaveConfirmationObserved = false;
         leaveAttemptCount++;
 
-        var completedDelta = dutyCompletedAtUtc == DateTime.MinValue
-            ? "n/a"
-            : $"+{Math.Max(0, (now - dutyCompletedAtUtc).TotalSeconds):F1}s";
-        var attemptText = leaveAttemptCount <= 1 ? string.Empty : $" (retry {leaveAttemptCount})";
         SetActiveStatus(
             DadRunPhase.InDutyOrTask,
-            $"ADS leave requested{attemptText}; waiting for duty exit ({completedDelta} from DutyCompleted).");
+            BuildAdsLeaveWaitingSummary(now));
         return BuildStatusStep(status, DadParticipantState.Running);
     }
 
@@ -692,6 +685,29 @@ public sealed class DadDutySupportExecutor(
             _ => $"Starting native Duty Support queue for {dutyName}.",
         };
 
+    private string BuildPreDutySummary(string summary)
+    {
+        if (string.IsNullOrWhiteSpace(summary))
+            summary = $"Waiting to start native Duty Support queue for {resolvedContent?.DutyName ?? "requested duty"}.";
+
+        return rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => summary.StartsWith("Use FrenRider mode:", StringComparison.OrdinalIgnoreCase)
+                ? summary
+                : $"Use FrenRider mode: {summary}",
+            DadCombatRotationMode.ForceCommands when adsOutsideArmed => summary.StartsWith("Force Commands mode:", StringComparison.OrdinalIgnoreCase)
+                ? summary
+                : $"Force Commands mode: ADS outside armed; {summary}",
+            DadCombatRotationMode.ForceCommands => summary.StartsWith("Force Commands mode:", StringComparison.OrdinalIgnoreCase)
+                ? summary
+                : $"Force Commands mode: {summary}",
+            DadCombatRotationMode.DoNothing => summary.StartsWith("Do Nothing mode:", StringComparison.OrdinalIgnoreCase)
+                ? summary
+                : $"Do Nothing mode: {summary}",
+            _ => summary,
+        };
+    }
+
     private string BuildInDutySummary()
     {
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
@@ -730,6 +746,26 @@ public sealed class DadDutySupportExecutor(
             _ => $"Duty Support duty {dutyName} completed; Dad run done.",
         };
     }
+
+    private string BuildAdsLeaveBlockedSummary(string leaveBlocker)
+        => $"ADS running duty; duty complete, leave blocked ({leaveBlocker}). {BuildAdsLeaveAttemptLabel()} pending.";
+
+    private string BuildAdsLeaveWaitingSummary(DateTime now, string extraDetail = "")
+    {
+        var remaining = nextLeaveAttemptUtc == DateTime.MinValue
+            ? 0
+            : Math.Max(0, (nextLeaveAttemptUtc - now).TotalSeconds);
+        var retryWindow = nextLeaveAttemptUtc == DateTime.MinValue
+            ? "retry window unavailable"
+            : $"{remaining:F0}s to retry";
+        var evidenceText = leaveConfirmationObserved ? " Leave evidence observed." : string.Empty;
+        return $"ADS leave requested ({BuildAdsLeaveAttemptLabel()}); waiting for duty exit ({retryWindow}).{evidenceText}{extraDetail}";
+    }
+
+    private string BuildAdsLeaveAttemptLabel()
+        => leaveAttemptCount <= 1
+            ? "attempt 1"
+            : $"retry {leaveAttemptCount}";
 
     private List<DadModuleBlockerDto> BuildBlockers(
         DadRunPlan plan,

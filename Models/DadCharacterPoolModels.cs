@@ -288,6 +288,7 @@ public sealed class DadPresetPlannerOptions
     public bool DutyUnsynced { get; set; }
     public int DutyExpectedPartySize { get; set; } = 4;
     public string MogtomePreset { get; set; } = "Daily MSQ";
+    public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public List<DadAccountKey> IncludedAccountKeys { get; set; } = [];
 }
 
@@ -343,10 +344,12 @@ public sealed class DadPlannerRunRequestPreview
 {
     public DadActivityPreset PlannerPreview { get; set; } = new();
     public DadRunRequest? Request { get; set; }
+    public DadPlannerRequestContractPreview ContractPreview { get; set; } = new();
     public bool CanStart { get; set; }
     public string StatusSummary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
     public string RequestJson { get; set; } = string.Empty;
+    public string ContractPreviewJson { get; set; } = string.Empty;
     public string RequestId { get; set; } = string.Empty;
     public DadModuleId ModuleId { get; set; } = DadModuleId.None;
     public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.LocalOnly;

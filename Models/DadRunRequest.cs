@@ -57,7 +57,7 @@ public sealed class DadRunRequest
             parts.Add($"Daily MSQ preset '{DailyMsq.LanPartyPreset}'");
 
         if (Msq != null)
-            parts.Add($"MSQ preset '{Msq.Preset}' ({Msq.Attempts} attempt(s))");
+            parts.Add($"MSQ preset '{Msq.Preset}' ({Msq.Attempts} attempt(s) / legacy {Msq.LegacyQueuePreset})");
 
         if (DutySupport != null)
             parts.Add($"Duty Support ({DutySupport.DutyName} #{DutySupport.ContentFinderConditionId})");
@@ -76,11 +76,11 @@ public sealed class DadRunRequest
             var emote = string.IsNullOrWhiteSpace(Blunderville.EmoteCommand)
                 ? "configured emote"
                 : Blunderville.EmoteCommand;
-            parts.Add($"Blunderville emote run ({emote}, {Blunderville.Attempts} attempt(s))");
+            parts.Add($"Blunderville {Blunderville.Mode} ({emote}, {Blunderville.Attempts} attempt(s), {Blunderville.CompletionPolicy})");
         }
 
         if (Mogtome != null)
-            parts.Add($"MOGTOME preset '{Mogtome.Preset}' ({Mogtome.Attempts} attempt(s))");
+            parts.Add($"MOGTOME preset '{Mogtome.Preset}' ({Mogtome.Attempts} attempt(s), {Mogtome.DutyPolicy})");
 
         if (Commendation != null)
             parts.Add($"{Commendation.Attempts} commendation attempt(s)");
@@ -145,7 +145,11 @@ public sealed class DadRunRequest
 
         Orchestration.RosterIntent.RequireRemoteParticipants = Orchestration.RosterIntent.ExpectedPartySize > 1;
 
-        if (Orchestration.LocalOnlyOverride)
+        var preserveLocalOnlyAuthority = Orchestration.LocalOnlyOverride
+                                         || (Orchestration.AuthorityMode == DadAuthorityMode.LocalOnly
+                                             && !Orchestration.RosterIntent.RequireRemoteParticipants);
+
+        if (preserveLocalOnlyAuthority)
         {
             Orchestration.AuthorityMode = DadAuthorityMode.LocalOnly;
             Orchestration.TransportMode = DadTransportMode.LocalOnly;
@@ -227,6 +231,7 @@ public sealed class DadDailyMsqTask
 public sealed class DadMsqTask
 {
     public string Preset { get; set; } = "MSQ";
+    public string LegacyQueuePreset { get; set; } = "Daily MSQ";
     public int Attempts { get; set; } = 1;
     public bool PreferTrustThenDutySupport { get; set; } = true;
 }
@@ -256,13 +261,16 @@ public sealed class DadPremadeDutyTask
 
 public sealed class DadBlundervilleTask
 {
+    public string Mode { get; set; } = DadBlundervilleModes.FixedEmoteRun;
     public string EmoteCommand { get; set; } = string.Empty;
+    public string CompletionPolicy { get; set; } = DadBlundervillePolicies.FailOrLeaveAfterEmote;
     public int Attempts { get; set; } = 1;
 }
 
 public sealed class DadMogtomeTask
 {
     public string Preset { get; set; } = "Daily MSQ";
+    public string DutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public int Attempts { get; set; } = 1;
 }
 
@@ -282,6 +290,30 @@ public sealed class DadCustomDutyTask
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
+}
+
+public static class DadBlundervilleModes
+{
+    public const string FixedEmoteRun = "FixedEmoteRun";
+}
+
+public static class DadBlundervillePolicies
+{
+    public const string FailOrLeaveAfterEmote = "FailOrLeaveAfterEmote";
+}
+
+public static class DadMogtomeDutyPolicies
+{
+    public const string PresetHandoff = "PresetHandoff";
+    public const string PreservePresetDuty = "PreservePresetDuty";
+    public const string PinnedDutySelection = "PinnedDutySelection";
+
+    public static readonly string[] All =
+    [
+        PresetHandoff,
+        PreservePresetDuty,
+        PinnedDutySelection,
+    ];
 }
 
 public static class DadRunRequestOptions

@@ -83,8 +83,8 @@ public sealed class Plugin : IDalamudPlugin
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
-        PresetProviderService = new DadPresetProviderService();
         ModuleRegistry = new DadModuleRegistry();
+        PresetProviderService = new DadPresetProviderService(ModuleRegistry);
         PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry);
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
@@ -201,12 +201,26 @@ public sealed class Plugin : IDalamudPlugin
         var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions);
         var signature = BuildPlannerPreviewSignature(PlannerOptions, plannerPreview);
         var identity = ResolvePlannerPreviewIdentity(signature);
-        return PresetProviderService.BuildPlannerRunRequestPreview(
+        var requestPreview = PresetProviderService.BuildPlannerRunRequestPreview(
             pool,
             PlannerOptions,
             identity.RequestId,
             identity.RequestedAtUtc,
             plannerPreview);
+        return ApplyPlannerRuntimeTruth(requestPreview, pool);
+    }
+
+    public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview(
+        DadPresetPlannerOptions options,
+        DadActivityPreset? plannerPreviewOverride = null)
+    {
+        var pool = CharacterIntelligenceService.CurrentPool;
+        var plannerPreview = plannerPreviewOverride ?? PresetProviderService.BuildPlannerPreview(pool, options);
+        var requestPreview = PresetProviderService.BuildPlannerRunRequestPreview(
+            pool,
+            options,
+            plannerPreviewOverride: plannerPreview);
+        return ApplyPlannerRuntimeTruth(requestPreview, pool);
     }
 
     public string BuildPlannerRequestJson()
@@ -277,6 +291,128 @@ public sealed class Plugin : IDalamudPlugin
         cachedPlannerPreviewRequestedAtUtc = DateTime.MinValue;
     }
 
+    private DadPlannerRunRequestPreview ApplyPlannerRuntimeTruth(DadPlannerRunRequestPreview requestPreview, DadCharacterPool pool)
+    {
+        if (requestPreview.Request == null)
+        {
+            RefreshPlannerContractPreview(requestPreview);
+            return requestPreview;
+        }
+
+        var previewOnly = string.Equals(requestPreview.Request.RequestedBy, "planner-preview", StringComparison.OrdinalIgnoreCase);
+        if (!previewOnly)
+        {
+            var plan = PlannerService.BuildPlan(requestPreview.Request, pool, out var rejectionReason);
+            if (plan == null)
+            {
+                MergePlannerPreviewBlocker(requestPreview, rejectionReason);
+            }
+            else
+            {
+                var runtimeStatus = QueueExecutionService.PreviewModuleStart(plan);
+                MergePlannerRuntimeStatus(requestPreview, runtimeStatus);
+            }
+        }
+
+        RefreshPlannerContractPreview(requestPreview);
+        return requestPreview;
+    }
+
+    private static void MergePlannerRuntimeStatus(DadPlannerRunRequestPreview requestPreview, DadModuleExecutionStatusDto runtimeStatus)
+    {
+        MergePlannerModuleBlockers(requestPreview.ModuleBlockers, runtimeStatus.Blockers);
+
+        if (!runtimeStatus.CanStart)
+        {
+            if (requestPreview.CanStart || string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
+            {
+                var reason = string.IsNullOrWhiteSpace(runtimeStatus.BlockedReason)
+                    ? string.IsNullOrWhiteSpace(runtimeStatus.FailureReason)
+                        ? runtimeStatus.Summary
+                        : runtimeStatus.FailureReason
+                    : runtimeStatus.BlockedReason;
+                requestPreview.CanStart = false;
+                requestPreview.BlockedReason = reason;
+                requestPreview.StatusSummary = $"Planner request blocked by runtime readiness: {reason}";
+            }
+
+            return;
+        }
+
+        if (requestPreview.CanStart && !string.IsNullOrWhiteSpace(runtimeStatus.Summary))
+            requestPreview.StatusSummary = $"Planner request ready to start. {runtimeStatus.Summary}";
+    }
+
+    private static void MergePlannerPreviewBlocker(DadPlannerRunRequestPreview requestPreview, string blocker)
+    {
+        if (string.IsNullOrWhiteSpace(blocker))
+            return;
+
+        if (requestPreview.CanStart || string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
+        {
+            requestPreview.CanStart = false;
+            requestPreview.BlockedReason = blocker;
+            requestPreview.StatusSummary = $"Planner request blocked: {blocker}";
+        }
+
+        if (requestPreview.ModuleBlockers.All(existing => !string.Equals(existing.Summary, blocker, StringComparison.OrdinalIgnoreCase)))
+        {
+            requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
+            {
+                ModuleId = requestPreview.ModuleId,
+                Capability = "PlannerRuntime",
+                Severity = DadModuleBlockerSeverity.Blocked,
+                Summary = blocker,
+            });
+        }
+    }
+
+    private static void MergePlannerModuleBlockers(List<DadModuleBlockerDto> target, IReadOnlyList<DadModuleBlockerDto> source)
+    {
+        foreach (var blocker in source)
+        {
+            if (target.Any(existing =>
+                    existing.ModuleId == blocker.ModuleId &&
+                    string.Equals(existing.Capability, blocker.Capability, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.Summary, blocker.Summary, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            target.Add(blocker.Clone());
+        }
+    }
+
+    private static void RefreshPlannerContractPreview(DadPlannerRunRequestPreview requestPreview)
+    {
+        requestPreview.ContractPreview.CanStart = requestPreview.CanStart;
+        requestPreview.ContractPreview.Startability = BuildPlannerStartabilityLabel(requestPreview);
+        requestPreview.ContractPreview.Blockers = BuildPlannerContractBlockers(requestPreview);
+        requestPreview.ContractPreviewJson = DadIpcJson.Serialize(requestPreview.ContractPreview);
+    }
+
+    private static string BuildPlannerStartabilityLabel(DadPlannerRunRequestPreview requestPreview)
+        => requestPreview.CanStart
+            ? "Startable"
+            : string.Equals(requestPreview.Request?.RequestedBy, "planner-preview", StringComparison.OrdinalIgnoreCase)
+                ? "PreviewOnly"
+                : "Blocked";
+
+    private static List<string> BuildPlannerContractBlockers(DadPlannerRunRequestPreview requestPreview)
+    {
+        var blockers = new List<string>();
+        if (!string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
+            blockers.Add(requestPreview.BlockedReason);
+
+        blockers.AddRange(requestPreview.PlannerPreview.Blockers);
+        blockers.AddRange(requestPreview.ModuleBlockers
+            .Select(static blocker => blocker.Summary)
+            .Where(static summary => !string.IsNullOrWhiteSpace(summary)));
+        return blockers
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private static string BuildPlannerPreviewSignature(DadPresetPlannerOptions options, DadActivityPreset plannerPreview)
     {
         var accountKeys = string.Join(",", options.IncludedAccountKeys
@@ -304,7 +440,7 @@ public sealed class Plugin : IDalamudPlugin
             $"stale={options.AllowStaleForPlanning}",
             $"accounts={accountKeys}",
             $"duty={options.DutyContentFinderConditionId}:{options.DutyDisplayName.Trim()}:{options.DutyUnsynced}:{options.DutyExpectedPartySize}",
-            $"mogtome={options.MogtomePreset.Trim()}",
+            $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
             "blunderville=emote-run",
             $"leader={plannerPreview.LeaderCharacterKey}",
             $"slots={selectedSlots}",
@@ -671,8 +807,14 @@ public sealed class Plugin : IDalamudPlugin
             ? "(none)"
             : $"{run.ActiveTaskIndex}/{run.TotalTaskCount} {run.ActiveTaskName}";
         var taskDetail = string.IsNullOrWhiteSpace(run.ActiveTaskStatus) ? run.Summary : run.ActiveTaskStatus;
-        var blocker = string.IsNullOrWhiteSpace(run.BlockedReason) ? string.Empty : $" | Blocker {run.BlockedReason}";
-        return FormatOperatorTextForChat($"{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail} | Task {taskName}{blocker} | Request {requestId}");
+        var blocker = string.IsNullOrWhiteSpace(run.BlockedReason)
+            ? string.Empty
+            : $" | {(DadOperatorPhaseText.HasBlockingFailure(run) ? "Blocked" : "Note")} {run.BlockedReason}";
+        var operatorPhase = DadOperatorPhaseText.GetPhaseLabel(run);
+        var phasePrefix = string.IsNullOrWhiteSpace(operatorPhase)
+            ? string.Empty
+            : $"DAD: {operatorPhase} | ";
+        return FormatOperatorTextForChat($"{phasePrefix}{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail} | Task {taskName}{blocker} | Request {requestId}");
     }
 
     private static string FormatTaskPayload(DadRunResult run)
@@ -682,7 +824,13 @@ public sealed class Plugin : IDalamudPlugin
         => KrangleService.FormatOperatorText(value, CharacterIntelligenceService.CurrentPool);
 
     private string BuildShellRunSummary(string label, DadRunRequest request, DadRunResult result)
-        => $"{label}: {BuildShellRoutingText(request, result)} | Payload {request.DescribeRequestedWork()} | Result {result.Status}/{result.Phase}/{result.ModuleId} | {result.Summary}";
+    {
+        var operatorPhase = DadOperatorPhaseText.GetPhaseLabel(result);
+        var phaseText = string.IsNullOrWhiteSpace(operatorPhase)
+            ? $"{result.Status}/{result.Phase}/{result.ModuleId}"
+            : $"DAD: {operatorPhase} | {result.Status}/{result.Phase}/{result.ModuleId}";
+        return $"{label}: {BuildShellRoutingText(request, result)} | Payload {request.DescribeRequestedWork()} | Result {phaseText} | {result.Summary}";
+    }
 
     private static string BuildShellRoutingText(DadRunRequest request, DadRunResult result)
     {

@@ -94,6 +94,30 @@ public sealed class DadQueueExecutionService
     public DadModuleExecutionStatusDto GetActiveExecutorStatus()
         => activeExecutor?.GetStatus() ?? new DadModuleExecutionStatusDto();
 
+    public DadModuleExecutionStatusDto PreviewModuleStart(DadRunPlan plan)
+    {
+        var module = ResolvePreviewModule(plan);
+        var participantCount = Math.Max(1, Math.Max(module.ExpectedPartySize, plan.RequiredParticipantCount));
+        var participants = Enumerable.Range(0, participantCount)
+            .Select(index => new DadParticipantSnapshot
+            {
+                IsLocalClient = index == 0,
+                IsAvailable = true,
+                IsEligibleForRun = true,
+                PostArReady = true,
+                State = DadParticipantState.Ready,
+                ClaimState = DadClaimState.Granted,
+                LeaseState = DadParticipantLeaseState.Granted,
+                ActiveCharacterKey = index == 0 && !string.IsNullOrWhiteSpace(plan.LeaderCharacterKey)
+                    ? new DadCharacterKey(plan.LeaderCharacterKey)
+                    : new DadCharacterKey($"Preview-{index + 1}"),
+                AssignedSlotId = index == 0 ? "Leader" : $"Party {index + 1}",
+            })
+            .ToList();
+
+        return ResolveExecutor(plan, module).CanStart(plan, participants);
+    }
+
     private IDadModuleExecutor ResolveExecutor(DadRunPlan plan, DadPlannedModuleExecution module)
         => module.ModuleId switch
         {
@@ -115,6 +139,15 @@ public sealed class DadQueueExecutionService
     private bool ShouldPrepareFrenRiderBeforeQueue(DadModuleId moduleId)
         => combatRotationService.CombatRotationMode == DadCombatRotationMode.UseFrenRider &&
            moduleId is not DadModuleId.None and not DadModuleId.Mixed;
+
+    private static DadPlannedModuleExecution ResolvePreviewModule(DadRunPlan plan)
+        => plan.Modules.FirstOrDefault()
+           ?? new DadPlannedModuleExecution
+           {
+               ModuleId = plan.CompositeModuleId,
+               DisplayName = plan.CompositeModuleId == DadModuleId.None ? "Dad" : plan.CompositeModuleId.ToString(),
+               ExpectedPartySize = Math.Max(1, plan.RequiredParticipantCount),
+           };
 
     private static DadRunStepResultDto BuildFrenRiderPreQueueFailure(
         DadRunPlan plan,

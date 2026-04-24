@@ -5,6 +5,7 @@ using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using dad.Models;
+using dad.Services;
 
 namespace dad.Windows;
 
@@ -14,7 +15,17 @@ public sealed class MainWindow : Window, IDisposable
     private readonly Plugin plugin;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
-    private string selectedCharacterKey = string.Empty;
+    private string plannerDutySearch = string.Empty;
+
+    private sealed record PlannerLaneCardView(
+        DadPlannerLaneDefinition Lane,
+        bool IsSelected,
+        string MaturityLabel,
+        string PartySizeLabel,
+        string StartabilityLabel,
+        string FirstBlockerLabel,
+        int BlockerCount,
+        string RuntimeLabel);
 
     public MainWindow(Plugin plugin) : base($"{PluginInfo.DisplayName}##Main", ImGuiWindowFlags.None)
     {
@@ -148,7 +159,7 @@ public sealed class MainWindow : Window, IDisposable
                                  !Plugin.IsBusy(authorityRun);
 
         ImGui.Spacing();
-        DrawVisibleRunStatus(runState);
+        DrawActiveRunBanner(runState);
         ImGui.Spacing();
 
         DrawDemoButton("Run local demo", canStartLocalDemo, plugin.StartLocalDemoRunFromShell);
@@ -198,71 +209,121 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
-    private void DrawVisibleRunStatus(DadVisibleRunState runState)
+    private void DrawActiveRunBanner(DadVisibleRunState runState)
     {
-        DrawStatusRow("Authority view", $"{runState.AuthorityView.StateText} | {runState.AuthorityView.ClientPerspectiveText} | {runState.AuthorityView.FreshnessText}");
-        DrawStatusRow("Authority timeline", runState.AuthorityView.TimelineText);
-        DrawStatusRow("Local run", FormatRunSnapshot(runState.LocalRun));
-        DrawStatusRow("Authority run", FormatRunSnapshot(runState.AuthorityRun));
+        var activeRun = GetActiveRun(runState);
+        var plannerLocked = IsPlannerLocked(runState);
+        var phase = DadOperatorPhaseText.FormatPhaseLabel(activeRun);
+        var module = activeRun.ModuleId == DadModuleId.None ? "No module" : activeRun.ModuleId.ToString();
+        var keyStatus = BuildActiveRunKeyStatus(activeRun);
+
+        ImGui.Separator();
+        DrawStateBadge("Phase", phase);
+        ImGui.SameLine();
+        DrawStateBadge("Module", module);
+        ImGui.SameLine();
+        DrawStateBadge("Status", activeRun.Status.ToString());
+        if (plannerLocked)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Cancel active run##top-banner"))
+                plugin.CancelActiveRunFromShell();
+        }
+
+        ImGui.TextWrapped(keyStatus);
+        ImGui.Separator();
     }
 
     private void DrawOverviewTab(DadVisibleRunState runState, CharacterConfig profile)
     {
+        var activeRun = GetActiveRun(runState);
         var localRun = runState.LocalRun;
         var authorityRun = runState.AuthorityRun;
         var authorityView = runState.AuthorityView;
         var localParticipant = plugin.PresenceService.CurrentParticipant;
+        var activeWarnings = activeRun.Warnings
+            .Where(static warning => !string.IsNullOrWhiteSpace(warning))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var progressTotal = Math.Max(activeRun.TotalTaskCount, activeRun.RequestedTaskCount);
 
-        ImGui.TextUnformatted("Live snapshot");
+        DrawSectionHeader("Authority Snapshot", "Current control-plane state and DTR-aligned operator phase.");
+        DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(activeRun));
         DrawStatusRow("Authority view", $"{authorityView.StateText} | {authorityView.ClientPerspectiveText}");
         DrawStatusRow("Authority timeline", authorityView.TimelineText);
         DrawStatusRow("Authority freshness", authorityView.FreshnessText);
         DrawStatusRow("Authority owner", authorityView.OwnershipText);
-        DrawStatusRow("Authority payload", authorityView.PayloadText);
-        DrawStatusRow("IPC ready", plugin.RunCoordinatorService.IsReady ? "Yes" : "No");
-        DrawStatusRow("This instance", DadStatusText.FormatWorkerRole(plugin.PresenceService.CurrentParticipant.WorkerRole));
         DrawStatusRow("Authority worker", authorityView.AuthorityWorkerText);
         DrawStatusRow("Authority endpoint", authorityView.AuthorityEndpointText);
+        DrawStatusRow("Authority payload", authorityView.PayloadText);
+        DrawStatusRow("This instance", DadStatusText.FormatWorkerRole(plugin.PresenceService.CurrentParticipant.WorkerRole));
         DrawStatusRow("Local-only", localRun.LocalOnlyEnabled ? "Enabled" : "Disabled");
-        DrawStatusRow("Local run status", localRun.Summary);
-        DrawStatusRow("Local run state", $"{localRun.Status} / {localRun.Phase} / {localRun.ModuleId}");
-        DrawStatusRow("Authority run status", authorityRun.Summary);
-        DrawStatusRow("Authority run state", $"{authorityRun.Status} / {authorityRun.Phase} / {authorityRun.ModuleId}");
-        DrawStatusRow("Local participant state", localParticipant.State.ToString());
-        DrawStatusRow("Local claim / lease", $"{localParticipant.ClaimState} / {localParticipant.LeaseState}");
-        DrawStatusRow("Local assignment", string.IsNullOrWhiteSpace(localParticipant.AssignedSlotId) ? "(none)" : localParticipant.AssignedSlotId);
-        DrawStatusRow("Local participant status", FormatText(localParticipant.StatusText, "(none)"));
-        DrawStatusRow("Local participant run", string.IsNullOrWhiteSpace(localParticipant.RunId) ? "(none)" : localParticipant.RunId);
-        DrawStatusRow("Local worker / phase", $"{DadStatusText.FormatWorkerRole(localRun.WorkerRole)} / {localRun.Phase}");
-        DrawStatusRow("Authority worker / phase", $"{DadStatusText.FormatWorkerRole(authorityRun.WorkerRole)} / {authorityRun.Phase}");
-        DrawStatusRow("Authority mode", DadStatusText.FormatAuthorityMode(authorityRun.AuthorityMode));
-        DrawStatusRow("Authority transport", authorityRun.TransportMode.ToString());
-        DrawStatusRow("Leader client", string.IsNullOrWhiteSpace(authorityRun.LeaderClientInstanceId) ? "(none)" : authorityRun.LeaderClientInstanceId);
-        DrawStatusRow("Cancellation", authorityRun.CancellationState.ToString());
-        DrawStatusRow("Participants", authorityRun.Participants.Count == 0 ? "0" : authorityRun.Participants.Count.ToString(CultureInfo.InvariantCulture));
-        DrawStatusRow("Task progress", $"{authorityRun.CompletedTaskCount}/{Math.Max(authorityRun.TotalTaskCount, authorityRun.RequestedTaskCount)} complete");
-        DrawStatusRow("Active task", string.IsNullOrWhiteSpace(authorityRun.ActiveTaskName) ? "(none)" : $"{authorityRun.ActiveTaskIndex}/{authorityRun.TotalTaskCount} {authorityRun.ActiveTaskName}");
-        DrawStatusRow("Task detail", string.IsNullOrWhiteSpace(authorityRun.ActiveTaskStatus) ? "(none)" : authorityRun.ActiveTaskStatus);
-        DrawStatusRow("Executor", FormatExecutorStatus(authorityRun.CurrentExecutorStatus));
-        if (!string.IsNullOrWhiteSpace(authorityRun.BlockedReason))
-            DrawStatusRow("Authority blocker", authorityRun.BlockedReason);
-        if (authorityRun.Warnings.Count > 0)
-            DrawStatusRow("Authority warnings", string.Join(" | ", authorityRun.Warnings));
-        DrawStatusRow("Authority request id", string.IsNullOrWhiteSpace(authorityRun.RequestId) ? "(none)" : authorityRun.RequestId);
-        DrawStatusRow("Authority requested by", string.IsNullOrWhiteSpace(authorityRun.RequestedBy) ? "(unknown)" : authorityRun.RequestedBy);
+        DrawStatusRow("IPC ready", plugin.RunCoordinatorService.IsReady ? "Yes" : "No");
+
+        DrawSectionHeader("Active Request / Run", "Live request truth from visible authority/local state.");
+        if (activeRun.Status == DadRunStatus.Idle)
+        {
+            DrawMutedNotice("No active Dad request. Planner and runtime are idle.");
+        }
+        else
+        {
+            DrawStatusRow("Run status", activeRun.Summary);
+            DrawStatusRow("Run state", $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
+            DrawStatusRow("Request id", FormatText(activeRun.RequestId, "(none)"));
+            DrawStatusRow("Requested by", FormatText(activeRun.RequestedBy, "(unknown)"));
+            DrawStatusRow("Authority mode", DadStatusText.FormatAuthorityMode(activeRun.AuthorityMode));
+            DrawStatusRow("Transport", activeRun.TransportMode.ToString());
+            DrawStatusRow("Role / worker", $"{activeRun.Role} / {DadStatusText.FormatWorkerRole(activeRun.WorkerRole)}");
+            DrawStatusRow("Leader client", FormatText(activeRun.LeaderClientInstanceId, "(none)"));
+            DrawStatusRow("Cancellation", activeRun.CancellationState.ToString());
+            DrawStatusRow("Payload", activeRun.Request?.DescribeRequestedWork() ?? authorityView.PayloadText);
+        }
+
+        DrawSectionHeader("Executor / Task Progress", "Existing runtime executor/task projection only.");
+        if (activeRun.Status == DadRunStatus.Idle &&
+            activeRun.CurrentExecutorStatus.ModuleId == DadModuleId.None &&
+            string.IsNullOrWhiteSpace(activeRun.ActiveTaskName))
+        {
+            DrawMutedNotice("No active executor or task progress.");
+        }
+        else
+        {
+            DrawStatusRow("Task progress", $"{activeRun.CompletedTaskCount}/{Math.Max(1, progressTotal)} complete");
+            DrawStatusRow("Active task", string.IsNullOrWhiteSpace(activeRun.ActiveTaskName) ? "(none)" : $"{activeRun.ActiveTaskIndex}/{Math.Max(1, activeRun.TotalTaskCount)} {activeRun.ActiveTaskName}");
+            DrawStatusRow("Task detail", FormatText(activeRun.ActiveTaskStatus, activeRun.Summary));
+            DrawStatusRow("Executor", FormatExecutorStatus(activeRun.CurrentExecutorStatus));
+            DrawStatusRow("Participants", activeRun.Participants.Count.ToString(CultureInfo.InvariantCulture));
+            DrawStatusRow("Local participant", $"{localParticipant.State} | {localParticipant.ClaimState} / {localParticipant.LeaseState}");
+            DrawStatusRow("Local assignment", string.IsNullOrWhiteSpace(localParticipant.AssignedSlotId) ? "(none)" : localParticipant.AssignedSlotId);
+            DrawStatusRow("Local participant status", FormatText(localParticipant.StatusText, "(none)"));
+        }
+
+        DrawDutySupportRuntimeSection(activeRun);
+
+        DrawSectionHeader("Blockers And Warnings", "Real runtime blockers first; no fabricated warning state.");
+        if (string.IsNullOrWhiteSpace(activeRun.BlockedReason) &&
+            string.IsNullOrWhiteSpace(activeRun.FailureReason) &&
+            activeWarnings.Count == 0)
+        {
+            DrawMutedNotice("No active blockers or warnings.");
+        }
+        else
+        {
+            if (DadOperatorPhaseText.HasBlockingFailure(activeRun) && !string.IsNullOrWhiteSpace(activeRun.BlockedReason))
+                DrawStatusRow("Blocked", activeRun.BlockedReason);
+            else if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
+                DrawStatusRow("Runtime note", activeRun.BlockedReason);
+            if (!string.IsNullOrWhiteSpace(activeRun.FailureReason))
+                DrawStatusRow("Failure", activeRun.FailureReason);
+            if (activeWarnings.Count > 0)
+                DrawStatusRow("Warnings", FormatOperatorText(string.Join(" | ", activeWarnings), "(none)"));
+        }
+
+        DrawSectionHeader("Operator Next Action", "Single next step aligned with current authority/runtime truth.");
+        DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile));
         DrawStatusRow("Account", FormatOperatorAccountLabel(plugin.ConfigManager.GetCurrentAccount()?.AccountAlias, plugin.ConfigManager.CurrentAccountId));
         DrawStatusRow("Profile", FormatOperatorCharacterKey(plugin.ConfigManager.SelectedCharacterKey, "(Account default)"));
         DrawStatusRow("Profile notes", FormatOperatorText(profile.TargetNotes, "(none)"));
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("Bootstrap scope");
-        foreach (var item in PluginInfo.Services)
-            ImGui.BulletText(item);
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("First test pass");
-        foreach (var item in PluginInfo.Tests)
-            ImGui.BulletText(item);
     }
 
     private void DrawMultiplayerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
@@ -280,9 +341,20 @@ public sealed class MainWindow : Window, IDisposable
             .ThenBy(static participant => participant.ActiveCharacterKey.Value, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var activeRun = GetActiveRun(runState);
         var authorityParticipant = authorityRun.Participants.FirstOrDefault(static participant => participant.IsAuthority)
                                   ?? participants.FirstOrDefault(candidate =>
                                       string.Equals(candidate.WorkerSessionId, authorityRun.AuthorityWorkerSessionId.ToString(), StringComparison.OrdinalIgnoreCase));
+        var readyCount = participants.Count(static participant => participant.IsEligibleForRun);
+        var postArReadyCount = participants.Count(static participant => participant.PostArReady);
+        var staleCount = participants.Count(IsParticipantStale);
+        var assignedParticipants = participants
+            .Where(static participant => !string.IsNullOrWhiteSpace(participant.AssignedSlotId))
+            .OrderBy(static participant => participant.AssignedSlotId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var leaseCount = authorityRun.Leases.Count;
+        var partySnapshotCount = participants.Count(static participant => participant.Character.PartyRosterCount.HasValue);
 
         if (ImGui.SmallButton("Refresh local"))
             plugin.RefreshCharacterPoolFromShell();
@@ -302,8 +374,23 @@ public sealed class MainWindow : Window, IDisposable
             plugin.PrintStatus("Copied Dad character pool JSON.");
         }
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Multiplayer data");
+        DrawSectionHeader("Cancellation And Authority Summary", "Current runtime owner, cancellation state, and visible run truth.");
+        DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(activeRun));
+        DrawStatusRow("Authority view", $"{authorityView.StateText} | {authorityView.ClientPerspectiveText}");
+        DrawStatusRow("Authority timeline", authorityView.TimelineText);
+        DrawStatusRow("Authority freshness", authorityView.FreshnessText);
+        DrawStatusRow("Authority owner", authorityView.OwnershipText);
+        DrawStatusRow("Authority status", DadStatusText.FormatAuthorityStatus(
+            authorityParticipant?.WorkerRole ?? peerTransport.AuthorityRole,
+            authorityRun.AuthorityWorkerSessionId,
+            authorityRun.AuthorityEndpoint,
+            authorityRun.AuthorityMode));
+        DrawStatusRow("Visible run", $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
+        DrawStatusRow("Cancellation", activeRun.CancellationState.ToString());
+        DrawStatusRow("Task payload", activeRun.Request?.DescribeRequestedWork() ?? authorityView.PayloadText);
+        DrawDutySupportRuntimeSection(activeRun);
+
+        DrawSectionHeader("Readiness And Freshness", "Participant readiness, heartbeat freshness, and snapshot coverage.");
         DrawStatusRow("XADB local", xadbStatus.Availability);
         DrawStatusRow("Last save", FormatTime(xadbStatus.LastSaveUtc));
         DrawStatusRow("Snapshot version", xadbStatus.SnapshotVersion?.ToString(CultureInfo.InvariantCulture) ?? "?");
@@ -312,44 +399,35 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Connected peers", peerTransport.ConnectedPeerCount.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Last peer request", FormatTime(peerTransport.LastRequestUtc));
         DrawStatusRow("Listener", FormatText(peerTransport.ListenerEndpoint, "(none)"));
-        DrawStatusRow("Authority view", $"{authorityView.StateText} | {authorityView.ClientPerspectiveText}");
-        DrawStatusRow("Authority freshness", authorityView.FreshnessText);
-        DrawStatusRow("Authority timeline", authorityView.TimelineText);
-        DrawStatusRow("Local run status", localRun.Summary);
-        DrawStatusRow("Authority run status", authorityRun.Summary);
-        DrawStatusRow("Authority phase / module", $"{authorityRun.Phase} / {authorityRun.ModuleId}");
-        DrawStatusRow("Authority task payload", authorityView.PayloadText);
-        DrawStatusRow("Authority", authorityView.AuthorityWorkerText);
-        DrawStatusRow("Authority endpoint", authorityView.AuthorityEndpointText);
-        DrawStatusRow("Authority mode", DadStatusText.FormatAuthorityMode(authorityRun.AuthorityMode));
-        DrawStatusRow("Authority status", DadStatusText.FormatAuthorityStatus(
-            authorityParticipant?.WorkerRole ?? peerTransport.AuthorityRole,
-            authorityRun.AuthorityWorkerSessionId,
-            authorityRun.AuthorityEndpoint,
-            authorityRun.AuthorityMode));
+        DrawStatusRow("Participants discovered", participants.Count.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Eligible for run", readyCount.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Post-AR ready", postArReadyCount.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Stale heartbeats", staleCount.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Assigned slots", assignedParticipants.Count.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Active leases", leaseCount.ToString(CultureInfo.InvariantCulture));
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Participant status");
+        DrawSectionHeader("Participant Table", "Runtime coordination view of workers, assignments, and current readiness.");
         if (participants.Count == 1 && !participants[0].IsAuthority && !participants[0].IsAvailable)
         {
-            ImGui.TextUnformatted("No Dad workers discovered yet.");
+            DrawMutedNotice("No Dad workers discovered yet.");
         }
         else if (ImGui.BeginTable("dad-participant-status", 10, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
             ImGui.TableSetupColumn("Role / owner");
             ImGui.TableSetupColumn("Account");
-            ImGui.TableSetupColumn("Active character");
-            ImGui.TableSetupColumn("Worker session");
-            ImGui.TableSetupColumn("State");
-            ImGui.TableSetupColumn("Lease");
+            ImGui.TableSetupColumn("Character");
+            ImGui.TableSetupColumn("Assignment");
+            ImGui.TableSetupColumn("Claim / lease");
             ImGui.TableSetupColumn("Ready");
-            ImGui.TableSetupColumn("Available");
+            ImGui.TableSetupColumn("Fresh");
+            ImGui.TableSetupColumn("Party");
+            ImGui.TableSetupColumn("Worker");
             ImGui.TableSetupColumn("Status");
-            ImGui.TableSetupColumn("Endpoint");
             ImGui.TableHeadersRow();
 
             foreach (var participant in participants)
             {
+                var participantCharacter = ResolveParticipantCharacter(characterPool, participant);
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(DadStatusText.FormatParticipantOwner(participant));
@@ -358,89 +436,115 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatOperatorCharacterKey(participant.ActiveCharacterKey.ToString(), "(unknown)"));
                 ImGui.TableNextColumn();
+                ImGui.TextUnformatted(string.IsNullOrWhiteSpace(participant.AssignedSlotId) ? "(unassigned)" : participant.AssignedSlotId);
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{participant.ClaimState} / {participant.LeaseState}");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(participant.PostArReady ? "post-AR ready" : participant.IsEligibleForRun ? "ready" : "waiting");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatParticipantFreshness(participant, participantCharacter));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(participantCharacter == null ? "-" : FormatParty(participantCharacter));
+                ImGui.TableNextColumn();
                 ImGui.TextUnformatted(participant.WorkerSessionId.ToString());
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(participant.State.ToString());
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(participant.LeaseState == DadParticipantLeaseState.None ? participant.ClaimState.ToString() : participant.LeaseState.ToString());
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(participant.PostArReady ? "post-AR ready" : "waiting");
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(participant.AvailableCharacterKeys.Count == 0 ? "-" : plugin.KrangleService.FormatCharacterKeys(participant.AvailableCharacterKeys));
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatOperatorText(participant.StatusText, "(none)"));
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatText(participant.Endpoint, participant.IsLocalClient ? "(local)" : "(none)"));
+                ImGui.TextUnformatted(FormatOperatorText(FormatParticipantStatus(participant), "(none)"));
             }
 
             ImGui.EndTable();
         }
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Character pool");
-
-        var selectedCharacter = ResolveSelectedCharacter(characterPool.Characters);
-        if (ImGui.BeginTable("dad-character-pool", 9, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        DrawSectionHeader("Assignment / Slot State", "Slot ownership and participant assignment truth from current runtime models.");
+        if (assignedParticipants.Count == 0)
         {
-            ImGui.TableSetupColumn("Source");
-            ImGui.TableSetupColumn("Fresh");
-            ImGui.TableSetupColumn("Character");
-            ImGui.TableSetupColumn("CID");
+            if (activeRun.Status == DadRunStatus.Idle)
+                DrawMutedNotice("No active slot assignments.");
+            else
+                DrawPlaceholderNotice("Placeholder: slot assignment rows will populate when runtime lane state issues assignments.");
+        }
+        else if (ImGui.BeginTable("dad-participant-assignments", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Slot");
             ImGui.TableSetupColumn("Account");
-            ImGui.TableSetupColumn("Job/Lvl");
-            ImGui.TableSetupColumn("Territory");
-            ImGui.TableSetupColumn("Party");
-            ImGui.TableSetupColumn("Ready");
+            ImGui.TableSetupColumn("Character");
+            ImGui.TableSetupColumn("Worker");
+            ImGui.TableSetupColumn("State");
+            ImGui.TableSetupColumn("Claim");
+            ImGui.TableSetupColumn("Lease");
             ImGui.TableHeadersRow();
 
-            foreach (var character in characterPool.Characters)
+            foreach (var participant in assignedParticipants)
             {
+                var participantCharacter = ResolveParticipantCharacter(characterPool, participant);
                 ImGui.TableNextRow();
-
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatSource(character.Source));
-
+                ImGui.TextUnformatted(participant.AssignedSlotId);
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatFreshness(character));
-
+                ImGui.TextUnformatted(FormatOperatorAccountLabel(participant.ManagedAccountAlias, participant.ManagedAccountKey.ToString()));
                 ImGui.TableNextColumn();
-                if (ImGui.Selectable($"{FormatOperatorCharacterKey(character.CharacterKey, "-")}##pool-{character.CharacterKey}", string.Equals(selectedCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase), ImGuiSelectableFlags.SpanAllColumns))
-                    selectedCharacterKey = character.CharacterKey;
-
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(participant.ActiveCharacterKey.ToString(), "(unknown)"));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatContentId(character.ContentId));
-
+                ImGui.TextUnformatted(participant.WorkerSessionId.ToString());
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatOperatorAccountLabel(character.AccountAlias, character.AccountId));
-
+                ImGui.TextUnformatted($"{participant.State} | {FormatParticipantFreshness(participant, participantCharacter)}");
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatJobAndLevel(character));
-
+                ImGui.TextUnformatted(participant.ClaimState.ToString());
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(string.IsNullOrWhiteSpace(character.TerritoryName) ? "unknown" : character.TerritoryName);
-
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatParty(character));
-
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatReadiness(character.Readiness));
+                ImGui.TextUnformatted(participant.LeaseState.ToString());
             }
 
             ImGui.EndTable();
         }
 
-        if (selectedCharacter == null)
-            return;
+        DrawSectionHeader("Claim / Lease State", "Authority lease records only. Placeholder rows mark missing backend projections.");
+        if (authorityRun.Leases.Count == 0)
+        {
+            if (activeRun.Status == DadRunStatus.Idle)
+                DrawMutedNotice("No active leases.");
+            else
+                DrawPlaceholderNotice("Placeholder: lease detail appears once this run emits authority lease records.");
+        }
+        else if (ImGui.BeginTable("dad-lease-state", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Slot");
+            ImGui.TableSetupColumn("Account");
+            ImGui.TableSetupColumn("Character");
+            ImGui.TableSetupColumn("Worker");
+            ImGui.TableSetupColumn("Issued");
+            ImGui.TableSetupColumn("Expires");
+            ImGui.TableSetupColumn("Summary");
+            ImGui.TableHeadersRow();
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Selected character detail");
-        DrawStatusRow("Identity", $"{FormatOperatorCharacterKey(selectedCharacter.CharacterKey, "-")} | CID {FormatContentId(selectedCharacter.ContentId)} | Account {FormatOperatorAccountLabel(selectedCharacter.AccountAlias, selectedCharacter.AccountId)}");
-        DrawStatusRow("World", $"{selectedCharacter.WorldName} | {selectedCharacter.DataCenterName}");
-        DrawStatusRow("Live", $"{FormatReadiness(selectedCharacter.Readiness)} | {selectedCharacter.TerritoryName} | party {FormatParty(selectedCharacter)}");
-        DrawStatusRow("XADB", selectedCharacter.XadbReady
-            ? $"{FormatTime(selectedCharacter.XadbSnapshotUtc)} | quality {FormatText(selectedCharacter.SnapshotQuality, "(unknown)")}"
-            : "Unavailable");
-        DrawStatusRow("Planner", selectedCharacter.Blockers.Count == 0 ? "No blockers recorded." : FormatOperatorText(string.Join(" | ", selectedCharacter.Blockers), "(none)"));
+            foreach (var lease in authorityRun.Leases.OrderBy(static lease => lease.SlotId, StringComparer.OrdinalIgnoreCase))
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(lease.SlotId);
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorAccountLabel("Account", lease.AssignedAccountKey.ToString()));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(lease.AssignedCharacterKey.ToString(), "(none)"));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(lease.OwningWorkerSessionId.ToString());
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatTime(lease.IssuedUtc));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatTime(lease.ExpiresUtc));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorText(FormatText(lease.Summary, lease.State.ToString()), "(none)"));
+            }
+
+            ImGui.EndTable();
+        }
+
+        DrawSectionHeader("Party Verification Summary", "Use existing local party truth first; mark missing distributed verification as placeholder.");
+        DrawStatusRow("PartyList", Plugin.PartyList.Length.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Local participant", $"{localParticipant.State} | slot {FormatText(localParticipant.AssignedSlotId, "(none)")}");
+        DrawStatusRow("Local character party", localParticipant.Character.ContentId == 0
+            ? "(unknown)"
+            : $"{FormatParty(localParticipant.Character)} | {FormatText(localParticipant.Character.TerritoryName, "unknown")}");
+        DrawStatusRow("Worker snapshots with party data", partySnapshotCount.ToString(CultureInfo.InvariantCulture));
+        DrawPlaceholderNotice("Placeholder: distributed party verification summary is not implemented yet. Current view uses PartyList/ObjectTable local truth plus worker snapshot party counts only.");
     }
 
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
@@ -461,13 +565,73 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
         ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerLanePanel(plannerOptions, requestPreview);
+        DrawPlannerLanePanel(characterPool, plannerOptions, requestPreview, runState);
         ImGui.EndDisabled();
 
         ImGui.TableNextColumn();
         if (plannerLocked)
-            DrawStatusRow("Planner locked", "Dad run active. Cancel or wait for final state before editing plan.");
+            DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
 
+        DrawPlannerLaneSummarySection(plannerPreview, requestPreview, runState);
+        DrawPlannerActionStrip(requestPreview, runState, plannerLocked);
+        DrawPlannerConfigSection(characterPool, plannerOptions, plannerPreview, plannerLocked);
+        DrawPlannerRosterSummarySection(plannerPreview, runState);
+        DrawPlannerDetailsSection(plannerOptions, plannerPreview, requestPreview, runState, plannerLocked);
+        ImGui.EndTable();
+    }
+
+    private void DrawPlannerLanePanel(
+        DadCharacterPool characterPool,
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerRunRequestPreview requestPreview,
+        DadVisibleRunState runState)
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, 0.03f));
+        if (!ImGui.BeginChild("dad-planner-lane-rail", new Vector2(0f, 0f), true))
+        {
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
+            return;
+        }
+
+        ImGui.TextUnformatted("Planner lanes");
+        ImGui.TextDisabled("Operator lane summary cards");
+        ImGui.Separator();
+
+        foreach (var lane in plugin.PresetProviderService.GetPlannerLaneDefinitions())
+        {
+            var laneCard = BuildPlannerLaneCard(characterPool, plannerOptions, requestPreview, runState, lane);
+            var accent = ParseHexColor(lane.AccentColorHex, laneCard.IsSelected ? 0.95f : 0.62f);
+            var hovered = ParseHexColor(lane.AccentColorHex, 0.82f);
+            var active = ParseHexColor(lane.AccentColorHex, 1f);
+            ImGui.PushStyleColor(ImGuiCol.Button, accent);
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hovered);
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, active);
+            if (ImGui.Button($"{lane.DisplayName}##dad-lane-{lane.ActivityMode}", new Vector2(-1f, 54f)))
+                SelectPlannerLane(plannerOptions, lane);
+            ImGui.PopStyleColor(3);
+
+            DrawCompactStatusRow("Maturity", laneCard.MaturityLabel);
+            DrawCompactStatusRow("Startability", laneCard.StartabilityLabel);
+            DrawCompactStatusRow("Party", laneCard.PartySizeLabel);
+            DrawCompactStatusRow("Blockers", BuildShortBlockerSummary(laneCard.FirstBlockerLabel, laneCard.BlockerCount));
+            DrawCompactStatusRow("Runtime", laneCard.RuntimeLabel);
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+        }
+
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private void DrawPlannerConfigSection(
+        DadCharacterPool characterPool,
+        DadPresetPlannerOptions plannerOptions,
+        DadActivityPreset plannerPreview,
+        bool plannerLocked)
+    {
+        DrawSectionHeader("Lane Config", "Editable planner inputs plus lane-specific config. Read-only lanes stay explicit.");
         ImGui.BeginDisabled(plannerLocked);
         DrawPlannerOperatorModeSelector(plannerOptions);
         ImGui.SameLine();
@@ -502,35 +666,21 @@ public sealed class MainWindow : Window, IDisposable
             plugin.SavePlannerOptions();
         }
 
-        ImGui.EndDisabled();
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Planner to chat"))
-            plugin.PrintStatus(plugin.BuildPlannerSummary());
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Copy planner summary"))
-        {
-            ImGui.SetClipboardText(plugin.BuildPlannerSummary());
-            plugin.PrintStatus("Copied dad planner summary.");
-        }
-
-        ImGui.SameLine();
-        ImGui.BeginDisabled(plannerLocked);
-        if (ImGui.SmallButton("Load Local Sastasha test"))
-            LoadPlannerTestDuty(plannerOptions, DadPlannerActivityMode.LocalDuty);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Load Duty Support Sastasha test"))
-            LoadPlannerDutySupportTest(plannerOptions);
-        ImGui.EndDisabled();
-
-        ImGui.Separator();
-        ImGui.BeginDisabled(plannerLocked);
+        ImGui.Spacing();
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition);
         ImGui.EndDisabled();
+    }
 
-        ImGui.Separator();
+    private void DrawPlannerLaneSummarySection(
+        DadActivityPreset plannerPreview,
+        DadPlannerRunRequestPreview requestPreview,
+        DadVisibleRunState runState)
+    {
+        DrawSectionHeader("Lane Summary", "Selected lane summary, validation state, and current runtime phase.");
+        var laneRun = ResolveLaneRuntime(runState, plannerPreview.LaneDefinition);
+        var activeRun = GetActiveRun(runState);
         DrawStatusRow("Lane", $"{plannerPreview.LaneDefinition.DisplayName} | {plannerPreview.LaneDefinition.MaturityLabel}");
+        DrawStatusRow("Lane summary", plannerPreview.LaneDefinition.Summary);
         DrawStatusRow("Next action", plannerPreview.LaneDefinition.NextAction);
         DrawStatusRow("Preset", plannerPreview.DisplayName);
         DrawStatusRow("Operator mode", plannerPreview.OperatorModeLabel);
@@ -544,15 +694,333 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Validation", $"{FormatReadiness(plannerPreview.ValidationState)} | {plannerPreview.ValidationSummary}");
         DrawStatusRow("Filters", plannerPreview.FilterSummary);
         DrawStatusRow("Summary", FormatOperatorText(plannerPreview.PlannerSummary, "(none)"));
-        DrawStatusRow("Planner request", requestPreview.StatusSummary);
-        DrawStatusRow("Request id", FormatText(requestPreview.RequestId, "(none)"));
-        DrawStatusRow("Request module", requestPreview.ModuleId.ToString());
-        DrawStatusRow("Required characters", plugin.KrangleService.FormatCharacterKeys(requestPreview.RequiredCharacterKeys));
-        DrawStatusRow("Required accounts", FormatOperatorAccountKeys(requestPreview.RequiredAccountKeys));
-        DrawStatusRow("Request queue", requestPreview.QueueAuthority.ToString());
-        DrawStatusRow("Expected party size", requestPreview.ExpectedPartySize <= 0 ? "?" : requestPreview.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
-        DrawStatusRow("Local-only mode", plugin.Configuration.LocalOnlyModeEnabled ? "Enabled" : "Disabled");
+        if (laneRun.Status != DadRunStatus.Idle)
+        {
+            DrawStatusRow("Runtime phase", DadOperatorPhaseText.FormatPhaseLabel(laneRun));
+            DrawStatusRow("Runtime status", laneRun.Summary);
+        }
+        else if (activeRun.Status != DadRunStatus.Idle)
+        {
+            DrawStatusRow("Live lane", $"{activeRun.ModuleId} | {DadOperatorPhaseText.FormatPhaseLabel(activeRun)} | {activeRun.Summary}");
+        }
+        else
+        {
+            DrawStatusRow("Runtime phase", "No live runtime for selected lane.");
+        }
 
+        DrawStatusRow("Local-only mode", plugin.Configuration.LocalOnlyModeEnabled ? "Enabled" : "Disabled");
+        DrawStatusRow("Planner request", requestPreview.StatusSummary);
+    }
+
+    private void DrawPlannerActionStrip(
+        DadPlannerRunRequestPreview requestPreview,
+        DadVisibleRunState runState,
+        bool plannerLocked)
+    {
+        DrawSectionHeader("Planner Action", "Startability, blocker, and active-run controls for the selected lane.");
+        var activeRun = GetActiveRun(runState);
+        var blockers = BuildPlannerBlockerList(requestPreview);
+        var firstBlocker = blockers.FirstOrDefault() ?? "(none)";
+        var disabledReason = plannerLocked
+            ? "A Dad run is active. Cancel it or wait for the run to reach a final state before starting another planner request."
+            : requestPreview.CanStart
+                ? string.Empty
+                : firstBlocker == "(none)"
+                    ? FormatText(requestPreview.StatusSummary, "Planner request is not startable.")
+                    : firstBlocker;
+
+        ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
+        if (ImGui.SmallButton("Start planner run"))
+            plugin.StartPlannerRunFromShell();
+        var startHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.EndDisabled();
+        if (startHovered && !string.IsNullOrWhiteSpace(disabledReason))
+            ImGui.SetTooltip(disabledReason);
+
+        if (plannerLocked)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Cancel active run##planner-action-strip"))
+                plugin.CancelActiveRunFromShell();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Cancels the active Dad run visible to this client.");
+        }
+
+        ImGui.SameLine();
+        DrawStateBadge("Startability", FormatText(requestPreview.ContractPreview.Startability, requestPreview.CanStart ? "Startable" : "Blocked"));
+        ImGui.SameLine();
+        DrawStateBadge("Blockers", blockers.Count.ToString(CultureInfo.InvariantCulture));
+        ImGui.SameLine();
+        DrawStateBadge("Active", activeRun.Status == DadRunStatus.Idle
+            ? "Idle"
+            : $"{activeRun.ModuleId} / {DadOperatorPhaseText.FormatPhaseLabel(activeRun)}");
+
+        DrawStatusRow("First blocker", firstBlocker);
+        DrawStatusRow("Start reason", requestPreview.CanStart ? FormatText(requestPreview.StatusSummary, "Planner request ready.") : disabledReason);
+    }
+
+    private void DrawPlannerRequestContractSection(
+        DadActivityPreset plannerPreview,
+        DadPlannerRunRequestPreview requestPreview)
+    {
+        DrawSectionHeader("Request Contract", "Typed preview contract is primary operator truth. Raw start contract stays secondary/debug.");
+        DrawStatusRow("Preview lane", FormatText(requestPreview.ContractPreview.Lane, plannerPreview.LaneDefinition.DisplayName));
+        DrawStatusRow("Authority mode", DadStatusText.FormatAuthorityMode(requestPreview.ContractPreview.AuthorityMode));
+        DrawStatusRow("Request id", FormatText(requestPreview.ContractPreview.RequestId, requestPreview.RequestId));
+        DrawStatusRow("Request module", requestPreview.ContractPreview.ModuleId.ToString());
+        DrawStatusRow("Task config", FormatOperatorText(FormatPlannerTaskConfig(requestPreview.ContractPreview.TaskConfig), "(none)"));
+        DrawStatusRow("Required characters", plugin.KrangleService.FormatCharacterKeys(requestPreview.ContractPreview.RequiredCharacterKeys));
+        DrawStatusRow("Required accounts", FormatOperatorAccountKeys(requestPreview.ContractPreview.RequiredAccountKeys));
+        DrawStatusRow("Request queue", plugin.PresetProviderService.GetQueueAuthorityLabel(requestPreview.ContractPreview.QueueAuthority));
+        DrawStatusRow("Expected party size", requestPreview.ContractPreview.PartySize <= 0 ? "?" : requestPreview.ContractPreview.PartySize.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Startability", FormatText(requestPreview.ContractPreview.Startability, requestPreview.CanStart ? "Startable" : "Blocked"));
+
+        var contractPreviewJson = string.IsNullOrWhiteSpace(requestPreview.ContractPreviewJson)
+            ? requestPreview.StatusSummary
+            : requestPreview.ContractPreviewJson;
+        ImGui.InputTextMultiline("Preview JSON (typed contract)", ref contractPreviewJson, 16384, new Vector2(-1f, 220f), ImGuiInputTextFlags.ReadOnly);
+
+        if (ImGui.TreeNode("Raw request JSON (secondary/debug)"))
+        {
+            var requestJson = string.IsNullOrWhiteSpace(requestPreview.RequestJson)
+                ? requestPreview.StatusSummary
+                : requestPreview.RequestJson;
+            ImGui.InputTextMultiline("Request JSON (raw start contract)", ref requestJson, 8192, new Vector2(-1f, 160f), ImGuiInputTextFlags.ReadOnly);
+            ImGui.TreePop();
+        }
+    }
+
+    private void DrawPlannerValidationSection(DadActivityPreset plannerPreview, DadPlannerRunRequestPreview requestPreview)
+    {
+        DrawSectionHeader("Validation And Blockers", "Planner blockers first, module blockers second, filter exclusions after.");
+        DrawStatusRow("Preview blockers", requestPreview.ContractPreview.Blockers.Count == 0
+            ? "(none)"
+            : FormatOperatorText(string.Join(" | ", requestPreview.ContractPreview.Blockers), "(none)"));
+        DrawPlannerValidation(plannerPreview, requestPreview);
+        ImGui.Spacing();
+        DrawPlannerFilterCounts(plannerPreview);
+    }
+
+    private void DrawPlannerRosterSummarySection(DadActivityPreset plannerPreview, DadVisibleRunState runState)
+    {
+        DrawSectionHeader("Planned Roster", "Compact selected-slot and candidate summary. Full tables are in details.");
+        var totalSlots = plannerPreview.SelectedCharacters.Count;
+        var assignedSlots = plannerPreview.SelectedCharacters.Count(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey));
+        var blockedSlots = plannerPreview.SelectedCharacters.Count(static slot => !string.IsNullOrWhiteSpace(slot.BlockerSummary));
+        var readySlots = plannerPreview.SelectedCharacters.Count(static slot => slot.SelectedReadiness == DadReadinessState.Ready);
+        var laneRun = ResolveLaneRuntime(runState, plannerPreview.LaneDefinition);
+
+        DrawStatusRow("Slots", $"{assignedSlots}/{Math.Max(1, totalSlots)} assigned | {readySlots} ready | {blockedSlots} with blockers");
+        DrawStatusRow("Candidates", $"{plannerPreview.AvailableCharacters.Count} available | {plannerPreview.FilterSummary}");
+        DrawStatusRow("Leader", FormatOperatorText(plannerPreview.LeaderStatusText, "(none)"));
+        DrawStatusRow("Runtime participants", laneRun.Status == DadRunStatus.Idle
+            ? "No live participant snapshot for selected lane."
+            : $"{laneRun.Participants.Count} participant(s) | {DadOperatorPhaseText.FormatPhaseLabel(laneRun)}");
+
+        var firstBlockedSlot = plannerPreview.SelectedCharacters
+            .FirstOrDefault(static slot => !string.IsNullOrWhiteSpace(slot.BlockerSummary));
+        if (firstBlockedSlot != null)
+            DrawStatusRow("First roster blocker", $"{firstBlockedSlot.SlotId}: {firstBlockedSlot.BlockerSummary}");
+    }
+
+    private void DrawPlannerDetailsSection(
+        DadPresetPlannerOptions plannerOptions,
+        DadActivityPreset plannerPreview,
+        DadPlannerRunRequestPreview requestPreview,
+        DadVisibleRunState runState,
+        bool plannerLocked)
+    {
+        DrawSectionHeader("Details", "Collapsed validation, JSON, runtime, roster tables, and debug actions.");
+
+        if (ImGui.TreeNode("Validation, blockers, and filter counts"))
+        {
+            DrawPlannerValidationSection(plannerPreview, requestPreview);
+            ImGui.TreePop();
+        }
+
+        if (ImGui.TreeNode("Request contract and JSON"))
+        {
+            DrawPlannerRequestContractSection(plannerPreview, requestPreview);
+            ImGui.TreePop();
+        }
+
+        if (ImGui.TreeNode("Runtime timeline and executor detail"))
+        {
+            DrawPlannerExecutionTimelineSection(runState, plannerPreview, requestPreview);
+            ImGui.TreePop();
+        }
+
+        if (ImGui.TreeNode("Full roster and available characters"))
+        {
+            DrawPlannerRosterSection(plannerPreview, runState);
+            ImGui.TreePop();
+        }
+
+        if (ImGui.TreeNode("Export, test loaders, and raw duty fallback"))
+        {
+            DrawPlannerControlsSection(plannerOptions, requestPreview, plannerLocked);
+            DrawPlannerDutyDebugFallback(plannerOptions, plannerPreview.LaneDefinition, plannerLocked);
+            ImGui.TreePop();
+        }
+    }
+
+    private void DrawPlannerRosterSection(DadActivityPreset plannerPreview, DadVisibleRunState runState)
+    {
+        DrawSectionHeader("Roster / Participants", "Planned slots first. Runtime participants appear only when this lane is live.");
+        var laneRun = ResolveLaneRuntime(runState, plannerPreview.LaneDefinition);
+        if (laneRun.Status == DadRunStatus.Idle || laneRun.Participants.Count == 0)
+        {
+            DrawMutedNotice("No runtime participant snapshot for selected lane.");
+        }
+        else if (ImGui.BeginTable("dad-planner-runtime-participants", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Owner");
+            ImGui.TableSetupColumn("Account");
+            ImGui.TableSetupColumn("Character");
+            ImGui.TableSetupColumn("Slot");
+            ImGui.TableSetupColumn("State");
+            ImGui.TableSetupColumn("Claim / lease");
+            ImGui.TableSetupColumn("Status");
+            ImGui.TableHeadersRow();
+
+            foreach (var participant in laneRun.Participants.OrderBy(static participant => participant.AssignedSlotId, StringComparer.OrdinalIgnoreCase))
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(DadStatusText.FormatParticipantOwner(participant));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorAccountLabel(participant.ManagedAccountAlias, participant.ManagedAccountKey.ToString()));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(participant.ActiveCharacterKey.ToString(), "(unknown)"));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatText(participant.AssignedSlotId, "(unassigned)"));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(participant.State.ToString());
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{participant.ClaimState} / {participant.LeaseState}");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorText(FormatParticipantStatus(participant), "(none)"));
+            }
+
+            ImGui.EndTable();
+        }
+
+        ImGui.Spacing();
+        DrawPlannerRosterSlots(plannerPreview);
+        ImGui.Spacing();
+        DrawPlannerAvailableCharacters(plannerPreview);
+    }
+
+    private void DrawPlannerExecutionTimelineSection(
+        DadVisibleRunState runState,
+        DadActivityPreset plannerPreview,
+        DadPlannerRunRequestPreview requestPreview)
+    {
+        DrawSectionHeader("Execution Timeline", "Real executor state first. Explicit placeholders mark deferred runtime surfaces.");
+        var laneRun = ResolveLaneRuntime(runState, plannerPreview.LaneDefinition);
+        var activeRun = GetActiveRun(runState);
+        var capability = plugin.ModuleRegistry.GetCapability(requestPreview.ModuleId);
+
+        if (laneRun.Status != DadRunStatus.Idle)
+        {
+            DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(laneRun));
+            DrawStatusRow("Run status", $"{laneRun.Status} / {laneRun.Phase} / {laneRun.ModuleId}");
+            DrawStatusRow("Summary", laneRun.Summary);
+            DrawStatusRow("Executor", FormatExecutorStatus(laneRun.CurrentExecutorStatus));
+            DrawStatusRow("Active task", string.IsNullOrWhiteSpace(laneRun.ActiveTaskName) ? "(none)" : $"{laneRun.ActiveTaskIndex}/{Math.Max(1, laneRun.TotalTaskCount)} {laneRun.ActiveTaskName}");
+            DrawStatusRow("Task detail", FormatText(laneRun.ActiveTaskStatus, laneRun.Summary));
+            DrawDutySupportRuntimeRows(laneRun);
+
+            if (laneRun.StepResults.Count == 0)
+            {
+                DrawMutedNotice("No step results recorded yet for this active lane.");
+            }
+            else if (ImGui.BeginTable("dad-planner-step-results", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            {
+                ImGui.TableSetupColumn("Time");
+                ImGui.TableSetupColumn("Step");
+                ImGui.TableSetupColumn("State");
+                ImGui.TableSetupColumn("Participant");
+                ImGui.TableSetupColumn("Summary");
+                ImGui.TableHeadersRow();
+
+                foreach (var step in laneRun.StepResults.OrderBy(static step => step.ReportedAtUtc))
+                {
+                    var stepState = step.Success
+                        ? "Success"
+                        : step.Deferred
+                            ? "Deferred"
+                            : step.TimedOut
+                                ? "Timed out"
+                                : "Failed";
+
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(FormatTime(step.ReportedAtUtc));
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(FormatText(step.StepName, "(none)"));
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(stepState);
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(step.ParticipantState.ToString());
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(FormatOperatorText(FormatText(step.Summary, step.BlockedReason), "(none)"));
+                }
+
+                ImGui.EndTable();
+            }
+        }
+        else if (activeRun.Status != DadRunStatus.Idle)
+        {
+            DrawMutedNotice($"Selected lane has no live runtime state. Current active lane: {activeRun.ModuleId} | {DadOperatorPhaseText.FormatPhaseLabel(activeRun)}");
+        }
+        else
+        {
+            DrawMutedNotice("No live execution for selected lane yet.");
+        }
+
+        if (!capability.CanExecuteLiveQueue)
+            DrawPlaceholderNotice($"Placeholder: live executor phase timeline is not implemented for {plannerPreview.LaneDefinition.DisplayName} yet.");
+        if (requestPreview.ModuleId == DadModuleId.DutySupport)
+        {
+            DrawStatusRow("Retry loop", capability.CanRequeue
+                ? "Enabled"
+                : "Single-run only. Requeue/retry loop is not enabled.");
+        }
+        else if (!capability.CanStartQueue || !capability.CanRequeue)
+        {
+            DrawPlaceholderNotice("Placeholder: queue/retry detail is deferred until this lane emits runtime queue telemetry.");
+        }
+        if (!capability.CanTrackCompletion)
+            DrawPlaceholderNotice("Placeholder: per-lane completion/result widget waits on backend completion projection.");
+    }
+
+    private void DrawPlannerControlsSection(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerRunRequestPreview requestPreview,
+        bool plannerLocked)
+    {
+        DrawSectionHeader("Export And Test Controls", "Developer/operator diagnostics only. Start stays in the action strip.");
+        if (ImGui.SmallButton("Planner to chat"))
+            plugin.PrintStatus(plugin.BuildPlannerSummary());
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Copy planner summary"))
+        {
+            ImGui.SetClipboardText(plugin.BuildPlannerSummary());
+            plugin.PrintStatus("Copied dad planner summary.");
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(string.IsNullOrWhiteSpace(requestPreview.ContractPreviewJson));
+        if (ImGui.SmallButton("Copy preview JSON"))
+        {
+            ImGui.SetClipboardText(requestPreview.ContractPreviewJson);
+            plugin.PrintStatus("Copied dad planner preview contract JSON.");
+        }
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
         ImGui.BeginDisabled(requestPreview.Request == null);
         if (ImGui.SmallButton("Copy request JSON"))
         {
@@ -561,118 +1029,485 @@ public sealed class MainWindow : Window, IDisposable
         }
         ImGui.EndDisabled();
 
+        ImGui.BeginDisabled(plannerLocked);
+        if (ImGui.SmallButton("Load Local Sastasha test"))
+            LoadPlannerTestDuty(plannerOptions, DadPlannerActivityMode.LocalDuty);
         ImGui.SameLine();
-        ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
-        if (ImGui.SmallButton("Start planner run"))
-            plugin.StartPlannerRunFromShell();
+        if (ImGui.SmallButton("Load Duty Support Sastasha test"))
+            LoadPlannerDutySupportTest(plannerOptions);
         ImGui.EndDisabled();
-
-        var requestJson = string.IsNullOrWhiteSpace(requestPreview.RequestJson)
-            ? requestPreview.StatusSummary
-            : requestPreview.RequestJson;
-        ImGui.InputTextMultiline("Request JSON (raw contract)", ref requestJson, 8192, new Vector2(-1f, 160f), ImGuiInputTextFlags.ReadOnly);
-
-        ImGui.Separator();
-        DrawPlannerValidation(plannerPreview, requestPreview);
-
-        ImGui.Separator();
-        DrawPlannerFilterCounts(plannerPreview);
-
-        ImGui.Separator();
-        DrawPlannerRosterSlots(plannerPreview);
-
-        ImGui.Separator();
-        DrawPlannerAvailableCharacters(plannerPreview);
-        ImGui.EndTable();
     }
 
-    private void DrawPlannerLanePanel(DadPresetPlannerOptions plannerOptions, DadPlannerRunRequestPreview requestPreview)
+    private PlannerLaneCardView BuildPlannerLaneCard(
+        DadCharacterPool characterPool,
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerRunRequestPreview selectedRequestPreview,
+        DadVisibleRunState runState,
+        DadPlannerLaneDefinition lane)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, 0.03f));
-        if (!ImGui.BeginChild("dad-planner-lane-rail", new Vector2(0f, 0f), true))
-        {
-            ImGui.PopStyleColor();
-            return;
-        }
+        var selected = IsSelectedPlannerLane(plannerOptions.ActivityMode, lane.ActivityMode);
+        var laneOptions = selected
+            ? plannerOptions
+            : ClonePlannerOptionsForLane(plannerOptions, lane);
+        var lanePreview = selected
+            ? selectedRequestPreview.PlannerPreview
+            : plugin.PresetProviderService.BuildPlannerPreview(characterPool, laneOptions);
+        var laneRequestPreview = selected
+            ? selectedRequestPreview
+            : plugin.BuildPlannerRunRequestPreview(laneOptions, lanePreview);
+        var blockers = laneRequestPreview.ContractPreview.Blockers;
+        var laneRun = ResolveLaneRuntime(runState, lane);
+        var startabilityLabel = FormatText(laneRequestPreview.ContractPreview.Startability, laneRequestPreview.CanStart ? "Startable" : "Blocked");
+        var expectedPartySize = laneRequestPreview.ContractPreview.PartySize;
+        var firstBlocker = blockers.FirstOrDefault(static blocker => !string.IsNullOrWhiteSpace(blocker)) ?? string.Empty;
 
-        ImGui.TextUnformatted("Planner lanes");
-        ImGui.TextDisabled("Vertical lane rail restored");
-        ImGui.Separator();
-
-        foreach (var lane in plugin.PresetProviderService.GetPlannerLaneDefinitions())
-        {
-            var selected = IsSelectedPlannerLane(plannerOptions.ActivityMode, lane.ActivityMode);
-            var accent = ParseHexColor(lane.AccentColorHex, selected ? 0.95f : 0.62f);
-            var hovered = ParseHexColor(lane.AccentColorHex, 0.82f);
-            var active = ParseHexColor(lane.AccentColorHex, 1f);
-            ImGui.PushStyleColor(ImGuiCol.Button, accent);
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hovered);
-            ImGui.PushStyleColor(ImGuiCol.ButtonActive, active);
-            if (ImGui.Button($"{lane.DisplayName}##dad-lane-{lane.ActivityMode}", new Vector2(-1f, 34f)))
-                SelectPlannerLane(plannerOptions, lane);
-            ImGui.PopStyleColor(3);
-
-            ImGui.TextDisabled($"{lane.MaturityLabel} | party {lane.ExpectedPartySize}");
-            ImGui.TextWrapped(lane.NextAction);
-            if (selected && !string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
-                ImGui.TextWrapped(requestPreview.BlockedReason);
-            ImGui.Spacing();
-        }
-
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
+        return new PlannerLaneCardView(
+            lane,
+            selected,
+            lane.MaturityLabel,
+            expectedPartySize <= 0 ? "?" : expectedPartySize.ToString(CultureInfo.InvariantCulture),
+            startabilityLabel,
+            firstBlocker,
+            blockers.Count,
+            laneRun.Status == DadRunStatus.Idle
+                ? "Idle"
+                : $"{DadOperatorPhaseText.FormatPhaseLabel(laneRun)} | {laneRun.Status} / {laneRun.Phase}");
     }
+
+    private static DadPresetPlannerOptions ClonePlannerOptionsForLane(
+        DadPresetPlannerOptions source,
+        DadPlannerLaneDefinition lane)
+        => new()
+        {
+            PresetName = source.PresetName,
+            ActivityMode = lane.ActivityMode,
+            ActivityName = lane.DisplayName,
+            OperatorMode = source.OperatorMode,
+            ConnectedOnly = source.ConnectedOnly,
+            SameDatacenterOnly = source.SameDatacenterOnly,
+            AllowStaleForPlanning = source.AllowStaleForPlanning,
+            TransportOwner = lane.DefaultTransportOwner,
+            QueueAuthority = lane.DefaultQueueAuthority,
+            InviteAuthority = source.InviteAuthority,
+            DutyContentFinderConditionId = source.DutyContentFinderConditionId,
+            DutyDisplayName = source.DutyDisplayName,
+            DutyUnsynced = source.DutyUnsynced,
+            DutyExpectedPartySize = source.DutyExpectedPartySize,
+            MogtomePreset = source.MogtomePreset,
+            MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            IncludedAccountKeys = [..source.IncludedAccountKeys],
+        };
+
+    private static DadRunResult GetActiveRun(DadVisibleRunState runState)
+        => runState.VisibleRun.Status != DadRunStatus.Idle
+            ? runState.VisibleRun
+            : runState.AuthorityRun.Status != DadRunStatus.Idle
+                ? runState.AuthorityRun
+                : runState.LocalRun;
+
+    private DadRunResult ResolveLaneRuntime(DadVisibleRunState runState, DadPlannerLaneDefinition lane)
+    {
+        var candidates = new[] { runState.VisibleRun, runState.AuthorityRun, runState.LocalRun };
+        return candidates.FirstOrDefault(candidate => IsRuntimeMatchForPlannerLane(candidate, lane))
+               ?? DadRunResult.Idle();
+    }
+
+    private static bool IsRuntimeMatchForPlannerLane(DadRunResult run, DadPlannerLaneDefinition lane)
+    {
+        if (run.Status == DadRunStatus.Idle)
+            return false;
+
+        return lane.ActivityMode switch
+        {
+            DadPlannerActivityMode.Msq => run.ModuleId is DadModuleId.Msq or DadModuleId.DailyMsq,
+            DadPlannerActivityMode.DutySupport => run.ModuleId == DadModuleId.DutySupport,
+            DadPlannerActivityMode.Trust => run.ModuleId == DadModuleId.Trust,
+            DadPlannerActivityMode.PremadeDuty => run.ModuleId == DadModuleId.PremadeDuty,
+            DadPlannerActivityMode.Blunderville => run.ModuleId == DadModuleId.Blunderville,
+            DadPlannerActivityMode.Mogtome => run.ModuleId == DadModuleId.Mogtome,
+            DadPlannerActivityMode.Commendation => run.ModuleId == DadModuleId.Commendation,
+            DadPlannerActivityMode.Astrope => run.ModuleId == DadModuleId.Astrope,
+            DadPlannerActivityMode.LocalDuty => run.ModuleId == DadModuleId.Duty,
+            DadPlannerActivityMode.CustomDuty => run.ModuleId == DadModuleId.CustomDuty,
+            _ => run.ModuleId == lane.ModuleId,
+        };
+    }
+
+    private string BuildOverviewNextAction(DadVisibleRunState runState, CharacterConfig profile)
+    {
+        var activeRun = GetActiveRun(runState);
+        if (!plugin.Configuration.PluginEnabled)
+            return "Enable Dad plugin before using planner or runtime authority.";
+
+        if (!profile.Enabled)
+            return "Arm current profile before starting Dad work.";
+
+        if (!profile.AllowIpcStarts)
+            return "Enable Allow IPC starts before launching planner-driven runs.";
+
+        if (activeRun.Status != DadRunStatus.Idle)
+        {
+            if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
+            {
+                var blocker = !string.IsNullOrWhiteSpace(activeRun.BlockedReason)
+                    ? activeRun.BlockedReason
+                    : !string.IsNullOrWhiteSpace(activeRun.FailureReason)
+                        ? activeRun.FailureReason
+                        : activeRun.Summary;
+                return $"Resolve blocker: {blocker}";
+            }
+
+            if (activeRun.Status is DadRunStatus.Completed or DadRunStatus.Cancelled)
+                return "Review final summary, then return to Preset Planner for the next lane.";
+
+            return activeRun.Phase switch
+            {
+                DadRunPhase.Planning or DadRunPhase.RoutingModules => "Keep planner locked while Dad validates and routes the selected request.",
+                DadRunPhase.DiscoveringParticipants or DadRunPhase.WaitingForReadiness or DadRunPhase.ClaimingSlots or DadRunPhase.AssemblingParty
+                    => "Wait for participants and slot claims to settle, or cancel stale workers.",
+                DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop
+                    => "Observe queue state and authority ownership; cancel only if queue truth diverges.",
+                DadRunPhase.InDutyOrTask when activeRun.ModuleId == DadModuleId.Blunderville
+                    => "Monitor task progress. Runtime authority owns the active Blunderville task.",
+                DadRunPhase.InDutyOrTask
+                    => "Monitor duty progress. Runtime authority owns in-duty execution now.",
+                _ => "Wait for Dad to finish the current phase or cancel if operator intent changed.",
+            };
+        }
+
+        if (plugin.Configuration.LocalOnlyModeEnabled)
+            return "Switch off local-only mode before testing remote-party lanes.";
+
+        if (runState.AuthorityView.Kind == DadAuthorityViewKind.NoRemoteAuthority)
+            return "Discover or configure Server Dad authority before starting remote lanes.";
+
+        return "Pick a planner lane, verify typed roster coverage, then start from Preset Planner.";
+    }
+
+    private void DrawDutySupportRuntimeSection(DadRunResult run)
+    {
+        if (!HasDutySupportRuntime(run))
+            return;
+
+        DrawSectionHeader("Duty Support Runtime", "Live queue, duty entry, in-duty, leave, and stabilization truth from current executor state.");
+        DrawDutySupportRuntimeRows(run);
+    }
+
+    private void DrawDutySupportRuntimeRows(DadRunResult run)
+    {
+        if (!HasDutySupportRuntime(run))
+            return;
+
+        var status = ResolveDutySupportExecutorStatus(run);
+        var summary = ResolveDutySupportSummary(run, status);
+        DrawStatusRow("Duty Support", $"{DadOperatorPhaseText.FormatPhaseLabel(run)} | {status.Status} / {status.Phase}");
+        DrawStatusRow("Path", FormatOperatorText(DetectDutySupportPath(summary), "(none)"));
+        DrawStatusRow("Queue / entry", FormatOperatorText(BuildDutySupportQueueEntryText(status, summary), "(none)"));
+        DrawStatusRow("Entry automation", FormatOperatorText(BuildDutySupportEntryAutomationText(status, summary), "(none)"));
+        DrawStatusRow("Leave / exit", FormatOperatorText(BuildDutySupportLeaveText(run, status, summary), "(none)"));
+        DrawStatusRow("Stabilize", FormatOperatorText(BuildDutySupportStabilizeText(run, status, summary), "(none)"));
+        DrawStatusRow("Current summary", FormatOperatorText(summary, "(none)"));
+    }
+
+    private static bool HasDutySupportRuntime(DadRunResult run)
+        => run.Status != DadRunStatus.Idle &&
+           (run.ModuleId == DadModuleId.DutySupport ||
+            run.CurrentExecutorStatus.ModuleId == DadModuleId.DutySupport ||
+            run.StepResults.Any(static step => step.ModuleId == DadModuleId.DutySupport));
+
+    private static DadModuleExecutionStatusDto ResolveDutySupportExecutorStatus(DadRunResult run)
+    {
+        if (run.CurrentExecutorStatus.ModuleId == DadModuleId.DutySupport)
+            return run.CurrentExecutorStatus;
+
+        return run.StepResults
+            .Where(static step => step.ModuleId == DadModuleId.DutySupport)
+            .OrderByDescending(static step => step.ReportedAtUtc)
+            .Select(static step => step.ExecutorStatus)
+            .FirstOrDefault()
+            ?? run.CurrentExecutorStatus;
+    }
+
+    private static string ResolveDutySupportSummary(DadRunResult run, DadModuleExecutionStatusDto status)
+        => string.IsNullOrWhiteSpace(status.Summary)
+            ? FormatText(string.IsNullOrWhiteSpace(run.ActiveTaskStatus) ? run.Summary : run.ActiveTaskStatus, "(none)")
+            : status.Summary;
+
+    private static string DetectDutySupportPath(string summary)
+    {
+        if (ContainsAny(summary, "Force Commands mode", "ADS"))
+            return "ADS force commands";
+
+        if (ContainsAny(summary, "Use FrenRider mode", "FrenRider"))
+            return "FrenRider";
+
+        if (ContainsAny(summary, "Do Nothing mode", "user owns combat", "user-owned"))
+            return "User-owned";
+
+        return "Path pending.";
+    }
+
+    private static string BuildDutySupportQueueEntryText(DadModuleExecutionStatusDto status, string summary)
+        => status.Phase switch
+        {
+            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => summary,
+            DadRunPhase.InDutyOrTask => "Queue complete. Duty entry confirmed.",
+            DadRunPhase.PostRunStabilizing or DadRunPhase.Finalizing => "Queue complete. Duty entry and exit confirmed.",
+            _ => "No live queue state.",
+        };
+
+    private static string BuildDutySupportEntryAutomationText(DadModuleExecutionStatusDto status, string summary)
+    {
+        var entryAutomation = ExtractSentence(summary,
+            "sent no Duty Support entry command",
+            "sent /bmrai on and /rotation auto after Duty Support entry",
+            "sent no FrenRider, ADS, or rotation command after duty entry",
+            "attempted rotation bootstrap",
+            "already requested FrenRider before queue");
+        if (!string.IsNullOrWhiteSpace(entryAutomation))
+            return entryAutomation;
+
+        return status.Phase switch
+        {
+            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => "Pending duty entry.",
+            DadRunPhase.InDutyOrTask or DadRunPhase.PostRunStabilizing or DadRunPhase.Finalizing => "Duty entered.",
+            _ => "Not started.",
+        };
+    }
+
+    private static string BuildDutySupportLeaveText(DadRunResult run, DadModuleExecutionStatusDto status, string summary)
+    {
+        if (ContainsAny(summary,
+                "leave blocked",
+                "leave requested",
+                "waiting for FrenRider or user to leave",
+                "waiting for user-owned duty exit",
+                "waiting for duty exit"))
+        {
+            return summary;
+        }
+
+        return status.Phase switch
+        {
+            DadRunPhase.InDutyOrTask => "Waiting for DutyCompleted or duty exit.",
+            DadRunPhase.PostRunStabilizing => "Duty exit confirmed.",
+            DadRunPhase.Finalizing when run.Status == DadRunStatus.Completed => "Duty exit confirmed.",
+            DadRunPhase.Finalizing when run.Status == DadRunStatus.Cancelled => "Cancelled before final duty exit confirmation.",
+            _ => "Not started.",
+        };
+    }
+
+    private static string BuildDutySupportStabilizeText(DadRunResult run, DadModuleExecutionStatusDto status, string summary)
+        => status.Phase == DadRunPhase.PostRunStabilizing
+            ? summary
+            : run.Status switch
+            {
+                DadRunStatus.Completed => "Stabilized.",
+                DadRunStatus.Cancelled => "Cancelled.",
+                DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut => run.Summary,
+                _ => "Not started.",
+            };
+
+    private static string ExtractSentence(string value, params string[] markers)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var sentences = value.Split('.', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return sentences.FirstOrDefault(sentence => markers.Any(marker => sentence.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+               ?? string.Empty;
+    }
+
+    private static bool ContainsAny(string value, params string[] markers)
+        => markers.Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    private DadAcquiredCharacter? ResolveParticipantCharacter(DadCharacterPool characterPool, DadParticipantSnapshot participant)
+    {
+        if (!string.IsNullOrWhiteSpace(participant.Character.CharacterKey) || participant.Character.ContentId != 0)
+            return participant.Character;
+
+        var activeCharacterKey = participant.ActiveCharacterKey.ToString();
+        return characterPool.Characters.FirstOrDefault(character =>
+            (!string.IsNullOrWhiteSpace(activeCharacterKey) &&
+             string.Equals(character.CharacterKey, activeCharacterKey, StringComparison.OrdinalIgnoreCase))
+            || (participant.Character.ContentId != 0 && character.ContentId == participant.Character.ContentId));
+    }
+
+    private static bool IsParticipantStale(DadParticipantSnapshot participant)
+        => DateTime.UtcNow - participant.LastHeartbeatUtc > TimeSpan.FromSeconds(30);
+
+    private string FormatParticipantFreshness(DadParticipantSnapshot participant, DadAcquiredCharacter? character)
+    {
+        if (character != null && (!string.IsNullOrWhiteSpace(character.CharacterKey) || character.ContentId != 0))
+            return FormatFreshness(character);
+
+        var age = DateTime.UtcNow - participant.LastHeartbeatUtc;
+        if (age <= TimeSpan.FromSeconds(10))
+            return "live";
+        if (age <= TimeSpan.FromSeconds(30))
+            return "recent";
+
+        return "stale";
+    }
+
+    private string FormatParticipantStatus(DadParticipantSnapshot participant)
+    {
+        var parts = new List<string> { participant.State.ToString() };
+        if (!string.IsNullOrWhiteSpace(participant.StatusText))
+            parts.Add(participant.StatusText);
+        if (participant.AvailableCharacterKeys.Count > 0)
+            parts.Add($"avail {plugin.KrangleService.FormatCharacterKeys(participant.AvailableCharacterKeys)}");
+        if (!string.IsNullOrWhiteSpace(participant.Endpoint))
+            parts.Add(participant.IsLocalClient ? "(local)" : participant.Endpoint);
+        return string.Join(" | ", parts);
+    }
+
+    private static bool HasHardBlocker(IReadOnlyList<DadModuleBlockerDto> blockers)
+        => blockers.Any(blocker => blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
+
+    private static void DrawSectionHeader(string title, string subtitle)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted(title);
+        if (!string.IsNullOrWhiteSpace(subtitle))
+            ImGui.TextDisabled(subtitle);
+    }
+
+    private static void DrawPlaceholderNotice(string text)
+    {
+        var placeholderText = text.StartsWith("Placeholder:", StringComparison.OrdinalIgnoreCase)
+            ? text
+            : $"Placeholder: {text}";
+        ImGui.TextDisabled(placeholderText);
+    }
+
+    private static void DrawMutedNotice(string text)
+        => ImGui.TextDisabled(text);
 
     private void DrawPlannerLaneInputs(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
     {
         if (lane.RequiresDutySelector)
         {
-            ImGui.TextUnformatted("Duty selector");
-            var dutyId = unchecked((int)Math.Min(plannerOptions.DutyContentFinderConditionId, int.MaxValue));
-            if (ImGui.InputInt("Content finder condition id", ref dutyId))
+            var selectedDuty = plugin.PresetProviderService.GetPlannerSelectedDuty(plannerOptions);
+            var dutyCompatible = selectedDuty == null || IsPlannerDutyCompatible(selectedDuty, lane);
+            var dutyLabel = selectedDuty == null
+                ? "Select typed duty..."
+                : dutyCompatible
+                    ? selectedDuty.SelectionLabel
+                    : $"Incompatible: {selectedDuty.SelectionLabel}";
+
+            ImGui.TextUnformatted("Typed duty selector");
+            DrawStatusRow("Selector source", lane.ActivityMode == DadPlannerActivityMode.DutySupport
+                ? "Lumina ContentFinderCondition duties with Duty Support data only."
+                : "Lumina ContentFinderCondition duty list.");
+
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.BeginCombo("Duty", dutyLabel))
             {
-                plannerOptions.DutyContentFinderConditionId = (uint)Math.Clamp(dutyId, 0, int.MaxValue);
-                plugin.SavePlannerOptions();
+                var search = plannerDutySearch;
+                ImGui.SetNextItemWidth(-1f);
+                if (ImGui.InputText("Search", ref search, 128))
+                    plannerDutySearch = search;
+
+                ImGui.Separator();
+                if (ImGui.BeginChild($"dad-duty-results-{lane.ActivityMode}", new Vector2(0f, 220f), true))
+                {
+                    var dutyOptions = plugin.PresetProviderService.SearchPlannerDutyOptions(lane.ActivityMode, plannerDutySearch, 96);
+                    if (dutyOptions.Count == 0)
+                    {
+                        ImGui.TextDisabled("No duties matched current search.");
+                    }
+                    else
+                    {
+                        foreach (var option in dutyOptions)
+                        {
+                            var isSelected = selectedDuty != null
+                                && option.ContentFinderConditionId == selectedDuty.ContentFinderConditionId;
+                            if (ImGui.Selectable($"{option.SelectionLabel}##dad-duty-{option.ContentFinderConditionId}", isSelected))
+                                ApplyPlannerDutySelection(plannerOptions, lane, option);
+
+                            if (ImGui.IsItemHovered())
+                                ImGui.SetTooltip(option.MetadataSummary);
+
+                            if (isSelected)
+                                ImGui.SetItemDefaultFocus();
+                        }
+                    }
+
+                    ImGui.EndChild();
+                }
+
+                ImGui.EndCombo();
             }
 
-            var dutyName = plannerOptions.DutyDisplayName;
-            if (ImGui.InputText("Duty display name", ref dutyName, 128))
+            if (selectedDuty != null)
             {
-                plannerOptions.DutyDisplayName = dutyName;
-                plugin.SavePlannerOptions();
+                DrawStatusRow("Selected duty", dutyCompatible
+                    ? selectedDuty.SelectionLabel
+                    : $"Incompatible with {lane.DisplayName}: {selectedDuty.SelectionLabel}");
+                DrawStatusRow("Duty metadata", selectedDuty.MetadataSummary);
+                if (!dutyCompatible)
+                {
+                    DrawStatusRow("Duty selector state", BuildIncompatibleDutyText(selectedDuty, lane));
+                    if (ImGui.SmallButton("Clear incompatible duty"))
+                        ClearPlannerDutySelection(plannerOptions, lane);
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("Reselect from the Duty combo above.");
+                }
             }
 
-            var dutyUnsynced = plannerOptions.DutyUnsynced;
-            if (ImGui.Checkbox("Unsynced", ref dutyUnsynced))
+            if (lane.ActivityMode is DadPlannerActivityMode.PremadeDuty or DadPlannerActivityMode.LocalDuty)
             {
-                plannerOptions.DutyUnsynced = dutyUnsynced;
-                plugin.SavePlannerOptions();
+                var dutyUnsynced = plannerOptions.DutyUnsynced;
+                if (ImGui.Checkbox("Unsynced", ref dutyUnsynced))
+                {
+                    plannerOptions.DutyUnsynced = dutyUnsynced;
+                    plugin.SavePlannerOptions();
+                }
             }
 
-            ImGui.SameLine();
-            var partySize = plannerOptions.DutyExpectedPartySize;
-            if (ImGui.InputInt("Expected party size", ref partySize))
+            if (lane.ActivityMode == DadPlannerActivityMode.PremadeDuty)
             {
-                plannerOptions.DutyExpectedPartySize = Math.Clamp(partySize, 1, 8);
-                plugin.SavePlannerOptions();
+                var partySize = Math.Max(2, plannerOptions.DutyExpectedPartySize <= 0
+                    ? selectedDuty?.QueueSize ?? lane.ExpectedPartySize
+                    : plannerOptions.DutyExpectedPartySize);
+                if (ImGui.InputInt("Expected party size", ref partySize))
+                {
+                    plannerOptions.DutyExpectedPartySize = Math.Clamp(partySize, 2, 48);
+                    plugin.SavePlannerOptions();
+                }
+
+                DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerOptions.QueueAuthority));
+                DrawStatusRow("Authority owner", DadStatusText.FormatAuthorityMode(lane.DefaultAuthorityMode));
+                DrawStatusRow("Request shape", "Typed premade request. Queue authority stays explicit; typed party size can be overridden here.");
+            }
+            else if (lane.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust)
+            {
+                DrawStatusRow("Execution mode", lane.ActivityMode == DadPlannerActivityMode.DutySupport ? "DutySupportOnly" : "TrustOnly");
+                DrawStatusRow("Runner count", "1 local runner");
+                DrawStatusRow("Request shape", "Solo local lane. Preview forces one local runner and local queue authority.");
+            }
+            else if (lane.ActivityMode == DadPlannerActivityMode.LocalDuty)
+            {
+                DrawStatusRow("Execution mode", DadRunRequestOptions.TrustThenDutySupport);
+                DrawStatusRow("Run count", "1");
+                DrawStatusRow("Frequency", DadRunRequestOptions.FrequencyPerArRun);
+                DrawStatusRow("Request shape", "Local duty contract. Preview stays one runner; unsynced applies only to this local lane.");
+            }
+            else if (lane.ActivityMode == DadPlannerActivityMode.CustomDuty)
+            {
+                DrawStatusRow("Attempts", "1");
+                DrawStatusRow("Request shape", "Typed custom duty contract. Planner keeps this lane local-only for now.");
             }
 
-            if (ImGui.SmallButton("Use Sastasha test duty"))
-                LoadPlannerTestDuty(plannerOptions, lane.ActivityMode);
-
-            ImGui.SameLine();
             if (ImGui.SmallButton("Clear duty selector"))
-            {
-                plannerOptions.DutyContentFinderConditionId = 0;
-                plannerOptions.DutyDisplayName = string.Empty;
-                plannerOptions.DutyUnsynced = false;
-                plugin.SavePlannerOptions();
-                plugin.PrintStatus("Cleared Dad planner duty selector.");
-            }
+                ClearPlannerDutySelection(plannerOptions, lane);
 
-            DrawStatusRow("Duty selector state", HasPlannerDutySelector(plannerOptions)
-                ? $"{plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId} | party {plannerOptions.DutyExpectedPartySize} | {(plannerOptions.DutyUnsynced ? "unsynced" : "synced")}"
-                : "Missing. Local Duty / Unsync blocks until duty id and name are set.");
+            DrawStatusRow("Duty selector state", selectedDuty != null
+                ? dutyCompatible
+                    ? BuildDutySelectorState(plannerOptions, lane, selectedDuty)
+                    : BuildIncompatibleDutyText(selectedDuty, lane)
+                : $"{lane.DisplayName} blocks until a typed duty is selected.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Mogtome)
@@ -683,11 +1518,63 @@ public sealed class MainWindow : Window, IDisposable
                 plannerOptions.MogtomePreset = preset;
                 plugin.SavePlannerOptions();
             }
+
+            var policies = plugin.PresetProviderService.GetMogtomeDutyPolicies().ToArray();
+            var currentPolicyIndex = Array.IndexOf(policies, plannerOptions.MogtomeDutyPolicy);
+            currentPolicyIndex = currentPolicyIndex < 0 ? 0 : currentPolicyIndex;
+            var preview = plugin.PresetProviderService.GetMogtomeDutyPolicyLabel(policies[currentPolicyIndex]);
+            if (ImGui.BeginCombo("MOGTOME duty policy", preview))
+            {
+                for (var index = 0; index < policies.Length; index++)
+                {
+                    var policy = policies[index];
+                    var selected = index == currentPolicyIndex;
+                    if (ImGui.Selectable(plugin.PresetProviderService.GetMogtomeDutyPolicyLabel(policy), selected))
+                    {
+                        plannerOptions.MogtomeDutyPolicy = policy;
+                        plugin.SavePlannerOptions();
+                    }
+
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+
+                ImGui.EndCombo();
+            }
+
+            DrawStatusRow("Attempts", "1");
+            DrawStatusRow("MOGTOME preview", "Dad owns request preview. Policy controls helper handoff shape only.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Blunderville)
         {
-            DrawStatusRow("Blunderville policy", "Fixed emote run. Dad will enter, run configured per-character emote, then fail/leave.");
+            DrawStatusRow("Attempts", "1");
+            DrawStatusRow("Queue owner", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
+            DrawStatusRow("Blunderville mode", "FixedEmoteRun");
+            DrawStatusRow("Blunderville policy", "Dad enters, runs configured per-character emote, then fail/leaves per fixed contract.");
+        }
+
+        if (lane.ActivityMode == DadPlannerActivityMode.Msq)
+        {
+            DrawStatusRow("Preset", "MSQ");
+            DrawStatusRow("Attempts", "1");
+            DrawStatusRow("Expected party size", lane.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
+            DrawStatusRow("MSQ mapping", "Planner surfaces MSQ lane while preserving DailyMsqPremade legacy queue mapping in preview.");
+        }
+
+        if (lane.ActivityMode == DadPlannerActivityMode.Commendation)
+        {
+            DrawStatusRow("Attempts", "1");
+            DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
+            DrawStatusRow("Commendation policy", "Short duty loop contract. Preview keeps attempt count and queue lane explicit.");
+        }
+
+        if (lane.ActivityMode == DadPlannerActivityMode.Astrope)
+        {
+            DrawStatusRow("Attempts", "1");
+            DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
+            DrawStatusRow("Valid local time window", new DadTimeWindow().Describe());
+            DrawStatusRow("Astrope policy", "Timed farming window stays explicit in preview JSON even before live executor phase.");
         }
     }
 
@@ -816,12 +1703,103 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
+    private void ApplyPlannerDutySelection(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerLaneDefinition lane,
+        DadPlannerDutyOption duty)
+    {
+        plannerOptions.ActivityMode = lane.ActivityMode;
+        plannerOptions.TransportOwner = lane.DefaultTransportOwner;
+        plannerOptions.QueueAuthority = lane.DefaultQueueAuthority;
+        plannerOptions.DutyContentFinderConditionId = duty.ContentFinderConditionId;
+        plannerOptions.DutyDisplayName = duty.DutyDisplayName;
+        plannerOptions.DutyExpectedPartySize = Math.Max(1, duty.QueueSize);
+        if (lane.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust)
+            plannerOptions.DutyUnsynced = false;
+
+        plannerDutySearch = duty.DutyDisplayName;
+        plugin.SavePlannerOptions();
+        plugin.PrintStatus($"Selected Dad planner duty: {duty.DutyDisplayName} #{duty.ContentFinderConditionId} for {lane.DisplayName}.");
+    }
+
+    private void ClearPlannerDutySelection(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
+    {
+        plannerOptions.DutyContentFinderConditionId = 0;
+        plannerOptions.DutyDisplayName = string.Empty;
+        plannerOptions.DutyUnsynced = false;
+        plannerOptions.DutyExpectedPartySize = lane.ExpectedPartySize;
+        plugin.SavePlannerOptions();
+        plugin.PrintStatus("Cleared Dad planner duty selector.");
+    }
+
+    private void DrawPlannerDutyDebugFallback(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerLaneDefinition lane,
+        bool plannerLocked)
+    {
+        DrawSectionHeader("Raw Duty Fallback", "Developer fallback for malformed catalog/selector state. Prefer the typed duty combo.");
+        if (!lane.RequiresDutySelector)
+        {
+            DrawMutedNotice("Selected lane does not use a duty selector.");
+            return;
+        }
+
+        ImGui.BeginDisabled(plannerLocked);
+        var dutyId = unchecked((int)Math.Min(plannerOptions.DutyContentFinderConditionId, int.MaxValue));
+        if (ImGui.InputInt("Content finder condition id", ref dutyId))
+        {
+            plannerOptions.DutyContentFinderConditionId = (uint)Math.Clamp(dutyId, 0, int.MaxValue);
+            plugin.SavePlannerOptions();
+        }
+
+        var dutyName = plannerOptions.DutyDisplayName;
+        if (ImGui.InputText("Duty display name", ref dutyName, 128))
+        {
+            plannerOptions.DutyDisplayName = dutyName;
+            plugin.SavePlannerOptions();
+        }
+
+        ImGui.EndDisabled();
+    }
+
+    private static string BuildDutySelectorState(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerLaneDefinition lane,
+        DadPlannerDutyOption duty)
+    {
+        if (lane.ActivityMode == DadPlannerActivityMode.PremadeDuty)
+        {
+            var expectedPartySize = Math.Max(2, plannerOptions.DutyExpectedPartySize <= 0
+                ? duty.QueueSize
+                : plannerOptions.DutyExpectedPartySize);
+            return $"{duty.SelectionLabel} | {duty.MetadataSummary} | request party {expectedPartySize} | {(plannerOptions.DutyUnsynced ? "unsynced" : "synced")}";
+        }
+
+        if (lane.ActivityMode == DadPlannerActivityMode.LocalDuty)
+            return $"{duty.SelectionLabel} | {duty.MetadataSummary} | local solo request | {(plannerOptions.DutyUnsynced ? "unsynced" : "synced")}";
+
+        return $"{duty.SelectionLabel} | {duty.MetadataSummary} | local solo request";
+    }
+
+    private static bool IsPlannerDutyCompatible(DadPlannerDutyOption duty, DadPlannerLaneDefinition lane)
+        => lane.ActivityMode switch
+        {
+            DadPlannerActivityMode.DutySupport => duty.SupportsDutySupport,
+            _ => true,
+        };
+
+    private static string BuildIncompatibleDutyText(DadPlannerDutyOption duty, DadPlannerLaneDefinition lane)
+        => lane.ActivityMode == DadPlannerActivityMode.DutySupport
+            ? $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not marked as Duty Support content. Clear it or reselect a Duty Support duty."
+            : $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not valid for {lane.DisplayName}. Clear it or reselect a compatible duty.";
+
     private void SelectPlannerLane(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
     {
         plannerOptions.ActivityMode = lane.ActivityMode;
         plannerOptions.TransportOwner = lane.DefaultTransportOwner;
         plannerOptions.QueueAuthority = lane.DefaultQueueAuthority;
-        plannerOptions.DutyExpectedPartySize = Math.Clamp(lane.ExpectedPartySize, 1, 8);
+        if (plannerOptions.DutyContentFinderConditionId == 0 && plannerOptions.DutyExpectedPartySize <= 0)
+            plannerOptions.DutyExpectedPartySize = Math.Clamp(lane.ExpectedPartySize, 1, 48);
         plugin.SavePlannerOptions();
     }
 
@@ -831,10 +1809,20 @@ public sealed class MainWindow : Window, IDisposable
         plannerOptions.ActivityMode = lane.ActivityMode;
         plannerOptions.TransportOwner = lane.DefaultTransportOwner;
         plannerOptions.QueueAuthority = lane.DefaultQueueAuthority;
-        plannerOptions.DutyContentFinderConditionId = 4;
-        plannerOptions.DutyDisplayName = "Sastasha";
+
+        var testDuty = plugin.PresetProviderService.GetPlannerDutyOption(4);
+        if (testDuty != null)
+        {
+            ApplyPlannerDutySelection(plannerOptions, lane, testDuty);
+        }
+        else
+        {
+            plannerOptions.DutyContentFinderConditionId = 4;
+            plannerOptions.DutyDisplayName = "Sastasha";
+            plannerOptions.DutyExpectedPartySize = Math.Clamp(lane.ExpectedPartySize, 1, 48);
+        }
+
         plannerOptions.DutyUnsynced = lane.ActivityMode == DadPlannerActivityMode.LocalDuty;
-        plannerOptions.DutyExpectedPartySize = Math.Clamp(lane.ExpectedPartySize, 1, 8);
         plugin.SavePlannerOptions();
         plugin.PrintStatus($"Loaded Dad planner test duty: {plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId} for {lane.DisplayName}.");
     }
@@ -846,16 +1834,21 @@ public sealed class MainWindow : Window, IDisposable
         plannerOptions.OperatorMode = DadPlannerOperatorMode.RemotePartyPlan;
         plannerOptions.TransportOwner = lane.DefaultTransportOwner;
         plannerOptions.QueueAuthority = lane.DefaultQueueAuthority;
-        plannerOptions.DutyContentFinderConditionId = 4;
-        plannerOptions.DutyDisplayName = "Sastasha";
+
+        var testDuty = plugin.PresetProviderService.GetPlannerDutyOption(4);
+        if (testDuty != null)
+            ApplyPlannerDutySelection(plannerOptions, lane, testDuty);
+        else
+        {
+            plannerOptions.DutyContentFinderConditionId = 4;
+            plannerOptions.DutyDisplayName = "Sastasha";
+            plannerOptions.DutyExpectedPartySize = 1;
+        }
+
         plannerOptions.DutyUnsynced = false;
-        plannerOptions.DutyExpectedPartySize = 1;
         plugin.SavePlannerOptions();
         plugin.PrintStatus($"Loaded Dad Duty Support test: {plannerOptions.DutyDisplayName} #{plannerOptions.DutyContentFinderConditionId}.");
     }
-
-    private static bool HasPlannerDutySelector(DadPresetPlannerOptions plannerOptions)
-        => plannerOptions.DutyContentFinderConditionId != 0 && !string.IsNullOrWhiteSpace(plannerOptions.DutyDisplayName);
 
     private static bool IsPlannerLocked(DadVisibleRunState runState)
         => Plugin.IsBusy(runState.LocalRun) || Plugin.IsBusy(runState.AuthorityRun) || Plugin.IsBusy(runState.VisibleRun);
@@ -883,29 +1876,89 @@ public sealed class MainWindow : Window, IDisposable
         return new Vector4(r, g, b, alpha);
     }
 
-    private DadAcquiredCharacter? ResolveSelectedCharacter(IReadOnlyList<DadAcquiredCharacter> characters)
-    {
-        if (characters.Count == 0)
-        {
-            selectedCharacterKey = string.Empty;
-            return null;
-        }
-
-        if (string.IsNullOrWhiteSpace(selectedCharacterKey) ||
-            !characters.Any(character => string.Equals(character.CharacterKey, selectedCharacterKey, StringComparison.OrdinalIgnoreCase)))
-        {
-            selectedCharacterKey = characters[0].CharacterKey;
-        }
-
-        return characters.FirstOrDefault(character => string.Equals(character.CharacterKey, selectedCharacterKey, StringComparison.OrdinalIgnoreCase));
-    }
-
     private static void DrawStatusRow(string label, string value)
+        => DrawStatusRow(label, value, 180f);
+
+    private static void DrawCompactStatusRow(string label, string value)
+        => DrawStatusRow(label, value, 92f);
+
+    private static void DrawStatusRow(string label, string value, float preferredLabelWidth)
     {
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var labelWidth = MathF.Min(
+            MathF.Max(84f, preferredLabelWidth),
+            MathF.Max(84f, availableWidth * 0.36f));
+
         ImGui.TextDisabled(label);
-        ImGui.SameLine(180f);
-        ImGui.TextWrapped(value);
+        if (availableWidth > labelWidth + 120f)
+        {
+            ImGui.SameLine(labelWidth);
+            ImGui.TextWrapped(value);
+        }
+        else
+        {
+            ImGui.Indent();
+            ImGui.TextWrapped(value);
+            ImGui.Unindent();
+        }
     }
+
+    private static void DrawStateBadge(string label, string value)
+    {
+        ImGui.TextDisabled($"{label}:");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(value);
+    }
+
+    private static string BuildShortBlockerSummary(string firstBlocker, int blockerCount)
+    {
+        if (blockerCount <= 0)
+            return "None";
+
+        return blockerCount == 1
+            ? firstBlocker
+            : $"{blockerCount}: {firstBlocker}";
+    }
+
+    private static List<string> BuildPlannerBlockerList(DadPlannerRunRequestPreview requestPreview)
+    {
+        var blockers = new List<string>();
+        if (!string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
+            blockers.Add(requestPreview.BlockedReason);
+
+        blockers.AddRange(requestPreview.ContractPreview.Blockers
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker)));
+        blockers.AddRange(requestPreview.PlannerPreview.Blockers
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker)));
+        blockers.AddRange(requestPreview.ModuleBlockers
+            .Select(static blocker => blocker.Summary)
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker)));
+
+        return blockers
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string BuildActiveRunKeyStatus(DadRunResult run)
+    {
+        if (run.Status == DadRunStatus.Idle)
+            return "No active Dad run. Planner can be edited.";
+
+        if (!string.IsNullOrWhiteSpace(run.BlockedReason))
+            return DadOperatorPhaseText.HasBlockingFailure(run)
+                ? $"Blocked: {run.BlockedReason}"
+                : $"Runtime note: {run.BlockedReason}";
+
+        if (!string.IsNullOrWhiteSpace(run.FailureReason))
+            return $"Failure: {run.FailureReason}";
+
+        return FormatText(string.IsNullOrWhiteSpace(run.ActiveTaskStatus) ? run.Summary : run.ActiveTaskStatus, "(none)");
+    }
+
+    private static string FormatPlannerTaskConfig(object? taskConfig)
+        => taskConfig == null
+            ? string.Empty
+            : DadIpcJson.Serialize(taskConfig);
 
     private bool CanStartLocalDemo(CharacterConfig profile, DadRunResult localRun)
         => plugin.Configuration.PluginEnabled &&
@@ -920,16 +1973,6 @@ public sealed class MainWindow : Window, IDisposable
             startDemo();
         ImGui.EndDisabled();
     }
-
-    private static string FormatSource(DadCharacterSource source)
-        => source switch
-        {
-            DadCharacterSource.LocalRuntime => "local runtime",
-            DadCharacterSource.PeerRuntime => "peer runtime",
-            DadCharacterSource.XadbOnly => "XADB only",
-            DadCharacterSource.ManualUnresolved => "manual unresolved",
-            _ => source.ToString(),
-        };
 
     private static string FormatFreshness(DadAcquiredCharacter character)
     {
@@ -989,9 +2032,6 @@ public sealed class MainWindow : Window, IDisposable
 
         return $"{character.PartyRosterCount.Value}/{visible}";
     }
-
-    private static string FormatContentId(ulong contentId)
-        => contentId == 0 ? "-" : $"0x{contentId:X}";
 
     private static string FormatTime(DateTime? utc)
         => utc.HasValue
@@ -1054,7 +2094,9 @@ public sealed class MainWindow : Window, IDisposable
     {
         var requestId = string.IsNullOrWhiteSpace(run.RequestId) ? "(none)" : run.RequestId;
         var taskDetail = string.IsNullOrWhiteSpace(run.ActiveTaskStatus) ? run.Summary : run.ActiveTaskStatus;
-        var blocker = string.IsNullOrWhiteSpace(run.BlockedReason) ? string.Empty : $" | Blocker {run.BlockedReason}";
+        var blocker = string.IsNullOrWhiteSpace(run.BlockedReason)
+            ? string.Empty
+            : $" | {(DadOperatorPhaseText.HasBlockingFailure(run) ? "Blocked" : "Note")} {run.BlockedReason}";
         return FormatOperatorText($"{run.Status} / {run.Phase} / {run.ModuleId} | {taskDetail}{blocker} | Request {requestId}", "(none)");
     }
 
@@ -1063,34 +2105,10 @@ public sealed class MainWindow : Window, IDisposable
         if (status.ModuleId == DadModuleId.None && string.IsNullOrWhiteSpace(status.DisplayName))
             return "(none)";
 
-        var blocker = string.IsNullOrWhiteSpace(status.BlockedReason) ? string.Empty : $" | Blocker {status.BlockedReason}";
+        var blockerLabel = HasHardBlocker(status.Blockers) ? "Blocker" : "Note";
+        var blocker = string.IsNullOrWhiteSpace(status.BlockedReason) ? string.Empty : $" | {blockerLabel} {status.BlockedReason}";
         var retry = status.MaxRetryAttempts <= 0 ? string.Empty : $" | Retry {status.RetryAttempt}/{status.MaxRetryAttempts}";
         return FormatOperatorText($"{status.DisplayName} / {status.Status} / {status.Phase}{retry} | {status.Summary}{blocker}", "(none)");
-    }
-
-    private void DrawPlannerActivityModeSelector(DadPresetPlannerOptions plannerOptions)
-    {
-        var activityModes = plugin.PresetProviderService.GetPlannerActivityModeOptions().ToArray();
-        var currentIndex = Array.IndexOf(activityModes, plannerOptions.ActivityMode);
-        currentIndex = currentIndex < 0 ? 0 : currentIndex;
-        var preview = plugin.PresetProviderService.GetPlannerActivityModeLabel(activityModes[currentIndex]);
-        if (!ImGui.BeginCombo("Activity mode", preview))
-            return;
-
-        for (var index = 0; index < activityModes.Length; index++)
-        {
-            var option = activityModes[index];
-            var selected = option == plannerOptions.ActivityMode;
-            if (ImGui.Selectable(plugin.PresetProviderService.GetPlannerActivityModeLabel(option), selected))
-            {
-                plannerOptions.ActivityMode = option;
-                plugin.SavePlannerOptions();
-            }
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
     }
 
     private void DrawPlannerOperatorModeSelector(DadPresetPlannerOptions plannerOptions)
