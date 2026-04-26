@@ -49,7 +49,8 @@ public sealed class Plugin : IDalamudPlugin
     public DadPlannerService PlannerService { get; }
     public DadPartyAssemblyService PartyAssemblyService { get; }
     public DadDutyQueueService DutyQueueService { get; }
-    public DadDutySupportQueueService DutySupportQueueService { get; }
+    public DadLocalDutyQueueService LocalDutyQueueService { get; }
+    public DadNpcDutyQueueService NpcDutyQueueService { get; }
     public DadDutySupportAdsService DutySupportAdsService { get; }
     public DadCombatRotationService CombatRotationService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
@@ -89,13 +90,14 @@ public sealed class Plugin : IDalamudPlugin
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
         DutySupportAdsService = new DadDutySupportAdsService(Log);
-        DutySupportQueueService = new DadDutySupportQueueService(Log);
+        LocalDutyQueueService = new DadLocalDutyQueueService(Log);
+        NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, Log);
         QueueExecutionService = new DadQueueExecutionService(
             ModuleRegistry,
             DutyQueueService,
-            ExternalPluginCapabilityService,
-            DutySupportQueueService,
+            LocalDutyQueueService,
+            NpcDutyQueueService,
             DutySupportAdsService,
             CombatRotationService);
         RunCoordinatorService = new DadCoordinatorService(
@@ -130,7 +132,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -164,7 +166,8 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(PluginInfo.Command);
         WindowSystem.RemoveAllWindows();
         dadIpcService.Dispose();
-        DutySupportQueueService.Dispose();
+        LocalDutyQueueService.Dispose();
+        NpcDutyQueueService.Dispose();
         TransportService.Dispose();
         dtrEntry?.Remove();
     }
@@ -737,6 +740,18 @@ public sealed class Plugin : IDalamudPlugin
             PrintStatus(enabled ? "dad enabled." : "dad disabled.");
     }
 
+    public void SetDebugUiEnabled(bool enabled)
+    {
+        Configuration.DebugUiEnabled = enabled;
+        Configuration.Save();
+        PrintStatus(enabled
+            ? "dad debug UI enabled. Verbose planner/runtime diagnostics are visible."
+            : "dad debug UI disabled. Operator UI is compact.");
+    }
+
+    public void ToggleDebugUi()
+        => SetDebugUiEnabled(!Configuration.DebugUiEnabled);
+
     public void ResetWindowPositions()
     {
         mainWindow.ResetToOrigin();
@@ -789,6 +804,7 @@ public sealed class Plugin : IDalamudPlugin
             $"Client {authorityView.ClientPerspectiveText} | " +
             $"{authorityView.FreshnessText} | " +
             $"Local-only {(localRun.LocalOnlyEnabled ? "on" : "off")} | " +
+            $"Debug UI {(Configuration.DebugUiEnabled ? "on" : "off")} | " +
             $"Profile {(profile.Enabled ? "armed" : "off")} | " +
             $"IPC starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
             $"Pool {characterPool.Characters.Count} row(s) / XADB {characterPool.XadbStatus.Availability} / peers {characterPool.PeerTransport.ConnectedPeerCount}");
@@ -881,6 +897,24 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("off", StringComparison.OrdinalIgnoreCase))
         {
             SetPluginEnabled(false);
+            return;
+        }
+
+        if (trimmed.Equals("debug", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleDebugUi();
+            return;
+        }
+
+        if (trimmed.Equals("debug on", StringComparison.OrdinalIgnoreCase))
+        {
+            SetDebugUiEnabled(true);
+            return;
+        }
+
+        if (trimmed.Equals("debug off", StringComparison.OrdinalIgnoreCase))
+        {
+            SetDebugUiEnabled(false);
             return;
         }
 

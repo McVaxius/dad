@@ -132,6 +132,8 @@ public sealed class ConfigWindow : Window, IDisposable
             configuration.Save();
         }
 
+        DrawStatusRow("Debug UI", configuration.DebugUiEnabled ? "Enabled via /dad debug." : "Disabled. Use /dad debug to show verbose diagnostics.");
+
         var dtr = configuration.DtrBarEnabled;
         if (ImGui.Checkbox("Show DTR bar entry", ref dtr))
         {
@@ -244,6 +246,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText("/dad ws -> reset both windows to 1,1");
         ImGui.BulletText("/dad j -> jump both windows somewhere visible");
         ImGui.BulletText("/dad status -> print the live shell summary to chat");
+        ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
         ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
         ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
         ImGui.BulletText("/dad run server -> start a Server Dad Sastasha premade demo");

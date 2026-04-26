@@ -217,23 +217,13 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
             : string.Join(" | ", blockers.Select(static blocker => $"{blocker.Capability}: {blocker.Summary}"));
 }
 
-public sealed class DadLocalDutyExecutor(
-    DadModuleRegistry moduleRegistry,
-    Func<DadRunPlan, string> queueBlockerFactory)
-    : DadDeferredModuleExecutor(moduleRegistry, "DadLocalDutyExecutor", DadModuleId.Duty, "Local Duty", queueBlockerFactory);
-
-public sealed class DadPremadeDutyExecutor(
-    DadModuleRegistry moduleRegistry,
-    Func<DadRunPlan, string> queueBlockerFactory)
-    : DadDeferredModuleExecutor(moduleRegistry, "DadPremadeDutyExecutor", DadModuleId.PremadeDuty, "Premade Duty", queueBlockerFactory);
-
 public sealed class DadMsqExecutor(
     DadModuleRegistry moduleRegistry,
     Func<DadRunPlan, string> queueBlockerFactory)
     : DadDeferredModuleExecutor(moduleRegistry, "DadMsqExecutor", DadModuleId.Msq, "MSQ", queueBlockerFactory);
 
 public sealed class DadDutySupportExecutor(
-    DadDutySupportQueueService queueService,
+    DadNpcDutyQueueService queueService,
     DadDutySupportAdsService adsService,
     DadCombatRotationService combatRotationService) : IDadModuleExecutor
 {
@@ -241,7 +231,7 @@ public sealed class DadDutySupportExecutor(
     private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
 
     private DadModuleExecutionStatusDto status = new();
-    private DadDutySupportResolvedContent? resolvedContent;
+    private DadNpcDutyResolvedContent? resolvedContent;
     private DateTime runStartedAtUtc = DateTime.MinValue;
     private DateTime dutyCompletedAtUtc = DateTime.MinValue;
     private DateTime nextLeaveAttemptUtc = DateTime.MinValue;
@@ -385,7 +375,7 @@ public sealed class DadDutySupportExecutor(
         var pulse = queueService.Pulse(status.RunId, resolvedContent);
         if (UsesAdsDutyFlow() && ProtectsAdsOwnershipAfterQueue(pulse.Kind))
             adsStopProtectedByDutyEntry = true;
-        var enteredDutyThisPulse = pulse.Kind == DadDutySupportQueuePulseKind.EnteredDuty;
+        var enteredDutyThisPulse = pulse.Kind == DadNpcDutyQueuePulseKind.EnteredDuty;
         if (enteredDutyThisPulse)
             enteredDuty = true;
         if (pulse.Status == DadRunStatus.Failed && !enteredDuty)
@@ -417,7 +407,7 @@ public sealed class DadDutySupportExecutor(
     {
         if (UsesAdsDutyFlow())
             adsService.TryStop(out _);
-        var pulse = queueService.Cancel(status.RunId, reason);
+        var pulse = queueService.Cancel(status.RunId, DadNpcDutyQueueMode.DutySupport, reason);
         ApplyPulse(pulse);
         status.Summary = pulse.Summary;
         status.FailureReason = pulse.FailureReason;
@@ -429,7 +419,7 @@ public sealed class DadDutySupportExecutor(
     public DadModuleExecutionStatusDto GetStatus()
         => status.Clone();
 
-    private void ApplyPulse(DadDutySupportQueuePulse pulse)
+    private void ApplyPulse(DadNpcDutyQueuePulse pulse)
     {
         status.Phase = pulse.Phase;
         status.Status = pulse.Status;
@@ -613,11 +603,11 @@ public sealed class DadDutySupportExecutor(
         return false;
     }
 
-    private static bool ProtectsAdsOwnershipAfterQueue(DadDutySupportQueuePulseKind pulseKind)
-        => pulseKind is DadDutySupportQueuePulseKind.AcceptedQueueConfirm
-            or DadDutySupportQueuePulseKind.WaitingForQueue
-            or DadDutySupportQueuePulseKind.DutyEntryTransition
-            or DadDutySupportQueuePulseKind.EnteredDuty;
+    private static bool ProtectsAdsOwnershipAfterQueue(DadNpcDutyQueuePulseKind pulseKind)
+        => pulseKind is DadNpcDutyQueuePulseKind.AcceptedQueueConfirm
+            or DadNpcDutyQueuePulseKind.WaitingForQueue
+            or DadNpcDutyQueuePulseKind.DutyEntryTransition
+            or DadNpcDutyQueuePulseKind.EnteredDuty;
 
     private void ResetRuntimeState(DateTime now)
     {
@@ -670,7 +660,7 @@ public sealed class DadDutySupportExecutor(
     private static string BuildCanStartSummary(string? dutyName, DadCombatRotationMode mode)
         => mode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Dad can start native Duty Support queue for {dutyName}; FrenRider will be requested before queue.",
+            DadCombatRotationMode.UseFrenRider => $"Dad can start native Duty Support queue for {dutyName}; Dad will send /fr on before queue, then observe while FrenRider owns duty behavior and exit.",
             DadCombatRotationMode.ForceCommands => $"Dad can start native Duty Support queue for {dutyName}; ADS and fixed rotation commands will be used.",
             DadCombatRotationMode.DoNothing => $"Dad can start native Duty Support queue for {dutyName}; no external automation commands will be sent.",
             _ => $"Dad can start native Duty Support queue for {dutyName}.",
@@ -679,7 +669,7 @@ public sealed class DadDutySupportExecutor(
     private string BuildStartSummary(string? dutyName)
         => rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: starting native Duty Support queue for {dutyName}.",
+            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: /fr on requested before queue; queueing native Duty Support for {dutyName}.",
             DadCombatRotationMode.ForceCommands => $"Force Commands mode: starting native Duty Support queue for {dutyName}.",
             DadCombatRotationMode.DoNothing => $"Do Nothing mode: starting native Duty Support queue for {dutyName}.",
             _ => $"Starting native Duty Support queue for {dutyName}.",
@@ -694,7 +684,7 @@ public sealed class DadDutySupportExecutor(
         {
             DadCombatRotationMode.UseFrenRider => summary.StartsWith("Use FrenRider mode:", StringComparison.OrdinalIgnoreCase)
                 ? summary
-                : $"Use FrenRider mode: {summary}",
+                : $"Use FrenRider mode: queueing; {summary}",
             DadCombatRotationMode.ForceCommands when adsOutsideArmed => summary.StartsWith("Force Commands mode:", StringComparison.OrdinalIgnoreCase)
                 ? summary
                 : $"Force Commands mode: ADS outside armed; {summary}",
@@ -714,8 +704,8 @@ public sealed class DadDutySupportExecutor(
         return rotationMode switch
         {
             DadCombatRotationMode.UseFrenRider => string.IsNullOrWhiteSpace(entryAutomationSummary)
-                ? $"Use FrenRider mode: Dad is observing {dutyName}; FrenRider owns in-duty behavior and exit."
-                : $"{entryAutomationSummary} Dad is observing {dutyName}; FrenRider owns in-duty behavior and exit.",
+                ? $"Use FrenRider mode: in duty for {dutyName}; Dad is observing while FrenRider owns combat, movement, and exit."
+                : $"{entryAutomationSummary} In duty for {dutyName}; Dad is observing while FrenRider owns combat, movement, and exit.",
             DadCombatRotationMode.ForceCommands => string.IsNullOrWhiteSpace(entryAutomationSummary)
                 ? $"Force Commands mode: ADS running duty; waiting for DutyCompleted before leave for {dutyName}."
                 : $"Force Commands mode: ADS running duty; waiting for DutyCompleted before leave for {dutyName}. {entryAutomationSummary}",
@@ -729,7 +719,7 @@ public sealed class DadDutySupportExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Duty Support duty {dutyName} completed; waiting for FrenRider or user to leave. Dad will not send a FrenRider disable command.",
+            DadCombatRotationMode.UseFrenRider => $"Duty Support duty {dutyName} completed; waiting for FrenRider or user to leave. Dad will keep observing and will not send a FrenRider disable command.",
             DadCombatRotationMode.DoNothing => $"Duty Support duty {dutyName} completed; waiting for user-owned duty exit.",
             _ => $"Duty Support duty {dutyName} completed; waiting for duty exit.",
         };
@@ -740,7 +730,7 @@ public sealed class DadDutySupportExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Duty Support duty {dutyName} completed; Dad FrenRider-mode run done without sending a FrenRider disable command.",
+            DadCombatRotationMode.UseFrenRider => $"Duty Support duty {dutyName} completed and stabilized; Dad FrenRider-mode run done without sending a FrenRider disable command.",
             DadCombatRotationMode.ForceCommands => $"Duty Support duty {dutyName} completed; Dad ADS run done.",
             DadCombatRotationMode.DoNothing => $"Duty Support duty {dutyName} completed; Dad queue-only run done.",
             _ => $"Duty Support duty {dutyName} completed; Dad run done.",
@@ -772,7 +762,7 @@ public sealed class DadDutySupportExecutor(
         DadPlannedModuleExecution module,
         IReadOnlyList<DadParticipantSnapshot> participants,
         DadCombatRotationMode mode,
-        out DadDutySupportResolvedContent? content)
+        out DadNpcDutyResolvedContent? content)
     {
         var blockers = new List<DadModuleBlockerDto>();
         content = queueService.Resolve(plan.Request.DutySupport, out var resolveBlocker);
@@ -841,9 +831,451 @@ public sealed class DadDutySupportExecutor(
 }
 
 public sealed class DadTrustExecutor(
-    DadModuleRegistry moduleRegistry,
-    Func<DadRunPlan, string> queueBlockerFactory)
-    : DadDeferredModuleExecutor(moduleRegistry, "DadTrustExecutor", DadModuleId.Trust, "Trust", queueBlockerFactory);
+    DadNpcDutyQueueService queueService,
+    DadCombatRotationService combatRotationService) : IDadModuleExecutor
+{
+    private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
+
+    private DadModuleExecutionStatusDto status = new();
+    private DadNpcDutyResolvedContent? resolvedContent;
+    private DateTime runStartedAtUtc = DateTime.MinValue;
+    private DateTime postDutyStabilizeUntilUtc = DateTime.MinValue;
+    private bool enteredDuty;
+    private bool dutyCompleted;
+    private DadCombatRotationMode rotationMode = DadCombatRotationMode.UseFrenRider;
+    private string entryAutomationSummary = string.Empty;
+
+    public string ExecutorId => "DadTrustExecutor";
+    public DadModuleId ModuleId => DadModuleId.Trust;
+
+    public DadModuleExecutionStatusDto CanStart(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        var module = ResolveModule(plan);
+        var mode = combatRotationService.CombatRotationMode;
+        var blockers = BuildBlockers(plan, module, participants, mode, out _);
+        var blockedReason = FormatBlockers(blockers);
+        var hardBlocked = blockers.Any(static blocker =>
+            blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
+
+        return new DadModuleExecutionStatusDto
+        {
+            RunId = plan.Request.RequestId,
+            ModuleId = DadModuleId.Trust,
+            DisplayName = module.DisplayName,
+            Phase = DadRunPhase.QueuePreparing,
+            Status = hardBlocked ? DadRunStatus.Failed : DadRunStatus.Running,
+            StepName = ExecutorId,
+            CanStart = !hardBlocked,
+            Deferred = false,
+            RetryAttempt = 0,
+            MaxRetryAttempts = 0,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Summary = hardBlocked
+                ? $"Dad cannot start Trust: {blockedReason}"
+                : BuildCanStartSummary(plan.Request.Trust?.DutyName, mode),
+            FailureReason = hardBlocked ? blockedReason : string.Empty,
+            BlockedReason = blockedReason,
+            Blockers = blockers,
+        };
+    }
+
+    public DadRunStepResultDto Start(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        var module = ResolveModule(plan);
+        rotationMode = combatRotationService.CombatRotationMode;
+        var blockers = BuildBlockers(plan, module, participants, rotationMode, out resolvedContent);
+        var blockedReason = FormatBlockers(blockers);
+        var hardBlocked = blockers.Any(static blocker =>
+            blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
+        var now = DateTime.UtcNow;
+        ResetRuntimeState(now);
+
+        status = new DadModuleExecutionStatusDto
+        {
+            RunId = plan.Request.RequestId,
+            ModuleId = DadModuleId.Trust,
+            DisplayName = module.DisplayName,
+            Phase = DadRunPhase.QueuePreparing,
+            Status = hardBlocked ? DadRunStatus.Failed : DadRunStatus.Running,
+            StepName = ExecutorId,
+            IsActive = !hardBlocked,
+            CanStart = !hardBlocked,
+            Deferred = false,
+            RetryAttempt = 0,
+            MaxRetryAttempts = 0,
+            StartedAtUtc = now,
+            UpdatedAtUtc = now,
+            CompletedAtUtc = hardBlocked ? now : null,
+            Summary = hardBlocked
+                ? $"Dad cannot start Trust: {blockedReason}"
+                : BuildStartSummary(resolvedContent?.DutyName),
+            FailureReason = hardBlocked ? blockedReason : string.Empty,
+            BlockedReason = blockedReason,
+            Blockers = blockers,
+        };
+
+        return hardBlocked ? BuildStatusStep(status) : Update();
+    }
+
+    public DadRunStepResultDto Update()
+    {
+        if (status.Status is DadRunStatus.Cancelled or DadRunStatus.Completed or DadRunStatus.Failed)
+            return BuildStatusStep(status);
+
+        if (resolvedContent == null)
+        {
+            Fail("Trust content was not resolved.");
+            return BuildStatusStep(status);
+        }
+
+        var now = DateTime.UtcNow;
+        if (postDutyStabilizeUntilUtc != DateTime.MinValue)
+            return UpdatePostDutyStabilizing(now);
+
+        if (enteredDuty && HasExitedRequestedDuty())
+        {
+            if (!dutyCompleted)
+            {
+                Fail($"Trust duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
+                return BuildStatusStep(status, DadParticipantState.Failed);
+            }
+
+            return BeginOrUpdatePostDutyStabilizing(now);
+        }
+
+        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
+            dutyCompleted = true;
+
+        if (dutyCompleted)
+            return UpdateDutyCompletionWaitForExit();
+
+        var pulse = queueService.Pulse(status.RunId, resolvedContent);
+        var enteredDutyThisPulse = pulse.Kind == DadNpcDutyQueuePulseKind.EnteredDuty;
+        if (enteredDutyThisPulse)
+            enteredDuty = true;
+
+        ApplyPulse(pulse);
+        if (pulse.Status == DadRunStatus.Failed)
+            return BuildStatusStep(status, pulse.ParticipantState);
+
+        if (enteredDutyThisPulse)
+            ApplyEntryObservationSummary();
+
+        if (enteredDuty)
+        {
+            SetActiveStatus(
+                DadRunPhase.InDutyOrTask,
+                BuildInDutySummary());
+            return BuildStatusStep(status, DadParticipantState.Running);
+        }
+
+        status.Summary = BuildPreDutySummary(status.Summary);
+
+        return BuildStatusStep(status, pulse.ParticipantState);
+    }
+
+    public DadRunStepResultDto Cancel(string reason)
+    {
+        var pulse = queueService.Cancel(status.RunId, DadNpcDutyQueueMode.Trust, reason);
+        ApplyPulse(pulse);
+        status.Summary = string.IsNullOrWhiteSpace(reason)
+            ? "Trust executor cancelled. Dad does not send AutoDuty or FrenRider stop commands; clear any remaining game-side queue or duty state manually if needed."
+            : reason;
+        status.FailureReason = pulse.FailureReason;
+        status.CompletedAtUtc = DateTime.UtcNow;
+        ClearRuntimeState();
+        return BuildStatusStep(status, DadParticipantState.Cancelled);
+    }
+
+    public DadModuleExecutionStatusDto GetStatus()
+        => status.Clone();
+
+    private void ApplyPulse(DadNpcDutyQueuePulse pulse)
+    {
+        status.Phase = pulse.Phase;
+        status.Status = pulse.Status;
+        status.IsActive = pulse.IsActive;
+        status.CanStart = pulse.Status != DadRunStatus.Failed;
+        status.Deferred = false;
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = pulse.IsActive ? null : status.UpdatedAtUtc;
+        status.Summary = pulse.Summary;
+        status.FailureReason = pulse.FailureReason;
+        status.BlockedReason = pulse.BlockedReason;
+        status.Blockers = pulse.Blockers.Select(static blocker => blocker.Clone()).ToList();
+    }
+
+    private void Fail(string reason)
+    {
+        status.Phase = DadRunPhase.Finalizing;
+        status.Status = DadRunStatus.Failed;
+        status.IsActive = false;
+        status.CanStart = false;
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = status.UpdatedAtUtc;
+        status.Summary = reason;
+        status.FailureReason = reason;
+        status.BlockedReason = reason;
+        status.Blockers =
+        [
+            BuildBlocker("RuntimeReadiness", reason, DadModuleBlockerSeverity.Failed),
+        ];
+    }
+
+    private DadRunStepResultDto UpdateDutyCompletionWaitForExit()
+    {
+        if (HasExitedRequestedDuty())
+            return BeginOrUpdatePostDutyStabilizing(DateTime.UtcNow);
+
+        SetActiveStatus(
+            DadRunPhase.InDutyOrTask,
+            BuildDutyCompleteWaitingForExitSummary());
+        return BuildStatusStep(status, DadParticipantState.Running);
+    }
+
+    private DadRunStepResultDto BeginOrUpdatePostDutyStabilizing(DateTime now)
+    {
+        if (postDutyStabilizeUntilUtc == DateTime.MinValue)
+            postDutyStabilizeUntilUtc = now + PostDutyStabilizeDuration;
+
+        return UpdatePostDutyStabilizing(now);
+    }
+
+    private DadRunStepResultDto UpdatePostDutyStabilizing(DateTime now)
+    {
+        if (postDutyStabilizeUntilUtc == DateTime.MinValue)
+            postDutyStabilizeUntilUtc = now + PostDutyStabilizeDuration;
+
+        if (now < postDutyStabilizeUntilUtc)
+        {
+            var remaining = Math.Max(0, (postDutyStabilizeUntilUtc - now).TotalSeconds);
+            SetActiveStatus(
+                DadRunPhase.PostRunStabilizing,
+                $"Post-duty stabilizing ({remaining:F0}s).");
+            return BuildStatusStep(status, DadParticipantState.Completed);
+        }
+
+        status.Phase = DadRunPhase.Finalizing;
+        status.Status = DadRunStatus.Completed;
+        status.IsActive = false;
+        status.CanStart = true;
+        status.UpdatedAtUtc = now;
+        status.CompletedAtUtc = now;
+        status.Summary = BuildCompletedSummary();
+        status.FailureReason = string.Empty;
+        status.BlockedReason = string.Empty;
+        status.Blockers = [];
+        ClearRuntimeState();
+        return BuildStatusStep(status, DadParticipantState.Completed);
+    }
+
+    private bool HasExitedRequestedDuty()
+        => resolvedContent != null &&
+           enteredDuty &&
+           !queueService.IsInRequestedDuty(resolvedContent) &&
+           !queueService.IsQueued() &&
+           !Plugin.Condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BoundByDuty];
+
+    private void SetActiveStatus(
+        DadRunPhase phase,
+        string summary,
+        string blockedReason = "",
+        List<DadModuleBlockerDto>? blockers = null)
+    {
+        status.Phase = phase;
+        status.Status = DadRunStatus.Running;
+        status.IsActive = true;
+        status.CanStart = true;
+        status.Deferred = false;
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = null;
+        status.Summary = summary;
+        status.FailureReason = string.Empty;
+        status.BlockedReason = blockedReason;
+        status.Blockers = blockers ?? [];
+    }
+
+    private void ApplyEntryObservationSummary()
+    {
+        entryAutomationSummary = rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => "Use FrenRider mode already requested FrenRider before queue; Dad sent no Trust entry command.",
+            DadCombatRotationMode.DoNothing => "Do Nothing mode selected; Dad sent no FrenRider, ADS, or rotation command after Trust entry.",
+            DadCombatRotationMode.ForceCommands => "Force Commands mode is not guarded for Trust; Dad sent no entry command.",
+            _ => $"Unknown combat rotation mode {rotationMode}; Dad sent no Trust entry command.",
+        };
+    }
+
+    private void ResetRuntimeState(DateTime now)
+    {
+        runStartedAtUtc = now;
+        postDutyStabilizeUntilUtc = DateTime.MinValue;
+        enteredDuty = false;
+        dutyCompleted = false;
+        entryAutomationSummary = string.Empty;
+    }
+
+    private void ClearRuntimeState()
+    {
+        runStartedAtUtc = DateTime.MinValue;
+        postDutyStabilizeUntilUtc = DateTime.MinValue;
+        enteredDuty = false;
+        dutyCompleted = false;
+        entryAutomationSummary = string.Empty;
+    }
+
+    private static DadPlannedModuleExecution ResolveModule(DadRunPlan plan)
+        => plan.Modules.FirstOrDefault(module => module.ModuleId == DadModuleId.Trust)
+           ?? new DadPlannedModuleExecution
+           {
+               ModuleId = DadModuleId.Trust,
+               DisplayName = "Trust",
+               ExpectedPartySize = 1,
+           };
+
+    private static string BuildCanStartSummary(string? dutyName, DadCombatRotationMode mode)
+        => mode switch
+        {
+            DadCombatRotationMode.UseFrenRider => $"Dad can start native Trust queue for {dutyName}; Dad will send /fr on before queue, then observe while FrenRider owns duty behavior and exit.",
+            DadCombatRotationMode.DoNothing => $"Dad can start native Trust queue for {dutyName}; no external automation commands will be sent.",
+            _ => $"Dad can start native Trust queue for {dutyName}.",
+        };
+
+    private string BuildStartSummary(string? dutyName)
+        => rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: /fr on requested before queue; queueing native Trust for {dutyName}.",
+            DadCombatRotationMode.DoNothing => $"Do Nothing mode: starting native Trust queue for {dutyName}.",
+            _ => $"Starting native Trust queue for {dutyName}.",
+        };
+
+    private string BuildPreDutySummary(string summary)
+    {
+        if (string.IsNullOrWhiteSpace(summary))
+            summary = $"Waiting to start native Trust queue for {resolvedContent?.DutyName ?? "requested duty"}.";
+
+        return rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => summary.StartsWith("Use FrenRider mode:", StringComparison.OrdinalIgnoreCase)
+                ? summary
+                : $"Use FrenRider mode: queueing; {summary}",
+            DadCombatRotationMode.DoNothing => summary.StartsWith("Do Nothing mode:", StringComparison.OrdinalIgnoreCase)
+                ? summary
+                : $"Do Nothing mode: {summary}",
+            _ => summary,
+        };
+    }
+
+    private string BuildInDutySummary()
+    {
+        var dutyName = resolvedContent?.DutyName ?? "requested duty";
+        return rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => string.IsNullOrWhiteSpace(entryAutomationSummary)
+                ? $"Use FrenRider mode: in Trust duty {dutyName}; Dad is observing while FrenRider owns combat, movement, and exit."
+                : $"{entryAutomationSummary} In Trust duty {dutyName}; Dad is observing while FrenRider owns combat, movement, and exit.",
+            DadCombatRotationMode.DoNothing => $"Do Nothing mode: Dad queued Trust duty {dutyName} and is observing completion/exit; user owns combat and leave.",
+            _ => $"Dad is observing Trust duty {dutyName}.",
+        };
+    }
+
+    private string BuildDutyCompleteWaitingForExitSummary()
+    {
+        var dutyName = resolvedContent?.DutyName ?? "requested duty";
+        return rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => $"Trust duty {dutyName} completed; waiting for FrenRider or user to leave. Dad will keep observing and will not send a FrenRider disable command.",
+            DadCombatRotationMode.DoNothing => $"Trust duty {dutyName} completed; waiting for user-owned duty exit.",
+            _ => $"Trust duty {dutyName} completed; waiting for duty exit.",
+        };
+    }
+
+    private string BuildCompletedSummary()
+    {
+        var dutyName = resolvedContent?.DutyName ?? "requested duty";
+        return rotationMode switch
+        {
+            DadCombatRotationMode.UseFrenRider => $"Trust duty {dutyName} completed and stabilized; Dad FrenRider-mode run done without sending a FrenRider disable command.",
+            DadCombatRotationMode.DoNothing => $"Trust duty {dutyName} completed; Dad queue-only run done.",
+            _ => $"Trust duty {dutyName} completed; Dad run done.",
+        };
+    }
+
+    private List<DadModuleBlockerDto> BuildBlockers(
+        DadRunPlan plan,
+        DadPlannedModuleExecution module,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        DadCombatRotationMode mode,
+        out DadNpcDutyResolvedContent? content)
+    {
+        var blockers = new List<DadModuleBlockerDto>();
+        content = queueService.Resolve(plan.Request.Trust, out var resolveBlocker);
+        if (!string.IsNullOrWhiteSpace(resolveBlocker))
+            blockers.Add(BuildBlocker("DutySelector", resolveBlocker, DadModuleBlockerSeverity.Blocked));
+
+        if (participants.Count < Math.Max(1, module.ExpectedPartySize))
+            blockers.Add(BuildBlocker("Participants", $"Need {Math.Max(1, module.ExpectedPartySize)} participant(s), have {participants.Count}.", DadModuleBlockerSeverity.Failed));
+
+        if (module.ExpectedPartySize != 1)
+            blockers.Add(BuildBlocker("Participants", "Native Trust executor only supports one local participant.", DadModuleBlockerSeverity.Blocked));
+
+        if (!queueService.CanSelectTrustPartyForLocalPlayer(out var trustPartyBlocker))
+            blockers.Add(BuildBlocker("TrustParty", trustPartyBlocker, DadModuleBlockerSeverity.Blocked));
+
+        if (mode == DadCombatRotationMode.UseFrenRider && !combatRotationService.IsFrenRiderLoaded())
+            blockers.Add(BuildBlocker("FrenRider", combatRotationService.MissingFrenRiderBlocker, DadModuleBlockerSeverity.Blocked));
+
+        if (mode == DadCombatRotationMode.ForceCommands)
+            blockers.Add(BuildBlocker("CombatRotation", "Force Commands mode is only guarded for Duty Support; select Use FrenRider or Do Nothing before starting Trust.", DadModuleBlockerSeverity.Blocked));
+
+        return blockers
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker.Summary))
+            .GroupBy(static blocker => $"{blocker.Capability}|{blocker.Summary}", StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .ToList();
+    }
+
+    private static DadModuleBlockerDto BuildBlocker(
+        string capability,
+        string summary,
+        DadModuleBlockerSeverity severity)
+        => new()
+        {
+            ModuleId = DadModuleId.Trust,
+            Capability = capability,
+            Severity = severity,
+            Summary = summary,
+        };
+
+    private static DadRunStepResultDto BuildStatusStep(DadModuleExecutionStatusDto status, DadParticipantState? participantState = null)
+        => new()
+        {
+            RunId = status.RunId,
+            ModuleId = DadModuleId.Trust,
+            StepName = "Trust",
+            ParticipantState = participantState
+                               ?? (status.Status switch
+                               {
+                                   DadRunStatus.Cancelled => DadParticipantState.Cancelled,
+                                   DadRunStatus.Failed => DadParticipantState.Failed,
+                                   DadRunStatus.Completed => DadParticipantState.Completed,
+                                   _ => DadParticipantState.QueuePending,
+                               }),
+            Success = status.Status is DadRunStatus.Running or DadRunStatus.Completed,
+            Deferred = false,
+            Summary = status.Summary,
+            FailureReason = status.FailureReason,
+            BlockedReason = status.BlockedReason,
+            ExecutorStatus = status.Clone(),
+            ModuleBlockers = status.Blockers.Select(static blocker => blocker.Clone()).ToList(),
+            ReportedAtUtc = DateTime.UtcNow,
+        };
+
+    private static string FormatBlockers(IReadOnlyList<DadModuleBlockerDto> blockers)
+        => blockers.Count == 0
+            ? string.Empty
+            : string.Join(" | ", blockers.Select(static blocker => $"{blocker.Capability}: {blocker.Summary}"));
+}
 
 public sealed class DadDailyMsqExecutor(
     DadModuleRegistry moduleRegistry,

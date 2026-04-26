@@ -21,31 +21,21 @@ public sealed class DadQueueExecutionService
     public DadQueueExecutionService(
         DadModuleRegistry moduleRegistry,
         DadDutyQueueService dutyQueueService,
-        DadExternalPluginCapabilityService externalPluginCapabilityService,
-        DadDutySupportQueueService dutySupportQueueService,
+        DadLocalDutyQueueService localDutyQueueService,
+        DadNpcDutyQueueService npcDutyQueueService,
         DadDutySupportAdsService dutySupportAdsService,
         DadCombatRotationService combatRotationService)
     {
         this.combatRotationService = combatRotationService;
-        localDutyExecutor = new DadLocalDutyExecutor(
-            moduleRegistry,
-            plan => plan.Request.Dungeon == null
-                ? moduleRegistry.GetCapability(DadModuleId.Duty).Notes
-                : dutyQueueService.DescribeDungeonExecutionDeferral(plan.Request.Dungeon));
-        premadeDutyExecutor = new DadPremadeDutyExecutor(
-            moduleRegistry,
-            _ => externalPluginCapabilityService.DescribeDadLanPartyModule());
+        localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
+        premadeDutyExecutor = new DadPremadeDutyExecutor(localDutyQueueService, combatRotationService);
         msqExecutor = new DadMsqExecutor(
             moduleRegistry,
             _ => moduleRegistry.GetCapability(DadModuleId.Msq).Blockers
                 .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
                  ?? moduleRegistry.GetCapability(DadModuleId.Msq).Notes);
-        dutySupportExecutor = new DadDutySupportExecutor(dutySupportQueueService, dutySupportAdsService, combatRotationService);
-        trustExecutor = new DadTrustExecutor(
-            moduleRegistry,
-            _ => moduleRegistry.GetCapability(DadModuleId.Trust).Blockers
-                .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
-                 ?? moduleRegistry.GetCapability(DadModuleId.Trust).Notes);
+        dutySupportExecutor = new DadDutySupportExecutor(npcDutyQueueService, dutySupportAdsService, combatRotationService);
+        trustExecutor = new DadTrustExecutor(npcDutyQueueService, combatRotationService);
         dailyMsqExecutor = new DadDailyMsqExecutor(
             moduleRegistry,
             _ => dutyQueueService.DescribeDailyMsqExecutionDeferral());
@@ -102,6 +92,7 @@ public sealed class DadQueueExecutionService
             .Select(index => new DadParticipantSnapshot
             {
                 IsLocalClient = index == 0,
+                IsAuthority = index == 0,
                 IsAvailable = true,
                 IsEligibleForRun = true,
                 PostArReady = true,

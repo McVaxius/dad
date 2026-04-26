@@ -13,6 +13,7 @@ public sealed class DadPlannerDutyOption
     public bool FixedItemLevelSync { get; set; }
     public bool AllowUndersized { get; set; }
     public bool SupportsDutySupport { get; set; }
+    public bool SupportsTrust { get; set; }
     public bool IsHighEndDuty { get; set; }
     public string SearchText { get; set; } = string.Empty;
     public string SelectionLabel { get; set; } = string.Empty;

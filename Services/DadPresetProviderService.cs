@@ -28,16 +28,16 @@ public sealed class DadPresetProviderService
             ActivityMode = DadPlannerActivityMode.Msq,
             ModuleId = DadModuleId.Msq,
             DisplayName = "MSQ",
-            Summary = "Main scenario roulette/preset lane owned by Dad.",
-            Maturity = DadLaneMaturity.PreviewOnly,
-            MaturityLabel = "Preview",
+            Summary = "Main scenario roulette/preset lane with Phase 5 readiness/status surfaced; live queue start remains deferred.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Policy deferred",
             AccentColorHex = "#F59E0B",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
             DefaultTransportOwner = DadTransportOwner.LanParty,
             DefaultQueueAuthority = DadQueueAuthority.Leader,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
-            NextAction = "Assemble full party, then enable guarded MSQ queue executor.",
+            NextAction = "Keep live MSQ queue deferred until preset/roulette queue policy is proven.",
         },
         new()
         {
@@ -60,33 +60,33 @@ public sealed class DadPresetProviderService
             ActivityMode = DadPlannerActivityMode.Trust,
             ModuleId = DadModuleId.Trust,
             DisplayName = "Trust",
-            Summary = "Solo Trust lane with selected Duty Finder content.",
-            Maturity = DadLaneMaturity.MissingContract,
-            MaturityLabel = "Needs duty selector",
-            AccentColorHex = "#EF4444",
+            Summary = "Solo Trust lane with selected native Trust content.",
+            Maturity = DadLaneMaturity.LocalTestable,
+            MaturityLabel = "Local test",
+            AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select Duty Finder duty, then enable guarded Trust start.",
+            NextAction = "Select Trust-capable duty, then start guarded native Trust queue.",
         },
         new()
         {
             ActivityMode = DadPlannerActivityMode.PremadeDuty,
             ModuleId = DadModuleId.PremadeDuty,
             DisplayName = "Premade Duty",
-            Summary = "Full-party Duty Finder lane with Server Dad party authority.",
-            Maturity = DadLaneMaturity.MissingContract,
-            MaturityLabel = "Needs duty selector",
-            AccentColorHex = "#EF4444",
+            Summary = "Dad-owned full-party regular Duty Finder lane with guarded synced/unsynced queue start.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Guarded queue",
+            AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
             DefaultTransportOwner = DadTransportOwner.LanParty,
             DefaultQueueAuthority = DadQueueAuthority.Leader,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
             RequiresDutySelector = true,
-            NextAction = "Select duty, verify party, then enable premade queue start.",
+            NextAction = "Manual-test full premade synced/unsynced starts, blockers, cancel, duty exit, and DTR/status text.",
         },
         new()
         {
@@ -158,16 +158,16 @@ public sealed class DadPresetProviderService
             ActivityMode = DadPlannerActivityMode.LocalDuty,
             ModuleId = DadModuleId.Duty,
             DisplayName = "Local Duty / Unsync",
-            Summary = "One-character local Duty Finder or unsynced lane.",
-            Maturity = DadLaneMaturity.LocalTestable,
-            MaturityLabel = "Local test",
+            Summary = "One-character Dad-owned regular Duty Finder lane with synced or unrestricted/unsynced queue mode.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Live queue",
             AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select duty, then enable guarded local queue executor.",
+            NextAction = "Manual-test synced and unsynced starts, cancellation, duty exit, and DTR/status text.",
         },
         new()
         {
@@ -1175,6 +1175,7 @@ public sealed class DadPresetProviderService
                 selectedDuty.FixedItemLevelSync,
                 selectedDuty.AllowUndersized,
                 selectedDuty.SupportsDutySupport,
+                selectedDuty.SupportsTrust,
                 selectedDuty.IsHighEndDuty,
             };
 
@@ -1230,9 +1231,12 @@ public sealed class DadPresetProviderService
         if (MatchesPlannerLaneDuty(selectedDuty, lane.ActivityMode))
             return string.Empty;
 
-        return lane.ActivityMode == DadPlannerActivityMode.DutySupport
-            ? $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Duty Support content."
-            : $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not valid for {lane.DisplayName}.";
+        return lane.ActivityMode switch
+        {
+            DadPlannerActivityMode.DutySupport => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Duty Support content.",
+            DadPlannerActivityMode.Trust => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Trust content.",
+            _ => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not valid for {lane.DisplayName}.",
+        };
     }
 
     private static int ResolveRequestedPartySize(
@@ -1253,8 +1257,41 @@ public sealed class DadPresetProviderService
         => activityMode switch
         {
             DadPlannerActivityMode.DutySupport => option.SupportsDutySupport,
+            DadPlannerActivityMode.Trust => option.SupportsTrust,
             _ => true,
         };
+
+    private static bool SupportsTrust(ContentFinderCondition condition, IReadOnlyList<DawnContent> trustDawnRows)
+    {
+        if (condition.TerritoryType.ValueNullable?.ExVersion.ValueNullable == null)
+            return false;
+
+        var trustOrdinal = trustDawnRows
+            .Select((row, index) => new { row, index })
+            .FirstOrDefault(item => item.row.Content.ValueNullable?.RowId == condition.RowId)
+            ?.index ?? -1;
+
+        return TryGetTrustIndex(
+            trustOrdinal,
+            condition.TerritoryType.Value.ExVersion.Value.RowId,
+            out _);
+    }
+
+    private static bool TryGetTrustIndex(int ordinal, uint exVersion, out int trustIndex)
+    {
+        trustIndex = ordinal switch
+        {
+            < 0 => -1,
+            _ => exVersion switch
+            {
+                3 => ordinal,
+                4 => ordinal - 11,
+                5 => ordinal - 22,
+                _ => -1,
+            },
+        };
+        return trustIndex >= 0;
+    }
 
     private static string BuildDutyMetadataSummary(
         string shortCode,
@@ -1266,6 +1303,7 @@ public sealed class DadPresetProviderService
         bool fixedItemLevelSync,
         bool allowUndersized,
         bool supportsDutySupport,
+        bool supportsTrust,
         bool isHighEndDuty)
     {
         var parts = new List<string>();
@@ -1292,6 +1330,9 @@ public sealed class DadPresetProviderService
         if (supportsDutySupport)
             parts.Add("duty support");
 
+        if (supportsTrust)
+            parts.Add("trust");
+
         if (isHighEndDuty)
             parts.Add("high-end");
 
@@ -1310,6 +1351,10 @@ public sealed class DadPresetProviderService
             .Select(static row => row.Content.RowId)
             .ToHashSet();
 
+        var trustDawnRows = dawnContentSheet
+            .Where(static row => row.RowId != 0 && row.Content.RowId != 0 && row.Unknown13)
+            .ToList();
+
         return contentFinderSheet
             .Where(static condition => condition.RowId != 0
                                        && condition.IsInDutyFinder
@@ -1326,6 +1371,8 @@ public sealed class DadPresetProviderService
                     ? condition.QueueMaxPlayers
                     : condition.ContentMemberType.ValueNullable?.MembersPerParty ?? (byte)1;
                 var queueSizeInt = Math.Max(1, (int)queueSize);
+                var supportsDutySupport = dutySupportContentIds.Contains(condition.RowId);
+                var supportsTrust = SupportsTrust(condition, trustDawnRows);
                 return new DadPlannerDutyOption
                 {
                     ContentFinderConditionId = condition.RowId,
@@ -1338,7 +1385,8 @@ public sealed class DadPresetProviderService
                     ItemLevelSync = condition.ItemLevelSync,
                     FixedItemLevelSync = condition.FixedItemLevelSync,
                     AllowUndersized = condition.AllowUndersized,
-                    SupportsDutySupport = dutySupportContentIds.Contains(condition.RowId),
+                    SupportsDutySupport = supportsDutySupport,
+                    SupportsTrust = supportsTrust,
                     IsHighEndDuty = condition.HighEndDuty,
                     SearchText = string.Join(" ", new[]
                     {
@@ -1359,7 +1407,8 @@ public sealed class DadPresetProviderService
                         condition.ItemLevelSync,
                         condition.FixedItemLevelSync,
                         condition.AllowUndersized,
-                        dutySupportContentIds.Contains(condition.RowId),
+                        supportsDutySupport,
+                        supportsTrust,
                         condition.HighEndDuty),
                 };
             })

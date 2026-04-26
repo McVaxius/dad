@@ -10,11 +10,11 @@ public sealed class DadModuleRegistry
     {
         capabilities = new Dictionary<DadModuleId, DadModuleCapabilitySnapshot>
         {
-            [DadModuleId.Duty] = BuildCapability(DadModuleId.Duty, "Duty", 1, false, true, true, "Duty planning and lane selection ready.", "Guarded Duty Finder queue start is not enabled yet."),
-            [DadModuleId.Msq] = BuildCapability(DadModuleId.Msq, "MSQ", 4, true, false, true, "MSQ lane planning ready.", "MSQ queue executor is not enabled yet."),
+            [DadModuleId.Duty] = BuildCapability(DadModuleId.Duty, "Duty", 1, false, true, true, "Local Duty / Unsync native Duty Finder queue enabled with guarded content validation, queue entry, completion, exit, and stabilization tracking.", string.Empty, canStartQueue: true, canTrackCompletion: true, canExecuteLiveQueue: true),
+            [DadModuleId.Msq] = BuildCapability(DadModuleId.Msq, "MSQ", 4, true, false, true, "MSQ Phase 5 readiness/status prepared; live queue start remains deferred pending preset/roulette policy.", "MSQ live queue start remains deferred until preset/roulette queue policy is proven."),
             [DadModuleId.DutySupport] = BuildCapability(DadModuleId.DutySupport, "Duty Support", 1, false, true, false, "Duty Support native queue enabled with selectable FrenRider, ADS force-command, or user-owned in-duty mode.", string.Empty, canStartQueue: true, canTrackCompletion: true, canExecuteLiveQueue: true),
-            [DadModuleId.Trust] = BuildCapability(DadModuleId.Trust, "Trust", 1, false, true, false, "Trust lane planning ready.", "Trust queue executor is not enabled yet."),
-            [DadModuleId.PremadeDuty] = BuildCapability(DadModuleId.PremadeDuty, "Premade Duty", 4, true, false, true, "Premade duty planning ready.", "Premade duty queue executor is not enabled yet."),
+            [DadModuleId.Trust] = BuildCapability(DadModuleId.Trust, "Trust", 1, false, true, false, "Trust native queue enabled with conservative DawnContent validation and FrenRider/user-owned in-duty observation.", string.Empty, canStartQueue: true, canTrackCompletion: true, canExecuteLiveQueue: true),
+            [DadModuleId.PremadeDuty] = BuildCapability(DadModuleId.PremadeDuty, "Premade Duty", 4, true, false, true, "Premade Duty guarded regular Duty Finder queue enabled for Dad-verified full parties; live party roster validation remains manual follow-up.", string.Empty, canStartQueue: true, canTrackCompletion: true, canExecuteLiveQueue: true),
             [DadModuleId.DailyMsq] = BuildCapability(DadModuleId.DailyMsq, "Daily MSQ", 4, true, false, true, "Premade Daily MSQ orchestration ready.", "Premade Daily MSQ queue start is not enabled yet."),
             [DadModuleId.Blunderville] = BuildCapability(DadModuleId.Blunderville, "Blunderville", 1, false, true, false, "Blunderville lane planning ready.", "Blunderville executor is not enabled yet."),
             [DadModuleId.Mogtome] = BuildCapability(DadModuleId.Mogtome, "MOGTOME", 4, true, false, true, "MOGTOME helper lane planning ready.", "MOGTOME helper queue handoff is not enabled yet."),
@@ -121,7 +121,7 @@ public sealed class DadModuleRegistry
             CanExecuteLiveQueue = canExecuteLiveQueue,
             CurrentStatus = currentStatus,
             Notes = canExecuteLiveQueue
-                ? "Dad owns planning, authority, routing, and native live execution for this guarded local lane."
+                ? "Dad owns planning, authority, routing, and native live execution for this guarded lane."
                 : "Dad owns planning, authority, and routing for this lane. Guarded live execution remains deferred until the lane executor is enabled.",
             Blockers = blockers,
         };

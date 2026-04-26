@@ -84,6 +84,7 @@ public sealed class MainWindow : Window, IDisposable
         ApplyPendingPositionChange();
 
         var configuration = plugin.Configuration;
+        var debugUi = configuration.DebugUiEnabled;
         var profile = plugin.ConfigManager.GetActiveConfig();
         var runState = plugin.GetVisibleRunState();
         var localRun = runState.LocalRun;
@@ -142,9 +143,12 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.SmallButton("Settings"))
             plugin.ToggleConfigUi();
 
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Status to chat"))
-            plugin.PrintStatusReport();
+        if (debugUi)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Status to chat"))
+                plugin.PrintStatusReport();
+        }
 
         ImGui.SameLine();
         if (ImGui.SmallButton(plugin.KrangleService.Enabled ? "Un-Krangle" : "Krangle Names"))
@@ -162,28 +166,35 @@ public sealed class MainWindow : Window, IDisposable
         DrawActiveRunBanner(runState);
         ImGui.Spacing();
 
-        DrawDemoButton("Run local demo", canStartLocalDemo, plugin.StartLocalDemoRunFromShell);
+        if (debugUi)
+        {
+            DrawDemoButton("Run local demo", canStartLocalDemo, plugin.StartLocalDemoRunFromShell);
 
-        ImGui.SameLine();
-        DrawDemoButton("Run server demo", canStartRemoteDemo, plugin.StartServerDemoRunFromShell);
+            ImGui.SameLine();
+            DrawDemoButton("Run server demo", canStartRemoteDemo, plugin.StartServerDemoRunFromShell);
 
-        ImGui.SameLine();
-        DrawDemoButton("Run Daily MSQ demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
+            ImGui.SameLine();
+            DrawDemoButton("Run Daily MSQ demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
 
-        ImGui.SameLine();
-        DrawDemoButton("Run commend demo", canStartRemoteDemo, plugin.StartCommendationDemoRunFromShell);
+            ImGui.SameLine();
+            DrawDemoButton("Run commend demo", canStartRemoteDemo, plugin.StartCommendationDemoRunFromShell);
 
-        ImGui.SameLine();
+            ImGui.SameLine();
+        }
+
         ImGui.BeginDisabled(!Plugin.IsBusy(localRun) && !Plugin.IsBusy(authorityRun));
         if (ImGui.SmallButton("Cancel active run"))
             plugin.CancelActiveRunFromShell();
         ImGui.EndDisabled();
 
-        ImGui.TextWrapped(PluginInfo.Summary);
-        DrawStatusRow("Krangle", plugin.KrangleService.BuildStatus(characterPool));
-        DrawStatusRow("Character pool", characterPool.LastSummary);
-        DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
-        DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
+        if (debugUi)
+        {
+            ImGui.TextWrapped(PluginInfo.Summary);
+            DrawStatusRow("Krangle", plugin.KrangleService.BuildStatus(characterPool));
+            DrawStatusRow("Character pool", characterPool.LastSummary);
+            DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
+            DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
+        }
 
         if (ImGui.BeginTabBar("dad-main-tabs"))
         {
@@ -240,6 +251,12 @@ public sealed class MainWindow : Window, IDisposable
         var localRun = runState.LocalRun;
         var authorityRun = runState.AuthorityRun;
         var authorityView = runState.AuthorityView;
+        if (!plugin.Configuration.DebugUiEnabled)
+        {
+            DrawOverviewCompact(runState, profile);
+            return;
+        }
+
         var localParticipant = plugin.PresenceService.CurrentParticipant;
         var activeWarnings = activeRun.Warnings
             .Where(static warning => !string.IsNullOrWhiteSpace(warning))
@@ -326,6 +343,30 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Profile notes", FormatOperatorText(profile.TargetNotes, "(none)"));
     }
 
+    private void DrawOverviewCompact(DadVisibleRunState runState, CharacterConfig profile)
+    {
+        var activeRun = GetActiveRun(runState);
+        DrawSectionHeader("Run Summary", "Current Dad run state.");
+        DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(activeRun));
+        DrawStatusRow("Visible run", activeRun.Status == DadRunStatus.Idle
+            ? "Idle."
+            : $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
+        DrawStatusRow("Status", BuildActiveRunKeyStatus(activeRun));
+
+        if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
+        {
+            var blocker = FormatText(
+                string.IsNullOrWhiteSpace(activeRun.BlockedReason) ? activeRun.FailureReason : activeRun.BlockedReason,
+                activeRun.Summary);
+            DrawStatusRow("Blocker", blocker);
+        }
+
+        DrawDutySupportRuntimeSection(activeRun);
+
+        DrawSectionHeader("Next Action", "Operator-facing next step.");
+        DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile));
+    }
+
     private void DrawMultiplayerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         var localRun = runState.LocalRun;
@@ -342,6 +383,12 @@ public sealed class MainWindow : Window, IDisposable
             .ThenBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var activeRun = GetActiveRun(runState);
+        if (!plugin.Configuration.DebugUiEnabled)
+        {
+            DrawMultiplayerCompact(characterPool, runState, participants, activeRun);
+            return;
+        }
+
         var authorityParticipant = authorityRun.Participants.FirstOrDefault(static participant => participant.IsAuthority)
                                   ?? participants.FirstOrDefault(candidate =>
                                       string.Equals(candidate.WorkerSessionId, authorityRun.AuthorityWorkerSessionId.ToString(), StringComparison.OrdinalIgnoreCase));
@@ -547,12 +594,37 @@ public sealed class MainWindow : Window, IDisposable
         DrawPlaceholderNotice("Placeholder: distributed party verification summary is not implemented yet. Current view uses PartyList/ObjectTable local truth plus worker snapshot party counts only.");
     }
 
+    private void DrawMultiplayerCompact(
+        DadCharacterPool characterPool,
+        DadVisibleRunState runState,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        DadRunResult activeRun)
+    {
+        var readyCount = participants.Count(static participant => participant.IsEligibleForRun);
+        var staleCount = participants.Count(IsParticipantStale);
+        var assignedCount = participants.Count(static participant => !string.IsNullOrWhiteSpace(participant.AssignedSlotId));
+
+        DrawSectionHeader("Multiplayer Summary", "Current authority and participant readiness.");
+        DrawStatusRow("Authority", $"{runState.AuthorityView.StateText} | {runState.AuthorityView.FreshnessText}");
+        DrawStatusRow("Visible run", activeRun.Status == DadRunStatus.Idle
+            ? "Idle."
+            : $"{activeRun.ModuleId} | {DadOperatorPhaseText.FormatPhaseLabel(activeRun)} | {activeRun.Status}");
+        DrawStatusRow("Participants", $"{participants.Count} discovered | {readyCount} eligible | {assignedCount} assigned | {staleCount} stale");
+        DrawStatusRow("Peers", $"{characterPool.PeerTransport.ConnectedPeerCount} connected | {FormatText(characterPool.PeerTransport.Availability, "(unknown)")}");
+
+        if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
+            DrawStatusRow(DadOperatorPhaseText.HasBlockingFailure(activeRun) ? "Blocker" : "Runtime note", activeRun.BlockedReason);
+
+        DrawDutySupportRuntimeSection(activeRun);
+    }
+
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         var plannerOptions = plugin.PlannerOptions;
         var requestPreview = plugin.BuildPlannerRunRequestPreview();
         var plannerPreview = requestPreview.PlannerPreview;
         var plannerLocked = IsPlannerLocked(runState);
+        var debugUi = plugin.Configuration.DebugUiEnabled;
 
         if (!ImGui.BeginTable(
                 "dad-planner-layout-v2",
@@ -560,23 +632,24 @@ public sealed class MainWindow : Window, IDisposable
                 ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoSavedSettings))
             return;
 
-        ImGui.TableSetupColumn("Lanes", ImGuiTableColumnFlags.WidthFixed, 320f);
+        ImGui.TableSetupColumn("Lanes", ImGuiTableColumnFlags.WidthFixed, debugUi ? 320f : 240f);
         ImGui.TableSetupColumn("Plan", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
         ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerLanePanel(characterPool, plannerOptions, requestPreview, runState);
+        DrawPlannerLanePanel(characterPool, plannerOptions, requestPreview, runState, debugUi);
         ImGui.EndDisabled();
 
         ImGui.TableNextColumn();
         if (plannerLocked)
             DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
 
-        DrawPlannerLaneSummarySection(plannerPreview, requestPreview, runState);
+        DrawPlannerLaneSummarySection(plannerPreview, requestPreview, runState, debugUi);
         DrawPlannerActionStrip(requestPreview, runState, plannerLocked);
-        DrawPlannerConfigSection(characterPool, plannerOptions, plannerPreview, plannerLocked);
-        DrawPlannerRosterSummarySection(plannerPreview, runState);
-        DrawPlannerDetailsSection(plannerOptions, plannerPreview, requestPreview, runState, plannerLocked);
+        DrawPlannerConfigSection(characterPool, plannerOptions, plannerPreview, plannerLocked, debugUi);
+        DrawPlannerRosterSummarySection(plannerPreview, runState, debugUi);
+        if (debugUi)
+            DrawPlannerDetailsSection(plannerOptions, plannerPreview, requestPreview, runState, plannerLocked);
         ImGui.EndTable();
     }
 
@@ -584,7 +657,8 @@ public sealed class MainWindow : Window, IDisposable
         DadCharacterPool characterPool,
         DadPresetPlannerOptions plannerOptions,
         DadPlannerRunRequestPreview requestPreview,
-        DadVisibleRunState runState)
+        DadVisibleRunState runState,
+        bool debugUi)
     {
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, 0.03f));
         if (!ImGui.BeginChild("dad-planner-lane-rail", new Vector2(0f, 0f), true))
@@ -595,7 +669,8 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.TextUnformatted("Planner lanes");
-        ImGui.TextDisabled("Operator lane summary cards");
+        if (debugUi)
+            ImGui.TextDisabled("Operator lane summary cards");
         ImGui.Separator();
 
         foreach (var lane in plugin.PresetProviderService.GetPlannerLaneDefinitions())
@@ -607,15 +682,27 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.PushStyleColor(ImGuiCol.Button, accent);
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hovered);
             ImGui.PushStyleColor(ImGuiCol.ButtonActive, active);
-            if (ImGui.Button($"{lane.DisplayName}##dad-lane-{lane.ActivityMode}", new Vector2(-1f, 54f)))
+            if (ImGui.Button($"{lane.DisplayName}##dad-lane-{lane.ActivityMode}", new Vector2(-1f, debugUi ? 54f : 38f)))
                 SelectPlannerLane(plannerOptions, lane);
             ImGui.PopStyleColor(3);
 
-            DrawCompactStatusRow("Maturity", laneCard.MaturityLabel);
-            DrawCompactStatusRow("Startability", laneCard.StartabilityLabel);
-            DrawCompactStatusRow("Party", laneCard.PartySizeLabel);
-            DrawCompactStatusRow("Blockers", BuildShortBlockerSummary(laneCard.FirstBlockerLabel, laneCard.BlockerCount));
-            DrawCompactStatusRow("Runtime", laneCard.RuntimeLabel);
+            if (debugUi)
+            {
+                DrawCompactStatusRow("Maturity", laneCard.MaturityLabel);
+                DrawCompactStatusRow("Startability", laneCard.StartabilityLabel);
+                DrawCompactStatusRow("Party", laneCard.PartySizeLabel);
+                DrawCompactStatusRow("Blockers", BuildShortBlockerSummary(laneCard.FirstBlockerLabel, laneCard.BlockerCount));
+                DrawCompactStatusRow("Runtime", laneCard.RuntimeLabel);
+            }
+            else
+            {
+                ImGui.TextDisabled(laneCard.MaturityLabel);
+                ImGui.SameLine();
+                ImGui.TextColored(GetStartabilityColor(laneCard.StartabilityLabel, laneCard.BlockerCount), laneCard.StartabilityLabel);
+                DrawCompactStatusRow("Blockers", laneCard.BlockerCount.ToString(CultureInfo.InvariantCulture));
+                DrawCompactStatusRow("Runtime", BuildRuntimeBadge(laneCard.RuntimeLabel));
+            }
+
             ImGui.Spacing();
             ImGui.Separator();
             ImGui.Spacing();
@@ -629,71 +716,82 @@ public sealed class MainWindow : Window, IDisposable
         DadCharacterPool characterPool,
         DadPresetPlannerOptions plannerOptions,
         DadActivityPreset plannerPreview,
-        bool plannerLocked)
+        bool plannerLocked,
+        bool debugUi)
     {
         DrawSectionHeader("Lane Config", "Editable planner inputs plus lane-specific config. Read-only lanes stay explicit.");
         ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerOperatorModeSelector(plannerOptions);
-        ImGui.SameLine();
-        DrawPlannerAccountFilterSelector(characterPool, plannerOptions);
-
-        DrawPlannerTransportOwnerSelector(plannerOptions);
-        ImGui.SameLine();
-        DrawPlannerQueueAuthoritySelector(plannerOptions);
-        ImGui.SameLine();
-        DrawPlannerInviteAuthoritySelector(plannerOptions);
-
-        var connectedOnly = plannerOptions.ConnectedOnly;
-        if (ImGui.Checkbox("Connected only", ref connectedOnly))
+        if (debugUi)
         {
-            plannerOptions.ConnectedOnly = connectedOnly;
-            plugin.SavePlannerOptions();
+            DrawPlannerOperatorModeSelector(plannerOptions);
+            ImGui.SameLine();
+            DrawPlannerAccountFilterSelector(characterPool, plannerOptions);
+
+            DrawPlannerTransportOwnerSelector(plannerOptions);
+            ImGui.SameLine();
+            DrawPlannerQueueAuthoritySelector(plannerOptions);
+            ImGui.SameLine();
+            DrawPlannerInviteAuthoritySelector(plannerOptions);
+
+            var connectedOnly = plannerOptions.ConnectedOnly;
+            if (ImGui.Checkbox("Connected only", ref connectedOnly))
+            {
+                plannerOptions.ConnectedOnly = connectedOnly;
+                plugin.SavePlannerOptions();
+            }
+
+            ImGui.SameLine();
+            var sameDatacenterOnly = plannerOptions.SameDatacenterOnly;
+            if (ImGui.Checkbox("Same datacenter", ref sameDatacenterOnly))
+            {
+                plannerOptions.SameDatacenterOnly = sameDatacenterOnly;
+                plugin.SavePlannerOptions();
+            }
+
+            ImGui.SameLine();
+            var allowStale = plannerOptions.AllowStaleForPlanning;
+            if (ImGui.Checkbox("Allow stale for planning", ref allowStale))
+            {
+                plannerOptions.AllowStaleForPlanning = allowStale;
+                plugin.SavePlannerOptions();
+            }
+
+            ImGui.Spacing();
         }
 
-        ImGui.SameLine();
-        var sameDatacenterOnly = plannerOptions.SameDatacenterOnly;
-        if (ImGui.Checkbox("Same datacenter", ref sameDatacenterOnly))
-        {
-            plannerOptions.SameDatacenterOnly = sameDatacenterOnly;
-            plugin.SavePlannerOptions();
-        }
-
-        ImGui.SameLine();
-        var allowStale = plannerOptions.AllowStaleForPlanning;
-        if (ImGui.Checkbox("Allow stale for planning", ref allowStale))
-        {
-            plannerOptions.AllowStaleForPlanning = allowStale;
-            plugin.SavePlannerOptions();
-        }
-
-        ImGui.Spacing();
-        DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition);
+        DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, debugUi);
         ImGui.EndDisabled();
     }
 
     private void DrawPlannerLaneSummarySection(
         DadActivityPreset plannerPreview,
         DadPlannerRunRequestPreview requestPreview,
-        DadVisibleRunState runState)
+        DadVisibleRunState runState,
+        bool debugUi)
     {
         DrawSectionHeader("Lane Summary", "Selected lane summary, validation state, and current runtime phase.");
         var laneRun = ResolveLaneRuntime(runState, plannerPreview.LaneDefinition);
         var activeRun = GetActiveRun(runState);
         DrawStatusRow("Lane", $"{plannerPreview.LaneDefinition.DisplayName} | {plannerPreview.LaneDefinition.MaturityLabel}");
         DrawStatusRow("Lane summary", plannerPreview.LaneDefinition.Summary);
-        DrawStatusRow("Next action", plannerPreview.LaneDefinition.NextAction);
         DrawStatusRow("Preset", plannerPreview.DisplayName);
-        DrawStatusRow("Operator mode", plannerPreview.OperatorModeLabel);
-        DrawStatusRow("Transport", plugin.PresetProviderService.GetTransportOwnerLabel(plannerPreview.TransportOwner));
-        DrawStatusRow("Queue authority", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerPreview.QueueAuthority));
-        DrawStatusRow("Invite owner", plugin.PresetProviderService.GetInviteAuthorityLabel(plannerPreview.InviteAuthority));
-        DrawStatusRow("Account filter", FormatOperatorText(plannerPreview.AccountFilterSummary, "(none)"));
-        DrawStatusRow("Roster source", plugin.PresetProviderService.GetRosterSourceLabel(plannerPreview.RosterSource));
-        DrawStatusRow("Leader", FormatOperatorText(plannerPreview.LeaderStatusText, "(none)"));
-        DrawStatusRow("Preview scope", plannerPreview.PreviewScope);
         DrawStatusRow("Validation", $"{FormatReadiness(plannerPreview.ValidationState)} | {plannerPreview.ValidationSummary}");
-        DrawStatusRow("Filters", plannerPreview.FilterSummary);
         DrawStatusRow("Summary", FormatOperatorText(plannerPreview.PlannerSummary, "(none)"));
+
+        if (debugUi)
+        {
+            DrawStatusRow("Next action", plannerPreview.LaneDefinition.NextAction);
+            DrawStatusRow("Operator mode", plannerPreview.OperatorModeLabel);
+            DrawStatusRow("Transport", plugin.PresetProviderService.GetTransportOwnerLabel(plannerPreview.TransportOwner));
+            DrawStatusRow("Queue authority", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerPreview.QueueAuthority));
+            DrawStatusRow("Invite owner", plugin.PresetProviderService.GetInviteAuthorityLabel(plannerPreview.InviteAuthority));
+            DrawStatusRow("Account filter", FormatOperatorText(plannerPreview.AccountFilterSummary, "(none)"));
+            DrawStatusRow("Roster source", plugin.PresetProviderService.GetRosterSourceLabel(plannerPreview.RosterSource));
+            DrawStatusRow("Leader", FormatOperatorText(plannerPreview.LeaderStatusText, "(none)"));
+            DrawStatusRow("Preview scope", plannerPreview.PreviewScope);
+            DrawStatusRow("Filters", plannerPreview.FilterSummary);
+        }
+
         if (laneRun.Status != DadRunStatus.Idle)
         {
             DrawStatusRow("Runtime phase", DadOperatorPhaseText.FormatPhaseLabel(laneRun));
@@ -708,7 +806,8 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Runtime phase", "No live runtime for selected lane.");
         }
 
-        DrawStatusRow("Local-only mode", plugin.Configuration.LocalOnlyModeEnabled ? "Enabled" : "Disabled");
+        if (debugUi)
+            DrawStatusRow("Local-only mode", plugin.Configuration.LocalOnlyModeEnabled ? "Enabled" : "Disabled");
         DrawStatusRow("Planner request", requestPreview.StatusSummary);
     }
 
@@ -801,7 +900,7 @@ public sealed class MainWindow : Window, IDisposable
         DrawPlannerFilterCounts(plannerPreview);
     }
 
-    private void DrawPlannerRosterSummarySection(DadActivityPreset plannerPreview, DadVisibleRunState runState)
+    private void DrawPlannerRosterSummarySection(DadActivityPreset plannerPreview, DadVisibleRunState runState, bool debugUi)
     {
         DrawSectionHeader("Planned Roster", "Compact selected-slot and candidate summary. Full tables are in details.");
         var totalSlots = plannerPreview.SelectedCharacters.Count;
@@ -811,7 +910,9 @@ public sealed class MainWindow : Window, IDisposable
         var laneRun = ResolveLaneRuntime(runState, plannerPreview.LaneDefinition);
 
         DrawStatusRow("Slots", $"{assignedSlots}/{Math.Max(1, totalSlots)} assigned | {readySlots} ready | {blockedSlots} with blockers");
-        DrawStatusRow("Candidates", $"{plannerPreview.AvailableCharacters.Count} available | {plannerPreview.FilterSummary}");
+        DrawStatusRow("Candidates", debugUi
+            ? $"{plannerPreview.AvailableCharacters.Count} available | {plannerPreview.FilterSummary}"
+            : $"{plannerPreview.AvailableCharacters.Count} available");
         DrawStatusRow("Leader", FormatOperatorText(plannerPreview.LeaderStatusText, "(none)"));
         DrawStatusRow("Runtime participants", laneRun.Status == DadRunStatus.Idle
             ? "No live participant snapshot for selected lane."
@@ -929,6 +1030,7 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Executor", FormatExecutorStatus(laneRun.CurrentExecutorStatus));
             DrawStatusRow("Active task", string.IsNullOrWhiteSpace(laneRun.ActiveTaskName) ? "(none)" : $"{laneRun.ActiveTaskIndex}/{Math.Max(1, laneRun.TotalTaskCount)} {laneRun.ActiveTaskName}");
             DrawStatusRow("Task detail", FormatText(laneRun.ActiveTaskStatus, laneRun.Summary));
+            DrawLocalDutyRuntimeRows(laneRun);
             DrawDutySupportRuntimeRows(laneRun);
 
             if (laneRun.StepResults.Count == 0)
@@ -1186,11 +1288,34 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawDutySupportRuntimeSection(DadRunResult run)
     {
+        if (HasLocalDutyRuntime(run))
+        {
+            DrawSectionHeader("Local Duty Runtime", "Live regular Duty Finder queue, entry, in-duty, exit, and stabilization truth from current executor state.");
+            DrawLocalDutyRuntimeRows(run);
+        }
+
         if (!HasDutySupportRuntime(run))
             return;
 
-        DrawSectionHeader("Duty Support Runtime", "Live queue, duty entry, in-duty, leave, and stabilization truth from current executor state.");
+        var label = ResolveNpcDutyLabel(run);
+        DrawSectionHeader($"{label} Runtime", "Live NPC duty queue, entry, in-duty, leave, and stabilization truth from current executor state.");
         DrawDutySupportRuntimeRows(run);
+    }
+
+    private void DrawLocalDutyRuntimeRows(DadRunResult run)
+    {
+        if (!HasLocalDutyRuntime(run))
+            return;
+
+        var status = ResolveLocalDutyExecutorStatus(run);
+        var summary = ResolveDutySupportSummary(run, status);
+        DrawStatusRow("Local Duty", $"{DadOperatorPhaseText.FormatPhaseLabel(run)} | {status.Status} / {status.Phase}");
+        DrawStatusRow("Path", FormatOperatorText(DetectDutySupportPath(summary), "(none)"));
+        DrawStatusRow("Queue / entry", FormatOperatorText(BuildLocalDutyQueueEntryText(status, summary), "(none)"));
+        DrawStatusRow("Duty observation", FormatOperatorText(BuildLocalDutyObservationText(status, summary), "(none)"));
+        DrawStatusRow("Leave / exit", FormatOperatorText(BuildDutySupportLeaveText(run, status, summary), "(none)"));
+        DrawStatusRow("Stabilize", FormatOperatorText(BuildDutySupportStabilizeText(run, status, summary), "(none)"));
+        DrawStatusRow("Current summary", FormatOperatorText(summary, "(none)"));
     }
 
     private void DrawDutySupportRuntimeRows(DadRunResult run)
@@ -1200,7 +1325,8 @@ public sealed class MainWindow : Window, IDisposable
 
         var status = ResolveDutySupportExecutorStatus(run);
         var summary = ResolveDutySupportSummary(run, status);
-        DrawStatusRow("Duty Support", $"{DadOperatorPhaseText.FormatPhaseLabel(run)} | {status.Status} / {status.Phase}");
+        var label = ResolveNpcDutyLabel(run, status);
+        DrawStatusRow(label, $"{DadOperatorPhaseText.FormatPhaseLabel(run)} | {status.Status} / {status.Phase}");
         DrawStatusRow("Path", FormatOperatorText(DetectDutySupportPath(summary), "(none)"));
         DrawStatusRow("Queue / entry", FormatOperatorText(BuildDutySupportQueueEntryText(status, summary), "(none)"));
         DrawStatusRow("Entry automation", FormatOperatorText(BuildDutySupportEntryAutomationText(status, summary), "(none)"));
@@ -1212,16 +1338,37 @@ public sealed class MainWindow : Window, IDisposable
     private static bool HasDutySupportRuntime(DadRunResult run)
         => run.Status != DadRunStatus.Idle &&
            (run.ModuleId == DadModuleId.DutySupport ||
+            run.ModuleId == DadModuleId.Trust ||
             run.CurrentExecutorStatus.ModuleId == DadModuleId.DutySupport ||
-            run.StepResults.Any(static step => step.ModuleId == DadModuleId.DutySupport));
+            run.CurrentExecutorStatus.ModuleId == DadModuleId.Trust ||
+            run.StepResults.Any(static step => step.ModuleId is DadModuleId.DutySupport or DadModuleId.Trust));
 
-    private static DadModuleExecutionStatusDto ResolveDutySupportExecutorStatus(DadRunResult run)
+    private static bool HasLocalDutyRuntime(DadRunResult run)
+        => run.Status != DadRunStatus.Idle &&
+           (run.ModuleId == DadModuleId.Duty ||
+            run.CurrentExecutorStatus.ModuleId == DadModuleId.Duty ||
+            run.StepResults.Any(static step => step.ModuleId == DadModuleId.Duty));
+
+    private static DadModuleExecutionStatusDto ResolveLocalDutyExecutorStatus(DadRunResult run)
     {
-        if (run.CurrentExecutorStatus.ModuleId == DadModuleId.DutySupport)
+        if (run.CurrentExecutorStatus.ModuleId == DadModuleId.Duty)
             return run.CurrentExecutorStatus;
 
         return run.StepResults
-            .Where(static step => step.ModuleId == DadModuleId.DutySupport)
+            .Where(static step => step.ModuleId == DadModuleId.Duty)
+            .OrderByDescending(static step => step.ReportedAtUtc)
+            .Select(static step => step.ExecutorStatus)
+            .FirstOrDefault()
+            ?? run.CurrentExecutorStatus;
+    }
+
+    private static DadModuleExecutionStatusDto ResolveDutySupportExecutorStatus(DadRunResult run)
+    {
+        if (run.CurrentExecutorStatus.ModuleId is DadModuleId.DutySupport or DadModuleId.Trust)
+            return run.CurrentExecutorStatus;
+
+        return run.StepResults
+            .Where(static step => step.ModuleId is DadModuleId.DutySupport or DadModuleId.Trust)
             .OrderByDescending(static step => step.ReportedAtUtc)
             .Select(static step => step.ExecutorStatus)
             .FirstOrDefault()
@@ -1239,7 +1386,7 @@ public sealed class MainWindow : Window, IDisposable
             return "ADS force commands";
 
         if (ContainsAny(summary, "Use FrenRider mode", "FrenRider"))
-            return "FrenRider";
+            return "FrenRider (pre-queue /fr on only)";
 
         if (ContainsAny(summary, "Do Nothing mode", "user owns combat", "user-owned"))
             return "User-owned";
@@ -1247,23 +1394,71 @@ public sealed class MainWindow : Window, IDisposable
         return "Path pending.";
     }
 
-    private static string BuildDutySupportQueueEntryText(DadModuleExecutionStatusDto status, string summary)
-        => status.Phase switch
+    private static string ResolveNpcDutyLabel(DadRunResult run)
+        => ResolveNpcDutyLabel(run, run.CurrentExecutorStatus);
+
+    private static string ResolveNpcDutyLabel(DadRunResult run, DadModuleExecutionStatusDto status)
+    {
+        var moduleId = status.ModuleId != DadModuleId.None
+            ? status.ModuleId
+            : run.ModuleId;
+        if (moduleId == DadModuleId.Trust ||
+            run.StepResults.Any(static step => step.ModuleId == DadModuleId.Trust))
         {
-            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => summary,
+            return "Trust";
+        }
+
+        return "Duty Support";
+    }
+
+    private static string BuildDutySupportQueueEntryText(DadModuleExecutionStatusDto status, string summary)
+    {
+        if (status.Status == DadRunStatus.Failed || !string.IsNullOrWhiteSpace(status.FailureReason))
+            return $"Blocked: {FormatText(status.FailureReason, FormatText(status.BlockedReason, summary))}";
+
+        return status.Phase switch
+        {
+            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => $"Queueing: {summary}",
             DadRunPhase.InDutyOrTask => "Queue complete. Duty entry confirmed.",
             DadRunPhase.PostRunStabilizing or DadRunPhase.Finalizing => "Queue complete. Duty entry and exit confirmed.",
             _ => "No live queue state.",
+        };
+    }
+
+    private static string BuildLocalDutyQueueEntryText(DadModuleExecutionStatusDto status, string summary)
+    {
+        if (status.Status == DadRunStatus.Failed || !string.IsNullOrWhiteSpace(status.FailureReason))
+            return $"Blocked: {FormatText(status.FailureReason, FormatText(status.BlockedReason, summary))}";
+
+        return status.Phase switch
+        {
+            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => $"Queueing: {summary}",
+            DadRunPhase.InDutyOrTask => "Regular Duty Finder queue complete. Duty entry confirmed.",
+            DadRunPhase.PostRunStabilizing or DadRunPhase.Finalizing => "Regular Duty Finder entry and exit confirmed.",
+            _ => "No live queue state.",
+        };
+    }
+
+    private static string BuildLocalDutyObservationText(DadModuleExecutionStatusDto status, string summary)
+        => status.Phase switch
+        {
+            DadRunPhase.InDutyOrTask => summary,
+            DadRunPhase.PostRunStabilizing or DadRunPhase.Finalizing => "Duty observation complete.",
+            DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => "Pending duty entry.",
+            _ => "Not started.",
         };
 
     private static string BuildDutySupportEntryAutomationText(DadModuleExecutionStatusDto status, string summary)
     {
         var entryAutomation = ExtractSentence(summary,
             "sent no Duty Support entry command",
+            "sent no Trust entry command",
             "sent /bmrai on and /rotation auto after Duty Support entry",
             "sent no FrenRider, ADS, or rotation command after duty entry",
+            "sent no FrenRider, ADS, or rotation command after Trust entry",
             "attempted rotation bootstrap",
-            "already requested FrenRider before queue");
+            "already requested FrenRider before queue",
+            "/fr on requested before queue");
         if (!string.IsNullOrWhiteSpace(entryAutomation))
             return entryAutomation;
 
@@ -1302,7 +1497,7 @@ public sealed class MainWindow : Window, IDisposable
             ? summary
             : run.Status switch
             {
-                DadRunStatus.Completed => "Stabilized.",
+                DadRunStatus.Completed => "Done. Duty exit and post-run stabilization completed.",
                 DadRunStatus.Cancelled => "Cancelled.",
                 DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut => run.Summary,
                 _ => "Not started.",
@@ -1384,7 +1579,7 @@ public sealed class MainWindow : Window, IDisposable
     private static void DrawMutedNotice(string text)
         => ImGui.TextDisabled(text);
 
-    private void DrawPlannerLaneInputs(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
+    private void DrawPlannerLaneInputs(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane, bool debugUi)
     {
         if (lane.RequiresDutySelector)
         {
@@ -1397,20 +1592,32 @@ public sealed class MainWindow : Window, IDisposable
                     : $"Incompatible: {selectedDuty.SelectionLabel}";
 
             ImGui.TextUnformatted("Typed duty selector");
-            DrawStatusRow("Selector source", lane.ActivityMode == DadPlannerActivityMode.DutySupport
-                ? "Lumina ContentFinderCondition duties with Duty Support data only."
-                : "Lumina ContentFinderCondition duty list.");
+            if (debugUi)
+            {
+                DrawStatusRow("Selector source", lane.ActivityMode switch
+                {
+                    DadPlannerActivityMode.DutySupport => "Lumina ContentFinderCondition duties with Duty Support data only.",
+                    DadPlannerActivityMode.Trust => "Lumina ContentFinderCondition duties with native Trust data only.",
+                    _ => "Lumina ContentFinderCondition duty list.",
+                });
+            }
 
+            var dutyPopupWidth = ResolvePlannerDutyPopupWidth();
+            var dutyPopupHeight = MathF.Max(260f, ImGui.GetMainViewport().WorkSize.Y * 0.70f);
             ImGui.SetNextItemWidth(-1f);
+            ImGui.SetNextWindowSizeConstraints(
+                new Vector2(dutyPopupWidth, 120f),
+                new Vector2(dutyPopupWidth, dutyPopupHeight));
             if (ImGui.BeginCombo("Duty", dutyLabel))
             {
+                var popupContentWidth = MathF.Max(1f, dutyPopupWidth - (ImGui.GetStyle().WindowPadding.X * 2f));
                 var search = plannerDutySearch;
-                ImGui.SetNextItemWidth(-1f);
+                ImGui.SetNextItemWidth(popupContentWidth);
                 if (ImGui.InputText("Search", ref search, 128))
                     plannerDutySearch = search;
 
                 ImGui.Separator();
-                if (ImGui.BeginChild($"dad-duty-results-{lane.ActivityMode}", new Vector2(0f, 220f), true))
+                if (ImGui.BeginChild($"dad-duty-results-{lane.ActivityMode}", new Vector2(popupContentWidth, 220f), true))
                 {
                     var dutyOptions = plugin.PresetProviderService.SearchPlannerDutyOptions(lane.ActivityMode, plannerDutySearch, 96);
                     if (dutyOptions.Count == 0)
@@ -1423,11 +1630,12 @@ public sealed class MainWindow : Window, IDisposable
                         {
                             var isSelected = selectedDuty != null
                                 && option.ContentFinderConditionId == selectedDuty.ContentFinderConditionId;
-                            if (ImGui.Selectable($"{option.SelectionLabel}##dad-duty-{option.ContentFinderConditionId}", isSelected))
+                            var selectableWidth = MathF.Max(1f, ImGui.GetContentRegionAvail().X);
+                            if (ImGui.Selectable($"{option.SelectionLabel}##dad-duty-{option.ContentFinderConditionId}", isSelected, ImGuiSelectableFlags.None, new Vector2(selectableWidth, 0f)))
                                 ApplyPlannerDutySelection(plannerOptions, lane, option);
 
                             if (ImGui.IsItemHovered())
-                                ImGui.SetTooltip(option.MetadataSummary);
+                                ImGui.SetTooltip(BuildPlannerDutyOptionTooltip(option));
 
                             if (isSelected)
                                 ImGui.SetItemDefaultFocus();
@@ -1445,7 +1653,8 @@ public sealed class MainWindow : Window, IDisposable
                 DrawStatusRow("Selected duty", dutyCompatible
                     ? selectedDuty.SelectionLabel
                     : $"Incompatible with {lane.DisplayName}: {selectedDuty.SelectionLabel}");
-                DrawStatusRow("Duty metadata", selectedDuty.MetadataSummary);
+                if (debugUi)
+                    DrawStatusRow("Duty metadata", selectedDuty.MetadataSummary);
                 if (!dutyCompatible)
                 {
                     DrawStatusRow("Duty selector state", BuildIncompatibleDutyText(selectedDuty, lane));
@@ -1477,37 +1686,46 @@ public sealed class MainWindow : Window, IDisposable
                     plugin.SavePlannerOptions();
                 }
 
-                DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerOptions.QueueAuthority));
-                DrawStatusRow("Authority owner", DadStatusText.FormatAuthorityMode(lane.DefaultAuthorityMode));
-                DrawStatusRow("Request shape", "Typed premade request. Queue authority stays explicit; typed party size can be overridden here.");
+                if (debugUi)
+                {
+                    DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerOptions.QueueAuthority));
+                    DrawStatusRow("Authority owner", DadStatusText.FormatAuthorityMode(lane.DefaultAuthorityMode));
+                    DrawStatusRow("Request shape", "Typed premade request. Queue authority stays explicit; typed party size can be overridden here.");
+                }
             }
             else if (lane.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust)
             {
                 DrawStatusRow("Execution mode", lane.ActivityMode == DadPlannerActivityMode.DutySupport ? "DutySupportOnly" : "TrustOnly");
                 DrawStatusRow("Runner count", "1 local runner");
-                DrawStatusRow("Request shape", "Solo local lane. Preview forces one local runner and local queue authority.");
+                if (debugUi)
+                    DrawStatusRow("Request shape", "Solo local lane. Preview forces one local runner and local queue authority.");
             }
             else if (lane.ActivityMode == DadPlannerActivityMode.LocalDuty)
             {
-                DrawStatusRow("Execution mode", DadRunRequestOptions.TrustThenDutySupport);
+                DrawStatusRow("Execution mode", "Regular Duty Finder");
                 DrawStatusRow("Run count", "1");
                 DrawStatusRow("Frequency", DadRunRequestOptions.FrequencyPerArRun);
-                DrawStatusRow("Request shape", "Local duty contract. Preview stays one runner; unsynced applies only to this local lane.");
+                if (debugUi)
+                    DrawStatusRow("Request shape", "Local duty contract. Preview stays one runner; synced/unsynced applies only to this local lane.");
             }
             else if (lane.ActivityMode == DadPlannerActivityMode.CustomDuty)
             {
                 DrawStatusRow("Attempts", "1");
-                DrawStatusRow("Request shape", "Typed custom duty contract. Planner keeps this lane local-only for now.");
+                if (debugUi)
+                    DrawStatusRow("Request shape", "Typed custom duty contract. Planner keeps this lane local-only for now.");
             }
 
             if (ImGui.SmallButton("Clear duty selector"))
                 ClearPlannerDutySelection(plannerOptions, lane);
 
-            DrawStatusRow("Duty selector state", selectedDuty != null
-                ? dutyCompatible
-                    ? BuildDutySelectorState(plannerOptions, lane, selectedDuty)
-                    : BuildIncompatibleDutyText(selectedDuty, lane)
-                : $"{lane.DisplayName} blocks until a typed duty is selected.");
+            if (debugUi)
+            {
+                DrawStatusRow("Duty selector state", selectedDuty != null
+                    ? dutyCompatible
+                        ? BuildDutySelectorState(plannerOptions, lane, selectedDuty)
+                        : BuildIncompatibleDutyText(selectedDuty, lane)
+                    : $"{lane.DisplayName} blocks until a typed duty is selected.");
+            }
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Mogtome)
@@ -1543,15 +1761,19 @@ public sealed class MainWindow : Window, IDisposable
             }
 
             DrawStatusRow("Attempts", "1");
-            DrawStatusRow("MOGTOME preview", "Dad owns request preview. Policy controls helper handoff shape only.");
+            if (debugUi)
+                DrawStatusRow("MOGTOME preview", "Dad owns request preview. Policy controls helper handoff shape only.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Blunderville)
         {
             DrawStatusRow("Attempts", "1");
-            DrawStatusRow("Queue owner", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
             DrawStatusRow("Blunderville mode", "FixedEmoteRun");
-            DrawStatusRow("Blunderville policy", "Dad enters, runs configured per-character emote, then fail/leaves per fixed contract.");
+            if (debugUi)
+            {
+                DrawStatusRow("Queue owner", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
+                DrawStatusRow("Blunderville policy", "Dad enters, runs configured per-character emote, then fail/leaves per fixed contract.");
+            }
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Msq)
@@ -1559,24 +1781,44 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Preset", "MSQ");
             DrawStatusRow("Attempts", "1");
             DrawStatusRow("Expected party size", lane.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
-            DrawStatusRow("MSQ mapping", "Planner surfaces MSQ lane while preserving DailyMsqPremade legacy queue mapping in preview.");
+            if (debugUi)
+                DrawStatusRow("MSQ mapping", "Planner surfaces MSQ lane while preserving DailyMsqPremade legacy queue mapping in preview.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Commendation)
         {
             DrawStatusRow("Attempts", "1");
-            DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
-            DrawStatusRow("Commendation policy", "Short duty loop contract. Preview keeps attempt count and queue lane explicit.");
+            if (debugUi)
+            {
+                DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
+                DrawStatusRow("Commendation policy", "Short duty loop contract. Preview keeps attempt count and queue lane explicit.");
+            }
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Astrope)
         {
             DrawStatusRow("Attempts", "1");
-            DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
             DrawStatusRow("Valid local time window", new DadTimeWindow().Describe());
-            DrawStatusRow("Astrope policy", "Timed farming window stays explicit in preview JSON even before live executor phase.");
+            if (debugUi)
+            {
+                DrawStatusRow("Queue lane", plugin.PresetProviderService.GetQueueAuthorityLabel(lane.DefaultQueueAuthority));
+                DrawStatusRow("Astrope policy", "Timed farming window stays explicit in preview JSON even before live executor phase.");
+            }
         }
     }
+
+    private static float ResolvePlannerDutyPopupWidth()
+    {
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var viewportWidth = ImGui.GetMainViewport().WorkSize.X;
+        var maxWidth = MathF.Max(160f, viewportWidth - 64f);
+        return Math.Clamp(availableWidth <= 0f ? 360f : availableWidth, 160f, maxWidth);
+    }
+
+    private static string BuildPlannerDutyOptionTooltip(DadPlannerDutyOption option)
+        => string.IsNullOrWhiteSpace(option.MetadataSummary)
+            ? option.SelectionLabel
+            : $"{option.SelectionLabel}\n{option.MetadataSummary}";
 
     private void DrawPlannerValidation(DadActivityPreset plannerPreview, DadPlannerRunRequestPreview requestPreview)
     {
@@ -1785,13 +2027,17 @@ public sealed class MainWindow : Window, IDisposable
         => lane.ActivityMode switch
         {
             DadPlannerActivityMode.DutySupport => duty.SupportsDutySupport,
+            DadPlannerActivityMode.Trust => duty.SupportsTrust,
             _ => true,
         };
 
     private static string BuildIncompatibleDutyText(DadPlannerDutyOption duty, DadPlannerLaneDefinition lane)
-        => lane.ActivityMode == DadPlannerActivityMode.DutySupport
-            ? $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not marked as Duty Support content. Clear it or reselect a Duty Support duty."
-            : $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not valid for {lane.DisplayName}. Clear it or reselect a compatible duty.";
+        => lane.ActivityMode switch
+        {
+            DadPlannerActivityMode.DutySupport => $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not marked as Duty Support content. Clear it or reselect a Duty Support duty.",
+            DadPlannerActivityMode.Trust => $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not marked as Trust content. Clear it or reselect a Trust duty.",
+            _ => $"{duty.DutyDisplayName} #{duty.ContentFinderConditionId} is not valid for {lane.DisplayName}. Clear it or reselect a compatible duty.",
+        };
 
     private void SelectPlannerLane(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
     {
@@ -1909,6 +2155,32 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.TextUnformatted(value);
     }
+
+    private static Vector4 GetStartabilityColor(string startabilityLabel, int blockerCount)
+    {
+        if (blockerCount > 0 ||
+            startabilityLabel.Contains("Blocked", StringComparison.OrdinalIgnoreCase) ||
+            startabilityLabel.Contains("Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return new Vector4(1f, 0.45f, 0.35f, 1f);
+        }
+
+        if (startabilityLabel.Contains("Preview", StringComparison.OrdinalIgnoreCase))
+            return new Vector4(0.45f, 0.75f, 1f, 1f);
+
+        if (startabilityLabel.Contains("Start", StringComparison.OrdinalIgnoreCase) ||
+            startabilityLabel.Contains("Ready", StringComparison.OrdinalIgnoreCase))
+        {
+            return new Vector4(0.35f, 0.95f, 0.45f, 1f);
+        }
+
+        return new Vector4(1f, 0.85f, 0.25f, 1f);
+    }
+
+    private static string BuildRuntimeBadge(string runtimeLabel)
+        => runtimeLabel.StartsWith("Idle", StringComparison.OrdinalIgnoreCase)
+            ? "Idle"
+            : runtimeLabel;
 
     private static string BuildShortBlockerSummary(string firstBlocker, int blockerCount)
     {

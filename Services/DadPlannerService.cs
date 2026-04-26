@@ -449,14 +449,20 @@ public sealed class DadPlannerService
         if (request.Dungeon?.QueueViaLanParty == true)
             warnings.Add("Premade dungeon routing stays inside Dad's internal premade lane.");
 
+        if (request.Dungeon is { QueueViaLanParty: false })
+            warnings.Add("Local Duty routes through Dad-owned guarded regular Duty Finder queue execution.");
+
         if (request.DailyMsq != null)
             warnings.Add("Daily MSQ routes through Dad's internal premade lane.");
 
         if (request.Msq != null || request.PremadeDuty != null || request.Mogtome != null)
             warnings.Add("MSQ, Premade Duty, and MOGTOME require Server Dad authority and exact typed party workers.");
 
-        if (request.DutySupport != null || request.Trust != null || request.CustomDuty != null)
-            warnings.Add("Duty Support, Trust, and Custom Duty remain local typed duty lanes until guarded live start is enabled.");
+        if (request.DutySupport != null || request.Trust != null)
+            warnings.Add("Duty Support and Trust route through Dad-owned guarded native local NPC duty lanes.");
+
+        if (request.CustomDuty != null)
+            warnings.Add("Custom Duty remains a local typed duty lane until guarded live start is enabled.");
 
         if (request.Blunderville != null)
             warnings.Add("Blunderville routes through Dad-owned local lane with helper integration deferred.");

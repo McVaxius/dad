@@ -16,10 +16,9 @@ public sealed class DadDutyQueueService
         if (task.QueueViaLanParty)
             return capabilityService.DescribeLanPartyQueueTransport();
 
-        if (task.Unsynced)
-            return "Unsynced live duty execution is deferred until Dad has a guarded queue executor.";
-
-        return "Direct Duty Finder execution is deferred until Dad's guarded queue executor is enabled.";
+        return task.Unsynced
+            ? "Dad-owned unrestricted/unsynced regular Duty Finder execution is enabled for the Local Duty lane."
+            : "Dad-owned synced regular Duty Finder execution is enabled for the Local Duty lane.";
     }
 
     public string DescribeDailyMsqExecutionDeferral()

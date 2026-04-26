@@ -46,7 +46,7 @@ public sealed class DadRunRequest
         {
             var job = string.IsNullOrWhiteSpace(Dungeon.SelectedJob) ? "current job" : Dungeon.SelectedJob;
             var syncMode = Dungeon.Unsynced ? "unsynced" : "synced";
-            var queueMode = Dungeon.QueueViaLanParty ? "internal premade queue" : "Dad duty queue";
+            var queueMode = Dungeon.QueueViaLanParty ? "internal premade queue" : "Dad regular Duty Finder queue";
             var preference = string.IsNullOrWhiteSpace(Dungeon.ExecutionPreference)
                 ? DadRunRequestOptions.TrustThenDutySupport
                 : Dungeon.ExecutionPreference;
@@ -175,8 +175,8 @@ public sealed class DadRunRequest
                 ? Dungeon.QueueViaLanParty
                     ? "InternalPremadeQueue"
                     : Dungeon.Unsynced
-                        ? "Unsynced"
-                        : Dungeon.ExecutionPreference
+                        ? "LocalDutyUnsynced"
+                        : "LocalDutySynced"
                 : Orchestration.ModuleTarget switch
                 {
                     DadModuleId.Msq => "MsqLane",
