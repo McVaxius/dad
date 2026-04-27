@@ -278,6 +278,9 @@ public sealed class DadPlannerService
             return null;
         }
 
+        if (!ValidateRequiredRuntimeParticipants(request, pool, out rejectionReason))
+            return null;
+
         var localCharacterKey = pool.Characters
             .FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime)
             ?.CharacterKey ?? string.Empty;
@@ -296,6 +299,94 @@ public sealed class DadPlannerService
             Modules = modules,
             PlannerWarnings = BuildPlannerWarnings(request, pool),
         };
+    }
+
+    private static bool ValidateRequiredRuntimeParticipants(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
+    {
+        rejectionReason = string.Empty;
+        var requiredAccounts = request.Orchestration.RequiredAccountKeys
+            .Select(static key => key.Value)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+        var requiredCharacters = request.Orchestration.RequiredCharacterKeys
+            .Select(static key => key.Value)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+
+        var duplicateAccount = requiredAccounts
+            .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => group.Count() > 1)
+            ?.Key;
+        if (!string.IsNullOrWhiteSpace(duplicateAccount))
+        {
+            rejectionReason = $"Required account '{duplicateAccount}' appears in multiple planned slots.";
+            return false;
+        }
+
+        var duplicateCharacter = requiredCharacters
+            .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => group.Count() > 1)
+            ?.Key;
+        if (!string.IsNullOrWhiteSpace(duplicateCharacter))
+        {
+            rejectionReason = $"Required character '{duplicateCharacter}' appears in multiple planned slots.";
+            return false;
+        }
+
+        foreach (var account in requiredAccounts)
+        {
+            var matchingCharacters = pool.Characters
+                .Where(character => MatchesAccountKey(character, account))
+                .ToList();
+            var liveCharacter = matchingCharacters.FirstOrDefault(IsConnectedForRuntime);
+            if (liveCharacter == null)
+            {
+                rejectionReason = matchingCharacters.Any(static character => character.Source == DadCharacterSource.XadbOnly)
+                    ? $"Required account '{account}' is only available from XADB/offline planner data and is not connected at runtime."
+                    : $"Required account '{account}' is not connected to Dad at runtime.";
+                return false;
+            }
+
+            if (liveCharacter.Blockers.Any(IsLocalIsolationReason))
+            {
+                rejectionReason = $"Required account '{account}' is connected but local-only/isolated and cannot accept remote Dad work.";
+                return false;
+            }
+        }
+
+        foreach (var characterKey in requiredCharacters)
+        {
+            var character = pool.Characters.FirstOrDefault(candidate =>
+                string.Equals(candidate.CharacterKey, characterKey, StringComparison.OrdinalIgnoreCase));
+            if (character == null)
+            {
+                rejectionReason = $"Required character '{characterKey}' is not known to Dad.";
+                return false;
+            }
+
+            if (!IsConnectedForRuntime(character))
+            {
+                var requiredAccount = ResolveAccountKey(character);
+                var activeOnSameAccount = string.IsNullOrWhiteSpace(requiredAccount)
+                    ? null
+                    : pool.Characters.FirstOrDefault(candidate =>
+                        !string.Equals(candidate.CharacterKey, characterKey, StringComparison.OrdinalIgnoreCase) &&
+                        MatchesAccountKey(candidate, requiredAccount) &&
+                        IsConnectedForRuntime(candidate));
+                rejectionReason = activeOnSameAccount == null
+                    ? $"Required character '{characterKey}' is not live/ready at runtime."
+                    : $"Required account '{requiredAccount}' is connected as '{activeOnSameAccount.CharacterKey}', not required character '{characterKey}'.";
+                return false;
+            }
+
+            if (character.Blockers.Any(IsLocalIsolationReason))
+            {
+                rejectionReason = $"Required character '{characterKey}' is local-only/isolated and cannot accept remote Dad work.";
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public IReadOnlyList<DadAcquiredCharacter> ResolveParticipants(DadRunPlan plan, DadCharacterPool pool, out string blocker)
@@ -416,6 +507,27 @@ public sealed class DadPlannerService
             LastSummary = pool.LastSummary,
         };
     }
+
+    private static bool IsConnectedForRuntime(DadAcquiredCharacter character)
+        => character.Source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime
+           && character.Freshness is DadSnapshotFreshness.Live or DadSnapshotFreshness.Recent
+           && character.Readiness == DadReadinessState.Ready;
+
+    private static bool MatchesAccountKey(DadAcquiredCharacter character, string accountKey)
+        => (!string.IsNullOrWhiteSpace(character.AccountId)
+            && string.Equals(character.AccountId, accountKey, StringComparison.OrdinalIgnoreCase))
+           || (!string.IsNullOrWhiteSpace(character.AccountAlias)
+               && string.Equals(character.AccountAlias, accountKey, StringComparison.OrdinalIgnoreCase));
+
+    private static string ResolveAccountKey(DadAcquiredCharacter character)
+        => !string.IsNullOrWhiteSpace(character.AccountId)
+            ? character.AccountId
+            : character.AccountAlias;
+
+    private static bool IsLocalIsolationReason(string blocker)
+        => blocker.Contains("local-only", StringComparison.OrdinalIgnoreCase)
+           || blocker.Contains("local only", StringComparison.OrdinalIgnoreCase)
+           || blocker.Contains("isolated", StringComparison.OrdinalIgnoreCase);
 
     private static DadTransportOwner ResolveTransportOwner(DadModuleId moduleId)
         => moduleId switch

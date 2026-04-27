@@ -35,6 +35,7 @@ public sealed class Configuration : IPluginConfiguration
     public int CancelAckTimeoutSeconds { get; set; } = 6;
     public DadCombatRotationMode CombatRotationMode { get; set; } = DadCombatRotationMode.UseFrenRider;
     public DadPresetPlannerOptions PlannerOptions { get; set; } = new();
+    public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

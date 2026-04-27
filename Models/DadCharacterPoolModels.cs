@@ -274,6 +274,7 @@ public sealed class DadPlannerAccountOption
 public sealed class DadPresetPlannerOptions
 {
     public string PresetName { get; set; } = "MSQ Main Group";
+    public string SelectedPlannerGroupId { get; set; } = string.Empty;
     public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
     public string ActivityName { get; set; } = "MSQ";
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
@@ -290,6 +291,59 @@ public sealed class DadPresetPlannerOptions
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public List<DadAccountKey> IncludedAccountKeys { get; set; } = [];
+}
+
+public sealed class DadPlannerGroup
+{
+    public string GroupId { get; set; } = Guid.NewGuid().ToString("N");
+    public string DisplayName { get; set; } = "Dad Group";
+    public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
+    public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
+    public bool ConnectedOnly { get; set; } = true;
+    public bool SameDatacenterOnly { get; set; } = true;
+    public bool AllowStaleForPlanning { get; set; }
+    public DadTransportOwner TransportOwner { get; set; } = DadTransportOwner.LanParty;
+    public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.Leader;
+    public DadInviteAuthority InviteAuthority { get; set; } = DadInviteAuthority.PresetLeader;
+    public uint DutyContentFinderConditionId { get; set; }
+    public string DutyDisplayName { get; set; } = string.Empty;
+    public bool DutyUnsynced { get; set; }
+    public int DutyExpectedPartySize { get; set; } = 4;
+    public string MogtomePreset { get; set; } = "Daily MSQ";
+    public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public List<DadPlannerGroupSlot> Slots { get; set; } = [];
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class DadPlannerGroupSlot
+{
+    public string SlotId { get; set; } = string.Empty;
+    public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
+    public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
+    public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
+    public bool AllowSubstitution { get; set; } = true;
+}
+
+public sealed class DadPlannerGroupSummary
+{
+    public string GroupId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
+    public string Lane { get; set; } = string.Empty;
+    public int SlotCount { get; set; }
+    public int RequiredAccountCount { get; set; }
+    public int RequiredCharacterCount { get; set; }
+    public string Summary { get; set; } = string.Empty;
+}
+
+public sealed class DadPlannerGroupStartRequest
+{
+    public string GroupId { get; set; } = string.Empty;
+    public string Lane { get; set; } = string.Empty;
+    public uint? DutyContentFinderConditionId { get; set; }
+    public string RequestedBy { get; set; } = string.Empty;
+    public bool DryRun { get; set; }
 }
 
 public sealed class DadPlannerLaneDefinition
@@ -315,6 +369,9 @@ public sealed class DadActivityPreset
 {
     public string PresetId { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+    public string SelectedPlannerGroupId { get; set; } = string.Empty;
+    public string SelectedPlannerGroupName { get; set; } = string.Empty;
+    public bool UsingPlannerGroup { get; set; }
     public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
     public string ActivityModeId { get; set; } = string.Empty;
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
@@ -363,6 +420,8 @@ public sealed class DadPresetCharacterSlot
 {
     public string SlotId { get; set; } = string.Empty;
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
+    public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
+    public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public DadSlotAssignmentMode AssignmentMode { get; set; } = DadSlotAssignmentMode.Auto;
     public ulong? ContentId { get; set; }
     public string CharacterKey { get; set; } = string.Empty;

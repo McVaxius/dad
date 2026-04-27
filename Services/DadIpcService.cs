@@ -15,10 +15,12 @@ public sealed class DadIpcService : IDisposable
     private readonly DadTransportService transportService;
     private readonly DadModuleRegistry moduleRegistry;
     private readonly DadPresetProviderService presetProviderService;
+    private readonly Plugin plugin;
     private readonly IPluginLog log;
 
     public DadIpcService(
         IDalamudPluginInterface pluginInterface,
+        Plugin plugin,
         DadCoordinatorService coordinatorService,
         DadCharacterIntelligenceService characterIntelligenceService,
         DadPresenceService presenceService,
@@ -27,6 +29,7 @@ public sealed class DadIpcService : IDisposable
         DadPresetProviderService presetProviderService,
         IPluginLog log)
     {
+        this.plugin = plugin;
         this.coordinatorService = coordinatorService;
         this.characterIntelligenceService = characterIntelligenceService;
         this.presenceService = presenceService;
@@ -49,10 +52,13 @@ public sealed class DadIpcService : IDisposable
         Register(pluginInterface, DadIpcContract.GetLanPartyPresets, () => this.presetProviderService.GetLanPartyPresetsJson());
         Register(pluginInterface, DadIpcContract.GetRosterPreview, () => DadIpcJson.Serialize(
             presetProviderService.BuildPlannerPreview(characterIntelligenceService.CurrentPool)));
+        Register(pluginInterface, DadIpcContract.GetPlannerGroups, this.plugin.GetPlannerGroupsJson);
+        Register<string, string>(pluginInterface, DadIpcContract.GetPlannerGroupPreview, this.plugin.GetPlannerGroupPreviewJson);
         Register(pluginInterface, DadIpcContract.GetModuleCapabilities, () => DadIpcJson.Serialize(moduleRegistry.GetCapabilities()));
         Register(pluginInterface, DadIpcContract.GetSupportedJobHints, () => this.presetProviderService.GetSupportedJobHintsJson());
         Register<string, string>(pluginInterface, DadIpcContract.StartTasks, StartTasksFromJson);
         Register<string, string>(pluginInterface, DadIpcContract.StartRun, StartTasksFromJson);
+        Register<string, string>(pluginInterface, DadIpcContract.StartPlannerGroup, this.plugin.StartPlannerGroupFromJson);
         Register(pluginInterface, DadIpcContract.CancelActiveRun, () => DadIpcJson.Serialize(coordinatorService.CancelActiveRun()));
 
         runStatusChangedProvider = pluginInterface.GetIpcProvider<string, object>(DadIpcContract.OnRunStatusChanged);

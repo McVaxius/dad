@@ -44,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
     public DadKrangleService KrangleService { get; }
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
+    public IReadOnlyList<DadPlannerGroup> PlannerGroups => Configuration.PlannerGroups;
     public DadPresetProviderService PresetProviderService { get; }
     public DadModuleRegistry ModuleRegistry { get; }
     public DadPlannerService PlannerService { get; }
@@ -145,6 +146,7 @@ public sealed class Plugin : IDalamudPlugin
 
         dadIpcService = new DadIpcService(
             PluginInterface,
+            this,
             RunCoordinatorService,
             CharacterIntelligenceService,
             PresenceService,
@@ -193,15 +195,16 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     public DadActivityPreset BuildPlannerPreview()
-        => PresetProviderService.BuildPlannerPreview(CharacterIntelligenceService.CurrentPool, PlannerOptions);
+        => PresetProviderService.BuildPlannerPreview(CharacterIntelligenceService.CurrentPool, PlannerOptions, GetSelectedPlannerGroup());
 
     public string BuildPlannerSummary()
-        => PresetProviderService.BuildPlannerSummary(CharacterIntelligenceService.CurrentPool, PlannerOptions);
+        => BuildPlannerPreview().PlannerSummary;
 
     public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview()
     {
         var pool = CharacterIntelligenceService.CurrentPool;
-        var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions);
+        var selectedGroup = GetSelectedPlannerGroup();
+        var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions, selectedGroup);
         var signature = BuildPlannerPreviewSignature(PlannerOptions, plannerPreview);
         var identity = ResolvePlannerPreviewIdentity(signature);
         var requestPreview = PresetProviderService.BuildPlannerRunRequestPreview(
@@ -209,20 +212,23 @@ public sealed class Plugin : IDalamudPlugin
             PlannerOptions,
             identity.RequestId,
             identity.RequestedAtUtc,
-            plannerPreview);
+            plannerPreview,
+            selectedGroup);
         return ApplyPlannerRuntimeTruth(requestPreview, pool);
     }
 
     public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview(
         DadPresetPlannerOptions options,
-        DadActivityPreset? plannerPreviewOverride = null)
+        DadActivityPreset? plannerPreviewOverride = null,
+        DadPlannerGroup? selectedGroup = null)
     {
         var pool = CharacterIntelligenceService.CurrentPool;
-        var plannerPreview = plannerPreviewOverride ?? PresetProviderService.BuildPlannerPreview(pool, options);
+        var plannerPreview = plannerPreviewOverride ?? PresetProviderService.BuildPlannerPreview(pool, options, selectedGroup);
         var requestPreview = PresetProviderService.BuildPlannerRunRequestPreview(
             pool,
             options,
-            plannerPreviewOverride: plannerPreview);
+            plannerPreviewOverride: plannerPreview,
+            selectedGroup: selectedGroup);
         return ApplyPlannerRuntimeTruth(requestPreview, pool);
     }
 
@@ -234,6 +240,376 @@ public sealed class Plugin : IDalamudPlugin
 
     public void SavePlannerOptions()
         => Configuration.Save();
+
+    public DadPlannerGroup? GetSelectedPlannerGroup()
+        => ResolvePlannerGroup(PlannerOptions.SelectedPlannerGroupId);
+
+    public DadPlannerGroup? ResolvePlannerGroup(string groupIdOrName)
+    {
+        var key = groupIdOrName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(key))
+            return null;
+
+        return Configuration.PlannerGroups.FirstOrDefault(group =>
+                   string.Equals(group.GroupId, key, StringComparison.OrdinalIgnoreCase))
+               ?? Configuration.PlannerGroups.FirstOrDefault(group =>
+                   string.Equals(group.DisplayName, key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public void ClearPlannerGroupSelection()
+    {
+        PlannerOptions.SelectedPlannerGroupId = string.Empty;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+    }
+
+    public bool SelectPlannerGroup(string groupIdOrName)
+    {
+        var group = ResolvePlannerGroup(groupIdOrName);
+        if (group == null)
+        {
+            ClearPlannerGroupSelection();
+            return false;
+        }
+
+        ApplyPlannerGroupDefaults(group, PlannerOptions);
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+        return true;
+    }
+
+    public DadPlannerGroup SaveCurrentPlannerAsGroup(string displayName)
+    {
+        var group = BuildPlannerGroupFromCurrentPlanner(displayName);
+        Configuration.PlannerGroups.Add(group);
+        PlannerOptions.SelectedPlannerGroupId = group.GroupId;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+        return group;
+    }
+
+    public DadPlannerGroup? DuplicateSelectedPlannerGroup(string displayName)
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected == null)
+            return null;
+
+        var duplicate = ClonePlannerGroup(selected);
+        duplicate.GroupId = Guid.NewGuid().ToString("N");
+        duplicate.DisplayName = string.IsNullOrWhiteSpace(displayName)
+            ? $"{selected.DisplayName} Copy"
+            : displayName.Trim();
+        duplicate.CreatedAtUtc = DateTime.UtcNow;
+        duplicate.UpdatedAtUtc = duplicate.CreatedAtUtc;
+        Configuration.PlannerGroups.Add(duplicate);
+        PlannerOptions.SelectedPlannerGroupId = duplicate.GroupId;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+        return duplicate;
+    }
+
+    public bool RenameSelectedPlannerGroup(string displayName)
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected == null || string.IsNullOrWhiteSpace(displayName))
+            return false;
+
+        selected.DisplayName = displayName.Trim();
+        selected.UpdatedAtUtc = DateTime.UtcNow;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+        return true;
+    }
+
+    public bool DeleteSelectedPlannerGroup()
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected == null)
+            return false;
+
+        Configuration.PlannerGroups.Remove(selected);
+        PlannerOptions.SelectedPlannerGroupId = string.Empty;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+        return true;
+    }
+
+    public void TouchPlannerGroup(DadPlannerGroup group)
+    {
+        group.UpdatedAtUtc = DateTime.UtcNow;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+    }
+
+    public void ReplaceSelectedPlannerGroupSlotsFromCurrentPreview()
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected == null)
+            return;
+
+        var preview = BuildPlannerPreview();
+        selected.Slots = BuildPlannerGroupSlotsFromPreview(preview);
+        selected.UpdatedAtUtc = DateTime.UtcNow;
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+    }
+
+    public IReadOnlyList<DadPlannerGroupSummary> GetPlannerGroupSummaries()
+        => Configuration.PlannerGroups
+            .Select(BuildPlannerGroupSummary)
+            .OrderBy(static summary => summary.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public string GetPlannerGroupsJson()
+        => DadIpcJson.Serialize(new
+        {
+            groups = Configuration.PlannerGroups,
+            summaries = GetPlannerGroupSummaries(),
+        });
+
+    public string GetPlannerGroupPreviewJson(string groupIdOrName)
+        => DadIpcJson.Serialize(BuildPlannerGroupRunRequestPreview(groupIdOrName, null));
+
+    public string StartPlannerGroupFromJson(string json)
+    {
+        var startRequest = DadIpcJson.Deserialize<DadPlannerGroupStartRequest>(json);
+        if (startRequest == null)
+        {
+            var fallbackId = (json ?? string.Empty).Trim().Trim('"');
+            startRequest = new DadPlannerGroupStartRequest { GroupId = fallbackId };
+        }
+
+        var preview = BuildPlannerGroupRunRequestPreview(startRequest.GroupId, startRequest);
+        if (preview.Request != null && !string.IsNullOrWhiteSpace(startRequest.RequestedBy))
+            preview.Request.RequestedBy = startRequest.RequestedBy.Trim();
+
+        if (preview.Request == null)
+            return DadIpcJson.Serialize(DadRunResult.Rejected(null, preview.StatusSummary));
+
+        if (startRequest.DryRun)
+        {
+            var dryRunStatus = preview.CanStart ? DadRunStatus.Idle : DadRunStatus.Rejected;
+            var dryRunSummary = preview.CanStart
+                ? $"Planner group dry run ready: {preview.StatusSummary}"
+                : $"Planner group dry run blocked: {preview.BlockedReason}";
+            return DadIpcJson.Serialize(DadRunResult.FromRequest(preview.Request, dryRunStatus, dryRunSummary));
+        }
+
+        if (!preview.CanStart)
+            return DadIpcJson.Serialize(DadRunResult.Rejected(preview.Request, preview.BlockedReason));
+
+        return DadIpcJson.Serialize(RunCoordinatorService.StartTasks(preview.Request));
+    }
+
+    private DadPlannerRunRequestPreview BuildPlannerGroupRunRequestPreview(
+        string groupIdOrName,
+        DadPlannerGroupStartRequest? startRequest)
+    {
+        var group = ResolvePlannerGroup(groupIdOrName);
+        if (group == null)
+        {
+            return new DadPlannerRunRequestPreview
+            {
+                CanStart = false,
+                StatusSummary = $"Planner group '{groupIdOrName}' was not found.",
+                BlockedReason = $"Planner group '{groupIdOrName}' was not found.",
+            };
+        }
+
+        var options = BuildPlannerOptionsForGroup(group, startRequest);
+        var pool = CharacterIntelligenceService.CurrentPool;
+        var preview = PresetProviderService.BuildPlannerPreview(pool, options, group);
+        return ApplyPlannerRuntimeTruth(PresetProviderService.BuildPlannerRunRequestPreview(
+            pool,
+            options,
+            plannerPreviewOverride: preview,
+            selectedGroup: group), pool);
+    }
+
+    private DadPlannerGroup BuildPlannerGroupFromCurrentPlanner(string displayName)
+    {
+        var preview = BuildPlannerPreview();
+        return new DadPlannerGroup
+        {
+            GroupId = Guid.NewGuid().ToString("N"),
+            DisplayName = string.IsNullOrWhiteSpace(displayName) ? $"{preview.LaneDefinition.DisplayName} Group" : displayName.Trim(),
+            ActivityMode = PlannerOptions.ActivityMode,
+            OperatorMode = PlannerOptions.OperatorMode,
+            ConnectedOnly = PlannerOptions.ConnectedOnly,
+            SameDatacenterOnly = PlannerOptions.SameDatacenterOnly,
+            AllowStaleForPlanning = PlannerOptions.AllowStaleForPlanning,
+            TransportOwner = PlannerOptions.TransportOwner,
+            QueueAuthority = PlannerOptions.QueueAuthority,
+            InviteAuthority = PlannerOptions.InviteAuthority,
+            DutyContentFinderConditionId = PlannerOptions.DutyContentFinderConditionId,
+            DutyDisplayName = PlannerOptions.DutyDisplayName,
+            DutyUnsynced = PlannerOptions.DutyUnsynced,
+            DutyExpectedPartySize = PlannerOptions.DutyExpectedPartySize,
+            MogtomePreset = PlannerOptions.MogtomePreset,
+            MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
+            Slots = BuildPlannerGroupSlotsFromPreview(preview),
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+        };
+    }
+
+    private List<DadPlannerGroupSlot> BuildPlannerGroupSlotsFromPreview(DadActivityPreset preview)
+    {
+        return preview.SelectedCharacters.Select(slot =>
+        {
+            var character = preview.AvailableCharacters.FirstOrDefault(candidate =>
+                string.Equals(candidate.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase));
+            var accountKey = !slot.RequiredAccountKey.IsEmpty
+                ? slot.RequiredAccountKey
+                : character == null
+                    ? new DadAccountKey(string.Empty)
+                    : ResolvePlannerAccountKey(character);
+            return new DadPlannerGroupSlot
+            {
+                SlotId = slot.SlotId,
+                RequiredRole = slot.RequiredRole,
+                RequiredAccountKey = accountKey,
+                RequiredCharacterKey = string.IsNullOrWhiteSpace(slot.CharacterKey)
+                    ? new DadCharacterKey(string.Empty)
+                    : new DadCharacterKey(slot.CharacterKey),
+                AllowSubstitution = slot.AllowSubstitution,
+            };
+        }).ToList();
+    }
+
+    private DadPlannerGroupSummary BuildPlannerGroupSummary(DadPlannerGroup group)
+    {
+        var lane = PresetProviderService.GetPlannerLaneDefinition(group.ActivityMode);
+        var requiredAccounts = group.Slots
+            .Select(static slot => slot.RequiredAccountKey.Value)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var requiredCharacters = group.Slots
+            .Select(static slot => slot.RequiredCharacterKey.Value)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        return new DadPlannerGroupSummary
+        {
+            GroupId = group.GroupId,
+            DisplayName = group.DisplayName,
+            ActivityMode = group.ActivityMode,
+            Lane = lane.DisplayName,
+            SlotCount = group.Slots.Count,
+            RequiredAccountCount = requiredAccounts,
+            RequiredCharacterCount = requiredCharacters,
+            Summary = $"{lane.DisplayName} | {group.Slots.Count} slot(s) | accounts {requiredAccounts} | characters {requiredCharacters}",
+        };
+    }
+
+    private DadPresetPlannerOptions BuildPlannerOptionsForGroup(DadPlannerGroup group, DadPlannerGroupStartRequest? startRequest)
+    {
+        var activityMode = ResolvePlannerGroupLane(group.ActivityMode, startRequest?.Lane);
+        return new DadPresetPlannerOptions
+        {
+            PresetName = group.DisplayName,
+            SelectedPlannerGroupId = group.GroupId,
+            ActivityMode = activityMode,
+            ActivityName = PresetProviderService.GetPlannerLaneDefinition(activityMode).DisplayName,
+            OperatorMode = group.OperatorMode,
+            ConnectedOnly = group.ConnectedOnly,
+            SameDatacenterOnly = group.SameDatacenterOnly,
+            AllowStaleForPlanning = group.AllowStaleForPlanning,
+            TransportOwner = group.TransportOwner,
+            QueueAuthority = group.QueueAuthority,
+            InviteAuthority = group.InviteAuthority,
+            DutyContentFinderConditionId = startRequest?.DutyContentFinderConditionId ?? group.DutyContentFinderConditionId,
+            DutyDisplayName = group.DutyDisplayName,
+            DutyUnsynced = group.DutyUnsynced,
+            DutyExpectedPartySize = group.DutyExpectedPartySize,
+            MogtomePreset = group.MogtomePreset,
+            MogtomeDutyPolicy = group.MogtomeDutyPolicy,
+            IncludedAccountKeys = group.Slots
+                .Select(static slot => slot.RequiredAccountKey)
+                .Where(static key => !key.IsEmpty)
+                .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+        };
+    }
+
+    private DadPlannerActivityMode ResolvePlannerGroupLane(DadPlannerActivityMode fallback, string? lane)
+    {
+        if (string.IsNullOrWhiteSpace(lane))
+            return fallback;
+
+        var trimmed = lane.Trim();
+        if (Enum.TryParse<DadPlannerActivityMode>(trimmed, ignoreCase: true, out var parsed))
+            return parsed;
+
+        return PresetProviderService.GetPlannerLaneDefinitions()
+            .FirstOrDefault(definition =>
+                string.Equals(definition.DisplayName, trimmed, StringComparison.OrdinalIgnoreCase))
+            ?.ActivityMode ?? fallback;
+    }
+
+    private static DadPlannerGroup ClonePlannerGroup(DadPlannerGroup source)
+        => new()
+        {
+            GroupId = source.GroupId,
+            DisplayName = source.DisplayName,
+            ActivityMode = source.ActivityMode,
+            OperatorMode = source.OperatorMode,
+            ConnectedOnly = source.ConnectedOnly,
+            SameDatacenterOnly = source.SameDatacenterOnly,
+            AllowStaleForPlanning = source.AllowStaleForPlanning,
+            TransportOwner = source.TransportOwner,
+            QueueAuthority = source.QueueAuthority,
+            InviteAuthority = source.InviteAuthority,
+            DutyContentFinderConditionId = source.DutyContentFinderConditionId,
+            DutyDisplayName = source.DutyDisplayName,
+            DutyUnsynced = source.DutyUnsynced,
+            DutyExpectedPartySize = source.DutyExpectedPartySize,
+            MogtomePreset = source.MogtomePreset,
+            MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
+            {
+                SlotId = slot.SlotId,
+                RequiredRole = slot.RequiredRole,
+                RequiredAccountKey = slot.RequiredAccountKey,
+                RequiredCharacterKey = slot.RequiredCharacterKey,
+                AllowSubstitution = slot.AllowSubstitution,
+            }).ToList(),
+            CreatedAtUtc = source.CreatedAtUtc,
+            UpdatedAtUtc = source.UpdatedAtUtc,
+        };
+
+    private static void ApplyPlannerGroupDefaults(DadPlannerGroup group, DadPresetPlannerOptions options)
+    {
+        options.SelectedPlannerGroupId = group.GroupId;
+        options.PresetName = group.DisplayName;
+        options.ActivityMode = group.ActivityMode;
+        options.OperatorMode = group.OperatorMode;
+        options.ConnectedOnly = group.ConnectedOnly;
+        options.SameDatacenterOnly = group.SameDatacenterOnly;
+        options.AllowStaleForPlanning = group.AllowStaleForPlanning;
+        options.TransportOwner = group.TransportOwner;
+        options.QueueAuthority = group.QueueAuthority;
+        options.InviteAuthority = group.InviteAuthority;
+        options.DutyContentFinderConditionId = group.DutyContentFinderConditionId;
+        options.DutyDisplayName = group.DutyDisplayName;
+        options.DutyUnsynced = group.DutyUnsynced;
+        options.DutyExpectedPartySize = group.DutyExpectedPartySize;
+        options.MogtomePreset = group.MogtomePreset;
+        options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
+        options.IncludedAccountKeys = group.Slots
+            .Select(static slot => slot.RequiredAccountKey)
+            .Where(static key => !key.IsEmpty)
+            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static DadAccountKey ResolvePlannerAccountKey(DadAcquiredCharacter character)
+        => !string.IsNullOrWhiteSpace(character.AccountId)
+            ? new DadAccountKey(character.AccountId)
+            : !string.IsNullOrWhiteSpace(character.AccountAlias)
+                ? new DadAccountKey(character.AccountAlias)
+                : new DadAccountKey(string.Empty);
 
     public string ToggleKrangleOperatorNames()
     {
@@ -434,6 +810,7 @@ public sealed class Plugin : IDalamudPlugin
         return string.Join("|", new[]
         {
             $"activity={options.ActivityMode}",
+            $"group={options.SelectedPlannerGroupId.Trim()}:{plannerPreview.SelectedPlannerGroupId.Trim()}",
             $"operator={options.OperatorMode}",
             $"transport={options.TransportOwner}",
             $"queue={options.QueueAuthority}",

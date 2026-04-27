@@ -326,27 +326,34 @@ public sealed class DadPresetProviderService
         return BuildAccountFilterSummary(pool, options);
     }
 
-    public DadActivityPreset BuildPlannerPreview(DadCharacterPool pool, DadPresetPlannerOptions? options = null)
+    public DadActivityPreset BuildPlannerPreview(
+        DadCharacterPool pool,
+        DadPresetPlannerOptions? options = null,
+        DadPlannerGroup? selectedGroup = null)
     {
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
         var lane = ResolveLaneDefinition(options.ActivityMode);
         var selectedDuty = GetPlannerSelectedDuty(options);
         var dutySelectorBlocker = BuildDutySelectorBlocker(lane, selectedDuty);
+        selectedGroup = NormalizeSelectedGroup(selectedGroup);
 
         var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
         var effectiveInviteAuthority = ResolveEffectiveInviteAuthority(options);
         var filterStats = BuildFilterStats(pool, localCharacter, options);
         var accountFilterSummary = BuildAccountFilterSummary(pool, options);
-        var availableCharacters = pool.Characters
-            .Where(character => MatchesPlannerFilters(character, localCharacter, options))
-            .OrderByDescending(character => GetPlanningPriority(character, options))
-            .ThenBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
-            .Select(static character => character.Clone())
-            .ToList();
+        var availableCharacters = BuildAvailableCharacters(pool, localCharacter, options, selectedGroup);
 
-        var leaderCandidate = availableCharacters.FirstOrDefault(static character => IsConnectedForPlanning(character));
-        var selectedCharacters = BuildSlotAssignments(availableCharacters, lane);
+        var selectedCharacters = selectedGroup?.Slots.Count > 0
+            ? BuildGroupSlotAssignments(availableCharacters, selectedGroup, lane)
+            : BuildSlotAssignments(availableCharacters, lane);
+        var groupBlockers = BuildPlannerGroupBlockers(selectedGroup, selectedCharacters);
+        var leaderCandidate = selectedCharacters
+                                  .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
+                                  .Select(slot => availableCharacters.FirstOrDefault(character =>
+                                      string.Equals(character.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase)))
+                                  .FirstOrDefault(static character => character != null && IsConnectedForPlanning(character))
+                              ?? availableCharacters.FirstOrDefault(static character => IsConnectedForPlanning(character));
         var missingRoleSlots = selectedCharacters
             .Where(static slot => string.IsNullOrWhiteSpace(slot.CharacterKey))
             .Select(static slot => slot.SlotId)
@@ -357,7 +364,8 @@ public sealed class DadPresetProviderService
         var blocked = string.IsNullOrWhiteSpace(leaderCandidate?.CharacterKey)
                       || missingRoleSlots.Count > 0
                       || missingDutySelector
-                      || insufficientPlannerPartyShell;
+                      || insufficientPlannerPartyShell
+                      || groupBlockers.Count > 0;
         var localCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.LocalRuntime);
         var remoteCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.PeerRuntime);
 
@@ -365,6 +373,9 @@ public sealed class DadPresetProviderService
         {
             PresetId = $"{options.ActivityMode}-{options.OperatorMode}",
             DisplayName = options.PresetName,
+            SelectedPlannerGroupId = selectedGroup?.GroupId ?? string.Empty,
+            SelectedPlannerGroupName = selectedGroup?.DisplayName ?? string.Empty,
+            UsingPlannerGroup = selectedGroup != null,
             ActivityMode = options.ActivityMode,
             ActivityModeId = GetPlannerActivityModeLabel(options.ActivityMode),
             OperatorMode = options.OperatorMode,
@@ -400,6 +411,19 @@ public sealed class DadPresetProviderService
 
         if (insufficientPlannerPartyShell)
             preset.Blockers.Add($"Selected duty needs party size {requestedPartySize}, but planner shell currently exposes only {selectedCharacters.Count} typed slot(s).");
+
+        preset.Blockers.AddRange(groupBlockers);
+
+        if (selectedGroup != null)
+        {
+            preset.Notes.Add($"Planner group selected: {selectedGroup.DisplayName} ({selectedGroup.Slots.Count} slot(s)).");
+            var offlinePreviewSlots = selectedCharacters
+                .Where(static slot => slot.SelectedSource == DadCharacterSource.XadbOnly)
+                .Select(static slot => slot.SlotId)
+                .ToList();
+            if (offlinePreviewSlots.Count > 0)
+                preset.Notes.Add($"Offline/XADB-only preview slot(s): {string.Join(", ", offlinePreviewSlots)}. These rows are design-time only and will block live start until connected.");
+        }
 
         if (blocked)
         {
@@ -449,10 +473,12 @@ public sealed class DadPresetProviderService
         DadPresetPlannerOptions? options = null,
         string? requestId = null,
         DateTime? requestedAtUtc = null,
-        DadActivityPreset? plannerPreviewOverride = null)
+        DadActivityPreset? plannerPreviewOverride = null,
+        DadPlannerGroup? selectedGroup = null)
     {
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
+        selectedGroup = NormalizeSelectedGroup(selectedGroup);
         var lane = ResolveLaneDefinition(options.ActivityMode);
         var requestModuleId = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane);
         var selectedDuty = GetPlannerSelectedDuty(options);
@@ -460,15 +486,15 @@ public sealed class DadPresetProviderService
         var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
         var capability = moduleRegistry.GetCapability(requestModuleId);
 
-        var plannerPreview = plannerPreviewOverride ?? BuildPlannerPreview(pool, options);
+        var plannerPreview = plannerPreviewOverride ?? BuildPlannerPreview(pool, options, selectedGroup);
         var selectedCharacters = ResolveSelectedCharacters(plannerPreview);
         var previewOnly = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine;
         var request = new DadRunRequest
         {
             RequestId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId,
             RequestedAtUtc = requestedAtUtc ?? DateTime.UtcNow,
-            RequestedBy = previewOnly ? "planner-preview" : "planner",
-            Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty),
+            RequestedBy = previewOnly ? "planner-preview" : selectedGroup == null ? "planner" : $"planner-group:{selectedGroup.DisplayName}",
+            Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty, selectedGroup),
         };
 
         PopulatePlannerRequestTask(request, options, selectedDuty, requestedPartySize);
@@ -762,6 +788,7 @@ public sealed class DadPresetProviderService
 
     private void NormalizePlannerOptions(DadPresetPlannerOptions options)
     {
+        options.SelectedPlannerGroupId = options.SelectedPlannerGroupId?.Trim() ?? string.Empty;
         options.ActivityName = options.ActivityMode switch
         {
             DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ",
@@ -798,6 +825,60 @@ public sealed class DadPresetProviderService
         options.IncludedAccountKeys = options.IncludedAccountKeys
             .Where(static key => !key.IsEmpty)
             .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static DadPlannerGroup? NormalizeSelectedGroup(DadPlannerGroup? selectedGroup)
+    {
+        if (selectedGroup == null || string.IsNullOrWhiteSpace(selectedGroup.GroupId))
+            return null;
+
+        selectedGroup.DisplayName = string.IsNullOrWhiteSpace(selectedGroup.DisplayName)
+            ? "Dad Group"
+            : selectedGroup.DisplayName.Trim();
+        selectedGroup.MogtomeDutyPolicy = string.IsNullOrWhiteSpace(selectedGroup.MogtomeDutyPolicy)
+            ? DadMogtomeDutyPolicies.PresetHandoff
+            : selectedGroup.MogtomeDutyPolicy.Trim();
+        selectedGroup.Slots = selectedGroup.Slots
+            .Where(static slot => slot != null)
+            .Select(static slot =>
+            {
+                slot.SlotId = string.IsNullOrWhiteSpace(slot.SlotId) ? "Slot" : slot.SlotId.Trim();
+                return slot;
+            })
+            .ToList();
+        return selectedGroup;
+    }
+
+    private static List<DadAcquiredCharacter> BuildAvailableCharacters(
+        DadCharacterPool pool,
+        DadAcquiredCharacter? localCharacter,
+        DadPresetPlannerOptions options,
+        DadPlannerGroup? selectedGroup)
+    {
+        var availableCharacters = pool.Characters
+            .Where(character => MatchesPlannerFilters(character, localCharacter, options))
+            .Select(static character => character.Clone())
+            .ToList();
+
+        if (selectedGroup != null)
+        {
+            foreach (var character in pool.Characters)
+            {
+                if (availableCharacters.Any(existing =>
+                        string.Equals(existing.CharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                if (selectedGroup.Slots.Any(slot => MatchesGroupSlot(character, slot)))
+                    availableCharacters.Add(character.Clone());
+            }
+        }
+
+        return availableCharacters
+            .OrderByDescending(character => GetPlanningPriority(character, options))
+            .ThenBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
@@ -865,6 +946,109 @@ public sealed class DadPresetProviderService
         return selected;
     }
 
+    private static List<DadPresetCharacterSlot> BuildGroupSlotAssignments(
+        List<DadAcquiredCharacter> availableCharacters,
+        DadPlannerGroup selectedGroup,
+        DadPlannerLaneDefinition lane)
+    {
+        if (selectedGroup.Slots.Count == 0)
+            return BuildSlotAssignments(availableCharacters, lane);
+
+        var remaining = availableCharacters
+            .Select(static character => character.Clone())
+            .ToList();
+        var selected = new List<DadPresetCharacterSlot>(selectedGroup.Slots.Count);
+
+        foreach (var groupSlot in selectedGroup.Slots)
+        {
+            var candidates = remaining
+                .Where(character => MatchesGroupSlot(character, groupSlot))
+                .ToList();
+            var assignedCharacter = candidates.FirstOrDefault(candidate =>
+                                        !groupSlot.RequiredCharacterKey.IsEmpty &&
+                                        string.Equals(candidate.CharacterKey, groupSlot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+                                    ?? candidates.FirstOrDefault(candidate => IsExactRoleMatch(groupSlot.RequiredRole, ClassifyRole(candidate)))
+                                    ?? (groupSlot.AllowSubstitution ? candidates.FirstOrDefault() : null);
+            var isSubstitution = assignedCharacter != null &&
+                                 ((groupSlot.RequiredCharacterKey.IsEmpty &&
+                                   !IsExactRoleMatch(groupSlot.RequiredRole, ClassifyRole(assignedCharacter))) ||
+                                  (!groupSlot.RequiredCharacterKey.IsEmpty &&
+                                   !string.Equals(assignedCharacter.CharacterKey, groupSlot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase)));
+
+            if (assignedCharacter != null)
+                remaining.RemoveAll(character => string.Equals(character.CharacterKey, assignedCharacter.CharacterKey, StringComparison.OrdinalIgnoreCase));
+
+            selected.Add(BuildGroupSlot(groupSlot, assignedCharacter, isSubstitution));
+        }
+
+        return selected;
+    }
+
+    private static DadPresetCharacterSlot BuildGroupSlot(DadPlannerGroupSlot groupSlot, DadAcquiredCharacter? character, bool isSubstitution)
+    {
+        if (character == null)
+        {
+            var requirement = !groupSlot.RequiredCharacterKey.IsEmpty
+                ? $"character {groupSlot.RequiredCharacterKey}"
+                : !groupSlot.RequiredAccountKey.IsEmpty
+                    ? $"account {groupSlot.RequiredAccountKey}"
+                    : FormatRoleRequirement(groupSlot.RequiredRole);
+            return new DadPresetCharacterSlot
+            {
+                SlotId = groupSlot.SlotId,
+                RequiredRole = groupSlot.RequiredRole,
+                RequiredAccountKey = groupSlot.RequiredAccountKey,
+                RequiredCharacterKey = groupSlot.RequiredCharacterKey,
+                AssignmentMode = groupSlot.RequiredCharacterKey.IsEmpty
+                    ? DadSlotAssignmentMode.SpecificRole
+                    : DadSlotAssignmentMode.SpecificCharacter,
+                AllowSubstitution = groupSlot.AllowSubstitution,
+                AssignmentSummary = "Missing group assignment",
+                StatusText = "Missing",
+                BlockerSummary = $"No candidate matched required {requirement}.",
+            };
+        }
+
+        var readiness = FormatReadiness(character.Readiness);
+        var freshness = FormatFreshness(character);
+        var accountKey = groupSlot.RequiredAccountKey.IsEmpty
+            ? GetPlannerAccountSelectionKey(character)
+            : groupSlot.RequiredAccountKey;
+        var requiredCharacterKey = groupSlot.RequiredCharacterKey.IsEmpty
+            ? new DadCharacterKey(character.CharacterKey)
+            : groupSlot.RequiredCharacterKey;
+        var blockers = character.Blockers.Count == 0 ? "No blockers recorded." : string.Join(" | ", character.Blockers);
+        if (character.Source == DadCharacterSource.XadbOnly)
+            blockers = blockers == "No blockers recorded."
+                ? "XADB-only/offline preview row; live runtime requires this account to connect."
+                : $"{blockers} | XADB-only/offline preview row; live runtime requires this account to connect.";
+        if (isSubstitution && !groupSlot.AllowSubstitution)
+            blockers = $"{blockers} | Substitution is disabled for this group slot.";
+
+        var assignmentSummary = isSubstitution
+            ? $"Group substitution via {FormatSourceLabel(character.Source)}"
+            : $"Group assignment via {FormatSourceLabel(character.Source)}";
+
+        return new DadPresetCharacterSlot
+        {
+            SlotId = groupSlot.SlotId,
+            RequiredRole = groupSlot.RequiredRole,
+            RequiredAccountKey = accountKey,
+            RequiredCharacterKey = requiredCharacterKey,
+            AssignmentMode = DadSlotAssignmentMode.SpecificCharacter,
+            AllowSubstitution = groupSlot.AllowSubstitution,
+            ContentId = character.ContentId == 0 ? null : character.ContentId,
+            CharacterKey = character.CharacterKey,
+            IsSubstitution = isSubstitution,
+            SelectedSource = character.Source,
+            SelectedFreshness = character.Freshness,
+            SelectedReadiness = character.Readiness,
+            AssignmentSummary = assignmentSummary,
+            StatusText = $"{(isSubstitution ? "substitution" : "exact")} | {readiness} | {freshness}",
+            BlockerSummary = blockers,
+        };
+    }
+
     private static DadPresetCharacterSlot BuildSlot(PlannerSlotDefinition slot, DadAcquiredCharacter? character, bool isSubstitution)
     {
         if (character == null)
@@ -873,6 +1057,8 @@ public sealed class DadPresetProviderService
             {
                 SlotId = slot.SlotId,
                 RequiredRole = slot.RequiredRole,
+                RequiredAccountKey = new DadAccountKey(string.Empty),
+                RequiredCharacterKey = new DadCharacterKey(string.Empty),
                 AssignmentMode = DadSlotAssignmentMode.Auto,
                 AllowSubstitution = slot.AllowSubstitution,
                 IsSubstitution = false,
@@ -893,6 +1079,8 @@ public sealed class DadPresetProviderService
         {
             SlotId = slot.SlotId,
             RequiredRole = slot.RequiredRole,
+            RequiredAccountKey = GetPlannerAccountSelectionKey(character),
+            RequiredCharacterKey = new DadCharacterKey(character.CharacterKey),
             AssignmentMode = DadSlotAssignmentMode.SpecificCharacter,
             AllowSubstitution = slot.AllowSubstitution,
             ContentId = character.ContentId == 0 ? null : character.ContentId,
@@ -1470,13 +1658,29 @@ public sealed class DadPresetProviderService
         DadActivityPreset plannerPreview,
         IReadOnlyList<DadAcquiredCharacter> selectedCharacters,
         bool previewOnly,
-        DadPlannerDutyOption? selectedDuty)
+        DadPlannerDutyOption? selectedDuty,
+        DadPlannerGroup? selectedGroup)
     {
         var lane = ResolveLaneDefinition(options.ActivityMode);
         var selectedCharacterKeys = selectedCharacters
             .Select(static character => new DadCharacterKey(character.CharacterKey))
             .Where(static key => !key.IsEmpty)
             .ToList();
+        List<DadAccountKey> requiredAccountKeys = selectedGroup == null
+            ? [..options.IncludedAccountKeys]
+            : selectedGroup.Slots
+                .Select(static slot => slot.RequiredAccountKey)
+                .Where(static key => !key.IsEmpty)
+                .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        List<DadCharacterKey> groupRequiredCharacterKeys = selectedGroup?.Slots
+            .Select(static slot => slot.RequiredCharacterKey)
+            .Where(static key => !key.IsEmpty)
+            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+        List<DadCharacterKey> requiredCharacterKeys = groupRequiredCharacterKeys.Count > 0
+            ? groupRequiredCharacterKeys
+            : selectedCharacterKeys;
         var expectedPartySize = previewOnly
             ? 1
             : ResolveRequestedPartySize(options, selectedDuty, lane);
@@ -1489,15 +1693,15 @@ public sealed class DadPresetProviderService
             ModuleTarget = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane),
             QueueAuthority = previewOnly ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
             PreferredLeaderCharacterKey = new DadCharacterKey(plannerPreview.LeaderCharacterKey),
-            RequiredAccountKeys = [..options.IncludedAccountKeys],
+            RequiredAccountKeys = requiredAccountKeys,
             PreferredCharacterKeys = [..selectedCharacterKeys],
-            RequiredCharacterKeys = previewOnly ? [] : [..selectedCharacterKeys],
+            RequiredCharacterKeys = selectedGroup == null && previewOnly ? [] : [..requiredCharacterKeys],
             RosterIntent = new DadRosterIntent
             {
                 ExpectedPartySize = expectedPartySize,
                 RequireRemoteParticipants = !previewOnly && expectedPartySize > 1,
                 AllowStoredXadbFallback = false,
-                RequireExactCharacters = !previewOnly,
+                RequireExactCharacters = selectedGroup != null || !previewOnly,
             },
             ExecutionConstraintSummary = BuildPlannerExecutionConstraint(options),
         };
@@ -1529,6 +1733,53 @@ public sealed class DadPresetProviderService
             return false;
 
         return !options.SameDatacenterOnly || IsSameDatacenter(localCharacter, character);
+    }
+
+    private static bool MatchesGroupSlot(DadAcquiredCharacter character, DadPlannerGroupSlot slot)
+    {
+        if (!slot.RequiredCharacterKey.IsEmpty &&
+            !string.Equals(character.CharacterKey, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!slot.RequiredAccountKey.IsEmpty && !MatchesPlannerAccountKey(character, slot.RequiredAccountKey.Value))
+            return false;
+
+        return true;
+    }
+
+    private static List<string> BuildPlannerGroupBlockers(DadPlannerGroup? selectedGroup, IReadOnlyList<DadPresetCharacterSlot> selectedSlots)
+    {
+        if (selectedGroup == null)
+            return [];
+
+        var blockers = new List<string>();
+        foreach (var duplicateAccount in selectedGroup.Slots
+                     .Select(static slot => slot.RequiredAccountKey.Value)
+                     .Where(static value => !string.IsNullOrWhiteSpace(value))
+                     .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
+                     .Where(static group => group.Count() > 1)
+                     .Select(static group => group.Key))
+        {
+            blockers.Add($"Planner group '{selectedGroup.DisplayName}' uses account '{duplicateAccount}' in multiple slots; one account can only satisfy one planned slot.");
+        }
+
+        foreach (var slot in selectedGroup.Slots.Where(static slot => slot.RequiredAccountKey.IsEmpty))
+            blockers.Add($"Planner group slot '{slot.SlotId}' is missing a required account key.");
+
+        foreach (var duplicateAssignedAccount in selectedSlots
+                     .Select(static slot => slot.RequiredAccountKey.Value)
+                     .Where(static value => !string.IsNullOrWhiteSpace(value))
+                     .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
+                     .Where(static group => group.Count() > 1)
+                     .Select(static group => group.Key))
+        {
+            if (blockers.All(blocker => !blocker.Contains(duplicateAssignedAccount, StringComparison.OrdinalIgnoreCase)))
+                blockers.Add($"Planner group selected account '{duplicateAssignedAccount}' for multiple slots; one account can only satisfy one planned slot.");
+        }
+
+        return blockers;
     }
 
     private static int GetPlanningPriority(DadAcquiredCharacter character, DadPresetPlannerOptions options)

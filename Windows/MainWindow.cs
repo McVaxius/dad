@@ -16,6 +16,7 @@ public sealed class MainWindow : Window, IDisposable
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string plannerDutySearch = string.Empty;
+    private string plannerGroupNameBuffer = string.Empty;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -721,6 +722,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         DrawSectionHeader("Lane Config", "Editable planner inputs plus lane-specific config. Read-only lanes stay explicit.");
         ImGui.BeginDisabled(plannerLocked);
+        DrawPlannerGroupControls(characterPool, plannerOptions, plannerPreview);
+        ImGui.Spacing();
         if (debugUi)
         {
             DrawPlannerOperatorModeSelector(plannerOptions);
@@ -775,6 +778,7 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Lane", $"{plannerPreview.LaneDefinition.DisplayName} | {plannerPreview.LaneDefinition.MaturityLabel}");
         DrawStatusRow("Lane summary", plannerPreview.LaneDefinition.Summary);
         DrawStatusRow("Preset", plannerPreview.DisplayName);
+        DrawStatusRow("Planner group", plannerPreview.UsingPlannerGroup ? plannerPreview.SelectedPlannerGroupName : "Auto roster");
         DrawStatusRow("Validation", $"{FormatReadiness(plannerPreview.ValidationState)} | {plannerPreview.ValidationSummary}");
         DrawStatusRow("Summary", FormatOperatorText(plannerPreview.PlannerSummary, "(none)"));
 
@@ -2382,6 +2386,266 @@ public sealed class MainWindow : Window, IDisposable
         var retry = status.MaxRetryAttempts <= 0 ? string.Empty : $" | Retry {status.RetryAttempt}/{status.MaxRetryAttempts}";
         return FormatOperatorText($"{status.DisplayName} / {status.Status} / {status.Phase}{retry} | {status.Summary}{blocker}", "(none)");
     }
+
+    private void DrawPlannerGroupControls(
+        DadCharacterPool characterPool,
+        DadPresetPlannerOptions plannerOptions,
+        DadActivityPreset plannerPreview)
+    {
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var preview = selectedGroup == null ? "Auto roster" : selectedGroup.DisplayName;
+        if (ImGui.BeginCombo("Planner group", preview))
+        {
+            var autoSelected = selectedGroup == null;
+            if (ImGui.Selectable("Auto roster", autoSelected))
+                plugin.ClearPlannerGroupSelection();
+            if (autoSelected)
+                ImGui.SetItemDefaultFocus();
+
+            foreach (var group in plugin.PlannerGroups.OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase))
+            {
+                var selected = selectedGroup != null &&
+                               string.Equals(group.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(group.DisplayName, selected))
+                {
+                    plugin.SelectPlannerGroup(group.GroupId);
+                    plannerGroupNameBuffer = group.DisplayName;
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (string.IsNullOrWhiteSpace(plannerGroupNameBuffer))
+            plannerGroupNameBuffer = selectedGroup?.DisplayName ?? $"{plannerPreview.LaneDefinition.DisplayName} Group";
+
+        ImGui.SetNextItemWidth(MathF.Min(280f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText("Group name", ref plannerGroupNameBuffer, 96);
+
+        if (ImGui.SmallButton("Save current planner as group"))
+        {
+            var group = plugin.SaveCurrentPlannerAsGroup(plannerGroupNameBuffer);
+            plannerGroupNameBuffer = group.DisplayName;
+            plugin.PrintStatus($"Saved planner group '{group.DisplayName}'.");
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(selectedGroup == null);
+        if (ImGui.SmallButton("Duplicate group"))
+        {
+            var group = plugin.DuplicateSelectedPlannerGroup(plannerGroupNameBuffer);
+            if (group != null)
+            {
+                plannerGroupNameBuffer = group.DisplayName;
+                plugin.PrintStatus($"Duplicated planner group '{group.DisplayName}'.");
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Rename group") && plugin.RenameSelectedPlannerGroup(plannerGroupNameBuffer))
+            plugin.PrintStatus($"Renamed planner group to '{plannerGroupNameBuffer}'.");
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Delete group") && plugin.DeleteSelectedPlannerGroup())
+        {
+            plannerGroupNameBuffer = $"{plannerPreview.LaneDefinition.DisplayName} Group";
+            plugin.PrintStatus("Deleted selected planner group.");
+        }
+        ImGui.EndDisabled();
+
+        selectedGroup = plugin.GetSelectedPlannerGroup();
+        if (selectedGroup == null)
+        {
+            DrawStatusRow("Roster source", "Auto roster from filtered pool.");
+            return;
+        }
+
+        DrawStatusRow("Selected group", $"{selectedGroup.DisplayName} | {selectedGroup.Slots.Count} slot(s)");
+        DrawStatusRow("Group lane", plugin.PresetProviderService.GetPlannerLaneDefinition(selectedGroup.ActivityMode).DisplayName);
+        if (ImGui.SmallButton("Refresh group slots from current planner"))
+        {
+            plugin.ReplaceSelectedPlannerGroupSlotsFromCurrentPreview();
+            plugin.PrintStatus($"Updated planner group '{selectedGroup.DisplayName}' slots from current preview.");
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Add empty slot"))
+        {
+            selectedGroup.Slots.Add(new DadPlannerGroupSlot
+            {
+                SlotId = $"Slot{selectedGroup.Slots.Count + 1}",
+                RequiredRole = DadPartyRole.Any,
+                AllowSubstitution = true,
+            });
+            plugin.TouchPlannerGroup(selectedGroup);
+        }
+
+        DrawPlannerGroupSlotEditor(characterPool, selectedGroup);
+    }
+
+    private void DrawPlannerGroupSlotEditor(DadCharacterPool characterPool, DadPlannerGroup group)
+    {
+        if (!ImGui.BeginTable("dad-planner-group-slots", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("Slot");
+        ImGui.TableSetupColumn("Role");
+        ImGui.TableSetupColumn("Account");
+        ImGui.TableSetupColumn("Character");
+        ImGui.TableSetupColumn("Sub");
+        ImGui.TableSetupColumn("Edit");
+        ImGui.TableHeadersRow();
+
+        for (var index = 0; index < group.Slots.Count; index++)
+        {
+            var slot = group.Slots[index];
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            var slotId = slot.SlotId;
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.InputText($"##dad-group-slot-id-{index}", ref slotId, 48))
+            {
+                slot.SlotId = slotId;
+                plugin.TouchPlannerGroup(group);
+            }
+
+            ImGui.TableNextColumn();
+            DrawPlannerGroupRoleCombo(group, slot, index);
+
+            ImGui.TableNextColumn();
+            DrawPlannerGroupAccountCombo(characterPool, group, slot, index);
+
+            ImGui.TableNextColumn();
+            DrawPlannerGroupCharacterCombo(characterPool, group, slot, index);
+
+            ImGui.TableNextColumn();
+            var allowSubstitution = slot.AllowSubstitution;
+            if (ImGui.Checkbox($"##dad-group-sub-{index}", ref allowSubstitution))
+            {
+                slot.AllowSubstitution = allowSubstitution;
+                plugin.TouchPlannerGroup(group);
+            }
+
+            ImGui.TableNextColumn();
+            if (ImGui.SmallButton($"Remove##dad-group-slot-remove-{index}"))
+            {
+                group.Slots.RemoveAt(index);
+                plugin.TouchPlannerGroup(group);
+                break;
+            }
+        }
+
+        ImGui.EndTable();
+    }
+
+    private void DrawPlannerGroupRoleCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
+    {
+        ImGui.SetNextItemWidth(-1f);
+        if (!ImGui.BeginCombo($"##dad-group-role-{index}", FormatRoleRequirement(slot.RequiredRole)))
+            return;
+
+        foreach (var role in Enum.GetValues<DadPartyRole>())
+        {
+            var selected = role == slot.RequiredRole;
+            if (ImGui.Selectable(FormatRoleRequirement(role), selected))
+            {
+                slot.RequiredRole = role;
+                plugin.TouchPlannerGroup(group);
+            }
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private void DrawPlannerGroupAccountCombo(
+        DadCharacterPool characterPool,
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index)
+    {
+        var preview = slot.RequiredAccountKey.IsEmpty ? "(missing)" : slot.RequiredAccountKey.Value;
+        ImGui.SetNextItemWidth(-1f);
+        if (!ImGui.BeginCombo($"##dad-group-account-{index}", preview))
+            return;
+
+        foreach (var option in plugin.PresetProviderService.GetPlannerAccountOptions(characterPool))
+        {
+            var selected = string.Equals(slot.RequiredAccountKey.Value, option.AccountKey.Value, StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable(option.DisplayName, selected))
+            {
+                slot.RequiredAccountKey = option.AccountKey;
+                if (!slot.RequiredCharacterKey.IsEmpty &&
+                    !characterPool.Characters.Any(character =>
+                        string.Equals(character.CharacterKey, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase) &&
+                        MatchesPlannerGroupAccount(character, option.AccountKey)))
+                {
+                    slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+                }
+
+                plugin.TouchPlannerGroup(group);
+            }
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private void DrawPlannerGroupCharacterCombo(
+        DadCharacterPool characterPool,
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index)
+    {
+        var preview = slot.RequiredCharacterKey.IsEmpty
+            ? "Any character"
+            : FormatOperatorCharacterKey(slot.RequiredCharacterKey.Value, slot.RequiredCharacterKey.Value);
+        ImGui.SetNextItemWidth(-1f);
+        if (!ImGui.BeginCombo($"##dad-group-character-{index}", preview))
+            return;
+
+        if (ImGui.Selectable("Any character on account", slot.RequiredCharacterKey.IsEmpty))
+        {
+            slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+            plugin.TouchPlannerGroup(group);
+        }
+
+        foreach (var character in characterPool.Characters
+                     .Where(character => slot.RequiredAccountKey.IsEmpty || MatchesPlannerGroupAccount(character, slot.RequiredAccountKey))
+                     .OrderBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase))
+        {
+            var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase);
+            var source = plugin.PresetProviderService.GetCharacterSourceLabel(character.Source);
+            var label = $"{FormatOperatorCharacterKey(character.CharacterKey, character.CharacterKey)} | {FormatAccount(character)} | {source}";
+            if (ImGui.Selectable(label, selected))
+            {
+                slot.RequiredCharacterKey = new DadCharacterKey(character.CharacterKey);
+                slot.RequiredAccountKey = ResolvePlannerGroupAccountKey(character);
+                plugin.TouchPlannerGroup(group);
+            }
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private static bool MatchesPlannerGroupAccount(DadAcquiredCharacter character, DadAccountKey accountKey)
+        => (!string.IsNullOrWhiteSpace(character.AccountId)
+            && string.Equals(character.AccountId, accountKey.Value, StringComparison.OrdinalIgnoreCase))
+           || (!string.IsNullOrWhiteSpace(character.AccountAlias)
+               && string.Equals(character.AccountAlias, accountKey.Value, StringComparison.OrdinalIgnoreCase));
+
+    private static DadAccountKey ResolvePlannerGroupAccountKey(DadAcquiredCharacter character)
+        => !string.IsNullOrWhiteSpace(character.AccountId)
+            ? new DadAccountKey(character.AccountId)
+            : !string.IsNullOrWhiteSpace(character.AccountAlias)
+                ? new DadAccountKey(character.AccountAlias)
+                : new DadAccountKey(string.Empty);
 
     private void DrawPlannerOperatorModeSelector(DadPresetPlannerOptions plannerOptions)
     {
