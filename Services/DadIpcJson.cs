@@ -13,6 +13,17 @@ internal static class DadIpcJson
         if (string.IsNullOrWhiteSpace(json))
             return default;
 
-        return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
+        catch (NotSupportedException)
+        {
+            return default;
+        }
     }
 }

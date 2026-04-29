@@ -1,6 +1,7 @@
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
 using dad.Models;
+using FFXIVClientStructs.FFXIV.Client.Enums;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
@@ -68,7 +69,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private DateTime nextRegisterAttemptUtc = DateTime.MinValue;
     private DateTime nextConfirmAttemptUtc = DateTime.MinValue;
     private DateTime lastDutyCompletedUtc = DateTime.MinValue;
-    private ushort lastDutyCompletedTerritoryId;
+    private uint lastDutyCompletedTerritoryId;
     private string activeRunId = string.Empty;
     private bool dutyStateSubscribed;
     private bool dutyEntryEvidenceObserved;
@@ -560,7 +561,13 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         }
     }
 
+    private void OnDutyCompleted(Dalamud.Game.DutyState.IDutyStateEventArgs args)
+        => OnDutyCompleted(args.TerritoryType.RowId);
+
     private void OnDutyCompleted(object? sender, ushort territoryId)
+        => OnDutyCompleted((uint)territoryId);
+
+    private void OnDutyCompleted(uint territoryId)
     {
         lastDutyCompletedTerritoryId = territoryId;
         lastDutyCompletedUtc = DateTime.UtcNow;
@@ -690,10 +697,10 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 return false;
 
             return contentsFinder->QueueInfo.QueueState is
-                ContentsFinderQueueInfo.QueueStates.Pending or
-                ContentsFinderQueueInfo.QueueStates.Queued or
-                ContentsFinderQueueInfo.QueueStates.Ready or
-                ContentsFinderQueueInfo.QueueStates.Accepted;
+                ContentsFinderQueueState.Pending or
+                ContentsFinderQueueState.Queued or
+                ContentsFinderQueueState.Ready or
+                ContentsFinderQueueState.Accepted;
         }
         catch
         {
@@ -704,7 +711,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private static void FireAddonIntCallback(AtkUnitBase* addon, int value)
     {
         var atkValues = stackalloc AtkValue[1];
-        atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int;
+        atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType.Int;
         atkValues[0].Int = value;
         addon->FireCallback(1, atkValues, true);
     }
@@ -712,9 +719,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private static void FireAddonIntCallback(AtkUnitBase* addon, int first, int second)
     {
         var atkValues = stackalloc AtkValue[2];
-        atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int;
+        atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType.Int;
         atkValues[0].Int = first;
-        atkValues[1].Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int;
+        atkValues[1].Type = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType.Int;
         atkValues[1].Int = second;
         addon->FireCallback(2, atkValues, true);
     }

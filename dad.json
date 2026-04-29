@@ -5,9 +5,9 @@
   "Punchline": "Private Dad duty operations shell.",
   "Description": "Private Dad duty operations shell with multiplayer status, preset planning, queue routing, and Duty Support automation.",
   "InternalName": "dad",
-  "AssemblyVersion": "0.0.0.3",
+  "AssemblyVersion": "0.0.0.5",
   "ApplicableVersion": "any",
-  "DalamudApiLevel": 14,
+  "DalamudApiLevel": 15,
   "Tags": [
     "ffxiv",
     "dad",

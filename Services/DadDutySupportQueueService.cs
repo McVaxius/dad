@@ -94,7 +94,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     private DateTime nextRegisterAttemptUtc = DateTime.MinValue;
     private DateTime nextConfirmAttemptUtc = DateTime.MinValue;
     private DateTime lastDutyCompletedUtc = DateTime.MinValue;
-    private ushort lastDutyCompletedTerritoryId;
+    private uint lastDutyCompletedTerritoryId;
     private string activeRunId = string.Empty;
     private DadNpcDutyQueueMode activeMode = DadNpcDutyQueueMode.DutySupport;
     private bool dutyStateSubscribed;
@@ -659,7 +659,13 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         }
     }
 
+    private void OnDutyCompleted(Dalamud.Game.DutyState.IDutyStateEventArgs args)
+        => OnDutyCompleted(args.TerritoryType.RowId);
+
     private void OnDutyCompleted(object? sender, ushort territoryId)
+        => OnDutyCompleted((uint)territoryId);
+
+    private void OnDutyCompleted(uint territoryId)
     {
         lastDutyCompletedTerritoryId = territoryId;
         lastDutyCompletedUtc = DateTime.UtcNow;
@@ -678,7 +684,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
                 return false;
 
             var atkValues = stackalloc AtkValue[1];
-            atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int;
+            atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType.Int;
             atkValues[0].Int = 8;
 
             log.Information("[dad] Accepting {LaneName} commence popup for {DutyName}.", content.LaneName, content.DutyName);

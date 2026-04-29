@@ -256,6 +256,51 @@ public sealed class Plugin : IDalamudPlugin
                    string.Equals(group.DisplayName, key, StringComparison.OrdinalIgnoreCase));
     }
 
+    private bool TryResolvePlannerGroupForIpc(
+        string groupIdOrName,
+        out DadPlannerGroup? group,
+        out string rejectionReason)
+    {
+        group = null;
+        var key = groupIdOrName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            rejectionReason = "Planner group id or name is required.";
+            return false;
+        }
+
+        var idMatches = Configuration.PlannerGroups
+            .Where(candidate => string.Equals(candidate.GroupId, key, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (idMatches.Count == 1)
+        {
+            group = idMatches[0];
+            rejectionReason = string.Empty;
+            return true;
+        }
+
+        if (idMatches.Count > 1)
+        {
+            rejectionReason = $"Planner group id '{key}' matched multiple groups; repair saved Dad planner groups before starting.";
+            return false;
+        }
+
+        var nameMatches = Configuration.PlannerGroups
+            .Where(candidate => string.Equals(candidate.DisplayName, key, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (nameMatches.Count == 1)
+        {
+            group = nameMatches[0];
+            rejectionReason = string.Empty;
+            return true;
+        }
+
+        rejectionReason = nameMatches.Count > 1
+            ? $"Planner group name '{key}' matches {nameMatches.Count} groups; use the stable GroupId instead."
+            : $"Planner group '{key}' was not found.";
+        return false;
+    }
+
     public void ClearPlannerGroupSelection()
     {
         PlannerOptions.SelectedPlannerGroupId = string.Empty;
@@ -405,14 +450,13 @@ public sealed class Plugin : IDalamudPlugin
         string groupIdOrName,
         DadPlannerGroupStartRequest? startRequest)
     {
-        var group = ResolvePlannerGroup(groupIdOrName);
-        if (group == null)
+        if (!TryResolvePlannerGroupForIpc(groupIdOrName, out var group, out var rejectionReason) || group == null)
         {
             return new DadPlannerRunRequestPreview
             {
                 CanStart = false,
-                StatusSummary = $"Planner group '{groupIdOrName}' was not found.",
-                BlockedReason = $"Planner group '{groupIdOrName}' was not found.",
+                StatusSummary = rejectionReason,
+                BlockedReason = rejectionReason,
             };
         }
 
