@@ -1,0 +1,29 @@
+[
+  {
+    "$schema": "https://raw.githubusercontent.com/goatcorp/Dalamud/master/Dalamud/Configuration/PluginManifest/pluginmanifest.schema.json",
+    "Author": "DhogGPT",
+    "Name": "dad",
+    "Punchline": "Private Dad duty operations shell.",
+    "Description": "Private Dad duty operations shell with multiplayer status, preset planning, queue routing, and Duty Support automation.",
+    "InternalName": "dad",
+    "AssemblyVersion": "0.0.0.7",
+    "RepoUrl": "https://github.com/McVaxius/dad",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "Tags": [
+      "ffxiv",
+      "dad",
+      "dhog"
+    ],
+    "CategoryTags": [
+      "utility"
+    ],
+    "IconUrl": "https://raw.githubusercontent.com/McVaxius/dad/main/images/icon.png",
+    "DownloadLinkInstall": "https://github.com/McVaxius/dad/releases/download/v0.0.0.7/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/McVaxius/dad/releases/download/v0.0.0.7/latest.zip",
+    "DownloadLinkTesting": "https://github.com/McVaxius/dad/releases/latest/download/latest.zip",
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "LoadPriority": 0
+  }
+]
