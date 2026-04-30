@@ -564,9 +564,6 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private void OnDutyCompleted(Dalamud.Game.DutyState.IDutyStateEventArgs args)
         => OnDutyCompleted(args.TerritoryType.RowId);
 
-    private void OnDutyCompleted(object? sender, ushort territoryId)
-        => OnDutyCompleted((uint)territoryId);
-
     private void OnDutyCompleted(uint territoryId)
     {
         lastDutyCompletedTerritoryId = territoryId;
