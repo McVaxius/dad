@@ -253,6 +253,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText("/dad run msq -> start a Server Dad Daily MSQ demo");
         ImGui.BulletText("/dad run commend -> start a Server Dad commendation demo");
         ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
+        ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
         ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
     }
 

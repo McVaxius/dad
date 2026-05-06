@@ -133,7 +133,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, {PluginInfo.Command} test planner-groups, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -433,11 +433,18 @@ public sealed class Plugin : IDalamudPlugin
 
         if (startRequest.DryRun)
         {
-            var dryRunStatus = preview.CanStart ? DadRunStatus.Idle : DadRunStatus.Rejected;
-            var dryRunSummary = preview.CanStart
-                ? $"Planner group dry run ready: {preview.StatusSummary}"
-                : $"Planner group dry run blocked: {preview.BlockedReason}";
-            return DadIpcJson.Serialize(DadRunResult.FromRequest(preview.Request, dryRunStatus, dryRunSummary));
+            if (!preview.CanStart)
+            {
+                var blockedReason = string.IsNullOrWhiteSpace(preview.BlockedReason)
+                    ? preview.StatusSummary
+                    : preview.BlockedReason;
+                return DadIpcJson.Serialize(DadRunResult.Rejected(
+                    preview.Request,
+                    $"Planner group dry run blocked: {blockedReason}"));
+            }
+
+            var dryRunSummary = $"Planner group dry run ready: {preview.StatusSummary}";
+            return DadIpcJson.Serialize(DadRunResult.FromRequest(preview.Request, DadRunStatus.Idle, dryRunSummary));
         }
 
         if (!preview.CanStart)
@@ -452,12 +459,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (!TryResolvePlannerGroupForIpc(groupIdOrName, out var group, out var rejectionReason) || group == null)
         {
-            return new DadPlannerRunRequestPreview
-            {
-                CanStart = false,
-                StatusSummary = rejectionReason,
-                BlockedReason = rejectionReason,
-            };
+            return BuildBlockedPlannerGroupPreview(rejectionReason);
         }
 
         var options = BuildPlannerOptionsForGroup(group, startRequest);
@@ -468,6 +470,35 @@ public sealed class Plugin : IDalamudPlugin
             options,
             plannerPreviewOverride: preview,
             selectedGroup: group), pool);
+    }
+
+    private static DadPlannerRunRequestPreview BuildBlockedPlannerGroupPreview(string reason)
+    {
+        var contractPreview = new DadPlannerRequestContractPreview
+        {
+            Startability = "Blocked",
+            CanStart = false,
+            Blockers = [reason],
+        };
+
+        return new DadPlannerRunRequestPreview
+        {
+            CanStart = false,
+            StatusSummary = reason,
+            BlockedReason = reason,
+            ContractPreview = contractPreview,
+            ContractPreviewJson = DadIpcJson.Serialize(contractPreview),
+            ModuleBlockers =
+            [
+                new DadModuleBlockerDto
+                {
+                    ModuleId = DadModuleId.None,
+                    Capability = "PlannerGroup",
+                    Severity = DadModuleBlockerSeverity.Blocked,
+                    Summary = reason,
+                },
+            ],
+        };
     }
 
     private DadPlannerGroup BuildPlannerGroupFromCurrentPlanner(string displayName)
@@ -1412,6 +1443,13 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (trimmed.Equals("test planner-groups", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("test groups", StringComparison.OrdinalIgnoreCase))
+        {
+            RunPlannerGroupIpcDiagnosticsFromShell();
+            return;
+        }
+
         if (trimmed.Equals("cancel", StringComparison.OrdinalIgnoreCase))
         {
             CancelActiveRunFromShell();
@@ -1419,6 +1457,130 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         ToggleMainUi();
+    }
+
+    private void RunPlannerGroupIpcDiagnosticsFromShell()
+    {
+        var checks = new List<(string Name, string Status, string Detail)>();
+
+        checks.Add(CheckBlockedPlannerGroupPreview(
+            "missing group preview",
+            GetPlannerGroupPreviewJson(string.Empty),
+            "required"));
+        checks.Add(CheckBlockedPlannerGroupPreview(
+            "unknown group preview",
+            GetPlannerGroupPreviewJson("__dad_missing_planner_group__"),
+            "not found"));
+
+        var groups = PlannerGroups.ToList();
+        var selectedGroup = GetSelectedPlannerGroup() ?? groups.FirstOrDefault();
+        if (selectedGroup == null)
+        {
+            checks.Add(("valid group preview", "SKIP", "No saved planner groups."));
+            checks.Add(("dry-run DTO start", "SKIP", "No saved planner groups."));
+        }
+        else
+        {
+            checks.Add(CheckReadablePlannerGroupPreview(
+                $"valid group preview ({selectedGroup.DisplayName})",
+                GetPlannerGroupPreviewJson(selectedGroup.GroupId),
+                selectedGroup.GroupId));
+            checks.Add(CheckPlannerGroupDryRun(
+                $"dry-run DTO start ({selectedGroup.DisplayName})",
+                StartPlannerGroupFromJson(DadIpcJson.Serialize(new DadPlannerGroupStartRequest
+                {
+                    GroupId = selectedGroup.GroupId,
+                    DryRun = true,
+                    RequestedBy = "dad-self-test",
+                }))));
+        }
+
+        var duplicateName = groups
+            .Select(static group => group.DisplayName.Trim())
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .GroupBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => group.Count() > 1)
+            ?.Key;
+        checks.Add(string.IsNullOrWhiteSpace(duplicateName)
+            ? ("ambiguous name preview", "SKIP", "No duplicate planner group display names.")
+            : CheckBlockedPlannerGroupPreview(
+                $"ambiguous name preview ({duplicateName})",
+                GetPlannerGroupPreviewJson(duplicateName),
+                "matches"));
+
+        foreach (var check in checks)
+            PrintStatus($"Planner group IPC diag {check.Status}: {check.Name} - {check.Detail}");
+
+        var failedCount = checks.Count(static check => check.Status == "FAIL");
+        var skippedCount = checks.Count(static check => check.Status == "SKIP");
+        var passedCount = checks.Count(static check => check.Status == "PASS");
+        PrintStatus($"Planner group IPC diagnostics done: {passedCount} pass, {failedCount} fail, {skippedCount} skip.");
+    }
+
+    private static (string Name, string Status, string Detail) CheckBlockedPlannerGroupPreview(
+        string name,
+        string previewJson,
+        string expectedText)
+    {
+        var preview = DadIpcJson.Deserialize<DadPlannerRunRequestPreview>(previewJson);
+        if (preview == null)
+            return (name, "FAIL", "Preview JSON was unreadable.");
+
+        var reasonText = string.Join(" | ", new[]
+            {
+                preview.StatusSummary,
+                preview.BlockedReason,
+                preview.ContractPreview.Startability,
+            }
+            .Concat(preview.ContractPreview.Blockers)
+            .Concat(preview.ModuleBlockers.Select(static blocker => blocker.Summary))
+            .Where(static value => !string.IsNullOrWhiteSpace(value)));
+        var blocked = !preview.CanStart &&
+                      !preview.ContractPreview.CanStart &&
+                      string.Equals(preview.ContractPreview.Startability, "Blocked", StringComparison.OrdinalIgnoreCase);
+        var hasContract = !string.IsNullOrWhiteSpace(preview.ContractPreviewJson) &&
+                          preview.ContractPreview.Blockers.Count > 0;
+        var hasExpectedReason = reasonText.Contains(expectedText, StringComparison.OrdinalIgnoreCase);
+        if (blocked && hasContract && hasExpectedReason)
+            return (name, "PASS", preview.StatusSummary);
+
+        return (name, "FAIL", $"Expected blocked contract containing '{expectedText}', got '{reasonText}'.");
+    }
+
+    private static (string Name, string Status, string Detail) CheckReadablePlannerGroupPreview(
+        string name,
+        string previewJson,
+        string expectedGroupId)
+    {
+        var preview = DadIpcJson.Deserialize<DadPlannerRunRequestPreview>(previewJson);
+        if (preview == null)
+            return (name, "FAIL", "Preview JSON was unreadable.");
+
+        if (string.Equals(preview.PlannerPreview.SelectedPlannerGroupId, expectedGroupId, StringComparison.OrdinalIgnoreCase) &&
+            preview.PlannerPreview.UsingPlannerGroup &&
+            !string.IsNullOrWhiteSpace(preview.ContractPreviewJson))
+        {
+            return (name, "PASS", preview.StatusSummary);
+        }
+
+        return (name, "FAIL", "Preview did not echo selected group id or contract JSON.");
+    }
+
+    private static (string Name, string Status, string Detail) CheckPlannerGroupDryRun(
+        string name,
+        string resultJson)
+    {
+        var result = DadIpcJson.Deserialize<DadRunResult>(resultJson);
+        if (result == null)
+            return (name, "FAIL", "Result JSON was unreadable.");
+
+        if (result.Status is DadRunStatus.Idle or DadRunStatus.Rejected &&
+            string.Equals(result.RequestedBy, "dad-self-test", StringComparison.OrdinalIgnoreCase))
+        {
+            return (name, "PASS", $"{result.Status}: {result.Summary}");
+        }
+
+        return (name, "FAIL", $"Expected idle/rejected dry-run result, got {result.Status}: {result.Summary}");
     }
 
     private void SetupDtrBar()
