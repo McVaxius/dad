@@ -73,6 +73,21 @@ public enum DadPlannerActivityMode
     CustomDuty,
 }
 
+public enum DadPlannerRunFamily
+{
+    Msq,
+    LevelingNpc,
+    DutyFinder,
+    FarmLoops,
+    Event,
+}
+
+public enum DadPlannerStopMode
+{
+    AfterRuns,
+    TargetLevel,
+}
+
 public enum DadPlannerOperatorMode
 {
     RemotePartyPlan,
@@ -275,6 +290,7 @@ public sealed class DadPresetPlannerOptions
 {
     public string PresetName { get; set; } = "MSQ Main Group";
     public string SelectedPlannerGroupId { get; set; } = string.Empty;
+    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.Msq;
     public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
     public string ActivityName { get; set; } = "MSQ";
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
@@ -290,6 +306,7 @@ public sealed class DadPresetPlannerOptions
     public int DutyExpectedPartySize { get; set; } = 4;
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public DadRunStopPolicy StopPolicy { get; set; } = new();
     public List<DadAccountKey> IncludedAccountKeys { get; set; } = [];
 }
 
@@ -297,6 +314,7 @@ public sealed class DadPlannerGroup
 {
     public string GroupId { get; set; } = Guid.NewGuid().ToString("N");
     public string DisplayName { get; set; } = "Dad Group";
+    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.Msq;
     public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
     public bool ConnectedOnly { get; set; } = true;
@@ -311,6 +329,7 @@ public sealed class DadPlannerGroup
     public int DutyExpectedPartySize { get; set; } = 4;
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public DadRunStopPolicy StopPolicy { get; set; } = new();
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -322,6 +341,9 @@ public sealed class DadPlannerGroupSlot
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
+    public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.AlreadyOnlineOnly;
+    public string LaunchProfileId { get; set; } = string.Empty;
+    public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
     public bool AllowSubstitution { get; set; } = true;
 }
 
@@ -349,6 +371,7 @@ public sealed class DadPlannerGroupStartRequest
 public sealed class DadPlannerLaneDefinition
 {
     public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
+    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.Msq;
     public DadModuleId ModuleId { get; set; } = DadModuleId.None;
     public string DisplayName { get; set; } = string.Empty;
     public string Summary { get; set; } = string.Empty;
@@ -372,8 +395,11 @@ public sealed class DadActivityPreset
     public string SelectedPlannerGroupId { get; set; } = string.Empty;
     public string SelectedPlannerGroupName { get; set; } = string.Empty;
     public bool UsingPlannerGroup { get; set; }
+    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.Msq;
+    public string RunFamilyId { get; set; } = string.Empty;
     public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
     public string ActivityModeId { get; set; } = string.Empty;
+    public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
     public string OperatorModeLabel { get; set; } = string.Empty;
     public DadTransportOwner TransportOwner { get; set; } = DadTransportOwner.DadDirect;
@@ -402,6 +428,7 @@ public sealed class DadPlannerRunRequestPreview
     public DadActivityPreset PlannerPreview { get; set; } = new();
     public DadRunRequest? Request { get; set; }
     public DadPlannerRequestContractPreview ContractPreview { get; set; } = new();
+    public DadRunStopPolicy StopPolicy { get; set; } = new();
     public bool CanStart { get; set; }
     public string StatusSummary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;

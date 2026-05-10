@@ -55,6 +55,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadDutySupportAdsService DutySupportAdsService { get; }
     public DadCombatRotationService CombatRotationService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
+    public DadSchedulerService SchedulerService { get; }
     public DadCoordinatorService RunCoordinatorService { get; }
     public WindowSystem WindowSystem { get; } = new(PluginInfo.InternalName);
 
@@ -101,6 +102,12 @@ public sealed class Plugin : IDalamudPlugin
             NpcDutyQueueService,
             DutySupportAdsService,
             CombatRotationService);
+        SchedulerService = new DadSchedulerService(
+            Configuration,
+            CharacterIntelligenceService,
+            PresenceService,
+            TransportService,
+            Log);
         RunCoordinatorService = new DadCoordinatorService(
             Configuration,
             ConfigManager,
@@ -453,6 +460,71 @@ public sealed class Plugin : IDalamudPlugin
         return DadIpcJson.Serialize(RunCoordinatorService.StartTasks(preview.Request));
     }
 
+    public string GetSchedulerPreviewJson()
+        => DadIpcJson.Serialize(BuildSchedulerPreview());
+
+    public DadSchedulerPreview BuildSchedulerPreview()
+    {
+        var selectedGroup = GetSelectedPlannerGroup();
+        var requestPreview = selectedGroup == null
+            ? BuildPlannerRunRequestPreview()
+            : BuildPlannerGroupRunRequestPreview(selectedGroup.GroupId, null);
+        return SchedulerService.BuildPreview(selectedGroup, requestPreview);
+    }
+
+    public string StartSchedulerPresetFromJson(string json)
+    {
+        var startRequest = DadIpcJson.Deserialize<DadSchedulerStartRequest>(json);
+        if (startRequest == null)
+        {
+            var fallbackId = (json ?? string.Empty).Trim().Trim('"');
+            startRequest = new DadSchedulerStartRequest { GroupId = fallbackId };
+        }
+
+        var groupId = string.IsNullOrWhiteSpace(startRequest.GroupId)
+            ? PlannerOptions.SelectedPlannerGroupId
+            : startRequest.GroupId;
+        if (!TryResolvePlannerGroupForIpc(groupId, out var group, out var rejectionReason) || group == null)
+        {
+            return DadIpcJson.Serialize(DadRunResult.Rejected(null, rejectionReason));
+        }
+
+        var preview = BuildPlannerGroupRunRequestPreview(group.GroupId, new DadPlannerGroupStartRequest
+        {
+            GroupId = group.GroupId,
+            RequestedBy = string.IsNullOrWhiteSpace(startRequest.RequestedBy)
+                ? "scheduler"
+                : startRequest.RequestedBy.Trim(),
+        });
+        if (preview.Request != null)
+            preview.Request.RequestedBy = string.IsNullOrWhiteSpace(startRequest.RequestedBy)
+                ? $"scheduler:{group.DisplayName}"
+                : startRequest.RequestedBy.Trim();
+
+        var state = SchedulerService.StartPreset(group, preview, startRequest.DryRun);
+        if (!startRequest.DryRun)
+        {
+            SchedulerService.Update(
+                BuildSchedulerPlannerPreview,
+                StartScheduledPlannerRequest);
+            state = SchedulerService.CurrentState;
+        }
+
+        return DadIpcJson.Serialize(state.ToRunResult(preview.Request));
+    }
+
+    public string GetLaunchProfilesJson()
+        => DadIpcJson.Serialize(SchedulerService.GetLaunchProfiles());
+
+    public int ImportLaunchProfilesFromBootDirectory()
+    {
+        var imported = SchedulerService.ImportLaunchProfilesFromBootDirectory();
+        PrintStatus(imported == 0
+            ? "No new launch profiles found in Z:\\!ff14clientboot."
+            : $"Imported {imported} launch profile candidate(s) from Z:\\!ff14clientboot.");
+        return imported;
+    }
+
     private DadPlannerRunRequestPreview BuildPlannerGroupRunRequestPreview(
         string groupIdOrName,
         DadPlannerGroupStartRequest? startRequest)
@@ -508,6 +580,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             GroupId = Guid.NewGuid().ToString("N"),
             DisplayName = string.IsNullOrWhiteSpace(displayName) ? $"{preview.LaneDefinition.DisplayName} Group" : displayName.Trim(),
+            RunFamily = PlannerOptions.RunFamily,
             ActivityMode = PlannerOptions.ActivityMode,
             OperatorMode = PlannerOptions.OperatorMode,
             ConnectedOnly = PlannerOptions.ConnectedOnly,
@@ -522,6 +595,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = PlannerOptions.DutyExpectedPartySize,
             MogtomePreset = PlannerOptions.MogtomePreset,
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
+            StopPolicy = preview.StopPolicy.Clone(),
             Slots = BuildPlannerGroupSlotsFromPreview(preview),
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow,
@@ -585,6 +659,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             PresetName = group.DisplayName,
             SelectedPlannerGroupId = group.GroupId,
+            RunFamily = PresetProviderService.GetPlannerRunFamily(activityMode),
             ActivityMode = activityMode,
             ActivityName = PresetProviderService.GetPlannerLaneDefinition(activityMode).DisplayName,
             OperatorMode = group.OperatorMode,
@@ -600,6 +675,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = group.DutyExpectedPartySize,
             MogtomePreset = group.MogtomePreset,
             MogtomeDutyPolicy = group.MogtomeDutyPolicy,
+            StopPolicy = group.StopPolicy.Clone(),
             IncludedAccountKeys = group.Slots
                 .Select(static slot => slot.RequiredAccountKey)
                 .Where(static key => !key.IsEmpty)
@@ -628,6 +704,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             GroupId = source.GroupId,
             DisplayName = source.DisplayName,
+            RunFamily = source.RunFamily,
             ActivityMode = source.ActivityMode,
             OperatorMode = source.OperatorMode,
             ConnectedOnly = source.ConnectedOnly,
@@ -642,12 +719,16 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = source.DutyExpectedPartySize,
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            StopPolicy = source.StopPolicy.Clone(),
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
+                WakePolicy = slot.WakePolicy,
+                LaunchProfileId = slot.LaunchProfileId,
+                CharacterLoadInstruction = slot.CharacterLoadInstruction.Clone(),
                 AllowSubstitution = slot.AllowSubstitution,
             }).ToList(),
             CreatedAtUtc = source.CreatedAtUtc,
@@ -658,6 +739,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         options.SelectedPlannerGroupId = group.GroupId;
         options.PresetName = group.DisplayName;
+        options.RunFamily = group.RunFamily;
         options.ActivityMode = group.ActivityMode;
         options.OperatorMode = group.OperatorMode;
         options.ConnectedOnly = group.ConnectedOnly;
@@ -672,6 +754,7 @@ public sealed class Plugin : IDalamudPlugin
         options.DutyExpectedPartySize = group.DutyExpectedPartySize;
         options.MogtomePreset = group.MogtomePreset;
         options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
+        options.StopPolicy = group.StopPolicy.Clone();
         options.IncludedAccountKeys = group.Slots
             .Select(static slot => slot.RequiredAccountKey)
             .Where(static key => !key.IsEmpty)
@@ -723,6 +806,21 @@ public sealed class Plugin : IDalamudPlugin
             InvalidatePlannerPreviewIdentity();
 
         return startResult;
+    }
+
+    private DadPlannerRunRequestPreview? BuildSchedulerPlannerPreview(string groupId)
+    {
+        var group = ResolvePlannerGroup(groupId);
+        return group == null ? null : BuildPlannerGroupRunRequestPreview(group.GroupId, null);
+    }
+
+    private DadRunResult StartScheduledPlannerRequest(DadRunRequest request)
+    {
+        var result = RunCoordinatorService.StartTasks(request);
+        PrimeAuthorityCacheFromRun(request, result);
+        if (result.Status != DadRunStatus.Rejected)
+            InvalidatePlannerPreviewIdentity();
+        return result;
     }
 
     private (string RequestId, DateTime RequestedAtUtc) ResolvePlannerPreviewIdentity(string signature)
@@ -839,6 +937,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private static void RefreshPlannerContractPreview(DadPlannerRunRequestPreview requestPreview)
     {
+        requestPreview.StopPolicy = requestPreview.Request?.StopPolicy.Clone()
+                                    ?? requestPreview.PlannerPreview.StopPolicy.Clone();
+        requestPreview.ContractPreview.StopPolicy = requestPreview.StopPolicy.Clone();
         requestPreview.ContractPreview.CanStart = requestPreview.CanStart;
         requestPreview.ContractPreview.Startability = BuildPlannerStartabilityLabel(requestPreview);
         requestPreview.ContractPreview.Blockers = BuildPlannerContractBlockers(requestPreview);
@@ -884,6 +985,7 @@ public sealed class Plugin : IDalamudPlugin
 
         return string.Join("|", new[]
         {
+            $"family={options.RunFamily}",
             $"activity={options.ActivityMode}",
             $"group={options.SelectedPlannerGroupId.Trim()}:{plannerPreview.SelectedPlannerGroupId.Trim()}",
             $"operator={options.OperatorMode}",
@@ -896,6 +998,7 @@ public sealed class Plugin : IDalamudPlugin
             $"accounts={accountKeys}",
             $"duty={options.DutyContentFinderConditionId}:{options.DutyDisplayName.Trim()}:{options.DutyUnsynced}:{options.DutyExpectedPartySize}",
             $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
+            $"stop={plannerPreview.StopPolicy.Mode}:{plannerPreview.StopPolicy.AfterRuns}:{plannerPreview.StopPolicy.TargetLevel}:{plannerPreview.StopPolicy.TargetCharacterKey}:{plannerPreview.StopPolicy.SafetyCap}",
             "blunderville=emote-run",
             $"leader={plannerPreview.LeaderCharacterKey}",
             $"slots={selectedSlots}",
@@ -1258,7 +1361,7 @@ public sealed class Plugin : IDalamudPlugin
             $"Local-only {(localRun.LocalOnlyEnabled ? "on" : "off")} | " +
             $"Debug UI {(Configuration.DebugUiEnabled ? "on" : "off")} | " +
             $"Profile {(profile.Enabled ? "armed" : "off")} | " +
-            $"IPC starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
+            $"Dad starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
             $"Pool {characterPool.Characters.Count} row(s) / XADB {characterPool.XadbStatus.Availability} / peers {characterPool.PeerTransport.ConnectedPeerCount}");
         PrintStatus($"Authority timeline: {FormatOperatorTextForChat(authorityView.TimelineText)}");
         PrintStatus($"Authority owner: {FormatOperatorTextForChat(authorityView.OwnershipText)}");
@@ -1733,6 +1836,9 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled);
+        SchedulerService.Update(
+            BuildSchedulerPlannerPreview,
+            StartScheduledPlannerRequest);
         RunCoordinatorService.Update();
     }
 

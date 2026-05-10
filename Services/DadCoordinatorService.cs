@@ -21,9 +21,11 @@ public sealed class DadCoordinatorService
     private DadRunPlan? activePlan;
     private readonly List<DadParticipantSnapshot> activeParticipants = [];
     private readonly List<DadRunStepResultDto> stepResults = [];
+    private DadRunStopProgress stopProgress = DadRunStopProgress.FromPolicy(null);
     private DateTime phaseChangedAtUtc = DateTime.MinValue;
     private DateTime nextParticipantPollUtc = DateTime.MinValue;
     private int activeModuleIndex = -1;
+    private int activeStepResultIndex = -1;
     private bool loggedSingleWorkerSeed;
     private bool loggedSingleWorkerAssemblyConfirmed;
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
@@ -141,7 +143,7 @@ public sealed class DadCoordinatorService
             return DadRunResult.Rejected(request, "dad profile is disabled.");
 
         if (!profile.AllowIpcStarts)
-            return DadRunResult.Rejected(request, "dad profile blocks IPC starts.");
+            return DadRunResult.Rejected(request, "dad profile blocks Dad starts.");
 
         if (IsBusy)
             return DadRunResult.Rejected(request, "dad already has an active run.");
@@ -182,7 +184,9 @@ public sealed class DadCoordinatorService
         activePlan = plan;
         activeParticipants.Clear();
         stepResults.Clear();
+        stopProgress = DadRunStopProgress.FromPolicy(plan.Request.StopPolicy);
         activeModuleIndex = -1;
+        activeStepResultIndex = -1;
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
         lastSingleWorkerAssemblyBlocker = string.Empty;
@@ -202,7 +206,10 @@ public sealed class DadCoordinatorService
         CurrentResult.AuthorityEndpoint = transportService.CurrentTransport.ListenerEndpoint;
         CurrentResult.LocalClientInstanceId = presenceService.ClientInstanceId;
         CurrentResult.LocalWorkerSessionId = presenceService.WorkerSessionId;
+        if (IsStopPolicyLoopEligible(plan))
+            CurrentResult.TotalTaskCount = stopProgress.SafetyCap;
         CurrentResult.ActiveTaskStatus = $"Planned {plan.Modules.Count} module(s).";
+        CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         CurrentResult.Leases = [];
 
@@ -575,6 +582,7 @@ public sealed class DadCoordinatorService
             participant.State = DadParticipantState.QueuePending;
 
         var module = activePlan.Modules[activeModuleIndex];
+        MarkStopPolicyAttemptStarted(activePlan);
         var result = queueExecutionService.ExecuteModule(activePlan, module, activeParticipants);
         ApplyModuleRoutingResult(module, result, replaceExisting: false);
     }
@@ -584,21 +592,28 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
-        if (replaceExisting && activeModuleIndex >= 0 && activeModuleIndex < stepResults.Count)
-            stepResults[activeModuleIndex] = result;
+        if (replaceExisting && activeStepResultIndex >= 0 && activeStepResultIndex < stepResults.Count)
+            stepResults[activeStepResultIndex] = result;
         else if (replaceExisting && stepResults.Count > 0)
             stepResults[^1] = result;
         else
+        {
             stepResults.Add(result);
+            activeStepResultIndex = stepResults.Count - 1;
+        }
 
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
         CurrentResult.CurrentExecutorStatus = result.ExecutorStatus.Clone();
         if (result.ExecutorStatus.Phase != DadRunPhase.Idle)
             CurrentResult.Phase = result.ExecutorStatus.Phase;
         CurrentResult.Status = DadRunStatus.Running;
-        CurrentResult.ActiveTaskIndex = activeModuleIndex + 1;
+        CurrentResult.ActiveTaskIndex = IsStopPolicyLoopEligible(activePlan)
+            ? Math.Max(1, stopProgress.StartedRuns)
+            : activeModuleIndex + 1;
         CurrentResult.ActiveTaskName = module.DisplayName;
         CurrentResult.ActiveTaskStatus = result.Summary;
+        RefreshStopProgressSummary(activePlan, refreshPool: false);
+        CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.CompletedTaskCount = stepResults.Count(static step =>
             step.Success &&
             step.ExecutorStatus.Status == DadRunStatus.Completed &&
@@ -629,6 +644,9 @@ public sealed class DadCoordinatorService
         {
             if (activeModuleIndex + 1 >= activePlan.Modules.Count)
             {
+                if (TryContinueStopPolicyLoop(module, result))
+                    return;
+
                 Transition(DadRunPhase.Finalizing, DadRunStatus.Running, "Dad module routing complete.");
                 return;
             }
@@ -639,6 +657,173 @@ public sealed class DadCoordinatorService
         }
 
         Publish();
+    }
+
+    private void MarkStopPolicyAttemptStarted(DadRunPlan plan)
+    {
+        if (!IsStopPolicyLoopEligible(plan))
+            return;
+
+        stopProgress.StartedRuns++;
+        RefreshStopProgressSummary(plan, refreshPool: false);
+        CurrentResult.StopProgress = stopProgress.Clone();
+        CurrentResult.TotalTaskCount = stopProgress.SafetyCap;
+    }
+
+    private bool TryContinueStopPolicyLoop(DadPlannedModuleExecution module, DadRunStepResultDto result)
+    {
+        if (activePlan == null || !IsStopPolicyLoopEligible(activePlan))
+            return false;
+
+        RefreshStopProgressSummary(activePlan, refreshPool: true);
+        CurrentResult.StopProgress = stopProgress.Clone();
+        CurrentResult.CompletedTaskCount = stopProgress.CompletedRuns;
+        CurrentResult.TotalTaskCount = stopProgress.SafetyCap;
+
+        if (stopProgress.StopReached)
+        {
+            Transition(
+                DadRunPhase.Finalizing,
+                DadRunStatus.Running,
+                $"Dad stop policy reached after {stopProgress.CompletedRuns} run(s): {stopProgress.Summary}");
+            return true;
+        }
+
+        if (stopProgress.SafetyCapReached)
+        {
+            FinalizeRun(
+                DadRunStatus.PartialFailure,
+                $"Dad stop policy safety cap reached after {stopProgress.CompletedRuns} run(s).",
+                stopProgress.Summary);
+            return true;
+        }
+
+        var pool = RefreshStopPolicyPool(activePlan);
+        var nextPlan = plannerService.BuildPlan(activePlan.Request, pool, out var rejectionReason);
+        if (nextPlan == null)
+        {
+            FinalizeRun(
+                DadRunStatus.PartialFailure,
+                "Dad stop-policy repeat blocked before next run.",
+                rejectionReason);
+            return true;
+        }
+
+        activePlan = nextPlan;
+        activeParticipants.Clear();
+        activeModuleIndex = -1;
+        activeStepResultIndex = -1;
+        loggedSingleWorkerSeed = false;
+        loggedSingleWorkerAssemblyConfirmed = false;
+        lastSingleWorkerAssemblyBlocker = string.Empty;
+        lastParticipantDiscoveryFilterSummary = string.Empty;
+        nextParticipantPollUtc = DateTime.MinValue;
+        claimService.ReleaseClaims(nextPlan.Request.RequestId);
+        presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Server Dad repeating {module.DisplayName}; {stopProgress.Summary}");
+        SeedLocalParticipantIfNeeded(nextPlan);
+
+        CurrentResult.Request = nextPlan.Request;
+        CurrentResult.ModuleId = nextPlan.CompositeModuleId;
+        CurrentResult.AuthorityMode = nextPlan.Orchestration.AuthorityMode;
+        CurrentResult.TransportMode = nextPlan.Orchestration.TransportMode;
+        CurrentResult.LocalOnlyEnabled = nextPlan.Orchestration.LocalOnlyOverride;
+        CurrentResult.Summary = $"Dad stop policy continuing: {stopProgress.Summary}";
+        CurrentResult.ActiveTaskName = string.Empty;
+        CurrentResult.ActiveTaskStatus = CurrentResult.Summary;
+        CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
+        CurrentResult.Leases = [];
+        CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
+
+        Transition(nextPlan.RequiresRemoteParticipants ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
+            nextPlan.RequiresRemoteParticipants ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
+            nextPlan.RequiresRemoteParticipants
+                ? $"Stop policy continuing; waiting for {nextPlan.RequiredParticipantCount} participant(s). {stopProgress.Summary}"
+                : $"Stop policy continuing; local runner ready for next run. {stopProgress.Summary}");
+        return true;
+    }
+
+    private void RefreshStopProgressSummary(DadRunPlan plan, bool refreshPool)
+    {
+        var policy = plan.Request.StopPolicy.Normalize();
+        stopProgress.StopPolicy = policy.Clone();
+        stopProgress.SafetyCap = policy.GetSafetyCap();
+        stopProgress.CompletedRuns = CountCompletedStopPolicyRuns(plan);
+        if (refreshPool)
+        {
+            var pool = RefreshStopPolicyPool(plan);
+            stopProgress.CurrentLevel = ResolveStopPolicyCurrentLevel(policy, pool);
+        }
+
+        stopProgress.StopReached = policy.Mode == DadPlannerStopMode.AfterRuns
+            ? stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns)
+            : stopProgress.CurrentLevel.HasValue && stopProgress.CurrentLevel.Value >= policy.TargetLevel;
+        stopProgress.SafetyCapReached = !stopProgress.StopReached &&
+                                        stopProgress.CompletedRuns >= stopProgress.SafetyCap;
+        stopProgress.Summary = BuildStopProgressSummary(stopProgress);
+    }
+
+    private int CountCompletedStopPolicyRuns(DadRunPlan plan)
+    {
+        var eligibleModules = ResolveStopPolicyEligibleModules(plan);
+        return stepResults.Count(step =>
+            step.Success &&
+            !step.ExecutorStatus.IsActive &&
+            step.ExecutorStatus.Status == DadRunStatus.Completed &&
+            eligibleModules.Contains(step.ModuleId));
+    }
+
+    private DadCharacterPool RefreshStopPolicyPool(DadRunPlan plan)
+    {
+        var pool = characterIntelligenceService.RefreshLocalCharacterPool("stop-policy", logRefresh: false);
+        return plan.RequiresRemoteParticipants
+            ? characterIntelligenceService.RequestPeerSnapshots()
+            : pool;
+    }
+
+    private static int? ResolveStopPolicyCurrentLevel(DadRunStopPolicy policy, DadCharacterPool pool)
+    {
+        if (policy.Mode != DadPlannerStopMode.TargetLevel || policy.TargetCharacterKey.IsEmpty)
+            return null;
+
+        return pool.Characters
+            .FirstOrDefault(character => string.Equals(
+                character.CharacterKey,
+                policy.TargetCharacterKey.Value,
+                StringComparison.OrdinalIgnoreCase))
+            ?.CurrentLevel;
+    }
+
+    private static string BuildStopProgressSummary(DadRunStopProgress progress)
+    {
+        var policy = progress.StopPolicy;
+        return policy.Mode == DadPlannerStopMode.TargetLevel
+            ? progress.CurrentLevel.HasValue
+                ? $"target level {policy.TargetLevel}; current {progress.CurrentLevel.Value}; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)"
+                : $"target level {policy.TargetLevel}; current level unknown; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)"
+            : $"completed {progress.CompletedRuns}/{Math.Max(1, policy.AfterRuns)} run(s)";
+    }
+
+    private static bool IsStopPolicyLoopEligible(DadRunPlan plan)
+    {
+        if (plan.Modules.Count != 1)
+            return false;
+
+        return ResolveStopPolicyEligibleModules(plan).Count > 0;
+    }
+
+    private static HashSet<DadModuleId> ResolveStopPolicyEligibleModules(DadRunPlan plan)
+    {
+        var modules = new HashSet<DadModuleId>();
+        foreach (var module in plan.Modules)
+        {
+            if (module.ModuleId is DadModuleId.Duty or DadModuleId.DutySupport or DadModuleId.Trust or DadModuleId.PremadeDuty)
+                modules.Add(module.ModuleId);
+        }
+
+        if (plan.Request.Dungeon?.QueueViaLanParty == true)
+            modules.Add(DadModuleId.Duty);
+
+        return modules;
     }
 
     private static DadParticipantState ResolveModuleParticipantState(DadRunStepResultDto result)
@@ -665,7 +850,9 @@ public sealed class DadCoordinatorService
             .ToList();
 
         var summary = deferredReasons.Count == 0
-            ? "Dad run completed."
+            ? stopProgress.StopReached
+                ? $"Dad run completed; stop policy reached: {stopProgress.Summary}"
+                : "Dad run completed."
             : $"Dad orchestration completed; guarded live executor deferred: {string.Join(" | ", deferredReasons)}";
 
         FinalizeRun(DadRunStatus.Completed, summary, string.Empty);
@@ -916,6 +1103,8 @@ public sealed class DadCoordinatorService
 
     private void ApplyConfigurationDefaults(DadRunRequest request)
     {
+        request.StopPolicy ??= new DadRunStopPolicy();
+        request.StopPolicy.Normalize();
         request.Orchestration ??= new DadOrchestrationIntent();
         request.Orchestration.LocalOnlyOverride |= configuration.LocalOnlyModeEnabled;
         request.Orchestration.WaitPolicy ??= new DadRunWaitPolicy();
@@ -982,6 +1171,7 @@ public sealed class DadCoordinatorService
         CurrentResult.AuthorityEndpoint = transportService.CurrentTransport.ListenerEndpoint;
         CurrentResult.LocalWorkerSessionId = presenceService.WorkerSessionId;
         CurrentResult.LocalOnlyEnabled = activePlan?.Orchestration.LocalOnlyOverride ?? configuration.LocalOnlyModeEnabled;
+        CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         CurrentResult.Leases = activePlan == null ? [] : claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
         phaseChangedAtUtc = DateTime.UtcNow;
@@ -1002,6 +1192,7 @@ public sealed class DadCoordinatorService
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         CurrentResult.Leases = activePlan == null ? [] : claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
+        CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.ActiveTaskName = string.Empty;
         CurrentResult.ActiveTaskStatus = summary;
         CurrentResult.CompletedTaskCount = stepResults.Count(static step => step.Success);
@@ -1009,6 +1200,7 @@ public sealed class DadCoordinatorService
         activePlan = null;
         activeParticipants.Clear();
         activeModuleIndex = -1;
+        activeStepResultIndex = -1;
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
         lastSingleWorkerAssemblyBlocker = string.Empty;

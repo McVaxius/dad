@@ -11,6 +11,9 @@ internal static class DadIpcContract
     public const string GetRosterPreview = $"{Prefix}.GetRosterPreview";
     public const string GetPlannerGroups = $"{Prefix}.GetPlannerGroups";
     public const string GetPlannerGroupPreview = $"{Prefix}.GetPlannerGroupPreview";
+    public const string GetSchedulerPreview = $"{Prefix}.GetSchedulerPreview";
+    public const string StartSchedulerPreset = $"{Prefix}.StartSchedulerPreset";
+    public const string GetLaunchProfiles = $"{Prefix}.GetLaunchProfiles";
     public const string GetModuleCapabilities = $"{Prefix}.GetModuleCapabilities";
     public const string GetSupportedJobHints = $"{Prefix}.GetSupportedJobHints";
     public const string StartTasks = $"{Prefix}.StartTasks";

@@ -36,6 +36,8 @@ public sealed class Configuration : IPluginConfiguration
     public DadCombatRotationMode CombatRotationMode { get; set; } = DadCombatRotationMode.UseFrenRider;
     public DadPresetPlannerOptions PlannerOptions { get; set; } = new();
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
+    public List<DadLaunchProfile> LaunchProfiles { get; set; } = [];
+    public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

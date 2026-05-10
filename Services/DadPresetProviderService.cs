@@ -26,6 +26,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.Msq,
+            RunFamily = DadPlannerRunFamily.Msq,
             ModuleId = DadModuleId.Msq,
             DisplayName = "MSQ",
             Summary = "Main scenario roulette/preset lane with Phase 5 readiness/status surfaced; live queue start remains deferred.",
@@ -42,6 +43,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.DutySupport,
+            RunFamily = DadPlannerRunFamily.LevelingNpc,
             ModuleId = DadModuleId.DutySupport,
             DisplayName = "Duty Support",
             Summary = "Solo Duty Support lane with selected Duty Finder content.",
@@ -58,6 +60,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.Trust,
+            RunFamily = DadPlannerRunFamily.LevelingNpc,
             ModuleId = DadModuleId.Trust,
             DisplayName = "Trust",
             Summary = "Solo Trust lane with selected native Trust content.",
@@ -74,6 +77,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.PremadeDuty,
+            RunFamily = DadPlannerRunFamily.DutyFinder,
             ModuleId = DadModuleId.PremadeDuty,
             DisplayName = "Premade Duty",
             Summary = "Dad-owned full-party regular Duty Finder lane with guarded synced/unsynced queue start.",
@@ -91,6 +95,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.Blunderville,
+            RunFamily = DadPlannerRunFamily.Event,
             ModuleId = DadModuleId.Blunderville,
             DisplayName = "Blunderville",
             Summary = "Gold Saucer Blunderville lane for configured per-character emote runs.",
@@ -107,6 +112,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.Mogtome,
+            RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Mogtome,
             DisplayName = "MOGTOME",
             Summary = "Dad-owned MOGTOME helper lane using MOGTOME queue/requeue safety patterns.",
@@ -124,6 +130,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.Commendation,
+            RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Commendation,
             DisplayName = "Commendation",
             Summary = "Short duty loop for commendation farming.",
@@ -140,6 +147,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.Astrope,
+            RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Astrope,
             DisplayName = "Astrope",
             Summary = "Timed Astrope farming window.",
@@ -156,6 +164,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.LocalDuty,
+            RunFamily = DadPlannerRunFamily.DutyFinder,
             ModuleId = DadModuleId.Duty,
             DisplayName = "Local Duty / Unsync",
             Summary = "One-character Dad-owned regular Duty Finder lane with synced or unrestricted/unsynced queue mode.",
@@ -172,6 +181,7 @@ public sealed class DadPresetProviderService
         new()
         {
             ActivityMode = DadPlannerActivityMode.CustomDuty,
+            RunFamily = DadPlannerRunFamily.DutyFinder,
             ModuleId = DadModuleId.CustomDuty,
             DisplayName = "Custom Duty",
             Summary = "Typed custom Duty Finder lane for later specialized policies.",
@@ -239,8 +249,31 @@ public sealed class DadPresetProviderService
     public IReadOnlyList<DadPlannerLaneDefinition> GetPlannerLaneDefinitions()
         => PlannerLaneDefinitions.Select(CloneLaneDefinition).ToArray();
 
+    public IReadOnlyList<DadPlannerRunFamily> GetPlannerRunFamilies()
+        =>
+        [
+            DadPlannerRunFamily.Msq,
+            DadPlannerRunFamily.LevelingNpc,
+            DadPlannerRunFamily.DutyFinder,
+            DadPlannerRunFamily.FarmLoops,
+            DadPlannerRunFamily.Event,
+        ];
+
+    public IReadOnlyList<DadPlannerLaneDefinition> GetPlannerSubmodes(DadPlannerRunFamily runFamily)
+        => PlannerLaneDefinitions
+            .Where(lane => lane.RunFamily == runFamily)
+            .Select(CloneLaneDefinition)
+            .ToArray();
+
     public DadPlannerLaneDefinition GetPlannerLaneDefinition(DadPlannerActivityMode activityMode)
         => CloneLaneDefinition(ResolveLaneDefinition(activityMode));
+
+    public DadPlannerRunFamily GetPlannerRunFamily(DadPlannerActivityMode activityMode)
+        => ResolveLaneDefinition(activityMode).RunFamily;
+
+    public DadPlannerActivityMode GetDefaultPlannerSubmode(DadPlannerRunFamily runFamily)
+        => PlannerLaneDefinitions.FirstOrDefault(lane => lane.RunFamily == runFamily)?.ActivityMode
+           ?? DadPlannerActivityMode.Msq;
 
     public IReadOnlyList<DadPlannerOperatorMode> GetPlannerOperatorModeOptions()
         => PlannerOperatorModes;
@@ -347,6 +380,8 @@ public sealed class DadPresetProviderService
         var selectedCharacters = selectedGroup?.Slots.Count > 0
             ? BuildGroupSlotAssignments(availableCharacters, selectedGroup, lane)
             : BuildSlotAssignments(availableCharacters, lane);
+        var stopPolicy = BuildResolvedStopPolicy(options.StopPolicy, selectedCharacters, availableCharacters);
+        var stopPolicyBlockers = BuildStopPolicyBlockers(stopPolicy, selectedCharacters, availableCharacters);
         var groupBlockers = BuildPlannerGroupBlockers(selectedGroup, selectedCharacters);
         var leaderCandidate = selectedCharacters
                                   .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
@@ -365,6 +400,7 @@ public sealed class DadPresetProviderService
                       || missingRoleSlots.Count > 0
                       || missingDutySelector
                       || insufficientPlannerPartyShell
+                      || stopPolicyBlockers.Count > 0
                       || groupBlockers.Count > 0;
         var localCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.LocalRuntime);
         var remoteCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.PeerRuntime);
@@ -376,8 +412,11 @@ public sealed class DadPresetProviderService
             SelectedPlannerGroupId = selectedGroup?.GroupId ?? string.Empty,
             SelectedPlannerGroupName = selectedGroup?.DisplayName ?? string.Empty,
             UsingPlannerGroup = selectedGroup != null,
+            RunFamily = options.RunFamily,
+            RunFamilyId = GetPlannerRunFamilyLabel(options.RunFamily),
             ActivityMode = options.ActivityMode,
             ActivityModeId = GetPlannerActivityModeLabel(options.ActivityMode),
+            StopPolicy = stopPolicy,
             OperatorMode = options.OperatorMode,
             OperatorModeLabel = GetPlannerOperatorModeLabel(options.OperatorMode),
             TransportOwner = options.TransportOwner,
@@ -412,6 +451,7 @@ public sealed class DadPresetProviderService
         if (insufficientPlannerPartyShell)
             preset.Blockers.Add($"Selected duty needs party size {requestedPartySize}, but planner shell currently exposes only {selectedCharacters.Count} typed slot(s).");
 
+        preset.Blockers.AddRange(stopPolicyBlockers);
         preset.Blockers.AddRange(groupBlockers);
 
         if (selectedGroup != null)
@@ -449,6 +489,8 @@ public sealed class DadPresetProviderService
 
         if (selectedDuty != null && lane.RequiresDutySelector)
             preset.Notes.Add($"Typed duty: {selectedDuty.SelectionLabel} | {selectedDuty.MetadataSummary}");
+
+        preset.Notes.Add($"Stop policy: {stopPolicy.Describe()}.");
 
         if (filterStats.ExcludedByConnectedFilter > 0)
             preset.Notes.Add($"Connected filter removed {filterStats.ExcludedByConnectedFilter} candidate(s).");
@@ -494,6 +536,7 @@ public sealed class DadPresetProviderService
             RequestId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId,
             RequestedAtUtc = requestedAtUtc ?? DateTime.UtcNow,
             RequestedBy = previewOnly ? "planner-preview" : selectedGroup == null ? "planner" : $"planner-group:{selectedGroup.DisplayName}",
+            StopPolicy = plannerPreview.StopPolicy.Clone().Normalize(),
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty, selectedGroup),
         };
 
@@ -504,13 +547,18 @@ public sealed class DadPresetProviderService
         {
             PlannerPreview = plannerPreview,
             Request = request,
+            StopPolicy = request.StopPolicy.Clone(),
             ModuleId = requestModuleId,
-            QueueAuthority = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
+            QueueAuthority = IsLocalNpcLane(options.ActivityMode)
+                ? DadQueueAuthority.LocalOnly
+                : options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
                 ? DadQueueAuthority.LocalOnly
                 : options.QueueAuthority,
-            ExpectedPartySize = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
+            ExpectedPartySize = IsLocalNpcLane(options.ActivityMode)
                 ? 1
-                : requestedPartySize,
+                : options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
+                    ? 1
+                    : requestedPartySize,
             ModuleBlockers = capability.Blockers.Select(static blocker => blocker.Clone()).ToList(),
         };
 
@@ -706,6 +754,24 @@ public sealed class DadPresetProviderService
             _ => activityMode.ToString(),
         };
 
+    public string GetPlannerRunFamilyLabel(DadPlannerRunFamily runFamily)
+        => runFamily switch
+        {
+            DadPlannerRunFamily.Msq => "MSQ",
+            DadPlannerRunFamily.LevelingNpc => "Leveling / NPC",
+            DadPlannerRunFamily.DutyFinder => "Duty Finder",
+            DadPlannerRunFamily.FarmLoops => "Farm Loops",
+            DadPlannerRunFamily.Event => "Event",
+            _ => runFamily.ToString(),
+        };
+
+    public string GetPlannerStopModeLabel(DadPlannerStopMode stopMode)
+        => stopMode switch
+        {
+            DadPlannerStopMode.TargetLevel => "Target level",
+            _ => "After runs",
+        };
+
     public string GetPlannerOperatorModeLabel(DadPlannerOperatorMode operatorMode)
         => operatorMode switch
         {
@@ -789,6 +855,7 @@ public sealed class DadPresetProviderService
     private void NormalizePlannerOptions(DadPresetPlannerOptions options)
     {
         options.SelectedPlannerGroupId = options.SelectedPlannerGroupId?.Trim() ?? string.Empty;
+        options.RunFamily = ResolveLaneDefinition(options.ActivityMode).RunFamily;
         options.ActivityName = options.ActivityMode switch
         {
             DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ",
@@ -820,8 +887,16 @@ public sealed class DadPresetProviderService
         var lane = ResolveLaneDefinition(options.ActivityMode);
         if (options.DutyExpectedPartySize <= 0 && options.DutyContentFinderConditionId == 0 && lane.ExpectedPartySize > 0)
             options.DutyExpectedPartySize = lane.ExpectedPartySize;
+        if (IsLocalNpcLane(options.ActivityMode))
+        {
+            options.TransportOwner = DadTransportOwner.DadDirect;
+            options.QueueAuthority = DadQueueAuthority.LocalOnly;
+            options.DutyExpectedPartySize = 1;
+        }
         if (string.IsNullOrWhiteSpace(options.MogtomeDutyPolicy))
             options.MogtomeDutyPolicy = DadMogtomeDutyPolicies.PresetHandoff;
+        options.StopPolicy ??= new DadRunStopPolicy();
+        options.StopPolicy.Normalize();
         options.IncludedAccountKeys = options.IncludedAccountKeys
             .Where(static key => !key.IsEmpty)
             .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
@@ -839,11 +914,17 @@ public sealed class DadPresetProviderService
         selectedGroup.MogtomeDutyPolicy = string.IsNullOrWhiteSpace(selectedGroup.MogtomeDutyPolicy)
             ? DadMogtomeDutyPolicies.PresetHandoff
             : selectedGroup.MogtomeDutyPolicy.Trim();
+        selectedGroup.RunFamily = ResolveLaneDefinition(selectedGroup.ActivityMode).RunFamily;
+        selectedGroup.StopPolicy ??= new DadRunStopPolicy();
+        selectedGroup.StopPolicy.Normalize();
         selectedGroup.Slots = selectedGroup.Slots
             .Where(static slot => slot != null)
             .Select(static slot =>
             {
                 slot.SlotId = string.IsNullOrWhiteSpace(slot.SlotId) ? "Slot" : slot.SlotId.Trim();
+                slot.LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty;
+                slot.CharacterLoadInstruction ??= new DadCharacterLoadInstruction();
+                slot.CharacterLoadInstruction.Normalize();
                 return slot;
             })
             .ToList();
@@ -1095,6 +1176,80 @@ public sealed class DadPresetProviderService
         };
     }
 
+    private static DadRunStopPolicy BuildResolvedStopPolicy(
+        DadRunStopPolicy? source,
+        IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+    {
+        var policy = (source ?? new DadRunStopPolicy()).Clone().Normalize();
+        if (policy.Mode != DadPlannerStopMode.TargetLevel)
+            return policy;
+
+        var selectedKey = selectedSlots
+            .Select(static slot => slot.CharacterKey)
+            .FirstOrDefault(static key => !string.IsNullOrWhiteSpace(key)) ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(selectedKey))
+            return policy;
+
+        policy.TargetCharacterKey = new DadCharacterKey(selectedKey);
+        var character = availableCharacters.FirstOrDefault(candidate =>
+            string.Equals(candidate.CharacterKey, selectedKey, StringComparison.OrdinalIgnoreCase));
+        policy.TargetCharacterLabel = character == null
+            ? selectedKey
+            : FormatCharacterDisplay(character);
+        return policy;
+    }
+
+    private static List<string> BuildStopPolicyBlockers(
+        DadRunStopPolicy stopPolicy,
+        IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+    {
+        stopPolicy.Normalize();
+        if (stopPolicy.Mode != DadPlannerStopMode.TargetLevel)
+            return [];
+
+        var blockers = new List<string>();
+        var targetKey = stopPolicy.TargetCharacterKey.Value?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(targetKey))
+        {
+            blockers.Add("Target-level stop requires an exact selected character.");
+            return blockers;
+        }
+
+        if (selectedSlots.All(slot => !string.Equals(slot.CharacterKey, targetKey, StringComparison.OrdinalIgnoreCase)))
+            blockers.Add($"Target-level stop character '{targetKey}' is not selected in the planned roster.");
+
+        var targetCharacter = availableCharacters.FirstOrDefault(character =>
+            string.Equals(character.CharacterKey, targetKey, StringComparison.OrdinalIgnoreCase));
+        if (targetCharacter == null)
+        {
+            blockers.Add($"Target-level stop character '{targetKey}' is not known in the planner pool.");
+            return blockers;
+        }
+
+        if (!targetCharacter.CurrentLevel.HasValue)
+        {
+            blockers.Add($"Target-level stop character '{targetKey}' has no current level data.");
+            return blockers;
+        }
+
+        if (targetCharacter.CurrentLevel.Value >= stopPolicy.TargetLevel)
+            blockers.Add($"Target-level stop character '{targetKey}' is already level {targetCharacter.CurrentLevel.Value}/{stopPolicy.TargetLevel}.");
+
+        return blockers;
+    }
+
+    private static string FormatCharacterDisplay(DadAcquiredCharacter character)
+    {
+        if (!string.IsNullOrWhiteSpace(character.CharacterName) && !string.IsNullOrWhiteSpace(character.WorldName))
+            return $"{character.CharacterName}@{character.WorldName}";
+
+        return string.IsNullOrWhiteSpace(character.CharacterKey)
+            ? "(unknown)"
+            : character.CharacterKey;
+    }
+
     private string BuildPreviewScope(DadPresetPlannerOptions options, int localCandidateCount, int remoteCandidateCount, bool blocked)
     {
         if (options.OperatorMode != DadPlannerOperatorMode.TestOnThisMachine)
@@ -1148,7 +1303,7 @@ public sealed class DadPresetProviderService
         var totalSlots = preset.SelectedCharacters.Count;
         var blockerText = preset.Blockers.Count == 0 ? "no blockers" : string.Join(" | ", preset.Blockers);
         return
-            $"{preset.ActivityModeId} | {preset.OperatorModeLabel} | {GetTransportOwnerLabel(preset.TransportOwner)} | {GetQueueAuthorityLabel(preset.QueueAuthority)} | {GetInviteAuthorityLabel(preset.InviteAuthority)} | accounts {preset.AccountFilterSummary} | " +
+            $"{preset.RunFamilyId} / {preset.ActivityModeId} | {preset.OperatorModeLabel} | {GetTransportOwnerLabel(preset.TransportOwner)} | {GetQueueAuthorityLabel(preset.QueueAuthority)} | {GetInviteAuthorityLabel(preset.InviteAuthority)} | stop {preset.StopPolicy.Describe()} | accounts {preset.AccountFilterSummary} | " +
             $"{leader} | slots {assignedSlots}/{Math.Max(1, totalSlots)} | {preset.FilterSummary} | {preset.ValidationSummary} | {blockerText}";
     }
 
@@ -1180,6 +1335,7 @@ public sealed class DadPresetProviderService
     {
         result.RequestId = request.RequestId;
         result.ModuleId = request.Orchestration.ModuleTarget;
+        result.StopPolicy = request.StopPolicy.Clone();
         result.QueueAuthority = request.Orchestration.QueueAuthority;
         result.ExpectedPartySize = request.Orchestration.RosterIntent.ExpectedPartySize;
         result.RequiredCharacterKeys = [..request.Orchestration.RequiredCharacterKeys];
@@ -1200,6 +1356,7 @@ public sealed class DadPresetProviderService
             Lane = lane.DisplayName,
             ModuleId = request.Orchestration.ModuleTarget,
             TaskConfig = BuildContractTaskConfig(request, selectedDuty),
+            StopPolicy = request.StopPolicy.Clone(),
             RequiredCharacterKeys = [..result.RequiredCharacterKeys],
             RequiredAccountKeys = [..result.RequiredAccountKeys],
             PartySize = request.Orchestration.RosterIntent.ExpectedPartySize,
@@ -1622,6 +1779,7 @@ public sealed class DadPresetProviderService
         => new()
         {
             ActivityMode = lane.ActivityMode,
+            RunFamily = lane.RunFamily,
             ModuleId = lane.ModuleId,
             DisplayName = lane.DisplayName,
             Summary = lane.Summary,
@@ -1662,6 +1820,7 @@ public sealed class DadPresetProviderService
         DadPlannerGroup? selectedGroup)
     {
         var lane = ResolveLaneDefinition(options.ActivityMode);
+        var forceLocalNpc = IsLocalNpcLane(options.ActivityMode);
         var selectedCharacterKeys = selectedCharacters
             .Select(static character => new DadCharacterKey(character.CharacterKey))
             .Where(static key => !key.IsEmpty)
@@ -1681,17 +1840,17 @@ public sealed class DadPresetProviderService
         List<DadCharacterKey> requiredCharacterKeys = groupRequiredCharacterKeys.Count > 0
             ? groupRequiredCharacterKeys
             : selectedCharacterKeys;
-        var expectedPartySize = previewOnly
+        var expectedPartySize = previewOnly || forceLocalNpc
             ? 1
             : ResolveRequestedPartySize(options, selectedDuty, lane);
 
         return new DadOrchestrationIntent
         {
-            LocalOnlyOverride = previewOnly,
-            AuthorityMode = previewOnly ? DadAuthorityMode.LocalOnly : lane.DefaultAuthorityMode,
-            TransportMode = previewOnly || !lane.RequiresRemoteParty ? DadTransportMode.LocalOnly : DadTransportMode.LocalhostHybrid,
+            LocalOnlyOverride = previewOnly || forceLocalNpc,
+            AuthorityMode = previewOnly || forceLocalNpc ? DadAuthorityMode.LocalOnly : lane.DefaultAuthorityMode,
+            TransportMode = previewOnly || forceLocalNpc || !lane.RequiresRemoteParty ? DadTransportMode.LocalOnly : DadTransportMode.LocalhostHybrid,
             ModuleTarget = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane),
-            QueueAuthority = previewOnly ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
+            QueueAuthority = previewOnly || forceLocalNpc ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
             PreferredLeaderCharacterKey = new DadCharacterKey(plannerPreview.LeaderCharacterKey),
             RequiredAccountKeys = requiredAccountKeys,
             PreferredCharacterKeys = [..selectedCharacterKeys],
@@ -1699,7 +1858,7 @@ public sealed class DadPresetProviderService
             RosterIntent = new DadRosterIntent
             {
                 ExpectedPartySize = expectedPartySize,
-                RequireRemoteParticipants = !previewOnly && expectedPartySize > 1,
+                RequireRemoteParticipants = !previewOnly && !forceLocalNpc && expectedPartySize > 1,
                 AllowStoredXadbFallback = false,
                 RequireExactCharacters = selectedGroup != null || !previewOnly,
             },
@@ -1717,6 +1876,9 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.DutyPremade => DadModuleId.PremadeDuty,
             _ => lane.ModuleId,
         };
+
+    private static bool IsLocalNpcLane(DadPlannerActivityMode activityMode)
+        => activityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust;
 
     private static bool MatchesPlannerFilters(DadAcquiredCharacter character, DadAcquiredCharacter? localCharacter, DadPresetPlannerOptions options)
     {

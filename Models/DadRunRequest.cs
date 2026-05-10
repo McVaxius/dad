@@ -7,6 +7,7 @@ public sealed class DadRunRequest
     public string RequestId { get; set; } = Guid.NewGuid().ToString("N");
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
     public string RequestedBy { get; set; } = string.Empty;
+    public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadOrchestrationIntent Orchestration { get; set; } = new();
     public DadDungeonTask? Dungeon { get; set; }
     public DadMsqTask? Msq { get; set; }
@@ -40,6 +41,7 @@ public sealed class DadRunRequest
     public string DescribeRequestedWork()
     {
         ApplyOrchestrationDefaults();
+        StopPolicy ??= new DadRunStopPolicy();
         var parts = new List<string>();
 
         if (Dungeon != null)
@@ -101,6 +103,7 @@ public sealed class DadRunRequest
             parts.Add($"accounts {string.Join(", ", Orchestration.RequiredAccountKeys.Select(static key => key.ToString()))}");
         if (Orchestration.RequiredCharacterKeys.Count > 0)
             parts.Add($"characters {string.Join(", ", Orchestration.RequiredCharacterKeys.Select(static key => key.ToString()))}");
+        parts.Add($"stop {StopPolicy.Normalize().Describe()}");
 
         var builder = new StringBuilder();
         for (var index = 0; index < parts.Count; index++)
@@ -116,6 +119,8 @@ public sealed class DadRunRequest
 
     public DadOrchestrationIntent ApplyOrchestrationDefaults()
     {
+        StopPolicy ??= new DadRunStopPolicy();
+        StopPolicy.Normalize();
         Orchestration ??= new DadOrchestrationIntent();
         Orchestration.RosterIntent ??= new DadRosterIntent();
         Orchestration.WaitPolicy ??= new DadRunWaitPolicy();
@@ -209,6 +214,54 @@ public sealed class DadRunRequest
 
         return 1;
     }
+}
+
+public sealed class DadRunStopPolicy
+{
+    public const int DefaultTargetLevel = 100;
+    public const int DefaultSafetyCap = 20;
+
+    public DadPlannerStopMode Mode { get; set; } = DadPlannerStopMode.AfterRuns;
+    public int AfterRuns { get; set; } = 1;
+    public int TargetLevel { get; set; } = DefaultTargetLevel;
+    public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
+    public string TargetCharacterLabel { get; set; } = string.Empty;
+    public int SafetyCap { get; set; } = DefaultSafetyCap;
+
+    public DadRunStopPolicy Normalize()
+    {
+        AfterRuns = Math.Clamp(AfterRuns <= 0 ? 1 : AfterRuns, 1, 200);
+        TargetLevel = Math.Clamp(TargetLevel <= 0 ? DefaultTargetLevel : TargetLevel, 1, 999);
+        SafetyCap = Math.Clamp(SafetyCap <= 0 ? DefaultSafetyCap : SafetyCap, 1, 200);
+        TargetCharacterKey = new DadCharacterKey((TargetCharacterKey.Value ?? string.Empty).Trim());
+        TargetCharacterLabel = TargetCharacterLabel?.Trim() ?? string.Empty;
+        return this;
+    }
+
+    public DadRunStopPolicy Clone()
+        => new()
+        {
+            Mode = Mode,
+            AfterRuns = AfterRuns,
+            TargetLevel = TargetLevel,
+            TargetCharacterKey = TargetCharacterKey,
+            TargetCharacterLabel = TargetCharacterLabel,
+            SafetyCap = SafetyCap,
+        };
+
+    public int GetSafetyCap()
+        => Mode == DadPlannerStopMode.AfterRuns
+            ? Math.Max(1, AfterRuns)
+            : Math.Max(1, SafetyCap);
+
+    public string Describe()
+        => Mode switch
+        {
+            DadPlannerStopMode.TargetLevel => TargetCharacterKey.IsEmpty
+                ? $"target level {TargetLevel} for selected character, safety cap {GetSafetyCap()} run(s)"
+                : $"target level {TargetLevel} for {TargetCharacterKey}, safety cap {GetSafetyCap()} run(s)",
+            _ => $"{Math.Max(1, AfterRuns)} run(s)",
+        };
 }
 
 public sealed class DadDungeonTask

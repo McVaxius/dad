@@ -12,6 +12,7 @@ public sealed class DadTransportService : IDisposable
     private const string MessageWakeRequest = "wake-request";
     private const string MessageClaimRequest = "claim-request";
     private const string MessageAssemblyInstruction = "assembly-instruction";
+    private const string MessageCharacterLoadCommand = "character-load-command";
     private const string MessageCancelRun = "cancel-run";
     private const string MessageCancelCommand = "cancel-command";
     private const string MessageStatusQuery = "status-query";
@@ -280,6 +281,9 @@ public sealed class DadTransportService : IDisposable
     public DadRunStepResultDto? SendAssemblyInstruction(DadParticipantSnapshot participant, DadAssemblyInstructionDto instruction)
         => SendEnvelope<DadAssemblyInstructionDto, DadRunStepResultDto>(participant.Endpoint, MessageAssemblyInstruction, instruction);
 
+    public DadCharacterLoadResultDto? SendCharacterLoadCommand(DadParticipantSnapshot participant, DadCharacterLoadCommandDto command)
+        => SendEnvelope<DadCharacterLoadCommandDto, DadCharacterLoadResultDto>(participant.Endpoint, MessageCharacterLoadCommand, command);
+
     public DadRunResult? QueryAuthorityStatus(string endpoint)
         => SendEnvelope<string, DadRunResult>(endpoint, MessageStatusQuery, string.Empty);
 
@@ -397,6 +401,7 @@ public sealed class DadTransportService : IDisposable
                 MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(envelope.PayloadJson)),
                 MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(envelope.PayloadJson)),
                 MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(envelope.PayloadJson)),
+                MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(envelope.PayloadJson)),
                 MessageCancelRun => DadIpcJson.Serialize(HandleCancelRun(envelope.PayloadJson)),
                 MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(envelope.PayloadJson)),
                 MessageStatusQuery => DadIpcJson.Serialize(HandleStatusQuery()),
@@ -457,6 +462,56 @@ public sealed class DadTransportService : IDisposable
             return BuildRejectedAssemblyResult(instruction, BuildRemoteMutationRejectedReason("remote assembly instruction"));
 
         return presenceService.HandleAssemblyInstruction(instruction);
+    }
+
+    private DadCharacterLoadResultDto HandleCharacterLoadCommand(string payloadJson)
+    {
+        var command = DadIpcJson.Deserialize<DadCharacterLoadCommandDto>(payloadJson) ?? new DadCharacterLoadCommandDto();
+        if (!remoteMutationsAllowed)
+        {
+            return new DadCharacterLoadResultDto
+            {
+                CommandId = command.CommandId,
+                Accepted = false,
+                DryRun = command.DryRun,
+                Summary = BuildRemoteMutationRejectedReason("remote character-load command"),
+                Snapshot = BuildLocalTransportSnapshot(),
+            };
+        }
+
+        if (command.DryRun)
+        {
+            return new DadCharacterLoadResultDto
+            {
+                CommandId = command.CommandId,
+                Accepted = true,
+                DryRun = true,
+                Summary = $"Dry-run character-load command accepted: {command.Command}",
+                Snapshot = presenceService.BuildSnapshotCopy(),
+            };
+        }
+
+        var accepted = false;
+        try
+        {
+            accepted = !string.IsNullOrWhiteSpace(command.Command) &&
+                       Plugin.CommandManager.ProcessCommand(command.Command);
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad] Character-load command failed: {Command}", command.Command);
+        }
+
+        return new DadCharacterLoadResultDto
+        {
+            CommandId = command.CommandId,
+            Accepted = accepted,
+            DryRun = false,
+            Summary = accepted
+                ? $"Sent character-load command for {command.CharacterKey}: {command.Command}"
+                : $"Character-load command rejected: {command.Command}",
+            Snapshot = presenceService.BuildSnapshotCopy(),
+        };
     }
 
     private DadCancelAckDto HandleCancelRun(string payloadJson)

@@ -979,7 +979,7 @@ public sealed class DadTrustExecutor(
         var pulse = queueService.Cancel(status.RunId, DadNpcDutyQueueMode.Trust, reason);
         ApplyPulse(pulse);
         status.Summary = string.IsNullOrWhiteSpace(reason)
-            ? "Trust executor cancelled. Dad does not send AutoDuty or FrenRider stop commands; clear any remaining game-side queue or duty state manually if needed."
+            ? "Trust executor cancelled. Dad does not send external stop commands; clear any remaining game-side queue or duty state manually if needed."
             : reason;
         status.FailureReason = pulse.FailureReason;
         status.CompletedAtUtc = DateTime.UtcNow;

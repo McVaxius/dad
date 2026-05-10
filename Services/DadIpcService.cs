@@ -54,6 +54,9 @@ public sealed class DadIpcService : IDisposable
             presetProviderService.BuildPlannerPreview(characterIntelligenceService.CurrentPool)));
         Register(pluginInterface, DadIpcContract.GetPlannerGroups, this.plugin.GetPlannerGroupsJson);
         Register<string, string>(pluginInterface, DadIpcContract.GetPlannerGroupPreview, this.plugin.GetPlannerGroupPreviewJson);
+        Register(pluginInterface, DadIpcContract.GetSchedulerPreview, this.plugin.GetSchedulerPreviewJson);
+        Register<string, string>(pluginInterface, DadIpcContract.StartSchedulerPreset, this.plugin.StartSchedulerPresetFromJson);
+        Register(pluginInterface, DadIpcContract.GetLaunchProfiles, this.plugin.GetLaunchProfilesJson);
         Register(pluginInterface, DadIpcContract.GetModuleCapabilities, () => DadIpcJson.Serialize(moduleRegistry.GetCapabilities()));
         Register(pluginInterface, DadIpcContract.GetSupportedJobHints, () => this.presetProviderService.GetSupportedJobHintsJson());
         Register<string, string>(pluginInterface, DadIpcContract.StartTasks, StartTasksFromJson);

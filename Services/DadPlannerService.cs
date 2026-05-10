@@ -263,6 +263,9 @@ public sealed class DadPlannerService
         if (modules.Count == 0)
             return null;
 
+        if (!ValidateStopPolicyAtStart(request, pool, out rejectionReason))
+            return null;
+
         if (request.Orchestration.LocalOnlyOverride && modules.Any(static module => module.RequiresPeers))
         {
             rejectionReason = request.Orchestration.ModuleTarget switch
@@ -387,6 +390,64 @@ public sealed class DadPlannerService
         }
 
         return true;
+    }
+
+    private static bool ValidateStopPolicyAtStart(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
+    {
+        rejectionReason = string.Empty;
+        request.StopPolicy ??= new DadRunStopPolicy();
+        var policy = request.StopPolicy.Normalize();
+        if (policy.Mode != DadPlannerStopMode.TargetLevel)
+            return true;
+
+        var targetKey = policy.TargetCharacterKey.Value?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(targetKey))
+        {
+            rejectionReason = "Target-level stop requires an exact target character.";
+            return false;
+        }
+
+        if (!IsStopTargetInPlannedRoster(request, targetKey))
+        {
+            rejectionReason = $"Target-level stop character '{targetKey}' is not one of the selected planner characters.";
+            return false;
+        }
+
+        var character = pool.Characters.FirstOrDefault(candidate =>
+            string.Equals(candidate.CharacterKey, targetKey, StringComparison.OrdinalIgnoreCase));
+        if (character == null)
+        {
+            rejectionReason = $"Target-level stop character '{targetKey}' is not known to Dad.";
+            return false;
+        }
+
+        if (!character.CurrentLevel.HasValue)
+        {
+            rejectionReason = $"Target-level stop character '{targetKey}' has no current level data.";
+            return false;
+        }
+
+        if (character.CurrentLevel.Value >= policy.TargetLevel)
+        {
+            rejectionReason = $"Target-level stop character '{targetKey}' is already level {character.CurrentLevel.Value}/{policy.TargetLevel}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsStopTargetInPlannedRoster(DadRunRequest request, string targetKey)
+    {
+        if (!request.Orchestration.PreferredLeaderCharacterKey.IsEmpty &&
+            string.Equals(request.Orchestration.PreferredLeaderCharacterKey.Value, targetKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return request.Orchestration.RequiredCharacterKeys
+                   .Any(key => string.Equals(key.Value, targetKey, StringComparison.OrdinalIgnoreCase))
+               || request.Orchestration.PreferredCharacterKeys
+                   .Any(key => string.Equals(key.Value, targetKey, StringComparison.OrdinalIgnoreCase));
     }
 
     public IReadOnlyList<DadAcquiredCharacter> ResolveParticipants(DadRunPlan plan, DadCharacterPool pool, out string blocker)

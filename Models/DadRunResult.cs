@@ -28,6 +28,7 @@ public sealed class DadRunResult
     public string FailureReason { get; set; } = string.Empty;
     public string Summary { get; set; } = "Idle";
     public DadRunRequest? Request { get; set; }
+    public DadRunStopProgress StopProgress { get; set; } = new();
     public DadModuleExecutionStatusDto CurrentExecutorStatus { get; set; } = new();
     public List<DadParticipantSnapshot> Participants { get; set; } = [];
     public List<DadParticipantLeaseRecord> Leases { get; set; } = [];
@@ -57,6 +58,7 @@ public sealed class DadRunResult
         RequestedBy = request?.RequestedBy ?? string.Empty,
         RequestedTaskCount = request?.GetConfiguredTaskCount() ?? 0,
         TotalTaskCount = request?.GetConfiguredTaskCount() ?? 0,
+        StopProgress = DadRunStopProgress.FromPolicy(request?.StopPolicy),
         FailureReason = reason,
         Summary = reason,
         Request = request,
@@ -75,6 +77,7 @@ public sealed class DadRunResult
         RequestedBy = request.RequestedBy,
         RequestedTaskCount = request.GetConfiguredTaskCount(),
         TotalTaskCount = request.GetConfiguredTaskCount(),
+        StopProgress = DadRunStopProgress.FromPolicy(request.StopPolicy),
         Summary = summary,
         Request = request,
     };
@@ -93,6 +96,7 @@ public sealed class DadRunResult
         RequestedBy = plan.Request.RequestedBy,
         RequestedTaskCount = plan.Modules.Count,
         TotalTaskCount = plan.Modules.Count,
+        StopProgress = DadRunStopProgress.FromPolicy(plan.Request.StopPolicy),
         Summary = summary,
         Request = plan.Request,
         Warnings = [..plan.PlannerWarnings],
@@ -126,6 +130,7 @@ public sealed class DadRunResult
         FailureReason = FailureReason,
         Summary = Summary,
         Request = Request,
+        StopProgress = StopProgress.Clone(),
         CurrentExecutorStatus = CurrentExecutorStatus.Clone(),
         Participants = Participants.Select(static participant => participant.Clone()).ToList(),
         Leases = Leases.Select(static lease => lease.Clone()).ToList(),
@@ -133,4 +138,40 @@ public sealed class DadRunResult
         Warnings = [..Warnings],
         CompletedAtUtc = CompletedAtUtc,
     };
+}
+
+public sealed class DadRunStopProgress
+{
+    public DadRunStopPolicy StopPolicy { get; set; } = new();
+    public int StartedRuns { get; set; }
+    public int CompletedRuns { get; set; }
+    public int SafetyCap { get; set; } = 1;
+    public int? CurrentLevel { get; set; }
+    public bool StopReached { get; set; }
+    public bool SafetyCapReached { get; set; }
+    public string Summary { get; set; } = "Stop policy: after 1 run.";
+
+    public static DadRunStopProgress FromPolicy(DadRunStopPolicy? policy)
+    {
+        var normalized = (policy ?? new DadRunStopPolicy()).Clone().Normalize();
+        return new DadRunStopProgress
+        {
+            StopPolicy = normalized,
+            SafetyCap = normalized.GetSafetyCap(),
+            Summary = $"Stop policy: {normalized.Describe()}.",
+        };
+    }
+
+    public DadRunStopProgress Clone()
+        => new()
+        {
+            StopPolicy = StopPolicy.Clone(),
+            StartedRuns = StartedRuns,
+            CompletedRuns = CompletedRuns,
+            SafetyCap = SafetyCap,
+            CurrentLevel = CurrentLevel,
+            StopReached = StopReached,
+            SafetyCapReached = SafetyCapReached,
+            Summary = Summary,
+        };
 }
