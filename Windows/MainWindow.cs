@@ -679,7 +679,7 @@ public sealed class MainWindow : Window, IDisposable
             catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool);
 
         ImGui.SameLine();
-        if (ImGui.SmallButton("Refresh peers"))
+        if (ImGui.SmallButton("Populate roster from connected Dads"))
             catalog = plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
             {
                 ForcePeerRefresh = true,
@@ -697,8 +697,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetNextItemWidth(MathF.Min(260f, ImGui.GetContentRegionAvail().X));
         ImGui.InputText("Search", ref rosterSearch, 128);
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(MathF.Min(220f, ImGui.GetContentRegionAvail().X));
-        ImGui.InputText("Account filter", ref rosterAccountFilter, 128);
+        DrawRosterAccountSelector(catalog);
 
         if (ImGui.Checkbox("Stale only", ref rosterStaleOnly))
         {
@@ -718,6 +717,10 @@ public sealed class MainWindow : Window, IDisposable
 
         var filtered = FilterRosterCharacters(catalog.Characters).ToList();
         DrawStatusRow("Catalog", $"{catalog.Summary} Showing {filtered.Count}/{catalog.Characters.Count} row(s).");
+        if (!catalog.IsFullRosterAvailable)
+            DrawStatusRow("XADB roster", "Full roster provider missing or old on at least one Dad client.");
+        if (catalog.Warnings.Count > 0)
+            DrawStatusRow("Warnings", string.Join(" | ", catalog.Warnings.Distinct(StringComparer.OrdinalIgnoreCase)));
 
         if (filtered.Count > 0)
         {
@@ -874,8 +877,8 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted(job.NextEligibleTimeUtc.HasValue ? FormatTime(job.NextEligibleTimeUtc) : "now");
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(job.TargetCharacterKeys.Count == 0
-                ? "-"
-                : plugin.KrangleService.FormatCharacterKeys(job.TargetCharacterKeys));
+                ? FormatRosterTargets(job.TargetCharacters)
+                : FormatRosterTargets(job.TargetCharacters, plugin.KrangleService.FormatCharacterKeys(job.TargetCharacterKeys)));
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatText(job.StatusSummary, job.BlockedReason));
             ImGui.TableNextColumn();
@@ -951,6 +954,61 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndTable();
     }
 
+    private void DrawRosterAccountSelector(DadAccountRosterCatalog catalog)
+    {
+        var options = catalog.Characters
+            .Where(static character => !character.AccountKey.IsEmpty)
+            .GroupBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var alias = group
+                    .Select(static character => character.AccountAlias)
+                    .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))
+                    ?? string.Empty;
+                return new
+                {
+                    AccountKey = group.Key,
+                    Label = string.IsNullOrWhiteSpace(alias) || string.Equals(alias, group.Key, StringComparison.OrdinalIgnoreCase)
+                        ? group.Key
+                        : $"{alias} ({group.Key})",
+                    Count = group.Count(),
+                };
+            })
+            .OrderBy(static option => option.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(rosterAccountFilter) &&
+            options.All(option => !string.Equals(option.AccountKey, rosterAccountFilter, StringComparison.OrdinalIgnoreCase)))
+        {
+            rosterAccountFilter = string.Empty;
+        }
+
+        var selected = options.FirstOrDefault(option => string.Equals(option.AccountKey, rosterAccountFilter, StringComparison.OrdinalIgnoreCase));
+        var preview = selected == null
+            ? $"All accounts ({catalog.Characters.Count})"
+            : $"{selected.Label} ({selected.Count})";
+
+        ImGui.SetNextItemWidth(MathF.Min(280f, ImGui.GetContentRegionAvail().X));
+        if (!ImGui.BeginCombo("Account", preview))
+            return;
+
+        if (ImGui.Selectable($"All accounts ({catalog.Characters.Count})", string.IsNullOrWhiteSpace(rosterAccountFilter)))
+            rosterAccountFilter = string.Empty;
+        if (string.IsNullOrWhiteSpace(rosterAccountFilter))
+            ImGui.SetItemDefaultFocus();
+
+        foreach (var option in options)
+        {
+            var isSelected = string.Equals(option.AccountKey, rosterAccountFilter, StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable($"{option.Label} ({option.Count})", isSelected))
+                rosterAccountFilter = option.AccountKey;
+            if (isSelected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
     private IEnumerable<DadRosterCharacter> FilterRosterCharacters(IEnumerable<DadRosterCharacter> characters)
     {
         var search = rosterSearch.Trim();
@@ -959,8 +1017,7 @@ public sealed class MainWindow : Window, IDisposable
             .Where(character => rosterShowHidden || character.Visibility is DadRosterVisibility.Active or DadRosterVisibility.NeedsUpdate)
             .Where(character => !rosterStaleOnly || character.IsStale)
             .Where(character => string.IsNullOrWhiteSpace(accountFilter) ||
-                                character.AccountKey.Value.Contains(accountFilter, StringComparison.OrdinalIgnoreCase) ||
-                                character.AccountAlias.Contains(accountFilter, StringComparison.OrdinalIgnoreCase))
+                                string.Equals(character.AccountKey.Value, accountFilter, StringComparison.OrdinalIgnoreCase))
             .Where(character => string.IsNullOrWhiteSpace(search) ||
                                 character.CharacterKey.Value.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                                 character.CharacterName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
@@ -972,6 +1029,22 @@ public sealed class MainWindow : Window, IDisposable
             .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase);
     }
 
+    private static string FormatRosterTargets(IReadOnlyList<DadRosterCharacterRef> targets, string fallback = "-")
+    {
+        var labels = targets
+            .Where(static target => target is { IsEmpty: false })
+            .Select(static target =>
+            {
+                var character = target.CharacterKey.IsEmpty
+                    ? target.ContentId == 0 ? "(any)" : $"cid:{target.ContentId}"
+                    : target.CharacterKey.Value;
+                return target.AccountKey.IsEmpty ? character : $"{target.AccountKey.Value}:{character}";
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return labels.Count == 0 ? fallback : string.Join(", ", labels);
+    }
+
     private void SetRosterVisibility(IReadOnlyList<DadRosterCharacter> characters, DadRosterVisibility visibility)
     {
         if (characters.Count == 0)
@@ -979,6 +1052,8 @@ public sealed class MainWindow : Window, IDisposable
 
         plugin.SetRosterVisibilityFromJson(DadIpcJson.Serialize(new DadRosterVisibilityChangeRequest
         {
+            CharacterRefs = characters.Select(DadRosterIdentity.From).ToList(),
+            AccountKeys = characters.Select(static character => character.AccountKey).Where(static key => !key.IsEmpty).DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase).ToList(),
             CharacterKeys = characters.Select(static character => character.CharacterKey).ToList(),
             Visibility = visibility,
             Reason = $"Bulk {visibility} from Crew / Scheduler roster.",
@@ -992,6 +1067,8 @@ public sealed class MainWindow : Window, IDisposable
 
         var resultJson = plugin.EnqueueRosterUpdateFromJson(DadIpcJson.Serialize(new DadRosterRefreshPlan
         {
+            CharacterRefs = characters.Select(DadRosterIdentity.From).ToList(),
+            AccountKeys = characters.Select(static character => character.AccountKey).Where(static key => !key.IsEmpty).DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase).ToList(),
             CharacterKeys = characters.Select(static character => character.CharacterKey).ToList(),
             DryRun = dryRun,
             IncludeHidden = true,
@@ -3434,9 +3511,12 @@ public sealed class MainWindow : Window, IDisposable
 
         foreach (var character in characterPool.Characters
                      .Where(character => slot.RequiredAccountKey.IsEmpty || MatchesPlannerGroupAccount(character, slot.RequiredAccountKey))
+                     .Where(character => plugin.Configuration.RosterCatalog.ShowAllInPresetSlots ||
+                                         character.RosterVisibility == DadRosterVisibility.Active)
                      .OrderBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase))
         {
-            var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase);
+            var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
+                           (slot.RequiredAccountKey.IsEmpty || MatchesPlannerGroupAccount(character, slot.RequiredAccountKey));
             var source = plugin.PresetProviderService.GetCharacterSourceLabel(character.Source);
             var label = $"{FormatOperatorCharacterKey(character.CharacterKey, character.CharacterKey)} | {FormatAccount(character)} | {source}";
             if (ImGui.Selectable(label, selected))

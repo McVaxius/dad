@@ -78,7 +78,8 @@ public sealed class DadSchedulerService
             Priority = request.Priority,
             MapMode = request.MapMode,
             MapRunTemplate = request.MapRunTemplate?.Trim() ?? string.Empty,
-            TargetCharacterKeys = [..request.TargetCharacterKeys],
+            TargetCharacters = request.TargetCharacters?.Select(static target => target.Clone()).ToList() ?? [],
+            TargetCharacterKeys = request.TargetCharacterKeys == null ? [] : [..request.TargetCharacterKeys],
             StatusSummary = $"Queued preset '{group.DisplayName}'.",
         };
 
@@ -90,14 +91,18 @@ public sealed class DadSchedulerService
     public DadScheduledCrewJob EnqueueRosterUpdate(DadRosterRefreshPlan plan, DadAccountRosterCatalog catalog)
     {
         NormalizeQueue();
+        plan.CharacterRefs ??= [];
+        plan.AccountKeys ??= [];
+        plan.CharacterKeys ??= [];
         var targets = catalog.Characters
             .Where(character =>
                 character.Visibility == DadRosterVisibility.NeedsUpdate ||
+                plan.CharacterRefs.Any(reference => DadRosterIdentity.Matches(character, reference)) ||
                 plan.CharacterKeys.Any(key => string.Equals(key.Value, character.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)) ||
-                plan.AccountKeys.Any(key => string.Equals(key.Value, character.AccountKey.Value, StringComparison.OrdinalIgnoreCase)))
+                plan.AccountKeys.Any(key => DadRosterIdentity.SameAccount(key, character.AccountKey)))
             .Where(character => !character.CharacterKey.IsEmpty)
-            .Select(static character => character.CharacterKey)
-            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .Select(DadRosterIdentity.From)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var job = new DadScheduledCrewJob
@@ -107,7 +112,9 @@ public sealed class DadSchedulerService
             DryRun = plan.DryRun,
             CreatedAtUtc = DateTime.UtcNow,
             RequestedBy = "roster-update",
-            TargetCharacterKeys = targets,
+            TargetCharacters = targets.Select(static target => target.Clone()).ToList(),
+            TargetAccountKeys = targets.Select(static target => target.AccountKey).Where(static key => !key.IsEmpty).DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase).ToList(),
+            TargetCharacterKeys = targets.Select(static target => target.CharacterKey).Where(static key => !key.IsEmpty).DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase).ToList(),
             StatusSummary = targets.Count == 0
                 ? "Roster update queued with no matching target characters."
                 : $"Queued roster update for {targets.Count} character(s).",
@@ -606,6 +613,7 @@ public sealed class DadSchedulerService
             {
                 AccountKey = slot.RequiredAccountKey,
                 CharacterKey = slot.RequiredCharacterKey,
+                ContentId = ResolveSlotContentId(slot),
                 SaveAfterRefresh = true,
             };
 
@@ -657,6 +665,12 @@ public sealed class DadSchedulerService
         DadScheduledCrewJob job,
         DadAccountRosterCatalog catalog)
     {
+        job.TargetCharacters ??= [];
+        job.TargetCharacterKeys ??= [];
+        job.TargetAccountKeys ??= [];
+        var explicitRefs = job.TargetCharacters
+            .Where(static reference => reference is { IsEmpty: false })
+            .ToList();
         var explicitTargets = job.TargetCharacterKeys
             .Where(static key => !key.IsEmpty)
             .Select(static key => key.Value)
@@ -666,15 +680,17 @@ public sealed class DadSchedulerService
             .Select(static key => key.Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var hasExplicitTargets = explicitRefs.Count > 0 || explicitTargets.Count > 0 || explicitAccounts.Count > 0;
         return catalog.Characters
+            .Where(character => explicitRefs.Count == 0 ||
+                                explicitRefs.Any(reference => DadRosterIdentity.Matches(character, reference)))
             .Where(character => explicitTargets.Count == 0 ||
                                 explicitTargets.Contains(character.CharacterKey.Value))
             .Where(character => explicitAccounts.Count == 0 ||
                                 explicitAccounts.Contains(character.AccountKey.Value))
-            .Where(character => character.Visibility == DadRosterVisibility.NeedsUpdate ||
-                                explicitTargets.Contains(character.CharacterKey.Value))
+            .Where(character => character.Visibility == DadRosterVisibility.NeedsUpdate || hasExplicitTargets)
             .Where(static character => !character.CharacterKey.IsEmpty)
-            .DistinctBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
@@ -764,7 +780,9 @@ public sealed class DadSchedulerService
         }
 
         var matchingAccount = participants.FirstOrDefault(participant => MatchesSlotAccount(participant, slot));
-        var matchingCharacter = participants.FirstOrDefault(participant => MatchesSlotCharacter(participant, slot));
+        var matchingCharacter = participants.FirstOrDefault(participant =>
+            MatchesSlotCharacter(participant, slot) &&
+            (slot.RequiredAccountKey.IsEmpty || MatchesSlotAccount(participant, slot)));
         var selected = matchingCharacter ?? matchingAccount;
         if (selected != null)
         {
@@ -897,6 +915,16 @@ public sealed class DadSchedulerService
             .ToList();
     }
 
+    private ulong ResolveSlotContentId(DadSchedulerSlotState slot)
+    {
+        var character = rosterCatalogService.FindCharacter(new DadRosterCharacterRef
+        {
+            AccountKey = slot.RequiredAccountKey,
+            CharacterKey = slot.RequiredCharacterKey,
+        });
+        return character?.ContentId ?? 0;
+    }
+
     private DadLaunchProfile? ResolveLaunchProfile(DadPlannerGroupSlot slot)
     {
         NormalizeLaunchProfiles();
@@ -908,10 +936,13 @@ public sealed class DadSchedulerService
                 return exact;
         }
 
+        var accountProfile = configuration.LaunchProfiles.FirstOrDefault(profile =>
+            !slot.RequiredAccountKey.IsEmpty &&
+            string.Equals(profile.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
+        if (accountProfile != null || !slot.RequiredAccountKey.IsEmpty)
+            return accountProfile;
+
         return configuration.LaunchProfiles.FirstOrDefault(profile =>
-                   !slot.RequiredAccountKey.IsEmpty &&
-                   string.Equals(profile.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase))
-               ?? configuration.LaunchProfiles.FirstOrDefault(profile =>
                    !slot.RequiredCharacterKey.IsEmpty &&
                    profile.ExpectedCharacterKeys.Any(key =>
                        string.Equals(key.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase)));
@@ -928,10 +959,13 @@ public sealed class DadSchedulerService
                 return exact;
         }
 
+        var accountProfile = configuration.LaunchProfiles.FirstOrDefault(profile =>
+            !slot.RequiredAccountKey.IsEmpty &&
+            string.Equals(profile.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
+        if (accountProfile != null || !slot.RequiredAccountKey.IsEmpty)
+            return accountProfile;
+
         return configuration.LaunchProfiles.FirstOrDefault(profile =>
-                   !slot.RequiredAccountKey.IsEmpty &&
-                   string.Equals(profile.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase))
-               ?? configuration.LaunchProfiles.FirstOrDefault(profile =>
                    !slot.RequiredCharacterKey.IsEmpty &&
                    profile.ExpectedCharacterKeys.Any(key =>
                        string.Equals(key.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase)));
@@ -1162,6 +1196,9 @@ public sealed class DadSchedulerService
             job.GroupId = job.GroupId?.Trim() ?? string.Empty;
             job.RequestedBy = string.IsNullOrWhiteSpace(job.RequestedBy) ? "scheduler" : job.RequestedBy.Trim();
             job.MapRunTemplate = job.MapRunTemplate?.Trim() ?? string.Empty;
+            job.TargetCharacters ??= [];
+            job.TargetCharacterKeys ??= [];
+            job.TargetAccountKeys ??= [];
             job.TargetCharacterKeys = job.TargetCharacterKeys
                 .Where(static key => !key.IsEmpty)
                 .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
@@ -1169,6 +1206,10 @@ public sealed class DadSchedulerService
             job.TargetAccountKeys = job.TargetAccountKeys
                 .Where(static key => !key.IsEmpty)
                 .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            job.TargetCharacters = job.TargetCharacters
+                .Where(static target => target is { IsEmpty: false })
+                .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
     }

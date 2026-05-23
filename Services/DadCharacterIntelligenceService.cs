@@ -383,9 +383,8 @@ public sealed class DadCharacterIntelligenceService
     private static void UpsertCharacter(List<DadAcquiredCharacter> characters, DadAcquiredCharacter candidate)
     {
         var existing = characters.FindIndex(existingCharacter =>
-            existingCharacter.ContentId != 0
-                ? existingCharacter.ContentId == candidate.ContentId
-                : string.Equals(existingCharacter.CharacterKey, candidate.CharacterKey, StringComparison.OrdinalIgnoreCase));
+            DadRosterIdentity.BuildKey(existingCharacter)
+                .Equals(DadRosterIdentity.BuildKey(candidate), StringComparison.OrdinalIgnoreCase));
 
         if (existing >= 0)
             characters[existing] = candidate;

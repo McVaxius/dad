@@ -315,6 +315,10 @@ public sealed class DadPlannerService
             .Select(static key => key.Value)
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .ToList();
+        var requiredRosterCharacters = request.Orchestration.RequiredRosterCharacters
+            .Where(static reference => reference is { IsEmpty: false })
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         var duplicateAccount = requiredAccounts
             .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
@@ -326,10 +330,12 @@ public sealed class DadPlannerService
             return false;
         }
 
-        var duplicateCharacter = requiredCharacters
-            .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault(static group => group.Count() > 1)
-            ?.Key;
+        var duplicateCharacter = requiredRosterCharacters.Count == 0
+            ? requiredCharacters
+                .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(static group => group.Count() > 1)
+                ?.Key
+            : string.Empty;
         if (!string.IsNullOrWhiteSpace(duplicateCharacter))
         {
             rejectionReason = $"Required character '{duplicateCharacter}' appears in multiple planned slots.";
@@ -355,6 +361,45 @@ public sealed class DadPlannerService
                 rejectionReason = $"Required account '{account}' is connected but local-only/isolated and cannot accept remote Dad work.";
                 return false;
             }
+        }
+
+        if (requiredRosterCharacters.Count > 0)
+        {
+            foreach (var reference in requiredRosterCharacters)
+            {
+                if (reference.CharacterKey.IsEmpty)
+                    continue;
+
+                var character = pool.Characters.FirstOrDefault(candidate => MatchesRosterReference(candidate, reference));
+                if (character == null)
+                {
+                    rejectionReason = $"Required roster character '{reference.CharacterKey}' for account '{reference.AccountKey}' is not known to Dad.";
+                    return false;
+                }
+
+                if (!IsConnectedForRuntime(character))
+                {
+                    var requiredAccount = ResolveAccountKey(character);
+                    var activeOnSameAccount = string.IsNullOrWhiteSpace(requiredAccount)
+                        ? null
+                        : pool.Characters.FirstOrDefault(candidate =>
+                            !string.Equals(candidate.CharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
+                            MatchesAccountKey(candidate, requiredAccount) &&
+                            IsConnectedForRuntime(candidate));
+                    rejectionReason = activeOnSameAccount == null
+                        ? $"Required character '{character.CharacterKey}' on account '{requiredAccount}' is not live/ready at runtime."
+                        : $"Required account '{requiredAccount}' is connected as '{activeOnSameAccount.CharacterKey}', not required character '{character.CharacterKey}'.";
+                    return false;
+                }
+
+                if (character.Blockers.Any(IsLocalIsolationReason))
+                {
+                    rejectionReason = $"Required character '{character.CharacterKey}' is local-only/isolated and cannot accept remote Dad work.";
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         foreach (var characterKey in requiredCharacters)
@@ -497,10 +542,11 @@ public sealed class DadPlannerService
         var resolved = preview.SelectedCharacters
             .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
             .Select(slot => preview.AvailableCharacters.FirstOrDefault(character =>
-                string.Equals(character.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase)))
+                string.Equals(character.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
+                (slot.RequiredAccountKey.IsEmpty || MatchesAccountKey(character, slot.RequiredAccountKey.Value))))
             .Where(static character => character != null)
             .Select(static character => character!.Clone())
-            .DistinctBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         if (resolved.Count < plan.RequiredParticipantCount)
@@ -579,6 +625,18 @@ public sealed class DadPlannerService
             && string.Equals(character.AccountId, accountKey, StringComparison.OrdinalIgnoreCase))
            || (!string.IsNullOrWhiteSpace(character.AccountAlias)
                && string.Equals(character.AccountAlias, accountKey, StringComparison.OrdinalIgnoreCase));
+
+    private static bool MatchesRosterReference(DadAcquiredCharacter character, DadRosterCharacterRef reference)
+    {
+        if (!reference.AccountKey.IsEmpty && !MatchesAccountKey(character, reference.AccountKey.Value))
+            return false;
+
+        return DadRosterIdentity.SameCharacter(
+            new DadCharacterKey(character.CharacterKey),
+            character.ContentId,
+            reference.CharacterKey,
+            reference.ContentId);
+    }
 
     private static string ResolveAccountKey(DadAcquiredCharacter character)
         => !string.IsNullOrWhiteSpace(character.AccountId)

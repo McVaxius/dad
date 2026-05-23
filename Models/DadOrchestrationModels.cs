@@ -200,6 +200,8 @@ public sealed class DadOrchestrationIntent
     public DadCharacterKey PreferredLeaderCharacterKey { get; set; } = new(string.Empty);
     public List<DadAccountKey> PreferredAccountKeys { get; set; } = [];
     public List<DadAccountKey> RequiredAccountKeys { get; set; } = [];
+    public List<DadRosterCharacterRef> PreferredRosterCharacters { get; set; } = [];
+    public List<DadRosterCharacterRef> RequiredRosterCharacters { get; set; } = [];
     public List<DadCharacterKey> PreferredCharacterKeys { get; set; } = [];
     public List<DadCharacterKey> RequiredCharacterKeys { get; set; } = [];
     public DadRunWaitPolicy WaitPolicy { get; set; } = new();

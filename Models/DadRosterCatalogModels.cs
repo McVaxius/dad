@@ -25,6 +25,7 @@ public enum DadMapCrewJobMode
 public sealed class DadRosterVisibilityRecord
 {
     public string CharacterKey { get; set; } = string.Empty;
+    public ulong ContentId { get; set; }
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadRosterVisibility Visibility { get; set; } = DadRosterVisibility.Active;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -34,6 +35,7 @@ public sealed class DadRosterVisibilityRecord
         => new()
         {
             CharacterKey = CharacterKey,
+            ContentId = ContentId,
             AccountKey = AccountKey,
             Visibility = Visibility,
             UpdatedAtUtc = UpdatedAtUtc,
@@ -54,6 +56,7 @@ public sealed class DadRosterCatalogConfiguration
 public sealed class DadRosterRefreshRecord
 {
     public string CharacterKey { get; set; } = string.Empty;
+    public ulong ContentId { get; set; }
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? RefreshedAtUtc { get; set; }
@@ -64,12 +67,105 @@ public sealed class DadRosterRefreshRecord
         => new()
         {
             CharacterKey = CharacterKey,
+            ContentId = ContentId,
             AccountKey = AccountKey,
             RequestedAtUtc = RequestedAtUtc,
             RefreshedAtUtc = RefreshedAtUtc,
             Success = Success,
             Summary = Summary,
         };
+}
+
+public sealed class DadRosterCharacterRef
+{
+    public DadAccountKey AccountKey { get; set; } = new(string.Empty);
+    public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
+    public ulong ContentId { get; set; }
+
+    public bool IsEmpty => AccountKey.IsEmpty && CharacterKey.IsEmpty && ContentId == 0;
+
+    public DadRosterCharacterRef Clone()
+        => new()
+        {
+            AccountKey = AccountKey,
+            CharacterKey = CharacterKey,
+            ContentId = ContentId,
+        };
+}
+
+public static class DadRosterIdentity
+{
+    public static DadRosterCharacterRef From(DadRosterCharacter character)
+        => new()
+        {
+            AccountKey = character.AccountKey,
+            CharacterKey = character.CharacterKey,
+            ContentId = character.ContentId,
+        };
+
+    public static DadRosterCharacterRef From(DadAcquiredCharacter character)
+        => new()
+        {
+            AccountKey = ResolveAccountKey(character.AccountId, character.AccountAlias),
+            CharacterKey = new DadCharacterKey(character.CharacterKey),
+            ContentId = character.ContentId,
+        };
+
+    public static DadAccountKey ResolveAccountKey(string accountId, string accountAlias)
+        => !string.IsNullOrWhiteSpace(accountId)
+            ? new DadAccountKey(accountId.Trim())
+            : !string.IsNullOrWhiteSpace(accountAlias)
+                ? new DadAccountKey(accountAlias.Trim())
+                : new DadAccountKey(string.Empty);
+
+    public static string BuildKey(DadRosterCharacterRef reference)
+        => BuildKey(reference.AccountKey, reference.CharacterKey, reference.ContentId);
+
+    public static string BuildKey(DadRosterCharacter character)
+        => BuildKey(character.AccountKey, character.CharacterKey, character.ContentId);
+
+    public static string BuildKey(DadAcquiredCharacter character)
+        => BuildKey(From(character));
+
+    public static string BuildKey(DadAccountKey accountKey, DadCharacterKey characterKey, ulong contentId)
+    {
+        var accountPart = Normalize(accountKey.Value);
+        if (contentId != 0)
+            return $"acct:{accountPart}|cid:{contentId}";
+
+        return $"acct:{accountPart}|key:{Normalize(characterKey.Value)}";
+    }
+
+    public static bool Matches(DadRosterCharacter character, DadRosterCharacterRef reference)
+    {
+        if (reference.IsEmpty)
+            return false;
+
+        if (!SameAccount(character.AccountKey, reference.AccountKey))
+            return false;
+
+        return SameCharacter(character.CharacterKey, character.ContentId, reference.CharacterKey, reference.ContentId);
+    }
+
+    public static bool SameRow(DadRosterCharacter left, DadRosterCharacter right)
+        => SameAccount(left.AccountKey, right.AccountKey)
+           && SameCharacter(left.CharacterKey, left.ContentId, right.CharacterKey, right.ContentId);
+
+    public static bool SameAccount(DadAccountKey left, DadAccountKey right)
+        => string.Equals(Normalize(left.Value), Normalize(right.Value), StringComparison.OrdinalIgnoreCase);
+
+    public static bool SameCharacter(DadCharacterKey leftKey, ulong leftContentId, DadCharacterKey rightKey, ulong rightContentId)
+    {
+        if (leftContentId != 0 && rightContentId != 0)
+            return leftContentId == rightContentId;
+
+        return !leftKey.IsEmpty
+               && !rightKey.IsEmpty
+               && string.Equals(leftKey.Value, rightKey.Value, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Normalize(string? value)
+        => (value ?? string.Empty).Trim();
 }
 
 public sealed class DadRosterCharacter
@@ -170,6 +266,7 @@ public sealed class DadRosterRefreshPlan
     public bool IncludeHidden { get; set; }
     public bool IncludeIgnored { get; set; }
     public int StaleAfterHours { get; set; } = 72;
+    public List<DadRosterCharacterRef> CharacterRefs { get; set; } = [];
     public List<DadAccountKey> AccountKeys { get; set; } = [];
     public List<DadCharacterKey> CharacterKeys { get; set; } = [];
     public bool DryRun { get; set; }
@@ -177,6 +274,7 @@ public sealed class DadRosterRefreshPlan
 
 public sealed class DadRosterVisibilityChangeRequest
 {
+    public List<DadRosterCharacterRef> CharacterRefs { get; set; } = [];
     public List<DadCharacterKey> CharacterKeys { get; set; } = [];
     public List<DadAccountKey> AccountKeys { get; set; } = [];
     public DadRosterVisibility Visibility { get; set; } = DadRosterVisibility.Active;
@@ -199,6 +297,7 @@ public sealed class DadRosterRefreshCommandDto
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
+    public ulong ContentId { get; set; }
     public bool SaveAfterRefresh { get; set; } = true;
     public bool DryRun { get; set; }
 }
@@ -208,6 +307,7 @@ public sealed class DadRosterRefreshResultDto
     public string CommandId { get; set; } = string.Empty;
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
+    public ulong ContentId { get; set; }
     public bool Accepted { get; set; }
     public bool Success { get; set; }
     public bool DryRun { get; set; }
@@ -232,6 +332,7 @@ public sealed class DadScheduledCrewJob
     public int Priority { get; set; }
     public string MapRunTemplate { get; set; } = string.Empty;
     public DadMapCrewJobMode MapMode { get; set; } = DadMapCrewJobMode.ManualMapReady;
+    public List<DadRosterCharacterRef> TargetCharacters { get; set; } = [];
     public List<DadAccountKey> TargetAccountKeys { get; set; } = [];
     public List<DadCharacterKey> TargetCharacterKeys { get; set; } = [];
     public string StatusSummary { get; set; } = string.Empty;
@@ -253,8 +354,9 @@ public sealed class DadScheduledCrewJob
             Priority = Priority,
             MapRunTemplate = MapRunTemplate,
             MapMode = MapMode,
-            TargetAccountKeys = [..TargetAccountKeys],
-            TargetCharacterKeys = [..TargetCharacterKeys],
+            TargetCharacters = TargetCharacters?.Select(static target => target.Clone()).ToList() ?? [],
+            TargetAccountKeys = TargetAccountKeys == null ? [] : [..TargetAccountKeys],
+            TargetCharacterKeys = TargetCharacterKeys == null ? [] : [..TargetCharacterKeys],
             StatusSummary = StatusSummary,
             BlockedReason = BlockedReason,
         };
@@ -282,6 +384,7 @@ public sealed class DadScheduledPresetRequest
     public DadSchedulerJobType JobType { get; set; } = DadSchedulerJobType.ScheduledPreset;
     public DadMapCrewJobMode MapMode { get; set; } = DadMapCrewJobMode.ManualMapReady;
     public string MapRunTemplate { get; set; } = string.Empty;
+    public List<DadRosterCharacterRef> TargetCharacters { get; set; } = [];
     public List<DadCharacterKey> TargetCharacterKeys { get; set; } = [];
 }
 

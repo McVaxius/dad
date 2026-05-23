@@ -99,10 +99,11 @@ public sealed class DadXadbClient
 
             using var doc = JsonDocument.Parse(json);
             PopulateAccountRosterCatalog(catalog, doc.RootElement);
-            catalog.IsFullRosterAvailable = catalog.Characters.Count > 0;
             catalog.Summary = catalog.IsFullRosterAvailable
                 ? $"XADB account roster ready: {catalog.Characters.Count} character(s)."
-                : "XADB account roster JSON contained no characters.";
+                : catalog.Characters.Count > 0
+                    ? "XADB account roster JSON did not advertise full roster support."
+                    : "XADB account roster JSON contained no characters.";
             return catalog;
         }
         catch (Exception ex)
@@ -123,6 +124,7 @@ public sealed class DadXadbClient
             CommandId = command.CommandId,
             AccountKey = command.AccountKey,
             CharacterKey = command.CharacterKey,
+            ContentId = command.ContentId,
             DryRun = command.DryRun,
             Snapshot = snapshot.Clone(),
         };
@@ -243,6 +245,20 @@ public sealed class DadXadbClient
     {
         catalog.Version = ReadNullableInt32(root, "version", "rosterVersion", "accountCharacterListVersion") ?? 1;
         catalog.GeneratedAtUtc = ReadNullableDateTime(root, "generatedAtUtc", "updatedUtc", "snapshotUtc") ?? DateTime.UtcNow;
+        catalog.IsFullRosterAvailable = ReadNullableBool(root, "isFullRosterAvailable", "fullRosterAvailable") ?? false;
+
+        if (TryGetProperty(root, out var warningsElement, "warnings") &&
+            warningsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var warningElement in warningsElement.EnumerateArray())
+            {
+                var warning = warningElement.ValueKind == JsonValueKind.String
+                    ? warningElement.GetString()
+                    : warningElement.ToString();
+                if (!string.IsNullOrWhiteSpace(warning))
+                    catalog.Warnings.Add(warning);
+            }
+        }
 
         var accountsByKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (TryGetProperty(root, out var accountsElement, "accounts", "accountList") &&
@@ -280,9 +296,7 @@ public sealed class DadXadbClient
 
         catalog.Characters = catalog.Characters
             .Where(static character => !character.CharacterKey.IsEmpty || character.ContentId != 0)
-            .DistinctBy(static character => character.ContentId != 0
-                ? $"cid:{character.ContentId}"
-                : $"key:{character.CharacterKey.Value}", StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .OrderBy(static character => character.AccountAlias, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)

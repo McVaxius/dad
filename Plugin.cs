@@ -561,11 +561,15 @@ public sealed class Plugin : IDalamudPlugin
     public string EnqueueRosterUpdateFromJson(string json)
     {
         var plan = DadIpcJson.Deserialize<DadRosterRefreshPlan>(json) ?? new DadRosterRefreshPlan();
+        plan.CharacterRefs ??= [];
+        plan.AccountKeys ??= [];
+        plan.CharacterKeys ??= [];
         var catalog = RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
         {
             ForcePeerRefresh = true,
             IncludeHidden = true,
             IncludeIgnored = true,
+            CharacterRefs = plan.CharacterRefs.Select(static reference => reference.Clone()).ToList(),
             AccountKeys = [..plan.AccountKeys],
             CharacterKeys = [..plan.CharacterKeys],
             DryRun = plan.DryRun,
@@ -730,7 +734,8 @@ public sealed class Plugin : IDalamudPlugin
         return preview.SelectedCharacters.Select(slot =>
         {
             var character = preview.AvailableCharacters.FirstOrDefault(candidate =>
-                string.Equals(candidate.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase));
+                string.Equals(candidate.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
+                (slot.RequiredAccountKey.IsEmpty || MatchesPlannerSlotAccount(candidate, slot.RequiredAccountKey)));
             var accountKey = !slot.RequiredAccountKey.IsEmpty
                 ? slot.RequiredAccountKey
                 : character == null
@@ -749,6 +754,12 @@ public sealed class Plugin : IDalamudPlugin
         }).ToList();
     }
 
+    private static bool MatchesPlannerSlotAccount(DadAcquiredCharacter character, DadAccountKey accountKey)
+        => (!string.IsNullOrWhiteSpace(character.AccountId)
+            && string.Equals(character.AccountId, accountKey.Value, StringComparison.OrdinalIgnoreCase))
+           || (!string.IsNullOrWhiteSpace(character.AccountAlias)
+               && string.Equals(character.AccountAlias, accountKey.Value, StringComparison.OrdinalIgnoreCase));
+
     private DadPlannerGroupSummary BuildPlannerGroupSummary(DadPlannerGroup group)
     {
         var lane = PresetProviderService.GetPlannerLaneDefinition(group.ActivityMode);
@@ -758,8 +769,8 @@ public sealed class Plugin : IDalamudPlugin
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
         var requiredCharacters = group.Slots
-            .Select(static slot => slot.RequiredCharacterKey.Value)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Where(static slot => !slot.RequiredCharacterKey.IsEmpty)
+            .Select(static slot => $"{slot.RequiredAccountKey.Value}:{slot.RequiredCharacterKey.Value}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
         return new DadPlannerGroupSummary
@@ -1106,10 +1117,10 @@ public sealed class Plugin : IDalamudPlugin
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase));
         var selectedSlots = string.Join(",", plannerPreview.SelectedCharacters.Select(static slot =>
-            $"{slot.SlotId}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.CharacterKey}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
+            $"{slot.SlotId}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.RequiredAccountKey}:{slot.CharacterKey}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
         var selectedCharacters = string.Join(",", plannerPreview.SelectedCharacters
-            .Select(static slot => slot.CharacterKey.Trim())
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
+            .Select(static slot => $"{slot.RequiredAccountKey.Value.Trim()}:{slot.CharacterKey.Trim()}:{slot.ContentId}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase));
 

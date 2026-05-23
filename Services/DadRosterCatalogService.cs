@@ -23,6 +23,8 @@ public sealed class DadRosterCatalogService
         this.transportService = transportService;
         this.log = log;
         configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        configuration.RosterCatalog.Visibility ??= [];
+        configuration.RosterCatalog.RefreshHistory ??= [];
     }
 
     public DadAccountRosterCatalog CurrentCatalog => currentCatalog.Clone();
@@ -58,9 +60,10 @@ public sealed class DadRosterCatalogService
         var catalog = xadbClient.GetAccountCharacterList();
         catalog.SourceClientInstanceId = string.Empty;
         catalog.SourceWorkerSessionId = new DadWorkerSessionId(string.Empty);
+        StampCatalogAccount(catalog, pool);
 
         if (!catalog.IsFullRosterAvailable)
-            catalog.Warnings.Add("Full XADB roster IPC unavailable; using current runtime/XADB summary rows only.");
+            catalog.Warnings.Add("Full XADB roster IPC missing or old; using runtime rows plus any best-effort XADB rows.");
 
         foreach (var character in pool.Characters)
             UpsertRosterCharacter(catalog.Characters, FromAcquiredCharacter(character));
@@ -82,9 +85,7 @@ public sealed class DadRosterCatalogService
             IncludeIgnored = includeIgnored,
             StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
         };
-        var catalog = currentCatalog.Characters.Count == 0
-            ? RefreshCatalog(pool, plan)
-            : CurrentCatalog;
+        var catalog = RefreshCatalog(pool, plan);
 
         var filteredCharacters = catalog.Characters
             .Where(character => ShouldIncludeForPlanner(character.Visibility, includeHidden, includeIgnored, includeNeedsUpdate))
@@ -120,20 +121,27 @@ public sealed class DadRosterCatalogService
     public DadAccountRosterCatalog SetVisibility(DadRosterVisibilityChangeRequest request, DadCharacterPool pool)
     {
         configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        request.CharacterRefs ??= [];
+        request.CharacterKeys ??= [];
+        request.AccountKeys ??= [];
         var changedKeys = ResolveVisibilityTargets(request, pool);
         foreach (var target in changedKeys)
         {
-            var record = FindVisibilityRecord(target.CharacterKey, target.AccountKey);
+            var record = FindVisibilityRecord(target.CharacterKey, target.AccountKey, target.ContentId);
             if (record == null)
             {
                 record = new DadRosterVisibilityRecord
                 {
                     CharacterKey = target.CharacterKey.Value,
+                    ContentId = target.ContentId,
                     AccountKey = target.AccountKey,
                 };
                 configuration.RosterCatalog.Visibility.Add(record);
             }
 
+            record.CharacterKey = target.CharacterKey.Value;
+            record.ContentId = target.ContentId;
+            record.AccountKey = target.AccountKey;
             record.Visibility = request.Visibility;
             record.UpdatedAtUtc = DateTime.UtcNow;
             record.Reason = request.Reason?.Trim() ?? string.Empty;
@@ -164,6 +172,7 @@ public sealed class DadRosterCatalogService
         configuration.RosterCatalog.RefreshHistory.Add(new DadRosterRefreshRecord
         {
             CharacterKey = result.CharacterKey.Value,
+            ContentId = result.ContentId,
             AccountKey = result.AccountKey,
             RequestedAtUtc = DateTime.UtcNow,
             RefreshedAtUtc = result.RefreshedAtUtc,
@@ -173,7 +182,7 @@ public sealed class DadRosterCatalogService
 
         if (result.Success)
         {
-            var record = FindVisibilityRecord(result.CharacterKey, result.AccountKey);
+            var record = FindVisibilityRecord(result.CharacterKey, result.AccountKey, result.ContentId);
             if (record != null && record.Visibility == DadRosterVisibility.NeedsUpdate)
             {
                 record.Visibility = DadRosterVisibility.Active;
@@ -191,6 +200,12 @@ public sealed class DadRosterCatalogService
         var catalog = CurrentCatalog;
         return catalog.Characters.FirstOrDefault(character =>
             string.Equals(character.CharacterKey.Value, characterKey.Value, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public DadRosterCharacter? FindCharacter(DadRosterCharacterRef reference)
+    {
+        var catalog = CurrentCatalog;
+        return catalog.Characters.FirstOrDefault(character => DadRosterIdentity.Matches(character, reference));
     }
 
     private DadAccountRosterCatalog MergeCatalogs(IReadOnlyList<DadAccountRosterCatalog> catalogs, DadRosterRefreshPlan plan)
@@ -238,7 +253,7 @@ public sealed class DadRosterCatalogService
             character.IsStale = character.LastSnapshotUtc.HasValue && DateTime.UtcNow - character.LastSnapshotUtc.Value > staleAfter;
 
             var lastRefresh = configuration.RosterCatalog.RefreshHistory
-                .Where(record => string.Equals(record.CharacterKey, character.CharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+                .Where(record => RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId))
                 .OrderByDescending(static record => record.RefreshedAtUtc ?? record.RequestedAtUtc)
                 .FirstOrDefault();
             character.LastRosterRefreshUtc = lastRefresh?.RefreshedAtUtc;
@@ -256,10 +271,7 @@ public sealed class DadRosterCatalogService
 
     private static void UpsertRosterCharacter(List<DadRosterCharacter> characters, DadRosterCharacter candidate)
     {
-        var existing = characters.FindIndex(existingCharacter =>
-            candidate.ContentId != 0 && existingCharacter.ContentId == candidate.ContentId ||
-            !candidate.CharacterKey.IsEmpty &&
-            string.Equals(existingCharacter.CharacterKey.Value, candidate.CharacterKey.Value, StringComparison.OrdinalIgnoreCase));
+        var existing = characters.FindIndex(existingCharacter => DadRosterIdentity.SameRow(existingCharacter, candidate));
 
         if (existing < 0)
         {
@@ -323,37 +335,112 @@ public sealed class DadRosterCatalogService
         return left.Value >= right.Value ? left : right;
     }
 
-    private DadRosterVisibilityRecord? FindVisibilityRecord(DadCharacterKey characterKey, DadAccountKey accountKey)
+    private DadRosterVisibilityRecord? FindVisibilityRecord(
+        DadCharacterKey characterKey,
+        DadAccountKey accountKey,
+        ulong contentId = 0)
         => configuration.RosterCatalog.Visibility.FirstOrDefault(record =>
-               !string.IsNullOrWhiteSpace(record.CharacterKey) &&
-               string.Equals(record.CharacterKey, characterKey.Value, StringComparison.OrdinalIgnoreCase))
-           ?? configuration.RosterCatalog.Visibility.FirstOrDefault(record =>
-               !record.AccountKey.IsEmpty &&
-               !accountKey.IsEmpty &&
-               string.Equals(record.AccountKey.Value, accountKey.Value, StringComparison.OrdinalIgnoreCase));
+            RecordMatches(record, characterKey, accountKey, contentId));
 
-    private List<(DadCharacterKey CharacterKey, DadAccountKey AccountKey)> ResolveVisibilityTargets(
+    private static bool RecordMatches(
+        DadRosterVisibilityRecord record,
+        DadCharacterKey characterKey,
+        DadAccountKey accountKey,
+        ulong contentId)
+    {
+        if (!DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
+            return false;
+
+        if (record.ContentId != 0 && contentId != 0)
+            return record.ContentId == contentId;
+
+        return !string.IsNullOrWhiteSpace(record.CharacterKey) &&
+               string.Equals(record.CharacterKey, characterKey.Value, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RecordMatches(
+        DadRosterRefreshRecord record,
+        DadCharacterKey characterKey,
+        DadAccountKey accountKey,
+        ulong contentId)
+    {
+        if (!DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
+            return false;
+
+        if (record.ContentId != 0 && contentId != 0)
+            return record.ContentId == contentId;
+
+        return !string.IsNullOrWhiteSpace(record.CharacterKey) &&
+               string.Equals(record.CharacterKey, characterKey.Value, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private List<DadRosterCharacterRef> ResolveVisibilityTargets(
         DadRosterVisibilityChangeRequest request,
         DadCharacterPool pool)
     {
         var catalog = CurrentCatalog.Characters.Count == 0 ? RefreshCatalog(pool) : CurrentCatalog;
+        var explicitRefs = request.CharacterRefs
+            .Where(static reference => reference is { IsEmpty: false })
+            .Select(static reference => reference.Clone())
+            .ToList();
+        if (explicitRefs.Count > 0)
+        {
+            return catalog.Characters
+                .Where(character => explicitRefs.Any(reference => DadRosterIdentity.Matches(character, reference)))
+                .Select(DadRosterIdentity.From)
+                .Concat(explicitRefs)
+                .Where(static target => !target.CharacterKey.IsEmpty || target.ContentId != 0)
+                .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
         var targets = catalog.Characters
             .Where(character => request.CharacterKeys.Count == 0 ||
                                 request.CharacterKeys.Any(key => string.Equals(key.Value, character.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)))
             .Where(character => request.AccountKeys.Count == 0 ||
-                                request.AccountKeys.Any(key => string.Equals(key.Value, character.AccountKey.Value, StringComparison.OrdinalIgnoreCase)))
-            .Select(static character => (character.CharacterKey, character.AccountKey))
-            .Where(static target => !target.CharacterKey.IsEmpty)
-            .DistinctBy(static target => target.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+                                request.AccountKeys.Any(key => DadRosterIdentity.SameAccount(key, character.AccountKey)))
+            .Select(DadRosterIdentity.From)
+            .Where(static target => !target.CharacterKey.IsEmpty || target.ContentId != 0)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         foreach (var key in request.CharacterKeys.Where(static key => !key.IsEmpty))
         {
             if (targets.All(target => !string.Equals(target.CharacterKey.Value, key.Value, StringComparison.OrdinalIgnoreCase)))
-                targets.Add((key, new DadAccountKey(string.Empty)));
+            {
+                targets.Add(new DadRosterCharacterRef
+                {
+                    CharacterKey = key,
+                    AccountKey = request.AccountKeys.Count == 1 ? request.AccountKeys[0] : new DadAccountKey(string.Empty),
+                });
+            }
         }
 
         return targets;
+    }
+
+    private static void StampCatalogAccount(DadAccountRosterCatalog catalog, DadCharacterPool pool)
+    {
+        var accountSource = pool.Characters
+            .OrderByDescending(static character => character.Source == DadCharacterSource.LocalRuntime)
+            .FirstOrDefault(character =>
+                !string.IsNullOrWhiteSpace(character.AccountId) ||
+                !string.IsNullOrWhiteSpace(character.AccountAlias));
+        if (accountSource == null)
+            return;
+
+        var accountKey = ResolveAccountKey(accountSource);
+        if (accountKey.IsEmpty)
+            return;
+
+        var accountAlias = accountSource.AccountAlias?.Trim() ?? string.Empty;
+        foreach (var character in catalog.Characters)
+        {
+            if (character.AccountKey.IsEmpty)
+                character.AccountKey = accountKey;
+            if (string.IsNullOrWhiteSpace(character.AccountAlias))
+                character.AccountAlias = accountAlias;
+        }
     }
 
     private static DadRosterCharacter FromAcquiredCharacter(DadAcquiredCharacter character)
@@ -441,11 +528,7 @@ public sealed class DadRosterCatalogService
     }
 
     private static DadAccountKey ResolveAccountKey(DadAcquiredCharacter character)
-        => !string.IsNullOrWhiteSpace(character.AccountId)
-            ? new DadAccountKey(character.AccountId)
-            : !string.IsNullOrWhiteSpace(character.AccountAlias)
-                ? new DadAccountKey(character.AccountAlias)
-                : new DadAccountKey(string.Empty);
+        => DadRosterIdentity.ResolveAccountKey(character.AccountId, character.AccountAlias);
 
     private static bool ShouldIncludeForPlanner(
         DadRosterVisibility visibility,

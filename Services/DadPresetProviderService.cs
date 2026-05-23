@@ -947,7 +947,7 @@ public sealed class DadPresetProviderService
             foreach (var character in pool.Characters)
             {
                 if (availableCharacters.Any(existing =>
-                        string.Equals(existing.CharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase)))
+                        string.Equals(DadRosterIdentity.BuildKey(existing), DadRosterIdentity.BuildKey(character), StringComparison.OrdinalIgnoreCase)))
                 {
                     continue;
                 }
@@ -1057,7 +1057,8 @@ public sealed class DadPresetProviderService
                                    !string.Equals(assignedCharacter.CharacterKey, groupSlot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase)));
 
             if (assignedCharacter != null)
-                remaining.RemoveAll(character => string.Equals(character.CharacterKey, assignedCharacter.CharacterKey, StringComparison.OrdinalIgnoreCase));
+                remaining.RemoveAll(character =>
+                    string.Equals(DadRosterIdentity.BuildKey(character), DadRosterIdentity.BuildKey(assignedCharacter), StringComparison.OrdinalIgnoreCase));
 
             selected.Add(BuildGroupSlot(groupSlot, assignedCharacter, isSubstitution));
         }
@@ -1805,11 +1806,22 @@ public sealed class DadPresetProviderService
         => plannerPreview.SelectedCharacters
             .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
             .Select(slot => plannerPreview.AvailableCharacters.FirstOrDefault(character =>
-                string.Equals(character.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase)))
+                MatchesSelectedSlot(character, slot)))
             .Where(static character => character != null)
             .Select(static character => character!.Clone())
-            .DistinctBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    private static bool MatchesSelectedSlot(DadAcquiredCharacter character, DadPresetCharacterSlot slot)
+    {
+        if (!string.Equals(character.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (slot.ContentId.HasValue && character.ContentId != 0)
+            return character.ContentId == slot.ContentId.Value;
+
+        return slot.RequiredAccountKey.IsEmpty || MatchesPlannerAccountKey(character, slot.RequiredAccountKey.Value);
+    }
 
     private DadOrchestrationIntent BuildPlannerOrchestration(
         DadPresetPlannerOptions options,
@@ -1825,6 +1837,17 @@ public sealed class DadPresetProviderService
             .Select(static character => new DadCharacterKey(character.CharacterKey))
             .Where(static key => !key.IsEmpty)
             .ToList();
+        var selectedRosterCharacters = plannerPreview.SelectedCharacters
+            .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
+            .Select(static slot => new DadRosterCharacterRef
+            {
+                AccountKey = slot.RequiredAccountKey,
+                CharacterKey = new DadCharacterKey(slot.CharacterKey),
+                ContentId = slot.ContentId ?? 0,
+            })
+            .Where(static reference => !reference.IsEmpty)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+            .ToList();
         List<DadAccountKey> requiredAccountKeys = selectedGroup == null
             ? [..options.IncludedAccountKeys]
             : selectedGroup.Slots
@@ -1832,6 +1855,15 @@ public sealed class DadPresetProviderService
                 .Where(static key => !key.IsEmpty)
                 .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+        List<DadRosterCharacterRef> groupRequiredRosterCharacters = selectedGroup?.Slots
+            .Select(static slot => new DadRosterCharacterRef
+            {
+                AccountKey = slot.RequiredAccountKey,
+                CharacterKey = slot.RequiredCharacterKey,
+            })
+            .Where(static reference => !reference.IsEmpty)
+            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
         List<DadCharacterKey> groupRequiredCharacterKeys = selectedGroup?.Slots
             .Select(static slot => slot.RequiredCharacterKey)
             .Where(static key => !key.IsEmpty)
@@ -1853,6 +1885,12 @@ public sealed class DadPresetProviderService
             QueueAuthority = previewOnly || forceLocalNpc ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
             PreferredLeaderCharacterKey = new DadCharacterKey(plannerPreview.LeaderCharacterKey),
             RequiredAccountKeys = requiredAccountKeys,
+            PreferredRosterCharacters = selectedRosterCharacters,
+            RequiredRosterCharacters = selectedGroup == null && previewOnly
+                ? []
+                : groupRequiredRosterCharacters.Count > 0
+                    ? groupRequiredRosterCharacters
+                    : selectedRosterCharacters,
             PreferredCharacterKeys = [..selectedCharacterKeys],
             RequiredCharacterKeys = selectedGroup == null && previewOnly ? [] : [..requiredCharacterKeys],
             RosterIntent = new DadRosterIntent

@@ -124,6 +124,12 @@ public sealed class DadRunRequest
         Orchestration ??= new DadOrchestrationIntent();
         Orchestration.RosterIntent ??= new DadRosterIntent();
         Orchestration.WaitPolicy ??= new DadRunWaitPolicy();
+        Orchestration.PreferredRosterCharacters ??= [];
+        Orchestration.RequiredRosterCharacters ??= [];
+        Orchestration.PreferredAccountKeys ??= [];
+        Orchestration.RequiredAccountKeys ??= [];
+        Orchestration.PreferredCharacterKeys ??= [];
+        Orchestration.RequiredCharacterKeys ??= [];
 
         if (Orchestration.ModuleTarget == DadModuleId.None)
         {
