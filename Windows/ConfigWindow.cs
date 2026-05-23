@@ -447,6 +447,33 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawStatusRow("Placeholders", "{Character}, {CharacterName}, {World}, {Account}");
         DrawStatusRow("Scheduler state", plugin.SchedulerService.CurrentState.Summary);
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("Roster catalog");
+        configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        var staleHours = configuration.RosterCatalog.StaleAfterHours;
+        if (ImGui.InputInt("Roster stale after (h)", ref staleHours))
+        {
+            configuration.RosterCatalog.StaleAfterHours = Math.Clamp(staleHours, 1, 24 * 90);
+            configuration.Save();
+        }
+
+        var showHidden = configuration.RosterCatalog.ShowHiddenInRoster;
+        if (ImGui.Checkbox("Show hidden in roster tab", ref showHidden))
+        {
+            configuration.RosterCatalog.ShowHiddenInRoster = showHidden;
+            configuration.Save();
+        }
+
+        var showAllSlots = configuration.RosterCatalog.ShowAllInPresetSlots;
+        if (ImGui.Checkbox("Show all in preset slot pickers", ref showAllSlots))
+        {
+            configuration.RosterCatalog.ShowAllInPresetSlots = showAllSlots;
+            configuration.Save();
+        }
+
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        DrawStatusRow("Queue", queue.Summary);
     }
 
     private void DrawCombatRotationTab(Configuration configuration)

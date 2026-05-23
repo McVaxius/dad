@@ -38,6 +38,8 @@ public sealed class Configuration : IPluginConfiguration
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
     public List<DadLaunchProfile> LaunchProfiles { get; set; } = [];
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
+    public DadRosterCatalogConfiguration RosterCatalog { get; set; } = new();
+    public List<DadScheduledCrewJob> SchedulerQueue { get; set; } = [];
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

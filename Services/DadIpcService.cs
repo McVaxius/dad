@@ -57,6 +57,14 @@ public sealed class DadIpcService : IDisposable
         Register(pluginInterface, DadIpcContract.GetSchedulerPreview, this.plugin.GetSchedulerPreviewJson);
         Register<string, string>(pluginInterface, DadIpcContract.StartSchedulerPreset, this.plugin.StartSchedulerPresetFromJson);
         Register(pluginInterface, DadIpcContract.GetLaunchProfiles, this.plugin.GetLaunchProfilesJson);
+        Register(pluginInterface, DadIpcContract.GetRosterCatalog, this.plugin.GetRosterCatalogJson);
+        Register(pluginInterface, DadIpcContract.RefreshPeerRosterCatalog, this.plugin.RefreshPeerRosterCatalogJson);
+        Register<string, string>(pluginInterface, DadIpcContract.SetRosterVisibility, this.plugin.SetRosterVisibilityFromJson);
+        Register<string, string>(pluginInterface, DadIpcContract.EnqueueRosterUpdate, this.plugin.EnqueueRosterUpdateFromJson);
+        Register(pluginInterface, DadIpcContract.GetCrewStatus, this.plugin.GetCrewStatusJson);
+        Register(pluginInterface, DadIpcContract.GetSchedulerQueue, this.plugin.GetSchedulerQueueJson);
+        Register<string, string>(pluginInterface, DadIpcContract.EnqueueScheduledPreset, this.plugin.EnqueueScheduledPresetFromJson);
+        Register<string, string>(pluginInterface, DadIpcContract.CancelScheduledJob, this.plugin.CancelScheduledJobFromJson);
         Register(pluginInterface, DadIpcContract.GetModuleCapabilities, () => DadIpcJson.Serialize(moduleRegistry.GetCapabilities()));
         Register(pluginInterface, DadIpcContract.GetSupportedJobHints, () => this.presetProviderService.GetSupportedJobHintsJson());
         Register<string, string>(pluginInterface, DadIpcContract.StartTasks, StartTasksFromJson);

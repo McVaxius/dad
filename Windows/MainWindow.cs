@@ -18,6 +18,10 @@ public sealed class MainWindow : Window, IDisposable
     private string plannerDutySearch = string.Empty;
     private string plannerGroupNameBuffer = string.Empty;
     private string pendingDeletePlannerGroupId = string.Empty;
+    private string rosterSearch = string.Empty;
+    private string rosterAccountFilter = string.Empty;
+    private bool rosterStaleOnly;
+    private bool rosterShowHidden;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -215,6 +219,12 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.BeginTabItem("Multiplayer"))
             {
                 DrawMultiplayerTab(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Crew / Scheduler"))
+            {
+                DrawCrewSchedulerTab(characterPool, runState);
                 ImGui.EndTabItem();
             }
 
@@ -624,6 +634,446 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow(DadOperatorPhaseText.HasBlockingFailure(activeRun) ? "Blocker" : "Runtime note", activeRun.BlockedReason);
 
         DrawDutySupportRuntimeSection(activeRun);
+    }
+
+    private void DrawCrewSchedulerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
+    {
+        var catalog = plugin.RosterCatalogService.CurrentCatalog;
+        if (catalog.Characters.Count == 0)
+            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool);
+
+        if (ImGui.BeginTabBar("dad-crew-scheduler-tabs"))
+        {
+            if (ImGui.BeginTabItem("Roster"))
+            {
+                DrawCrewRosterSection(characterPool, catalog);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Crew Presets"))
+            {
+                DrawCrewPresetSection(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Queue"))
+            {
+                DrawCrewQueueSection();
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Active Job"))
+            {
+                DrawCrewActiveJobSection();
+                ImGui.EndTabItem();
+            }
+
+            ImGui.EndTabBar();
+        }
+    }
+
+    private void DrawCrewRosterSection(DadCharacterPool characterPool, DadAccountRosterCatalog catalog)
+    {
+        DrawSectionHeader("Roster", "Curated account roster. Active rows feed normal crew slots.");
+        if (ImGui.SmallButton("Refresh local roster"))
+            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool);
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Refresh peers"))
+            catalog = plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
+            {
+                ForcePeerRefresh = true,
+                IncludeHidden = true,
+                IncludeIgnored = true,
+            });
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Copy roster JSON"))
+        {
+            ImGui.SetClipboardText(DadIpcJson.Serialize(catalog));
+            plugin.PrintStatus("Copied Dad roster catalog JSON.");
+        }
+
+        ImGui.SetNextItemWidth(MathF.Min(260f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText("Search", ref rosterSearch, 128);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(MathF.Min(220f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText("Account filter", ref rosterAccountFilter, 128);
+
+        if (ImGui.Checkbox("Stale only", ref rosterStaleOnly))
+        {
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Checkbox("Show hidden/ignored", ref rosterShowHidden))
+        {
+            plugin.Configuration.RosterCatalog.ShowHiddenInRoster = rosterShowHidden;
+            plugin.Configuration.Save();
+            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
+            {
+                IncludeHidden = rosterShowHidden,
+                IncludeIgnored = rosterShowHidden,
+            });
+        }
+
+        var filtered = FilterRosterCharacters(catalog.Characters).ToList();
+        DrawStatusRow("Catalog", $"{catalog.Summary} Showing {filtered.Count}/{catalog.Characters.Count} row(s).");
+
+        if (filtered.Count > 0)
+        {
+            ImGui.BeginDisabled(false);
+            if (ImGui.SmallButton("Activate filtered"))
+                SetRosterVisibility(filtered, DadRosterVisibility.Active);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Hide filtered"))
+                SetRosterVisibility(filtered, DadRosterVisibility.Hidden);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Ignore filtered"))
+                SetRosterVisibility(filtered, DadRosterVisibility.Ignored);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Mark update"))
+                SetRosterVisibility(filtered, DadRosterVisibility.NeedsUpdate);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Queue update"))
+                QueueRosterUpdate(filtered, dryRun: false);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Dry-run update"))
+                QueueRosterUpdate(filtered, dryRun: true);
+            ImGui.EndDisabled();
+        }
+
+        if (filtered.Count == 0)
+        {
+            DrawMutedNotice("No roster characters match current filters.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-crew-roster", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("Visibility");
+        ImGui.TableSetupColumn("Account");
+        ImGui.TableSetupColumn("Character");
+        ImGui.TableSetupColumn("Snapshot");
+        ImGui.TableSetupColumn("Job/Lvl");
+        ImGui.TableSetupColumn("Map");
+        ImGui.TableSetupColumn("Source");
+        ImGui.TableSetupColumn("Blockers");
+        ImGui.TableHeadersRow();
+
+        foreach (var character in filtered)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(character.Visibility.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatRosterAccount(character));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatOperatorCharacterKey(character.CharacterKey.Value, "(unknown)"));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted($"{FormatRosterFreshness(character)} | {FormatTime(character.LastSnapshotUtc)}");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatRosterJob(character));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatRosterMap(character));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(plugin.PresetProviderService.GetCharacterSourceLabel(character.Source));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatOperatorText(FormatBlockers(character.Blockers), "(none)"));
+        }
+
+        ImGui.EndTable();
+    }
+
+    private void DrawCrewPresetSection(DadCharacterPool characterPool, DadVisibleRunState runState)
+    {
+        var presetPool = plugin.RosterCatalogService.BuildCuratedPool(
+            characterPool,
+            includeHidden: plugin.Configuration.RosterCatalog.ShowAllInPresetSlots,
+            includeIgnored: plugin.Configuration.RosterCatalog.ShowAllInPresetSlots,
+            includeNeedsUpdate: plugin.Configuration.RosterCatalog.ShowAllInPresetSlots);
+        var plannerPreview = plugin.BuildPlannerPreview();
+        var requestPreview = plugin.BuildPlannerRunRequestPreview();
+        var plannerLocked = IsPlannerLocked(runState);
+
+        DrawSectionHeader("Crew Presets", "Saved presets use Active roster rows by default.");
+        var showAll = plugin.Configuration.RosterCatalog.ShowAllInPresetSlots;
+        if (ImGui.Checkbox("Show all roster rows in preset slots", ref showAll))
+        {
+            plugin.Configuration.RosterCatalog.ShowAllInPresetSlots = showAll;
+            plugin.Configuration.Save();
+        }
+
+        ImGui.BeginDisabled(plannerLocked);
+        DrawPlannerGroupControls(presetPool, plugin.PlannerOptions, plannerPreview, plannerLocked, debugUi: true);
+        ImGui.EndDisabled();
+
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        ImGui.BeginDisabled(selectedGroup == null || plannerLocked);
+        if (ImGui.SmallButton("Enqueue preset"))
+        {
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Enqueue map crew"))
+        {
+            EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, DadMapCrewJobMode.ManualMapReady);
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Dry-run preset"))
+        {
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady, dryRun: true);
+        }
+        ImGui.EndDisabled();
+
+        DrawStatusRow("Request", requestPreview.StatusSummary);
+        if (selectedGroup != null)
+            DrawStatusRow("Selected", $"{selectedGroup.DisplayName} | {selectedGroup.Slots.Count} slot(s)");
+    }
+
+    private void DrawCrewQueueSection()
+    {
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        DrawSectionHeader("Queue", "Server Dad runs one active job; new requests wait behind it.");
+        DrawStatusRow("Summary", queue.Summary);
+        DrawStatusRow("Active owner", FormatText(queue.ActiveQueueOwner, "(none)"));
+
+        if (queue.PendingJobs.Count == 0)
+        {
+            DrawMutedNotice("No queued scheduler jobs.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-scheduler-queue", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("Type");
+        ImGui.TableSetupColumn("Preset");
+        ImGui.TableSetupColumn("Owner");
+        ImGui.TableSetupColumn("Priority");
+        ImGui.TableSetupColumn("Eligible");
+        ImGui.TableSetupColumn("Targets");
+        ImGui.TableSetupColumn("Status");
+        ImGui.TableSetupColumn("Edit");
+        ImGui.TableHeadersRow();
+
+        foreach (var job in queue.PendingJobs)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(job.JobType.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatText(job.PresetName, job.GroupId));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatText(job.RequestedBy, "(scheduler)"));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(job.Priority.ToString(CultureInfo.InvariantCulture));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(job.NextEligibleTimeUtc.HasValue ? FormatTime(job.NextEligibleTimeUtc) : "now");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(job.TargetCharacterKeys.Count == 0
+                ? "-"
+                : plugin.KrangleService.FormatCharacterKeys(job.TargetCharacterKeys));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatText(job.StatusSummary, job.BlockedReason));
+            ImGui.TableNextColumn();
+            if (ImGui.SmallButton($"Cancel##dad-cancel-job-{job.JobId}"))
+                plugin.CancelScheduledJobFromJson(DadIpcJson.Serialize(new DadCancelScheduledJobRequest
+                {
+                    JobId = job.JobId,
+                    Reason = "Cancelled from Crew / Scheduler queue.",
+                }));
+        }
+
+        ImGui.EndTable();
+    }
+
+    private void DrawCrewActiveJobSection()
+    {
+        var state = plugin.SchedulerService.CurrentState;
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        DrawSectionHeader("Active Job", "Launch/load/readiness state for current scheduler job.");
+        DrawStatusRow("State", $"{state.JobType} | {state.Phase}");
+        DrawStatusRow("Summary", state.Summary);
+        DrawStatusRow("Job", FormatText(state.JobId, "(none)"));
+        DrawStatusRow("Owner", FormatText(state.RequestedBy, "(scheduler)"));
+        DrawStatusRow("Preset", FormatText(state.PresetName, "(none)"));
+        DrawStatusRow("Queue", queue.Summary);
+        if (!string.IsNullOrWhiteSpace(state.BlockedReason))
+            DrawStatusRow("Blocker", state.BlockedReason);
+
+        if (state.Slots.Count == 0)
+        {
+            DrawMutedNotice("No active scheduler slot state.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-active-scheduler-slots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("Slot");
+        ImGui.TableSetupColumn("Account");
+        ImGui.TableSetupColumn("Target");
+        ImGui.TableSetupColumn("Active");
+        ImGui.TableSetupColumn("Wake");
+        ImGui.TableSetupColumn("Launch/load");
+        ImGui.TableSetupColumn("Ready");
+        ImGui.TableSetupColumn("Status");
+        ImGui.TableHeadersRow();
+
+        foreach (var slot in state.Slots)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(slot.SlotId);
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(slot.RequiredAccountKey.Value);
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatOperatorCharacterKey(slot.RequiredCharacterKey.Value, "(any)"));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatOperatorCharacterKey(slot.ActiveCharacterKey.Value, "(offline)"));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted($"{slot.WakePolicy} / {slot.RosterVisibility}");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(slot.LaunchStarted
+                ? $"launch {FormatTime(slot.LaunchStartedUtc)}"
+                : slot.LoadCommandSentUtc.HasValue
+                    ? $"load {FormatTime(slot.LoadCommandSentUtc)}"
+                    : FormatText(slot.LaunchProfileName, "-"));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(slot.Ready ? "ready" : slot.IsOnline ? "online" : "offline");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatOperatorText(FormatText(slot.BlockedReason, slot.Summary), "(none)"));
+        }
+
+        ImGui.EndTable();
+    }
+
+    private IEnumerable<DadRosterCharacter> FilterRosterCharacters(IEnumerable<DadRosterCharacter> characters)
+    {
+        var search = rosterSearch.Trim();
+        var accountFilter = rosterAccountFilter.Trim();
+        return characters
+            .Where(character => rosterShowHidden || character.Visibility is DadRosterVisibility.Active or DadRosterVisibility.NeedsUpdate)
+            .Where(character => !rosterStaleOnly || character.IsStale)
+            .Where(character => string.IsNullOrWhiteSpace(accountFilter) ||
+                                character.AccountKey.Value.Contains(accountFilter, StringComparison.OrdinalIgnoreCase) ||
+                                character.AccountAlias.Contains(accountFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(character => string.IsNullOrWhiteSpace(search) ||
+                                character.CharacterKey.Value.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                                character.CharacterName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                                character.WorldName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                                character.DataCenterName.Contains(search, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(static character => character.Visibility)
+            .ThenBy(static character => character.AccountAlias, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void SetRosterVisibility(IReadOnlyList<DadRosterCharacter> characters, DadRosterVisibility visibility)
+    {
+        if (characters.Count == 0)
+            return;
+
+        plugin.SetRosterVisibilityFromJson(DadIpcJson.Serialize(new DadRosterVisibilityChangeRequest
+        {
+            CharacterKeys = characters.Select(static character => character.CharacterKey).ToList(),
+            Visibility = visibility,
+            Reason = $"Bulk {visibility} from Crew / Scheduler roster.",
+        }));
+    }
+
+    private void QueueRosterUpdate(IReadOnlyList<DadRosterCharacter> characters, bool dryRun)
+    {
+        if (characters.Count == 0)
+            return;
+
+        var resultJson = plugin.EnqueueRosterUpdateFromJson(DadIpcJson.Serialize(new DadRosterRefreshPlan
+        {
+            CharacterKeys = characters.Select(static character => character.CharacterKey).ToList(),
+            DryRun = dryRun,
+            IncludeHidden = true,
+            IncludeIgnored = true,
+        }));
+        var queue = DadIpcJson.Deserialize<DadSchedulerQueueSnapshot>(resultJson);
+        plugin.PrintStatus(queue?.Summary ?? "Roster update enqueued.");
+    }
+
+    private void EnqueueSelectedPreset(
+        DadSchedulerJobType jobType,
+        DadMapCrewJobMode mapMode,
+        bool dryRun = false)
+    {
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        if (selectedGroup == null)
+            return;
+
+        var request = new DadScheduledPresetRequest
+        {
+            GroupId = selectedGroup.GroupId,
+            DryRun = dryRun,
+            RequestedBy = "crew-ui",
+            Priority = selectedGroup.SchedulePriority,
+            Enabled = true,
+            CadenceHours = selectedGroup.ScheduleCadenceHours,
+            NextEligibleTimeUtc = selectedGroup.NextEligibleTimeUtc,
+            JobType = jobType,
+            MapMode = mapMode,
+            MapRunTemplate = selectedGroup.MapRunTemplate,
+        };
+        var queueJson = plugin.EnqueueScheduledPresetFromJson(DadIpcJson.Serialize(request));
+        var queue = DadIpcJson.Deserialize<DadSchedulerQueueSnapshot>(queueJson);
+        plugin.PrintStatus(queue?.Summary ?? $"Queued preset '{selectedGroup.DisplayName}'.");
+    }
+
+    private static string FormatRosterAccount(DadRosterCharacter character)
+    {
+        if (string.IsNullOrWhiteSpace(character.AccountAlias) ||
+            string.Equals(character.AccountAlias, character.AccountKey.Value, StringComparison.OrdinalIgnoreCase))
+        {
+            return FormatText(character.AccountKey.Value, "(unknown)");
+        }
+
+        return $"{character.AccountAlias} ({FormatText(character.AccountKey.Value, "?")})";
+    }
+
+    private static string FormatRosterFreshness(DadRosterCharacter character)
+    {
+        if (character.LastRuntimeSeenUtc.HasValue)
+            return FormatRelativeAge(character.LastRuntimeSeenUtc);
+
+        if (character.LastSnapshotUtc.HasValue)
+            return character.IsStale ? $"stale {FormatRelativeAge(character.LastSnapshotUtc)}" : FormatRelativeAge(character.LastSnapshotUtc);
+
+        return "unknown";
+    }
+
+    private static string FormatRosterJob(DadRosterCharacter character)
+    {
+        if (string.IsNullOrWhiteSpace(character.CurrentJobAbbrev) && !character.CurrentLevel.HasValue)
+            return character.JobLevels.Count == 0 ? "-" : $"{character.JobLevels.Count} job(s)";
+
+        if (string.IsNullOrWhiteSpace(character.CurrentJobAbbrev))
+            return character.CurrentLevel?.ToString(CultureInfo.InvariantCulture) ?? "-";
+
+        return character.CurrentLevel.HasValue
+            ? $"{character.CurrentJobAbbrev} {character.CurrentLevel.Value}"
+            : character.CurrentJobAbbrev;
+    }
+
+    private static string FormatRosterMap(DadRosterCharacter character)
+    {
+        if (!string.IsNullOrWhiteSpace(character.MapEligibilitySummary))
+            return character.MapEligibilitySummary;
+
+        return character.MapEligible switch
+        {
+            true => "eligible",
+            false => "blocked",
+            _ => "unknown",
+        };
     }
 
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
@@ -2659,6 +3109,7 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawStatusRow("Selected preset", $"{selectedGroup.DisplayName} | {selectedGroup.Slots.Count} slot(s)");
         DrawStatusRow("Preset submode", plugin.PresetProviderService.GetPlannerLaneDefinition(selectedGroup.ActivityMode).DisplayName);
+        DrawPlannerGroupScheduleControls(selectedGroup);
         if (!debugUi)
             return;
 
@@ -2681,6 +3132,73 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawPlannerGroupSlotEditor(characterPool, selectedGroup);
+    }
+
+    private void DrawPlannerGroupScheduleControls(DadPlannerGroup group)
+    {
+        var enabled = group.ScheduleEnabled;
+        if (ImGui.Checkbox("Schedule enabled", ref enabled))
+        {
+            group.ScheduleEnabled = enabled;
+            plugin.TouchPlannerGroup(group);
+        }
+
+        ImGui.SameLine();
+        var priority = group.SchedulePriority;
+        ImGui.SetNextItemWidth(100f);
+        if (ImGui.InputInt("Priority", ref priority))
+        {
+            group.SchedulePriority = Math.Clamp(priority, -100, 100);
+            plugin.TouchPlannerGroup(group);
+        }
+
+        var cadence = group.ScheduleCadenceHours <= 0 ? 18 : group.ScheduleCadenceHours;
+        ImGui.SetNextItemWidth(120f);
+        if (ImGui.InputInt("Cadence (h)", ref cadence))
+        {
+            group.ScheduleCadenceHours = Math.Clamp(cadence, 0, 24 * 30);
+            plugin.TouchPlannerGroup(group);
+        }
+
+        var requester = group.ScheduleRequester;
+        ImGui.SetNextItemWidth(MathF.Min(220f, ImGui.GetContentRegionAvail().X));
+        if (ImGui.InputText("Requester", ref requester, 96))
+        {
+            group.ScheduleRequester = requester;
+            plugin.TouchPlannerGroup(group);
+        }
+
+        var mapTemplate = group.MapRunTemplate;
+        ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
+        if (ImGui.InputText("Map/run template", ref mapTemplate, 160))
+        {
+            group.MapRunTemplate = mapTemplate;
+            plugin.TouchPlannerGroup(group);
+        }
+
+        ImGui.SameLine();
+        DrawPlannerGroupMapModeCombo(group);
+    }
+
+    private void DrawPlannerGroupMapModeCombo(DadPlannerGroup group)
+    {
+        ImGui.SetNextItemWidth(MathF.Min(180f, ImGui.GetContentRegionAvail().X));
+        if (!ImGui.BeginCombo("Map mode", group.MapMode.ToString()))
+            return;
+
+        foreach (var mode in Enum.GetValues<DadMapCrewJobMode>())
+        {
+            var selected = mode == group.MapMode;
+            if (ImGui.Selectable(mode.ToString(), selected))
+            {
+                group.MapMode = mode;
+                plugin.TouchPlannerGroup(group);
+            }
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
     }
 
     private void DrawDeletePresetPopup(DadActivityPreset plannerPreview)

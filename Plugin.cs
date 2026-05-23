@@ -42,6 +42,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
+    public DadRosterCatalogService RosterCatalogService { get; }
     public DadKrangleService KrangleService { get; }
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
     public IReadOnlyList<DadPlannerGroup> PlannerGroups => Configuration.PlannerGroups;
@@ -85,6 +86,7 @@ public sealed class Plugin : IDalamudPlugin
         ClaimService = new DadClaimService();
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
+        RosterCatalogService = new DadRosterCatalogService(Configuration, XadbClient, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
         ModuleRegistry = new DadModuleRegistry();
         PresetProviderService = new DadPresetProviderService(ModuleRegistry);
@@ -107,6 +109,7 @@ public sealed class Plugin : IDalamudPlugin
             CharacterIntelligenceService,
             PresenceService,
             TransportService,
+            RosterCatalogService,
             Log);
         RunCoordinatorService = new DadCoordinatorService(
             Configuration,
@@ -123,6 +126,9 @@ public sealed class Plugin : IDalamudPlugin
             () => RunCoordinatorService.GetLocalResult(),
             request => RunCoordinatorService.StartTasks(request),
             _ => RunCoordinatorService.CancelActiveRun());
+        TransportService.ConfigureRosterHandlers(
+            () => RosterCatalogService.BuildLocalCatalog(CharacterIntelligenceService.CurrentPool),
+            command => RosterCatalogService.RefreshLocalRosterCharacter(command, PresenceService.BuildSnapshotCopy()));
 
         if (!string.IsNullOrWhiteSpace(Configuration.LastAccountId))
             ConfigManager.CurrentAccountId = Configuration.LastAccountId;
@@ -202,14 +208,14 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     public DadActivityPreset BuildPlannerPreview()
-        => PresetProviderService.BuildPlannerPreview(CharacterIntelligenceService.CurrentPool, PlannerOptions, GetSelectedPlannerGroup());
+        => PresetProviderService.BuildPlannerPreview(BuildPlannerPool(), PlannerOptions, GetSelectedPlannerGroup());
 
     public string BuildPlannerSummary()
         => BuildPlannerPreview().PlannerSummary;
 
     public DadPlannerRunRequestPreview BuildPlannerRunRequestPreview()
     {
-        var pool = CharacterIntelligenceService.CurrentPool;
+        var pool = BuildPlannerPool();
         var selectedGroup = GetSelectedPlannerGroup();
         var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions, selectedGroup);
         var signature = BuildPlannerPreviewSignature(PlannerOptions, plannerPreview);
@@ -229,7 +235,7 @@ public sealed class Plugin : IDalamudPlugin
         DadActivityPreset? plannerPreviewOverride = null,
         DadPlannerGroup? selectedGroup = null)
     {
-        var pool = CharacterIntelligenceService.CurrentPool;
+        var pool = BuildPlannerPool();
         var plannerPreview = plannerPreviewOverride ?? PresetProviderService.BuildPlannerPreview(pool, options, selectedGroup);
         var requestPreview = PresetProviderService.BuildPlannerRunRequestPreview(
             pool,
@@ -247,6 +253,13 @@ public sealed class Plugin : IDalamudPlugin
 
     public void SavePlannerOptions()
         => Configuration.Save();
+
+    private DadCharacterPool BuildPlannerPool()
+        => RosterCatalogService.BuildCuratedPool(
+            CharacterIntelligenceService.CurrentPool,
+            includeHidden: Configuration.RosterCatalog.ShowAllInPresetSlots,
+            includeIgnored: Configuration.RosterCatalog.ShowAllInPresetSlots,
+            includeNeedsUpdate: Configuration.RosterCatalog.ShowAllInPresetSlots);
 
     public DadPlannerGroup? GetSelectedPlannerGroup()
         => ResolvePlannerGroup(PlannerOptions.SelectedPlannerGroupId);
@@ -472,6 +485,9 @@ public sealed class Plugin : IDalamudPlugin
         return SchedulerService.BuildPreview(selectedGroup, requestPreview);
     }
 
+    private bool CanAdvanceSchedulerQueue()
+        => SchedulerService.CurrentState.IsActive || !IsBusy(GetVisibleRunState().VisibleRun);
+
     public string StartSchedulerPresetFromJson(string json)
     {
         var startRequest = DadIpcJson.Deserialize<DadSchedulerStartRequest>(json);
@@ -489,6 +505,9 @@ public sealed class Plugin : IDalamudPlugin
             return DadIpcJson.Serialize(DadRunResult.Rejected(null, rejectionReason));
         }
 
+        if (!CanAdvanceSchedulerQueue())
+            return DadIpcJson.Serialize(DadRunResult.Rejected(null, "Dad run active; enqueue scheduler preset instead of direct start."));
+
         var preview = BuildPlannerGroupRunRequestPreview(group.GroupId, new DadPlannerGroupStartRequest
         {
             GroupId = group.GroupId,
@@ -502,9 +521,10 @@ public sealed class Plugin : IDalamudPlugin
                 : startRequest.RequestedBy.Trim();
 
         var state = SchedulerService.StartPreset(group, preview, startRequest.DryRun);
-        if (!startRequest.DryRun)
+        if (!startRequest.DryRun && CanAdvanceSchedulerQueue())
         {
             SchedulerService.Update(
+                ResolvePlannerGroup,
                 BuildSchedulerPlannerPreview,
                 StartScheduledPlannerRequest);
             state = SchedulerService.CurrentState;
@@ -515,6 +535,108 @@ public sealed class Plugin : IDalamudPlugin
 
     public string GetLaunchProfilesJson()
         => DadIpcJson.Serialize(SchedulerService.GetLaunchProfiles());
+
+    public string GetRosterCatalogJson()
+        => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
+        {
+            IncludeHidden = Configuration.RosterCatalog.ShowHiddenInRoster,
+            IncludeIgnored = Configuration.RosterCatalog.ShowHiddenInRoster,
+        }));
+
+    public string RefreshPeerRosterCatalogJson()
+        => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
+        {
+            ForcePeerRefresh = true,
+            IncludeHidden = true,
+            IncludeIgnored = true,
+        }));
+
+    public string SetRosterVisibilityFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadRosterVisibilityChangeRequest>(json)
+                      ?? new DadRosterVisibilityChangeRequest();
+        return DadIpcJson.Serialize(RosterCatalogService.SetVisibility(request, CharacterIntelligenceService.CurrentPool));
+    }
+
+    public string EnqueueRosterUpdateFromJson(string json)
+    {
+        var plan = DadIpcJson.Deserialize<DadRosterRefreshPlan>(json) ?? new DadRosterRefreshPlan();
+        var catalog = RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
+        {
+            ForcePeerRefresh = true,
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            AccountKeys = [..plan.AccountKeys],
+            CharacterKeys = [..plan.CharacterKeys],
+            DryRun = plan.DryRun,
+        });
+        SchedulerService.EnqueueRosterUpdate(plan, catalog);
+        if (CanAdvanceSchedulerQueue())
+        {
+            SchedulerService.Update(
+                ResolvePlannerGroup,
+                BuildSchedulerPlannerPreview,
+                StartScheduledPlannerRequest);
+        }
+        return DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+    }
+
+    public string GetCrewStatusJson()
+        => DadIpcJson.Serialize(new
+        {
+            roster = RosterCatalogService.CurrentCatalog,
+            queue = SchedulerService.GetQueueSnapshot(),
+            scheduler = SchedulerService.CurrentState,
+        });
+
+    public string GetSchedulerQueueJson()
+        => DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+
+    public string EnqueueScheduledPresetFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadScheduledPresetRequest>(json);
+        if (request == null)
+        {
+            var fallbackId = (json ?? string.Empty).Trim().Trim('"');
+            request = new DadScheduledPresetRequest { GroupId = fallbackId };
+        }
+
+        var groupId = string.IsNullOrWhiteSpace(request.GroupId)
+            ? PlannerOptions.SelectedPlannerGroupId
+            : request.GroupId;
+        if (!TryResolvePlannerGroupForIpc(groupId, out var group, out var rejectionReason) || group == null)
+        {
+            return DadIpcJson.Serialize(new DadSchedulerQueueSnapshot
+            {
+                Summary = rejectionReason,
+                ActiveState = SchedulerService.CurrentState,
+                PendingJobs = SchedulerService.GetQueueSnapshot().PendingJobs,
+            });
+        }
+
+        SchedulerService.EnqueueScheduledPreset(group, request);
+        if (CanAdvanceSchedulerQueue())
+        {
+            SchedulerService.Update(
+                ResolvePlannerGroup,
+                BuildSchedulerPlannerPreview,
+                StartScheduledPlannerRequest);
+        }
+        return DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+    }
+
+    public string CancelScheduledJobFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadCancelScheduledJobRequest>(json);
+        if (request == null)
+        {
+            var fallbackId = (json ?? string.Empty).Trim().Trim('"');
+            request = new DadCancelScheduledJobRequest { JobId = fallbackId };
+        }
+
+        SchedulerService.CancelScheduledJob(request.JobId, request.Reason);
+        return DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+    }
 
     public int ImportLaunchProfilesFromBootDirectory()
     {
@@ -535,7 +657,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var options = BuildPlannerOptionsForGroup(group, startRequest);
-        var pool = CharacterIntelligenceService.CurrentPool;
+        var pool = BuildPlannerPool();
         var preview = PresetProviderService.BuildPlannerPreview(pool, options, group);
         return ApplyPlannerRuntimeTruth(PresetProviderService.BuildPlannerRunRequestPreview(
             pool,
@@ -597,6 +719,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
             StopPolicy = preview.StopPolicy.Clone(),
             Slots = BuildPlannerGroupSlotsFromPreview(preview),
+            ScheduleCadenceHours = PlannerOptions.ActivityMode == DadPlannerActivityMode.CustomDuty ? 18 : 0,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow,
         };
@@ -731,6 +854,13 @@ public sealed class Plugin : IDalamudPlugin
                 CharacterLoadInstruction = slot.CharacterLoadInstruction.Clone(),
                 AllowSubstitution = slot.AllowSubstitution,
             }).ToList(),
+            ScheduleEnabled = source.ScheduleEnabled,
+            ScheduleCadenceHours = source.ScheduleCadenceHours,
+            NextEligibleTimeUtc = source.NextEligibleTimeUtc,
+            ScheduleRequester = source.ScheduleRequester,
+            SchedulePriority = source.SchedulePriority,
+            MapRunTemplate = source.MapRunTemplate,
+            MapMode = source.MapMode,
             CreatedAtUtc = source.CreatedAtUtc,
             UpdatedAtUtc = source.UpdatedAtUtc,
         };
@@ -1267,6 +1397,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool RefreshCharacterPoolFromShell()
     {
         var pool = CharacterIntelligenceService.RefreshLocalCharacterPool("shell");
+        RosterCatalogService.RefreshCatalog(pool);
         PrintStatus($"dad pool refreshed. {pool.LastSummary}");
         return pool;
     }
@@ -1274,6 +1405,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool SaveLocalCharacterToXadbFromShell()
     {
         var pool = CharacterIntelligenceService.SaveLocalToXadb();
+        RosterCatalogService.RefreshCatalog(pool);
         PrintStatus($"dad XADB save requested. {pool.XadbStatus.LastStatus}");
         return pool;
     }
@@ -1281,6 +1413,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool RequestPeerSnapshotsFromShell()
     {
         var pool = CharacterIntelligenceService.RequestPeerSnapshots();
+        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan { ForcePeerRefresh = true });
         PrintStatus($"dad peer snapshot request status: {pool.PeerTransport.LastRequestStatus}");
         return pool;
     }
@@ -1836,9 +1969,13 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled);
-        SchedulerService.Update(
-            BuildSchedulerPlannerPreview,
-            StartScheduledPlannerRequest);
+        if (CanAdvanceSchedulerQueue())
+        {
+            SchedulerService.Update(
+                ResolvePlannerGroup,
+                BuildSchedulerPlannerPreview,
+                StartScheduledPlannerRequest);
+        }
         RunCoordinatorService.Update();
     }
 
@@ -1846,6 +1983,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         UpdateDtrBar();
         CharacterIntelligenceService.RefreshLocalCharacterPool("login", logRefresh: false);
+        RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool);
         PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
     }
 }

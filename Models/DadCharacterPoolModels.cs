@@ -156,6 +156,9 @@ public sealed class DadAcquiredCharacter
     public string SnapshotQuality { get; set; } = string.Empty;
     public int? SnapshotVersion { get; set; }
     public bool XadbReady { get; set; }
+    public DadRosterVisibility RosterVisibility { get; set; } = DadRosterVisibility.Active;
+    public bool? MapEligible { get; set; }
+    public string MapEligibilitySummary { get; set; } = string.Empty;
 
     public bool IsLiveConnected =>
         Source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime
@@ -190,6 +193,9 @@ public sealed class DadAcquiredCharacter
         SnapshotQuality = SnapshotQuality,
         SnapshotVersion = SnapshotVersion,
         XadbReady = XadbReady,
+        RosterVisibility = RosterVisibility,
+        MapEligible = MapEligible,
+        MapEligibilitySummary = MapEligibilitySummary,
     };
 }
 
@@ -331,6 +337,13 @@ public sealed class DadPlannerGroup
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
+    public bool ScheduleEnabled { get; set; }
+    public int ScheduleCadenceHours { get; set; }
+    public DateTime? NextEligibleTimeUtc { get; set; }
+    public string ScheduleRequester { get; set; } = string.Empty;
+    public int SchedulePriority { get; set; }
+    public string MapRunTemplate { get; set; } = string.Empty;
+    public DadMapCrewJobMode MapMode { get; set; } = DadMapCrewJobMode.ManualMapReady;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

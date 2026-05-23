@@ -17,6 +17,8 @@ public sealed class DadTransportService : IDisposable
     private const string MessageCancelCommand = "cancel-command";
     private const string MessageStatusQuery = "status-query";
     private const string MessageStartRun = "start-run";
+    private const string MessageRosterCatalogRequest = "roster-catalog-request";
+    private const string MessageRosterRefreshCommand = "roster-refresh-command";
     private static readonly TimeSpan RegistryFreshness = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan HeartbeatWriteInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SocketTimeout = TimeSpan.FromSeconds(2);
@@ -45,6 +47,8 @@ public sealed class DadTransportService : IDisposable
     private Func<DadRunResult>? statusProvider;
     private Func<DadRunRequest, DadRunResult>? startRunHandler;
     private Func<DadCancelCommandDto, DadRunResult>? cancelRunHandler;
+    private Func<DadAccountRosterCatalog>? rosterCatalogProvider;
+    private Func<DadRosterRefreshCommandDto, DadRosterRefreshResultDto>? rosterRefreshHandler;
 
     public DadTransportService(Configuration configuration, DadPresenceService presenceService, DadClaimService claimService, IPluginLog log)
     {
@@ -97,6 +101,14 @@ public sealed class DadTransportService : IDisposable
         this.statusProvider = statusProvider;
         this.startRunHandler = startRunHandler;
         this.cancelRunHandler = cancelRunHandler;
+    }
+
+    public void ConfigureRosterHandlers(
+        Func<DadAccountRosterCatalog> rosterCatalogProvider,
+        Func<DadRosterRefreshCommandDto, DadRosterRefreshResultDto> rosterRefreshHandler)
+    {
+        this.rosterCatalogProvider = rosterCatalogProvider;
+        this.rosterRefreshHandler = rosterRefreshHandler;
     }
 
     public void Dispose()
@@ -293,6 +305,37 @@ public sealed class DadTransportService : IDisposable
     public DadRunResult? SendCancelCommand(string endpoint, DadCancelCommandDto command)
         => SendEnvelope<DadCancelCommandDto, DadRunResult>(endpoint, MessageCancelCommand, command);
 
+    public IReadOnlyList<DadPeerRosterCatalogResponse> RequestRosterCatalogs(DadRosterRefreshPlan request)
+    {
+        RefreshKnownParticipants();
+        var responses = new List<DadPeerRosterCatalogResponse>();
+        foreach (var participant in CurrentTransport.KnownParticipants.ToList())
+        {
+            var response = SendEnvelope<DadRosterRefreshPlan, DadPeerRosterCatalogResponse>(
+                participant.Endpoint,
+                MessageRosterCatalogRequest,
+                request);
+            if (response == null)
+                continue;
+
+            responses.Add(response);
+        }
+
+        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestStatus = responses.Count == 0
+            ? "No remote Dad roster catalogs discovered."
+            : $"Received {responses.Count} roster catalog response(s) from discovered workers.";
+        return responses;
+    }
+
+    public DadRosterRefreshResultDto? SendRosterRefreshCommand(
+        DadParticipantSnapshot participant,
+        DadRosterRefreshCommandDto command)
+        => SendEnvelope<DadRosterRefreshCommandDto, DadRosterRefreshResultDto>(
+            participant.Endpoint,
+            MessageRosterRefreshCommand,
+            command);
+
     public List<DadCancelAckDto> BroadcastCancel(DadCancelCommandDto command, IEnumerable<DadParticipantSnapshot> participants)
     {
         var acks = new List<DadCancelAckDto>();
@@ -406,6 +449,8 @@ public sealed class DadTransportService : IDisposable
                 MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(envelope.PayloadJson)),
                 MessageStatusQuery => DadIpcJson.Serialize(HandleStatusQuery()),
                 MessageStartRun => DadIpcJson.Serialize(HandleStartRun(envelope.PayloadJson)),
+                MessageRosterCatalogRequest => DadIpcJson.Serialize(HandleRosterCatalogRequest(envelope.PayloadJson)),
+                MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(envelope.PayloadJson)),
                 _ => string.Empty,
             };
 
@@ -563,6 +608,63 @@ public sealed class DadTransportService : IDisposable
             return DadRunResult.Rejected(request, "Server Dad start handler unavailable.");
 
         return startRunHandler(request);
+    }
+
+    private DadPeerRosterCatalogResponse HandleRosterCatalogRequest(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadRosterRefreshPlan>(payloadJson) ?? new DadRosterRefreshPlan();
+        var catalog = rosterCatalogProvider?.Invoke() ?? new DadAccountRosterCatalog
+        {
+            Summary = "Dad roster catalog provider unavailable.",
+            Warnings = ["Dad roster catalog provider unavailable."],
+        };
+
+        catalog.SourceClientInstanceId = presenceService.ClientInstanceId;
+        catalog.SourceWorkerSessionId = presenceService.WorkerSessionId;
+
+        return new DadPeerRosterCatalogResponse
+        {
+            RequestId = request.PlanId,
+            RespondedAtUtc = DateTime.UtcNow,
+            ClientInstanceId = presenceService.ClientInstanceId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            Catalog = catalog,
+            Warnings = remoteMutationsAllowed ? [] : [BuildLocalUnavailableReason()],
+        };
+    }
+
+    private DadRosterRefreshResultDto HandleRosterRefreshCommand(string payloadJson)
+    {
+        var command = DadIpcJson.Deserialize<DadRosterRefreshCommandDto>(payloadJson) ?? new DadRosterRefreshCommandDto();
+        if (!remoteMutationsAllowed)
+        {
+            return new DadRosterRefreshResultDto
+            {
+                CommandId = command.CommandId,
+                AccountKey = command.AccountKey,
+                CharacterKey = command.CharacterKey,
+                Accepted = false,
+                DryRun = command.DryRun,
+                Summary = BuildRemoteMutationRejectedReason("remote roster-refresh command"),
+                Snapshot = BuildLocalTransportSnapshot(),
+            };
+        }
+
+        if (rosterRefreshHandler == null)
+        {
+            return new DadRosterRefreshResultDto
+            {
+                CommandId = command.CommandId,
+                AccountKey = command.AccountKey,
+                CharacterKey = command.CharacterKey,
+                Accepted = false,
+                DryRun = command.DryRun,
+                Summary = "Dad roster refresh handler unavailable.",
+                Snapshot = BuildLocalTransportSnapshot(),
+            };
+        }
+
+        return rosterRefreshHandler(command);
     }
 
     private DadParticipantSnapshot BuildLocalTransportSnapshot()

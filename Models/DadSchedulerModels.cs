@@ -144,6 +144,7 @@ public sealed class DadSchedulerSlotState
     public bool IsOnline { get; set; }
     public bool CorrectCharacter { get; set; }
     public bool Ready { get; set; }
+    public DadRosterVisibility RosterVisibility { get; set; } = DadRosterVisibility.Active;
     public DadWorkerSessionId MatchedWorkerSessionId { get; set; } = new(string.Empty);
     public DadCharacterKey ActiveCharacterKey { get; set; } = new(string.Empty);
     public string Summary { get; set; } = string.Empty;
@@ -167,6 +168,7 @@ public sealed class DadSchedulerSlotState
             IsOnline = IsOnline,
             CorrectCharacter = CorrectCharacter,
             Ready = Ready,
+            RosterVisibility = RosterVisibility,
             MatchedWorkerSessionId = MatchedWorkerSessionId,
             ActiveCharacterKey = ActiveCharacterKey,
             Summary = Summary,
@@ -193,6 +195,9 @@ public sealed class DadSchedulerPreview
 public sealed class DadSchedulerPresetState
 {
     public string SchedulerRunId { get; set; } = Guid.NewGuid().ToString("N");
+    public string JobId { get; set; } = string.Empty;
+    public DadSchedulerJobType JobType { get; set; } = DadSchedulerJobType.ScheduledPreset;
+    public string RequestedBy { get; set; } = string.Empty;
     public string GroupId { get; set; } = string.Empty;
     public string PresetName { get; set; } = string.Empty;
     public DadSchedulerPresetPhase Phase { get; set; } = DadSchedulerPresetPhase.Idle;
@@ -217,6 +222,9 @@ public sealed class DadSchedulerPresetState
         => new()
         {
             SchedulerRunId = SchedulerRunId,
+            JobId = JobId,
+            JobType = JobType,
+            RequestedBy = RequestedBy,
             GroupId = GroupId,
             PresetName = PresetName,
             Phase = Phase,
@@ -244,7 +252,7 @@ public sealed class DadSchedulerPresetState
                     : DadRunStatus.Running,
             Phase = DadRunPhase.DiscoveringParticipants,
             ModuleId = request?.Orchestration?.ModuleTarget ?? DadModuleId.Mixed,
-            RequestedBy = "scheduler",
+            RequestedBy = string.IsNullOrWhiteSpace(RequestedBy) ? "scheduler" : RequestedBy,
             Summary = Summary,
             BlockedReason = BlockedReason,
             Request = request,

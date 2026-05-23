@@ -13,8 +13,10 @@ public sealed class DadSchedulerService
     private readonly DadCharacterIntelligenceService characterIntelligenceService;
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
+    private readonly DadRosterCatalogService rosterCatalogService;
     private readonly IPluginLog log;
     private DadSchedulerPresetState currentState = new() { Phase = DadSchedulerPresetPhase.Idle, Summary = "Scheduler idle." };
+    private DadScheduledCrewJob? activeJob;
     private DateTime nextRefreshUtc = DateTime.MinValue;
 
     public DadSchedulerService(
@@ -22,16 +24,122 @@ public sealed class DadSchedulerService
         DadCharacterIntelligenceService characterIntelligenceService,
         DadPresenceService presenceService,
         DadTransportService transportService,
+        DadRosterCatalogService rosterCatalogService,
         IPluginLog log)
     {
         this.configuration = configuration;
         this.characterIntelligenceService = characterIntelligenceService;
         this.presenceService = presenceService;
         this.transportService = transportService;
+        this.rosterCatalogService = rosterCatalogService;
         this.log = log;
     }
 
     public DadSchedulerPresetState CurrentState => currentState.Clone();
+
+    public DadSchedulerQueueSnapshot GetQueueSnapshot()
+    {
+        NormalizeQueue();
+        var activeJobClone = currentState.IsActive ? activeJob?.Clone() : null;
+        return new DadSchedulerQueueSnapshot
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            ActiveJob = activeJobClone,
+            ActiveState = currentState.Clone(),
+            ActiveQueueOwner = activeJobClone?.RequestedBy ?? currentState.RequestedBy,
+            PendingJobs = configuration.SchedulerQueue
+                .OrderBy(static job => job.NextEligibleTimeUtc ?? DateTime.MinValue)
+                .ThenByDescending(static job => job.Priority)
+                .ThenBy(static job => job.CreatedAtUtc)
+                .Select(static job => job.Clone())
+                .ToList(),
+            Summary = currentState.IsActive
+                ? $"Active {currentState.JobType}: {currentState.Summary}"
+                : configuration.SchedulerQueue.Count == 0
+                    ? "Scheduler queue idle."
+                    : $"{configuration.SchedulerQueue.Count} queued scheduler job(s).",
+        };
+    }
+
+    public DadScheduledCrewJob EnqueueScheduledPreset(DadPlannerGroup group, DadScheduledPresetRequest request)
+    {
+        NormalizeQueue();
+        var job = new DadScheduledCrewJob
+        {
+            JobType = request.JobType,
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            Enabled = request.Enabled,
+            DryRun = request.DryRun,
+            CreatedAtUtc = DateTime.UtcNow,
+            NextEligibleTimeUtc = request.NextEligibleTimeUtc,
+            Cadence = TimeSpan.FromHours(Math.Max(0, request.CadenceHours)),
+            RequestedBy = string.IsNullOrWhiteSpace(request.RequestedBy) ? "scheduler" : request.RequestedBy.Trim(),
+            Priority = request.Priority,
+            MapMode = request.MapMode,
+            MapRunTemplate = request.MapRunTemplate?.Trim() ?? string.Empty,
+            TargetCharacterKeys = [..request.TargetCharacterKeys],
+            StatusSummary = $"Queued preset '{group.DisplayName}'.",
+        };
+
+        configuration.SchedulerQueue.Add(job);
+        configuration.Save();
+        return job.Clone();
+    }
+
+    public DadScheduledCrewJob EnqueueRosterUpdate(DadRosterRefreshPlan plan, DadAccountRosterCatalog catalog)
+    {
+        NormalizeQueue();
+        var targets = catalog.Characters
+            .Where(character =>
+                character.Visibility == DadRosterVisibility.NeedsUpdate ||
+                plan.CharacterKeys.Any(key => string.Equals(key.Value, character.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)) ||
+                plan.AccountKeys.Any(key => string.Equals(key.Value, character.AccountKey.Value, StringComparison.OrdinalIgnoreCase)))
+            .Where(character => !character.CharacterKey.IsEmpty)
+            .Select(static character => character.CharacterKey)
+            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var job = new DadScheduledCrewJob
+        {
+            JobType = DadSchedulerJobType.RosterUpdate,
+            PresetName = "Roster update",
+            DryRun = plan.DryRun,
+            CreatedAtUtc = DateTime.UtcNow,
+            RequestedBy = "roster-update",
+            TargetCharacterKeys = targets,
+            StatusSummary = targets.Count == 0
+                ? "Roster update queued with no matching target characters."
+                : $"Queued roster update for {targets.Count} character(s).",
+        };
+
+        configuration.SchedulerQueue.Add(job);
+        configuration.Save();
+        return job.Clone();
+    }
+
+    public bool CancelScheduledJob(string jobId, string reason)
+    {
+        NormalizeQueue();
+        var job = configuration.SchedulerQueue.FirstOrDefault(candidate =>
+            string.Equals(candidate.JobId, jobId, StringComparison.OrdinalIgnoreCase));
+        if (job != null)
+        {
+            configuration.SchedulerQueue.Remove(job);
+            configuration.Save();
+            return true;
+        }
+
+        if (activeJob != null &&
+            string.Equals(activeJob.JobId, jobId, StringComparison.OrdinalIgnoreCase) &&
+            currentState.IsActive)
+        {
+            Cancel(string.IsNullOrWhiteSpace(reason) ? $"Scheduler job {jobId} cancelled." : reason);
+            return true;
+        }
+
+        return false;
+    }
 
     public IReadOnlyList<DadLaunchProfile> GetLaunchProfiles()
     {
@@ -138,12 +246,24 @@ public sealed class DadSchedulerService
     public DadSchedulerPresetState StartPreset(
         DadPlannerGroup group,
         DadPlannerRunRequestPreview plannerRequestPreview,
-        bool dryRun)
+        bool dryRun,
+        DadScheduledCrewJob? job = null)
     {
         var preview = BuildPreview(group, plannerRequestPreview, forcePeerRefresh: true);
+        activeJob = job?.Clone() ?? new DadScheduledCrewJob
+        {
+            JobType = DadSchedulerJobType.ScheduledPreset,
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            DryRun = dryRun,
+            RequestedBy = "scheduler",
+        };
         currentState = new DadSchedulerPresetState
         {
             SchedulerRunId = Guid.NewGuid().ToString("N"),
+            JobId = activeJob.JobId,
+            JobType = activeJob.JobType,
+            RequestedBy = activeJob.RequestedBy,
             GroupId = group.GroupId,
             PresetName = group.DisplayName,
             StartedAtUtc = DateTime.UtcNow,
@@ -179,11 +299,15 @@ public sealed class DadSchedulerService
     }
 
     public void Update(
+        Func<string, DadPlannerGroup?> groupResolver,
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
         Func<DadRunRequest, DadRunResult> startPlannerRequest)
     {
         if (!currentState.IsActive)
+        {
+            TryStartNextQueuedJob(groupResolver, plannerPreviewBuilder);
             return;
+        }
 
         if (currentState.DryRun)
             return;
@@ -192,6 +316,12 @@ public sealed class DadSchedulerService
             return;
 
         nextRefreshUtc = DateTime.UtcNow + RefreshInterval;
+
+        if (currentState.JobType == DadSchedulerJobType.RosterUpdate)
+        {
+            UpdateRosterUpdateJob();
+            return;
+        }
 
         var plannerPreview = plannerPreviewBuilder(currentState.GroupId);
         if (plannerPreview?.Request == null)
@@ -227,7 +357,7 @@ public sealed class DadSchedulerService
 
             if (slot.IsOnline &&
                 !slot.CorrectCharacter &&
-                slot.WakePolicy == DadSchedulerWakePolicy.LoadCharacterIfOnline &&
+                slot.WakePolicy is DadSchedulerWakePolicy.LoadCharacterIfOnline or DadSchedulerWakePolicy.LaunchIfOffline &&
                 !slot.LoadCommandSentUtc.HasValue)
             {
                 if (!TrySendCharacterLoadCommand(slot, out var loadBlocker))
@@ -281,6 +411,273 @@ public sealed class DadSchedulerService
         currentState.UpdatedAtUtc = DateTime.UtcNow;
     }
 
+    private bool TryStartNextQueuedJob(
+        Func<string, DadPlannerGroup?> groupResolver,
+        Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder)
+    {
+        NormalizeQueue();
+        var now = DateTime.UtcNow;
+        var nextJob = configuration.SchedulerQueue
+            .Where(static job => job.Enabled)
+            .Where(job => !job.NextEligibleTimeUtc.HasValue || job.NextEligibleTimeUtc.Value <= now)
+            .OrderByDescending(static job => job.Priority)
+            .ThenBy(static job => job.CreatedAtUtc)
+            .FirstOrDefault();
+        if (nextJob == null)
+            return false;
+
+        configuration.SchedulerQueue.Remove(nextJob);
+        configuration.Save();
+
+        if (nextJob.JobType == DadSchedulerJobType.RosterUpdate)
+        {
+            StartRosterUpdateJob(nextJob);
+            return true;
+        }
+
+        var group = groupResolver(nextJob.GroupId);
+        var preview = plannerPreviewBuilder(nextJob.GroupId);
+        if (group == null || preview == null)
+        {
+            activeJob = nextJob.Clone();
+            currentState = BuildBlockedQueuedState(nextJob, $"Queued preset '{nextJob.GroupId}' could not be resolved.");
+            return true;
+        }
+
+        StartPreset(group, preview, nextJob.DryRun, nextJob);
+        return true;
+    }
+
+    private void StartRosterUpdateJob(DadScheduledCrewJob job)
+    {
+        activeJob = job.Clone();
+        var pool = characterIntelligenceService.RequestPeerSnapshots();
+        var catalog = rosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan
+        {
+            ForcePeerRefresh = true,
+            IncludeHidden = true,
+            IncludeIgnored = true,
+        });
+        var targets = ResolveRosterUpdateTargets(job, catalog);
+        currentState = new DadSchedulerPresetState
+        {
+            SchedulerRunId = Guid.NewGuid().ToString("N"),
+            JobId = job.JobId,
+            JobType = DadSchedulerJobType.RosterUpdate,
+            RequestedBy = job.RequestedBy,
+            PresetName = "Roster update",
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            DryRun = job.DryRun,
+        };
+
+        if (targets.Count == 0)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.Summary = "Roster update has no target characters.";
+            currentState.BlockedReason = currentState.Summary;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        var group = new DadPlannerGroup
+        {
+            GroupId = job.JobId,
+            DisplayName = "Roster update",
+            Slots = targets.Select((target, index) => new DadPlannerGroupSlot
+            {
+                SlotId = $"Update{index + 1}",
+                RequiredAccountKey = target.AccountKey,
+                RequiredCharacterKey = target.CharacterKey,
+                WakePolicy = DadSchedulerWakePolicy.LaunchIfOffline,
+            }).ToList(),
+        };
+
+        currentState.Slots = BuildSlotStates(group, pool, [], allowNeedsUpdateVisibility: true);
+        var blockers = currentState.Slots
+            .Select(static slot => slot.BlockedReason)
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (blockers.Count > 0)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.Summary = string.Join(" | ", blockers);
+            currentState.BlockedReason = currentState.Summary;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (job.DryRun)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Completed;
+            currentState.Summary = $"Roster update dry run ready for {targets.Count} character(s).";
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        currentState.Phase = currentState.Slots.All(static slot => slot.Ready)
+            ? DadSchedulerPresetPhase.ReadyToStart
+            : ResolveWaitingPhase(currentState.Slots);
+        currentState.Summary = $"Roster update waiting: {currentState.Slots.Count(static slot => slot.Ready)}/{currentState.Slots.Count} target(s) ready.";
+        nextRefreshUtc = DateTime.MinValue;
+    }
+
+    private void UpdateRosterUpdateJob()
+    {
+        var pool = characterIntelligenceService.RequestPeerSnapshots();
+        var group = new DadPlannerGroup
+        {
+            GroupId = currentState.JobId,
+            DisplayName = currentState.PresetName,
+            Slots = currentState.Slots.Select(static slot => new DadPlannerGroupSlot
+            {
+                SlotId = slot.SlotId,
+                RequiredAccountKey = slot.RequiredAccountKey,
+                RequiredCharacterKey = slot.RequiredCharacterKey,
+                WakePolicy = slot.WakePolicy,
+                LaunchProfileId = slot.LaunchProfileId,
+            }).ToList(),
+        };
+        currentState.Slots = BuildSlotStates(group, pool, currentState.Slots, allowNeedsUpdateVisibility: true);
+        currentState.UpdatedAtUtc = DateTime.UtcNow;
+
+        foreach (var slot in currentState.Slots)
+        {
+            if (slot.Ready)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(slot.BlockedReason))
+            {
+                BlockActive(slot.BlockedReason);
+                return;
+            }
+
+            if (!slot.IsOnline && slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline)
+            {
+                if (!TryStartLaunch(slot, out var launchBlocker))
+                {
+                    BlockActive(launchBlocker);
+                    return;
+                }
+            }
+
+            if (slot.IsOnline &&
+                !slot.CorrectCharacter &&
+                !slot.LoadCommandSentUtc.HasValue)
+            {
+                if (!TrySendCharacterLoadCommand(slot, out var loadBlocker))
+                {
+                    BlockActive(loadBlocker);
+                    return;
+                }
+            }
+
+            if (IsLaunchTimedOut(slot, out var timeoutReason) || IsLoadTimedOut(slot, out timeoutReason))
+            {
+                currentState.Phase = DadSchedulerPresetPhase.TimedOut;
+                currentState.BlockedReason = timeoutReason;
+                currentState.Summary = timeoutReason;
+                currentState.CompletedAtUtc = DateTime.UtcNow;
+                return;
+            }
+        }
+
+        if (!currentState.Slots.All(static slot => slot.Ready))
+        {
+            currentState.Phase = ResolveWaitingPhase(currentState.Slots);
+            currentState.Summary = $"Roster update waiting: {currentState.Slots.Count(static slot => slot.Ready)}/{currentState.Slots.Count} target(s) ready.";
+            return;
+        }
+
+        var results = new List<DadRosterRefreshResultDto>();
+        foreach (var slot in currentState.Slots)
+        {
+            var participant = BuildParticipantSet(pool).FirstOrDefault(candidate =>
+                string.Equals(candidate.WorkerSessionId.Value, slot.MatchedWorkerSessionId.Value, StringComparison.OrdinalIgnoreCase));
+            if (participant == null)
+            {
+                BlockActive($"Roster update lost participant for {slot.RequiredCharacterKey}.");
+                return;
+            }
+
+            var command = new DadRosterRefreshCommandDto
+            {
+                AccountKey = slot.RequiredAccountKey,
+                CharacterKey = slot.RequiredCharacterKey,
+                SaveAfterRefresh = true,
+            };
+
+            var result = participant.IsLocalClient
+                ? rosterCatalogService.RefreshLocalRosterCharacter(command, presenceService.BuildSnapshotCopy())
+                : transportService.SendRosterRefreshCommand(participant, command);
+            if (result == null)
+            {
+                BlockActive($"No roster refresh acknowledgement from {slot.RequiredCharacterKey}.");
+                return;
+            }
+
+            if (!participant.IsLocalClient)
+                rosterCatalogService.RecordRefreshResult(result);
+            results.Add(result);
+            if (!result.Success)
+            {
+                BlockActive(result.Summary);
+                return;
+            }
+        }
+
+        currentState.Phase = DadSchedulerPresetPhase.Completed;
+        currentState.Summary = $"Roster update completed for {results.Count} character(s).";
+        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        characterIntelligenceService.RefreshLocalCharacterPool("roster-update", logRefresh: false);
+    }
+
+    private static DadSchedulerPresetState BuildBlockedQueuedState(DadScheduledCrewJob job, string reason)
+        => new()
+        {
+            SchedulerRunId = Guid.NewGuid().ToString("N"),
+            JobId = job.JobId,
+            JobType = job.JobType,
+            RequestedBy = job.RequestedBy,
+            GroupId = job.GroupId,
+            PresetName = job.PresetName,
+            Phase = DadSchedulerPresetPhase.Blocked,
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow,
+            DryRun = job.DryRun,
+            Summary = reason,
+            BlockedReason = reason,
+        };
+
+    private static IReadOnlyList<DadRosterCharacter> ResolveRosterUpdateTargets(
+        DadScheduledCrewJob job,
+        DadAccountRosterCatalog catalog)
+    {
+        var explicitTargets = job.TargetCharacterKeys
+            .Where(static key => !key.IsEmpty)
+            .Select(static key => key.Value)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var explicitAccounts = job.TargetAccountKeys
+            .Where(static key => !key.IsEmpty)
+            .Select(static key => key.Value)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return catalog.Characters
+            .Where(character => explicitTargets.Count == 0 ||
+                                explicitTargets.Contains(character.CharacterKey.Value))
+            .Where(character => explicitAccounts.Count == 0 ||
+                                explicitAccounts.Contains(character.AccountKey.Value))
+            .Where(character => character.Visibility == DadRosterVisibility.NeedsUpdate ||
+                                explicitTargets.Contains(character.CharacterKey.Value))
+            .Where(static character => !character.CharacterKey.IsEmpty)
+            .DistinctBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private List<DadSchedulerSlotState> RebuildActiveSlots(
         DadPlannerRunRequestPreview plannerPreview,
         IReadOnlyList<DadSchedulerSlotState> previousSlots)
@@ -299,7 +696,11 @@ public sealed class DadSchedulerService
                 LaunchProfileId = slot.LaunchProfileId,
             }).ToList(),
         };
-        var rebuilt = BuildSlotStates(syntheticGroup, pool, previousSlots);
+        var rebuilt = BuildSlotStates(
+            syntheticGroup,
+            pool,
+            previousSlots,
+            allowNeedsUpdateVisibility: currentState.JobType == DadSchedulerJobType.RosterUpdate);
 
         foreach (var slot in rebuilt)
         {
@@ -322,14 +723,15 @@ public sealed class DadSchedulerService
     private List<DadSchedulerSlotState> BuildSlotStates(
         DadPlannerGroup group,
         DadCharacterPool pool,
-        IReadOnlyList<DadSchedulerSlotState> previousSlots)
+        IReadOnlyList<DadSchedulerSlotState> previousSlots,
+        bool allowNeedsUpdateVisibility = false)
     {
         var participants = BuildParticipantSet(pool);
         return group.Slots.Select(slot =>
         {
             var previous = previousSlots.FirstOrDefault(existing =>
                 string.Equals(existing.SlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase));
-            var state = BuildSlotState(slot, participants);
+            var state = BuildSlotState(slot, participants, allowNeedsUpdateVisibility);
             if (previous != null)
             {
                 state.LaunchStarted = previous.LaunchStarted;
@@ -343,7 +745,8 @@ public sealed class DadSchedulerService
 
     private DadSchedulerSlotState BuildSlotState(
         DadPlannerGroupSlot slot,
-        IReadOnlyList<DadParticipantSnapshot> participants)
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        bool allowNeedsUpdateVisibility = false)
     {
         var state = new DadSchedulerSlotState
         {
@@ -353,6 +756,13 @@ public sealed class DadSchedulerService
             RequiredCharacterKey = slot.RequiredCharacterKey,
             LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty,
         };
+        state.RosterVisibility = rosterCatalogService.ResolveVisibility(slot.RequiredCharacterKey, slot.RequiredAccountKey);
+        if (state.RosterVisibility is DadRosterVisibility.Hidden or DadRosterVisibility.Ignored ||
+            state.RosterVisibility == DadRosterVisibility.NeedsUpdate && !allowNeedsUpdateVisibility)
+        {
+            state.BlockedReason = $"Slot {state.SlotId} targets {state.RosterVisibility} roster character {slot.RequiredCharacterKey}.";
+        }
+
         var matchingAccount = participants.FirstOrDefault(participant => MatchesSlotAccount(participant, slot));
         var matchingCharacter = participants.FirstOrDefault(participant => MatchesSlotCharacter(participant, slot));
         var selected = matchingCharacter ?? matchingAccount;
@@ -367,7 +777,8 @@ public sealed class DadSchedulerService
                 ? $"Online on {selected.ActiveCharacterKey}."
                 : $"Account online as {selected.ActiveCharacterKey}; needs {slot.RequiredCharacterKey}.";
 
-            if (!state.Ready && slot.WakePolicy != DadSchedulerWakePolicy.LoadCharacterIfOnline)
+            if (!state.Ready &&
+                slot.WakePolicy is not DadSchedulerWakePolicy.LoadCharacterIfOnline and not DadSchedulerWakePolicy.LaunchIfOffline)
                 state.BlockedReason = $"Slot {state.SlotId} is online on the wrong character and wake policy is {slot.WakePolicy}.";
         }
         else
@@ -395,6 +806,9 @@ public sealed class DadSchedulerService
 
     private void ApplyWakePolicyBlockers(DadSchedulerSlotState state, DadPlannerGroupSlot slot)
     {
+        if (!string.IsNullOrWhiteSpace(state.BlockedReason))
+            return;
+
         if (state.Ready)
             return;
 
@@ -432,6 +846,22 @@ public sealed class DadSchedulerService
                 state.Summary = profile.DryRun
                     ? $"Dry-run launch profile would start {profile.BatchPath} for account {profile.AccountKey}."
                     : $"Launch profile ready: {profile.BatchPath} for account {profile.AccountKey}.";
+            return;
+        }
+
+        if (state.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline && state.IsOnline && !state.CorrectCharacter)
+        {
+            var instruction = ResolveLoadInstruction(slot);
+            var command = instruction.BuildCommand(slot.RequiredCharacterKey, slot.RequiredAccountKey);
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                state.BlockedReason = $"Slot {state.SlotId} is online on wrong character and needs character load command template before loading {slot.RequiredCharacterKey}.";
+                return;
+            }
+
+            state.Summary = instruction.DryRun
+                ? $"Dry-run would send character-load command for {slot.RequiredCharacterKey}: {command}"
+                : $"Character-load command ready for {slot.RequiredCharacterKey}.";
             return;
         }
 
@@ -720,5 +1150,26 @@ public sealed class DadSchedulerService
         configuration.LaunchProfiles ??= [];
         foreach (var profile in configuration.LaunchProfiles)
             profile.Normalize();
+    }
+
+    private void NormalizeQueue()
+    {
+        configuration.SchedulerQueue ??= [];
+        foreach (var job in configuration.SchedulerQueue)
+        {
+            job.JobId = string.IsNullOrWhiteSpace(job.JobId) ? Guid.NewGuid().ToString("N") : job.JobId.Trim();
+            job.PresetName = job.PresetName?.Trim() ?? string.Empty;
+            job.GroupId = job.GroupId?.Trim() ?? string.Empty;
+            job.RequestedBy = string.IsNullOrWhiteSpace(job.RequestedBy) ? "scheduler" : job.RequestedBy.Trim();
+            job.MapRunTemplate = job.MapRunTemplate?.Trim() ?? string.Empty;
+            job.TargetCharacterKeys = job.TargetCharacterKeys
+                .Where(static key => !key.IsEmpty)
+                .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            job.TargetAccountKeys = job.TargetAccountKeys
+                .Where(static key => !key.IsEmpty)
+                .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
     }
 }
