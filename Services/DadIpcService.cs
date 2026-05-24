@@ -10,7 +10,6 @@ public sealed class DadIpcService : IDisposable
     private readonly List<Action> disposeActions = [];
     private readonly ICallGateProvider<string, object> runStatusChangedProvider;
     private readonly DadCoordinatorService coordinatorService;
-    private readonly DadCharacterIntelligenceService characterIntelligenceService;
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
     private readonly DadModuleRegistry moduleRegistry;
@@ -22,7 +21,6 @@ public sealed class DadIpcService : IDisposable
         IDalamudPluginInterface pluginInterface,
         Plugin plugin,
         DadCoordinatorService coordinatorService,
-        DadCharacterIntelligenceService characterIntelligenceService,
         DadPresenceService presenceService,
         DadTransportService transportService,
         DadModuleRegistry moduleRegistry,
@@ -31,7 +29,6 @@ public sealed class DadIpcService : IDisposable
     {
         this.plugin = plugin;
         this.coordinatorService = coordinatorService;
-        this.characterIntelligenceService = characterIntelligenceService;
         this.presenceService = presenceService;
         this.transportService = transportService;
         this.moduleRegistry = moduleRegistry;
@@ -50,8 +47,7 @@ public sealed class DadIpcService : IDisposable
                 transportService.CurrentTransport.AuthorityEndpoint,
                 transportService.CurrentTransport.LastRequestStatus)));
         Register(pluginInterface, DadIpcContract.GetLanPartyPresets, () => this.presetProviderService.GetLanPartyPresetsJson());
-        Register(pluginInterface, DadIpcContract.GetRosterPreview, () => DadIpcJson.Serialize(
-            presetProviderService.BuildPlannerPreview(characterIntelligenceService.CurrentPool)));
+        Register(pluginInterface, DadIpcContract.GetRosterPreview, () => DadIpcJson.Serialize(this.plugin.BuildPlannerPreview()));
         Register(pluginInterface, DadIpcContract.GetPlannerGroups, this.plugin.GetPlannerGroupsJson);
         Register<string, string>(pluginInterface, DadIpcContract.GetPlannerGroupPreview, this.plugin.GetPlannerGroupPreviewJson);
         Register(pluginInterface, DadIpcContract.GetSchedulerPreview, this.plugin.GetSchedulerPreviewJson);
@@ -60,6 +56,7 @@ public sealed class DadIpcService : IDisposable
         Register(pluginInterface, DadIpcContract.GetRosterCatalog, this.plugin.GetRosterCatalogJson);
         Register(pluginInterface, DadIpcContract.RefreshPeerRosterCatalog, this.plugin.RefreshPeerRosterCatalogJson);
         Register<string, string>(pluginInterface, DadIpcContract.SetRosterVisibility, this.plugin.SetRosterVisibilityFromJson);
+        Register<string, string>(pluginInterface, DadIpcContract.ChangeRosterAssignment, this.plugin.ChangeRosterAssignmentFromJson);
         Register<string, string>(pluginInterface, DadIpcContract.EnqueueRosterUpdate, this.plugin.EnqueueRosterUpdateFromJson);
         Register(pluginInterface, DadIpcContract.GetCrewStatus, this.plugin.GetCrewStatusJson);
         Register(pluginInterface, DadIpcContract.GetSchedulerQueue, this.plugin.GetSchedulerQueueJson);

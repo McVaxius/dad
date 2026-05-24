@@ -94,13 +94,14 @@ public sealed class DadSchedulerService
         plan.CharacterRefs ??= [];
         plan.AccountKeys ??= [];
         plan.CharacterKeys ??= [];
+        var hasExplicitTargets = plan.CharacterRefs.Count > 0 || plan.AccountKeys.Count > 0 || plan.CharacterKeys.Count > 0;
         var targets = catalog.Characters
             .Where(character =>
-                character.Visibility == DadRosterVisibility.NeedsUpdate ||
+                !hasExplicitTargets && character.Visibility == DadRosterVisibility.NeedsUpdate ||
                 plan.CharacterRefs.Any(reference => DadRosterIdentity.Matches(character, reference)) ||
                 plan.CharacterKeys.Any(key => string.Equals(key.Value, character.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)) ||
                 plan.AccountKeys.Any(key => DadRosterIdentity.SameAccount(key, character.AccountKey)))
-            .Where(character => !character.CharacterKey.IsEmpty)
+            .Where(character => !character.AccountKey.IsEmpty && !character.CharacterKey.IsEmpty)
             .Select(DadRosterIdentity.From)
             .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -689,7 +690,7 @@ public sealed class DadSchedulerService
             .Where(character => explicitAccounts.Count == 0 ||
                                 explicitAccounts.Contains(character.AccountKey.Value))
             .Where(character => character.Visibility == DadRosterVisibility.NeedsUpdate || hasExplicitTargets)
-            .Where(static character => !character.CharacterKey.IsEmpty)
+            .Where(static character => !character.AccountKey.IsEmpty && !character.CharacterKey.IsEmpty)
             .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }

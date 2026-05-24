@@ -214,12 +214,16 @@ public sealed class DadPresetProviderService
     private readonly record struct PlannerSlotDefinition(string SlotId, DadPartyRole RequiredRole, bool AllowSubstitution);
 
     private readonly DadModuleRegistry moduleRegistry;
+    private readonly Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider;
     private IReadOnlyList<DadPlannerDutyOption>? plannerDutyCatalog;
     private IReadOnlyDictionary<uint, DadPlannerDutyOption>? plannerDutyCatalogById;
 
-    public DadPresetProviderService(DadModuleRegistry moduleRegistry)
+    public DadPresetProviderService(
+        DadModuleRegistry moduleRegistry,
+        Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider)
     {
         this.moduleRegistry = moduleRegistry;
+        this.accountDirectoryProvider = accountDirectoryProvider;
     }
 
     public IReadOnlyList<string> GetLanPartyPresets()
@@ -278,32 +282,18 @@ public sealed class DadPresetProviderService
     public IReadOnlyList<DadPlannerOperatorMode> GetPlannerOperatorModeOptions()
         => PlannerOperatorModes;
 
-    public IReadOnlyList<DadPlannerAccountOption> GetPlannerAccountOptions(DadCharacterPool pool)
-    {
-        return pool.Characters
-            .Select(character => new
-            {
-                AccountKey = GetPlannerAccountSelectionKey(character),
-                character.AccountAlias,
-            })
-            .Where(static item => !item.AccountKey.IsEmpty)
-            .GroupBy(static item => item.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
-            {
-                var alias = group
-                    .Select(static item => item.AccountAlias)
-                    .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))
-                    ?? string.Empty;
-                return new DadPlannerAccountOption
-                {
-                    AccountKey = new DadAccountKey(group.Key),
-                    DisplayName = BuildAccountDisplayName(group.Key, alias),
-                    CharacterCount = group.Count(),
-                };
-            })
-            .OrderBy(static option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
+    public IReadOnlyList<DadRosterAccountOption> GetPlannerAccountOptions(DadCharacterPool pool)
+        => GetPlannerAccountOptions();
+
+    public IReadOnlyList<DadRosterAccountOption> GetPlannerAccountOptions()
+        => accountDirectoryProvider()
+            .Where(static option => !option.AccountKey.IsEmpty)
+            .Select(static option => option.Clone())
+            .OrderByDescending(static option => option.IsLocal)
+            .ThenBy(static option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static option => option.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static option => option.SourceClientInstanceId, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
 
     public IReadOnlyList<DadPlannerDutyOption> SearchPlannerDutyOptions(
         DadPlannerActivityMode activityMode,
@@ -2046,8 +2036,12 @@ public sealed class DadPresetProviderService
         if (options.IncludedAccountKeys.Count == 0)
             return "Any account";
 
-        var knownLabelsByKey = GetPlannerAccountOptions(pool)
-            .ToDictionary(static option => option.AccountKey.Value, static option => option.DisplayName, StringComparer.OrdinalIgnoreCase);
+        var knownLabelsByKey = GetPlannerAccountOptions()
+            .GroupBy(static option => option.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.First().DisplayName,
+                StringComparer.OrdinalIgnoreCase);
         var labels = options.IncludedAccountKeys
             .Select(key => knownLabelsByKey.TryGetValue(key.Value, out var label) ? label : key.Value)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -2079,11 +2073,6 @@ public sealed class DadPresetProviderService
             : !string.IsNullOrWhiteSpace(character.AccountAlias)
                 ? new DadAccountKey(character.AccountAlias)
                 : new DadAccountKey(string.Empty);
-
-    private static string BuildAccountDisplayName(string accountKey, string accountAlias)
-        => string.IsNullOrWhiteSpace(accountAlias) || string.Equals(accountAlias, accountKey, StringComparison.OrdinalIgnoreCase)
-            ? accountKey
-            : $"{accountAlias} ({accountKey})";
 
     private static string BuildFilterSummary(DadPlannerFilterStats stats)
         => $"kept {stats.CandidatesAfterFilters}/{Math.Max(1, stats.TotalCandidates)} | connected -{stats.ExcludedByConnectedFilter} | stale -{stats.ExcludedByStaleFilter} | dc -{stats.ExcludedByDatacenterFilter} | accounts -{stats.ExcludedByAccountFilter} | local-only -{stats.ExcludedByLocalOnlyIsolation} | peer -{stats.ExcludedByPeerEligibility}";

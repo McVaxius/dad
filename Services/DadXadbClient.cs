@@ -9,6 +9,8 @@ namespace dad.Services;
 
 public sealed class DadXadbClient
 {
+    public const string RosterIpcMissingWarning = "XADB roster IPC missing; XADatabase loaded 20-channel/old provider.";
+
     private const string ReadyChannel = "XA.Database.IsReady";
     private const string RefreshChannel = "XA.Database.Refresh";
     private const string SaveChannel = "XA.Database.Save";
@@ -108,8 +110,8 @@ public sealed class DadXadbClient
         }
         catch (Exception ex)
         {
-            catalog.Warnings.Add("XADB account roster IPC unavailable or unreadable.");
-            catalog.Summary = "XADB account roster unavailable.";
+            catalog.Warnings.Add(RosterIpcMissingWarning);
+            catalog.Summary = RosterIpcMissingWarning;
             log.Debug(ex, "[dad] XADB account roster IPC failed.");
             return catalog;
         }

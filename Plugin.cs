@@ -86,10 +86,10 @@ public sealed class Plugin : IDalamudPlugin
         ClaimService = new DadClaimService();
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
-        RosterCatalogService = new DadRosterCatalogService(Configuration, XadbClient, TransportService, Log);
+        RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
         KrangleService = new DadKrangleService(Configuration);
         ModuleRegistry = new DadModuleRegistry();
-        PresetProviderService = new DadPresetProviderService(ModuleRegistry);
+        PresetProviderService = new DadPresetProviderService(ModuleRegistry, () => RosterCatalogService.GetAccountDirectory());
         PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry);
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
@@ -161,7 +161,6 @@ public sealed class Plugin : IDalamudPlugin
             PluginInterface,
             this,
             RunCoordinatorService,
-            CharacterIntelligenceService,
             PresenceService,
             TransportService,
             ModuleRegistry,
@@ -254,12 +253,8 @@ public sealed class Plugin : IDalamudPlugin
     public void SavePlannerOptions()
         => Configuration.Save();
 
-    private DadCharacterPool BuildPlannerPool()
-        => RosterCatalogService.BuildCuratedPool(
-            CharacterIntelligenceService.CurrentPool,
-            includeHidden: Configuration.RosterCatalog.ShowAllInPresetSlots,
-            includeIgnored: Configuration.RosterCatalog.ShowAllInPresetSlots,
-            includeNeedsUpdate: Configuration.RosterCatalog.ShowAllInPresetSlots);
+    public DadCharacterPool BuildPlannerPool()
+        => RosterCatalogService.BuildCuratedPool(CharacterIntelligenceService.CurrentPool);
 
     public DadPlannerGroup? GetSelectedPlannerGroup()
         => ResolvePlannerGroup(PlannerOptions.SelectedPlannerGroupId);
@@ -556,6 +551,13 @@ public sealed class Plugin : IDalamudPlugin
         var request = DadIpcJson.Deserialize<DadRosterVisibilityChangeRequest>(json)
                       ?? new DadRosterVisibilityChangeRequest();
         return DadIpcJson.Serialize(RosterCatalogService.SetVisibility(request, CharacterIntelligenceService.CurrentPool));
+    }
+
+    public string ChangeRosterAssignmentFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadRosterAssignmentChangeRequest>(json)
+                      ?? new DadRosterAssignmentChangeRequest();
+        return DadIpcJson.Serialize(RosterCatalogService.ChangeAssignment(request, CharacterIntelligenceService.CurrentPool));
     }
 
     public string EnqueueRosterUpdateFromJson(string json)

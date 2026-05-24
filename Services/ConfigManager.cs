@@ -52,6 +52,65 @@ public sealed class ConfigManager
         return keys;
     }
 
+    public IReadOnlyList<AccountConfig> GetAllAccounts()
+        => accounts.Values
+            .Select(CloneAccount)
+            .OrderBy(static account => account.AccountAlias, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static account => account.AccountId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public AccountConfig? GetAccount(DadAccountKey accountKey)
+    {
+        var account = ResolveAccount(accountKey);
+        return account == null ? null : CloneAccount(account);
+    }
+
+    public bool EnsureCharacterForAccount(
+        DadAccountKey accountKey,
+        string characterKey,
+        string characterName,
+        string worldName)
+    {
+        var account = ResolveAccount(accountKey);
+        if (account == null)
+            return false;
+
+        NormalizeAccount(account);
+        var resolvedKey = ResolveCharacterKey(characterKey, characterName, worldName);
+        if (string.IsNullOrWhiteSpace(resolvedKey))
+            return false;
+
+        if (account.Characters.ContainsKey(resolvedKey))
+            return true;
+
+        account.Characters[resolvedKey] = account.DefaultConfig.Clone();
+        SaveAccount(account.AccountId);
+        return true;
+    }
+
+    public bool RemoveCharacterFromAccount(DadAccountKey accountKey, DadCharacterKey characterKey)
+    {
+        var account = ResolveAccount(accountKey);
+        if (account == null || characterKey.IsEmpty)
+            return false;
+
+        NormalizeAccount(account);
+        var existingKey = account.Characters.Keys.FirstOrDefault(key =>
+            string.Equals(key, characterKey.Value, StringComparison.OrdinalIgnoreCase));
+        if (existingKey == null)
+            return false;
+
+        account.Characters.Remove(existingKey);
+        if (string.Equals(CurrentAccountId, account.AccountId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(SelectedCharacterKey, existingKey, StringComparison.OrdinalIgnoreCase))
+        {
+            SelectedCharacterKey = string.Empty;
+        }
+
+        SaveAccount(account.AccountId);
+        return true;
+    }
+
     public CharacterConfig GetActiveConfig()
     {
         var account = GetCurrentAccount();
@@ -117,7 +176,10 @@ public sealed class ConfigManager
             {
                 var account = JsonSerializer.Deserialize<AccountConfig>(File.ReadAllText(path), JsonOptions);
                 if (account != null && !string.IsNullOrWhiteSpace(account.AccountId))
+                {
+                    NormalizeAccount(account);
                     accounts[account.AccountId] = account;
+                }
             }
         }
         catch (Exception ex)
@@ -140,5 +202,52 @@ public sealed class ConfigManager
         {
             log.Error(ex, "[dad] Failed to save account config.");
         }
+    }
+
+    private AccountConfig? ResolveAccount(DadAccountKey accountKey)
+    {
+        var value = accountKey.Value.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        if (accounts.TryGetValue(value, out var exact))
+            return exact;
+
+        return accounts.Values.FirstOrDefault(account =>
+            string.Equals(account.AccountAlias, value, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ResolveCharacterKey(string characterKey, string characterName, string worldName)
+    {
+        if (!string.IsNullOrWhiteSpace(characterKey))
+            return characterKey.Trim();
+
+        if (string.IsNullOrWhiteSpace(characterName) || string.IsNullOrWhiteSpace(worldName))
+            return string.Empty;
+
+        return $"{characterName.Trim()}@{worldName.Trim()}";
+    }
+
+    private static void NormalizeAccount(AccountConfig account)
+    {
+        account.AccountId = account.AccountId?.Trim() ?? string.Empty;
+        account.AccountAlias = string.IsNullOrWhiteSpace(account.AccountAlias) ? "Account" : account.AccountAlias.Trim();
+        account.DefaultConfig ??= new CharacterConfig();
+        account.Characters ??= new Dictionary<string, CharacterConfig>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static AccountConfig CloneAccount(AccountConfig account)
+    {
+        NormalizeAccount(account);
+        return new AccountConfig
+        {
+            AccountId = account.AccountId,
+            AccountAlias = account.AccountAlias,
+            DefaultConfig = account.DefaultConfig.Clone(),
+            Characters = account.Characters.ToDictionary(
+                static pair => pair.Key,
+                static pair => pair.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase),
+        };
     }
 }

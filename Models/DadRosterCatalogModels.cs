@@ -49,8 +49,83 @@ public sealed class DadRosterCatalogConfiguration
     public bool ShowHiddenInRoster { get; set; }
     public bool ShowAllInPresetSlots { get; set; }
     public int StaleAfterHours { get; set; } = 72;
+    public List<DadRosterKnownCharacterRecord> KnownCharacters { get; set; } = [];
     public List<DadRosterVisibilityRecord> Visibility { get; set; } = [];
     public List<DadRosterRefreshRecord> RefreshHistory { get; set; } = [];
+}
+
+public sealed class DadRosterKnownCharacterRecord
+{
+    public DadAccountKey AccountKey { get; set; } = new(string.Empty);
+    public string AccountAlias { get; set; } = string.Empty;
+    public string CharacterKey { get; set; } = string.Empty;
+    public ulong ContentId { get; set; }
+    public string CharacterName { get; set; } = string.Empty;
+    public uint? WorldId { get; set; }
+    public string WorldName { get; set; } = string.Empty;
+    public uint? DataCenterId { get; set; }
+    public string DataCenterName { get; set; } = string.Empty;
+    public DateTime? LastSnapshotUtc { get; set; }
+    public DateTime? LastRuntimeSeenUtc { get; set; }
+    public Dictionary<uint, int> JobLevels { get; set; } = [];
+    public uint? CurrentJobId { get; set; }
+    public string CurrentJobAbbrev { get; set; } = string.Empty;
+    public int? CurrentLevel { get; set; }
+    public string SnapshotQuality { get; set; } = string.Empty;
+    public int? SnapshotVersion { get; set; }
+    public bool XadbReady { get; set; }
+    public bool? MapEligible { get; set; }
+    public string MapEligibilitySummary { get; set; } = string.Empty;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public DadRosterKnownCharacterRecord Clone()
+        => new()
+        {
+            AccountKey = AccountKey,
+            AccountAlias = AccountAlias,
+            CharacterKey = CharacterKey,
+            ContentId = ContentId,
+            CharacterName = CharacterName,
+            WorldId = WorldId,
+            WorldName = WorldName,
+            DataCenterId = DataCenterId,
+            DataCenterName = DataCenterName,
+            LastSnapshotUtc = LastSnapshotUtc,
+            LastRuntimeSeenUtc = LastRuntimeSeenUtc,
+            JobLevels = new Dictionary<uint, int>(JobLevels),
+            CurrentJobId = CurrentJobId,
+            CurrentJobAbbrev = CurrentJobAbbrev,
+            CurrentLevel = CurrentLevel,
+            SnapshotQuality = SnapshotQuality,
+            SnapshotVersion = SnapshotVersion,
+            XadbReady = XadbReady,
+            MapEligible = MapEligible,
+            MapEligibilitySummary = MapEligibilitySummary,
+            UpdatedAtUtc = UpdatedAtUtc,
+        };
+}
+
+public sealed class DadRosterAccountOption
+{
+    public DadAccountKey AccountKey { get; set; } = new(string.Empty);
+    public string AccountAlias { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string SourceClientInstanceId { get; set; } = string.Empty;
+    public DadWorkerSessionId SourceWorkerSessionId { get; set; } = new(string.Empty);
+    public bool IsLocal { get; set; }
+    public int AssignedCharacterCount { get; set; }
+
+    public DadRosterAccountOption Clone()
+        => new()
+        {
+            AccountKey = AccountKey,
+            AccountAlias = AccountAlias,
+            DisplayName = DisplayName,
+            SourceClientInstanceId = SourceClientInstanceId,
+            SourceWorkerSessionId = SourceWorkerSessionId,
+            IsLocal = IsLocal,
+            AssignedCharacterCount = AssignedCharacterCount,
+        };
 }
 
 public sealed class DadRosterRefreshRecord
@@ -195,6 +270,8 @@ public sealed class DadRosterCharacter
     public string MapEligibilitySummary { get; set; } = string.Empty;
     public DadRosterVisibility Visibility { get; set; } = DadRosterVisibility.Active;
     public DadCharacterSource Source { get; set; } = DadCharacterSource.XadbOnly;
+    public string SourceClientInstanceId { get; set; } = string.Empty;
+    public DadWorkerSessionId SourceWorkerSessionId { get; set; } = new(string.Empty);
     public List<string> Blockers { get; set; } = [];
     public List<string> Warnings { get; set; } = [];
 
@@ -226,6 +303,8 @@ public sealed class DadRosterCharacter
             MapEligibilitySummary = MapEligibilitySummary,
             Visibility = Visibility,
             Source = Source,
+            SourceClientInstanceId = SourceClientInstanceId,
+            SourceWorkerSessionId = SourceWorkerSessionId,
             Blockers = [..Blockers],
             Warnings = [..Warnings],
         };
@@ -239,6 +318,7 @@ public sealed class DadAccountRosterCatalog
     public DadWorkerSessionId SourceWorkerSessionId { get; set; } = new(string.Empty);
     public bool IsFullRosterAvailable { get; set; }
     public string Summary { get; set; } = string.Empty;
+    public List<DadRosterAccountOption> Accounts { get; set; } = [];
     public List<DadRosterCharacter> Characters { get; set; } = [];
     public List<DadRosterVisibilityRecord> Visibility { get; set; } = [];
     public List<string> Warnings { get; set; } = [];
@@ -252,6 +332,7 @@ public sealed class DadAccountRosterCatalog
             SourceWorkerSessionId = SourceWorkerSessionId,
             IsFullRosterAvailable = IsFullRosterAvailable,
             Summary = Summary,
+            Accounts = Accounts.Select(static account => account.Clone()).ToList(),
             Characters = Characters.Select(static character => character.Clone()).ToList(),
             Visibility = Visibility.Select(static record => record.Clone()).ToList(),
             Warnings = [..Warnings],
@@ -278,6 +359,15 @@ public sealed class DadRosterVisibilityChangeRequest
     public List<DadCharacterKey> CharacterKeys { get; set; } = [];
     public List<DadAccountKey> AccountKeys { get; set; } = [];
     public DadRosterVisibility Visibility { get; set; } = DadRosterVisibility.Active;
+    public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class DadRosterAssignmentChangeRequest
+{
+    public DadRosterCharacterRef CharacterRef { get; set; } = new();
+    public DadAccountKey AccountKey { get; set; } = new(string.Empty);
+    public string AccountAlias { get; set; } = string.Empty;
+    public bool ClearAssignment { get; set; }
     public string Reason { get; set; } = string.Empty;
 }
 

@@ -17,6 +17,7 @@ internal static class DadIpcContract
     public const string GetRosterCatalog = $"{Prefix}.GetRosterCatalog";
     public const string RefreshPeerRosterCatalog = $"{Prefix}.RefreshPeerRosterCatalog";
     public const string SetRosterVisibility = $"{Prefix}.SetRosterVisibility";
+    public const string ChangeRosterAssignment = $"{Prefix}.ChangeRosterAssignment";
     public const string EnqueueRosterUpdate = $"{Prefix}.EnqueueRosterUpdate";
     public const string GetCrewStatus = $"{Prefix}.GetCrewStatus";
     public const string GetSchedulerQueue = $"{Prefix}.GetSchedulerQueue";

@@ -465,12 +465,7 @@ public sealed class ConfigWindow : Window, IDisposable
             configuration.Save();
         }
 
-        var showAllSlots = configuration.RosterCatalog.ShowAllInPresetSlots;
-        if (ImGui.Checkbox("Show all in preset slot pickers", ref showAllSlots))
-        {
-            configuration.RosterCatalog.ShowAllInPresetSlots = showAllSlots;
-            configuration.Save();
-        }
+        DrawStatusRow("Preset slot pickers", "Assigned Active roster rows only.");
 
         var queue = plugin.SchedulerService.GetQueueSnapshot();
         DrawStatusRow("Queue", queue.Summary);
