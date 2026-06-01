@@ -40,6 +40,7 @@ public sealed class Configuration : IPluginConfiguration
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
     public DadRosterCatalogConfiguration RosterCatalog { get; set; } = new();
     public List<DadScheduledCrewJob> SchedulerQueue { get; set; } = [];
+    public List<DadScheduledCrewJobResult> SchedulerHistory { get; set; } = [];
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

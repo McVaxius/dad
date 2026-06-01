@@ -452,6 +452,37 @@ public sealed class DadScheduledCrewJob
         };
 }
 
+public sealed class DadScheduledCrewJobResult
+{
+    public string JobId { get; set; } = string.Empty;
+    public DadSchedulerJobType JobType { get; set; } = DadSchedulerJobType.ScheduledPreset;
+    public string GroupId { get; set; } = string.Empty;
+    public string PresetName { get; set; } = string.Empty;
+    public string RequestedBy { get; set; } = string.Empty;
+    public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime CompletedAtUtc { get; set; } = DateTime.UtcNow;
+    public DadSchedulerPresetPhase FinalPhase { get; set; } = DadSchedulerPresetPhase.Idle;
+    public bool Success { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public string BlockedReason { get; set; } = string.Empty;
+
+    public DadScheduledCrewJobResult Clone()
+        => new()
+        {
+            JobId = JobId,
+            JobType = JobType,
+            GroupId = GroupId,
+            PresetName = PresetName,
+            RequestedBy = RequestedBy,
+            StartedAtUtc = StartedAtUtc,
+            CompletedAtUtc = CompletedAtUtc,
+            FinalPhase = FinalPhase,
+            Success = Success,
+            Summary = Summary,
+            BlockedReason = BlockedReason,
+        };
+}
+
 public sealed class DadSchedulerQueueSnapshot
 {
     public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
@@ -459,6 +490,7 @@ public sealed class DadSchedulerQueueSnapshot
     public string ActiveQueueOwner { get; set; } = string.Empty;
     public DadScheduledCrewJob? ActiveJob { get; set; }
     public List<DadScheduledCrewJob> PendingJobs { get; set; } = [];
+    public List<DadScheduledCrewJobResult> RecentResults { get; set; } = [];
     public DadSchedulerPresetState ActiveState { get; set; } = new();
 }
 

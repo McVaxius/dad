@@ -65,6 +65,18 @@ public sealed class ConfigManager
         return account == null ? null : CloneAccount(account);
     }
 
+    public bool UpdateAccountAlias(DadAccountKey accountKey, string alias)
+    {
+        var account = ResolveAccount(accountKey);
+        if (account == null)
+            return false;
+
+        NormalizeAccount(account);
+        account.AccountAlias = string.IsNullOrWhiteSpace(alias) ? "Account" : alias.Trim();
+        SaveAccount(account.AccountId);
+        return true;
+    }
+
     public bool EnsureCharacterForAccount(
         DadAccountKey accountKey,
         string characterKey,

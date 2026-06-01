@@ -1982,6 +1982,7 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled);
+        SchedulerService.TickScheduleEnqueue();
         if (CanAdvanceSchedulerQueue())
         {
             SchedulerService.Update(

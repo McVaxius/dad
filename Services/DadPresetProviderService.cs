@@ -46,16 +46,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.LevelingNpc,
             ModuleId = DadModuleId.DutySupport,
             DisplayName = "Duty Support",
-            Summary = "Solo Duty Support lane with selected Duty Finder content.",
-            Maturity = DadLaneMaturity.LocalTestable,
-            MaturityLabel = "Local test",
+            Summary = "Solo Duty Support native queue lane with selected Duty Finder content.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Live queue",
             AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select Duty Support duty, then wire guarded RequestDutySupport/SendDutySupport submit.",
+            NextAction = "Select Duty Support duty, then start guarded native Duty Support queue.",
         },
         new()
         {
@@ -63,9 +63,9 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.LevelingNpc,
             ModuleId = DadModuleId.Trust,
             DisplayName = "Trust",
-            Summary = "Solo Trust lane with selected native Trust content.",
-            Maturity = DadLaneMaturity.LocalTestable,
-            MaturityLabel = "Local test",
+            Summary = "Solo Trust native queue lane with selected native Trust content.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Live queue",
             AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
@@ -98,16 +98,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.Event,
             ModuleId = DadModuleId.Blunderville,
             DisplayName = "Blunderville",
-            Summary = "Gold Saucer Blunderville lane for configured per-character emote runs.",
-            Maturity = DadLaneMaturity.PreviewOnly,
-            MaturityLabel = "Preview",
+            Summary = "Gold Saucer Blunderville planning lane; live executor is deferred.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Executor deferred",
             AccentColorHex = "#F59E0B",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.Blunderville,
             DefaultQueueAuthority = DadQueueAuthority.Blunderville,
             ExpectedPartySize = 1,
             UsesExternalHelper = true,
-            NextAction = "Enter Blunderville, run configured emote, then fail/leave per character.",
+            NextAction = "Blocked until Blunderville executor contract is enabled.",
         },
         new()
         {
@@ -115,7 +115,7 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Mogtome,
             DisplayName = "MOGTOME",
-            Summary = "Dad-owned MOGTOME helper lane using MOGTOME queue/requeue safety patterns.",
+            Summary = "Dad-owned MOGTOME helper planning lane; live helper handoff is deferred until IPC exists.",
             Maturity = DadLaneMaturity.IntegrationDeferred,
             MaturityLabel = "Integration deferred",
             AccentColorHex = "#A855F7",
@@ -125,7 +125,7 @@ public sealed class DadPresetProviderService
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
             UsesExternalHelper = true,
-            NextAction = "Keep Dad authority, then wire narrow MOGTOME helper handoff.",
+            NextAction = "Blocked until narrow MOGTOME helper IPC exists.",
         },
         new()
         {
@@ -133,16 +133,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Commendation,
             DisplayName = "Commendation",
-            Summary = "Short duty loop for commendation farming.",
-            Maturity = DadLaneMaturity.PreviewOnly,
-            MaturityLabel = "Preview",
+            Summary = "Short duty loop planning lane for commendation farming; live executor is deferred.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Executor deferred",
             AccentColorHex = "#F59E0B",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
             DefaultTransportOwner = DadTransportOwner.AuraFarmer,
             DefaultQueueAuthority = DadQueueAuthority.AuraFarmer,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
-            NextAction = "Reuse party queue base, then add commendation attempt detector.",
+            NextAction = "Blocked until commendation attempt detector and executor are enabled.",
         },
         new()
         {
@@ -150,16 +150,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Astrope,
             DisplayName = "Astrope",
-            Summary = "Timed Astrope farming window.",
-            Maturity = DadLaneMaturity.PreviewOnly,
-            MaturityLabel = "Preview",
+            Summary = "Timed Astrope farming planning lane; live executor is deferred.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Executor deferred",
             AccentColorHex = "#F59E0B",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
             DefaultTransportOwner = DadTransportOwner.AuraFarmer,
             DefaultQueueAuthority = DadQueueAuthority.AuraFarmer,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
-            NextAction = "Reuse party queue base, then add time-window and attempt policy.",
+            NextAction = "Blocked until Astrope time-window executor policy is enabled.",
         },
         new()
         {
@@ -184,16 +184,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.DutyFinder,
             ModuleId = DadModuleId.CustomDuty,
             DisplayName = "Custom Duty",
-            Summary = "Typed custom Duty Finder lane for later specialized policies.",
+            Summary = "Typed custom Duty Finder planning lane; live executor contract is missing.",
             Maturity = DadLaneMaturity.MissingContract,
-            MaturityLabel = "Needs duty selector",
+            MaturityLabel = "Executor missing",
             AccentColorHex = "#EF4444",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select duty and policy before this lane can start.",
+            NextAction = "Blocked until custom duty executor contract exists.",
         },
     ];
 
@@ -1273,7 +1273,11 @@ public sealed class DadPresetProviderService
         int remoteCandidateCount)
     {
         if (preset.ValidationState == DadReadinessState.Ready)
-            return "Ready for full typed roster planning.";
+        {
+            return preset.LaneDefinition.Maturity == DadLaneMaturity.LiveReady
+                ? "Ready for full typed roster planning."
+                : $"Planner roster checks pass; live lane remains deferred: {preset.LaneDefinition.NextAction}";
+        }
 
         if (options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine && localCandidateCount > 0)
         {

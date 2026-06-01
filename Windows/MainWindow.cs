@@ -742,6 +742,10 @@ public sealed class MainWindow : Window, IDisposable
             .Where(character => rosterSelectedRows.Contains(BuildRosterSelectionKey(character)))
             .ToList();
         DrawStatusRow("Catalog", $"{catalog.Summary} Showing {filtered.Count}/{catalog.Characters.Count} row(s).");
+        DrawStatusRow("Roster preflight", catalog.IsFullRosterAvailable
+            ? "Full XADB roster IPC available."
+            : DadXadbClient.RosterIpcMissingWarning);
+        DrawStatusRow("Roster counts", BuildRosterStatusCounts(catalog));
         if (!catalog.IsFullRosterAvailable)
             DrawStatusRow("XADB roster", DadXadbClient.RosterIpcMissingWarning);
         if (catalog.Warnings.Count > 0)
@@ -872,7 +876,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.SmallButton("Enqueue map crew"))
         {
-            EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, DadMapCrewJobMode.ManualMapReady);
+            EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, selectedGroup?.MapMode ?? DadMapCrewJobMode.ManualMapReady);
         }
 
         ImGui.SameLine();
@@ -897,48 +901,97 @@ public sealed class MainWindow : Window, IDisposable
         if (queue.PendingJobs.Count == 0)
         {
             DrawMutedNotice("No queued scheduler jobs.");
+        }
+        else if (ImGui.BeginTable("dad-scheduler-queue", 9, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Type");
+            ImGui.TableSetupColumn("Preset");
+            ImGui.TableSetupColumn("Owner");
+            ImGui.TableSetupColumn("Priority");
+            ImGui.TableSetupColumn("Eligible");
+            ImGui.TableSetupColumn("Map");
+            ImGui.TableSetupColumn("Targets");
+            ImGui.TableSetupColumn("Status");
+            ImGui.TableSetupColumn("Edit");
+            ImGui.TableHeadersRow();
+
+            foreach (var job in queue.PendingJobs)
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(job.JobType.ToString());
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatText(job.PresetName, job.GroupId));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatText(job.RequestedBy, "(scheduler)"));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(job.Priority.ToString(CultureInfo.InvariantCulture));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(job.NextEligibleTimeUtc.HasValue ? FormatTime(job.NextEligibleTimeUtc) : "now");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(job.JobType == DadSchedulerJobType.MapCrew
+                    ? $"{job.MapMode}{(string.IsNullOrWhiteSpace(job.MapRunTemplate) ? string.Empty : $" / {job.MapRunTemplate}")}"
+                    : "-");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(job.TargetCharacterKeys.Count == 0
+                    ? FormatRosterTargets(job.TargetCharacters)
+                    : FormatRosterTargets(job.TargetCharacters, plugin.KrangleService.FormatCharacterKeys(job.TargetCharacterKeys)));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatText(job.StatusSummary, job.BlockedReason));
+                ImGui.TableNextColumn();
+                if (ImGui.SmallButton($"Cancel##dad-cancel-job-{job.JobId}"))
+                    plugin.CancelScheduledJobFromJson(DadIpcJson.Serialize(new DadCancelScheduledJobRequest
+                    {
+                        JobId = job.JobId,
+                        Reason = "Cancelled from Crew / Scheduler queue.",
+                    }));
+            }
+
+            ImGui.EndTable();
+        }
+
+        DrawSchedulerRecentResults(queue);
+    }
+
+    private void DrawSchedulerRecentResults(DadSchedulerQueueSnapshot queue)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted("Recent terminal jobs");
+        if (queue.RecentResults.Count == 0)
+        {
+            DrawMutedNotice("No terminal scheduler history recorded yet.");
             return;
         }
 
-        if (!ImGui.BeginTable("dad-scheduler-queue", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        if (!ImGui.BeginTable("dad-scheduler-history", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
+        ImGui.TableSetupColumn("Done");
         ImGui.TableSetupColumn("Type");
         ImGui.TableSetupColumn("Preset");
         ImGui.TableSetupColumn("Owner");
-        ImGui.TableSetupColumn("Priority");
-        ImGui.TableSetupColumn("Eligible");
-        ImGui.TableSetupColumn("Targets");
-        ImGui.TableSetupColumn("Status");
-        ImGui.TableSetupColumn("Edit");
+        ImGui.TableSetupColumn("Phase");
+        ImGui.TableSetupColumn("Result");
+        ImGui.TableSetupColumn("Summary");
         ImGui.TableHeadersRow();
 
-        foreach (var job in queue.PendingJobs)
+        foreach (var result in queue.RecentResults.Take(12))
         {
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(job.JobType.ToString());
+            ImGui.TextUnformatted(FormatTime(result.CompletedAtUtc));
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatText(job.PresetName, job.GroupId));
+            ImGui.TextUnformatted(result.JobType.ToString());
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatText(job.RequestedBy, "(scheduler)"));
+            ImGui.TextUnformatted(FormatText(result.PresetName, result.GroupId));
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(job.Priority.ToString(CultureInfo.InvariantCulture));
+            ImGui.TextUnformatted(FormatText(result.RequestedBy, "(scheduler)"));
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(job.NextEligibleTimeUtc.HasValue ? FormatTime(job.NextEligibleTimeUtc) : "now");
+            ImGui.TextUnformatted(result.FinalPhase.ToString());
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(job.TargetCharacterKeys.Count == 0
-                ? FormatRosterTargets(job.TargetCharacters)
-                : FormatRosterTargets(job.TargetCharacters, plugin.KrangleService.FormatCharacterKeys(job.TargetCharacterKeys)));
+            ImGui.TextUnformatted(result.Success ? "success" : "blocked");
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatText(job.StatusSummary, job.BlockedReason));
-            ImGui.TableNextColumn();
-            if (ImGui.SmallButton($"Cancel##dad-cancel-job-{job.JobId}"))
-                plugin.CancelScheduledJobFromJson(DadIpcJson.Serialize(new DadCancelScheduledJobRequest
-                {
-                    JobId = job.JobId,
-                    Reason = "Cancelled from Crew / Scheduler queue.",
-                }));
+            ImGui.TextUnformatted(FormatText(result.BlockedReason, result.Summary));
         }
 
         ImGui.EndTable();
@@ -954,6 +1007,8 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Job", FormatText(state.JobId, "(none)"));
         DrawStatusRow("Owner", FormatText(state.RequestedBy, "(scheduler)"));
         DrawStatusRow("Preset", FormatText(state.PresetName, "(none)"));
+        if (queue.ActiveJob?.JobType == DadSchedulerJobType.MapCrew)
+            DrawStatusRow("Map crew", $"{queue.ActiveJob.MapMode}{(string.IsNullOrWhiteSpace(queue.ActiveJob.MapRunTemplate) ? string.Empty : $" | {queue.ActiveJob.MapRunTemplate}")}");
         DrawStatusRow("Queue", queue.Summary);
         if (!string.IsNullOrWhiteSpace(state.BlockedReason))
             DrawStatusRow("Blocker", state.BlockedReason);
@@ -1299,6 +1354,17 @@ public sealed class MainWindow : Window, IDisposable
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         return labels.Count == 0 ? fallback : string.Join(", ", labels);
+    }
+
+    private static string BuildRosterStatusCounts(DadAccountRosterCatalog catalog)
+    {
+        var active = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.Active);
+        var hidden = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.Hidden);
+        var ignored = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.Ignored);
+        var needsUpdate = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.NeedsUpdate);
+        var unassigned = catalog.Characters.Count(static character => character.AccountKey.IsEmpty);
+        var stale = catalog.Characters.Count(static character => character.IsStale);
+        return $"active {active}, hidden {hidden}, ignored {ignored}, needs-update {needsUpdate}, unassigned {unassigned}, stale {stale}";
     }
 
     private void SetRosterVisibility(IReadOnlyList<DadRosterCharacter> characters, DadRosterVisibility visibility)
@@ -2913,7 +2979,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("Validation");
         if (plannerPreview.Blockers.Count == 0)
         {
-            ImGui.TextUnformatted("Ready.");
+            ImGui.TextUnformatted("No planner roster blockers.");
         }
         else
         {

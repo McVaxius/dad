@@ -469,6 +469,55 @@ public sealed class ConfigWindow : Window, IDisposable
 
         var queue = plugin.SchedulerService.GetQueueSnapshot();
         DrawStatusRow("Queue", queue.Summary);
+
+        ImGui.Separator();
+        DrawAccountAliasEditor(configuration);
+    }
+
+    private void DrawAccountAliasEditor(Configuration configuration)
+    {
+        ImGui.TextUnformatted("Dad account aliases");
+        var accounts = plugin.ConfigManager.GetAllAccounts();
+        if (accounts.Count == 0)
+        {
+            ImGui.TextDisabled("No Dad account configs have been seen on this client.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-account-aliases", 3, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("Account key");
+        ImGui.TableSetupColumn("Alias");
+        ImGui.TableSetupColumn("Characters");
+        ImGui.TableHeadersRow();
+
+        foreach (var account in accounts)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(account.AccountId);
+            ImGui.TableNextColumn();
+            var alias = account.AccountAlias;
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.InputText($"##dad-account-alias-{account.AccountId}", ref alias, 96))
+            {
+                if (plugin.ConfigManager.UpdateAccountAlias(new DadAccountKey(account.AccountId), alias))
+                {
+                    plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
+                    {
+                        IncludeHidden = true,
+                        IncludeIgnored = true,
+                        StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
+                    });
+                }
+            }
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(account.Characters.Count.ToString());
+        }
+
+        ImGui.EndTable();
     }
 
     private void DrawCombatRotationTab(Configuration configuration)

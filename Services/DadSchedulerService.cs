@@ -7,6 +7,8 @@ namespace dad.Services;
 public sealed class DadSchedulerService
 {
     private const string ClientBootDirectory = @"Z:\!ff14clientboot";
+    private const int DefaultScheduleCadenceHours = 18;
+    private const int MaxSchedulerHistory = 50;
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(2);
 
     private readonly Configuration configuration;
@@ -40,6 +42,7 @@ public sealed class DadSchedulerService
     public DadSchedulerQueueSnapshot GetQueueSnapshot()
     {
         NormalizeQueue();
+        NormalizeHistory();
         var activeJobClone = currentState.IsActive ? activeJob?.Clone() : null;
         return new DadSchedulerQueueSnapshot
         {
@@ -53,6 +56,12 @@ public sealed class DadSchedulerService
                 .ThenBy(static job => job.CreatedAtUtc)
                 .Select(static job => job.Clone())
                 .ToList(),
+            RecentResults = configuration.SchedulerHistory
+                .OrderByDescending(static result => result.CompletedAtUtc)
+                .ThenByDescending(static result => result.StartedAtUtc)
+                .Take(MaxSchedulerHistory)
+                .Select(static result => result.Clone())
+                .ToList(),
             Summary = currentState.IsActive
                 ? $"Active {currentState.JobType}: {currentState.Summary}"
                 : configuration.SchedulerQueue.Count == 0
@@ -64,6 +73,10 @@ public sealed class DadSchedulerService
     public DadScheduledCrewJob EnqueueScheduledPreset(DadPlannerGroup group, DadScheduledPresetRequest request)
     {
         NormalizeQueue();
+        var existing = FindEquivalentActiveOrPendingJob(request.JobType, group.GroupId);
+        if (existing != null)
+            return existing.Clone();
+
         var job = new DadScheduledCrewJob
         {
             JobType = request.JobType,
@@ -80,8 +93,8 @@ public sealed class DadSchedulerService
             MapRunTemplate = request.MapRunTemplate?.Trim() ?? string.Empty,
             TargetCharacters = request.TargetCharacters?.Select(static target => target.Clone()).ToList() ?? [],
             TargetCharacterKeys = request.TargetCharacterKeys == null ? [] : [..request.TargetCharacterKeys],
-            StatusSummary = $"Queued preset '{group.DisplayName}'.",
         };
+        job.StatusSummary = BuildQueuedJobSummary(job);
 
         configuration.SchedulerQueue.Add(job);
         configuration.Save();
@@ -134,6 +147,9 @@ public sealed class DadSchedulerService
         if (job != null)
         {
             configuration.SchedulerQueue.Remove(job);
+            RecordTerminalResult(job, DadSchedulerPresetPhase.Cancelled, string.IsNullOrWhiteSpace(reason)
+                ? $"Scheduler job {jobId} cancelled before start."
+                : reason);
             configuration.Save();
             return true;
         }
@@ -287,6 +303,7 @@ public sealed class DadSchedulerService
             currentState.Summary = $"Scheduler blocked for preset '{group.DisplayName}'.";
             currentState.BlockedReason = preview.BlockedReason;
             currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
             return CurrentState;
         }
 
@@ -295,6 +312,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Completed;
             currentState.Summary = $"Scheduler dry run ready for preset '{group.DisplayName}': {preview.StatusSummary}";
             currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
             return CurrentState;
         }
 
@@ -311,6 +329,8 @@ public sealed class DadSchedulerService
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
         Func<DadRunRequest, DadRunResult> startPlannerRequest)
     {
+        TickScheduleEnqueue();
+
         if (!currentState.IsActive)
         {
             TryStartNextQueuedJob(groupResolver, plannerPreviewBuilder);
@@ -328,6 +348,12 @@ public sealed class DadSchedulerService
         if (currentState.JobType == DadSchedulerJobType.RosterUpdate)
         {
             UpdateRosterUpdateJob();
+            return;
+        }
+
+        if (currentState.JobType == DadSchedulerJobType.MapCrew)
+        {
+            UpdateMapCrewJob(groupResolver);
             return;
         }
 
@@ -381,6 +407,8 @@ public sealed class DadSchedulerService
                 currentState.BlockedReason = timeoutReason;
                 currentState.Summary = timeoutReason;
                 currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+                RecordTerminalResult(currentState);
                 return;
             }
         }
@@ -405,6 +433,57 @@ public sealed class DadSchedulerService
             : $"Scheduler could not start preset '{currentState.PresetName}'.";
         currentState.BlockedReason = currentState.PlannerStarted ? string.Empty : result.Summary;
         currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+        RecordTerminalResult(currentState);
+    }
+
+    public void TickScheduleEnqueue()
+    {
+        NormalizeQueue();
+        configuration.PlannerGroups ??= [];
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var group in configuration.PlannerGroups
+                     .Where(static group => group.ScheduleEnabled)
+                     .OrderByDescending(static group => group.SchedulePriority)
+                     .ThenBy(static group => group.NextEligibleTimeUtc ?? DateTime.MinValue))
+        {
+            var nextEligible = group.NextEligibleTimeUtc ?? DateTime.MinValue;
+            if (nextEligible > now)
+                continue;
+
+            var jobType = DadSchedulerJobType.ScheduledPreset;
+            if (FindEquivalentActiveOrPendingJob(jobType, group.GroupId) == null)
+            {
+                var job = new DadScheduledCrewJob
+                {
+                    JobType = jobType,
+                    GroupId = group.GroupId,
+                    PresetName = group.DisplayName,
+                    Enabled = true,
+                    DryRun = false,
+                    CreatedAtUtc = now,
+                    NextEligibleTimeUtc = now,
+                    Cadence = TimeSpan.FromHours(ResolveScheduleCadenceHours(group.ScheduleCadenceHours)),
+                    RequestedBy = string.IsNullOrWhiteSpace(group.ScheduleRequester)
+                        ? "schedule"
+                        : group.ScheduleRequester.Trim(),
+                    Priority = group.SchedulePriority,
+                    MapMode = group.MapMode,
+                    MapRunTemplate = group.MapRunTemplate?.Trim() ?? string.Empty,
+                };
+                job.StatusSummary = BuildQueuedJobSummary(job);
+                configuration.SchedulerQueue.Add(job);
+            }
+
+            group.NextEligibleTimeUtc = now + TimeSpan.FromHours(ResolveScheduleCadenceHours(group.ScheduleCadenceHours));
+            group.UpdatedAtUtc = now;
+            changed = true;
+        }
+
+        if (changed)
+            configuration.Save();
     }
 
     public void Cancel(string reason)
@@ -417,6 +496,7 @@ public sealed class DadSchedulerService
         currentState.BlockedReason = currentState.Summary;
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
+        RecordTerminalResult(currentState);
     }
 
     private bool TryStartNextQueuedJob(
@@ -444,16 +524,103 @@ public sealed class DadSchedulerService
         }
 
         var group = groupResolver(nextJob.GroupId);
-        var preview = plannerPreviewBuilder(nextJob.GroupId);
-        if (group == null || preview == null)
+        if (group == null)
         {
             activeJob = nextJob.Clone();
             currentState = BuildBlockedQueuedState(nextJob, $"Queued preset '{nextJob.GroupId}' could not be resolved.");
+            RecordTerminalResult(currentState);
+            return true;
+        }
+
+        if (nextJob.JobType == DadSchedulerJobType.MapCrew)
+        {
+            StartMapCrewJob(nextJob, group);
+            return true;
+        }
+
+        var preview = plannerPreviewBuilder(nextJob.GroupId);
+        if (preview == null)
+        {
+            activeJob = nextJob.Clone();
+            currentState = BuildBlockedQueuedState(nextJob, $"Queued preset '{nextJob.GroupId}' could not build planner preview.");
+            RecordTerminalResult(currentState);
             return true;
         }
 
         StartPreset(group, preview, nextJob.DryRun, nextJob);
         return true;
+    }
+
+    private void StartMapCrewJob(DadScheduledCrewJob job, DadPlannerGroup group)
+    {
+        activeJob = job.Clone();
+        currentState = new DadSchedulerPresetState
+        {
+            SchedulerRunId = Guid.NewGuid().ToString("N"),
+            JobId = job.JobId,
+            JobType = DadSchedulerJobType.MapCrew,
+            RequestedBy = job.RequestedBy,
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            DryRun = job.DryRun,
+            Summary = BuildMapCrewSummary(job, group, "starting"),
+        };
+
+        var unsupported = BuildUnsupportedMapCrewBlocker(job.MapMode);
+        if (!string.IsNullOrWhiteSpace(unsupported))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.Summary = unsupported;
+            currentState.BlockedReason = unsupported;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
+            return;
+        }
+
+        if (group.Slots.Count == 0)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.Summary = $"Map crew '{group.DisplayName}' has no saved preset slots.";
+            currentState.BlockedReason = currentState.Summary;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
+            return;
+        }
+
+        var pool = characterIntelligenceService.RequestPeerSnapshots();
+        currentState.Slots = BuildSlotStates(group, pool, []);
+        var blockers = currentState.Slots
+            .Select(static slot => slot.BlockedReason)
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (blockers.Count > 0)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.Summary = string.Join(" | ", blockers);
+            currentState.BlockedReason = currentState.Summary;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
+            return;
+        }
+
+        if (job.DryRun)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Completed;
+            currentState.Summary = BuildMapCrewSummary(job, group, $"dry run ready with {currentState.Slots.Count} slot(s)");
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
+            return;
+        }
+
+        currentState.Phase = currentState.Slots.All(static slot => slot.Ready)
+            ? DadSchedulerPresetPhase.ReadyToStart
+            : ResolveWaitingPhase(currentState.Slots);
+        currentState.Summary = BuildMapCrewSummary(job, group, $"{currentState.Slots.Count(static slot => slot.Ready)}/{currentState.Slots.Count} slot(s) ready");
+        nextRefreshUtc = DateTime.MinValue;
     }
 
     private void StartRosterUpdateJob(DadScheduledCrewJob job)
@@ -485,6 +652,7 @@ public sealed class DadSchedulerService
             currentState.Summary = "Roster update has no target characters.";
             currentState.BlockedReason = currentState.Summary;
             currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
             return;
         }
 
@@ -514,6 +682,7 @@ public sealed class DadSchedulerService
             currentState.Summary = string.Join(" | ", blockers);
             currentState.BlockedReason = currentState.Summary;
             currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
             return;
         }
 
@@ -522,6 +691,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Completed;
             currentState.Summary = $"Roster update dry run ready for {targets.Count} character(s).";
             currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
             return;
         }
 
@@ -588,6 +758,8 @@ public sealed class DadSchedulerService
                 currentState.BlockedReason = timeoutReason;
                 currentState.Summary = timeoutReason;
                 currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+                RecordTerminalResult(currentState);
                 return;
             }
         }
@@ -641,7 +813,82 @@ public sealed class DadSchedulerService
         currentState.Summary = $"Roster update completed for {results.Count} character(s).";
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
+        RecordTerminalResult(currentState);
         characterIntelligenceService.RefreshLocalCharacterPool("roster-update", logRefresh: false);
+    }
+
+    private void UpdateMapCrewJob(Func<string, DadPlannerGroup?> groupResolver)
+    {
+        var group = groupResolver(currentState.GroupId);
+        if (group == null)
+        {
+            BlockActive($"Map crew preset '{currentState.GroupId}' could not be resolved.");
+            return;
+        }
+
+        var pool = characterIntelligenceService.RequestPeerSnapshots();
+        currentState.Slots = BuildSlotStates(group, pool, currentState.Slots);
+        currentState.UpdatedAtUtc = DateTime.UtcNow;
+
+        foreach (var slot in currentState.Slots)
+        {
+            if (slot.Ready)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(slot.BlockedReason))
+            {
+                BlockActive(slot.BlockedReason);
+                return;
+            }
+
+            if (!slot.IsOnline && slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline)
+            {
+                if (!TryStartLaunch(slot, out var launchBlocker))
+                {
+                    BlockActive(launchBlocker);
+                    return;
+                }
+            }
+
+            if (slot.IsOnline &&
+                !slot.CorrectCharacter &&
+                slot.WakePolicy is DadSchedulerWakePolicy.LoadCharacterIfOnline or DadSchedulerWakePolicy.LaunchIfOffline &&
+                !slot.LoadCommandSentUtc.HasValue)
+            {
+                if (!TrySendCharacterLoadCommand(slot, out var loadBlocker))
+                {
+                    BlockActive(loadBlocker);
+                    return;
+                }
+            }
+
+            if (IsLaunchTimedOut(slot, out var timeoutReason) || IsLoadTimedOut(slot, out timeoutReason))
+            {
+                currentState.Phase = DadSchedulerPresetPhase.TimedOut;
+                currentState.BlockedReason = timeoutReason;
+                currentState.Summary = timeoutReason;
+                currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+                RecordTerminalResult(currentState);
+                return;
+            }
+        }
+
+        if (!currentState.Slots.All(static slot => slot.Ready))
+        {
+            currentState.Phase = ResolveWaitingPhase(currentState.Slots);
+            currentState.Summary = BuildMapCrewSummary(
+                activeJob,
+                group,
+                $"{currentState.Slots.Count(static slot => slot.Ready)}/{currentState.Slots.Count} slot(s) ready");
+            return;
+        }
+
+        currentState.Phase = DadSchedulerPresetPhase.Completed;
+        currentState.Summary = BuildMapCrewSummary(activeJob, group, $"manual map crew ready with {currentState.Slots.Count} slot(s)");
+        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+        RecordTerminalResult(currentState);
     }
 
     private static DadSchedulerPresetState BuildBlockedQueuedState(DadScheduledCrewJob job, string reason)
@@ -857,14 +1104,16 @@ public sealed class DadSchedulerService
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' is disabled.";
             else if (!profile.AllowAutoStart)
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' does not allow auto-start.";
+            else if (profile.DryRun)
+                state.BlockedReason = $"Launch profile '{profile.DisplayName}' is dry-run only; Dad will not start clients.";
             else if (string.IsNullOrWhiteSpace(profile.BatchPath))
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' has no batch path.";
+            else if (!IsAllowedBootBatchPath(profile.BatchPath))
+                state.BlockedReason = $"Launch profile '{profile.DisplayName}' must be an imported .bat under {ClientBootDirectory}.";
             else if (!File.Exists(profile.BatchPath))
                 state.BlockedReason = $"Launch profile batch path not found: {profile.BatchPath}.";
             else
-                state.Summary = profile.DryRun
-                    ? $"Dry-run launch profile would start {profile.BatchPath} for account {profile.AccountKey}."
-                    : $"Launch profile ready: {profile.BatchPath} for account {profile.AccountKey}.";
+                state.Summary = $"Launch profile ready: {profile.BatchPath} for account {profile.AccountKey}.";
             return;
         }
 
@@ -878,9 +1127,13 @@ public sealed class DadSchedulerService
                 return;
             }
 
-            state.Summary = instruction.DryRun
-                ? $"Dry-run would send character-load command for {slot.RequiredCharacterKey}: {command}"
-                : $"Character-load command ready for {slot.RequiredCharacterKey}.";
+            if (instruction.DryRun)
+            {
+                state.BlockedReason = $"Character-load command is dry-run only; would send: {command}";
+                return;
+            }
+
+            state.Summary = $"Character-load command ready for {slot.RequiredCharacterKey}.";
             return;
         }
 
@@ -900,9 +1153,13 @@ public sealed class DadSchedulerService
                 return;
             }
 
-            state.Summary = instruction.DryRun
-                ? $"Dry-run would send character-load command for {slot.RequiredCharacterKey}: {command}"
-                : $"Character-load command ready for {slot.RequiredCharacterKey}.";
+            if (instruction.DryRun)
+            {
+                state.BlockedReason = $"Character-load command is dry-run only; would send: {command}";
+                return;
+            }
+
+            state.Summary = $"Character-load command ready for {slot.RequiredCharacterKey}.";
         }
     }
 
@@ -1003,9 +1260,33 @@ public sealed class DadSchedulerService
         }
 
         profile.Normalize();
+        if (!profile.Enabled)
+        {
+            blocker = $"Launch profile '{profile.DisplayName}' is disabled.";
+            return false;
+        }
+
+        if (!profile.AllowAutoStart)
+        {
+            blocker = $"Launch profile '{profile.DisplayName}' does not allow auto-start.";
+            return false;
+        }
+
         if (profile.DryRun)
         {
             blocker = $"Launch profile '{profile.DisplayName}' is dry-run only; would start {profile.BatchPath}.";
+            return false;
+        }
+
+        if (!IsAllowedBootBatchPath(profile.BatchPath))
+        {
+            blocker = $"Launch profile '{profile.DisplayName}' must be an imported .bat under {ClientBootDirectory}.";
+            return false;
+        }
+
+        if (!File.Exists(profile.BatchPath))
+        {
+            blocker = $"Launch profile batch path not found: {profile.BatchPath}.";
             return false;
         }
 
@@ -1178,6 +1459,171 @@ public sealed class DadSchedulerService
         currentState.BlockedReason = currentState.Summary;
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
+        RecordTerminalResult(currentState);
+    }
+
+    private DadScheduledCrewJob? FindEquivalentActiveOrPendingJob(DadSchedulerJobType jobType, string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId))
+            return null;
+
+        if (activeJob != null &&
+            currentState.IsActive &&
+            activeJob.JobType == jobType &&
+            string.Equals(activeJob.GroupId, groupId, StringComparison.OrdinalIgnoreCase))
+        {
+            return activeJob;
+        }
+
+        return configuration.SchedulerQueue.FirstOrDefault(job =>
+            job.JobType == jobType &&
+            string.Equals(job.GroupId, groupId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string BuildQueuedJobSummary(DadScheduledCrewJob job)
+        => job.JobType switch
+        {
+            DadSchedulerJobType.MapCrew => $"Queued map crew '{job.PresetName}' ({job.MapMode}{FormatMapTemplateSuffix(job.MapRunTemplate)}).",
+            DadSchedulerJobType.RosterUpdate => string.IsNullOrWhiteSpace(job.StatusSummary)
+                ? "Queued roster update."
+                : job.StatusSummary,
+            _ => $"Queued preset '{job.PresetName}'.",
+        };
+
+    private static string BuildMapCrewSummary(DadScheduledCrewJob? job, DadPlannerGroup group, string status)
+    {
+        var mode = job?.MapMode ?? group.MapMode;
+        var template = string.IsNullOrWhiteSpace(job?.MapRunTemplate)
+            ? group.MapRunTemplate
+            : job.MapRunTemplate;
+        return $"Map crew '{group.DisplayName}' {status}. Mode {mode}{FormatMapTemplateSuffix(template)}.";
+    }
+
+    private static string FormatMapTemplateSuffix(string template)
+        => string.IsNullOrWhiteSpace(template) ? string.Empty : $", template '{template.Trim()}'";
+
+    private static string BuildUnsupportedMapCrewBlocker(DadMapCrewJobMode mapMode)
+        => mapMode switch
+        {
+            DadMapCrewJobMode.GatherThenRun => "Map crew GatherThenRun is blocked: missing map inventory/runner IPC contract.",
+            DadMapCrewJobMode.PluginHandoff => "Map crew PluginHandoff is blocked: missing map inventory/runner IPC contract.",
+            _ => string.Empty,
+        };
+
+    private static int ResolveScheduleCadenceHours(int cadenceHours)
+        => Math.Clamp(cadenceHours <= 0 ? DefaultScheduleCadenceHours : cadenceHours, 1, 24 * 30);
+
+    private static bool IsAllowedBootBatchPath(string batchPath)
+    {
+        if (string.IsNullOrWhiteSpace(batchPath) ||
+            !string.Equals(Path.GetExtension(batchPath), ".bat", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            var root = Path.GetFullPath(ClientBootDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar);
+            var fullPath = Path.GetFullPath(batchPath);
+            return fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsTerminalPhase(DadSchedulerPresetPhase phase)
+        => phase is DadSchedulerPresetPhase.StartedPlanner
+            or DadSchedulerPresetPhase.Completed
+            or DadSchedulerPresetPhase.Blocked
+            or DadSchedulerPresetPhase.TimedOut
+            or DadSchedulerPresetPhase.Cancelled;
+
+    private static bool IsSuccessfulTerminalPhase(DadSchedulerPresetPhase phase)
+        => phase is DadSchedulerPresetPhase.StartedPlanner or DadSchedulerPresetPhase.Completed;
+
+    private void RecordTerminalResult(DadScheduledCrewJob job, DadSchedulerPresetPhase phase, string summary)
+    {
+        if (!IsTerminalPhase(phase))
+            return;
+
+        RecordTerminalResult(new DadScheduledCrewJobResult
+        {
+            JobId = job.JobId,
+            JobType = job.JobType,
+            GroupId = job.GroupId,
+            PresetName = job.PresetName,
+            RequestedBy = job.RequestedBy,
+            StartedAtUtc = job.CreatedAtUtc,
+            CompletedAtUtc = DateTime.UtcNow,
+            FinalPhase = phase,
+            Success = IsSuccessfulTerminalPhase(phase),
+            Summary = string.IsNullOrWhiteSpace(summary) ? phase.ToString() : summary,
+            BlockedReason = phase == DadSchedulerPresetPhase.Cancelled ? summary : job.BlockedReason,
+        });
+    }
+
+    private void RecordTerminalResult(DadSchedulerPresetState state)
+    {
+        if (!IsTerminalPhase(state.Phase))
+            return;
+
+        RecordTerminalResult(new DadScheduledCrewJobResult
+        {
+            JobId = state.JobId,
+            JobType = state.JobType,
+            GroupId = state.GroupId,
+            PresetName = state.PresetName,
+            RequestedBy = state.RequestedBy,
+            StartedAtUtc = state.StartedAtUtc,
+            CompletedAtUtc = state.CompletedAtUtc ?? DateTime.UtcNow,
+            FinalPhase = state.Phase,
+            Success = IsSuccessfulTerminalPhase(state.Phase),
+            Summary = state.Summary,
+            BlockedReason = state.BlockedReason,
+        });
+    }
+
+    private void RecordTerminalResult(DadScheduledCrewJobResult result)
+    {
+        NormalizeHistory();
+        if (string.IsNullOrWhiteSpace(result.JobId))
+            result.JobId = Guid.NewGuid().ToString("N");
+
+        configuration.SchedulerHistory.RemoveAll(existing =>
+            string.Equals(existing.JobId, result.JobId, StringComparison.OrdinalIgnoreCase));
+        configuration.SchedulerHistory.Insert(0, result.Clone());
+        TrimSchedulerHistory();
+        configuration.Save();
+    }
+
+    private void NormalizeHistory()
+    {
+        configuration.SchedulerHistory ??= [];
+        foreach (var result in configuration.SchedulerHistory)
+        {
+            result.JobId = result.JobId?.Trim() ?? string.Empty;
+            result.GroupId = result.GroupId?.Trim() ?? string.Empty;
+            result.PresetName = result.PresetName?.Trim() ?? string.Empty;
+            result.RequestedBy = string.IsNullOrWhiteSpace(result.RequestedBy) ? "scheduler" : result.RequestedBy.Trim();
+            result.Summary = result.Summary?.Trim() ?? string.Empty;
+            result.BlockedReason = result.BlockedReason?.Trim() ?? string.Empty;
+        }
+
+        TrimSchedulerHistory();
+    }
+
+    private void TrimSchedulerHistory()
+    {
+        if (configuration.SchedulerHistory.Count <= MaxSchedulerHistory)
+            return;
+
+        configuration.SchedulerHistory = configuration.SchedulerHistory
+            .OrderByDescending(static result => result.CompletedAtUtc)
+            .ThenByDescending(static result => result.StartedAtUtc)
+            .Take(MaxSchedulerHistory)
+            .ToList();
     }
 
     private void NormalizeLaunchProfiles()
@@ -1190,6 +1636,7 @@ public sealed class DadSchedulerService
     private void NormalizeQueue()
     {
         configuration.SchedulerQueue ??= [];
+        configuration.SchedulerHistory ??= [];
         foreach (var job in configuration.SchedulerQueue)
         {
             job.JobId = string.IsNullOrWhiteSpace(job.JobId) ? Guid.NewGuid().ToString("N") : job.JobId.Trim();
