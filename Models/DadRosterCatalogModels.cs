@@ -22,12 +22,52 @@ public enum DadMapCrewJobMode
     PluginHandoff,
 }
 
+public sealed class DadAccountDataClearResult
+{
+    public int AccountConfigsCleared { get; set; }
+    public int AccountConfigFilesDeleted { get; set; }
+    public int AccountConfigDeleteFailures { get; set; }
+    public int RosterKnownCharactersCleared { get; set; }
+    public int RosterVisibilityCleared { get; set; }
+    public int RosterRefreshHistoryCleared { get; set; }
+    public int PlannerAccountRefsCleared { get; set; }
+    public int PlannerGroupSlotRefsCleared { get; set; }
+    public int LaunchProfileRefsCleared { get; set; }
+    public int SchedulerJobsCleared { get; set; }
+    public bool LastAccountIdCleared { get; set; }
+
+    public void Merge(DadAccountDataClearResult other)
+    {
+        AccountConfigsCleared += other.AccountConfigsCleared;
+        AccountConfigFilesDeleted += other.AccountConfigFilesDeleted;
+        AccountConfigDeleteFailures += other.AccountConfigDeleteFailures;
+        RosterKnownCharactersCleared += other.RosterKnownCharactersCleared;
+        RosterVisibilityCleared += other.RosterVisibilityCleared;
+        RosterRefreshHistoryCleared += other.RosterRefreshHistoryCleared;
+        PlannerAccountRefsCleared += other.PlannerAccountRefsCleared;
+        PlannerGroupSlotRefsCleared += other.PlannerGroupSlotRefsCleared;
+        LaunchProfileRefsCleared += other.LaunchProfileRefsCleared;
+        SchedulerJobsCleared += other.SchedulerJobsCleared;
+        LastAccountIdCleared |= other.LastAccountIdCleared;
+    }
+
+    public string ToStatusMessage()
+    {
+        var lastAccount = LastAccountIdCleared ? "last account cleared" : "last account already empty";
+        var failures = AccountConfigDeleteFailures == 0
+            ? string.Empty
+            : $", {AccountConfigDeleteFailures} account config delete failure(s)";
+        return $"Cleared Dad account data: {AccountConfigFilesDeleted} account config file(s) deleted{failures}, {AccountConfigsCleared} in-memory account(s), roster known {RosterKnownCharactersCleared}, visibility {RosterVisibilityCleared}, refresh {RosterRefreshHistoryCleared}, planner refs {PlannerAccountRefsCleared}, group slot refs {PlannerGroupSlotRefsCleared}, launch refs {LaunchProfileRefsCleared}, scheduler jobs {SchedulerJobsCleared}; {lastAccount}. XADB snapshots untouched.";
+    }
+}
+
 public sealed class DadRosterVisibilityRecord
 {
     public string CharacterKey { get; set; } = string.Empty;
     public ulong ContentId { get; set; }
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadRosterVisibility Visibility { get; set; } = DadRosterVisibility.Active;
+    public bool NeedsRosterUpdate { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public string Reason { get; set; } = string.Empty;
 
@@ -38,6 +78,7 @@ public sealed class DadRosterVisibilityRecord
             ContentId = ContentId,
             AccountKey = AccountKey,
             Visibility = Visibility,
+            NeedsRosterUpdate = NeedsRosterUpdate,
             UpdatedAtUtc = UpdatedAtUtc,
             Reason = Reason,
         };
@@ -266,6 +307,7 @@ public sealed class DadRosterCharacter
     public bool XadbReady { get; set; }
     public bool IsCurrent { get; set; }
     public bool IsStale { get; set; }
+    public bool NeedsRosterUpdate { get; set; }
     public bool? MapEligible { get; set; }
     public string MapEligibilitySummary { get; set; } = string.Empty;
     public DadRosterVisibility Visibility { get; set; } = DadRosterVisibility.Active;
@@ -299,6 +341,7 @@ public sealed class DadRosterCharacter
             XadbReady = XadbReady,
             IsCurrent = IsCurrent,
             IsStale = IsStale,
+            NeedsRosterUpdate = NeedsRosterUpdate,
             MapEligible = MapEligible,
             MapEligibilitySummary = MapEligibilitySummary,
             Visibility = Visibility,
@@ -310,9 +353,50 @@ public sealed class DadRosterCharacter
         };
 }
 
+public sealed class DadRosterSourceDiagnostics
+{
+    public string LocalAccountKey { get; set; } = string.Empty;
+    public int XadbPayloadRows { get; set; }
+    public int XadbSnapshotRows { get; set; }
+    public int XadbLegacyRows { get; set; }
+    public int XadbMergedRows { get; set; }
+    public Dictionary<string, int> XadbDataCenterCounts { get; set; } = [];
+    public Dictionary<string, int> XadbWorldCounts { get; set; } = [];
+    public int LocalXadbAttributedRows { get; set; }
+    public int KnownRosterRows { get; set; }
+    public int LocalRuntimeRows { get; set; }
+    public int FinalLocalRows { get; set; }
+    public int PeerCatalogCount { get; set; }
+    public int PeerFullRosterCount { get; set; }
+    public int PeerFullRosterRows { get; set; }
+    public List<string> Warnings { get; set; } = [];
+
+    public DadRosterSourceDiagnostics Clone()
+        => new()
+        {
+            LocalAccountKey = LocalAccountKey,
+            XadbPayloadRows = XadbPayloadRows,
+            XadbSnapshotRows = XadbSnapshotRows,
+            XadbLegacyRows = XadbLegacyRows,
+            XadbMergedRows = XadbMergedRows,
+            XadbDataCenterCounts = new Dictionary<string, int>(XadbDataCenterCounts),
+            XadbWorldCounts = new Dictionary<string, int>(XadbWorldCounts),
+            LocalXadbAttributedRows = LocalXadbAttributedRows,
+            KnownRosterRows = KnownRosterRows,
+            LocalRuntimeRows = LocalRuntimeRows,
+            FinalLocalRows = FinalLocalRows,
+            PeerCatalogCount = PeerCatalogCount,
+            PeerFullRosterCount = PeerFullRosterCount,
+            PeerFullRosterRows = PeerFullRosterRows,
+            Warnings = [..Warnings],
+        };
+}
+
 public sealed class DadAccountRosterCatalog
 {
     public int Version { get; set; } = 1;
+    public int? XadbContractVersion { get; set; }
+    public int XadbPayloadRowCount { get; set; }
     public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
     public string SourceClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId SourceWorkerSessionId { get; set; } = new(string.Empty);
@@ -322,11 +406,14 @@ public sealed class DadAccountRosterCatalog
     public List<DadRosterCharacter> Characters { get; set; } = [];
     public List<DadRosterVisibilityRecord> Visibility { get; set; } = [];
     public List<string> Warnings { get; set; } = [];
+    public DadRosterSourceDiagnostics SourceDiagnostics { get; set; } = new();
 
     public DadAccountRosterCatalog Clone()
         => new()
         {
             Version = Version,
+            XadbContractVersion = XadbContractVersion,
+            XadbPayloadRowCount = XadbPayloadRowCount,
             GeneratedAtUtc = GeneratedAtUtc,
             SourceClientInstanceId = SourceClientInstanceId,
             SourceWorkerSessionId = SourceWorkerSessionId,
@@ -336,6 +423,7 @@ public sealed class DadAccountRosterCatalog
             Characters = Characters.Select(static character => character.Clone()).ToList(),
             Visibility = Visibility.Select(static record => record.Clone()).ToList(),
             Warnings = [..Warnings],
+            SourceDiagnostics = SourceDiagnostics.Clone(),
         };
 }
 
@@ -351,6 +439,8 @@ public sealed class DadRosterRefreshPlan
     public List<DadAccountKey> AccountKeys { get; set; } = [];
     public List<DadCharacterKey> CharacterKeys { get; set; } = [];
     public bool DryRun { get; set; }
+    public bool LogDiagnostics { get; set; }
+    public string DiagnosticsReason { get; set; } = string.Empty;
 }
 
 public sealed class DadRosterVisibilityChangeRequest

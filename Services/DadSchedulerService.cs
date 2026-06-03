@@ -110,7 +110,7 @@ public sealed class DadSchedulerService
         var hasExplicitTargets = plan.CharacterRefs.Count > 0 || plan.AccountKeys.Count > 0 || plan.CharacterKeys.Count > 0;
         var targets = catalog.Characters
             .Where(character =>
-                !hasExplicitTargets && character.Visibility == DadRosterVisibility.NeedsUpdate ||
+                !hasExplicitTargets && character.NeedsRosterUpdate ||
                 plan.CharacterRefs.Any(reference => DadRosterIdentity.Matches(character, reference)) ||
                 plan.CharacterKeys.Any(key => string.Equals(key.Value, character.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)) ||
                 plan.AccountKeys.Any(key => DadRosterIdentity.SameAccount(key, character.AccountKey)))
@@ -163,6 +163,21 @@ public sealed class DadSchedulerService
         }
 
         return false;
+    }
+
+    public int ClearAccountData()
+    {
+        NormalizeQueue();
+        var clearedJobs = configuration.SchedulerQueue.Count;
+        configuration.SchedulerQueue.Clear();
+        activeJob = null;
+        currentState = new DadSchedulerPresetState
+        {
+            Phase = DadSchedulerPresetPhase.Idle,
+            Summary = "Scheduler account data cleared.",
+        };
+        nextRefreshUtc = DateTime.MinValue;
+        return clearedJobs;
     }
 
     public IReadOnlyList<DadLaunchProfile> GetLaunchProfiles()
@@ -669,7 +684,7 @@ public sealed class DadSchedulerService
             }).ToList(),
         };
 
-        currentState.Slots = BuildSlotStates(group, pool, [], allowNeedsUpdateVisibility: true);
+        currentState.Slots = BuildSlotStates(group, pool, [], allowRosterMaintenanceTarget: true);
         var blockers = currentState.Slots
             .Select(static slot => slot.BlockedReason)
             .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
@@ -718,7 +733,7 @@ public sealed class DadSchedulerService
                 LaunchProfileId = slot.LaunchProfileId,
             }).ToList(),
         };
-        currentState.Slots = BuildSlotStates(group, pool, currentState.Slots, allowNeedsUpdateVisibility: true);
+        currentState.Slots = BuildSlotStates(group, pool, currentState.Slots, allowRosterMaintenanceTarget: true);
         currentState.UpdatedAtUtc = DateTime.UtcNow;
 
         foreach (var slot in currentState.Slots)
@@ -936,7 +951,7 @@ public sealed class DadSchedulerService
                                 explicitTargets.Contains(character.CharacterKey.Value))
             .Where(character => explicitAccounts.Count == 0 ||
                                 explicitAccounts.Contains(character.AccountKey.Value))
-            .Where(character => character.Visibility == DadRosterVisibility.NeedsUpdate || hasExplicitTargets)
+            .Where(character => character.NeedsRosterUpdate || hasExplicitTargets)
             .Where(static character => !character.AccountKey.IsEmpty && !character.CharacterKey.IsEmpty)
             .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -964,7 +979,7 @@ public sealed class DadSchedulerService
             syntheticGroup,
             pool,
             previousSlots,
-            allowNeedsUpdateVisibility: currentState.JobType == DadSchedulerJobType.RosterUpdate);
+            allowRosterMaintenanceTarget: currentState.JobType == DadSchedulerJobType.RosterUpdate);
 
         foreach (var slot in rebuilt)
         {
@@ -988,14 +1003,14 @@ public sealed class DadSchedulerService
         DadPlannerGroup group,
         DadCharacterPool pool,
         IReadOnlyList<DadSchedulerSlotState> previousSlots,
-        bool allowNeedsUpdateVisibility = false)
+        bool allowRosterMaintenanceTarget = false)
     {
         var participants = BuildParticipantSet(pool);
         return group.Slots.Select(slot =>
         {
             var previous = previousSlots.FirstOrDefault(existing =>
                 string.Equals(existing.SlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase));
-            var state = BuildSlotState(slot, participants, allowNeedsUpdateVisibility);
+            var state = BuildSlotState(slot, participants, allowRosterMaintenanceTarget);
             if (previous != null)
             {
                 state.LaunchStarted = previous.LaunchStarted;
@@ -1010,7 +1025,7 @@ public sealed class DadSchedulerService
     private DadSchedulerSlotState BuildSlotState(
         DadPlannerGroupSlot slot,
         IReadOnlyList<DadParticipantSnapshot> participants,
-        bool allowNeedsUpdateVisibility = false)
+        bool allowRosterMaintenanceTarget = false)
     {
         var state = new DadSchedulerSlotState
         {
@@ -1021,10 +1036,15 @@ public sealed class DadSchedulerService
             LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty,
         };
         state.RosterVisibility = rosterCatalogService.ResolveVisibility(slot.RequiredCharacterKey, slot.RequiredAccountKey);
-        if (state.RosterVisibility is DadRosterVisibility.Hidden or DadRosterVisibility.Ignored ||
-            state.RosterVisibility == DadRosterVisibility.NeedsUpdate && !allowNeedsUpdateVisibility)
+        state.NeedsRosterUpdate = rosterCatalogService.ResolveNeedsRosterUpdate(slot.RequiredCharacterKey, slot.RequiredAccountKey);
+        if (!allowRosterMaintenanceTarget &&
+            (state.RosterVisibility is DadRosterVisibility.Hidden or DadRosterVisibility.Ignored ||
+             state.NeedsRosterUpdate))
         {
-            state.BlockedReason = $"Slot {state.SlotId} targets {state.RosterVisibility} roster character {slot.RequiredCharacterKey}.";
+            var rosterState = state.NeedsRosterUpdate
+                ? "NeedsRosterUpdate"
+                : state.RosterVisibility.ToString();
+            state.BlockedReason = $"Slot {state.SlotId} targets {rosterState} roster character {slot.RequiredCharacterKey}.";
         }
 
         var matchingAccount = participants.FirstOrDefault(participant => MatchesSlotAccount(participant, slot));

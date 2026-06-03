@@ -9,7 +9,7 @@ namespace dad.Services;
 
 public sealed class DadXadbClient
 {
-    public const string RosterIpcMissingWarning = "XADB roster IPC missing; XADatabase loaded 20-channel/old provider.";
+    public const string RosterIpcMissingWarning = "XADB roster IPC missing; XADatabase loaded 20-channel/old provider. Channel XA.Database.GetAccountCharacterListJson was not registered yet.";
 
     private const string ReadyChannel = "XA.Database.IsReady";
     private const string RefreshChannel = "XA.Database.Refresh";
@@ -102,17 +102,24 @@ public sealed class DadXadbClient
             using var doc = JsonDocument.Parse(json);
             PopulateAccountRosterCatalog(catalog, doc.RootElement);
             catalog.Summary = catalog.IsFullRosterAvailable
-                ? $"XADB account roster ready: {catalog.Characters.Count} character(s)."
+                ? $"XADB account roster ready: {catalog.XadbPayloadRowCount} row(s), roster v{catalog.Version}, contract v{FormatNullableInt(catalog.XadbContractVersion)}."
                 : catalog.Characters.Count > 0
-                    ? "XADB account roster JSON did not advertise full roster support."
+                    ? $"XADB account roster JSON did not advertise full roster support: {catalog.XadbPayloadRowCount} row(s), roster v{catalog.Version}, contract v{FormatNullableInt(catalog.XadbContractVersion)}."
                     : "XADB account roster JSON contained no characters.";
+            log.Information(
+                "[dad] XADB roster IPC {Channel} succeeded: {RowCount} row(s), roster v{RosterVersion}, contract v{ContractVersion}, full roster {FullRoster}.",
+                AccountCharacterListChannel,
+                catalog.XadbPayloadRowCount,
+                catalog.Version,
+                FormatNullableInt(catalog.XadbContractVersion),
+                catalog.IsFullRosterAvailable);
             return catalog;
         }
         catch (Exception ex)
         {
             catalog.Warnings.Add(RosterIpcMissingWarning);
             catalog.Summary = RosterIpcMissingWarning;
-            log.Debug(ex, "[dad] XADB account roster IPC failed.");
+            log.Warning(ex, "[dad] XADB roster IPC failed on {Channel}; old/missing provider.", AccountCharacterListChannel);
             return catalog;
         }
     }
@@ -246,8 +253,15 @@ public sealed class DadXadbClient
     private static void PopulateAccountRosterCatalog(DadAccountRosterCatalog catalog, JsonElement root)
     {
         catalog.Version = ReadNullableInt32(root, "version", "rosterVersion", "accountCharacterListVersion") ?? 1;
+        catalog.XadbContractVersion = ReadNullableInt32(root, "ipcContractVersion", "contractVersion", "ipcVersion");
         catalog.GeneratedAtUtc = ReadNullableDateTime(root, "generatedAtUtc", "updatedUtc", "snapshotUtc") ?? DateTime.UtcNow;
         catalog.IsFullRosterAvailable = ReadNullableBool(root, "isFullRosterAvailable", "fullRosterAvailable") ?? false;
+        var advertisedMergedRows = ReadNullableInt32(root, "mergedRows", "xadbMergedRows", "payloadRows");
+        catalog.SourceDiagnostics.XadbSnapshotRows = ReadNullableInt32(root, "xaSnapshotRows", "snapshotRows", "xadbSnapshotRows") ?? 0;
+        catalog.SourceDiagnostics.XadbLegacyRows = ReadNullableInt32(root, "legacyRows", "xadbLegacyRows") ?? 0;
+        catalog.SourceDiagnostics.XadbMergedRows = advertisedMergedRows ?? 0;
+        catalog.SourceDiagnostics.XadbDataCenterCounts = ReadStringIntDictionary(root, "dataCenterCounts", "datacenterCounts", "dcCounts");
+        catalog.SourceDiagnostics.XadbWorldCounts = ReadStringIntDictionary(root, "worldCounts");
 
         if (TryGetProperty(root, out var warningsElement, "warnings") &&
             warningsElement.ValueKind == JsonValueKind.Array)
@@ -262,7 +276,6 @@ public sealed class DadXadbClient
             }
         }
 
-        var accountsByKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (TryGetProperty(root, out var accountsElement, "accounts", "accountList") &&
             accountsElement.ValueKind == JsonValueKind.Array)
         {
@@ -271,16 +284,11 @@ public sealed class DadXadbClient
                 if (accountElement.ValueKind != JsonValueKind.Object)
                     continue;
 
-                var accountKey = ReadString(accountElement, "accountKey", "accountId", "id", "key");
-                var accountAlias = ReadString(accountElement, "accountAlias", "alias", "displayName", "name");
-                if (!string.IsNullOrWhiteSpace(accountKey))
-                    accountsByKey[accountKey] = accountAlias;
-
                 if (TryGetProperty(accountElement, out var nestedCharacters, "characters", "characterList") &&
                     nestedCharacters.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var characterElement in nestedCharacters.EnumerateArray())
-                        AddRosterCharacter(catalog, characterElement, accountKey, accountAlias);
+                        AddRosterCharacter(catalog, characterElement);
                 }
             }
         }
@@ -289,11 +297,7 @@ public sealed class DadXadbClient
             charactersElement.ValueKind == JsonValueKind.Array)
         {
             foreach (var characterElement in charactersElement.EnumerateArray())
-            {
-                var accountKey = ReadString(characterElement, "accountKey", "accountId", "account");
-                accountsByKey.TryGetValue(accountKey, out var accountAlias);
-                AddRosterCharacter(catalog, characterElement, accountKey, accountAlias ?? string.Empty);
-            }
+                AddRosterCharacter(catalog, characterElement);
         }
 
         catalog.Characters = catalog.Characters
@@ -303,13 +307,26 @@ public sealed class DadXadbClient
             .ThenBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        catalog.XadbPayloadRowCount = advertisedMergedRows ?? catalog.Characters.Count;
+        catalog.SourceDiagnostics.XadbPayloadRows = catalog.XadbPayloadRowCount;
+        if (!advertisedMergedRows.HasValue)
+        {
+            catalog.SourceDiagnostics.XadbMergedRows = catalog.Characters.Count;
+            if (catalog.SourceDiagnostics.XadbSnapshotRows == 0 && catalog.SourceDiagnostics.XadbLegacyRows == 0)
+                catalog.SourceDiagnostics.XadbSnapshotRows = catalog.Characters.Count;
+        }
+        if (catalog.SourceDiagnostics.XadbDataCenterCounts.Count == 0)
+            catalog.SourceDiagnostics.XadbDataCenterCounts = BuildRosterCountMap(catalog.Characters, static character => character.DataCenterName);
+        if (catalog.SourceDiagnostics.XadbWorldCounts.Count == 0)
+            catalog.SourceDiagnostics.XadbWorldCounts = BuildRosterCountMap(catalog.Characters, static character => character.WorldName);
     }
+
+    private static string FormatNullableInt(int? value)
+        => value?.ToString(CultureInfo.InvariantCulture) ?? "?";
 
     private static void AddRosterCharacter(
         DadAccountRosterCatalog catalog,
-        JsonElement characterElement,
-        string accountKey,
-        string accountAlias)
+        JsonElement characterElement)
     {
         if (characterElement.ValueKind != JsonValueKind.Object)
             return;
@@ -324,14 +341,6 @@ public sealed class DadXadbClient
             characterKey = $"{characterName.Trim()}@{worldName.Trim()}";
         }
 
-        var resolvedAccountKey = ReadString(characterElement, "accountKey", "accountId", "account");
-        if (string.IsNullOrWhiteSpace(resolvedAccountKey))
-            resolvedAccountKey = accountKey;
-
-        var resolvedAccountAlias = ReadString(characterElement, "accountAlias", "alias", "accountName");
-        if (string.IsNullOrWhiteSpace(resolvedAccountAlias))
-            resolvedAccountAlias = accountAlias;
-
         var lastSnapshotUtc = ReadNullableDateTime(
             characterElement,
             "lastSnapshotUtc",
@@ -342,8 +351,8 @@ public sealed class DadXadbClient
 
         var rosterCharacter = new DadRosterCharacter
         {
-            AccountKey = new DadAccountKey(resolvedAccountKey),
-            AccountAlias = resolvedAccountAlias,
+            AccountKey = new DadAccountKey(string.Empty),
+            AccountAlias = string.Empty,
             CharacterKey = new DadCharacterKey(characterKey),
             ContentId = ReadUInt64(characterElement, "contentId", "ContentId"),
             CharacterName = characterName,
@@ -404,6 +413,36 @@ public sealed class DadXadbClient
 
         return levels;
     }
+
+    private static Dictionary<string, int> ReadStringIntDictionary(JsonElement root, params string[] propertyNames)
+    {
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (!TryGetProperty(root, out var element, propertyNames) || element.ValueKind != JsonValueKind.Object)
+            return result;
+
+        foreach (var property in element.EnumerateObject())
+        {
+            var value = ReadNullableInt32(property.Value);
+            if (!value.HasValue)
+                continue;
+
+            var key = NormalizeCountKey(property.Name);
+            result[key] = value.Value;
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, int> BuildRosterCountMap(
+        IReadOnlyList<DadRosterCharacter> characters,
+        Func<DadRosterCharacter, string> selector)
+        => characters
+            .GroupBy(character => NormalizeCountKey(selector(character)), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.Count(), StringComparer.OrdinalIgnoreCase);
+
+    private static string NormalizeCountKey(string value)
+        => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Trim();
 
     private static string ReadString(JsonElement root, params string[] propertyNames)
     {

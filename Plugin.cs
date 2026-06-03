@@ -79,7 +79,9 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        EnsureClientAccountId();
         ConfigManager = new ConfigManager(PluginInterface, Log);
+        ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
         ExternalPluginCapabilityService = new DadExternalPluginCapabilityService();
         XadbClient = new DadXadbClient(PluginInterface, Log);
         PresenceService = new DadPresenceService(Configuration, ConfigManager, Log);
@@ -130,8 +132,8 @@ public sealed class Plugin : IDalamudPlugin
             () => RosterCatalogService.BuildLocalCatalog(CharacterIntelligenceService.CurrentPool),
             command => RosterCatalogService.RefreshLocalRosterCharacter(command, PresenceService.BuildSnapshotCopy()));
 
-        if (!string.IsNullOrWhiteSpace(Configuration.LastAccountId))
-            ConfigManager.CurrentAccountId = Configuration.LastAccountId;
+        if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
+            ConfigManager.CurrentAccountId = Configuration.ClientAccountId;
 
         ClientState.Login += OnLogin;
 
@@ -191,6 +193,190 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleConfigUi() => configWindow.Toggle();
 
     public void PrintStatus(string message) => ChatGui.Print($"[{PluginInfo.DisplayName}] {message}");
+
+    private void EnsureClientAccountId()
+    {
+        var clientAccountId = Configuration.ClientAccountId?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(clientAccountId))
+        {
+            if (!string.Equals(Configuration.ClientAccountId, clientAccountId, StringComparison.Ordinal))
+            {
+                Configuration.ClientAccountId = clientAccountId;
+                Configuration.Save();
+            }
+
+            return;
+        }
+
+        Configuration.ClientAccountId = $"dad-client-{Guid.NewGuid():N}";
+        Configuration.Save();
+        Log.Information("[dad] Generated client account id {ClientAccountId}.", Configuration.ClientAccountId);
+    }
+
+    public bool DeleteDadAccount(DadAccountKey accountKey)
+    {
+        var account = ConfigManager.GetAccount(accountKey);
+        var resolvedAccountKey = new DadAccountKey(account?.AccountId ?? accountKey.Value);
+        if (resolvedAccountKey.IsEmpty)
+            return false;
+
+        var deletedConfig = ConfigManager.DeleteAccount(resolvedAccountKey);
+        if (account != null && !deletedConfig)
+            return false;
+
+        var purgedRoster = RosterCatalogService.PurgeAccount(resolvedAccountKey);
+        var clearedLastAccount = false;
+        if (string.Equals(Configuration.LastAccountId, resolvedAccountKey.Value, StringComparison.OrdinalIgnoreCase))
+        {
+            Configuration.LastAccountId = string.Empty;
+            clearedLastAccount = true;
+        }
+
+        if (clearedLastAccount)
+            Configuration.Save();
+
+        if (!deletedConfig && !purgedRoster && !clearedLastAccount)
+            return false;
+
+        PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
+        RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
+        {
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            StaleAfterHours = Configuration.RosterCatalog.StaleAfterHours,
+        });
+        return true;
+    }
+
+    public bool MergeDadAccountIntoCurrent(DadAccountKey sourceAccountKey)
+    {
+        var sourceAccount = ConfigManager.GetAccount(sourceAccountKey);
+        var targetAccount = ConfigManager.GetCurrentAccount();
+        if (sourceAccount == null || targetAccount == null)
+            return false;
+
+        var sourceKey = new DadAccountKey(sourceAccount.AccountId);
+        var targetKey = new DadAccountKey(targetAccount.AccountId);
+        if (sourceKey.IsEmpty || targetKey.IsEmpty ||
+            DadRosterIdentity.SameAccount(sourceKey, targetKey))
+        {
+            return false;
+        }
+
+        if (!ConfigManager.MergeAccountInto(sourceKey, targetKey))
+            return false;
+
+        RosterCatalogService.MergeAccount(sourceKey, targetKey, targetAccount.AccountAlias);
+        Configuration.LastAccountId = targetAccount.AccountId;
+        Configuration.Save();
+
+        PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
+        RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
+        {
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            StaleAfterHours = Configuration.RosterCatalog.StaleAfterHours,
+        });
+        return true;
+    }
+
+    public DadAccountDataClearResult ClearAllDadAccountData()
+    {
+        var result = ConfigManager.ClearAllAccounts();
+        result.Merge(RosterCatalogService.ClearAccountData());
+
+        result.LastAccountIdCleared = !string.IsNullOrWhiteSpace(Configuration.LastAccountId);
+        Configuration.LastAccountId = string.Empty;
+        if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
+            ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
+        result.PlannerAccountRefsCleared = ClearPlannerOptionsAccountData(Configuration.PlannerOptions);
+        result.PlannerGroupSlotRefsCleared = ClearPlannerGroupAccountData(Configuration.PlannerGroups);
+        result.LaunchProfileRefsCleared = ClearLaunchProfileAccountData(Configuration.LaunchProfiles);
+        result.SchedulerJobsCleared = SchedulerService.ClearAccountData();
+
+        Configuration.Save();
+        InvalidatePlannerPreviewIdentity();
+
+        var pool = CharacterIntelligenceService.RefreshLocalCharacterPool("account-reset", logRefresh: false);
+        PresenceService.Update(pool, TransportService.CurrentTransport.ListenerEndpoint);
+        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan
+        {
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            StaleAfterHours = Configuration.RosterCatalog.StaleAfterHours,
+        });
+
+        Log.Information("[dad] {Summary}", result.ToStatusMessage());
+        return result;
+    }
+
+    private static int ClearPlannerOptionsAccountData(DadPresetPlannerOptions options)
+    {
+        options.IncludedAccountKeys ??= [];
+        var cleared = options.IncludedAccountKeys.Count(static key => !key.IsEmpty);
+        options.IncludedAccountKeys.Clear();
+        return cleared;
+    }
+
+    private static int ClearPlannerGroupAccountData(List<DadPlannerGroup> groups)
+    {
+        groups ??= [];
+        var cleared = 0;
+        var now = DateTime.UtcNow;
+        foreach (var group in groups)
+        {
+            group.Slots ??= [];
+            var groupChanged = false;
+            foreach (var slot in group.Slots)
+            {
+                if (!slot.RequiredAccountKey.IsEmpty)
+                {
+                    slot.RequiredAccountKey = new DadAccountKey(string.Empty);
+                    cleared++;
+                    groupChanged = true;
+                }
+
+                if (!slot.RequiredCharacterKey.IsEmpty)
+                {
+                    slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+                    cleared++;
+                    groupChanged = true;
+                }
+
+                if (!string.IsNullOrWhiteSpace(slot.LaunchProfileId))
+                {
+                    slot.LaunchProfileId = string.Empty;
+                    cleared++;
+                    groupChanged = true;
+                }
+            }
+
+            if (groupChanged)
+                group.UpdatedAtUtc = now;
+        }
+
+        return cleared;
+    }
+
+    private static int ClearLaunchProfileAccountData(List<DadLaunchProfile> launchProfiles)
+    {
+        launchProfiles ??= [];
+        var cleared = 0;
+        foreach (var profile in launchProfiles)
+        {
+            profile.Normalize();
+            if (!profile.AccountKey.IsEmpty)
+            {
+                profile.AccountKey = new DadAccountKey(string.Empty);
+                cleared++;
+            }
+
+            cleared += profile.ExpectedCharacterKeys.Count(static key => !key.IsEmpty);
+            profile.ExpectedCharacterKeys.Clear();
+        }
+
+        return cleared;
+    }
 
     public void ApplyEndpointConfiguration(bool bindChanged, bool authorityTargetChanged)
     {
@@ -536,6 +722,8 @@ public sealed class Plugin : IDalamudPlugin
         {
             IncludeHidden = Configuration.RosterCatalog.ShowHiddenInRoster,
             IncludeIgnored = Configuration.RosterCatalog.ShowHiddenInRoster,
+            LogDiagnostics = true,
+            DiagnosticsReason = "json local roster refresh",
         }));
 
     public string RefreshPeerRosterCatalogJson()
@@ -544,6 +732,8 @@ public sealed class Plugin : IDalamudPlugin
             ForcePeerRefresh = true,
             IncludeHidden = true,
             IncludeIgnored = true,
+            LogDiagnostics = true,
+            DiagnosticsReason = "json connected roster refresh",
         }));
 
     public string SetRosterVisibilityFromJson(string json)
@@ -1410,7 +1600,11 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool RefreshCharacterPoolFromShell()
     {
         var pool = CharacterIntelligenceService.RefreshLocalCharacterPool("shell");
-        RosterCatalogService.RefreshCatalog(pool);
+        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan
+        {
+            LogDiagnostics = true,
+            DiagnosticsReason = "shell character pool refresh",
+        });
         PrintStatus($"dad pool refreshed. {pool.LastSummary}");
         return pool;
     }
@@ -1418,7 +1612,11 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool SaveLocalCharacterToXadbFromShell()
     {
         var pool = CharacterIntelligenceService.SaveLocalToXadb();
-        RosterCatalogService.RefreshCatalog(pool);
+        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan
+        {
+            LogDiagnostics = true,
+            DiagnosticsReason = "shell XADB save refresh",
+        });
         PrintStatus($"dad XADB save requested. {pool.XadbStatus.LastStatus}");
         return pool;
     }
@@ -1426,7 +1624,12 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool RequestPeerSnapshotsFromShell()
     {
         var pool = CharacterIntelligenceService.RequestPeerSnapshots();
-        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan { ForcePeerRefresh = true });
+        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan
+        {
+            ForcePeerRefresh = true,
+            LogDiagnostics = true,
+            DiagnosticsReason = "shell connected roster refresh",
+        });
         PrintStatus($"dad peer snapshot request status: {pool.PeerTransport.LastRequestStatus}");
         return pool;
     }
@@ -1965,8 +2168,10 @@ public sealed class Plugin : IDalamudPlugin
         if (ClientState.IsLoggedIn && ObjectTable.LocalPlayer != null)
         {
             var player = ObjectTable.LocalPlayer;
-            ConfigManager.EnsureAccountSelected(PlayerState.ContentId, player.Name.ToString());
-            ConfigManager.EnsureCharacterExists(player.Name.ToString(), player.HomeWorld.Value.Name.ToString());
+            ConfigManager.EnsureRuntimeIdentity(
+                player.Name.ToString(),
+                player.HomeWorld.Value.Name.ToString(),
+                Configuration.ClientAccountId);
 
             if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentAccountId)
                 && !string.Equals(Configuration.LastAccountId, ConfigManager.CurrentAccountId, StringComparison.Ordinal))

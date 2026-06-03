@@ -12,7 +12,8 @@ public sealed class ConfigManager
 {
     private readonly IPluginLog log;
     private readonly string configDirectory;
-    private readonly Dictionary<string, AccountConfig> accounts = new();
+    private readonly Dictionary<string, AccountConfig> accounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> deletedAccountIds = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -77,6 +78,129 @@ public sealed class ConfigManager
         return true;
     }
 
+    public bool DeleteAccount(DadAccountKey accountKey)
+    {
+        var account = ResolveAccount(accountKey);
+        if (account == null)
+            return false;
+
+        NormalizeAccount(account);
+        var accountId = account.AccountId;
+        if (string.IsNullOrWhiteSpace(accountId))
+            return false;
+
+        try
+        {
+            var path = Path.Combine(configDirectory, $"{accountId}_dad.json");
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "[dad] Failed to delete account config {AccountId}.", accountId);
+            return false;
+        }
+
+        var existingKey = accounts.Keys.FirstOrDefault(key =>
+            string.Equals(key, accountId, StringComparison.OrdinalIgnoreCase));
+        if (existingKey != null)
+            accounts.Remove(existingKey);
+        deletedAccountIds.Add(accountId);
+
+        if (string.Equals(CurrentAccountId, accountId, StringComparison.OrdinalIgnoreCase))
+        {
+            CurrentAccountId = string.Empty;
+            SelectedCharacterKey = string.Empty;
+        }
+
+        return true;
+    }
+
+    public DadAccountDataClearResult ClearAllAccounts()
+    {
+        var result = new DadAccountDataClearResult
+        {
+            AccountConfigsCleared = accounts.Count,
+        };
+
+        foreach (var accountId in accounts.Keys)
+        {
+            if (!string.IsNullOrWhiteSpace(accountId))
+                deletedAccountIds.Add(accountId);
+        }
+
+        try
+        {
+            foreach (var path in Directory.GetFiles(configDirectory, "*_dad.json"))
+            {
+                var accountId = ResolveAccountIdFromConfigPath(path);
+                if (!string.IsNullOrWhiteSpace(accountId))
+                    deletedAccountIds.Add(accountId);
+
+                try
+                {
+                    File.Delete(path);
+                    result.AccountConfigFilesDeleted++;
+                }
+                catch (Exception ex)
+                {
+                    result.AccountConfigDeleteFailures++;
+                    log.Error(ex, "[dad] Failed to delete account config {ConfigPath}.", path);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            result.AccountConfigDeleteFailures++;
+            log.Error(ex, "[dad] Failed to enumerate Dad account configs.");
+        }
+
+        accounts.Clear();
+        CurrentAccountId = string.Empty;
+        SelectedCharacterKey = string.Empty;
+        return result;
+    }
+
+    public bool MergeAccountInto(DadAccountKey sourceKey, DadAccountKey targetKey)
+    {
+        var source = ResolveAccount(sourceKey);
+        var target = ResolveAccount(targetKey);
+        if (source == null || target == null)
+            return false;
+
+        NormalizeAccount(source);
+        NormalizeAccount(target);
+        if (string.Equals(source.AccountId, target.AccountId, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var changed = false;
+        foreach (var pair in source.Characters)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key) || target.Characters.ContainsKey(pair.Key))
+                continue;
+
+            target.Characters[pair.Key] = pair.Value.Clone();
+            changed = true;
+        }
+
+        if (changed)
+            SaveAccount(target.AccountId);
+
+        var sourceWasCurrent = string.Equals(CurrentAccountId, source.AccountId, StringComparison.OrdinalIgnoreCase);
+        var selectedBeforeDelete = SelectedCharacterKey;
+        var deleted = DeleteAccount(new DadAccountKey(source.AccountId));
+        if (!deleted)
+            return false;
+
+        if (sourceWasCurrent || string.IsNullOrWhiteSpace(CurrentAccountId))
+            CurrentAccountId = target.AccountId;
+        if (sourceWasCurrent && !string.IsNullOrWhiteSpace(selectedBeforeDelete) && target.Characters.ContainsKey(selectedBeforeDelete))
+            SelectedCharacterKey = selectedBeforeDelete;
+
+        SaveAccount(target.AccountId);
+        return true;
+    }
+
     public bool EnsureCharacterForAccount(
         DadAccountKey accountKey,
         string characterKey,
@@ -123,6 +247,17 @@ public sealed class ConfigManager
         return true;
     }
 
+    public bool HasCharacterInAccount(DadAccountKey accountKey, DadCharacterKey characterKey)
+    {
+        var account = ResolveAccount(accountKey);
+        if (account == null || characterKey.IsEmpty)
+            return false;
+
+        NormalizeAccount(account);
+        return account.Characters.Keys.Any(key =>
+            string.Equals(key, characterKey.Value, StringComparison.OrdinalIgnoreCase));
+    }
+
     public CharacterConfig GetActiveConfig()
     {
         var account = GetCurrentAccount();
@@ -141,23 +276,49 @@ public sealed class ConfigManager
         => GetCurrentAccount()?.Characters.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase)
            ?? Enumerable.Empty<string>();
 
-    public void EnsureAccountSelected(ulong contentId, string? aliasHint = null)
+    public bool EnsureRuntimeIdentity(string characterName, string worldName, string? preferredAccountId = null)
     {
-        var accountId = contentId == 0
-            ? Guid.NewGuid().ToString("N")[..8]
-            : contentId.ToString("X");
+        var characterKey = ResolveCharacterKey(string.Empty, characterName, worldName);
+        if (string.IsNullOrWhiteSpace(characterKey))
+            return false;
 
-        if (!accounts.ContainsKey(accountId))
+        var preferredKey = preferredAccountId?.Trim() ?? string.Empty;
+        var account = !string.IsNullOrWhiteSpace(preferredKey)
+            ? ResolveAccountById(preferredKey) ?? CreateAccount(preferredKey, characterName)
+            : FindAccountContainingCharacter(characterKey)
+              ?? ResolveAccount(new DadAccountKey(CurrentAccountId))
+              ?? ResolveSingleAccount()
+              ?? ResolveFirstAccount();
+        if (account == null)
+            return false;
+
+        NormalizeAccount(account);
+        CurrentAccountId = account.AccountId;
+        SelectedCharacterKey = characterKey;
+
+        if (!account.Characters.ContainsKey(characterKey))
         {
-            accounts[accountId] = new AccountConfig
-            {
-                AccountId = accountId,
-                AccountAlias = string.IsNullOrWhiteSpace(aliasHint) ? "Account" : aliasHint,
-            };
+            account.Characters[characterKey] = account.DefaultConfig.Clone();
+            SaveAccount(account.AccountId);
         }
 
-        CurrentAccountId = accountId;
-        SaveCurrentAccount();
+        return true;
+    }
+
+    public void EnsureAccountSelected(string? preferredAccountId = null, string? aliasHint = null)
+    {
+        var preferredKey = preferredAccountId?.Trim() ?? string.Empty;
+        var account = !string.IsNullOrWhiteSpace(preferredKey)
+            ? ResolveAccountById(preferredKey) ?? CreateAccount(preferredKey, aliasHint)
+            : ResolveAccount(new DadAccountKey(CurrentAccountId))
+                      ?? ResolveSingleAccount()
+                      ?? ResolveFirstAccount();
+        if (account == null)
+            return;
+
+        NormalizeAccount(account);
+        CurrentAccountId = account.AccountId;
+        SaveAccount(account.AccountId);
     }
 
     public void EnsureCharacterExists(string name, string world)
@@ -216,6 +377,17 @@ public sealed class ConfigManager
         }
     }
 
+    private static string ResolveAccountIdFromConfigPath(string path)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrWhiteSpace(fileName))
+            return string.Empty;
+
+        return fileName.EndsWith("_dad", StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^4]
+            : fileName;
+    }
+
     private AccountConfig? ResolveAccount(DadAccountKey accountKey)
     {
         var value = accountKey.Value.Trim();
@@ -226,7 +398,53 @@ public sealed class ConfigManager
             return exact;
 
         return accounts.Values.FirstOrDefault(account =>
+            string.Equals(account.AccountId, value, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(account.AccountAlias, value, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private AccountConfig? ResolveAccountById(string accountId)
+    {
+        var value = accountId.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return accounts.GetValueOrDefault(value);
+    }
+
+    private AccountConfig? FindAccountContainingCharacter(string characterKey)
+        => accounts.Values.FirstOrDefault(account =>
+        {
+            NormalizeAccount(account);
+            return account.Characters.ContainsKey(characterKey);
+        });
+
+    private AccountConfig? ResolveSingleAccount()
+        => accounts.Count == 1 ? accounts.Values.First() : null;
+
+    private AccountConfig? ResolveFirstAccount()
+        => accounts.Values
+            .OrderBy(static account => account.AccountAlias, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static account => account.AccountId, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+    private AccountConfig? CreateAccount(string accountId, string? aliasHint)
+    {
+        var normalizedAccountId = accountId.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedAccountId))
+            return null;
+        if (accounts.TryGetValue(normalizedAccountId, out var existing))
+            return existing;
+
+        var account = new AccountConfig
+        {
+            AccountId = normalizedAccountId,
+            AccountAlias = string.IsNullOrWhiteSpace(aliasHint) ? "Account" : aliasHint.Trim(),
+        };
+        NormalizeAccount(account);
+        deletedAccountIds.Remove(account.AccountId);
+        accounts[account.AccountId] = account;
+        SaveAccount(account.AccountId);
+        return account;
     }
 
     private static string ResolveCharacterKey(string characterKey, string characterName, string worldName)
@@ -245,7 +463,17 @@ public sealed class ConfigManager
         account.AccountId = account.AccountId?.Trim() ?? string.Empty;
         account.AccountAlias = string.IsNullOrWhiteSpace(account.AccountAlias) ? "Account" : account.AccountAlias.Trim();
         account.DefaultConfig ??= new CharacterConfig();
-        account.Characters ??= new Dictionary<string, CharacterConfig>(StringComparer.OrdinalIgnoreCase);
+        var normalizedCharacters = new Dictionary<string, CharacterConfig>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in account.Characters ?? new Dictionary<string, CharacterConfig>())
+        {
+            var key = pair.Key?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(key) || normalizedCharacters.ContainsKey(key))
+                continue;
+
+            normalizedCharacters[key] = pair.Value?.Clone() ?? new CharacterConfig();
+        }
+
+        account.Characters = normalizedCharacters;
     }
 
     private static AccountConfig CloneAccount(AccountConfig account)

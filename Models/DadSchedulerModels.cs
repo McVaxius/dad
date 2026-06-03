@@ -145,6 +145,7 @@ public sealed class DadSchedulerSlotState
     public bool CorrectCharacter { get; set; }
     public bool Ready { get; set; }
     public DadRosterVisibility RosterVisibility { get; set; } = DadRosterVisibility.Active;
+    public bool NeedsRosterUpdate { get; set; }
     public DadWorkerSessionId MatchedWorkerSessionId { get; set; } = new(string.Empty);
     public DadCharacterKey ActiveCharacterKey { get; set; } = new(string.Empty);
     public string Summary { get; set; } = string.Empty;
@@ -169,6 +170,7 @@ public sealed class DadSchedulerSlotState
             CorrectCharacter = CorrectCharacter,
             Ready = Ready,
             RosterVisibility = RosterVisibility,
+            NeedsRosterUpdate = NeedsRosterUpdate,
             MatchedWorkerSessionId = MatchedWorkerSessionId,
             ActiveCharacterKey = ActiveCharacterKey,
             Summary = Summary,

@@ -23,6 +23,7 @@ public sealed class Configuration : IPluginConfiguration
     public int DtrBarMode { get; set; } = 1;
     public string DtrIconEnabled { get; set; } = "\uE044";
     public string DtrIconDisabled { get; set; } = "\uE04C";
+    public string ClientAccountId { get; set; } = string.Empty;
     public string LastAccountId { get; set; } = string.Empty;
     public string TransportBindHost { get; set; } = string.Empty;
     public int TransportBindPort { get; set; }

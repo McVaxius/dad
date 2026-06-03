@@ -5,8 +5,6 @@ namespace dad.Services;
 
 public sealed class DadRosterCatalogService
 {
-    private const string XadbRosterIpcMissingWarning = "XADB roster IPC missing; XADatabase loaded 20-channel/old provider.";
-
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
     private readonly DadXadbClient xadbClient;
@@ -34,6 +32,7 @@ public sealed class DadRosterCatalogService
         configuration.RosterCatalog.KnownCharacters ??= [];
         configuration.RosterCatalog.Visibility ??= [];
         configuration.RosterCatalog.RefreshHistory ??= [];
+        NormalizeRosterVisibilityRecords(saveIfChanged: true);
     }
 
     public DadAccountRosterCatalog CurrentCatalog => currentCatalog.Clone();
@@ -42,7 +41,7 @@ public sealed class DadRosterCatalogService
     {
         var accounts = currentCatalog.Accounts.Count > 0
             ? currentCatalog.Accounts
-            : BuildLocalAccountDirectory([]);
+            : BuildLocalAccountDirectory([], transportService.CurrentTransport.KnownParticipants);
 
         return accounts
             .Select(static account => account.Clone())
@@ -57,7 +56,8 @@ public sealed class DadRosterCatalogService
     {
         plan ??= new DadRosterRefreshPlan
         {
-            IncludeHidden = configuration.RosterCatalog.ShowHiddenInRoster,
+            IncludeHidden = true,
+            IncludeIgnored = true,
             StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
         };
 
@@ -65,10 +65,24 @@ public sealed class DadRosterCatalogService
         var allCatalogs = new List<DadAccountRosterCatalog> { localCatalog };
 
         if (plan.ForcePeerRefresh)
+        {
             lastPeerResponses = transportService.RequestRosterCatalogs(plan);
+            foreach (var response in lastPeerResponses)
+            {
+                foreach (var warning in response.Warnings)
+                    AddWarning(response.Catalog.Warnings, warning);
+            }
 
-        allCatalogs.AddRange(lastPeerResponses.Select(static response => response.Catalog));
+            allCatalogs.AddRange(lastPeerResponses.Select(static response => response.Catalog));
+            var peerRuntimeFallback = BuildPeerRuntimeFallbackCatalog(pool, lastPeerResponses);
+            if (peerRuntimeFallback.Characters.Count > 0)
+                allCatalogs.Add(peerRuntimeFallback);
+        }
+
         currentCatalog = MergeCatalogs(allCatalogs, plan);
+        if (plan.LogDiagnostics)
+            LogRosterDiagnostics(currentCatalog, plan);
+
         return CurrentCatalog;
     }
 
@@ -82,9 +96,20 @@ public sealed class DadRosterCatalogService
         };
 
         var xadbCatalog = xadbClient.GetAccountCharacterList();
+        var localAccountKey = GetLocalClientAccountKey();
+        var localAccountAlias = GetLocalClientAccountAlias();
+        var localDadAccounts = BuildLocalDadAccounts();
         var accountSaveNeeded = SeedKnownCharactersFromAccountConfigs();
+        accountSaveNeeded |= PruneKnownOwnershipFromRuntime(pool.Characters, localDadAccounts);
         var catalog = BuildKnownRosterCatalog();
         catalog.GeneratedAtUtc = xadbCatalog.GeneratedAtUtc;
+        catalog.Version = xadbCatalog.Version;
+        catalog.XadbContractVersion = xadbCatalog.XadbContractVersion;
+        catalog.XadbPayloadRowCount = xadbCatalog.XadbPayloadRowCount;
+        catalog.SourceDiagnostics = xadbCatalog.SourceDiagnostics.Clone();
+        catalog.SourceDiagnostics.LocalAccountKey = localAccountKey.Value;
+        catalog.SourceDiagnostics.XadbPayloadRows = xadbCatalog.XadbPayloadRowCount;
+        catalog.SourceDiagnostics.KnownRosterRows = catalog.Characters.Count;
         catalog.SourceClientInstanceId = presenceService.ClientInstanceId;
         catalog.SourceWorkerSessionId = presenceService.WorkerSessionId;
         catalog.IsFullRosterAvailable = xadbCatalog.IsFullRosterAvailable;
@@ -92,25 +117,34 @@ public sealed class DadRosterCatalogService
             AddWarning(catalog.Warnings, warning);
 
         if (!xadbCatalog.IsFullRosterAvailable)
-            AddWarning(catalog.Warnings, XadbRosterIpcMissingWarning);
+            AddWarning(catalog.Warnings, DadXadbClient.RosterIpcMissingWarning);
 
-        var localRuntimeRows = pool.Characters
-            .Where(static character => character.Source == DadCharacterSource.LocalRuntime)
-            .Select(FromAcquiredCharacter)
-            .ToList();
-        var currentAccount = ResolveCurrentAccount(localRuntimeRows);
-        foreach (var character in AttributeXadbCharacters(xadbCatalog.Characters, currentAccount, catalog.Warnings))
+        var localXadbCharacters = AttributeLocalXadbCharacters(xadbCatalog.Characters, localAccountKey, localAccountAlias, catalog.Warnings);
+        catalog.SourceDiagnostics.LocalXadbAttributedRows = localXadbCharacters.Count(static character => !character.AccountKey.IsEmpty);
+        if (catalog.SourceDiagnostics.XadbMergedRows > catalog.SourceDiagnostics.LocalXadbAttributedRows)
+        {
+            AddWarning(
+                catalog.Warnings,
+                $"XADB advertised {catalog.SourceDiagnostics.XadbMergedRows} merged roster row(s), but Dad attributed {catalog.SourceDiagnostics.LocalXadbAttributedRows} local XADB row(s).");
+        }
+
+        foreach (var character in localXadbCharacters)
         {
             UpsertRosterCharacter(catalog.Characters, character);
             accountSaveNeeded |= UpsertKnownCharacter(character);
         }
 
-        foreach (var character in pool.Characters)
+        var localRuntimeRows = pool.Characters
+            .Where(static character => character.Source == DadCharacterSource.LocalRuntime)
+            .ToList();
+        catalog.SourceDiagnostics.LocalRuntimeRows = localRuntimeRows.Count;
+        foreach (var character in localRuntimeRows)
         {
             var rosterCharacter = FromAcquiredCharacter(character);
+            if (rosterCharacter.AccountKey.IsEmpty)
+                StampCharacterAccount(rosterCharacter, localAccountKey, localAccountAlias);
             UpsertRosterCharacter(catalog.Characters, rosterCharacter);
-            if (character.Source == DadCharacterSource.LocalRuntime)
-                accountSaveNeeded |= UpsertKnownCharacter(rosterCharacter);
+            accountSaveNeeded |= UpsertKnownCharacter(rosterCharacter);
         }
 
         if (accountSaveNeeded)
@@ -118,7 +152,10 @@ public sealed class DadRosterCatalogService
 
         StampCatalogSource(catalog, catalog.SourceClientInstanceId, catalog.SourceWorkerSessionId);
         ApplyVisibility(catalog, plan);
-        catalog.Accounts = BuildLocalAccountDirectory(catalog.Characters).ToList();
+        catalog.SourceDiagnostics.FinalLocalRows = catalog.Characters.Count;
+        foreach (var warning in catalog.Warnings)
+            AddWarning(catalog.SourceDiagnostics.Warnings, warning);
+        catalog.Accounts = BuildLocalAccountDirectory(catalog.Characters, pool.PeerTransport.KnownParticipants).ToList();
         catalog.Summary = BuildCatalogSummary(catalog);
         return catalog;
     }
@@ -139,7 +176,7 @@ public sealed class DadRosterCatalogService
 
         var filteredCharacters = catalog.Characters
             .Where(static character => !character.AccountKey.IsEmpty)
-            .Where(static character => character.Visibility == DadRosterVisibility.Active)
+            .Where(character => ShouldIncludeForPlanner(character, includeHidden, includeIgnored, includeNeedsUpdate))
             .Select(ToAcquiredCharacter)
             .ToList();
 
@@ -163,11 +200,18 @@ public sealed class DadRosterCatalogService
     public DadRosterVisibility ResolveVisibility(DadCharacterKey characterKey, DadAccountKey accountKey)
     {
         var record = FindVisibilityRecord(characterKey, accountKey);
-        return record?.Visibility ?? DadRosterVisibility.Active;
+        return NormalizeVisibility(record?.Visibility ?? DadRosterVisibility.Active);
+    }
+
+    public bool ResolveNeedsRosterUpdate(DadCharacterKey characterKey, DadAccountKey accountKey)
+    {
+        var record = FindVisibilityRecord(characterKey, accountKey);
+        return record is { NeedsRosterUpdate: true } || record?.Visibility == DadRosterVisibility.NeedsUpdate;
     }
 
     public bool IsVisibleForNormalPlanning(DadCharacterKey characterKey, DadAccountKey accountKey)
-        => ResolveVisibility(characterKey, accountKey) == DadRosterVisibility.Active;
+        => ResolveVisibility(characterKey, accountKey) == DadRosterVisibility.Active &&
+           !ResolveNeedsRosterUpdate(characterKey, accountKey);
 
     public DadAccountRosterCatalog SetVisibility(DadRosterVisibilityChangeRequest request, DadCharacterPool pool)
     {
@@ -176,6 +220,8 @@ public sealed class DadRosterCatalogService
         request.CharacterKeys ??= [];
         request.AccountKeys ??= [];
         var changedKeys = ResolveVisibilityTargets(request, pool);
+        var marksRosterUpdate = request.Visibility == DadRosterVisibility.NeedsUpdate;
+        var now = DateTime.UtcNow;
         foreach (var target in changedKeys)
         {
             var record = FindVisibilityRecord(target.CharacterKey, target.AccountKey, target.ContentId);
@@ -193,13 +239,25 @@ public sealed class DadRosterCatalogService
             record.CharacterKey = target.CharacterKey.Value;
             record.ContentId = target.ContentId;
             record.AccountKey = target.AccountKey;
-            record.Visibility = request.Visibility;
-            record.UpdatedAtUtc = DateTime.UtcNow;
+            if (marksRosterUpdate)
+            {
+                record.Visibility = NormalizeVisibility(record.Visibility);
+                record.NeedsRosterUpdate = true;
+            }
+            else
+            {
+                record.Visibility = NormalizeVisibility(request.Visibility);
+            }
+
+            record.UpdatedAtUtc = now;
             record.Reason = request.Reason?.Trim() ?? string.Empty;
         }
 
         configuration.Save();
-        log.Information("[dad][Roster] Set {Count} roster row(s) to {Visibility}.", changedKeys.Count, request.Visibility);
+        if (marksRosterUpdate)
+            log.Information("[dad][Roster] Marked {Count} roster row(s) as needing update.", changedKeys.Count);
+        else
+            log.Information("[dad][Roster] Set {Count} roster row(s) to {Visibility}.", changedKeys.Count, request.Visibility);
         return RefreshCatalog(pool, new DadRosterRefreshPlan
         {
             IncludeHidden = true,
@@ -253,6 +311,13 @@ public sealed class DadRosterCatalogService
             return catalog;
         }
 
+        var localAccountKey = GetLocalClientAccountKey();
+        if (localAccountKey.IsEmpty || !DadRosterIdentity.SameAccount(request.AccountKey, localAccountKey))
+        {
+            AddWarning(catalog.Warnings, "Local roster rows can only be assigned to this Dad client account.");
+            return catalog;
+        }
+
         var account = configManager.GetAccount(request.AccountKey);
         if (account == null)
         {
@@ -296,6 +361,176 @@ public sealed class DadRosterCatalogService
         return result;
     }
 
+    public bool PurgeAccount(DadAccountKey accountKey)
+    {
+        configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        configuration.RosterCatalog.KnownCharacters ??= [];
+        configuration.RosterCatalog.Visibility ??= [];
+        configuration.RosterCatalog.RefreshHistory ??= [];
+
+        if (accountKey.IsEmpty)
+            return false;
+
+        var knownBefore = configuration.RosterCatalog.KnownCharacters.Count;
+        var visibilityBefore = configuration.RosterCatalog.Visibility.Count;
+        var refreshBefore = configuration.RosterCatalog.RefreshHistory.Count;
+
+        configuration.RosterCatalog.KnownCharacters = configuration.RosterCatalog.KnownCharacters
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
+            .ToList();
+        configuration.RosterCatalog.Visibility = configuration.RosterCatalog.Visibility
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
+            .ToList();
+        configuration.RosterCatalog.RefreshHistory = configuration.RosterCatalog.RefreshHistory
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
+            .ToList();
+
+        var knownRemoved = knownBefore - configuration.RosterCatalog.KnownCharacters.Count;
+        var visibilityRemoved = visibilityBefore - configuration.RosterCatalog.Visibility.Count;
+        var refreshRemoved = refreshBefore - configuration.RosterCatalog.RefreshHistory.Count;
+        if (knownRemoved == 0 && visibilityRemoved == 0 && refreshRemoved == 0)
+            return false;
+
+        currentCatalog.Accounts = currentCatalog.Accounts
+            .Where(account => !DadRosterIdentity.SameAccount(account.AccountKey, accountKey))
+            .ToList();
+        currentCatalog.Visibility = currentCatalog.Visibility
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
+            .ToList();
+
+        configuration.Save();
+        log.Information(
+            "[dad][Roster] Purged Dad metadata for account {AccountKey}: {KnownCount} known, {VisibilityCount} visibility, {RefreshCount} refresh record(s).",
+            accountKey.Value,
+            knownRemoved,
+            visibilityRemoved,
+            refreshRemoved);
+        return true;
+    }
+
+    public DadAccountDataClearResult ClearAccountData()
+    {
+        configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        configuration.RosterCatalog.KnownCharacters ??= [];
+        configuration.RosterCatalog.Visibility ??= [];
+        configuration.RosterCatalog.RefreshHistory ??= [];
+
+        var result = new DadAccountDataClearResult
+        {
+            RosterKnownCharactersCleared = configuration.RosterCatalog.KnownCharacters.Count,
+            RosterVisibilityCleared = configuration.RosterCatalog.Visibility.Count,
+            RosterRefreshHistoryCleared = configuration.RosterCatalog.RefreshHistory.Count,
+        };
+
+        configuration.RosterCatalog.KnownCharacters.Clear();
+        configuration.RosterCatalog.Visibility.Clear();
+        configuration.RosterCatalog.RefreshHistory.Clear();
+        currentCatalog = new DadAccountRosterCatalog
+        {
+            Summary = "Dad account data cleared; roster catalog not refreshed yet.",
+        };
+        lastPeerResponses = [];
+        log.Information(
+            "[dad][Roster] Cleared Dad roster account data: {KnownCount} known, {VisibilityCount} visibility, {RefreshCount} refresh record(s).",
+            result.RosterKnownCharactersCleared,
+            result.RosterVisibilityCleared,
+            result.RosterRefreshHistoryCleared);
+        return result;
+    }
+
+    public bool HasLocalRosterCopy(DadRosterCharacter character)
+    {
+        configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        configuration.RosterCatalog.KnownCharacters ??= [];
+        configuration.RosterCatalog.Visibility ??= [];
+        configuration.RosterCatalog.RefreshHistory ??= [];
+
+        if (character.AccountKey.IsEmpty ||
+            DadRosterIdentity.SameAccount(character.AccountKey, GetLocalClientAccountKey()))
+        {
+            return false;
+        }
+
+        return configuration.RosterCatalog.KnownCharacters.Any(record =>
+                   DadRosterIdentity.SameAccount(record.AccountKey, character.AccountKey) &&
+                   DadRosterIdentity.SameCharacter(
+                       new DadCharacterKey(record.CharacterKey),
+                       record.ContentId,
+                       character.CharacterKey,
+                       character.ContentId)) ||
+               configuration.RosterCatalog.Visibility.Any(record =>
+                   RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId)) ||
+               configuration.RosterCatalog.RefreshHistory.Any(record =>
+                   RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId)) ||
+               configManager.HasCharacterInAccount(character.AccountKey, character.CharacterKey);
+    }
+
+    public bool ForgetLocalRosterCopy(DadRosterCharacter character)
+    {
+        configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        configuration.RosterCatalog.KnownCharacters ??= [];
+        configuration.RosterCatalog.Visibility ??= [];
+        configuration.RosterCatalog.RefreshHistory ??= [];
+
+        if (character.AccountKey.IsEmpty)
+            return false;
+
+        var removedKnown = RemoveKnownCharacter(character);
+        var removedVisibility = RemoveVisibilityRecords(character);
+        var removedRefresh = RemoveRefreshRecords(character);
+        var removedAccountConfig = configManager.RemoveCharacterFromAccount(character.AccountKey, character.CharacterKey);
+        if (!removedKnown && !removedVisibility && !removedRefresh && !removedAccountConfig)
+            return false;
+
+        if (removedKnown || removedVisibility || removedRefresh)
+            configuration.Save();
+
+        currentCatalog.Characters = currentCatalog.Characters
+            .Where(existing => !DadRosterIdentity.SameRow(existing, character))
+            .ToList();
+        currentCatalog.Visibility = currentCatalog.Visibility
+            .Where(record => !RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId))
+            .ToList();
+
+        log.Information(
+            "[dad][Roster] Forgot local Dad roster copy for account {AccountKey}, character {CharacterKey}, cid {ContentId}: known {Known}, visibility {Visibility}, refresh {Refresh}, config {Config}.",
+            character.AccountKey.Value,
+            character.CharacterKey.Value,
+            character.ContentId,
+            removedKnown,
+            removedVisibility,
+            removedRefresh,
+            removedAccountConfig);
+        return true;
+    }
+
+    public bool MergeAccount(DadAccountKey sourceAccountKey, DadAccountKey targetAccountKey, string targetAccountAlias)
+    {
+        configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
+        configuration.RosterCatalog.KnownCharacters ??= [];
+        configuration.RosterCatalog.Visibility ??= [];
+        configuration.RosterCatalog.RefreshHistory ??= [];
+
+        if (sourceAccountKey.IsEmpty || targetAccountKey.IsEmpty ||
+            DadRosterIdentity.SameAccount(sourceAccountKey, targetAccountKey))
+        {
+            return false;
+        }
+
+        var changed = MoveKnownCharactersToAccount(sourceAccountKey, targetAccountKey, targetAccountAlias);
+        changed |= MoveVisibilityToAccount(sourceAccountKey, targetAccountKey);
+        changed |= MoveRefreshHistoryToAccount(sourceAccountKey, targetAccountKey);
+        if (!changed)
+            return false;
+
+        configuration.Save();
+        log.Information(
+            "[dad][Roster] Merged Dad metadata from account {SourceAccountKey} into {TargetAccountKey}.",
+            sourceAccountKey.Value,
+            targetAccountKey.Value);
+        return true;
+    }
+
     public void RecordRefreshResult(DadRosterRefreshResultDto result)
     {
         configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
@@ -313,9 +548,10 @@ public sealed class DadRosterCatalogService
         if (result.Success)
         {
             var record = FindVisibilityRecord(result.CharacterKey, result.AccountKey, result.ContentId);
-            if (record != null && record.Visibility == DadRosterVisibility.NeedsUpdate)
+            if (record != null && (record.NeedsRosterUpdate || record.Visibility == DadRosterVisibility.NeedsUpdate))
             {
-                record.Visibility = DadRosterVisibility.Active;
+                record.Visibility = NormalizeVisibility(record.Visibility);
+                record.NeedsRosterUpdate = false;
                 record.UpdatedAtUtc = DateTime.UtcNow;
                 record.Reason = "Roster refresh completed.";
             }
@@ -340,15 +576,29 @@ public sealed class DadRosterCatalogService
 
     private DadAccountRosterCatalog MergeCatalogs(IReadOnlyList<DadAccountRosterCatalog> catalogs, DadRosterRefreshPlan plan)
     {
+        var localCatalog = catalogs.FirstOrDefault();
+        var peerCatalogs = catalogs.Skip(1).ToList();
         var merged = new DadAccountRosterCatalog
         {
             GeneratedAtUtc = DateTime.UtcNow,
-            IsFullRosterAvailable = catalogs.Any(static catalog => catalog.IsFullRosterAvailable),
+            Version = localCatalog?.Version ?? 1,
+            XadbContractVersion = localCatalog?.XadbContractVersion,
+            XadbPayloadRowCount = localCatalog?.XadbPayloadRowCount ?? 0,
+            IsFullRosterAvailable = localCatalog?.IsFullRosterAvailable ?? false,
             Visibility = configuration.RosterCatalog.Visibility.Select(static record => record.Clone()).ToList(),
+            SourceDiagnostics = localCatalog?.SourceDiagnostics.Clone() ?? new DadRosterSourceDiagnostics(),
         };
+        merged.SourceDiagnostics.PeerCatalogCount = peerCatalogs.Count;
+        merged.SourceDiagnostics.PeerFullRosterCount = peerCatalogs.Count(static catalog => catalog.IsFullRosterAvailable);
+        merged.SourceDiagnostics.PeerFullRosterRows = peerCatalogs
+            .Where(static catalog => catalog.IsFullRosterAvailable)
+            .Sum(static catalog => catalog.Characters.Count);
 
         foreach (var catalog in catalogs)
         {
+            foreach (var warning in catalog.SourceDiagnostics.Warnings)
+                AddWarning(merged.SourceDiagnostics.Warnings, warning);
+
             foreach (var warning in catalog.Warnings)
             {
                 if (!string.IsNullOrWhiteSpace(warning) &&
@@ -356,6 +606,8 @@ public sealed class DadRosterCatalogService
                 {
                     merged.Warnings.Add(warning);
                 }
+
+                AddWarning(merged.SourceDiagnostics.Warnings, warning);
             }
 
             foreach (var character in catalog.Characters)
@@ -369,10 +621,11 @@ public sealed class DadRosterCatalogService
             }
         }
 
+        PruneCatalogRowsSupersededByRuntime(merged.Characters);
         merged.Accounts = BuildMergedAccountDirectory(catalogs, merged.Characters).ToList();
         ApplyVisibility(merged, plan);
         merged.Characters = merged.Characters
-            .Where(character => ShouldIncludeInCatalog(character.Visibility, plan))
+            .Where(character => ShouldIncludeInCatalog(character, plan))
             .OrderBy(static character => character.AccountAlias, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
@@ -389,8 +642,11 @@ public sealed class DadRosterCatalogService
             if (character.AccountKey.IsEmpty)
                 AddBlocker(character, "Account attribution missing; excluded from preset and scheduler planning.");
 
-            var visibility = ResolveVisibility(character.CharacterKey, character.AccountKey);
+            var record = FindVisibilityRecord(character.CharacterKey, character.AccountKey, character.ContentId);
+            var visibility = NormalizeVisibility(record?.Visibility ?? DadRosterVisibility.Active);
+            var needsRosterUpdate = record is { NeedsRosterUpdate: true } || record?.Visibility == DadRosterVisibility.NeedsUpdate;
             character.Visibility = visibility;
+            character.NeedsRosterUpdate = needsRosterUpdate;
             character.IsStale = character.LastSnapshotUtc.HasValue && DateTime.UtcNow - character.LastSnapshotUtc.Value > staleAfter;
 
             var lastRefresh = configuration.RosterCatalog.RefreshHistory
@@ -403,8 +659,8 @@ public sealed class DadRosterCatalogService
                 AddBlocker(character, "Hidden from normal roster planning.");
             else if (visibility == DadRosterVisibility.Ignored)
                 AddBlocker(character, "Ignored by operator.");
-            else if (visibility == DadRosterVisibility.NeedsUpdate)
-                AddBlocker(character, "Queued for login-refresh update.");
+            if (needsRosterUpdate)
+                AddBlocker(character, "Needs roster refresh before normal planning.");
         }
 
         catalog.Visibility = configuration.RosterCatalog.Visibility.Select(static record => record.Clone()).ToList();
@@ -571,7 +827,6 @@ public sealed class DadRosterCatalogService
         {
             GeneratedAtUtc = DateTime.UtcNow,
             Characters = configuration.RosterCatalog.KnownCharacters
-                .Where(static record => !record.AccountKey.IsEmpty)
                 .Select(ToRosterCharacter)
                 .ToList(),
         };
@@ -580,10 +835,11 @@ public sealed class DadRosterCatalogService
     private bool SeedKnownCharactersFromAccountConfigs()
     {
         var changed = false;
+        var localAccountKey = GetLocalClientAccountKey();
         foreach (var account in configManager.GetAllAccounts())
         {
             var accountKey = new DadAccountKey(account.AccountId);
-            if (accountKey.IsEmpty)
+            if (accountKey.IsEmpty || !DadRosterIdentity.SameAccount(accountKey, localAccountKey))
                 continue;
 
             foreach (var characterKey in account.Characters.Keys)
@@ -619,6 +875,24 @@ public sealed class DadRosterCatalogService
         return before != configuration.RosterCatalog.KnownCharacters.Count;
     }
 
+    private bool RemoveVisibilityRecords(DadRosterCharacter character)
+    {
+        var before = configuration.RosterCatalog.Visibility.Count;
+        configuration.RosterCatalog.Visibility = configuration.RosterCatalog.Visibility
+            .Where(record => !RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId))
+            .ToList();
+        return before != configuration.RosterCatalog.Visibility.Count;
+    }
+
+    private bool RemoveRefreshRecords(DadRosterCharacter character)
+    {
+        var before = configuration.RosterCatalog.RefreshHistory.Count;
+        configuration.RosterCatalog.RefreshHistory = configuration.RosterCatalog.RefreshHistory
+            .Where(record => !RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId))
+            .ToList();
+        return before != configuration.RosterCatalog.RefreshHistory.Count;
+    }
+
     private bool IsRemoteSource(DadRosterCharacter character)
         => !string.IsNullOrWhiteSpace(character.SourceClientInstanceId) &&
            !string.Equals(character.SourceClientInstanceId, presenceService.ClientInstanceId, StringComparison.OrdinalIgnoreCase);
@@ -637,9 +911,115 @@ public sealed class DadRosterCatalogService
         }
     }
 
-    private IReadOnlyList<DadRosterAccountOption> BuildLocalAccountDirectory(IReadOnlyList<DadRosterCharacter> characters)
+    private Dictionary<string, string> BuildKnownDadAccounts(IReadOnlyList<DadParticipantSnapshot> peerParticipants)
+    {
+        var accounts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        AddKnownDadAccount(accounts, GetLocalClientAccountKey(), GetLocalClientAccountAlias());
+        foreach (var participant in peerParticipants)
+            AddKnownDadAccount(accounts, participant.ManagedAccountKey, participant.ManagedAccountAlias);
+
+        return accounts;
+    }
+
+    private Dictionary<string, string> BuildLocalDadAccounts()
+    {
+        var accounts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddKnownDadAccount(accounts, GetLocalClientAccountKey(), GetLocalClientAccountAlias());
+        return accounts;
+    }
+
+    private static void AddKnownDadAccount(Dictionary<string, string> accounts, DadAccountKey accountKey, string accountAlias)
+    {
+        if (accountKey.IsEmpty)
+            return;
+
+        var key = accountKey.Value.Trim();
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        if (!accounts.TryGetValue(key, out var existingAlias) || string.IsNullOrWhiteSpace(existingAlias))
+            accounts[key] = accountAlias?.Trim() ?? string.Empty;
+    }
+
+    private static bool IsKnownDadAccount(
+        DadAccountKey accountKey,
+        IReadOnlyDictionary<string, string> knownDadAccounts)
+        => !accountKey.IsEmpty && knownDadAccounts.ContainsKey(accountKey.Value.Trim());
+
+    private bool PruneKnownOwnershipFromRuntime(
+        IReadOnlyList<DadAcquiredCharacter> characters,
+        IReadOnlyDictionary<string, string> knownDadAccounts)
+    {
+        var runtimeCharacters = characters
+            .Where(static character => character.Source == DadCharacterSource.LocalRuntime)
+            .Where(character => IsKnownDadAccount(new DadAccountKey(character.AccountId), knownDadAccounts))
+            .Where(static character => !string.IsNullOrWhiteSpace(character.CharacterKey) || character.ContentId != 0)
+            .Select(FromAcquiredCharacter)
+            .ToList();
+        if (runtimeCharacters.Count == 0 || configuration.RosterCatalog.KnownCharacters.Count == 0)
+            return false;
+
+        var before = configuration.RosterCatalog.KnownCharacters.Count;
+        configuration.RosterCatalog.KnownCharacters = configuration.RosterCatalog.KnownCharacters
+            .Where(record => !runtimeCharacters.Any(runtime =>
+                !DadRosterIdentity.SameAccount(record.AccountKey, runtime.AccountKey) &&
+                DadRosterIdentity.SameCharacter(
+                    new DadCharacterKey(record.CharacterKey),
+                    record.ContentId,
+                    runtime.CharacterKey,
+                    runtime.ContentId)))
+            .ToList();
+        return before != configuration.RosterCatalog.KnownCharacters.Count;
+    }
+
+    private static void PruneCatalogRowsSupersededByRuntime(List<DadRosterCharacter> characters)
+    {
+        var runtimeCharacters = characters
+            .Where(static character => IsRuntimeSource(character.Source))
+            .Where(static character => !character.AccountKey.IsEmpty)
+            .Where(static character => !character.CharacterKey.IsEmpty || character.ContentId != 0)
+            .ToList();
+        if (runtimeCharacters.Count == 0)
+            return;
+
+        characters.RemoveAll(character =>
+            !IsRuntimeSource(character.Source) &&
+            !character.AccountKey.IsEmpty &&
+            runtimeCharacters.Any(runtime =>
+                SameSourceClient(runtime, character) &&
+                !DadRosterIdentity.SameAccount(runtime.AccountKey, character.AccountKey) &&
+                DadRosterIdentity.SameCharacter(
+                    runtime.CharacterKey,
+                    runtime.ContentId,
+                    character.CharacterKey,
+                    character.ContentId)));
+    }
+
+    private static bool SameSourceClient(DadRosterCharacter left, DadRosterCharacter right)
+        => string.Equals(
+            left.SourceClientInstanceId?.Trim() ?? string.Empty,
+            right.SourceClientInstanceId?.Trim() ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyList<DadRosterAccountOption> BuildLocalAccountDirectory(
+        IReadOnlyList<DadRosterCharacter> characters,
+        IReadOnlyList<DadParticipantSnapshot> peerParticipants)
     {
         var options = new List<DadRosterAccountOption>();
+        AddConfiguredAccountOptions(options);
+        AddCharacterAccountOptions(options, characters);
+        AddLocalClientAccountOption(options);
+        AddParticipantAccountOption(options, presenceService.CurrentParticipant, isLocal: true);
+        foreach (var participant in peerParticipants)
+            AddParticipantAccountOption(options, participant, isLocal: false);
+
+        RefreshAccountCharacterCounts(options, characters);
+        return SortAccountOptions(options);
+    }
+
+    private void AddConfiguredAccountOptions(List<DadRosterAccountOption> options)
+    {
         foreach (var account in configManager.GetAllAccounts())
         {
             var accountKey = new DadAccountKey(account.AccountId);
@@ -657,10 +1037,128 @@ public sealed class DadRosterCatalogService
                 AssignedCharacterCount = account.Characters.Count,
             });
         }
+    }
 
-        AddCatalogCharacterAccounts(options, characters, presenceService.ClientInstanceId, presenceService.WorkerSessionId);
-        RefreshAccountCharacterCounts(options, characters);
-        return SortAccountOptions(options);
+    private static void AddCharacterAccountOptions(
+        List<DadRosterAccountOption> options,
+        IReadOnlyList<DadRosterCharacter> characters)
+    {
+        foreach (var group in characters
+                     .Where(static character => !character.AccountKey.IsEmpty)
+                     .GroupBy(static character => character.AccountKey.Value.Trim(), StringComparer.OrdinalIgnoreCase))
+        {
+            var first = group.First();
+            UpsertAccountOption(options, new DadRosterAccountOption
+            {
+                AccountKey = first.AccountKey,
+                AccountAlias = first.AccountAlias,
+                DisplayName = BuildAccountDisplayName(first.AccountKey.Value, first.AccountAlias),
+                SourceClientInstanceId = first.SourceClientInstanceId,
+                SourceWorkerSessionId = first.SourceWorkerSessionId,
+                IsLocal = false,
+                AssignedCharacterCount = group
+                    .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+                    .Count(),
+            });
+        }
+    }
+
+    private static void AddParticipantAccountOption(
+        List<DadRosterAccountOption> options,
+        DadParticipantSnapshot participant,
+        bool isLocal)
+    {
+        if (participant.ManagedAccountKey.IsEmpty)
+            return;
+
+        var assignedCharacterCount = participant.AvailableCharacterKeys
+            .Where(static key => !key.IsEmpty)
+            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (assignedCharacterCount == 0 && !participant.ActiveCharacterKey.IsEmpty)
+            assignedCharacterCount = 1;
+
+        UpsertAccountOption(options, new DadRosterAccountOption
+        {
+            AccountKey = participant.ManagedAccountKey,
+            AccountAlias = participant.ManagedAccountAlias,
+            DisplayName = BuildAccountDisplayName(participant.ManagedAccountKey.Value, participant.ManagedAccountAlias),
+            SourceClientInstanceId = participant.ClientInstanceId,
+            SourceWorkerSessionId = participant.WorkerSessionId,
+            IsLocal = isLocal,
+            AssignedCharacterCount = assignedCharacterCount,
+        });
+    }
+
+    private DadAccountRosterCatalog BuildPeerRuntimeFallbackCatalog(
+        DadCharacterPool pool,
+        IReadOnlyList<DadPeerRosterCatalogResponse> peerCatalogResponses)
+    {
+        var respondedClientIds = peerCatalogResponses
+            .Select(static response => response.ClientInstanceId)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var respondedWorkerIds = peerCatalogResponses
+            .Select(static response => response.WorkerSessionId.Value)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var catalog = new DadAccountRosterCatalog
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            SourceClientInstanceId = string.Empty,
+            SourceWorkerSessionId = new DadWorkerSessionId(string.Empty),
+            IsFullRosterAvailable = false,
+            SourceDiagnostics = new DadRosterSourceDiagnostics
+            {
+                LocalAccountKey = GetLocalClientAccountKey().Value,
+            },
+        };
+
+        foreach (var response in pool.PeerTransport.LastResponses)
+        {
+            var participant = response.Participant;
+            var clientId = string.IsNullOrWhiteSpace(response.ClientInstanceId)
+                ? participant.ClientInstanceId
+                : response.ClientInstanceId;
+            var workerSessionId = participant.WorkerSessionId.Value;
+            if (!string.IsNullOrWhiteSpace(clientId) && respondedClientIds.Contains(clientId) ||
+                !string.IsNullOrWhiteSpace(workerSessionId) && respondedWorkerIds.Contains(workerSessionId))
+            {
+                continue;
+            }
+
+            var acquired = participant.Character.Clone();
+            acquired.Source = DadCharacterSource.PeerRuntime;
+            acquired.Freshness = response.Character.Freshness;
+            acquired.Readiness = response.Character.Readiness;
+            if (!participant.ManagedAccountKey.IsEmpty)
+                acquired.AccountId = participant.ManagedAccountKey.Value;
+            if (!string.IsNullOrWhiteSpace(participant.ManagedAccountAlias))
+                acquired.AccountAlias = participant.ManagedAccountAlias;
+            if (string.IsNullOrWhiteSpace(acquired.CharacterKey) && !participant.ActiveCharacterKey.IsEmpty)
+                acquired.CharacterKey = participant.ActiveCharacterKey.Value;
+            if (string.IsNullOrWhiteSpace(acquired.CharacterKey) && acquired.ContentId == 0)
+                continue;
+
+            var rosterCharacter = FromAcquiredCharacter(acquired);
+            rosterCharacter.SourceClientInstanceId = clientId;
+            rosterCharacter.SourceWorkerSessionId = participant.WorkerSessionId;
+            if (rosterCharacter.AccountKey.IsEmpty && !participant.ManagedAccountKey.IsEmpty)
+                StampCharacterAccount(rosterCharacter, participant.ManagedAccountKey, participant.ManagedAccountAlias);
+            UpsertRosterCharacter(catalog.Characters, rosterCharacter);
+            AddParticipantAccountOption(catalog.Accounts, participant, isLocal: false);
+        }
+
+        if (catalog.Characters.Count == 0)
+            return catalog;
+
+        RefreshAccountCharacterCounts(catalog.Accounts, catalog.Characters);
+        catalog.Accounts = SortAccountOptions(catalog.Accounts).ToList();
+        var warning = "Peer roster catalog unavailable; using current runtime character fallback.";
+        AddWarning(catalog.Warnings, warning);
+        AddWarning(catalog.SourceDiagnostics.Warnings, warning);
+        catalog.Summary = BuildCatalogSummary(catalog);
+        return catalog;
     }
 
     private IReadOnlyList<DadRosterAccountOption> BuildMergedAccountDirectory(
@@ -679,6 +1177,7 @@ public sealed class DadRosterCatalogService
                     candidate.SourceClientInstanceId = sourceClientInstanceId;
                 if (candidate.SourceWorkerSessionId.IsEmpty)
                     candidate.SourceWorkerSessionId = sourceWorkerSessionId;
+
                 candidate.IsLocal = string.Equals(
                     candidate.SourceClientInstanceId,
                     presenceService.ClientInstanceId,
@@ -686,53 +1185,11 @@ public sealed class DadRosterCatalogService
                 candidate.DisplayName = BuildAccountDisplayName(candidate.AccountKey.Value, candidate.AccountAlias);
                 UpsertAccountOption(options, candidate);
             }
-
-            if (catalog.Accounts.Count == 0)
-                AddCatalogCharacterAccounts(options, catalog.Characters, sourceClientInstanceId, sourceWorkerSessionId);
         }
 
+        AddCharacterAccountOptions(options, characters);
         RefreshAccountCharacterCounts(options, characters);
         return SortAccountOptions(options);
-    }
-
-    private void AddCatalogCharacterAccounts(
-        List<DadRosterAccountOption> options,
-        IReadOnlyList<DadRosterCharacter> characters,
-        string sourceClientInstanceId,
-        DadWorkerSessionId sourceWorkerSessionId)
-    {
-        foreach (var group in characters
-                     .Where(static character => !character.AccountKey.IsEmpty)
-                     .GroupBy(character => new
-                     {
-                         SourceClientInstanceId = string.IsNullOrWhiteSpace(character.SourceClientInstanceId)
-                             ? sourceClientInstanceId
-                             : character.SourceClientInstanceId,
-                         AccountKey = character.AccountKey.Value,
-                     }))
-        {
-            var alias = group
-                .Select(static character => character.AccountAlias)
-                .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
-            var workerSessionId = group
-                .Select(static character => character.SourceWorkerSessionId)
-                .FirstOrDefault(static value => !value.IsEmpty);
-            if (workerSessionId.IsEmpty)
-                workerSessionId = sourceWorkerSessionId;
-
-            UpsertAccountOption(options, new DadRosterAccountOption
-            {
-                AccountKey = new DadAccountKey(group.Key.AccountKey),
-                AccountAlias = alias,
-                DisplayName = BuildAccountDisplayName(group.Key.AccountKey, alias),
-                SourceClientInstanceId = group.Key.SourceClientInstanceId,
-                SourceWorkerSessionId = workerSessionId,
-                IsLocal = string.Equals(group.Key.SourceClientInstanceId, presenceService.ClientInstanceId, StringComparison.OrdinalIgnoreCase),
-                AssignedCharacterCount = group
-                    .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
-                    .Count(),
-            });
-        }
     }
 
     private static void RefreshAccountCharacterCounts(
@@ -743,11 +1200,7 @@ public sealed class DadRosterCatalogService
         {
             var count = characters
                 .Where(character => !character.AccountKey.IsEmpty &&
-                                    DadRosterIdentity.SameAccount(character.AccountKey, option.AccountKey) &&
-                                    string.Equals(
-                                        character.SourceClientInstanceId,
-                                        option.SourceClientInstanceId,
-                                        StringComparison.OrdinalIgnoreCase))
+                                    DadRosterIdentity.SameAccount(character.AccountKey, option.AccountKey))
                 .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
                 .Count();
             option.AssignedCharacterCount = Math.Max(option.AssignedCharacterCount, count);
@@ -763,7 +1216,6 @@ public sealed class DadRosterCatalogService
         candidate.DisplayName = BuildAccountDisplayName(candidate.AccountKey.Value, candidate.AccountAlias);
         candidate.SourceClientInstanceId = candidate.SourceClientInstanceId?.Trim() ?? string.Empty;
         var existing = options.FirstOrDefault(option =>
-            string.Equals(option.SourceClientInstanceId, candidate.SourceClientInstanceId, StringComparison.OrdinalIgnoreCase) &&
             DadRosterIdentity.SameAccount(option.AccountKey, candidate.AccountKey));
         if (existing == null)
         {
@@ -778,7 +1230,9 @@ public sealed class DadRosterCatalogService
             existing.DisplayName = candidate.DisplayName;
         }
 
-        if (existing.SourceWorkerSessionId.IsEmpty)
+        if (string.IsNullOrWhiteSpace(existing.SourceClientInstanceId) || candidate.IsLocal && !existing.IsLocal)
+            existing.SourceClientInstanceId = candidate.SourceClientInstanceId;
+        if (existing.SourceWorkerSessionId.IsEmpty || candidate.IsLocal && !existing.IsLocal)
             existing.SourceWorkerSessionId = candidate.SourceWorkerSessionId;
         existing.IsLocal |= candidate.IsLocal;
         existing.AssignedCharacterCount = Math.Max(existing.AssignedCharacterCount, candidate.AssignedCharacterCount);
@@ -798,6 +1252,49 @@ public sealed class DadRosterCatalogService
             ? accountKey
             : accountAlias.Trim();
 
+    private DadAccountKey GetLocalClientAccountKey()
+        => new(configuration.ClientAccountId?.Trim() ?? string.Empty);
+
+    private string GetLocalClientAccountAlias()
+    {
+        var localAccountKey = GetLocalClientAccountKey();
+        var account = configManager.GetAccount(localAccountKey);
+        if (!string.IsNullOrWhiteSpace(account?.AccountAlias))
+            return account.AccountAlias.Trim();
+
+        if (!presenceService.CurrentParticipant.ManagedAccountKey.IsEmpty &&
+            DadRosterIdentity.SameAccount(presenceService.CurrentParticipant.ManagedAccountKey, localAccountKey) &&
+            !string.IsNullOrWhiteSpace(presenceService.CurrentParticipant.ManagedAccountAlias))
+        {
+            return presenceService.CurrentParticipant.ManagedAccountAlias.Trim();
+        }
+
+        return "Dad client";
+    }
+
+    private void AddLocalClientAccountOption(List<DadRosterAccountOption> options)
+    {
+        var accountKey = GetLocalClientAccountKey();
+        if (accountKey.IsEmpty)
+            return;
+
+        var account = configManager.GetAccount(accountKey);
+        var accountAlias = !string.IsNullOrWhiteSpace(account?.AccountAlias)
+            ? account.AccountAlias.Trim()
+            : GetLocalClientAccountAlias();
+
+        UpsertAccountOption(options, new DadRosterAccountOption
+        {
+            AccountKey = accountKey,
+            AccountAlias = accountAlias,
+            DisplayName = BuildAccountDisplayName(accountKey.Value, accountAlias),
+            SourceClientInstanceId = presenceService.ClientInstanceId,
+            SourceWorkerSessionId = presenceService.WorkerSessionId,
+            IsLocal = true,
+            AssignedCharacterCount = account?.Characters.Count ?? 0,
+        });
+    }
+
     private static (string CharacterName, string WorldName) ParseCharacterKey(string characterKey)
     {
         var parts = (characterKey ?? string.Empty).Split('@', 2, StringSplitOptions.TrimEntries);
@@ -806,102 +1303,42 @@ public sealed class DadRosterCatalogService
             : (characterKey ?? string.Empty, string.Empty);
     }
 
-    private List<DadRosterCharacter> AttributeXadbCharacters(
+    private List<DadRosterCharacter> AttributeLocalXadbCharacters(
         IReadOnlyList<DadRosterCharacter> xadbCharacters,
-        CurrentRosterAccount currentAccount,
+        DadAccountKey localAccountKey,
+        string localAccountAlias,
         List<string> warnings)
     {
         var attributed = new List<DadRosterCharacter>();
-        var ambiguousCount = 0;
-        foreach (var character in xadbCharacters)
+        if (localAccountKey.IsEmpty)
         {
-            if (!character.AccountKey.IsEmpty)
-            {
-                attributed.Add(character.Clone());
-                continue;
-            }
-
-            var knownMatches = FindKnownCharacterMatches(character);
-            if (knownMatches.Count > 0)
-            {
-                foreach (var known in knownMatches)
-                    attributed.Add(WithAccount(character, known.AccountKey, known.AccountAlias));
-                continue;
-            }
-
-            if (MatchesCurrentAccount(character, currentAccount))
-            {
-                attributed.Add(WithAccount(character, currentAccount.AccountKey, currentAccount.AccountAlias));
-                continue;
-            }
-
-            ambiguousCount++;
-            var ambiguous = character.Clone();
-            AddBlocker(ambiguous, "Account attribution missing; log into this character/account in Dad before scheduling.");
-            if (ambiguous.Warnings.All(static warning => !string.Equals(warning, "XADB row has no Dad account attribution.", StringComparison.OrdinalIgnoreCase)))
-                ambiguous.Warnings.Add("XADB row has no Dad account attribution.");
-            attributed.Add(ambiguous);
+            AddWarning(warnings, "Dad client account id missing; local XADB roster rows cannot be attributed.");
+            return xadbCharacters.Select(static character => character.Clone()).ToList();
         }
 
-        if (ambiguousCount > 0)
-            AddWarning(warnings, $"Skipped scheduling for {ambiguousCount} XADB roster row(s) with no Dad account attribution.");
+        foreach (var character in xadbCharacters)
+        {
+            var candidate = character.Clone();
+            StampCharacterAccount(candidate, localAccountKey, localAccountAlias);
+            attributed.Add(candidate);
+        }
 
         return attributed;
     }
 
-    private List<DadRosterKnownCharacterRecord> FindKnownCharacterMatches(DadRosterCharacter character)
-        => configuration.RosterCatalog.KnownCharacters
-            .Where(static record => !record.AccountKey.IsEmpty)
-            .Where(record => DadRosterIdentity.SameCharacter(
-                new DadCharacterKey(record.CharacterKey),
-                record.ContentId,
-                character.CharacterKey,
-                character.ContentId))
-            .GroupBy(static record => record.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
-            .Select(static group => group
-                .OrderByDescending(record => record.LastSnapshotUtc ?? record.LastRuntimeSeenUtc ?? record.UpdatedAtUtc)
-                .First())
-            .ToList();
-
-    private static CurrentRosterAccount ResolveCurrentAccount(IReadOnlyList<DadRosterCharacter> localRuntimeRows)
-    {
-        var source = localRuntimeRows.FirstOrDefault(static character => !character.AccountKey.IsEmpty);
-        if (source == null)
-            return CurrentRosterAccount.Empty;
-
-        var characterKeys = localRuntimeRows
-            .Where(static character => !character.CharacterKey.IsEmpty)
-            .Select(static character => character.CharacterKey.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var contentIds = localRuntimeRows
-            .Where(static character => character.ContentId != 0)
-            .Select(static character => character.ContentId)
-            .ToHashSet();
-
-        return new CurrentRosterAccount(source.AccountKey, source.AccountAlias, characterKeys, contentIds);
-    }
-
-    private static bool MatchesCurrentAccount(DadRosterCharacter character, CurrentRosterAccount account)
-    {
-        if (account.AccountKey.IsEmpty)
-            return false;
-
-        if (character.ContentId != 0 && account.ContentIds.Contains(character.ContentId))
-            return true;
-
-        return !character.CharacterKey.IsEmpty && account.CharacterKeys.Contains(character.CharacterKey.Value);
-    }
-
-    private static DadRosterCharacter WithAccount(
-        DadRosterCharacter source,
+    private static void StampCharacterAccount(
+        DadRosterCharacter character,
         DadAccountKey accountKey,
         string accountAlias)
     {
-        var character = source.Clone();
         character.AccountKey = accountKey;
         if (!string.IsNullOrWhiteSpace(accountAlias))
             character.AccountAlias = accountAlias.Trim();
-        return character;
+        character.Blockers.RemoveAll(static blocker =>
+            blocker.Contains("Account attribution missing", StringComparison.OrdinalIgnoreCase));
+        character.Warnings.RemoveAll(static warning =>
+            warning.Contains("Dad account attribution", StringComparison.OrdinalIgnoreCase) ||
+            warning.Contains("XADB account attribution", StringComparison.OrdinalIgnoreCase));
     }
 
     private bool UpsertKnownCharacter(DadRosterCharacter character)
@@ -1017,19 +1454,6 @@ public sealed class DadRosterCatalogService
     private static bool DictionariesEqual(Dictionary<uint, int> left, Dictionary<uint, int> right)
         => left.Count == right.Count && left.All(pair => right.TryGetValue(pair.Key, out var value) && value == pair.Value);
 
-    private sealed record CurrentRosterAccount(
-        DadAccountKey AccountKey,
-        string AccountAlias,
-        HashSet<string> CharacterKeys,
-        HashSet<ulong> ContentIds)
-    {
-        public static CurrentRosterAccount Empty { get; } = new(
-            new DadAccountKey(string.Empty),
-            string.Empty,
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
-            []);
-    }
-
     private static DadRosterCharacter FromAcquiredCharacter(DadAcquiredCharacter character)
         => new()
         {
@@ -1085,6 +1509,7 @@ public sealed class DadRosterCatalogService
             SnapshotVersion = character.SnapshotVersion,
             XadbReady = character.XadbReady,
             RosterVisibility = character.Visibility,
+            NeedsRosterUpdate = character.NeedsRosterUpdate,
             MapEligible = character.MapEligible,
             MapEligibilitySummary = character.MapEligibilitySummary,
         };
@@ -1108,6 +1533,9 @@ public sealed class DadRosterCatalogService
         if (character.Visibility != DadRosterVisibility.Active)
             return DadReadinessState.Unavailable;
 
+        if (character.NeedsRosterUpdate)
+            return DadReadinessState.Unavailable;
+
         if (character.Source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime)
             return character.Blockers.Count == 0 ? DadReadinessState.Ready : DadReadinessState.Blocked;
 
@@ -1117,21 +1545,53 @@ public sealed class DadRosterCatalogService
     private static DadAccountKey ResolveAccountKey(DadAcquiredCharacter character)
         => DadRosterIdentity.ResolveAccountKey(character.AccountId, character.AccountAlias);
 
+    private static bool IsRuntimeSource(DadCharacterSource source)
+        => source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime;
+
     private static bool ShouldIncludeForPlanner(
-        DadRosterVisibility visibility,
+        DadRosterCharacter character,
         bool includeHidden,
         bool includeIgnored,
         bool includeNeedsUpdate)
-        => visibility == DadRosterVisibility.Active
-           || includeHidden && visibility == DadRosterVisibility.Hidden
-           || includeIgnored && visibility == DadRosterVisibility.Ignored
-           || includeNeedsUpdate && visibility == DadRosterVisibility.NeedsUpdate;
+    {
+        var visibility = NormalizeVisibility(character.Visibility);
+        var visibilityIncluded = visibility == DadRosterVisibility.Active
+                                 || includeHidden && visibility == DadRosterVisibility.Hidden
+                                 || includeIgnored && visibility == DadRosterVisibility.Ignored;
+        return visibilityIncluded && (!character.NeedsRosterUpdate || includeNeedsUpdate);
+    }
 
-    private static bool ShouldIncludeInCatalog(DadRosterVisibility visibility, DadRosterRefreshPlan plan)
-        => visibility == DadRosterVisibility.Active
-           || visibility == DadRosterVisibility.NeedsUpdate
-           || plan.IncludeHidden && visibility == DadRosterVisibility.Hidden
-           || plan.IncludeIgnored && visibility == DadRosterVisibility.Ignored;
+    private static bool ShouldIncludeInCatalog(DadRosterCharacter character, DadRosterRefreshPlan plan)
+    {
+        var visibility = NormalizeVisibility(character.Visibility);
+        return visibility == DadRosterVisibility.Active
+               || plan.IncludeHidden && visibility == DadRosterVisibility.Hidden
+               || plan.IncludeIgnored && visibility == DadRosterVisibility.Ignored;
+    }
+
+    private bool NormalizeRosterVisibilityRecords(bool saveIfChanged)
+    {
+        var changed = false;
+        foreach (var record in configuration.RosterCatalog.Visibility)
+        {
+            if (record.Visibility != DadRosterVisibility.NeedsUpdate)
+                continue;
+
+            record.Visibility = DadRosterVisibility.Active;
+            record.NeedsRosterUpdate = true;
+            changed = true;
+        }
+
+        if (changed && saveIfChanged)
+            configuration.Save();
+
+        return changed;
+    }
+
+    private static DadRosterVisibility NormalizeVisibility(DadRosterVisibility visibility)
+        => visibility == DadRosterVisibility.NeedsUpdate
+            ? DadRosterVisibility.Active
+            : visibility;
 
     private static void AddBlocker(DadRosterCharacter character, string blocker)
     {
@@ -1163,12 +1623,173 @@ public sealed class DadRosterCatalogService
             .ToList();
     }
 
+    private bool MoveKnownCharactersToAccount(
+        DadAccountKey sourceAccountKey,
+        DadAccountKey targetAccountKey,
+        string targetAccountAlias)
+    {
+        var changed = false;
+        var sourceRecords = configuration.RosterCatalog.KnownCharacters
+            .Where(record => DadRosterIdentity.SameAccount(record.AccountKey, sourceAccountKey))
+            .Select(static record => record.Clone())
+            .ToList();
+        if (sourceRecords.Count == 0)
+            return false;
+
+        configuration.RosterCatalog.KnownCharacters = configuration.RosterCatalog.KnownCharacters
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, sourceAccountKey))
+            .ToList();
+        changed = true;
+
+        foreach (var record in sourceRecords)
+        {
+            record.AccountKey = targetAccountKey;
+            record.AccountAlias = string.IsNullOrWhiteSpace(targetAccountAlias)
+                ? record.AccountAlias
+                : targetAccountAlias.Trim();
+            record.UpdatedAtUtc = DateTime.UtcNow;
+
+            var existingIndex = configuration.RosterCatalog.KnownCharacters.FindIndex(existing =>
+                DadRosterIdentity.SameAccount(existing.AccountKey, targetAccountKey) &&
+                DadRosterIdentity.SameCharacter(
+                    new DadCharacterKey(existing.CharacterKey),
+                    existing.ContentId,
+                    new DadCharacterKey(record.CharacterKey),
+                    record.ContentId));
+            if (existingIndex >= 0)
+                continue;
+
+            configuration.RosterCatalog.KnownCharacters.Add(record);
+        }
+
+        return changed;
+    }
+
+    private bool MoveVisibilityToAccount(DadAccountKey sourceAccountKey, DadAccountKey targetAccountKey)
+    {
+        var sourceRecords = configuration.RosterCatalog.Visibility
+            .Where(record => DadRosterIdentity.SameAccount(record.AccountKey, sourceAccountKey))
+            .Select(static record => record.Clone())
+            .ToList();
+        if (sourceRecords.Count == 0)
+            return false;
+
+        configuration.RosterCatalog.Visibility = configuration.RosterCatalog.Visibility
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, sourceAccountKey))
+            .ToList();
+
+        foreach (var record in sourceRecords)
+        {
+            record.AccountKey = targetAccountKey;
+            record.UpdatedAtUtc = DateTime.UtcNow;
+            var exists = configuration.RosterCatalog.Visibility.Any(existing =>
+                DadRosterIdentity.SameAccount(existing.AccountKey, targetAccountKey) &&
+                SameVisibilityTarget(existing, record));
+            if (!exists)
+                configuration.RosterCatalog.Visibility.Add(record);
+        }
+
+        return true;
+    }
+
+    private bool MoveRefreshHistoryToAccount(DadAccountKey sourceAccountKey, DadAccountKey targetAccountKey)
+    {
+        var sourceRecords = configuration.RosterCatalog.RefreshHistory
+            .Where(record => DadRosterIdentity.SameAccount(record.AccountKey, sourceAccountKey))
+            .Select(static record => record.Clone())
+            .ToList();
+        if (sourceRecords.Count == 0)
+            return false;
+
+        configuration.RosterCatalog.RefreshHistory = configuration.RosterCatalog.RefreshHistory
+            .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, sourceAccountKey))
+            .ToList();
+
+        foreach (var record in sourceRecords)
+        {
+            record.AccountKey = targetAccountKey;
+            var exists = configuration.RosterCatalog.RefreshHistory.Any(existing =>
+                DadRosterIdentity.SameAccount(existing.AccountKey, targetAccountKey) &&
+                SameRefreshTarget(existing, record));
+            if (!exists)
+                configuration.RosterCatalog.RefreshHistory.Add(record);
+        }
+
+        TrimRefreshHistory();
+        return true;
+    }
+
+    private static bool SameVisibilityTarget(DadRosterVisibilityRecord left, DadRosterVisibilityRecord right)
+    {
+        if (left.ContentId != 0 && right.ContentId != 0)
+            return left.ContentId == right.ContentId;
+
+        return !string.IsNullOrWhiteSpace(left.CharacterKey) &&
+               !string.IsNullOrWhiteSpace(right.CharacterKey) &&
+               string.Equals(left.CharacterKey, right.CharacterKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool SameRefreshTarget(DadRosterRefreshRecord left, DadRosterRefreshRecord right)
+    {
+        if (left.ContentId != 0 && right.ContentId != 0)
+            return left.ContentId == right.ContentId;
+
+        return !string.IsNullOrWhiteSpace(left.CharacterKey) &&
+               !string.IsNullOrWhiteSpace(right.CharacterKey) &&
+               string.Equals(left.CharacterKey, right.CharacterKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void LogRosterDiagnostics(DadAccountRosterCatalog catalog, DadRosterRefreshPlan plan)
+    {
+        var diagnostics = catalog.SourceDiagnostics;
+        var reason = string.IsNullOrWhiteSpace(plan.DiagnosticsReason)
+            ? "manual"
+            : plan.DiagnosticsReason.Trim();
+        log.Information(
+            "[dad][Roster] {Reason}: account {LocalAccountKey}, XADB snapshots {SnapshotRows}, legacy {LegacyRows}, merged {MergedRows}, payload {XadbPayloadRows}, DCs {DataCenterCounts}, attributed local {AttributedRows}, known {KnownRows}, local runtime {RuntimeRows}, final local {FinalLocalRows}, peer catalogs {PeerCatalogs}, peer full-roster {PeerFullRosterCount}/{PeerFullRosterRows} row(s), IPC roster v{RosterVersion}, contract v{ContractVersion}, full roster {FullRoster}.",
+            reason,
+            diagnostics.LocalAccountKey,
+            diagnostics.XadbSnapshotRows,
+            diagnostics.XadbLegacyRows,
+            diagnostics.XadbMergedRows,
+            diagnostics.XadbPayloadRows,
+            FormatCountBreakdown(diagnostics.XadbDataCenterCounts),
+            diagnostics.LocalXadbAttributedRows,
+            diagnostics.KnownRosterRows,
+            diagnostics.LocalRuntimeRows,
+            diagnostics.FinalLocalRows,
+            diagnostics.PeerCatalogCount,
+            diagnostics.PeerFullRosterCount,
+            diagnostics.PeerFullRosterRows,
+            catalog.Version,
+            catalog.XadbContractVersion?.ToString() ?? "?",
+            catalog.IsFullRosterAvailable);
+
+        if (!catalog.IsFullRosterAvailable)
+            log.Warning("[dad][Roster] {Warning}", DadXadbClient.RosterIpcMissingWarning);
+    }
+
+    private static string FormatCountBreakdown(IReadOnlyDictionary<string, int> counts, int limit = 8)
+    {
+        if (counts.Count == 0)
+            return "-";
+
+        var ordered = counts
+            .OrderByDescending(static pair => pair.Value)
+            .ThenBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var visible = ordered.Take(Math.Max(1, limit))
+            .Select(static pair => $"{pair.Key}:{pair.Value}");
+        var suffix = ordered.Count > limit ? $", +{ordered.Count - limit}" : string.Empty;
+        return string.Join(", ", visible) + suffix;
+    }
+
     private static string BuildCatalogSummary(DadAccountRosterCatalog catalog)
     {
         var active = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.Active);
         var hidden = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.Hidden);
         var ignored = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.Ignored);
-        var needsUpdate = catalog.Characters.Count(static character => character.Visibility == DadRosterVisibility.NeedsUpdate);
+        var needsUpdate = catalog.Characters.Count(static character => character.NeedsRosterUpdate);
         var stale = catalog.Characters.Count(static character => character.IsStale);
         return $"{active} active, {hidden} hidden, {ignored} ignored, {needsUpdate} need update, {stale} stale.";
     }

@@ -19,6 +19,8 @@ public sealed class ConfigWindow : Window, IDisposable
     private bool endpointDraftInitialized;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
+    private string pendingDeleteAccountId = string.Empty;
+    private string pendingMergeAccountId = string.Empty;
 
     public ConfigWindow(Plugin plugin) : base($"{PluginInfo.DisplayName} Settings##Config", ImGuiWindowFlags.None)
     {
@@ -459,13 +461,14 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var showHidden = configuration.RosterCatalog.ShowHiddenInRoster;
-        if (ImGui.Checkbox("Show hidden in roster tab", ref showHidden))
+        if (ImGui.Checkbox("Include hidden/ignored in roster IPC export", ref showHidden))
         {
             configuration.RosterCatalog.ShowHiddenInRoster = showHidden;
             configuration.Save();
         }
 
-        DrawStatusRow("Preset slot pickers", "Assigned Active roster rows only.");
+        DrawStatusRow("Roster tab", "Account-scoped browser always exposes Active, Hidden, Ignored, Needs update, and All views.");
+        DrawStatusRow("Preset slot pickers", "Assigned Active rows only; update-marked rows wait for refresh.");
 
         var queue = plugin.SchedulerService.GetQueueSnapshot();
         DrawStatusRow("Queue", queue.Summary);
@@ -477,19 +480,33 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawAccountAliasEditor(Configuration configuration)
     {
         ImGui.TextUnformatted("Dad account aliases");
+        if (DrawClearAllAccountDataButton("dad-config-clear-all-account-data"))
+        {
+            DrawMergeAccountPopup();
+            DrawDeleteAccountPopup();
+            return;
+        }
+
         var accounts = plugin.ConfigManager.GetAllAccounts();
         if (accounts.Count == 0)
         {
             ImGui.TextDisabled("No Dad account configs have been seen on this client.");
+            DrawMergeAccountPopup();
+            DrawDeleteAccountPopup();
             return;
         }
 
-        if (!ImGui.BeginTable("dad-account-aliases", 3, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        if (!ImGui.BeginTable("dad-account-aliases", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        {
+            DrawMergeAccountPopup();
+            DrawDeleteAccountPopup();
             return;
+        }
 
         ImGui.TableSetupColumn("Account key");
         ImGui.TableSetupColumn("Alias");
         ImGui.TableSetupColumn("Characters");
+        ImGui.TableSetupColumn("Actions");
         ImGui.TableHeadersRow();
 
         foreach (var account in accounts)
@@ -515,9 +532,150 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(account.Characters.Count.ToString());
+            ImGui.TableNextColumn();
+            var currentAccountId = plugin.ConfigManager.CurrentAccountId?.Trim() ?? string.Empty;
+            var canMerge = !string.IsNullOrWhiteSpace(currentAccountId) &&
+                           !string.Equals(currentAccountId, account.AccountId, StringComparison.OrdinalIgnoreCase);
+            ImGui.BeginDisabled(!canMerge);
+            if (ImGui.SmallButton($"Merge into current##dad-config-merge-account-{account.AccountId}"))
+            {
+                pendingMergeAccountId = account.AccountId;
+                ImGui.OpenPopup("Confirm merge account##dad-config-merge-account");
+            }
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (DrawCtrlShiftSmallButton(
+                    "Delete",
+                    $"dad-config-delete-account-{account.AccountId}",
+                    "Click to delete this local Dad account config and Dad roster metadata. XADB snapshots stay untouched.",
+                    "Hold Ctrl+Shift to delete this local Dad account config and Dad roster metadata. XADB snapshots stay untouched."))
+            {
+                pendingDeleteAccountId = account.AccountId;
+                ImGui.OpenPopup("Confirm delete account##dad-config-delete-account");
+            }
         }
 
         ImGui.EndTable();
+        DrawMergeAccountPopup();
+        DrawDeleteAccountPopup();
+    }
+
+    private bool DrawClearAllAccountDataButton(string id)
+    {
+        var enabled = ImGui.GetIO().KeyCtrl && ImGui.GetIO().KeyShift;
+        ImGui.BeginDisabled(!enabled);
+        var clicked = ImGui.SmallButton($"Clear all account data##{id}");
+        ImGui.EndDisabled();
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(enabled
+                ? "Click to clear Dad account data. XADB snapshots stay untouched."
+                : "Hold Ctrl+Shift to enable. Deletes Dad account configs and clears roster/planner account assignments. XADB snapshots stay untouched.");
+        }
+
+        if (!clicked)
+            return false;
+
+        pendingDeleteAccountId = string.Empty;
+        pendingMergeAccountId = string.Empty;
+        var result = plugin.ClearAllDadAccountData();
+        plugin.PrintStatus(result.ToStatusMessage());
+        return true;
+    }
+
+    private static bool DrawCtrlShiftSmallButton(
+        string label,
+        string id,
+        string enabledTooltip,
+        string disabledTooltip)
+    {
+        var enabled = ImGui.GetIO().KeyCtrl && ImGui.GetIO().KeyShift;
+        ImGui.BeginDisabled(!enabled);
+        var clicked = ImGui.SmallButton($"{label}##{id}");
+        ImGui.EndDisabled();
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(enabled ? enabledTooltip : disabledTooltip);
+
+        return clicked;
+    }
+
+    private void DrawMergeAccountPopup()
+    {
+        if (!ImGui.BeginPopup("Confirm merge account##dad-config-merge-account"))
+            return;
+
+        var source = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingMergeAccountId));
+        var target = plugin.ConfigManager.GetCurrentAccount();
+        if (source == null || target == null)
+        {
+            ImGui.TextUnformatted("No merge source or current target account selected.");
+            if (ImGui.SmallButton("Close"))
+                ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return;
+        }
+
+        ImGui.TextWrapped($"Merge Dad account '{source.AccountAlias}' ({source.AccountId}) into current account '{target.AccountAlias}' ({target.AccountId})?");
+        ImGui.TextDisabled("Moves missing character configs and Dad roster metadata. Target keeps duplicate character configs. Source config is deleted. XADB snapshots stay untouched.");
+        if (ImGui.SmallButton("Merge account"))
+        {
+            if (plugin.MergeDadAccountIntoCurrent(new DadAccountKey(source.AccountId)))
+                plugin.PrintStatus($"Merged Dad account '{source.AccountAlias}' into '{target.AccountAlias}'.");
+
+            pendingMergeAccountId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Cancel"))
+        {
+            pendingMergeAccountId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private void DrawDeleteAccountPopup()
+    {
+        if (!ImGui.BeginPopup("Confirm delete account##dad-config-delete-account"))
+            return;
+
+        var account = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingDeleteAccountId));
+        if (account == null)
+        {
+            ImGui.TextUnformatted("No account selected.");
+            if (ImGui.SmallButton("Close"))
+                ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return;
+        }
+
+        ImGui.TextWrapped($"Delete Dad account '{account.AccountAlias}' ({account.AccountId})?");
+        ImGui.TextDisabled("Removes local Dad config and Dad roster metadata. XADB snapshots stay untouched.");
+        if (DrawCtrlShiftSmallButton(
+                "Delete account",
+                "dad-config-confirm-delete-account",
+                "Click to delete this local Dad account config and Dad roster metadata. XADB snapshots stay untouched.",
+                "Hold Ctrl+Shift to delete this local Dad account config and Dad roster metadata. XADB snapshots stay untouched."))
+        {
+            if (plugin.DeleteDadAccount(new DadAccountKey(account.AccountId)))
+                plugin.PrintStatus($"Deleted Dad account '{account.AccountAlias}' ({account.AccountId}).");
+
+            pendingDeleteAccountId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Cancel"))
+        {
+            pendingDeleteAccountId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
     }
 
     private void DrawCombatRotationTab(Configuration configuration)

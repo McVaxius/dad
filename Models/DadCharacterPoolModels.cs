@@ -157,6 +157,7 @@ public sealed class DadAcquiredCharacter
     public int? SnapshotVersion { get; set; }
     public bool XadbReady { get; set; }
     public DadRosterVisibility RosterVisibility { get; set; } = DadRosterVisibility.Active;
+    public bool NeedsRosterUpdate { get; set; }
     public bool? MapEligible { get; set; }
     public string MapEligibilitySummary { get; set; } = string.Empty;
 
@@ -194,6 +195,7 @@ public sealed class DadAcquiredCharacter
         SnapshotVersion = SnapshotVersion,
         XadbReady = XadbReady,
         RosterVisibility = RosterVisibility,
+        NeedsRosterUpdate = NeedsRosterUpdate,
         MapEligible = MapEligible,
         MapEligibilitySummary = MapEligibilitySummary,
     };

@@ -2044,7 +2044,7 @@ public sealed class DadPresetProviderService
             .GroupBy(static option => option.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 static group => group.Key,
-                static group => group.First().DisplayName,
+                static group => FormatPlannerAccountLabel(group.First()),
                 StringComparer.OrdinalIgnoreCase);
         var labels = options.IncludedAccountKeys
             .Select(key => knownLabelsByKey.TryGetValue(key.Value, out var label) ? label : key.Value)
@@ -2055,6 +2055,26 @@ public sealed class DadPresetProviderService
             return string.Join(", ", labels);
 
         return $"{labels.Count} selected ({string.Join(", ", labels.Take(2))}, +{labels.Count - 2})";
+    }
+
+    private static string FormatPlannerAccountLabel(DadRosterAccountOption option)
+    {
+        var accountKey = option.AccountKey.Value?.Trim() ?? string.Empty;
+        var displayName = !string.IsNullOrWhiteSpace(option.AccountAlias)
+            ? option.AccountAlias.Trim()
+            : !string.IsNullOrWhiteSpace(option.DisplayName)
+                ? option.DisplayName.Trim()
+                : accountKey;
+        if (string.IsNullOrWhiteSpace(displayName))
+            return string.IsNullOrWhiteSpace(accountKey) ? "(account)" : accountKey;
+
+        if (string.IsNullOrWhiteSpace(accountKey) ||
+            string.Equals(displayName, accountKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return displayName;
+        }
+
+        return $"{displayName} ({accountKey})";
     }
 
     private static bool MatchesPlannerAccountFilter(DadAcquiredCharacter character, DadPresetPlannerOptions options)
