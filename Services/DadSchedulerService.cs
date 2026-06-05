@@ -252,16 +252,17 @@ public sealed class DadSchedulerService
             return preview;
         }
 
+        var effectiveGroup = BuildEffectiveSchedulerGroup(group, pool, plannerRequestPreview);
         if (!plannerRequestPreview.CanStart || plannerRequestPreview.Request == null)
         {
             BlockPreview(preview, string.IsNullOrWhiteSpace(plannerRequestPreview.BlockedReason)
                 ? plannerRequestPreview.StatusSummary
                 : plannerRequestPreview.BlockedReason);
-            preview.Slots = BuildSlotStates(group, pool, currentState.Slots);
+            preview.Slots = BuildSlotStates(effectiveGroup, pool, currentState.Slots);
             return preview;
         }
 
-        preview.Slots = BuildSlotStates(group, pool, currentState.Slots);
+        preview.Slots = BuildSlotStates(effectiveGroup, pool, currentState.Slots);
         var blockers = preview.Slots
             .Select(static slot => slot.BlockedReason)
             .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
@@ -998,6 +999,86 @@ public sealed class DadSchedulerService
         currentState.PlannerRequestId = plannerPreview.Request?.RequestId ?? currentState.PlannerRequestId;
         return rebuilt;
     }
+
+    private DadPlannerGroup BuildEffectiveSchedulerGroup(
+        DadPlannerGroup group,
+        DadCharacterPool pool,
+        DadPlannerRunRequestPreview plannerRequestPreview)
+    {
+        if (!IsLocalNpcPlannerRequest(plannerRequestPreview) || group.Slots.Count <= 1)
+            return group;
+
+        var participants = BuildParticipantSet(pool);
+        var effectiveSlot = SelectEffectiveLocalNpcSchedulerSlot(group.Slots, participants);
+        return CloneSchedulerGroupWithSlots(group, [effectiveSlot]);
+    }
+
+    private static bool IsLocalNpcPlannerRequest(DadPlannerRunRequestPreview plannerRequestPreview)
+        => plannerRequestPreview.Request?.DutySupport != null
+           || plannerRequestPreview.Request?.Trust != null
+           || plannerRequestPreview.Request?.Orchestration.ModuleTarget is DadModuleId.DutySupport or DadModuleId.Trust
+           || plannerRequestPreview.PlannerPreview.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust;
+
+    private static DadPlannerGroupSlot SelectEffectiveLocalNpcSchedulerSlot(
+        IReadOnlyList<DadPlannerGroupSlot> slots,
+        IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        var matchingSlot = slots.FirstOrDefault(slot =>
+            participants.Any(participant => participant.IsLocalClient &&
+                                            MatchesSlotAccount(participant, slot) &&
+                                            (slot.RequiredCharacterKey.IsEmpty ||
+                                             MatchesSlotCharacter(participant, slot))));
+
+        return CloneSchedulerGroupSlot(matchingSlot ?? slots[0]);
+    }
+
+    private static DadPlannerGroup CloneSchedulerGroupWithSlots(
+        DadPlannerGroup source,
+        IEnumerable<DadPlannerGroupSlot> slots)
+        => new()
+        {
+            GroupId = source.GroupId,
+            DisplayName = source.DisplayName,
+            RunFamily = source.RunFamily,
+            ActivityMode = source.ActivityMode,
+            OperatorMode = source.OperatorMode,
+            ConnectedOnly = source.ConnectedOnly,
+            SameDatacenterOnly = source.SameDatacenterOnly,
+            AllowStaleForPlanning = source.AllowStaleForPlanning,
+            TransportOwner = source.TransportOwner,
+            QueueAuthority = source.QueueAuthority,
+            InviteAuthority = source.InviteAuthority,
+            DutyContentFinderConditionId = source.DutyContentFinderConditionId,
+            DutyDisplayName = source.DutyDisplayName,
+            DutyUnsynced = source.DutyUnsynced,
+            DutyExpectedPartySize = source.DutyExpectedPartySize,
+            MogtomePreset = source.MogtomePreset,
+            MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            StopPolicy = source.StopPolicy.Clone(),
+            Slots = slots.Select(CloneSchedulerGroupSlot).ToList(),
+            ScheduleEnabled = source.ScheduleEnabled,
+            ScheduleCadenceHours = source.ScheduleCadenceHours,
+            NextEligibleTimeUtc = source.NextEligibleTimeUtc,
+            ScheduleRequester = source.ScheduleRequester,
+            SchedulePriority = source.SchedulePriority,
+            MapRunTemplate = source.MapRunTemplate,
+            MapMode = source.MapMode,
+            CreatedAtUtc = source.CreatedAtUtc,
+            UpdatedAtUtc = source.UpdatedAtUtc,
+        };
+
+    private static DadPlannerGroupSlot CloneSchedulerGroupSlot(DadPlannerGroupSlot source)
+        => new()
+        {
+            SlotId = source.SlotId,
+            RequiredRole = source.RequiredRole,
+            RequiredAccountKey = source.RequiredAccountKey,
+            RequiredCharacterKey = source.RequiredCharacterKey,
+            WakePolicy = source.WakePolicy,
+            LaunchProfileId = source.LaunchProfileId,
+            CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
+            AllowSubstitution = source.AllowSubstitution,
+        };
 
     private List<DadSchedulerSlotState> BuildSlotStates(
         DadPlannerGroup group,
