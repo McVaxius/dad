@@ -140,7 +140,16 @@ public sealed class ConfigWindow : Window, IDisposable
             configuration.Save();
         }
 
+        var autoDutyCompatibility = configuration.EnableAutoDutyCompatibilityIpc;
+        if (ImGui.Checkbox("AutoDuty compatibility IPC", ref autoDutyCompatibility))
+        {
+            configuration.EnableAutoDutyCompatibilityIpc = autoDutyCompatibility;
+            configuration.Save();
+            plugin.AutoDutyCompatibilityIpcService.UpdateRegistrationState();
+        }
+
         DrawStatusRow("Debug UI", configuration.DebugUiEnabled ? "Enabled via /dad debug." : "Disabled. Use /dad debug to show verbose diagnostics.");
+        DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
 
         var dtr = configuration.DtrBarEnabled;
         if (ImGui.Checkbox("Show DTR bar entry", ref dtr))
@@ -775,6 +784,15 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextDisabled(label);
         ImGui.SameLine(220f);
         ImGui.TextWrapped(value);
+    }
+
+    private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
+        var state = status.Registered ? "Registered" : status.RegistrationState;
+        var territory = status.LastTerritoryType == 0 ? "(none)" : status.LastTerritoryType.ToString();
+        var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "(none)" : status.LastRunId;
+        var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "(none)" : status.LastFailure;
+        return $"{state} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
     }
 
     private void EnsureEndpointDraft(Configuration configuration)

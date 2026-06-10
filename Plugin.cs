@@ -58,6 +58,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadQueueExecutionService QueueExecutionService { get; }
     public DadSchedulerService SchedulerService { get; }
     public DadCoordinatorService RunCoordinatorService { get; }
+    public DadAutoDutyCompatibilityIpcService AutoDutyCompatibilityIpcService { get; }
     public WindowSystem WindowSystem { get; } = new(PluginInfo.InternalName);
 
     private readonly MainWindow mainWindow;
@@ -168,6 +169,12 @@ public sealed class Plugin : IDalamudPlugin
             ModuleRegistry,
             PresetProviderService,
             Log);
+        AutoDutyCompatibilityIpcService = new DadAutoDutyCompatibilityIpcService(
+            PluginInterface,
+            Configuration,
+            RunCoordinatorService,
+            PresetProviderService,
+            Log);
 
         Log.Information("[dad] Plugin loaded.");
     }
@@ -181,6 +188,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         CommandManager.RemoveHandler(PluginInfo.Command);
         WindowSystem.RemoveAllWindows();
+        AutoDutyCompatibilityIpcService.Dispose();
         dadIpcService.Dispose();
         LocalDutyQueueService.Dispose();
         NpcDutyQueueService.Dispose();
@@ -1708,6 +1716,7 @@ public sealed class Plugin : IDalamudPlugin
             $"Client {authorityView.ClientPerspectiveText} | " +
             $"{authorityView.FreshnessText} | " +
             $"Local-only {(localRun.LocalOnlyEnabled ? "on" : "off")} | " +
+            $"AutoDuty shim {FormatAutoDutyCompatibilityStatus(AutoDutyCompatibilityIpcService.GetStatus())} | " +
             $"Debug UI {(Configuration.DebugUiEnabled ? "on" : "off")} | " +
             $"Profile {(profile.Enabled ? "armed" : "off")} | " +
             $"Dad starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
@@ -1718,6 +1727,15 @@ public sealed class Plugin : IDalamudPlugin
         PrintStatus($"Authority run: {FormatRunStatusForChat(authorityRun)} | Payload {FormatOperatorTextForChat(authorityView.PayloadText)}");
         PrintStatus($"Planner: {FormatOperatorTextForChat(plannerPreview.PlannerSummary)}");
         PrintStatus($"Planner request: {BuildPlannerRunRequestPreview().StatusSummary}");
+    }
+
+    private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
+        var state = status.Registered ? "registered" : "disabled";
+        var territory = status.LastTerritoryType == 0 ? "none" : status.LastTerritoryType.ToString();
+        var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "none" : status.LastRunId;
+        var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "none" : status.LastFailure;
+        return $"{state} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
     }
 
     private string FormatRunStatusForChat(DadRunResult run)
@@ -2196,6 +2214,7 @@ public sealed class Plugin : IDalamudPlugin
                 StartScheduledPlannerRequest);
         }
         RunCoordinatorService.Update();
+        AutoDutyCompatibilityIpcService.UpdateRegistrationState();
     }
 
     private void OnLogin()

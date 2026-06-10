@@ -3,6 +3,7 @@ namespace dad.Models;
 public sealed class DadPlannerDutyOption
 {
     public uint ContentFinderConditionId { get; set; }
+    public uint TerritoryType { get; set; }
     public string DutyDisplayName { get; set; } = string.Empty;
     public string ShortCode { get; set; } = string.Empty;
     public int QueueSize { get; set; } = 1;

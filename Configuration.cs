@@ -18,6 +18,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool RunAsServerDad { get; set; } = true;
     public bool LocalOnlyModeEnabled { get; set; }
     public bool DebugUiEnabled { get; set; }
+    public bool EnableAutoDutyCompatibilityIpc { get; set; } = true;
     public bool KrangleOperatorNamesEnabled { get; set; }
     public bool DtrBarEnabled { get; set; } = true;
     public int DtrBarMode { get; set; } = 1;

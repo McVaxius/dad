@@ -325,6 +325,12 @@ public sealed class DadPresetProviderService
             : null;
     }
 
+    public IReadOnlyList<DadPlannerDutyOption> GetPlannerDutyOptionsForTerritory(uint territoryType)
+        => GetPlannerDutyCatalog()
+            .Where(option => option.TerritoryType == territoryType)
+            .OrderBy(static option => option.ContentFinderConditionId)
+            .ToList();
+
     public DadPlannerDutyOption? GetPlannerSelectedDuty(DadPresetPlannerOptions options)
     {
         NormalizePlannerOptions(options);
@@ -1801,6 +1807,7 @@ public sealed class DadPresetProviderService
                 return new DadPlannerDutyOption
                 {
                     ContentFinderConditionId = condition.RowId,
+                    TerritoryType = condition.TerritoryType.Value.RowId,
                     DutyDisplayName = dutyName,
                     ShortCode = shortCode,
                     QueueSize = queueSizeInt,

@@ -220,6 +220,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             ImGui.TextWrapped(PluginInfo.Summary);
             DrawStatusRow("Krangle", plugin.KrangleService.BuildStatus(characterPool));
+            DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
             DrawStatusRow("Character pool", characterPool.LastSummary);
             DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
             DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
@@ -311,6 +312,7 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("This instance", DadStatusText.FormatWorkerRole(plugin.PresenceService.CurrentParticipant.WorkerRole));
         DrawStatusRow("Local-only", localRun.LocalOnlyEnabled ? "Enabled" : "Disabled");
         DrawStatusRow("IPC ready", plugin.RunCoordinatorService.IsReady ? "Yes" : "No");
+        DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
 
         DrawSectionHeader("Active Request / Run", "Live request truth from visible authority/local state.");
         if (activeRun.Status == DadRunStatus.Idle)
@@ -387,6 +389,7 @@ public sealed class MainWindow : Window, IDisposable
             ? "Idle."
             : $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
         DrawStatusRow("Status", BuildActiveRunKeyStatus(activeRun));
+        DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
 
         if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
         {
@@ -5011,6 +5014,15 @@ public sealed class MainWindow : Window, IDisposable
             plannerOptions.IncludedAccountKeys.RemoveAt(existingIndex);
         else
             plannerOptions.IncludedAccountKeys.Add(accountKey);
+    }
+
+    private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
+        var state = status.Registered ? "Registered" : status.RegistrationState;
+        var territory = status.LastTerritoryType == 0 ? "(none)" : status.LastTerritoryType.ToString(CultureInfo.InvariantCulture);
+        var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "(none)" : status.LastRunId;
+        var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "(none)" : status.LastFailure;
+        return $"{state} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
     }
 
     private string FormatAccount(DadAcquiredCharacter character)
