@@ -16,6 +16,14 @@ public sealed class DadAutoDutyCompatibilityIpcStatus
     public string LastRunId { get; set; } = string.Empty;
     public bool LastBareMode { get; set; }
     public string LastFailure { get; set; } = string.Empty;
+    public uint LastContentHasPathTerritoryType { get; set; }
+    public bool? LastContentHasPathResult { get; set; }
+    public int LastContentHasPathCandidateCount { get; set; }
+    public int LastContentHasPathCompatibleCandidateCount { get; set; }
+    public uint LastContentHasPathSelectedContentFinderConditionId { get; set; }
+    public string LastContentHasPathSelectedDutyName { get; set; } = string.Empty;
+    public string LastContentHasPathBlocker { get; set; } = string.Empty;
+    public DateTime? LastContentHasPathUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public DadAutoDutyCompatibilityIpcStatus Clone()
@@ -30,8 +38,43 @@ public sealed class DadAutoDutyCompatibilityIpcStatus
             LastRunId = LastRunId,
             LastBareMode = LastBareMode,
             LastFailure = LastFailure,
+            LastContentHasPathTerritoryType = LastContentHasPathTerritoryType,
+            LastContentHasPathResult = LastContentHasPathResult,
+            LastContentHasPathCandidateCount = LastContentHasPathCandidateCount,
+            LastContentHasPathCompatibleCandidateCount = LastContentHasPathCompatibleCandidateCount,
+            LastContentHasPathSelectedContentFinderConditionId = LastContentHasPathSelectedContentFinderConditionId,
+            LastContentHasPathSelectedDutyName = LastContentHasPathSelectedDutyName,
+            LastContentHasPathBlocker = LastContentHasPathBlocker,
+            LastContentHasPathUtc = LastContentHasPathUtc,
             UpdatedAtUtc = UpdatedAtUtc,
         };
+}
+
+public sealed class DadAutoDutyCompatibilityDiagnostic
+{
+    public string Query { get; set; } = string.Empty;
+    public bool ConfigEnabled { get; set; }
+    public bool Registered { get; set; }
+    public bool RealAutoDutyLoaded { get; set; }
+    public string RegistrationState { get; set; } = string.Empty;
+    public string Mode { get; set; } = "Support";
+    public string Route { get; set; } = string.Empty;
+    public uint TerritoryType { get; set; }
+    public uint RequestedContentFinderConditionId { get; set; }
+    public string RequestedDutyName { get; set; } = string.Empty;
+    public bool? RequestedDutyRouteMatch { get; set; }
+    public string RequestedDutyBlocker { get; set; } = string.Empty;
+    public bool ContentHasPathResult { get; set; }
+    public int CandidateCount { get; set; }
+    public int CompatibleCandidateCount { get; set; }
+    public uint ContentHasPathSelectedContentFinderConditionId { get; set; }
+    public string ContentHasPathSelectedDutyName { get; set; } = string.Empty;
+    public string ContentHasPathBlocker { get; set; } = string.Empty;
+    public bool RouteAvailable { get; set; }
+    public uint RouteContentFinderConditionId { get; set; }
+    public string RouteDutyName { get; set; } = string.Empty;
+    public string RouteBlocker { get; set; } = string.Empty;
+    public string Blocker { get; set; } = string.Empty;
 }
 
 public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
@@ -51,6 +94,17 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
     private string dutyMode = "Support";
     private bool unsynced;
     private bool lastRunTerminal = true;
+
+    private sealed class DadAutoDutyContentPathProbe
+    {
+        public uint TerritoryType { get; init; }
+        public bool Result { get; init; }
+        public int CandidateCount { get; init; }
+        public int CompatibleCandidateCount { get; init; }
+        public uint SelectedContentFinderConditionId { get; init; }
+        public string SelectedDutyName { get; init; } = string.Empty;
+        public string Blocker { get; init; } = string.Empty;
+    }
 
     public DadAutoDutyCompatibilityIpcService(
         IDalamudPluginInterface pluginInterface,
@@ -79,6 +133,45 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
     {
         RefreshStatus();
         return status.Clone();
+    }
+
+    public DadAutoDutyCompatibilityDiagnostic DiagnoseCurrentTerritory()
+    {
+        UpdateRegistrationState();
+        if (!Plugin.ClientState.IsLoggedIn)
+        {
+            return BuildUnavailableDiagnostic(
+                "current",
+                0,
+                0,
+                null,
+                "Current territory unavailable; log in before running this diagnostic.");
+        }
+
+        return DiagnoseTerritory(Plugin.ClientState.TerritoryType, "current", null, 0);
+    }
+
+    public DadAutoDutyCompatibilityDiagnostic DiagnoseTerritory(uint territoryType)
+    {
+        UpdateRegistrationState();
+        return DiagnoseTerritory(territoryType, $"territory {territoryType}", null, 0);
+    }
+
+    public DadAutoDutyCompatibilityDiagnostic DiagnoseContentFinderCondition(uint contentFinderConditionId)
+    {
+        UpdateRegistrationState();
+        var duty = presetProviderService.GetPlannerDutyOption(contentFinderConditionId);
+        if (duty == null)
+        {
+            return BuildUnavailableDiagnostic(
+                $"cfc {contentFinderConditionId}",
+                0,
+                contentFinderConditionId,
+                null,
+                $"Dad planner catalog has no ContentFinderCondition row #{contentFinderConditionId}.");
+        }
+
+        return DiagnoseTerritory(duty.TerritoryType, $"cfc {contentFinderConditionId}", duty, contentFinderConditionId);
     }
 
     public void UpdateRegistrationState()
@@ -142,26 +235,25 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
     private bool ContentHasPath(uint territoryType)
     {
-        status.LastTerritoryType = territoryType;
-        status.UpdatedAtUtc = DateTime.UtcNow;
-
         try
         {
-            var candidates = presetProviderService.GetPlannerDutyOptionsForTerritory(territoryType);
-            var hasPath = candidates.Any(IsAutoDutyCompatibleCandidate);
-            if (!hasPath)
-                status.LastFailure = $"No Dad-compatible duty route found for territory {territoryType}.";
+            var probe = EvaluateContentHasPath(territoryType);
+            RecordContentHasPathProbe(probe);
 
             log.Debug(
-                "[dad][AutoDutyCompat] ContentHasPath territory={TerritoryType} result={Result} candidates={CandidateCount}.",
+                "[dad][AutoDutyCompat] ContentHasPath territory={TerritoryType} result={Result} candidates={CandidateCount} compatible={CompatibleCandidateCount} selected={SelectedContentFinderConditionId}:{SelectedDutyName} blocker={Blocker}.",
                 territoryType,
-                hasPath,
-                candidates.Count);
-            return hasPath;
+                probe.Result,
+                probe.CandidateCount,
+                probe.CompatibleCandidateCount,
+                probe.SelectedContentFinderConditionId,
+                probe.SelectedDutyName,
+                probe.Blocker);
+            return probe.Result;
         }
         catch (Exception ex)
         {
-            status.LastFailure = ex.Message;
+            RecordContentHasPathFailure(territoryType, ex.Message);
             log.Warning(ex, "[dad][AutoDutyCompat] ContentHasPath failed for territory {TerritoryType}.", territoryType);
             return false;
         }
@@ -217,7 +309,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
         var route = ResolveRoute();
         var loopCount = Math.Max(1, loops);
-        if (!TryResolveDuty(territoryType, route, out var duty, out var blocker) || duty == null)
+        if (!TryResolveDuty(territoryType, route, logAmbiguousSelection: true, out var duty, out var blocker) || duty == null)
         {
             var rejected = DadRunResult.Rejected(null, blocker);
             status.LastRunId = rejected.RequestId;
@@ -324,9 +416,116 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             ? DadAutoDutyCompatibilityRoute.LocalDuty
             : DadAutoDutyCompatibilityRoute.DutySupport;
 
+    private DadAutoDutyCompatibilityDiagnostic DiagnoseTerritory(
+        uint territoryType,
+        string query,
+        DadPlannerDutyOption? requestedDuty,
+        uint requestedContentFinderConditionId)
+    {
+        DadAutoDutyContentPathProbe probe;
+        try
+        {
+            probe = EvaluateContentHasPath(territoryType);
+        }
+        catch (Exception ex)
+        {
+            probe = new DadAutoDutyContentPathProbe
+            {
+                TerritoryType = territoryType,
+                Result = false,
+                Blocker = ex.Message,
+            };
+        }
+
+        var route = ResolveRoute();
+        DadPlannerDutyOption? routeDuty;
+        string routeBlocker;
+        bool routeAvailable;
+        try
+        {
+            routeAvailable = TryResolveDuty(
+                territoryType,
+                route,
+                logAmbiguousSelection: false,
+                out routeDuty,
+                out routeBlocker);
+        }
+        catch (Exception ex)
+        {
+            routeDuty = null;
+            routeBlocker = ex.Message;
+            routeAvailable = false;
+        }
+        var requestedRouteMatch = requestedDuty == null
+            ? (bool?)null
+            : DoesDutyMatchRoute(requestedDuty, route);
+        var requestedDutyBlocker = requestedDuty == null || requestedRouteMatch == true
+            ? string.Empty
+            : BuildRequestedDutyBlocker(requestedDuty, route);
+
+        var blocker = ResolveDiagnosticBlocker(probe, routeAvailable, routeBlocker, requestedDutyBlocker);
+        return new DadAutoDutyCompatibilityDiagnostic
+        {
+            Query = query,
+            ConfigEnabled = status.ConfigEnabled,
+            Registered = status.Registered,
+            RealAutoDutyLoaded = status.RealAutoDutyLoaded,
+            RegistrationState = status.RegistrationState,
+            Mode = BuildModeStatusText(),
+            Route = route.ToString(),
+            TerritoryType = territoryType,
+            RequestedContentFinderConditionId = requestedContentFinderConditionId,
+            RequestedDutyName = requestedDuty?.DutyDisplayName ?? string.Empty,
+            RequestedDutyRouteMatch = requestedRouteMatch,
+            RequestedDutyBlocker = requestedDutyBlocker,
+            ContentHasPathResult = probe.Result,
+            CandidateCount = probe.CandidateCount,
+            CompatibleCandidateCount = probe.CompatibleCandidateCount,
+            ContentHasPathSelectedContentFinderConditionId = probe.SelectedContentFinderConditionId,
+            ContentHasPathSelectedDutyName = probe.SelectedDutyName,
+            ContentHasPathBlocker = probe.Blocker,
+            RouteAvailable = routeAvailable,
+            RouteContentFinderConditionId = routeDuty?.ContentFinderConditionId ?? 0,
+            RouteDutyName = routeDuty?.DutyDisplayName ?? string.Empty,
+            RouteBlocker = routeBlocker,
+            Blocker = blocker,
+        };
+    }
+
+    private DadAutoDutyCompatibilityDiagnostic BuildUnavailableDiagnostic(
+        string query,
+        uint territoryType,
+        uint requestedContentFinderConditionId,
+        DadPlannerDutyOption? requestedDuty,
+        string blocker)
+    {
+        var route = ResolveRoute();
+        return new DadAutoDutyCompatibilityDiagnostic
+        {
+            Query = query,
+            ConfigEnabled = status.ConfigEnabled,
+            Registered = status.Registered,
+            RealAutoDutyLoaded = status.RealAutoDutyLoaded,
+            RegistrationState = status.RegistrationState,
+            Mode = BuildModeStatusText(),
+            Route = route.ToString(),
+            TerritoryType = territoryType,
+            RequestedContentFinderConditionId = requestedContentFinderConditionId,
+            RequestedDutyName = requestedDuty?.DutyDisplayName ?? string.Empty,
+            RequestedDutyRouteMatch = requestedDuty == null ? (bool?)null : DoesDutyMatchRoute(requestedDuty, route),
+            RequestedDutyBlocker = requestedDuty == null ? string.Empty : BuildRequestedDutyBlocker(requestedDuty, route),
+            ContentHasPathResult = false,
+            ContentHasPathBlocker = blocker,
+            RouteAvailable = false,
+            RouteBlocker = blocker,
+            Blocker = blocker,
+        };
+    }
+
     private bool TryResolveDuty(
         uint territoryType,
         DadAutoDutyCompatibilityRoute route,
+        bool logAmbiguousSelection,
         out DadPlannerDutyOption? duty,
         out string blocker)
     {
@@ -343,7 +542,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
         if (duty != null)
         {
-            if (candidates.Count > 1)
+            if (logAmbiguousSelection && candidates.Count > 1)
             {
                 log.Information(
                     "[dad][AutoDutyCompat] Territory {TerritoryType} matched {CandidateCount} CFC row(s); selected {DutyName} #{ContentFinderConditionId}.",
@@ -363,6 +562,114 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
                 ? $"Territory {territoryType} has no Dad local duty row that allows undersized/unsynced queueing."
                 : $"Territory {territoryType} has no Dad local duty ContentFinderCondition row.";
         return false;
+    }
+
+    private DadAutoDutyContentPathProbe EvaluateContentHasPath(uint territoryType)
+    {
+        var candidates = presetProviderService.GetPlannerDutyOptionsForTerritory(territoryType)
+            .OrderBy(static option => option.ContentFinderConditionId)
+            .ToList();
+        var compatibleCandidates = candidates
+            .Where(IsAutoDutyCompatibleCandidate)
+            .OrderBy(static option => option.ContentFinderConditionId)
+            .ToList();
+        var selected = compatibleCandidates.FirstOrDefault();
+        return new DadAutoDutyContentPathProbe
+        {
+            TerritoryType = territoryType,
+            Result = selected != null,
+            CandidateCount = candidates.Count,
+            CompatibleCandidateCount = compatibleCandidates.Count,
+            SelectedContentFinderConditionId = selected?.ContentFinderConditionId ?? 0,
+            SelectedDutyName = selected?.DutyDisplayName ?? string.Empty,
+            Blocker = selected == null
+                ? $"No Dad-compatible duty route found for territory {territoryType}."
+                : string.Empty,
+        };
+    }
+
+    private void RecordContentHasPathProbe(DadAutoDutyContentPathProbe probe)
+    {
+        status.LastTerritoryType = probe.TerritoryType;
+        status.LastContentHasPathTerritoryType = probe.TerritoryType;
+        status.LastContentHasPathResult = probe.Result;
+        status.LastContentHasPathCandidateCount = probe.CandidateCount;
+        status.LastContentHasPathCompatibleCandidateCount = probe.CompatibleCandidateCount;
+        status.LastContentHasPathSelectedContentFinderConditionId = probe.SelectedContentFinderConditionId;
+        status.LastContentHasPathSelectedDutyName = probe.SelectedDutyName;
+        status.LastContentHasPathBlocker = probe.Blocker;
+        status.LastContentHasPathUtc = DateTime.UtcNow;
+        status.LastFailure = probe.Result ? string.Empty : probe.Blocker;
+        status.UpdatedAtUtc = status.LastContentHasPathUtc.Value;
+    }
+
+    private void RecordContentHasPathFailure(uint territoryType, string blocker)
+    {
+        status.LastTerritoryType = territoryType;
+        status.LastContentHasPathTerritoryType = territoryType;
+        status.LastContentHasPathResult = false;
+        status.LastContentHasPathCandidateCount = 0;
+        status.LastContentHasPathCompatibleCandidateCount = 0;
+        status.LastContentHasPathSelectedContentFinderConditionId = 0;
+        status.LastContentHasPathSelectedDutyName = string.Empty;
+        status.LastContentHasPathBlocker = blocker;
+        status.LastContentHasPathUtc = DateTime.UtcNow;
+        status.LastFailure = blocker;
+        status.UpdatedAtUtc = status.LastContentHasPathUtc.Value;
+    }
+
+    private string ResolveDiagnosticBlocker(
+        DadAutoDutyContentPathProbe probe,
+        bool routeAvailable,
+        string routeBlocker,
+        string requestedDutyBlocker)
+    {
+        if (!configuration.EnableAutoDutyCompatibilityIpc)
+            return "AutoDuty compatibility IPC disabled by Dad config.";
+
+        if (status.RealAutoDutyLoaded)
+            return "Real AutoDuty is loaded; Dad shim disabled to avoid AutoDuty.* collision.";
+
+        if (!status.Registered)
+            return string.IsNullOrWhiteSpace(status.RegistrationState)
+                ? "AutoDuty compatibility IPC is not registered."
+                : status.RegistrationState;
+
+        if (!probe.Result)
+            return probe.Blocker;
+
+        if (!routeAvailable)
+            return routeBlocker;
+
+        return requestedDutyBlocker;
+    }
+
+    private bool DoesDutyMatchRoute(DadPlannerDutyOption option, DadAutoDutyCompatibilityRoute route)
+    {
+        if (!IsAutoDutyCompatibleCandidate(option))
+            return false;
+
+        return route switch
+        {
+            DadAutoDutyCompatibilityRoute.DutySupport => option.SupportsDutySupport,
+            DadAutoDutyCompatibilityRoute.LocalDuty => !unsynced || option.AllowUndersized,
+            _ => false,
+        };
+    }
+
+    private string BuildRequestedDutyBlocker(DadPlannerDutyOption option, DadAutoDutyCompatibilityRoute route)
+    {
+        if (!IsAutoDutyCompatibleCandidate(option))
+            return $"ContentFinderCondition #{option.ContentFinderConditionId} is not Dad-compatible.";
+
+        return route switch
+        {
+            DadAutoDutyCompatibilityRoute.DutySupport when !option.SupportsDutySupport =>
+                $"{option.DutyDisplayName} #{option.ContentFinderConditionId} is not marked as Duty Support content.",
+            DadAutoDutyCompatibilityRoute.LocalDuty when unsynced && !option.AllowUndersized =>
+                $"{option.DutyDisplayName} #{option.ContentFinderConditionId} does not allow undersized/unsynced queueing.",
+            _ => string.Empty,
+        };
     }
 
     private DadRunRequest BuildRunRequest(

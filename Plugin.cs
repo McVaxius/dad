@@ -149,7 +149,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, {PluginInfo.Command} test planner-groups, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, {PluginInfo.Command} test planner-groups, {PluginInfo.Command} test autoduty current, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -1709,6 +1709,7 @@ public sealed class Plugin : IDalamudPlugin
         var authorityView = runState.AuthorityView;
         var characterPool = CharacterIntelligenceService.CurrentPool;
         var plannerPreview = BuildPlannerPreview();
+        var autoDutyStatus = AutoDutyCompatibilityIpcService.GetStatus();
         PrintStatus(
             $"IPC {(RunCoordinatorService.IsReady ? "ready" : "not ready")} | " +
             $"This instance {DadStatusText.FormatWorkerRole(localRun.WorkerRole)} | " +
@@ -1716,11 +1717,13 @@ public sealed class Plugin : IDalamudPlugin
             $"Client {authorityView.ClientPerspectiveText} | " +
             $"{authorityView.FreshnessText} | " +
             $"Local-only {(localRun.LocalOnlyEnabled ? "on" : "off")} | " +
-            $"AutoDuty shim {FormatAutoDutyCompatibilityStatus(AutoDutyCompatibilityIpcService.GetStatus())} | " +
+            $"AutoDuty shim {FormatAutoDutyCompatibilityStatus(autoDutyStatus)} | " +
             $"Debug UI {(Configuration.DebugUiEnabled ? "on" : "off")} | " +
             $"Profile {(profile.Enabled ? "armed" : "off")} | " +
             $"Dad starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
             $"Pool {characterPool.Characters.Count} row(s) / XADB {characterPool.XadbStatus.Availability} / peers {characterPool.PeerTransport.ConnectedPeerCount}");
+        PrintStatus($"AutoDuty probe: {FormatAutoDutyProbeStatus(autoDutyStatus)}");
+        PrintStatus($"AutoDuty failure: {FormatAutoDutyFailureStatus(autoDutyStatus)}");
         PrintStatus($"Authority timeline: {FormatOperatorTextForChat(authorityView.TimelineText)}");
         PrintStatus($"Authority owner: {FormatOperatorTextForChat(authorityView.OwnershipText)}");
         PrintStatus($"Local run: {FormatRunStatusForChat(localRun)} | Payload {FormatOperatorTextForChat(FormatTaskPayload(localRun))}");
@@ -1731,11 +1734,46 @@ public sealed class Plugin : IDalamudPlugin
 
     private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
     {
-        var state = status.Registered ? "registered" : "disabled";
-        var territory = status.LastTerritoryType == 0 ? "none" : status.LastTerritoryType.ToString();
+        var state = status.Registered
+            ? "registered"
+            : string.IsNullOrWhiteSpace(status.RegistrationState)
+                ? "not registered"
+                : status.RegistrationState;
+        var collision = status.RealAutoDutyLoaded ? "real AutoDuty loaded" : "no real AutoDuty";
+        return $"{state} | {collision} | mode {status.LastMode}";
+    }
+
+    private static string FormatAutoDutyProbeStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
+        if (!status.LastContentHasPathResult.HasValue)
+            return "no ContentHasPath probe yet";
+
+        var territory = status.LastContentHasPathTerritoryType == 0
+            ? "none"
+            : status.LastContentHasPathTerritoryType.ToString();
+        var result = status.LastContentHasPathResult.Value ? "true" : "false";
+        var selected = FormatAutoDutyDuty(status.LastContentHasPathSelectedContentFinderConditionId, status.LastContentHasPathSelectedDutyName);
+        var blocker = string.IsNullOrWhiteSpace(status.LastContentHasPathBlocker)
+            ? "none"
+            : status.LastContentHasPathBlocker;
+        return $"ContentHasPath({territory})={result} | candidates {status.LastContentHasPathCandidateCount} / compatible {status.LastContentHasPathCompatibleCandidateCount} | selected {selected} | blocker {blocker}";
+    }
+
+    private static string FormatAutoDutyFailureStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
         var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "none" : status.LastRunId;
         var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "none" : status.LastFailure;
-        return $"{state} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
+        return $"run {runId} | failure {failure}";
+    }
+
+    private static string FormatAutoDutyDuty(uint contentFinderConditionId, string dutyName)
+    {
+        if (contentFinderConditionId == 0)
+            return "none";
+
+        return string.IsNullOrWhiteSpace(dutyName)
+            ? $"#{contentFinderConditionId}"
+            : $"#{contentFinderConditionId} {dutyName}";
     }
 
     private string FormatRunStatusForChat(DadRunResult run)
@@ -1920,6 +1958,12 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (trimmed.StartsWith("test autoduty", StringComparison.OrdinalIgnoreCase))
+        {
+            RunAutoDutyDiagnosticsFromShell(trimmed["test autoduty".Length..].Trim());
+            return;
+        }
+
         if (trimmed.Equals("cancel", StringComparison.OrdinalIgnoreCase))
         {
             CancelActiveRunFromShell();
@@ -1928,6 +1972,82 @@ public sealed class Plugin : IDalamudPlugin
 
         ToggleMainUi();
     }
+
+    private void RunAutoDutyDiagnosticsFromShell(string arguments)
+    {
+        var tokens = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        DadAutoDutyCompatibilityDiagnostic diagnostic;
+        if (tokens.Length == 0 || tokens[0].Equals("current", StringComparison.OrdinalIgnoreCase))
+        {
+            diagnostic = AutoDutyCompatibilityIpcService.DiagnoseCurrentTerritory();
+        }
+        else if (tokens.Length == 2 &&
+                 tokens[0].Equals("territory", StringComparison.OrdinalIgnoreCase) &&
+                 uint.TryParse(tokens[1], out var territoryType))
+        {
+            diagnostic = AutoDutyCompatibilityIpcService.DiagnoseTerritory(territoryType);
+        }
+        else if (tokens.Length == 2 &&
+                 tokens[0].Equals("cfc", StringComparison.OrdinalIgnoreCase) &&
+                 uint.TryParse(tokens[1], out var contentFinderConditionId))
+        {
+            diagnostic = AutoDutyCompatibilityIpcService.DiagnoseContentFinderCondition(contentFinderConditionId);
+        }
+        else
+        {
+            PrintStatus("AutoDuty diagnostics usage: /dad test autoduty current | territory <id> | cfc <id>");
+            return;
+        }
+
+        PrintStatus($"AutoDuty diag state: {FormatAutoDutyDiagnosticState(diagnostic)}");
+        PrintStatus($"AutoDuty diag probe: {FormatAutoDutyDiagnosticProbe(diagnostic)}");
+        PrintStatus($"AutoDuty diag route: {FormatAutoDutyDiagnosticRoute(diagnostic)}");
+        if (!string.IsNullOrWhiteSpace(diagnostic.Blocker))
+            PrintStatus($"AutoDuty diag blocker: {diagnostic.Blocker}");
+    }
+
+    private static string FormatAutoDutyDiagnosticState(DadAutoDutyCompatibilityDiagnostic diagnostic)
+    {
+        var config = diagnostic.ConfigEnabled ? "config on" : "config off";
+        var ipc = diagnostic.Registered
+            ? "ipc registered"
+            : $"ipc {FormatAutoDutyDiagnosticText(diagnostic.RegistrationState, "not registered")}";
+        var collision = diagnostic.RealAutoDutyLoaded ? "real AutoDuty loaded" : "no real AutoDuty";
+        return $"{diagnostic.Query} | {config} | {ipc} | {collision} | mode {diagnostic.Mode}";
+    }
+
+    private static string FormatAutoDutyDiagnosticProbe(DadAutoDutyCompatibilityDiagnostic diagnostic)
+    {
+        var result = diagnostic.ContentHasPathResult ? "true" : "false";
+        var selected = FormatAutoDutyDuty(diagnostic.ContentHasPathSelectedContentFinderConditionId, diagnostic.ContentHasPathSelectedDutyName);
+        var blocker = FormatAutoDutyDiagnosticText(diagnostic.ContentHasPathBlocker, "none");
+        var requested = diagnostic.RequestedContentFinderConditionId == 0
+            ? string.Empty
+            : $" | requested {FormatAutoDutyDuty(diagnostic.RequestedContentFinderConditionId, diagnostic.RequestedDutyName)} route {FormatAutoDutyRouteMatch(diagnostic)}";
+        return $"territory {diagnostic.TerritoryType} | ContentHasPath={result} | candidates {diagnostic.CandidateCount} / compatible {diagnostic.CompatibleCandidateCount} | selected {selected} | blocker {blocker}{requested}";
+    }
+
+    private static string FormatAutoDutyDiagnosticRoute(DadAutoDutyCompatibilityDiagnostic diagnostic)
+    {
+        var availability = diagnostic.RouteAvailable ? "available" : "blocked";
+        var selected = FormatAutoDutyDuty(diagnostic.RouteContentFinderConditionId, diagnostic.RouteDutyName);
+        var blocker = FormatAutoDutyDiagnosticText(diagnostic.RouteBlocker, "none");
+        return $"{diagnostic.Route} | {availability} | selected {selected} | blocker {blocker}";
+    }
+
+    private static string FormatAutoDutyRouteMatch(DadAutoDutyCompatibilityDiagnostic diagnostic)
+    {
+        if (!diagnostic.RequestedDutyRouteMatch.HasValue)
+            return "unknown";
+
+        if (diagnostic.RequestedDutyRouteMatch.Value)
+            return "match";
+
+        return $"blocked ({FormatAutoDutyDiagnosticText(diagnostic.RequestedDutyBlocker, "no matching route")})";
+    }
+
+    private static string FormatAutoDutyDiagnosticText(string value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     private void RunPlannerGroupIpcDiagnosticsFromShell()
     {

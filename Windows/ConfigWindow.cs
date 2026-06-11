@@ -149,7 +149,11 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         DrawStatusRow("Debug UI", configuration.DebugUiEnabled ? "Enabled via /dad debug." : "Disabled. Use /dad debug to show verbose diagnostics.");
-        DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
+        var autoDutyStatus = plugin.AutoDutyCompatibilityIpcService.GetStatus();
+        DrawStatusRow("AutoDuty IPC", FormatAutoDutyRegistrationStatus(autoDutyStatus));
+        DrawStatusRow("AutoDuty collision", FormatAutoDutyCollisionStatus(autoDutyStatus));
+        DrawStatusRow("AutoDuty probe", FormatAutoDutyProbeStatus(autoDutyStatus));
+        DrawStatusRow("AutoDuty failure", FormatAutoDutyFailureStatus(autoDutyStatus));
 
         var dtr = configuration.DtrBarEnabled;
         if (ImGui.Checkbox("Show DTR bar entry", ref dtr))
@@ -271,6 +275,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText("/dad run commend -> start a Server Dad commendation demo");
         ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
         ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
+        ImGui.BulletText("/dad test autoduty current|territory <id>|cfc <id> -> diagnose AutoDuty shim availability");
         ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
     }
 
@@ -786,13 +791,44 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextWrapped(value);
     }
 
-    private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
+    private static string FormatAutoDutyRegistrationStatus(DadAutoDutyCompatibilityIpcStatus status)
     {
         var state = status.Registered ? "Registered" : status.RegistrationState;
-        var territory = status.LastTerritoryType == 0 ? "(none)" : status.LastTerritoryType.ToString();
+        return $"{FormatText(state, "Not registered")} | mode {status.LastMode}";
+    }
+
+    private static string FormatAutoDutyCollisionStatus(DadAutoDutyCompatibilityIpcStatus status)
+        => status.RealAutoDutyLoaded
+            ? "Real AutoDuty is loaded; Dad shim disabled to avoid AutoDuty.* IPC collision."
+            : "No real AutoDuty plugin loaded.";
+
+    private static string FormatAutoDutyProbeStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
+        if (!status.LastContentHasPathResult.HasValue)
+            return "No Questionable ContentHasPath probe observed yet.";
+
+        var territory = status.LastContentHasPathTerritoryType == 0 ? "(none)" : status.LastContentHasPathTerritoryType.ToString();
+        var result = status.LastContentHasPathResult.Value ? "true" : "false";
+        var selected = FormatAutoDutyDuty(status.LastContentHasPathSelectedContentFinderConditionId, status.LastContentHasPathSelectedDutyName);
+        var blocker = FormatText(status.LastContentHasPathBlocker, "(none)");
+        return $"ContentHasPath({territory})={result} | candidates {status.LastContentHasPathCandidateCount} / compatible {status.LastContentHasPathCompatibleCandidateCount} | selected {selected} | blocker {blocker}";
+    }
+
+    private static string FormatAutoDutyFailureStatus(DadAutoDutyCompatibilityIpcStatus status)
+    {
         var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "(none)" : status.LastRunId;
         var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "(none)" : status.LastFailure;
-        return $"{state} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
+        return $"run {runId} | failure {failure}";
+    }
+
+    private static string FormatAutoDutyDuty(uint contentFinderConditionId, string dutyName)
+    {
+        if (contentFinderConditionId == 0)
+            return "(none)";
+
+        return string.IsNullOrWhiteSpace(dutyName)
+            ? $"#{contentFinderConditionId}"
+            : $"#{contentFinderConditionId} {dutyName}";
     }
 
     private void EnsureEndpointDraft(Configuration configuration)
