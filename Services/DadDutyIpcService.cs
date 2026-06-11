@@ -74,16 +74,24 @@ public sealed class DadDutyIpcDiagnostic
 public sealed class DadDutyIpcService : IDisposable
 {
     private readonly IDalamudPluginInterface pluginInterface;
-    private readonly DadCoordinatorService coordinatorService;
     private readonly DadPresetProviderService presetProviderService;
+    private readonly DadDutySupportExecutor dutySupportExecutor;
+    private readonly DadLocalDutyExecutor localDutyExecutor;
+    private readonly DadCombatRotationService combatRotationService;
     private readonly IPluginLog log;
     private readonly List<Action> disposeActions = [];
     private readonly DadDutyIpcStatus status = new();
 
     private string dutyMode = "Support";
     private bool unsynced;
-    private string ownedRunId = string.Empty;
-    private bool lastRunTerminal = true;
+    private DadDutyIpcSessionStage sessionStage = DadDutyIpcSessionStage.Stopped;
+    private IDadModuleExecutor? activeExecutor;
+    private DadPlannerDutyOption? activeDuty;
+    private DadDutyIpcRoute activeRoute;
+    private bool activeUnsynced;
+    private string ownedSessionId = string.Empty;
+    private int requestedLoops;
+    private int completedLoops;
     private DateTime nextRegistrationAttemptUtc = DateTime.MinValue;
 
     private sealed class DadDutyContentPathProbe
@@ -99,22 +107,26 @@ public sealed class DadDutyIpcService : IDisposable
 
     public DadDutyIpcService(
         IDalamudPluginInterface pluginInterface,
-        DadCoordinatorService coordinatorService,
         DadPresetProviderService presetProviderService,
+        DadLocalDutyQueueService localDutyQueueService,
+        DadNpcDutyQueueService npcDutyQueueService,
+        DadDutySupportAdsService dutySupportAdsService,
+        DadCombatRotationService combatRotationService,
         IPluginLog log)
     {
         this.pluginInterface = pluginInterface;
-        this.coordinatorService = coordinatorService;
         this.presetProviderService = presetProviderService;
+        localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
+        dutySupportExecutor = new DadDutySupportExecutor(npcDutyQueueService, dutySupportAdsService, combatRotationService);
+        this.combatRotationService = combatRotationService;
         this.log = log;
 
-        coordinatorService.StatusChanged += OnRunStatusChanged;
         EnsureRegistered();
     }
 
     public void Dispose()
     {
-        coordinatorService.StatusChanged -= OnRunStatusChanged;
+        StopBridgeSession("Dad duty IPC disposed.", clearFailure: true);
         Unregister();
     }
 
@@ -131,6 +143,29 @@ public sealed class DadDutyIpcService : IDisposable
 
         nextRegistrationAttemptUtc = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         Register();
+    }
+
+    public void Update()
+    {
+        if (sessionStage != DadDutyIpcSessionStage.Running)
+            return;
+
+        if (activeExecutor == null)
+        {
+            StartNextLoop();
+            return;
+        }
+
+        try
+        {
+            activeExecutor.Update();
+            HandleActiveExecutorStatus();
+        }
+        catch (Exception ex)
+        {
+            FailSession(ex.Message);
+            log.Warning(ex, "[dad][DutyIpc] Bridge executor update failed.");
+        }
     }
 
     public DadDutyIpcDiagnostic DiagnoseCurrentTerritory()
@@ -253,124 +288,203 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void Run(uint territoryType, int loops, bool bareMode)
     {
+        StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true);
+
         status.LastTerritoryType = territoryType;
         status.LastBareMode = bareMode;
         status.LastMode = BuildModeStatusText();
+        status.LastRunId = $"duty-ipc-{Guid.NewGuid():N}";
         status.UpdatedAtUtc = DateTime.UtcNow;
 
-        if (!status.Registered)
-        {
-            status.LastFailure = status.RegistrationState;
-            throw new InvalidOperationException(status.RegistrationState);
-        }
-
-        var route = ResolveRoute();
-        var loopCount = Math.Max(1, loops);
-        if (!TryResolveDuty(territoryType, route, logAmbiguousSelection: true, out var duty, out var blocker) || duty == null)
-        {
-            status.LastFailure = blocker;
-            log.Warning(
-                "[dad][DutyIpc] Run rejected territory={TerritoryType} route={Route}: {Blocker}",
-                territoryType,
-                route,
-                blocker);
-            throw new InvalidOperationException(blocker);
-        }
-
-        var request = BuildRunRequest(duty, route, loopCount);
-        log.Information(
-            "[dad][DutyIpc] Starting Dad run from duty IPC territory={TerritoryType} cfc={ContentFinderConditionId} route={Route} loops={Loops} bareMode={BareMode}.",
-            territoryType,
-            duty.ContentFinderConditionId,
-            route,
-            loopCount,
-            bareMode);
-
-        DadRunResult result;
         try
         {
-            result = coordinatorService.StartTasks(request);
+            var route = ResolveRoute();
+            var loopCount = Math.Max(1, loops);
+            if (!TryResolveDuty(territoryType, route, logAmbiguousSelection: true, out var duty, out var blocker) || duty == null)
+            {
+                FailSession(blocker);
+                log.Warning(
+                    "[dad][DutyIpc] Run rejected territory={TerritoryType} route={Route}: {Blocker}",
+                    territoryType,
+                    route,
+                    blocker);
+                return;
+            }
+
+            ownedSessionId = status.LastRunId;
+            activeDuty = duty;
+            activeRoute = route;
+            activeUnsynced = unsynced;
+            requestedLoops = loopCount;
+            completedLoops = 0;
+            sessionStage = DadDutyIpcSessionStage.Running;
+            status.LastFailure = string.Empty;
+
+            log.Information(
+                "[dad][DutyIpc] Starting bridge session territory={TerritoryType} cfc={ContentFinderConditionId} route={Route} loops={Loops} bareMode={BareMode}.",
+                territoryType,
+                duty.ContentFinderConditionId,
+                route,
+                loopCount,
+                bareMode);
+
+            StartNextLoop();
         }
         catch (Exception ex)
         {
-            status.LastRunId = request.RequestId;
-            status.LastFailure = ex.Message;
-            status.UpdatedAtUtc = DateTime.UtcNow;
-            throw;
-        }
-
-        status.LastRunId = string.IsNullOrWhiteSpace(result.RequestId) ? request.RequestId : result.RequestId;
-        if (result.IsTerminal)
-        {
-            status.LastFailure = string.IsNullOrWhiteSpace(result.FailureReason)
-                ? result.Summary
-                : result.FailureReason;
-            throw new InvalidOperationException(status.LastFailure);
-        }
-        else
-        {
-            ownedRunId = status.LastRunId;
-            lastRunTerminal = false;
-            status.LastFailure = string.Empty;
+            FailSession(ex.Message);
+            log.Warning(ex, "[dad][DutyIpc] Run failed for territory {TerritoryType}.", territoryType);
         }
     }
 
     private bool IsStopped()
-    {
-        if (string.IsNullOrWhiteSpace(ownedRunId))
-            return true;
-
-        var run = coordinatorService.GetLocalResult();
-        if (string.Equals(run.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase) && run.IsTerminal)
-            lastRunTerminal = true;
-
-        return lastRunTerminal;
-    }
+        => sessionStage == DadDutyIpcSessionStage.Stopped;
 
     private void Stop()
+        => StopBridgeSession("Stopped by Dad duty IPC.", clearFailure: true);
+
+    private void StartNextLoop()
     {
-        if (string.IsNullOrWhiteSpace(ownedRunId))
+        if (sessionStage != DadDutyIpcSessionStage.Running)
+            return;
+
+        if (activeDuty == null)
         {
-            log.Information("[dad][DutyIpc] Stop ignored; no bridge-owned run has been started.");
+            FailSession("Dad duty IPC session has no resolved duty.");
             return;
         }
 
-        var run = coordinatorService.GetLocalResult();
-        if (!Plugin.IsBusy(run) ||
-            !string.Equals(run.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase))
+        try
         {
-            log.Information(
-                "[dad][DutyIpc] Stop ignored; active Dad run {ActiveRunId} is not bridge-owned run {BridgeRunId}.",
-                string.IsNullOrWhiteSpace(run.RequestId) ? "(none)" : run.RequestId,
-                ownedRunId);
-            return;
+            var loopNumber = completedLoops + 1;
+            var plan = BuildExecutorPlan(activeDuty, activeRoute, loopNumber);
+            IDadModuleExecutor executor = activeRoute == DadDutyIpcRoute.DutySupport
+                ? dutySupportExecutor
+                : localDutyExecutor;
+            if (combatRotationService.CombatRotationMode == DadCombatRotationMode.UseFrenRider &&
+                !combatRotationService.TryPrepareFrenRiderForDutyOperation(executor.ModuleId, out var frenRiderFailure))
+            {
+                FailSession(frenRiderFailure);
+                return;
+            }
+
+            activeExecutor = executor;
+            activeExecutor.Start(plan, BuildLocalParticipants(plan.Request.RequestId));
+            HandleActiveExecutorStatus();
         }
+        catch (Exception ex)
+        {
+            FailSession(ex.Message);
+            log.Warning(ex, "[dad][DutyIpc] Failed to start bridge executor.");
+        }
+    }
 
-        var result = coordinatorService.CancelActiveRun();
-        if (string.Equals(result.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase) && result.IsTerminal)
-            lastRunTerminal = true;
+    private void HandleActiveExecutorStatus()
+    {
+        if (activeExecutor == null)
+            return;
 
-        status.LastFailure = result.Status == DadRunStatus.Cancelled ? string.Empty : result.FailureReason;
+        var executorStatus = activeExecutor.GetStatus();
+        status.UpdatedAtUtc = DateTime.UtcNow;
+
+        switch (executorStatus.Status)
+        {
+            case DadRunStatus.Completed:
+                activeExecutor = null;
+                completedLoops++;
+                if (completedLoops >= requestedLoops)
+                    CompleteSession();
+                break;
+            case DadRunStatus.Cancelled:
+                CompleteSession();
+                break;
+            case DadRunStatus.Rejected:
+            case DadRunStatus.PartialFailure:
+            case DadRunStatus.TimedOut:
+            case DadRunStatus.Failed:
+                FailSession(ResolveExecutorFailure(executorStatus));
+                break;
+        }
+    }
+
+    private void CompleteSession()
+    {
+        activeExecutor = null;
+        activeDuty = null;
+        ownedSessionId = string.Empty;
+        requestedLoops = 0;
+        completedLoops = 0;
+        sessionStage = DadDutyIpcSessionStage.Stopped;
+        status.LastFailure = string.Empty;
         status.UpdatedAtUtc = DateTime.UtcNow;
     }
 
-    private void OnRunStatusChanged(DadRunResult result)
+    private void FailSession(string reason)
     {
-        if (!string.Equals(result.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase))
+        var executor = activeExecutor;
+        activeExecutor = null;
+        activeDuty = null;
+        ownedSessionId = string.Empty;
+        requestedLoops = 0;
+        completedLoops = 0;
+        sessionStage = DadDutyIpcSessionStage.Stopped;
+        status.LastFailure = string.IsNullOrWhiteSpace(reason)
+            ? "Dad duty IPC executor failed."
+            : reason;
+        status.UpdatedAtUtc = DateTime.UtcNow;
+
+        if (executor == null)
             return;
 
-        if (result.IsTerminal)
+        try
         {
-            lastRunTerminal = true;
-            if (result.Status is DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut or DadRunStatus.Rejected)
-            {
-                status.LastFailure = string.IsNullOrWhiteSpace(result.FailureReason)
-                    ? result.Summary
-                    : result.FailureReason;
-            }
+            executor.Cancel(status.LastFailure);
         }
+        catch (Exception ex)
+        {
+            log.Debug(ex, "[dad][DutyIpc] Failed to cancel rejected bridge executor.");
+        }
+    }
 
+    private void StopBridgeSession(string reason, bool clearFailure)
+    {
+        var executor = activeExecutor;
+        activeExecutor = null;
+        activeDuty = null;
+        ownedSessionId = string.Empty;
+        requestedLoops = 0;
+        completedLoops = 0;
+        sessionStage = DadDutyIpcSessionStage.Stopped;
+        if (clearFailure)
+            status.LastFailure = string.Empty;
         status.UpdatedAtUtc = DateTime.UtcNow;
+
+        if (executor == null)
+            return;
+
+        try
+        {
+            executor.Cancel(reason);
+        }
+        catch (Exception ex)
+        {
+            status.LastFailure = ex.Message;
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            log.Warning(ex, "[dad][DutyIpc] Failed to cancel bridge executor.");
+        }
+    }
+
+    private static string ResolveExecutorFailure(DadModuleExecutionStatusDto executorStatus)
+    {
+        if (!string.IsNullOrWhiteSpace(executorStatus.FailureReason))
+            return executorStatus.FailureReason;
+
+        if (!string.IsNullOrWhiteSpace(executorStatus.BlockedReason))
+            return executorStatus.BlockedReason;
+
+        return string.IsNullOrWhiteSpace(executorStatus.Summary)
+            ? "Dad duty IPC executor rejected the run."
+            : executorStatus.Summary;
     }
 
     private DadDutyIpcRoute ResolveRoute()
@@ -625,18 +739,17 @@ public sealed class DadDutyIpcService : IDisposable
     private DadRunRequest BuildRunRequest(
         DadPlannerDutyOption duty,
         DadDutyIpcRoute route,
-        int loopCount)
+        bool runUnsynced)
     {
         var request = new DadRunRequest
         {
-            RequestId = $"duty-ipc-{Guid.NewGuid():N}",
             RequestedAtUtc = DateTime.UtcNow,
             RequestedBy = "Dad duty IPC",
             StopPolicy = new DadRunStopPolicy
             {
                 Mode = DadPlannerStopMode.AfterRuns,
-                AfterRuns = loopCount,
-                SafetyCap = loopCount,
+                AfterRuns = 1,
+                SafetyCap = 1,
             },
             Orchestration = new DadOrchestrationIntent
             {
@@ -653,7 +766,7 @@ public sealed class DadDutyIpcService : IDisposable
                 },
                 ExecutionConstraintSummary = route == DadDutyIpcRoute.DutySupport
                     ? "DadDutyIpcDutySupport"
-                    : unsynced
+                    : runUnsynced
                         ? "DadDutyIpcLocalDutyUnsynced"
                         : "DadDutyIpcLocalDuty",
             },
@@ -665,25 +778,84 @@ public sealed class DadDutyIpcService : IDisposable
             {
                 ContentFinderConditionId = duty.ContentFinderConditionId,
                 DutyName = duty.DutyDisplayName,
-                Attempts = loopCount,
+                Attempts = 1,
             };
         }
         else
         {
             request.Dungeon = new DadDungeonTask
             {
-                Count = loopCount,
+                Count = 1,
                 Frequency = DadRunRequestOptions.FrequencyPerArRun,
                 ContentFinderConditionId = duty.ContentFinderConditionId,
                 SelectedDungeon = duty.DutyDisplayName,
                 ExecutionPreference = DadRunRequestOptions.TrustThenDutySupport,
                 QueueViaLanParty = false,
-                Unsynced = unsynced,
+                Unsynced = runUnsynced,
             };
         }
 
         return request;
     }
+
+    private DadRunPlan BuildExecutorPlan(
+        DadPlannerDutyOption duty,
+        DadDutyIpcRoute route,
+        int loopNumber)
+    {
+        var request = BuildRunRequest(duty, route, activeUnsynced);
+        request.RequestId = $"{ownedSessionId}-loop-{loopNumber}";
+        var moduleId = route == DadDutyIpcRoute.DutySupport
+            ? DadModuleId.DutySupport
+            : DadModuleId.Duty;
+        var displayName = route == DadDutyIpcRoute.DutySupport
+            ? "Duty Support"
+            : "Local Duty";
+
+        return new DadRunPlan
+        {
+            Request = request,
+            CompositeModuleId = moduleId,
+            Orchestration = request.Orchestration,
+            Summary = $"{displayName} {duty.DutyDisplayName}",
+            RequiredParticipantCount = 1,
+            RequiresRemoteParticipants = false,
+            Modules =
+            [
+                new DadPlannedModuleExecution
+                {
+                    ModuleId = moduleId,
+                    DisplayName = displayName,
+                    OwnerLabel = "Dad duty IPC",
+                    ExpectedPartySize = 1,
+                    RequiresPeers = false,
+                    Summary = $"{displayName} {duty.DutyDisplayName}",
+                },
+            ],
+        };
+    }
+
+    private static IReadOnlyList<DadParticipantSnapshot> BuildLocalParticipants(string runId)
+        =>
+        [
+            new DadParticipantSnapshot
+            {
+                RunId = runId,
+                AuthorityMode = DadAuthorityMode.LocalOnly,
+                Role = DadOrchestrationRole.Leader,
+                WorkerRole = DadWorkerRole.ClientDad,
+                State = DadParticipantState.Ready,
+                ClaimState = DadClaimState.Granted,
+                LeaseState = DadParticipantLeaseState.Granted,
+                IsLocalClient = true,
+                IsAuthority = true,
+                IsAvailable = true,
+                IsEligibleForRun = true,
+                PostArReady = true,
+                AssignedSlotId = "Leader",
+                StatusText = "Dad duty IPC local participant.",
+            },
+        ];
 
     private string BuildModeStatusText()
     {
@@ -768,6 +940,12 @@ internal enum DadDutyIpcRoute
 {
     DutySupport,
     LocalDuty,
+}
+
+internal enum DadDutyIpcSessionStage
+{
+    Stopped,
+    Running,
 }
 
 internal static class DadDutyIpcContract

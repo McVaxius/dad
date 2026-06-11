@@ -172,8 +172,11 @@ public sealed class Plugin : IDalamudPlugin
             Log);
         DutyIpcService = new DadDutyIpcService(
             PluginInterface,
-            RunCoordinatorService,
             PresetProviderService,
+            LocalDutyQueueService,
+            NpcDutyQueueService,
+            DutySupportAdsService,
+            CombatRotationService,
             Log);
         QuestionableBridge = new DadQuestionableReflectionBridge(PluginInterface, Framework, DutyIpcService, Log);
 
@@ -2363,6 +2366,7 @@ public sealed class Plugin : IDalamudPlugin
                 StartScheduledPlannerRequest);
         }
         RunCoordinatorService.Update();
+        DutyIpcService.Update();
         DutyIpcService.EnsureRegistered();
     }
 
