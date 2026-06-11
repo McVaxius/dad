@@ -220,7 +220,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             ImGui.TextWrapped(PluginInfo.Summary);
             DrawStatusRow("Krangle", plugin.KrangleService.BuildStatus(characterPool));
-            DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
+            DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
             DrawStatusRow("Character pool", characterPool.LastSummary);
             DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
             DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
@@ -312,7 +312,7 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("This instance", DadStatusText.FormatWorkerRole(plugin.PresenceService.CurrentParticipant.WorkerRole));
         DrawStatusRow("Local-only", localRun.LocalOnlyEnabled ? "Enabled" : "Disabled");
         DrawStatusRow("IPC ready", plugin.RunCoordinatorService.IsReady ? "Yes" : "No");
-        DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
+        DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
 
         DrawSectionHeader("Active Request / Run", "Live request truth from visible authority/local state.");
         if (activeRun.Status == DadRunStatus.Idle)
@@ -389,7 +389,7 @@ public sealed class MainWindow : Window, IDisposable
             ? "Idle."
             : $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
         DrawStatusRow("Status", BuildActiveRunKeyStatus(activeRun));
-        DrawStatusRow("AutoDuty shim", FormatAutoDutyCompatibilityStatus(plugin.AutoDutyCompatibilityIpcService.GetStatus()));
+        DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
 
         if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
         {
@@ -5016,15 +5016,30 @@ public sealed class MainWindow : Window, IDisposable
             plannerOptions.IncludedAccountKeys.Add(accountKey);
     }
 
-    private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
+    private static string FormatDutyIpcAndBridgeStatus(
+        DadDutyIpcStatus dutyIpc,
+        DadQuestionableReflectionBridgeStatus bridge)
     {
-        var state = status.Registered ? "Registered" : status.RegistrationState;
-        var facade = status.AutoDutyFacadeLoaded ? "facade loaded" : "facade missing";
-        var collision = status.RealAutoDutyLoaded ? "real AutoDuty collision" : "no real AutoDuty collision";
-        var territory = status.LastTerritoryType == 0 ? "(none)" : status.LastTerritoryType.ToString(CultureInfo.InvariantCulture);
-        var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "(none)" : status.LastRunId;
-        var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "(none)" : status.LastFailure;
-        return $"{state} | {facade} | {collision} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
+        var state = dutyIpc.Registered ? "IPC registered" : dutyIpc.RegistrationState;
+        var bridgeState = bridge.Patched
+            ? "runtime patched"
+            : bridge.Pending
+                ? "runtime pending"
+                : bridge.QuestionableLoaded
+                    ? "runtime blocked"
+                    : "runtime not loaded";
+        var cosmeticState = bridge.CosmeticPatched
+            ? "cosmetic patched"
+            : bridge.QuestionableLoaded
+                ? "cosmetic blocked"
+                : "cosmetic not loaded";
+        var cosmeticBlocker = string.IsNullOrWhiteSpace(bridge.CosmeticLastBlocker)
+            ? "(none)"
+            : bridge.CosmeticLastBlocker;
+        var territory = dutyIpc.LastTerritoryType == 0 ? "(none)" : dutyIpc.LastTerritoryType.ToString(CultureInfo.InvariantCulture);
+        var runId = string.IsNullOrWhiteSpace(dutyIpc.LastRunId) ? "(none)" : dutyIpc.LastRunId;
+        var failure = string.IsNullOrWhiteSpace(dutyIpc.LastFailure) ? "(none)" : dutyIpc.LastFailure;
+        return $"{state} | {bridgeState} | {cosmeticState} | cosmetic blocker {cosmeticBlocker} | territory {territory} | mode {dutyIpc.LastMode} | bareMode {dutyIpc.LastBareMode} | run {runId} | failure {failure}";
     }
 
     private string FormatAccount(DadAcquiredCharacter character)

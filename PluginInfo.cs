@@ -26,6 +26,8 @@ internal static class PluginInfo
         "DadDutyQueueService",
         "DadCoordinatorService",
         "DadIpcService",
+        "DadDutyIpcService",
+        "DadQuestionableReflectionBridge",
     ];
 
     public static readonly string[] Phases =
@@ -54,5 +56,6 @@ internal static class PluginInfo
         "Verify Preset Planner validates typed roster slots, preview-only local tests, and planner summary export",
         "Verify Preset Planner request JSON changes with planner controls and only startable requests can run",
         "Verify Krangle Names toggles operator-facing account and character names without changing run contracts",
+        "Verify Questionable bridge patches Dad duty IPC only while Questionable is idle",
     ];
 }

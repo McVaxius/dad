@@ -5,16 +5,10 @@ using dad.Models;
 
 namespace dad.Services;
 
-public sealed class DadAutoDutyCompatibilityIpcStatus
+public sealed class DadDutyIpcStatus
 {
-    public bool ConfigEnabled { get; set; }
     public bool Registered { get; set; }
-    public bool RealAutoDutyLoaded { get; set; }
-    public bool AutoDutyFacadeLoaded { get; set; }
     public string RegistrationState { get; set; } = string.Empty;
-    public string AutoDutyFacadePing { get; set; } = string.Empty;
-    public string RealAutoDutyPluginSummary { get; set; } = string.Empty;
-    public string RealAutoDutyCollisionBlocker { get; set; } = string.Empty;
     public uint LastTerritoryType { get; set; }
     public string LastMode { get; set; } = "Support";
     public string LastRunId { get; set; } = string.Empty;
@@ -30,17 +24,11 @@ public sealed class DadAutoDutyCompatibilityIpcStatus
     public DateTime? LastContentHasPathUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
-    public DadAutoDutyCompatibilityIpcStatus Clone()
+    public DadDutyIpcStatus Clone()
         => new()
         {
-            ConfigEnabled = ConfigEnabled,
             Registered = Registered,
-            RealAutoDutyLoaded = RealAutoDutyLoaded,
-            AutoDutyFacadeLoaded = AutoDutyFacadeLoaded,
             RegistrationState = RegistrationState,
-            AutoDutyFacadePing = AutoDutyFacadePing,
-            RealAutoDutyPluginSummary = RealAutoDutyPluginSummary,
-            RealAutoDutyCollisionBlocker = RealAutoDutyCollisionBlocker,
             LastTerritoryType = LastTerritoryType,
             LastMode = LastMode,
             LastRunId = LastRunId,
@@ -58,17 +46,11 @@ public sealed class DadAutoDutyCompatibilityIpcStatus
         };
 }
 
-public sealed class DadAutoDutyCompatibilityDiagnostic
+public sealed class DadDutyIpcDiagnostic
 {
     public string Query { get; set; } = string.Empty;
-    public bool ConfigEnabled { get; set; }
     public bool Registered { get; set; }
-    public bool RealAutoDutyLoaded { get; set; }
-    public bool AutoDutyFacadeLoaded { get; set; }
     public string RegistrationState { get; set; } = string.Empty;
-    public string AutoDutyFacadePing { get; set; } = string.Empty;
-    public string RealAutoDutyPluginSummary { get; set; } = string.Empty;
-    public string RealAutoDutyCollisionBlocker { get; set; } = string.Empty;
     public string Mode { get; set; } = "Support";
     public string Route { get; set; } = string.Empty;
     public uint TerritoryType { get; set; }
@@ -89,25 +71,22 @@ public sealed class DadAutoDutyCompatibilityDiagnostic
     public string Blocker { get; set; } = string.Empty;
 }
 
-public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
+public sealed class DadDutyIpcService : IDisposable
 {
-    private const string AutoDutyInternalName = "AutoDuty";
-    private const string AutoDutyDisplayName = "AutoDuty";
-    private const string AutoDutyDisplayNameSpaced = "Auto Duty";
-
     private readonly IDalamudPluginInterface pluginInterface;
-    private readonly Configuration configuration;
     private readonly DadCoordinatorService coordinatorService;
     private readonly DadPresetProviderService presetProviderService;
     private readonly IPluginLog log;
     private readonly List<Action> disposeActions = [];
-    private readonly DadAutoDutyCompatibilityIpcStatus status = new();
+    private readonly DadDutyIpcStatus status = new();
 
     private string dutyMode = "Support";
     private bool unsynced;
+    private string ownedRunId = string.Empty;
     private bool lastRunTerminal = true;
+    private DateTime nextRegistrationAttemptUtc = DateTime.MinValue;
 
-    private sealed class DadAutoDutyContentPathProbe
+    private sealed class DadDutyContentPathProbe
     {
         public uint TerritoryType { get; init; }
         public bool Result { get; init; }
@@ -118,21 +97,19 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         public string Blocker { get; init; } = string.Empty;
     }
 
-    public DadAutoDutyCompatibilityIpcService(
+    public DadDutyIpcService(
         IDalamudPluginInterface pluginInterface,
-        Configuration configuration,
         DadCoordinatorService coordinatorService,
         DadPresetProviderService presetProviderService,
         IPluginLog log)
     {
         this.pluginInterface = pluginInterface;
-        this.configuration = configuration;
         this.coordinatorService = coordinatorService;
         this.presetProviderService = presetProviderService;
         this.log = log;
 
         coordinatorService.StatusChanged += OnRunStatusChanged;
-        UpdateRegistrationState();
+        EnsureRegistered();
     }
 
     public void Dispose()
@@ -141,15 +118,23 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         Unregister();
     }
 
-    public DadAutoDutyCompatibilityIpcStatus GetStatus()
+    public DadDutyIpcStatus GetStatus()
     {
         RefreshStatus();
         return status.Clone();
     }
 
-    public DadAutoDutyCompatibilityDiagnostic DiagnoseCurrentTerritory()
+    public void EnsureRegistered()
     {
-        UpdateRegistrationState();
+        if (status.Registered || DateTime.UtcNow < nextRegistrationAttemptUtc)
+            return;
+
+        nextRegistrationAttemptUtc = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        Register();
+    }
+
+    public DadDutyIpcDiagnostic DiagnoseCurrentTerritory()
+    {
         if (!Plugin.ClientState.IsLoggedIn)
         {
             return BuildUnavailableDiagnostic(
@@ -163,15 +148,13 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         return DiagnoseTerritory(Plugin.ClientState.TerritoryType, "current", null, 0);
     }
 
-    public DadAutoDutyCompatibilityDiagnostic DiagnoseTerritory(uint territoryType)
+    public DadDutyIpcDiagnostic DiagnoseTerritory(uint territoryType)
     {
-        UpdateRegistrationState();
         return DiagnoseTerritory(territoryType, $"territory {territoryType}", null, 0);
     }
 
-    public DadAutoDutyCompatibilityDiagnostic DiagnoseContentFinderCondition(uint contentFinderConditionId)
+    public DadDutyIpcDiagnostic DiagnoseContentFinderCondition(uint contentFinderConditionId)
     {
-        UpdateRegistrationState();
         var duty = presetProviderService.GetPlannerDutyOption(contentFinderConditionId);
         if (duty == null)
         {
@@ -186,68 +169,33 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         return DiagnoseTerritory(duty.TerritoryType, $"cfc {contentFinderConditionId}", duty, contentFinderConditionId);
     }
 
-    public void UpdateRegistrationState()
+    private void Register()
     {
-        RefreshCollisionState();
-        status.ConfigEnabled = configuration.EnableAutoDutyCompatibilityIpc;
-
-        if (!configuration.EnableAutoDutyCompatibilityIpc)
-        {
-            if (status.Registered)
-                Unregister();
-
-            status.RegistrationState = "Disabled by Dad config.";
-            status.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        if (status.RealAutoDutyLoaded)
-        {
-            if (status.Registered)
-                Unregister();
-
-            status.RegistrationState = "Blocked by real AutoDuty collision.";
-            status.LastFailure = status.RealAutoDutyCollisionBlocker;
-            status.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        if (status.Registered)
-        {
-            status.RegistrationState = "Backend registered.";
-            status.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
         try
         {
-            Register<string>(DadAutoDutyCompatibilityIpcContract.BackendPing, Ping);
-            Register<uint, bool>(DadAutoDutyCompatibilityIpcContract.ContentHasPath, ContentHasPath);
-            Register<string, string, object>(DadAutoDutyCompatibilityIpcContract.SetConfig, SetConfig);
-            Register<uint, int, bool, object>(DadAutoDutyCompatibilityIpcContract.Run, Run);
-            Register<bool>(DadAutoDutyCompatibilityIpcContract.IsStopped, IsStopped);
-            Register<object>(DadAutoDutyCompatibilityIpcContract.Stop, Stop);
+            RegisterFunc<uint, bool>(DadDutyIpcContract.ContentHasPath, ContentHasPath);
+            RegisterAction<string, string, object>(DadDutyIpcContract.SetConfig, SetConfig);
+            RegisterAction<uint, int, bool, object>(DadDutyIpcContract.Run, Run);
+            RegisterFunc<bool>(DadDutyIpcContract.IsStopped, IsStopped);
+            RegisterAction<object>(DadDutyIpcContract.Stop, Stop);
 
             status.Registered = true;
-            status.RegistrationState = "Backend registered.";
+            status.RegistrationState = "Dad duty IPC registered.";
             status.LastFailure = string.Empty;
-            log.Information("[dad][AutoDutyCompat] Registered Dad AutoDuty backend IPC.");
+            log.Information("[dad][DutyIpc] Registered Dad duty IPC.");
         }
         catch (Exception ex)
         {
             Unregister();
             status.RegistrationState = "Registration failed.";
             status.LastFailure = ex.Message;
-            log.Warning(ex, "[dad][AutoDutyCompat] Failed to register AutoDuty-compatible IPC shim.");
+            log.Warning(ex, "[dad][DutyIpc] Failed to register Dad duty IPC.");
         }
         finally
         {
             status.UpdatedAtUtc = DateTime.UtcNow;
         }
     }
-
-    private string Ping()
-        => "Dad.AutoDutyCompat backend registered.";
 
     private bool ContentHasPath(uint territoryType)
     {
@@ -257,7 +205,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             RecordContentHasPathProbe(probe);
 
             log.Debug(
-                "[dad][AutoDutyCompat] ContentHasPath territory={TerritoryType} result={Result} candidates={CandidateCount} compatible={CompatibleCandidateCount} selected={SelectedContentFinderConditionId}:{SelectedDutyName} blocker={Blocker}.",
+                "[dad][DutyIpc] ContentHasPath territory={TerritoryType} result={Result} candidates={CandidateCount} compatible={CompatibleCandidateCount} selected={SelectedContentFinderConditionId}:{SelectedDutyName} blocker={Blocker}.",
                 territoryType,
                 probe.Result,
                 probe.CandidateCount,
@@ -270,12 +218,12 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         catch (Exception ex)
         {
             RecordContentHasPathFailure(territoryType, ex.Message);
-            log.Warning(ex, "[dad][AutoDutyCompat] ContentHasPath failed for territory {TerritoryType}.", territoryType);
+            log.Warning(ex, "[dad][DutyIpc] ContentHasPath failed for territory {TerritoryType}.", territoryType);
             return false;
         }
     }
 
-    private object SetConfig(string key, string value)
+    private void SetConfig(string key, string value)
     {
         var normalizedKey = key.Trim();
         var normalizedValue = value.Trim();
@@ -285,7 +233,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             if (bool.TryParse(normalizedValue, out var parsed))
                 unsynced = parsed;
             else
-                status.LastFailure = $"Unable to parse AutoDuty Unsynced config value '{value}'.";
+                status.LastFailure = $"Unable to parse Dad duty IPC Unsynced config value '{value}'.";
         }
         else if (normalizedKey.Equals("dutyModeEnum", StringComparison.OrdinalIgnoreCase))
         {
@@ -294,123 +242,121 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         else
         {
             log.Debug(
-                "[dad][AutoDutyCompat] Accepted unused AutoDuty.SetConfig {Key}={Value}.",
+                "[dad][DutyIpc] Ignored unknown SetConfig key {Key}={Value}.",
                 normalizedKey,
                 normalizedValue);
         }
 
         status.LastMode = BuildModeStatusText();
         status.UpdatedAtUtc = DateTime.UtcNow;
-        return true;
     }
 
-    private object Run(uint territoryType, int loops, bool bareMode)
+    private void Run(uint territoryType, int loops, bool bareMode)
     {
-        UpdateRegistrationState();
-
         status.LastTerritoryType = territoryType;
         status.LastBareMode = bareMode;
         status.LastMode = BuildModeStatusText();
         status.UpdatedAtUtc = DateTime.UtcNow;
-        lastRunTerminal = false;
 
         if (!status.Registered)
         {
-            var rejected = DadRunResult.Rejected(null, status.RegistrationState);
-            status.LastRunId = rejected.RequestId;
             status.LastFailure = status.RegistrationState;
-            lastRunTerminal = true;
-            return DadIpcJson.Serialize(rejected);
+            throw new InvalidOperationException(status.RegistrationState);
         }
 
         var route = ResolveRoute();
         var loopCount = Math.Max(1, loops);
         if (!TryResolveDuty(territoryType, route, logAmbiguousSelection: true, out var duty, out var blocker) || duty == null)
         {
-            var rejected = DadRunResult.Rejected(null, blocker);
-            status.LastRunId = rejected.RequestId;
             status.LastFailure = blocker;
-            lastRunTerminal = true;
             log.Warning(
-                "[dad][AutoDutyCompat] Run rejected territory={TerritoryType} route={Route}: {Blocker}",
+                "[dad][DutyIpc] Run rejected territory={TerritoryType} route={Route}: {Blocker}",
                 territoryType,
                 route,
                 blocker);
-            return DadIpcJson.Serialize(rejected);
+            throw new InvalidOperationException(blocker);
         }
 
         var request = BuildRunRequest(duty, route, loopCount);
         log.Information(
-            "[dad][AutoDutyCompat] Starting Dad run from AutoDuty.Run territory={TerritoryType} cfc={ContentFinderConditionId} route={Route} loops={Loops} bareMode={BareMode}.",
+            "[dad][DutyIpc] Starting Dad run from duty IPC territory={TerritoryType} cfc={ContentFinderConditionId} route={Route} loops={Loops} bareMode={BareMode}.",
             territoryType,
             duty.ContentFinderConditionId,
             route,
             loopCount,
             bareMode);
 
-        var result = coordinatorService.StartTasks(request);
-        status.LastRunId = result.RequestId;
+        DadRunResult result;
+        try
+        {
+            result = coordinatorService.StartTasks(request);
+        }
+        catch (Exception ex)
+        {
+            status.LastRunId = request.RequestId;
+            status.LastFailure = ex.Message;
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            throw;
+        }
+
+        status.LastRunId = string.IsNullOrWhiteSpace(result.RequestId) ? request.RequestId : result.RequestId;
         if (result.IsTerminal)
         {
-            lastRunTerminal = true;
             status.LastFailure = string.IsNullOrWhiteSpace(result.FailureReason)
                 ? result.Summary
                 : result.FailureReason;
+            throw new InvalidOperationException(status.LastFailure);
         }
         else
         {
+            ownedRunId = status.LastRunId;
+            lastRunTerminal = false;
             status.LastFailure = string.Empty;
         }
-
-        return DadIpcJson.Serialize(result);
     }
 
     private bool IsStopped()
     {
-        if (string.IsNullOrWhiteSpace(status.LastRunId))
+        if (string.IsNullOrWhiteSpace(ownedRunId))
             return true;
 
         var run = coordinatorService.GetLocalResult();
-        if (string.Equals(run.RequestId, status.LastRunId, StringComparison.OrdinalIgnoreCase) && run.IsTerminal)
+        if (string.Equals(run.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase) && run.IsTerminal)
             lastRunTerminal = true;
 
-        var leftRequestedTerritory = status.LastTerritoryType == 0 ||
-                                     !Plugin.ClientState.IsLoggedIn ||
-                                     Plugin.ClientState.TerritoryType != status.LastTerritoryType;
-        return lastRunTerminal && leftRequestedTerritory;
+        return lastRunTerminal;
     }
 
-    private object Stop()
+    private void Stop()
     {
-        if (string.IsNullOrWhiteSpace(status.LastRunId))
+        if (string.IsNullOrWhiteSpace(ownedRunId))
         {
-            log.Information("[dad][AutoDutyCompat] Stop ignored; no shim-owned run has been started.");
-            return true;
+            log.Information("[dad][DutyIpc] Stop ignored; no bridge-owned run has been started.");
+            return;
         }
 
         var run = coordinatorService.GetLocalResult();
         if (!Plugin.IsBusy(run) ||
-            !string.Equals(run.RequestId, status.LastRunId, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(run.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase))
         {
             log.Information(
-                "[dad][AutoDutyCompat] Stop ignored; active Dad run {ActiveRunId} is not shim-owned run {ShimRunId}.",
+                "[dad][DutyIpc] Stop ignored; active Dad run {ActiveRunId} is not bridge-owned run {BridgeRunId}.",
                 string.IsNullOrWhiteSpace(run.RequestId) ? "(none)" : run.RequestId,
-                status.LastRunId);
-            return true;
+                ownedRunId);
+            return;
         }
 
         var result = coordinatorService.CancelActiveRun();
-        if (string.Equals(result.RequestId, status.LastRunId, StringComparison.OrdinalIgnoreCase) && result.IsTerminal)
+        if (string.Equals(result.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase) && result.IsTerminal)
             lastRunTerminal = true;
 
         status.LastFailure = result.Status == DadRunStatus.Cancelled ? string.Empty : result.FailureReason;
         status.UpdatedAtUtc = DateTime.UtcNow;
-        return DadIpcJson.Serialize(result);
     }
 
     private void OnRunStatusChanged(DadRunResult result)
     {
-        if (!string.Equals(result.RequestId, status.LastRunId, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(result.RequestId, ownedRunId, StringComparison.OrdinalIgnoreCase))
             return;
 
         if (result.IsTerminal)
@@ -427,25 +373,25 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         status.UpdatedAtUtc = DateTime.UtcNow;
     }
 
-    private DadAutoDutyCompatibilityRoute ResolveRoute()
+    private DadDutyIpcRoute ResolveRoute()
         => unsynced || dutyMode.Equals("Regular", StringComparison.OrdinalIgnoreCase)
-            ? DadAutoDutyCompatibilityRoute.LocalDuty
-            : DadAutoDutyCompatibilityRoute.DutySupport;
+            ? DadDutyIpcRoute.LocalDuty
+            : DadDutyIpcRoute.DutySupport;
 
-    private DadAutoDutyCompatibilityDiagnostic DiagnoseTerritory(
+    private DadDutyIpcDiagnostic DiagnoseTerritory(
         uint territoryType,
         string query,
         DadPlannerDutyOption? requestedDuty,
         uint requestedContentFinderConditionId)
     {
-        DadAutoDutyContentPathProbe probe;
+        DadDutyContentPathProbe probe;
         try
         {
             probe = EvaluateContentHasPath(territoryType);
         }
         catch (Exception ex)
         {
-            probe = new DadAutoDutyContentPathProbe
+            probe = new DadDutyContentPathProbe
             {
                 TerritoryType = territoryType,
                 Result = false,
@@ -480,17 +426,11 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             : BuildRequestedDutyBlocker(requestedDuty, route);
 
         var blocker = ResolveDiagnosticBlocker(probe, routeAvailable, routeBlocker, requestedDutyBlocker);
-        return new DadAutoDutyCompatibilityDiagnostic
+        return new DadDutyIpcDiagnostic
         {
             Query = query,
-            ConfigEnabled = status.ConfigEnabled,
             Registered = status.Registered,
-            RealAutoDutyLoaded = status.RealAutoDutyLoaded,
-            AutoDutyFacadeLoaded = status.AutoDutyFacadeLoaded,
             RegistrationState = status.RegistrationState,
-            AutoDutyFacadePing = status.AutoDutyFacadePing,
-            RealAutoDutyPluginSummary = status.RealAutoDutyPluginSummary,
-            RealAutoDutyCollisionBlocker = status.RealAutoDutyCollisionBlocker,
             Mode = BuildModeStatusText(),
             Route = route.ToString(),
             TerritoryType = territoryType,
@@ -512,7 +452,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         };
     }
 
-    private DadAutoDutyCompatibilityDiagnostic BuildUnavailableDiagnostic(
+    private DadDutyIpcDiagnostic BuildUnavailableDiagnostic(
         string query,
         uint territoryType,
         uint requestedContentFinderConditionId,
@@ -520,17 +460,11 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         string blocker)
     {
         var route = ResolveRoute();
-        return new DadAutoDutyCompatibilityDiagnostic
+        return new DadDutyIpcDiagnostic
         {
             Query = query,
-            ConfigEnabled = status.ConfigEnabled,
             Registered = status.Registered,
-            RealAutoDutyLoaded = status.RealAutoDutyLoaded,
-            AutoDutyFacadeLoaded = status.AutoDutyFacadeLoaded,
             RegistrationState = status.RegistrationState,
-            AutoDutyFacadePing = status.AutoDutyFacadePing,
-            RealAutoDutyPluginSummary = status.RealAutoDutyPluginSummary,
-            RealAutoDutyCollisionBlocker = status.RealAutoDutyCollisionBlocker,
             Mode = BuildModeStatusText(),
             Route = route.ToString(),
             TerritoryType = territoryType,
@@ -548,19 +482,19 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
     private bool TryResolveDuty(
         uint territoryType,
-        DadAutoDutyCompatibilityRoute route,
+        DadDutyIpcRoute route,
         bool logAmbiguousSelection,
         out DadPlannerDutyOption? duty,
         out string blocker)
     {
         var candidates = presetProviderService.GetPlannerDutyOptionsForTerritory(territoryType)
-            .Where(IsAutoDutyCompatibleCandidate)
+            .Where(IsDutyIpcCompatibleCandidate)
             .OrderBy(static option => option.ContentFinderConditionId)
             .ToList();
 
         duty = route switch
         {
-            DadAutoDutyCompatibilityRoute.DutySupport => candidates.FirstOrDefault(static option => option.SupportsDutySupport),
+            DadDutyIpcRoute.DutySupport => candidates.FirstOrDefault(static option => option.SupportsDutySupport),
             _ => candidates.FirstOrDefault(option => !unsynced || option.AllowUndersized),
         };
 
@@ -569,7 +503,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             if (logAmbiguousSelection && candidates.Count > 1)
             {
                 log.Information(
-                    "[dad][AutoDutyCompat] Territory {TerritoryType} matched {CandidateCount} CFC row(s); selected {DutyName} #{ContentFinderConditionId}.",
+                    "[dad][DutyIpc] Territory {TerritoryType} matched {CandidateCount} CFC row(s); selected {DutyName} #{ContentFinderConditionId}.",
                     territoryType,
                     candidates.Count,
                     duty.DutyDisplayName,
@@ -580,7 +514,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             return true;
         }
 
-        blocker = route == DadAutoDutyCompatibilityRoute.DutySupport
+        blocker = route == DadDutyIpcRoute.DutySupport
             ? $"Territory {territoryType} has no Dad Duty Support-compatible ContentFinderCondition row."
             : unsynced
                 ? $"Territory {territoryType} has no Dad local duty row that allows undersized/unsynced queueing."
@@ -588,17 +522,17 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         return false;
     }
 
-    private DadAutoDutyContentPathProbe EvaluateContentHasPath(uint territoryType)
+    private DadDutyContentPathProbe EvaluateContentHasPath(uint territoryType)
     {
         var candidates = presetProviderService.GetPlannerDutyOptionsForTerritory(territoryType)
             .OrderBy(static option => option.ContentFinderConditionId)
             .ToList();
         var compatibleCandidates = candidates
-            .Where(IsAutoDutyCompatibleCandidate)
+            .Where(IsDutyIpcCompatibleCandidate)
             .OrderBy(static option => option.ContentFinderConditionId)
             .ToList();
         var selected = compatibleCandidates.FirstOrDefault();
-        return new DadAutoDutyContentPathProbe
+        return new DadDutyContentPathProbe
         {
             TerritoryType = territoryType,
             Result = selected != null,
@@ -612,7 +546,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         };
     }
 
-    private void RecordContentHasPathProbe(DadAutoDutyContentPathProbe probe)
+    private void RecordContentHasPathProbe(DadDutyContentPathProbe probe)
     {
         status.LastTerritoryType = probe.TerritoryType;
         status.LastContentHasPathTerritoryType = probe.TerritoryType;
@@ -623,7 +557,6 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         status.LastContentHasPathSelectedDutyName = probe.SelectedDutyName;
         status.LastContentHasPathBlocker = probe.Blocker;
         status.LastContentHasPathUtc = DateTime.UtcNow;
-        status.LastFailure = probe.Result ? string.Empty : probe.Blocker;
         status.UpdatedAtUtc = status.LastContentHasPathUtc.Value;
     }
 
@@ -638,25 +571,18 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         status.LastContentHasPathSelectedDutyName = string.Empty;
         status.LastContentHasPathBlocker = blocker;
         status.LastContentHasPathUtc = DateTime.UtcNow;
-        status.LastFailure = blocker;
         status.UpdatedAtUtc = status.LastContentHasPathUtc.Value;
     }
 
     private string ResolveDiagnosticBlocker(
-        DadAutoDutyContentPathProbe probe,
+        DadDutyContentPathProbe probe,
         bool routeAvailable,
         string routeBlocker,
         string requestedDutyBlocker)
     {
-        if (!configuration.EnableAutoDutyCompatibilityIpc)
-            return "AutoDuty compatibility IPC disabled by Dad config.";
-
-        if (status.RealAutoDutyLoaded)
-            return status.RealAutoDutyCollisionBlocker;
-
         if (!status.Registered)
             return string.IsNullOrWhiteSpace(status.RegistrationState)
-                ? "AutoDuty compatibility IPC is not registered."
+                ? "Dad duty IPC is not registered."
                 : status.RegistrationState;
 
         if (!probe.Result)
@@ -668,29 +594,29 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         return requestedDutyBlocker;
     }
 
-    private bool DoesDutyMatchRoute(DadPlannerDutyOption option, DadAutoDutyCompatibilityRoute route)
+    private bool DoesDutyMatchRoute(DadPlannerDutyOption option, DadDutyIpcRoute route)
     {
-        if (!IsAutoDutyCompatibleCandidate(option))
+        if (!IsDutyIpcCompatibleCandidate(option))
             return false;
 
         return route switch
         {
-            DadAutoDutyCompatibilityRoute.DutySupport => option.SupportsDutySupport,
-            DadAutoDutyCompatibilityRoute.LocalDuty => !unsynced || option.AllowUndersized,
+            DadDutyIpcRoute.DutySupport => option.SupportsDutySupport,
+            DadDutyIpcRoute.LocalDuty => !unsynced || option.AllowUndersized,
             _ => false,
         };
     }
 
-    private string BuildRequestedDutyBlocker(DadPlannerDutyOption option, DadAutoDutyCompatibilityRoute route)
+    private string BuildRequestedDutyBlocker(DadPlannerDutyOption option, DadDutyIpcRoute route)
     {
-        if (!IsAutoDutyCompatibleCandidate(option))
+        if (!IsDutyIpcCompatibleCandidate(option))
             return $"ContentFinderCondition #{option.ContentFinderConditionId} is not Dad-compatible.";
 
         return route switch
         {
-            DadAutoDutyCompatibilityRoute.DutySupport when !option.SupportsDutySupport =>
+            DadDutyIpcRoute.DutySupport when !option.SupportsDutySupport =>
                 $"{option.DutyDisplayName} #{option.ContentFinderConditionId} is not marked as Duty Support content.",
-            DadAutoDutyCompatibilityRoute.LocalDuty when unsynced && !option.AllowUndersized =>
+            DadDutyIpcRoute.LocalDuty when unsynced && !option.AllowUndersized =>
                 $"{option.DutyDisplayName} #{option.ContentFinderConditionId} does not allow undersized/unsynced queueing.",
             _ => string.Empty,
         };
@@ -698,14 +624,14 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
     private DadRunRequest BuildRunRequest(
         DadPlannerDutyOption duty,
-        DadAutoDutyCompatibilityRoute route,
+        DadDutyIpcRoute route,
         int loopCount)
     {
         var request = new DadRunRequest
         {
-            RequestId = $"autoduty-{Guid.NewGuid():N}",
+            RequestId = $"duty-ipc-{Guid.NewGuid():N}",
             RequestedAtUtc = DateTime.UtcNow,
-            RequestedBy = "AutoDuty compatibility IPC",
+            RequestedBy = "Dad duty IPC",
             StopPolicy = new DadRunStopPolicy
             {
                 Mode = DadPlannerStopMode.AfterRuns,
@@ -718,22 +644,22 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
                 LocalOnlyOverride = true,
                 TransportMode = DadTransportMode.LocalOnly,
                 QueueAuthority = DadQueueAuthority.LocalOnly,
-                ModuleTarget = route == DadAutoDutyCompatibilityRoute.DutySupport ? DadModuleId.DutySupport : DadModuleId.Duty,
+                ModuleTarget = route == DadDutyIpcRoute.DutySupport ? DadModuleId.DutySupport : DadModuleId.Duty,
                 RequirePostArReady = false,
                 RosterIntent = new DadRosterIntent
                 {
                     ExpectedPartySize = 1,
                     RequireRemoteParticipants = false,
                 },
-                ExecutionConstraintSummary = route == DadAutoDutyCompatibilityRoute.DutySupport
-                    ? "AutoDutyCompatibilityDutySupport"
+                ExecutionConstraintSummary = route == DadDutyIpcRoute.DutySupport
+                    ? "DadDutyIpcDutySupport"
                     : unsynced
-                        ? "AutoDutyCompatibilityLocalDutyUnsynced"
-                        : "AutoDutyCompatibilityLocalDuty",
+                        ? "DadDutyIpcLocalDutyUnsynced"
+                        : "DadDutyIpcLocalDuty",
             },
         };
 
-        if (route == DadAutoDutyCompatibilityRoute.DutySupport)
+        if (route == DadDutyIpcRoute.DutySupport)
         {
             request.DutySupport = new DadDutySupportTask
             {
@@ -762,7 +688,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
     private string BuildModeStatusText()
     {
         var route = ResolveRoute();
-        return route == DadAutoDutyCompatibilityRoute.LocalDuty
+        return route == DadDutyIpcRoute.LocalDuty
             ? unsynced
                 ? "Regular / Unsynced"
                 : "Regular"
@@ -771,126 +697,48 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
     private void RefreshStatus()
     {
-        RefreshCollisionState();
-        status.ConfigEnabled = configuration.EnableAutoDutyCompatibilityIpc;
-        status.RegistrationState = !configuration.EnableAutoDutyCompatibilityIpc
-            ? "Disabled by Dad config."
-            : status.RealAutoDutyLoaded
-                ? "Blocked by real AutoDuty collision."
-                : status.Registered
-                    ? "Backend registered."
-                    : "Not registered.";
+        if (status.Registered)
+            status.RegistrationState = "Dad duty IPC registered.";
+        else if (string.IsNullOrWhiteSpace(status.RegistrationState))
+            status.RegistrationState = "Not registered.";
+
         status.LastMode = BuildModeStatusText();
         status.UpdatedAtUtc = DateTime.UtcNow;
     }
 
-    private void RefreshCollisionState()
-    {
-        var autoDutyPlugins = GetLoadedAutoDutyPlugins(out var inspectionFailure);
-        var facadeLoaded = TryPingAutoDutyFacade(out var facadePing);
-        var realAutoDutyLoaded = !string.IsNullOrWhiteSpace(inspectionFailure) ||
-                                 (autoDutyPlugins.Count > 0 && !facadeLoaded);
-        if (autoDutyPlugins.Count > 1)
-            realAutoDutyLoaded = true;
-
-        status.AutoDutyFacadeLoaded = facadeLoaded;
-        status.AutoDutyFacadePing = facadePing;
-        status.RealAutoDutyPluginSummary = string.IsNullOrWhiteSpace(inspectionFailure)
-            ? FormatAutoDutyPlugins(autoDutyPlugins)
-            : "plugin inspection failed";
-        status.RealAutoDutyLoaded = realAutoDutyLoaded;
-        status.RealAutoDutyCollisionBlocker = !string.IsNullOrWhiteSpace(inspectionFailure)
-            ? $"AutoDuty collision check failed closed: {inspectionFailure}"
-            : realAutoDutyLoaded
-            ? BuildRealAutoDutyCollisionBlocker(autoDutyPlugins)
-            : string.Empty;
-    }
-
-    private List<IExposedPlugin> GetLoadedAutoDutyPlugins(out string inspectionFailure)
-    {
-        inspectionFailure = string.Empty;
-        try
-        {
-            return pluginInterface.InstalledPlugins
-                .Where(static plugin => plugin.IsLoaded && IsAutoDutyNamedPlugin(plugin))
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "[dad][AutoDutyCompat] Failed to inspect AutoDuty plugin availability.");
-            inspectionFailure = $"Failed to inspect Dalamud InstalledPlugins: {ex.Message}";
-            return [];
-        }
-    }
-
-    private bool TryPingAutoDutyFacade(out string ping)
-    {
-        ping = string.Empty;
-        try
-        {
-            ping = pluginInterface
-                .GetIpcSubscriber<string>(DadAutoDutyCompatibilityIpcContract.FacadePing)
-                .InvokeFunc()
-                .Trim();
-            return ping.StartsWith(DadAutoDutyCompatibilityIpcContract.FacadePingResponsePrefix, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            ping = string.Empty;
-            return false;
-        }
-    }
-
-    private string BuildRealAutoDutyCollisionBlocker(IReadOnlyCollection<IExposedPlugin> autoDutyPlugins)
-    {
-        var pluginSummary = FormatAutoDutyPlugins(autoDutyPlugins);
-        return $"Real AutoDuty collision: {pluginSummary}. Dad backend failed closed; Dalamud API 15 exposes no public IExposedPlugin unload API, so unload or disable real AutoDuty manually before using the Dad-owned AutoDuty facade.";
-    }
-
-    private static bool IsAutoDutyNamedPlugin(IExposedPlugin plugin)
-        => string.Equals(plugin.InternalName, AutoDutyInternalName, StringComparison.OrdinalIgnoreCase) ||
-           string.Equals(plugin.Name, AutoDutyDisplayName, StringComparison.OrdinalIgnoreCase) ||
-           string.Equals(plugin.Name, AutoDutyDisplayNameSpaced, StringComparison.OrdinalIgnoreCase);
-
-    private static string FormatAutoDutyPlugins(IReadOnlyCollection<IExposedPlugin> plugins)
-    {
-        if (plugins.Count == 0)
-            return "none";
-
-        return string.Join(", ", plugins.Select(static plugin =>
-        {
-            var version = plugin.Version?.ToString() ?? "unknown";
-            var source = plugin.IsDev ? "dev" : plugin.IsThirdParty ? "third-party" : "installed";
-            return $"{plugin.InternalName}/{plugin.Name} v{version} {source}";
-        }));
-    }
-
-    private void Register<TReturn>(string name, Func<TReturn> func)
+    private void RegisterFunc<TReturn>(string name, Func<TReturn> func)
     {
         var provider = pluginInterface.GetIpcProvider<TReturn>(name);
         provider.RegisterFunc(func);
         disposeActions.Add(provider.UnregisterFunc);
     }
 
-    private void Register<TArg1, TReturn>(string name, Func<TArg1, TReturn> func)
+    private void RegisterFunc<TArg1, TReturn>(string name, Func<TArg1, TReturn> func)
     {
         var provider = pluginInterface.GetIpcProvider<TArg1, TReturn>(name);
         provider.RegisterFunc(func);
         disposeActions.Add(provider.UnregisterFunc);
     }
 
-    private void Register<TArg1, TArg2, TReturn>(string name, Func<TArg1, TArg2, TReturn> func)
+    private void RegisterAction<TReturn>(string name, Action action)
     {
-        var provider = pluginInterface.GetIpcProvider<TArg1, TArg2, TReturn>(name);
-        provider.RegisterFunc(func);
-        disposeActions.Add(provider.UnregisterFunc);
+        var provider = pluginInterface.GetIpcProvider<TReturn>(name);
+        provider.RegisterAction(action);
+        disposeActions.Add(provider.UnregisterAction);
     }
 
-    private void Register<TArg1, TArg2, TArg3, TReturn>(string name, Func<TArg1, TArg2, TArg3, TReturn> func)
+    private void RegisterAction<TArg1, TArg2, TReturn>(string name, Action<TArg1, TArg2> action)
+    {
+        var provider = pluginInterface.GetIpcProvider<TArg1, TArg2, TReturn>(name);
+        provider.RegisterAction(action);
+        disposeActions.Add(provider.UnregisterAction);
+    }
+
+    private void RegisterAction<TArg1, TArg2, TArg3, TReturn>(string name, Action<TArg1, TArg2, TArg3> action)
     {
         var provider = pluginInterface.GetIpcProvider<TArg1, TArg2, TArg3, TReturn>(name);
-        provider.RegisterFunc(func);
-        disposeActions.Add(provider.UnregisterFunc);
+        provider.RegisterAction(action);
+        disposeActions.Add(provider.UnregisterAction);
     }
 
     private void Unregister()
@@ -903,7 +751,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             }
             catch (Exception ex)
             {
-                log.Debug(ex, "[dad][AutoDutyCompat] IPC unregister action failed.");
+                log.Debug(ex, "[dad][DutyIpc] IPC unregister action failed.");
             }
         }
 
@@ -911,25 +759,22 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
         status.Registered = false;
     }
 
-    private static bool IsAutoDutyCompatibleCandidate(DadPlannerDutyOption option)
+    private static bool IsDutyIpcCompatibleCandidate(DadPlannerDutyOption option)
         => option.ContentFinderConditionId != 0 &&
            (option.SupportsDutySupport || option.SupportsTrust || !string.IsNullOrWhiteSpace(option.DutyDisplayName));
 }
 
-internal enum DadAutoDutyCompatibilityRoute
+internal enum DadDutyIpcRoute
 {
     DutySupport,
     LocalDuty,
 }
 
-internal static class DadAutoDutyCompatibilityIpcContract
+internal static class DadDutyIpcContract
 {
-    public const string BackendPing = "Dad.AutoDutyCompat.Ping";
-    public const string ContentHasPath = "Dad.AutoDutyCompat.ContentHasPath";
-    public const string SetConfig = "Dad.AutoDutyCompat.SetConfig";
-    public const string Run = "Dad.AutoDutyCompat.Run";
-    public const string IsStopped = "Dad.AutoDutyCompat.IsStopped";
-    public const string Stop = "Dad.AutoDutyCompat.Stop";
-    public const string FacadePing = "Dad.AutoDutyFacade.Ping";
-    public const string FacadePingResponsePrefix = "Dad.AutoDutyFacade:";
+    public const string ContentHasPath = "dad.Duty.ContentHasPath";
+    public const string SetConfig = "dad.Duty.SetConfig";
+    public const string Run = "dad.Duty.Run";
+    public const string IsStopped = "dad.Duty.IsStopped";
+    public const string Stop = "dad.Duty.Stop";
 }
