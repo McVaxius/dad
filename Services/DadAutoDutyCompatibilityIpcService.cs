@@ -10,7 +10,11 @@ public sealed class DadAutoDutyCompatibilityIpcStatus
     public bool ConfigEnabled { get; set; }
     public bool Registered { get; set; }
     public bool RealAutoDutyLoaded { get; set; }
+    public bool AutoDutyFacadeLoaded { get; set; }
     public string RegistrationState { get; set; } = string.Empty;
+    public string AutoDutyFacadePing { get; set; } = string.Empty;
+    public string RealAutoDutyPluginSummary { get; set; } = string.Empty;
+    public string RealAutoDutyCollisionBlocker { get; set; } = string.Empty;
     public uint LastTerritoryType { get; set; }
     public string LastMode { get; set; } = "Support";
     public string LastRunId { get; set; } = string.Empty;
@@ -32,7 +36,11 @@ public sealed class DadAutoDutyCompatibilityIpcStatus
             ConfigEnabled = ConfigEnabled,
             Registered = Registered,
             RealAutoDutyLoaded = RealAutoDutyLoaded,
+            AutoDutyFacadeLoaded = AutoDutyFacadeLoaded,
             RegistrationState = RegistrationState,
+            AutoDutyFacadePing = AutoDutyFacadePing,
+            RealAutoDutyPluginSummary = RealAutoDutyPluginSummary,
+            RealAutoDutyCollisionBlocker = RealAutoDutyCollisionBlocker,
             LastTerritoryType = LastTerritoryType,
             LastMode = LastMode,
             LastRunId = LastRunId,
@@ -56,7 +64,11 @@ public sealed class DadAutoDutyCompatibilityDiagnostic
     public bool ConfigEnabled { get; set; }
     public bool Registered { get; set; }
     public bool RealAutoDutyLoaded { get; set; }
+    public bool AutoDutyFacadeLoaded { get; set; }
     public string RegistrationState { get; set; } = string.Empty;
+    public string AutoDutyFacadePing { get; set; } = string.Empty;
+    public string RealAutoDutyPluginSummary { get; set; } = string.Empty;
+    public string RealAutoDutyCollisionBlocker { get; set; } = string.Empty;
     public string Mode { get; set; } = "Support";
     public string Route { get; set; } = string.Empty;
     public uint TerritoryType { get; set; }
@@ -176,9 +188,8 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
     public void UpdateRegistrationState()
     {
-        var realAutoDutyLoaded = IsRealAutoDutyLoaded();
+        RefreshCollisionState();
         status.ConfigEnabled = configuration.EnableAutoDutyCompatibilityIpc;
-        status.RealAutoDutyLoaded = realAutoDutyLoaded;
 
         if (!configuration.EnableAutoDutyCompatibilityIpc)
         {
@@ -190,25 +201,27 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             return;
         }
 
-        if (realAutoDutyLoaded)
+        if (status.RealAutoDutyLoaded)
         {
             if (status.Registered)
                 Unregister();
 
-            status.RegistrationState = "Disabled because real AutoDuty is loaded.";
+            status.RegistrationState = "Blocked by real AutoDuty collision.";
+            status.LastFailure = status.RealAutoDutyCollisionBlocker;
             status.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
 
         if (status.Registered)
         {
-            status.RegistrationState = "Registered.";
+            status.RegistrationState = "Backend registered.";
             status.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
 
         try
         {
+            Register<string>(DadAutoDutyCompatibilityIpcContract.BackendPing, Ping);
             Register<uint, bool>(DadAutoDutyCompatibilityIpcContract.ContentHasPath, ContentHasPath);
             Register<string, string, object>(DadAutoDutyCompatibilityIpcContract.SetConfig, SetConfig);
             Register<uint, int, bool, object>(DadAutoDutyCompatibilityIpcContract.Run, Run);
@@ -216,9 +229,9 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             Register<object>(DadAutoDutyCompatibilityIpcContract.Stop, Stop);
 
             status.Registered = true;
-            status.RegistrationState = "Registered.";
+            status.RegistrationState = "Backend registered.";
             status.LastFailure = string.Empty;
-            log.Information("[dad][AutoDutyCompat] Registered AutoDuty-compatible IPC shim.");
+            log.Information("[dad][AutoDutyCompat] Registered Dad AutoDuty backend IPC.");
         }
         catch (Exception ex)
         {
@@ -232,6 +245,9 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             status.UpdatedAtUtc = DateTime.UtcNow;
         }
     }
+
+    private string Ping()
+        => "Dad.AutoDutyCompat backend registered.";
 
     private bool ContentHasPath(uint territoryType)
     {
@@ -470,7 +486,11 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             ConfigEnabled = status.ConfigEnabled,
             Registered = status.Registered,
             RealAutoDutyLoaded = status.RealAutoDutyLoaded,
+            AutoDutyFacadeLoaded = status.AutoDutyFacadeLoaded,
             RegistrationState = status.RegistrationState,
+            AutoDutyFacadePing = status.AutoDutyFacadePing,
+            RealAutoDutyPluginSummary = status.RealAutoDutyPluginSummary,
+            RealAutoDutyCollisionBlocker = status.RealAutoDutyCollisionBlocker,
             Mode = BuildModeStatusText(),
             Route = route.ToString(),
             TerritoryType = territoryType,
@@ -506,7 +526,11 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             ConfigEnabled = status.ConfigEnabled,
             Registered = status.Registered,
             RealAutoDutyLoaded = status.RealAutoDutyLoaded,
+            AutoDutyFacadeLoaded = status.AutoDutyFacadeLoaded,
             RegistrationState = status.RegistrationState,
+            AutoDutyFacadePing = status.AutoDutyFacadePing,
+            RealAutoDutyPluginSummary = status.RealAutoDutyPluginSummary,
+            RealAutoDutyCollisionBlocker = status.RealAutoDutyCollisionBlocker,
             Mode = BuildModeStatusText(),
             Route = route.ToString(),
             TerritoryType = territoryType,
@@ -628,7 +652,7 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
             return "AutoDuty compatibility IPC disabled by Dad config.";
 
         if (status.RealAutoDutyLoaded)
-            return "Real AutoDuty is loaded; Dad shim disabled to avoid AutoDuty.* collision.";
+            return status.RealAutoDutyCollisionBlocker;
 
         if (!status.Registered)
             return string.IsNullOrWhiteSpace(status.RegistrationState)
@@ -747,34 +771,98 @@ public sealed class DadAutoDutyCompatibilityIpcService : IDisposable
 
     private void RefreshStatus()
     {
+        RefreshCollisionState();
         status.ConfigEnabled = configuration.EnableAutoDutyCompatibilityIpc;
-        status.RealAutoDutyLoaded = IsRealAutoDutyLoaded();
         status.RegistrationState = !configuration.EnableAutoDutyCompatibilityIpc
             ? "Disabled by Dad config."
             : status.RealAutoDutyLoaded
-                ? "Disabled because real AutoDuty is loaded."
+                ? "Blocked by real AutoDuty collision."
                 : status.Registered
-                    ? "Registered."
+                    ? "Backend registered."
                     : "Not registered.";
         status.LastMode = BuildModeStatusText();
         status.UpdatedAtUtc = DateTime.UtcNow;
     }
 
-    private bool IsRealAutoDutyLoaded()
+    private void RefreshCollisionState()
     {
+        var autoDutyPlugins = GetLoadedAutoDutyPlugins(out var inspectionFailure);
+        var facadeLoaded = TryPingAutoDutyFacade(out var facadePing);
+        var realAutoDutyLoaded = !string.IsNullOrWhiteSpace(inspectionFailure) ||
+                                 (autoDutyPlugins.Count > 0 && !facadeLoaded);
+        if (autoDutyPlugins.Count > 1)
+            realAutoDutyLoaded = true;
+
+        status.AutoDutyFacadeLoaded = facadeLoaded;
+        status.AutoDutyFacadePing = facadePing;
+        status.RealAutoDutyPluginSummary = string.IsNullOrWhiteSpace(inspectionFailure)
+            ? FormatAutoDutyPlugins(autoDutyPlugins)
+            : "plugin inspection failed";
+        status.RealAutoDutyLoaded = realAutoDutyLoaded;
+        status.RealAutoDutyCollisionBlocker = !string.IsNullOrWhiteSpace(inspectionFailure)
+            ? $"AutoDuty collision check failed closed: {inspectionFailure}"
+            : realAutoDutyLoaded
+            ? BuildRealAutoDutyCollisionBlocker(autoDutyPlugins)
+            : string.Empty;
+    }
+
+    private List<IExposedPlugin> GetLoadedAutoDutyPlugins(out string inspectionFailure)
+    {
+        inspectionFailure = string.Empty;
         try
         {
-            return pluginInterface.InstalledPlugins.Any(plugin =>
-                plugin.IsLoaded &&
-                (string.Equals(plugin.InternalName, AutoDutyInternalName, StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(plugin.Name, AutoDutyDisplayName, StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(plugin.Name, AutoDutyDisplayNameSpaced, StringComparison.OrdinalIgnoreCase)));
+            return pluginInterface.InstalledPlugins
+                .Where(static plugin => plugin.IsLoaded && IsAutoDutyNamedPlugin(plugin))
+                .ToList();
         }
         catch (Exception ex)
         {
             log.Warning(ex, "[dad][AutoDutyCompat] Failed to inspect AutoDuty plugin availability.");
-            return true;
+            inspectionFailure = $"Failed to inspect Dalamud InstalledPlugins: {ex.Message}";
+            return [];
         }
+    }
+
+    private bool TryPingAutoDutyFacade(out string ping)
+    {
+        ping = string.Empty;
+        try
+        {
+            ping = pluginInterface
+                .GetIpcSubscriber<string>(DadAutoDutyCompatibilityIpcContract.FacadePing)
+                .InvokeFunc()
+                .Trim();
+            return ping.StartsWith(DadAutoDutyCompatibilityIpcContract.FacadePingResponsePrefix, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            ping = string.Empty;
+            return false;
+        }
+    }
+
+    private string BuildRealAutoDutyCollisionBlocker(IReadOnlyCollection<IExposedPlugin> autoDutyPlugins)
+    {
+        var pluginSummary = FormatAutoDutyPlugins(autoDutyPlugins);
+        return $"Real AutoDuty collision: {pluginSummary}. Dad backend failed closed; Dalamud API 15 exposes no public IExposedPlugin unload API, so unload or disable real AutoDuty manually before using the Dad-owned AutoDuty facade.";
+    }
+
+    private static bool IsAutoDutyNamedPlugin(IExposedPlugin plugin)
+        => string.Equals(plugin.InternalName, AutoDutyInternalName, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(plugin.Name, AutoDutyDisplayName, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(plugin.Name, AutoDutyDisplayNameSpaced, StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatAutoDutyPlugins(IReadOnlyCollection<IExposedPlugin> plugins)
+    {
+        if (plugins.Count == 0)
+            return "none";
+
+        return string.Join(", ", plugins.Select(static plugin =>
+        {
+            var version = plugin.Version?.ToString() ?? "unknown";
+            var source = plugin.IsDev ? "dev" : plugin.IsThirdParty ? "third-party" : "installed";
+            return $"{plugin.InternalName}/{plugin.Name} v{version} {source}";
+        }));
     }
 
     private void Register<TReturn>(string name, Func<TReturn> func)
@@ -836,9 +924,12 @@ internal enum DadAutoDutyCompatibilityRoute
 
 internal static class DadAutoDutyCompatibilityIpcContract
 {
-    public const string ContentHasPath = "AutoDuty.ContentHasPath";
-    public const string SetConfig = "AutoDuty.SetConfig";
-    public const string Run = "AutoDuty.Run";
-    public const string IsStopped = "AutoDuty.IsStopped";
-    public const string Stop = "AutoDuty.Stop";
+    public const string BackendPing = "Dad.AutoDutyCompat.Ping";
+    public const string ContentHasPath = "Dad.AutoDutyCompat.ContentHasPath";
+    public const string SetConfig = "Dad.AutoDutyCompat.SetConfig";
+    public const string Run = "Dad.AutoDutyCompat.Run";
+    public const string IsStopped = "Dad.AutoDutyCompat.IsStopped";
+    public const string Stop = "Dad.AutoDutyCompat.Stop";
+    public const string FacadePing = "Dad.AutoDutyFacade.Ping";
+    public const string FacadePingResponsePrefix = "Dad.AutoDutyFacade:";
 }

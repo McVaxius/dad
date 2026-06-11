@@ -1724,6 +1724,8 @@ public sealed class Plugin : IDalamudPlugin
             $"Pool {characterPool.Characters.Count} row(s) / XADB {characterPool.XadbStatus.Availability} / peers {characterPool.PeerTransport.ConnectedPeerCount}");
         PrintStatus($"AutoDuty probe: {FormatAutoDutyProbeStatus(autoDutyStatus)}");
         PrintStatus($"AutoDuty failure: {FormatAutoDutyFailureStatus(autoDutyStatus)}");
+        if (!string.IsNullOrWhiteSpace(autoDutyStatus.RealAutoDutyCollisionBlocker))
+            PrintStatus($"AutoDuty collision blocker: {autoDutyStatus.RealAutoDutyCollisionBlocker}");
         PrintStatus($"Authority timeline: {FormatOperatorTextForChat(authorityView.TimelineText)}");
         PrintStatus($"Authority owner: {FormatOperatorTextForChat(authorityView.OwnershipText)}");
         PrintStatus($"Local run: {FormatRunStatusForChat(localRun)} | Payload {FormatOperatorTextForChat(FormatTaskPayload(localRun))}");
@@ -1739,8 +1741,9 @@ public sealed class Plugin : IDalamudPlugin
             : string.IsNullOrWhiteSpace(status.RegistrationState)
                 ? "not registered"
                 : status.RegistrationState;
-        var collision = status.RealAutoDutyLoaded ? "real AutoDuty loaded" : "no real AutoDuty";
-        return $"{state} | {collision} | mode {status.LastMode}";
+        var facade = status.AutoDutyFacadeLoaded ? "facade loaded" : "facade missing";
+        var collision = status.RealAutoDutyLoaded ? "real AutoDuty collision" : "no real AutoDuty collision";
+        return $"{state} | {facade} | {collision} | mode {status.LastMode}";
     }
 
     private static string FormatAutoDutyProbeStatus(DadAutoDutyCompatibilityIpcStatus status)
@@ -2012,8 +2015,9 @@ public sealed class Plugin : IDalamudPlugin
         var ipc = diagnostic.Registered
             ? "ipc registered"
             : $"ipc {FormatAutoDutyDiagnosticText(diagnostic.RegistrationState, "not registered")}";
-        var collision = diagnostic.RealAutoDutyLoaded ? "real AutoDuty loaded" : "no real AutoDuty";
-        return $"{diagnostic.Query} | {config} | {ipc} | {collision} | mode {diagnostic.Mode}";
+        var facade = diagnostic.AutoDutyFacadeLoaded ? "facade loaded" : "facade missing";
+        var collision = diagnostic.RealAutoDutyLoaded ? "real AutoDuty collision" : "no real AutoDuty collision";
+        return $"{diagnostic.Query} | {config} | {ipc} | {facade} | {collision} | mode {diagnostic.Mode}";
     }
 
     private static string FormatAutoDutyDiagnosticProbe(DadAutoDutyCompatibilityDiagnostic diagnostic)

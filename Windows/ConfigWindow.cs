@@ -794,13 +794,14 @@ public sealed class ConfigWindow : Window, IDisposable
     private static string FormatAutoDutyRegistrationStatus(DadAutoDutyCompatibilityIpcStatus status)
     {
         var state = status.Registered ? "Registered" : status.RegistrationState;
-        return $"{FormatText(state, "Not registered")} | mode {status.LastMode}";
+        var facade = status.AutoDutyFacadeLoaded ? "facade loaded" : "facade missing";
+        return $"{FormatText(state, "Not registered")} | {facade} | mode {status.LastMode}";
     }
 
     private static string FormatAutoDutyCollisionStatus(DadAutoDutyCompatibilityIpcStatus status)
         => status.RealAutoDutyLoaded
-            ? "Real AutoDuty is loaded; Dad shim disabled to avoid AutoDuty.* IPC collision."
-            : "No real AutoDuty plugin loaded.";
+            ? FormatText(status.RealAutoDutyCollisionBlocker, "Real AutoDuty is loaded; Dad backend failed closed.")
+            : "No real AutoDuty collision.";
 
     private static string FormatAutoDutyProbeStatus(DadAutoDutyCompatibilityIpcStatus status)
     {

@@ -5019,10 +5019,12 @@ public sealed class MainWindow : Window, IDisposable
     private static string FormatAutoDutyCompatibilityStatus(DadAutoDutyCompatibilityIpcStatus status)
     {
         var state = status.Registered ? "Registered" : status.RegistrationState;
+        var facade = status.AutoDutyFacadeLoaded ? "facade loaded" : "facade missing";
+        var collision = status.RealAutoDutyLoaded ? "real AutoDuty collision" : "no real AutoDuty collision";
         var territory = status.LastTerritoryType == 0 ? "(none)" : status.LastTerritoryType.ToString(CultureInfo.InvariantCulture);
         var runId = string.IsNullOrWhiteSpace(status.LastRunId) ? "(none)" : status.LastRunId;
         var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "(none)" : status.LastFailure;
-        return $"{state} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
+        return $"{state} | {facade} | {collision} | territory {territory} | mode {status.LastMode} | run {runId} | failure {failure}";
     }
 
     private string FormatAccount(DadAcquiredCharacter character)
