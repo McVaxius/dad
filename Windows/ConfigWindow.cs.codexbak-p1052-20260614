@@ -148,7 +148,6 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawStatusRow("Questionable cosmetic", FormatQuestionableCosmeticStatus(bridgeStatus));
         DrawStatusRow("Dad duty IPC probe", FormatDutyIpcProbeStatus(dutyIpcStatus));
         DrawStatusRow("Dad duty IPC run", FormatDutyIpcFailureStatus(dutyIpcStatus));
-        DrawStatusRow("Dad duty IPC cleanup", FormatDutyIpcCleanupStatus(dutyIpcStatus));
 
         var dtr = configuration.DtrBarEnabled;
         if (ImGui.Checkbox("Show DTR bar entry", ref dtr))
@@ -689,7 +688,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawCombatRotationTab(Configuration configuration)
     {
-        ImGui.TextWrapped("Select what Dad does when it starts a duty operation. Use FrenRider is the default: Dad sends /fr on once before queue/routing begins, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
+        ImGui.TextWrapped("Select what Dad does when it starts a duty operation. Use FrenRider is the default: Dad sends /fr on once before queue/routing begins, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Selecting the menu option does not send commands, and Dad does not send a FrenRider disable command.");
         ImGui.Separator();
 
         DrawCombatRotationModeRadio(
@@ -751,7 +750,7 @@ public sealed class ConfigWindow : Window, IDisposable
             color,
             statusText);
         ImGui.TextWrapped("Status color uses Dalamud installed-plugin state only: green means installed and loaded, yellow means installed but not loaded, red means not installed/found.");
-        ImGui.TextWrapped("Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Only successful final dad.Duty.Run IPC completion sends /fr off, /rotation cancel, /vbmai off, /bmrai off, and /wrath auto off.");
+        ImGui.TextWrapped("Dad does not send a FrenRider disable command on completion or cancel because it cannot know whether the user had FrenRider enabled before this run.");
     }
 
     private static void DrawForceCommandsModeStatus()
@@ -828,15 +827,6 @@ public sealed class ConfigWindow : Window, IDisposable
         var territory = status.LastTerritoryType == 0 ? "(none)" : status.LastTerritoryType.ToString();
         var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "(none)" : status.LastFailure;
         return $"run {runId} | territory {territory} | bareMode {status.LastBareMode} | failure {failure}";
-    }
-
-    private static string FormatDutyIpcCleanupStatus(DadDutyIpcStatus status)
-    {
-        var cleanupUtc = status.LastCleanupUtc?.ToString("O") ?? "(never)";
-        var failedCommands = status.LastCleanupFailedCommands.Count == 0
-            ? "(none)"
-            : string.Join(", ", status.LastCleanupFailedCommands);
-        return $"{status.LastCleanupResult} | at {cleanupUtc} | failed {failedCommands}";
     }
 
     private static string FormatDutyIpcDuty(uint contentFinderConditionId, string dutyName)

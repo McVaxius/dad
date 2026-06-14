@@ -345,7 +345,7 @@ public sealed class DadLocalDutyExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Local Duty {dutyName} completed; waiting for FrenRider or user to leave. Disable commands are reserved for successful final dad.Duty.Run IPC cleanup.",
+            DadCombatRotationMode.UseFrenRider => $"Local Duty {dutyName} completed; waiting for FrenRider or user to leave. Dad will keep observing and will not send a FrenRider disable command.",
             DadCombatRotationMode.DoNothing => $"Local Duty {dutyName} completed; waiting for user-owned duty exit.",
             _ => $"Local Duty {dutyName} completed; waiting for duty exit.",
         };
@@ -356,7 +356,7 @@ public sealed class DadLocalDutyExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Local Duty {dutyName} completed and stabilized; normal Dad run done without disable commands. Successful final dad.Duty.Run IPC cleanup is separate.",
+            DadCombatRotationMode.UseFrenRider => $"Local Duty {dutyName} completed and stabilized; Dad FrenRider-mode run done without sending a FrenRider disable command.",
             DadCombatRotationMode.DoNothing => $"Local Duty {dutyName} completed; Dad queue-only run done.",
             _ => $"Local Duty {dutyName} completed; Dad run done.",
         };

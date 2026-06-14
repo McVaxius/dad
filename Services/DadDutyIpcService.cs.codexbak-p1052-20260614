@@ -22,9 +22,6 @@ public sealed class DadDutyIpcStatus
     public string LastContentHasPathSelectedDutyName { get; set; } = string.Empty;
     public string LastContentHasPathBlocker { get; set; } = string.Empty;
     public DateTime? LastContentHasPathUtc { get; set; }
-    public DateTime? LastCleanupUtc { get; set; }
-    public string LastCleanupResult { get; set; } = "Not run.";
-    public List<string> LastCleanupFailedCommands { get; set; } = [];
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public DadDutyIpcStatus Clone()
@@ -45,9 +42,6 @@ public sealed class DadDutyIpcStatus
             LastContentHasPathSelectedDutyName = LastContentHasPathSelectedDutyName,
             LastContentHasPathBlocker = LastContentHasPathBlocker,
             LastContentHasPathUtc = LastContentHasPathUtc,
-            LastCleanupUtc = LastCleanupUtc,
-            LastCleanupResult = LastCleanupResult,
-            LastCleanupFailedCommands = [.. LastCleanupFailedCommands],
             UpdatedAtUtc = UpdatedAtUtc,
         };
 }
@@ -79,15 +73,6 @@ public sealed class DadDutyIpcDiagnostic
 
 public sealed class DadDutyIpcService : IDisposable
 {
-    private static readonly string[] SuccessfulSessionCleanupCommands =
-    [
-        "/fr off",
-        "/rotation cancel",
-        "/vbmai off",
-        "/bmrai off",
-        "/wrath auto off",
-    ];
-
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly DadPresetProviderService presetProviderService;
     private readonly DadDutySupportExecutor dutySupportExecutor;
@@ -411,7 +396,7 @@ public sealed class DadDutyIpcService : IDisposable
                     CompleteSession();
                 break;
             case DadRunStatus.Cancelled:
-                EndSessionWithoutCleanup();
+                CompleteSession();
                 break;
             case DadRunStatus.Rejected:
             case DadRunStatus.PartialFailure:
@@ -424,12 +409,6 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void CompleteSession()
     {
-        RunSuccessfulSessionCleanup();
-        EndSessionWithoutCleanup();
-    }
-
-    private void EndSessionWithoutCleanup()
-    {
         activeExecutor = null;
         activeDuty = null;
         ownedSessionId = string.Empty;
@@ -438,47 +417,6 @@ public sealed class DadDutyIpcService : IDisposable
         sessionStage = DadDutyIpcSessionStage.Stopped;
         status.LastFailure = string.Empty;
         status.UpdatedAtUtc = DateTime.UtcNow;
-    }
-
-    private void RunSuccessfulSessionCleanup()
-    {
-        var failedCommands = new List<string>();
-        foreach (var command in SuccessfulSessionCleanupCommands)
-        {
-            try
-            {
-                if (Plugin.CommandManager.ProcessCommand(command))
-                    continue;
-
-                failedCommands.Add(command);
-                log.Warning("[dad][DutyIpc] Successful-session cleanup command was rejected: {Command}.", command);
-            }
-            catch (Exception ex)
-            {
-                failedCommands.Add(command);
-                log.Warning(ex, "[dad][DutyIpc] Successful-session cleanup command threw: {Command}.", command);
-            }
-        }
-
-        status.LastCleanupUtc = DateTime.UtcNow;
-        status.LastCleanupFailedCommands = failedCommands;
-        status.LastCleanupResult = failedCommands.Count == 0
-            ? "Succeeded."
-            : $"Completed with warnings; {failedCommands.Count} command(s) failed.";
-        status.UpdatedAtUtc = status.LastCleanupUtc.Value;
-
-        if (failedCommands.Count == 0)
-        {
-            log.Information(
-                "[dad][DutyIpc] Successful final bridge session cleanup sent all commands: {Commands}.",
-                string.Join(", ", SuccessfulSessionCleanupCommands));
-        }
-        else
-        {
-            log.Warning(
-                "[dad][DutyIpc] Successful final bridge session cleanup completed with failed command(s): {Commands}.",
-                string.Join(", ", failedCommands));
-        }
     }
 
     private void FailSession(string reason)

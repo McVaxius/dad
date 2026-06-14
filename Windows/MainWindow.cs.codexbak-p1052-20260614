@@ -5039,11 +5039,7 @@ public sealed class MainWindow : Window, IDisposable
         var territory = dutyIpc.LastTerritoryType == 0 ? "(none)" : dutyIpc.LastTerritoryType.ToString(CultureInfo.InvariantCulture);
         var runId = string.IsNullOrWhiteSpace(dutyIpc.LastRunId) ? "(none)" : dutyIpc.LastRunId;
         var failure = string.IsNullOrWhiteSpace(dutyIpc.LastFailure) ? "(none)" : dutyIpc.LastFailure;
-        var cleanupUtc = dutyIpc.LastCleanupUtc?.ToString("O") ?? "(never)";
-        var cleanupFailed = dutyIpc.LastCleanupFailedCommands.Count == 0
-            ? "(none)"
-            : string.Join(", ", dutyIpc.LastCleanupFailedCommands);
-        return $"{state} | {bridgeState} | {cosmeticState} | cosmetic blocker {cosmeticBlocker} | territory {territory} | mode {dutyIpc.LastMode} | bareMode {dutyIpc.LastBareMode} | run {runId} | failure {failure} | cleanup {dutyIpc.LastCleanupResult} @ {cleanupUtc} | cleanup failed {cleanupFailed}";
+        return $"{state} | {bridgeState} | {cosmeticState} | cosmetic blocker {cosmeticBlocker} | territory {territory} | mode {dutyIpc.LastMode} | bareMode {dutyIpc.LastBareMode} | run {runId} | failure {failure}";
     }
 
     private string FormatAccount(DadAcquiredCharacter character)

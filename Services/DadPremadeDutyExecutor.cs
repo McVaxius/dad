@@ -360,7 +360,7 @@ public sealed class DadPremadeDutyExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Premade Duty {dutyName} completed; waiting for FrenRider or user to leave. Dad will keep observing and will not send a FrenRider disable command.",
+            DadCombatRotationMode.UseFrenRider => $"Premade Duty {dutyName} completed; waiting for FrenRider or user to leave. Disable commands are reserved for successful final dad.Duty.Run IPC cleanup.",
             DadCombatRotationMode.DoNothing => $"Premade Duty {dutyName} completed; waiting for user-owned duty exit.",
             _ => $"Premade Duty {dutyName} completed; waiting for duty exit.",
         };
@@ -371,7 +371,7 @@ public sealed class DadPremadeDutyExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Premade Duty {dutyName} completed and stabilized; Dad FrenRider-mode run done without sending a FrenRider disable command.",
+            DadCombatRotationMode.UseFrenRider => $"Premade Duty {dutyName} completed and stabilized; normal Dad run done without disable commands. Successful final dad.Duty.Run IPC cleanup is separate.",
             DadCombatRotationMode.DoNothing => $"Premade Duty {dutyName} completed; Dad queue-only run done.",
             _ => $"Premade Duty {dutyName} completed; Dad run done.",
         };

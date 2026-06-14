@@ -1731,7 +1731,6 @@ public sealed class Plugin : IDalamudPlugin
             $"Pool {characterPool.Characters.Count} row(s) / XADB {characterPool.XadbStatus.Availability} / peers {characterPool.PeerTransport.ConnectedPeerCount}");
         PrintStatus($"Dad duty IPC probe: {FormatDutyIpcProbeStatus(dutyIpcStatus)}");
         PrintStatus($"Dad duty IPC run: {FormatDutyIpcFailureStatus(dutyIpcStatus)}");
-        PrintStatus($"Dad duty IPC cleanup: {FormatDutyIpcCleanupStatus(dutyIpcStatus)}");
         PrintStatus($"Questionable runtime bridge: {FormatQuestionableBridgeDetail(bridgeStatus)}");
         if (!string.IsNullOrWhiteSpace(bridgeStatus.LastBlocker))
             PrintStatus($"Questionable runtime bridge blocker: {bridgeStatus.LastBlocker}");
@@ -1799,15 +1798,6 @@ public sealed class Plugin : IDalamudPlugin
         var territory = status.LastTerritoryType == 0 ? "none" : status.LastTerritoryType.ToString();
         var failure = string.IsNullOrWhiteSpace(status.LastFailure) ? "none" : status.LastFailure;
         return $"run {runId} | territory {territory} | bareMode {status.LastBareMode} | failure {failure}";
-    }
-
-    private static string FormatDutyIpcCleanupStatus(DadDutyIpcStatus status)
-    {
-        var cleanupUtc = status.LastCleanupUtc?.ToString("O") ?? "never";
-        var failedCommands = status.LastCleanupFailedCommands.Count == 0
-            ? "none"
-            : string.Join(", ", status.LastCleanupFailedCommands);
-        return $"{status.LastCleanupResult} | at {cleanupUtc} | failed {failedCommands}";
     }
 
     private static string FormatDutyIpcDuty(uint contentFinderConditionId, string dutyName)
