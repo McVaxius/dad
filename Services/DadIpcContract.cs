@@ -14,6 +14,11 @@ internal static class DadIpcContract
     public const string GetSchedulerPreview = $"{Prefix}.GetSchedulerPreview";
     public const string StartSchedulerPreset = $"{Prefix}.StartSchedulerPreset";
     public const string GetLaunchProfiles = $"{Prefix}.GetLaunchProfiles";
+    public const string GetProfileCatalog = $"{Prefix}.GetProfileCatalog";
+    public const string UpdateProfile = $"{Prefix}.UpdateProfile";
+    public const string GetAccountDirectory = $"{Prefix}.GetAccountDirectory";
+    public const string UpdateLaunchProfile = $"{Prefix}.UpdateLaunchProfile";
+    public const string GetWorkerExecutionStatus = $"{Prefix}.GetWorkerExecutionStatus";
     public const string GetRosterCatalog = $"{Prefix}.GetRosterCatalog";
     public const string RefreshPeerRosterCatalog = $"{Prefix}.RefreshPeerRosterCatalog";
     public const string SetRosterVisibility = $"{Prefix}.SetRosterVisibility";

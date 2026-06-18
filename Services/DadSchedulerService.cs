@@ -12,6 +12,8 @@ public sealed class DadSchedulerService
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(2);
 
     private readonly Configuration configuration;
+    private readonly ConfigManager configManager;
+    private readonly DadProfileDirectoryService profileDirectoryService;
     private readonly DadCharacterIntelligenceService characterIntelligenceService;
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
@@ -23,6 +25,8 @@ public sealed class DadSchedulerService
 
     public DadSchedulerService(
         Configuration configuration,
+        ConfigManager configManager,
+        DadProfileDirectoryService profileDirectoryService,
         DadCharacterIntelligenceService characterIntelligenceService,
         DadPresenceService presenceService,
         DadTransportService transportService,
@@ -30,6 +34,8 @@ public sealed class DadSchedulerService
         IPluginLog log)
     {
         this.configuration = configuration;
+        this.configManager = configManager;
+        this.profileDirectoryService = profileDirectoryService;
         this.characterIntelligenceService = characterIntelligenceService;
         this.presenceService = presenceService;
         this.transportService = transportService;
@@ -243,6 +249,9 @@ public sealed class DadSchedulerService
 
     public int ImportLaunchProfilesFromBootDirectory()
     {
+        if (!configuration.RunAsServerDad)
+            return 0;
+
         NormalizeLaunchProfiles();
         if (!Directory.Exists(ClientBootDirectory))
             return 0;
@@ -272,6 +281,97 @@ public sealed class DadSchedulerService
             configuration.Save();
 
         return imported;
+    }
+
+    public DadLaunchProfileUpdateAck UpdateLaunchProfile(DadLaunchProfileUpdateRequest request)
+    {
+        if (!configuration.RunAsServerDad)
+        {
+            return new DadLaunchProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                Summary = "Only Server Dad may update launch profiles.",
+            };
+        }
+
+        NormalizeLaunchProfiles();
+        var incoming = request.Profile?.Clone() ?? new DadLaunchProfile();
+        incoming.Normalize();
+        var existing = configuration.LaunchProfiles.FirstOrDefault(profile =>
+            string.Equals(profile.ProfileId, incoming.ProfileId, StringComparison.OrdinalIgnoreCase));
+        if (existing == null)
+        {
+            return new DadLaunchProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                Summary = $"Launch profile {incoming.ProfileId} does not exist.",
+            };
+        }
+
+        if (request.ExpectedRevision != existing.Revision)
+        {
+            return new DadLaunchProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                RevisionConflict = true,
+                Summary = $"Launch profile '{existing.DisplayName}' changed; refresh before saving.",
+                Profile = existing.Clone(),
+            };
+        }
+
+        var blocker = ValidateLaunchProfile(incoming, existing.ProfileId);
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            return new DadLaunchProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                Summary = blocker,
+                Profile = existing.Clone(),
+            };
+        }
+
+        incoming.Revision = existing.Revision + 1;
+        var index = configuration.LaunchProfiles.IndexOf(existing);
+        configuration.LaunchProfiles[index] = incoming;
+        configuration.Save();
+        return new DadLaunchProfileUpdateAck
+        {
+            RequestId = request.RequestId,
+            Accepted = true,
+            Summary = $"Saved launch profile '{incoming.DisplayName}'.",
+            Profile = incoming.Clone(),
+        };
+    }
+
+    private string ValidateLaunchProfile(DadLaunchProfile profile, string existingProfileId)
+    {
+        if (string.IsNullOrWhiteSpace(profile.BatchPath))
+            return "Launch profile batch path is required.";
+        if (!IsAllowedBootBatchPath(profile.BatchPath))
+            return $"Launch profile must reference a .bat under {ClientBootDirectory}.";
+        if (!File.Exists(profile.BatchPath))
+            return $"Launch profile batch path not found: {profile.BatchPath}.";
+        var normalizedIncomingPath = Path.GetFullPath(profile.BatchPath);
+        if (configuration.LaunchProfiles.Any(existing =>
+                !string.Equals(existing.ProfileId, existingProfileId, StringComparison.OrdinalIgnoreCase) &&
+                IsAllowedBootBatchPath(existing.BatchPath) &&
+                string.Equals(Path.GetFullPath(existing.BatchPath), normalizedIncomingPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"Another launch profile already uses {profile.BatchPath}.";
+        }
+
+        foreach (var characterKey in profile.ExpectedCharacterKeys)
+        {
+            var character = rosterCatalogService.FindCharacter(new DadRosterCharacterRef
+            {
+                AccountKey = profile.AccountKey,
+                CharacterKey = characterKey,
+            });
+            if (character == null)
+                return $"Expected character {characterKey} does not belong to account {profile.AccountKey}.";
+        }
+
+        return string.Empty;
     }
 
     public DadSchedulerPreview BuildPreview(
@@ -1256,7 +1356,13 @@ public sealed class DadSchedulerService
             state.LaunchProfileName = profile.DisplayName;
             state.BatchPath = profile.BatchPath;
             state.LaunchProfileDryRun = profile.DryRun;
-            if (!profile.Enabled)
+            if (!slot.RequiredAccountKey.IsEmpty &&
+                !profile.AccountKey.IsEmpty &&
+                !DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey))
+            {
+                state.BlockedReason = $"Launch profile '{profile.DisplayName}' belongs to account {profile.AccountKey}, not {slot.RequiredAccountKey}.";
+            }
+            else if (!profile.Enabled)
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' is disabled.";
             else if (!profile.AllowAutoStart)
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' does not allow auto-start.";
@@ -1350,14 +1456,21 @@ public sealed class DadSchedulerService
                 return exact;
         }
 
-        var accountProfile = configuration.LaunchProfiles.FirstOrDefault(profile =>
-            !slot.RequiredAccountKey.IsEmpty &&
-            string.Equals(profile.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
-        if (accountProfile != null || !slot.RequiredAccountKey.IsEmpty)
-            return accountProfile;
+        var primaryLaunchProfileId = ResolvePrimaryLaunchProfileId(slot.RequiredAccountKey);
+        if (!string.IsNullOrWhiteSpace(primaryLaunchProfileId))
+        {
+            var primary = configuration.LaunchProfiles.FirstOrDefault(profile =>
+                string.Equals(profile.ProfileId, primaryLaunchProfileId, StringComparison.OrdinalIgnoreCase) &&
+                (profile.AccountKey.IsEmpty || DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey)));
+            if (primary != null)
+                return primary;
+        }
 
         return configuration.LaunchProfiles.FirstOrDefault(profile =>
                    !slot.RequiredCharacterKey.IsEmpty &&
+                   (slot.RequiredAccountKey.IsEmpty ||
+                    profile.AccountKey.IsEmpty ||
+                    DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey)) &&
                    profile.ExpectedCharacterKeys.Any(key =>
                        string.Equals(key.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase)));
     }
@@ -1373,16 +1486,38 @@ public sealed class DadSchedulerService
                 return exact;
         }
 
-        var accountProfile = configuration.LaunchProfiles.FirstOrDefault(profile =>
-            !slot.RequiredAccountKey.IsEmpty &&
-            string.Equals(profile.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
-        if (accountProfile != null || !slot.RequiredAccountKey.IsEmpty)
-            return accountProfile;
+        var primaryLaunchProfileId = ResolvePrimaryLaunchProfileId(slot.RequiredAccountKey);
+        if (!string.IsNullOrWhiteSpace(primaryLaunchProfileId))
+        {
+            var primary = configuration.LaunchProfiles.FirstOrDefault(profile =>
+                string.Equals(profile.ProfileId, primaryLaunchProfileId, StringComparison.OrdinalIgnoreCase) &&
+                (profile.AccountKey.IsEmpty || DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey)));
+            if (primary != null)
+                return primary;
+        }
 
         return configuration.LaunchProfiles.FirstOrDefault(profile =>
                    !slot.RequiredCharacterKey.IsEmpty &&
+                   (slot.RequiredAccountKey.IsEmpty ||
+                    profile.AccountKey.IsEmpty ||
+                    DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey)) &&
                    profile.ExpectedCharacterKeys.Any(key =>
                        string.Equals(key.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private string ResolvePrimaryLaunchProfileId(DadAccountKey accountKey)
+    {
+        if (accountKey.IsEmpty)
+            return string.Empty;
+
+        var local = configManager.GetAccount(accountKey);
+        if (local != null && !string.IsNullOrWhiteSpace(local.PrimaryLaunchProfileId))
+            return local.PrimaryLaunchProfileId;
+
+        return profileDirectoryService.GetCatalogs()
+            .SelectMany(static catalog => catalog.Accounts)
+            .FirstOrDefault(account => DadRosterIdentity.SameAccount(account.AccountKey, accountKey))
+            ?.PrimaryLaunchProfileId ?? string.Empty;
     }
 
     private DadCharacterLoadInstruction ResolveLoadInstruction(DadPlannerGroupSlot slot)
@@ -1416,6 +1551,13 @@ public sealed class DadSchedulerService
         }
 
         profile.Normalize();
+        if (!slot.RequiredAccountKey.IsEmpty &&
+            !profile.AccountKey.IsEmpty &&
+            !DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey))
+        {
+            blocker = $"Launch profile '{profile.DisplayName}' belongs to account {profile.AccountKey}, not {slot.RequiredAccountKey}.";
+            return false;
+        }
         if (!profile.Enabled)
         {
             blocker = $"Launch profile '{profile.DisplayName}' is disabled.";

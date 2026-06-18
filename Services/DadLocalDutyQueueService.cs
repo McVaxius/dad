@@ -445,12 +445,6 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         out string blocker)
     {
         blocker = string.Empty;
-        if (contentFinderConditionId == 0)
-        {
-            blocker = $"{laneDisplayName} task is missing content finder condition id.";
-            return null;
-        }
-
         if (string.IsNullOrWhiteSpace(dutyName))
         {
             blocker = $"{laneDisplayName} task is missing duty display name.";
@@ -459,6 +453,31 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
         var trimmedDutyName = dutyName.Trim();
         var contentFinderSheet = Plugin.DataManager.GetExcelSheet<ContentFinderCondition>();
+        if (contentFinderConditionId == 0)
+        {
+            var matches = contentFinderSheet
+                .Where(condition => string.Equals(condition.Name.ToString().Trim(), trimmedDutyName, StringComparison.OrdinalIgnoreCase))
+                .Take(2)
+                .ToList();
+            if (matches.Count == 0 && trimmedDutyName.Contains("Armour", StringComparison.OrdinalIgnoreCase))
+            {
+                var alternateName = trimmedDutyName.Replace("Armour", "Armor", StringComparison.OrdinalIgnoreCase);
+                matches = contentFinderSheet
+                    .Where(condition => string.Equals(condition.Name.ToString().Trim(), alternateName, StringComparison.OrdinalIgnoreCase))
+                    .Take(2)
+                    .ToList();
+            }
+            if (matches.Count != 1)
+            {
+                blocker = matches.Count == 0
+                    ? $"{laneDisplayName} could not resolve Duty Finder duty '{trimmedDutyName}'."
+                    : $"{laneDisplayName} duty name '{trimmedDutyName}' is ambiguous; provide ContentFinderCondition id.";
+                return null;
+            }
+
+            contentFinderConditionId = matches[0].RowId;
+        }
+
         if (!contentFinderSheet.TryGetRow(contentFinderConditionId, out var condition))
         {
             blocker = $"ContentFinderCondition #{contentFinderConditionId} was not found.";

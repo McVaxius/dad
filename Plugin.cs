@@ -45,6 +45,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadTransportService TransportService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
     public DadRosterCatalogService RosterCatalogService { get; }
+    public DadProfileDirectoryService ProfileDirectoryService { get; }
     public DadKrangleService KrangleService { get; }
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
     public IReadOnlyList<DadPlannerGroup> PlannerGroups => Configuration.PlannerGroups;
@@ -57,7 +58,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadNpcDutyQueueService NpcDutyQueueService { get; }
     public DadDutySupportAdsService DutySupportAdsService { get; }
     public DadCombatRotationService CombatRotationService { get; }
+    public DadMogtomeIpcService MogtomeIpcService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
+    public DadWorkerExecutionService WorkerExecutionService { get; }
     public DadSchedulerService SchedulerService { get; }
     public DadCoordinatorService RunCoordinatorService { get; }
     public DadDutyIpcService DutyIpcService { get; }
@@ -108,6 +111,7 @@ public sealed class Plugin : IDalamudPlugin
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
+        ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
         ModuleRegistry = new DadModuleRegistry();
         PresetProviderService = new DadPresetProviderService(ModuleRegistry, () => RosterCatalogService.GetAccountDirectory());
@@ -118,15 +122,20 @@ public sealed class Plugin : IDalamudPlugin
         LocalDutyQueueService = new DadLocalDutyQueueService(Log);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, Log);
+        MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
         QueueExecutionService = new DadQueueExecutionService(
             ModuleRegistry,
+            MogtomeIpcService,
             DutyQueueService,
             LocalDutyQueueService,
             NpcDutyQueueService,
             DutySupportAdsService,
             CombatRotationService);
+        WorkerExecutionService = new DadWorkerExecutionService(QueueExecutionService, PresenceService, Condition);
         SchedulerService = new DadSchedulerService(
             Configuration,
+            ConfigManager,
+            ProfileDirectoryService,
             CharacterIntelligenceService,
             PresenceService,
             TransportService,
@@ -141,6 +150,7 @@ public sealed class Plugin : IDalamudPlugin
             ClaimService,
             PartyAssemblyService,
             QueueExecutionService,
+            WorkerExecutionService,
             PlannerService,
             Log);
         TransportService.ConfigureAuthorityHandlers(
@@ -150,6 +160,13 @@ public sealed class Plugin : IDalamudPlugin
         TransportService.ConfigureRosterHandlers(
             () => RosterCatalogService.BuildLocalCatalog(CharacterIntelligenceService.CurrentPool),
             command => RosterCatalogService.RefreshLocalRosterCharacter(command, PresenceService.BuildSnapshotCopy()));
+        TransportService.ConfigureProfileHandlers(
+            ProfileDirectoryService.BuildLocalCatalog,
+            ConfigManager.ApplyProfileUpdate);
+        TransportService.ConfigureWorkerExecutionHandlers(
+            WorkerExecutionService.Accept,
+            WorkerExecutionService.GetStatus,
+            WorkerExecutionService.Cancel);
 
         if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
             ConfigManager.CurrentAccountId = Configuration.ClientAccountId;
@@ -167,7 +184,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} krangle, {PluginInfo.Command} ws, {PluginInfo.Command} j, {PluginInfo.Command} status, {PluginInfo.Command} refresh, {PluginInfo.Command} save, {PluginInfo.Command} peers, {PluginInfo.Command} run local, {PluginInfo.Command} run server, {PluginInfo.Command} run msq, {PluginInfo.Command} run commend, {PluginInfo.Command} run planner, {PluginInfo.Command} test planner-groups, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel. Dad now exposes Server Dad authority, Client Dad workers, sticky local-only mode, krangled operator names, and account-aware readiness/lease status.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test launch-profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -1022,7 +1039,8 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private bool CanAdvanceSchedulerQueue()
-        => SchedulerService.CurrentState.IsActive || !IsBusy(GetVisibleRunState().VisibleRun);
+        => Configuration.RunAsServerDad &&
+           (SchedulerService.CurrentState.IsActive || !IsBusy(GetVisibleRunState().VisibleRun));
 
     public string StartSchedulerPresetFromJson(string json)
     {
@@ -1071,6 +1089,33 @@ public sealed class Plugin : IDalamudPlugin
 
     public string GetLaunchProfilesJson()
         => DadIpcJson.Serialize(SchedulerService.GetLaunchProfiles());
+
+    public string GetProfileCatalogJson()
+        => DadIpcJson.Serialize(ProfileDirectoryService.GetCatalogs());
+
+    public string GetAccountDirectoryJson()
+        => ProfileDirectoryService.GetAccountDirectoryJson();
+
+    public string UpdateProfileFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadProfileUpdateRequest>(json);
+        return DadIpcJson.Serialize(request == null
+            ? new DadProfileUpdateAck { Summary = "Unreadable profile update payload." }
+            : ProfileDirectoryService.UpdateProfile(request));
+    }
+
+    public string UpdateLaunchProfileFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadLaunchProfileUpdateRequest>(json);
+        return DadIpcJson.Serialize(!Configuration.RunAsServerDad
+            ? new DadLaunchProfileUpdateAck { Summary = "Only Server Dad may update launch profiles." }
+            : request == null
+            ? new DadLaunchProfileUpdateAck { Summary = "Unreadable launch profile update payload." }
+            : SchedulerService.UpdateLaunchProfile(request));
+    }
+
+    public string GetWorkerExecutionStatusJson()
+        => DadIpcJson.Serialize(WorkerExecutionService.GetStatus());
 
     public string GetRosterCatalogJson()
         => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
@@ -2353,6 +2398,24 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (trimmed.Equals("test profiles", StringComparison.OrdinalIgnoreCase))
+        {
+            RunProfileDiagnosticsFromShell();
+            return;
+        }
+
+        if (trimmed.Equals("test launch-profiles", StringComparison.OrdinalIgnoreCase))
+        {
+            RunLaunchProfileDiagnosticsFromShell();
+            return;
+        }
+
+        if (trimmed.Equals("test workers", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWorkerDiagnosticsFromShell();
+            return;
+        }
+
         if (trimmed.StartsWith("test duty-ipc", StringComparison.OrdinalIgnoreCase))
         {
             RunDutyIpcDiagnosticsFromShell(trimmed["test duty-ipc".Length..].Trim());
@@ -2366,6 +2429,52 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         ToggleMainUi();
+    }
+
+    private void RunProfileDiagnosticsFromShell()
+    {
+        var catalogs = ProfileDirectoryService.GetCatalogs();
+        var accounts = catalogs.Sum(static catalog => catalog.Accounts.Count);
+        var characters = catalogs.Sum(static catalog => catalog.Accounts.Sum(static account => account.Characters.Count));
+        var offline = catalogs.Count(static catalog => !catalog.OwnerOnline);
+        PrintStatus($"Profiles: {catalogs.Count} owner catalog(s), {accounts} account(s), {characters} character profile(s), {offline} offline/read-only catalog(s).");
+        foreach (var catalog in catalogs)
+        {
+            PrintStatus($"Profiles owner {catalog.OwnerClientInstanceId}/{catalog.OwnerWorkerSessionId}: online={catalog.OwnerOnline}, readOnly={catalog.ReadOnly}, accounts={catalog.Accounts.Count}, generated={catalog.GeneratedAtUtc:O}.");
+        }
+    }
+
+    private void RunLaunchProfileDiagnosticsFromShell()
+    {
+        var profiles = SchedulerService.GetLaunchProfiles();
+        PrintStatus($"Launch profiles: {profiles.Count} candidate(s).");
+        foreach (var profile in profiles)
+        {
+            var pathState = File.Exists(profile.BatchPath) ? "exists" : "missing";
+            var allowed = false;
+            try
+            {
+                allowed = Path.GetExtension(profile.BatchPath).Equals(".bat", StringComparison.OrdinalIgnoreCase) &&
+                          Path.GetFullPath(profile.BatchPath).StartsWith(
+                              Path.GetFullPath(@"Z:\!ff14clientboot") + Path.DirectorySeparatorChar,
+                              StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                allowed = false;
+            }
+            PrintStatus($"Launch {profile.DisplayName} rev {profile.Revision}: account={profile.AccountKey}, enabled={profile.Enabled}, auto={profile.AllowAutoStart}, dry={profile.DryRun}, path={pathState}/{(allowed ? "allowed" : "blocked")}, expected={profile.ExpectedCharacterKeys.Count}.");
+        }
+    }
+
+    private void RunWorkerDiagnosticsFromShell()
+    {
+        var status = WorkerExecutionService.GetStatus();
+        var transport = TransportService.CurrentTransport;
+        PrintStatus($"Worker local {status.WorkerSessionId}: run={status.RunId}, role={status.Role}, state={status.State}, terminal={status.IsTerminal}, summary={status.Summary}");
+        PrintStatus($"Worker peers: {transport.KnownParticipants.Count} discovered, authority={transport.AuthorityWorkerSessionId}, endpoint={transport.AuthorityEndpoint}.");
+        foreach (var participant in transport.KnownParticipants)
+            PrintStatus($"Worker peer {participant.WorkerSessionId}: {participant.ActiveCharacterKey}, state={participant.State}, heartbeat={participant.LastHeartbeatUtc:O}, endpoint={participant.Endpoint}.");
     }
 
     private void RunDutyIpcDiagnosticsFromShell(string arguments)
@@ -2685,7 +2794,6 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         return request.Dungeon?.QueueViaLanParty == true ||
-               request.Msq != null ||
                request.PremadeDuty != null ||
                request.DailyMsq != null ||
                request.Mogtome != null ||
@@ -2718,6 +2826,8 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled);
+        ProfileDirectoryService.Update();
+        WorkerExecutionService.Update();
         SchedulerService.TickScheduleEnqueue();
         if (CanAdvanceSchedulerQueue())
         {

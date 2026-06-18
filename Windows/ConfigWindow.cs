@@ -79,8 +79,6 @@ public sealed class ConfigWindow : Window, IDisposable
         ApplyPendingPositionChange();
 
         var configuration = plugin.Configuration;
-        var account = plugin.ConfigManager.GetCurrentAccount();
-        var profile = plugin.ConfigManager.GetActiveConfig();
 
         if (ImGui.BeginTabBar("dad-config-tabs"))
         {
@@ -90,13 +88,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Profiles"))
-            {
-                DrawProfilesTab(account, profile);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Scheduler"))
+            if (ImGui.BeginTabItem("Scheduler Settings"))
             {
                 DrawSchedulerTab(configuration);
                 ImGui.EndTabItem();
@@ -270,162 +262,19 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText("/dad run commend -> start a Server Dad commendation demo");
         ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
         ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
+        ImGui.BulletText("/dad test profiles -> profile owner/cache/revision diagnostics");
+        ImGui.BulletText("/dad test launch-profiles -> launch path/mapping diagnostics");
+        ImGui.BulletText("/dad test workers -> distributed worker diagnostics");
         ImGui.BulletText("/dad test duty-ipc current|territory <id>|cfc <id> -> diagnose Dad duty IPC availability");
         ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
     }
 
-    private void DrawProfilesTab(AccountConfig? account, CharacterConfig profile)
-    {
-        ImGui.Text($"Current account: {account?.AccountAlias ?? "(waiting for login)"}");
-
-        var label = string.IsNullOrWhiteSpace(plugin.ConfigManager.SelectedCharacterKey)
-            ? "(Account default)"
-            : plugin.ConfigManager.SelectedCharacterKey;
-
-        if (ImGui.BeginCombo("Character profile", label))
-        {
-            if (ImGui.Selectable("(Account default)", string.IsNullOrWhiteSpace(plugin.ConfigManager.SelectedCharacterKey)))
-                plugin.ConfigManager.SelectedCharacterKey = string.Empty;
-
-            foreach (var key in plugin.ConfigManager.GetSortedCharacterKeys())
-            {
-                if (ImGui.Selectable(key, key == plugin.ConfigManager.SelectedCharacterKey))
-                    plugin.ConfigManager.SelectedCharacterKey = key;
-            }
-
-            ImGui.EndCombo();
-        }
-
-        var profileEnabled = profile.Enabled;
-        if (ImGui.Checkbox("Profile enabled", ref profileEnabled))
-        {
-            profile.Enabled = profileEnabled;
-            plugin.ConfigManager.SaveCurrentAccount();
-            plugin.UpdateDtrBar();
-        }
-
-        var allowIpcStarts = profile.AllowIpcStarts;
-        if (ImGui.Checkbox("Allow Dad starts", ref allowIpcStarts))
-        {
-            profile.AllowIpcStarts = allowIpcStarts;
-            plugin.ConfigManager.SaveCurrentAccount();
-        }
-
-        var targetNotes = profile.TargetNotes;
-        if (ImGui.InputTextMultiline("Operator notes", ref targetNotes, 512, new Vector2(-1f, 140f)))
-        {
-            profile.TargetNotes = targetNotes;
-            plugin.ConfigManager.SaveCurrentAccount();
-        }
-
-        ImGui.TextWrapped("Dad now owns Server Dad authority, Client Dad worker coordination, readiness waits, leases, party assembly, and module routing. VERMAXION remains caller-only. Daily MSQ uses Dad's internal premade lane; commendation and Astrope use Dad's internal aura lane.");
-    }
-
     private void DrawSchedulerTab(Configuration configuration)
     {
-        configuration.LaunchProfiles ??= [];
         configuration.CharacterLoadInstruction ??= new DadCharacterLoadInstruction();
         configuration.CharacterLoadInstruction.Normalize();
 
-        ImGui.TextUnformatted("Launch profiles");
-        if (ImGui.SmallButton("Import Z:\\!ff14clientboot batches"))
-            plugin.ImportLaunchProfilesFromBootDirectory();
-
-        if (configuration.LaunchProfiles.Count == 0)
-        {
-            ImGui.TextDisabled("No launch profiles configured.");
-        }
-        else if (ImGui.BeginTable("dad-launch-profiles", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
-        {
-            ImGui.TableSetupColumn("On");
-            ImGui.TableSetupColumn("Auto");
-            ImGui.TableSetupColumn("Dry");
-            ImGui.TableSetupColumn("Name");
-            ImGui.TableSetupColumn("Account");
-            ImGui.TableSetupColumn("Timeout");
-            ImGui.TableSetupColumn("Batch");
-            ImGui.TableSetupColumn("Expected chars");
-            ImGui.TableHeadersRow();
-
-            for (var index = 0; index < configuration.LaunchProfiles.Count; index++)
-            {
-                var profile = configuration.LaunchProfiles[index].Normalize();
-                ImGui.TableNextRow();
-
-                ImGui.TableNextColumn();
-                var enabled = profile.Enabled;
-                if (ImGui.Checkbox($"##dad-launch-enabled-{index}", ref enabled))
-                {
-                    profile.Enabled = enabled;
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var autoStart = profile.AllowAutoStart;
-                if (ImGui.Checkbox($"##dad-launch-auto-{index}", ref autoStart))
-                {
-                    profile.AllowAutoStart = autoStart;
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var dryRun = profile.DryRun;
-                if (ImGui.Checkbox($"##dad-launch-dry-{index}", ref dryRun))
-                {
-                    profile.DryRun = dryRun;
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var displayName = profile.DisplayName;
-                ImGui.SetNextItemWidth(-1f);
-                if (ImGui.InputText($"##dad-launch-name-{index}", ref displayName, 96))
-                {
-                    profile.DisplayName = displayName;
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var accountKey = profile.AccountKey.Value ?? string.Empty;
-                ImGui.SetNextItemWidth(-1f);
-                if (ImGui.InputText($"##dad-launch-account-{index}", ref accountKey, 96))
-                {
-                    profile.AccountKey = new DadAccountKey(accountKey);
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var timeout = profile.TimeoutSeconds;
-                ImGui.SetNextItemWidth(-1f);
-                if (ImGui.InputInt($"##dad-launch-timeout-{index}", ref timeout))
-                {
-                    profile.TimeoutSeconds = Math.Clamp(timeout, 30, 1800);
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var batchPath = profile.BatchPath;
-                ImGui.SetNextItemWidth(-1f);
-                if (ImGui.InputText($"##dad-launch-batch-{index}", ref batchPath, 260))
-                {
-                    profile.BatchPath = batchPath;
-                    configuration.Save();
-                }
-
-                ImGui.TableNextColumn();
-                var expectedCharacters = string.Join(", ", profile.ExpectedCharacterKeys.Select(static key => key.Value));
-                ImGui.SetNextItemWidth(-1f);
-                if (ImGui.InputText($"##dad-launch-characters-{index}", ref expectedCharacters, 512))
-                {
-                    profile.ExpectedCharacterKeys = ParseCharacterKeys(expectedCharacters);
-                    configuration.Save();
-                }
-            }
-
-            ImGui.EndTable();
-        }
-
-        ImGui.Separator();
+        ImGui.TextWrapped("Account, character, and launch profile mapping lives under Crew / Scheduler -> Accounts & Profiles.");
         ImGui.TextUnformatted("Character load command");
         var instruction = configuration.CharacterLoadInstruction;
         var loadEnabled = instruction.Enabled;
@@ -902,14 +751,6 @@ public sealed class ConfigWindow : Window, IDisposable
 
         plugin.ApplyEndpointConfiguration(bindChanged, authorityTargetChanged);
     }
-
-    private static List<DadCharacterKey> ParseCharacterKeys(string value)
-        => (value ?? string.Empty)
-            .Split([',', ';'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-            .Select(static key => new DadCharacterKey(key))
-            .Where(static key => !key.IsEmpty)
-            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
-            .ToList();
 
     private static string FormatText(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value;

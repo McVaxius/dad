@@ -13,7 +13,7 @@ public enum DadCombatRotationMode
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = true;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -38,6 +38,9 @@ public sealed class Configuration : IPluginConfiguration
     public DadPresetPlannerOptions PlannerOptions { get; set; } = new();
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
     public List<DadLaunchProfile> LaunchProfiles { get; set; } = [];
+    public List<DadProfileCatalog> ProfileCatalogCache { get; set; } = [];
+    public List<DadRunResult> RunHistory { get; set; } = [];
+    public DadRunResult? PersistedActiveRun { get; set; }
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
     public DadRosterCatalogConfiguration RosterCatalog { get; set; } = new();
     public List<DadScheduledCrewJob> SchedulerQueue { get; set; } = [];

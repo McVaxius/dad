@@ -25,6 +25,8 @@ public enum DadSchedulerPresetPhase
 
 public sealed class DadLaunchProfile
 {
+    public int SchemaVersion { get; set; } = 2;
+    public long Revision { get; set; } = 1;
     public string ProfileId { get; set; } = Guid.NewGuid().ToString("N");
     public string DisplayName { get; set; } = "Launch Profile";
     public string BatchPath { get; set; } = string.Empty;
@@ -37,6 +39,8 @@ public sealed class DadLaunchProfile
 
     public DadLaunchProfile Normalize()
     {
+        SchemaVersion = Math.Max(2, SchemaVersion);
+        Revision = Math.Max(1, Revision);
         ProfileId = string.IsNullOrWhiteSpace(ProfileId) ? Guid.NewGuid().ToString("N") : ProfileId.Trim();
         DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? "Launch Profile" : DisplayName.Trim();
         BatchPath = BatchPath?.Trim() ?? string.Empty;
@@ -52,6 +56,8 @@ public sealed class DadLaunchProfile
     public DadLaunchProfile Clone()
         => new()
         {
+            SchemaVersion = SchemaVersion,
+            Revision = Revision,
             ProfileId = ProfileId,
             DisplayName = DisplayName,
             BatchPath = BatchPath,

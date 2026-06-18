@@ -2,6 +2,22 @@ using System.Text;
 
 namespace dad.Models;
 
+public enum DadQueueTargetKind
+{
+    DutyFinderDuty,
+    Roulette,
+}
+
+public sealed class DadQueueTarget
+{
+    public int SchemaVersion { get; set; } = 1;
+    public DadQueueTargetKind Kind { get; set; } = DadQueueTargetKind.DutyFinderDuty;
+    public uint ContentFinderConditionId { get; set; }
+    public uint RouletteId { get; set; }
+    public string Key { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+}
+
 public sealed class DadRunRequest
 {
     public string RequestId { get; set; } = Guid.NewGuid().ToString("N");
@@ -209,11 +225,17 @@ public sealed class DadRunRequest
 
     private int DetermineExpectedPartySize()
     {
-        if (Msq != null || DailyMsq != null || Commendation != null || Astrope != null || Mogtome != null)
+        if (DailyMsq != null || Commendation != null || Astrope != null || Mogtome != null)
             return 4;
+
+        if (Msq != null)
+            return 1;
 
         if (PremadeDuty != null)
             return Math.Max(1, PremadeDuty.ExpectedPartySize);
+
+        if (CustomDuty != null)
+            return Math.Clamp(CustomDuty.ExpectedPartySize, 1, 8);
 
         if (Dungeon?.QueueViaLanParty == true)
             return 4;
@@ -285,12 +307,20 @@ public sealed class DadDungeonTask
 public sealed class DadDailyMsqTask
 {
     public string LanPartyPreset { get; set; } = "Daily MSQ";
+    public DadQueueTarget QueueTarget { get; set; } = new()
+    {
+        Kind = DadQueueTargetKind.Roulette,
+        Key = "MainScenario",
+        DisplayName = "Main Scenario Roulette",
+    };
 }
 
 public sealed class DadMsqTask
 {
     public string Preset { get; set; } = "MSQ";
     public string LegacyQueuePreset { get; set; } = "Daily MSQ";
+    public uint ContentFinderConditionId { get; set; }
+    public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
     public bool PreferTrustThenDutySupport { get; set; } = true;
 }
@@ -335,19 +365,38 @@ public sealed class DadMogtomeTask
 
 public sealed class DadCommendationTask
 {
+    public DadQueueTarget QueueTarget { get; set; } = new()
+    {
+        Kind = DadQueueTargetKind.DutyFinderDuty,
+        DisplayName = "Under the Armour",
+    };
+    public uint ContentFinderConditionId { get; set; }
+    public string DutyName { get; set; } = "Under the Armour";
     public int Attempts { get; set; } = 1;
+    public string StopMode { get; set; } = DadCommendationStopModes.Attempts;
+    public int TargetTotalCommendations { get; set; }
+    public int TargetGainedCommendations { get; set; }
 }
 
 public sealed class DadAstropeTask
 {
+    public DadQueueTarget QueueTarget { get; set; } = new()
+    {
+        Kind = DadQueueTargetKind.Roulette,
+        Key = "Mentor",
+        DisplayName = "Mentor Roulette",
+    };
     public int Attempts { get; set; } = 1;
     public DadTimeWindow ValidLocalTimeWindow { get; set; } = new();
 }
 
 public sealed class DadCustomDutyTask
 {
+    public DadQueueTarget QueueTarget { get; set; } = new();
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
+    public int ExpectedPartySize { get; set; } = 1;
+    public bool Unsynced { get; set; }
     public int Attempts { get; set; } = 1;
 }
 
@@ -373,6 +422,13 @@ public static class DadMogtomeDutyPolicies
         PreservePresetDuty,
         PinnedDutySelection,
     ];
+}
+
+public static class DadCommendationStopModes
+{
+    public const string Attempts = "Attempts";
+    public const string TargetTotal = "TargetTotal";
+    public const string TargetGained = "TargetGained";
 }
 
 public static class DadRunRequestOptions

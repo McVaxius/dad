@@ -29,16 +29,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.Msq,
             ModuleId = DadModuleId.Msq,
             DisplayName = "MSQ",
-            Summary = "Main scenario roulette/preset lane with Phase 5 readiness/status surfaced; live queue start remains deferred.",
-            Maturity = DadLaneMaturity.IntegrationDeferred,
-            MaturityLabel = "Policy deferred",
-            AccentColorHex = "#F59E0B",
-            DefaultAuthorityMode = DadAuthorityMode.ServerDad,
-            DefaultTransportOwner = DadTransportOwner.LanParty,
-            DefaultQueueAuthority = DadQueueAuthority.Leader,
-            ExpectedPartySize = 4,
-            RequiresRemoteParty = true,
-            NextAction = "Keep live MSQ queue deferred until preset/roulette queue policy is proven.",
+            Summary = "Solo MSQ selected-duty progression with Trust then Duty Support fallback.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Live fallback",
+            AccentColorHex = "#3B82F6",
+            DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
+            ExpectedPartySize = 1,
+            RequiresDutySelector = true,
+            NextAction = "Select an MSQ duty; Dad tries Trust then Duty Support.",
         },
         new()
         {
@@ -103,11 +103,10 @@ public sealed class DadPresetProviderService
             MaturityLabel = "Executor deferred",
             AccentColorHex = "#F59E0B",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
-            DefaultTransportOwner = DadTransportOwner.Blunderville,
-            DefaultQueueAuthority = DadQueueAuthority.Blunderville,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
-            UsesExternalHelper = true,
-            NextAction = "Blocked until Blunderville executor contract is enabled.",
+            NextAction = "Blocked until guarded FGS callbacks are available.",
         },
         new()
         {
@@ -115,17 +114,17 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Mogtome,
             DisplayName = "MOGTOME",
-            Summary = "Dad-owned MOGTOME helper planning lane; live helper handoff is deferred until IPC exists.",
-            Maturity = DadLaneMaturity.IntegrationDeferred,
-            MaturityLabel = "Integration deferred",
+            Summary = "Dad-owned orchestration with narrow MOGTOME readiness/start/status/stop helper IPC.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Helper IPC live",
             AccentColorHex = "#A855F7",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
-            DefaultTransportOwner = DadTransportOwner.Mogtome,
-            DefaultQueueAuthority = DadQueueAuthority.Mogtome,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.Leader,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
             UsesExternalHelper = true,
-            NextAction = "Blocked until narrow MOGTOME helper IPC exists.",
+            NextAction = "Manual-test leader/participant helper ownership, status, stop, and attempt limit.",
         },
         new()
         {
@@ -133,16 +132,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.FarmLoops,
             ModuleId = DadModuleId.Commendation,
             DisplayName = "Commendation",
-            Summary = "Short duty loop planning lane for commendation farming; live executor is deferred.",
-            Maturity = DadLaneMaturity.IntegrationDeferred,
-            MaturityLabel = "Executor deferred",
-            AccentColorHex = "#F59E0B",
+            Summary = "Typed Under the Armour premade duty loop; attempt stop is live and API15 target modes block without verified truth.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Attempt loop live",
+            AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
-            DefaultTransportOwner = DadTransportOwner.AuraFarmer,
-            DefaultQueueAuthority = DadQueueAuthority.AuraFarmer,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.Leader,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
-            NextAction = "Blocked until commendation attempt detector and executor are enabled.",
+            NextAction = "Use Attempts mode, or verify API15 adapter before total/gained targets.",
         },
         new()
         {
@@ -155,8 +154,8 @@ public sealed class DadPresetProviderService
             MaturityLabel = "Executor deferred",
             AccentColorHex = "#F59E0B",
             DefaultAuthorityMode = DadAuthorityMode.ServerDad,
-            DefaultTransportOwner = DadTransportOwner.AuraFarmer,
-            DefaultQueueAuthority = DadQueueAuthority.AuraFarmer,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.Leader,
             ExpectedPartySize = 4,
             RequiresRemoteParty = true,
             NextAction = "Blocked until Astrope time-window executor policy is enabled.",
@@ -184,16 +183,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.DutyFinder,
             ModuleId = DadModuleId.CustomDuty,
             DisplayName = "Custom Duty",
-            Summary = "Typed custom Duty Finder planning lane; live executor contract is missing.",
-            Maturity = DadLaneMaturity.MissingContract,
-            MaturityLabel = "Executor missing",
-            AccentColorHex = "#EF4444",
+            Summary = "Typed custom Duty Finder lane using local or premade execution by configured party size.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Typed queue live",
+            AccentColorHex = "#3B82F6",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Blocked until custom duty executor contract exists.",
+            NextAction = "Select CFC duty and party size, then start guarded local/premade queue.",
         },
     ];
 
@@ -650,6 +649,8 @@ public sealed class DadPresetProviderService
                 {
                     Preset = "MSQ",
                     LegacyQueuePreset = "Daily MSQ",
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Attempts = 1,
                 };
                 break;
@@ -707,12 +708,23 @@ public sealed class DadPresetProviderService
             case DadPlannerActivityMode.Commendation:
                 request.Commendation = new DadCommendationTask
                 {
+                    QueueTarget = new DadQueueTarget
+                    {
+                        Kind = DadQueueTargetKind.DutyFinderDuty,
+                        DisplayName = "Under the Armour",
+                    },
                     Attempts = 1,
                 };
                 break;
             case DadPlannerActivityMode.Astrope:
                 request.Astrope = new DadAstropeTask
                 {
+                    QueueTarget = new DadQueueTarget
+                    {
+                        Kind = DadQueueTargetKind.Roulette,
+                        Key = "Mentor",
+                        DisplayName = "Mentor Roulette",
+                    },
                     Attempts = 1,
                 };
                 break;
@@ -730,8 +742,16 @@ public sealed class DadPresetProviderService
             case DadPlannerActivityMode.CustomDuty:
                 request.CustomDuty = new DadCustomDutyTask
                 {
+                    QueueTarget = new DadQueueTarget
+                    {
+                        Kind = DadQueueTargetKind.DutyFinderDuty,
+                        ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                        DisplayName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
+                    },
                     ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
                     DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
+                    ExpectedPartySize = Math.Max(1, requestedPartySize),
+                    Unsynced = options.DutyUnsynced,
                     Attempts = 1,
                 };
                 break;

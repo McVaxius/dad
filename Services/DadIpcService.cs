@@ -53,6 +53,11 @@ public sealed class DadIpcService : IDisposable
         Register(pluginInterface, DadIpcContract.GetSchedulerPreview, this.plugin.GetSchedulerPreviewJson);
         Register<string, string>(pluginInterface, DadIpcContract.StartSchedulerPreset, this.plugin.StartSchedulerPresetFromJson);
         Register(pluginInterface, DadIpcContract.GetLaunchProfiles, this.plugin.GetLaunchProfilesJson);
+        Register(pluginInterface, DadIpcContract.GetProfileCatalog, this.plugin.GetProfileCatalogJson);
+        Register<string, string>(pluginInterface, DadIpcContract.UpdateProfile, this.plugin.UpdateProfileFromJson);
+        Register(pluginInterface, DadIpcContract.GetAccountDirectory, this.plugin.GetAccountDirectoryJson);
+        Register<string, string>(pluginInterface, DadIpcContract.UpdateLaunchProfile, this.plugin.UpdateLaunchProfileFromJson);
+        Register(pluginInterface, DadIpcContract.GetWorkerExecutionStatus, this.plugin.GetWorkerExecutionStatusJson);
         Register(pluginInterface, DadIpcContract.GetRosterCatalog, this.plugin.GetRosterCatalogJson);
         Register(pluginInterface, DadIpcContract.RefreshPeerRosterCatalog, this.plugin.RefreshPeerRosterCatalogJson);
         Register<string, string>(pluginInterface, DadIpcContract.SetRosterVisibility, this.plugin.SetRosterVisibilityFromJson);

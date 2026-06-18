@@ -38,6 +38,13 @@ public sealed class MainWindow : Window, IDisposable
     private bool rosterAccountInitialized;
     private readonly HashSet<string> rosterSelectedRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, string> classJobAbbrevCache = new();
+    private string selectedProfileOwner = string.Empty;
+    private string selectedProfileAccount = string.Empty;
+    private string selectedProfileCharacter = string.Empty;
+    private long selectedProfileAccountRevision;
+    private long selectedProfileRevision;
+    private CharacterConfig profileDraft = new();
+    private string profileSaveStatus = string.Empty;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -662,22 +669,16 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawCrewSchedulerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         var catalog = plugin.RosterCatalogService.CurrentCatalog;
-        if (catalog.Characters.Count == 0)
-            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
-            {
-                IncludeHidden = true,
-                IncludeIgnored = true,
-            });
 
         if (ImGui.BeginTabBar("dad-crew-scheduler-tabs"))
         {
-            if (ImGui.BeginTabItem("Roster"))
+            if (ImGui.BeginTabItem("Accounts & Profiles"))
             {
-                DrawCrewRosterSection(characterPool, catalog);
+                DrawAccountsProfilesSection(characterPool, catalog, runState);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Crew Presets"))
+            if (ImGui.BeginTabItem("Presets"))
             {
                 DrawCrewPresetSection(characterPool, runState);
                 ImGui.EndTabItem();
@@ -697,6 +698,287 @@ public sealed class MainWindow : Window, IDisposable
 
             ImGui.EndTabBar();
         }
+    }
+
+    private void DrawAccountsProfilesSection(
+        DadCharacterPool characterPool,
+        DadAccountRosterCatalog catalog,
+        DadVisibleRunState runState)
+    {
+        var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
+        if (ImGui.CollapsingHeader("Launch profiles", ImGuiTreeNodeFlags.DefaultOpen))
+            DrawLaunchProfileEditor(launchProfiles);
+
+        if (ImGui.CollapsingHeader("Account profile tree", ImGuiTreeNodeFlags.DefaultOpen))
+            DrawProfileTree(launchProfiles);
+
+        if (ImGui.CollapsingHeader("Roster state", ImGuiTreeNodeFlags.DefaultOpen))
+            DrawCrewRosterSection(characterPool, catalog);
+    }
+
+    private void DrawLaunchProfileEditor(IReadOnlyList<DadLaunchProfile> profiles)
+    {
+        if (ImGui.SmallButton("Import Z:\\!ff14clientboot batches"))
+            plugin.ImportLaunchProfilesFromBootDirectory();
+        ImGui.SameLine();
+        ImGui.TextDisabled("Batch files remain read-only; imported profiles default disabled, auto-start off, dry-run on.");
+
+        if (profiles.Count == 0)
+        {
+            ImGui.TextDisabled("No launch candidates imported.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-unified-launch-profiles", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
+            return;
+
+        ImGui.TableSetupColumn("On");
+        ImGui.TableSetupColumn("Auto");
+        ImGui.TableSetupColumn("Dry");
+        ImGui.TableSetupColumn("Name");
+        ImGui.TableSetupColumn("Account");
+        ImGui.TableSetupColumn("Timeout");
+        ImGui.TableSetupColumn("Batch / expected");
+        ImGui.TableHeadersRow();
+        foreach (var profile in profiles)
+        {
+            ImGui.TableNextRow();
+            var changed = false;
+            ImGui.TableNextColumn();
+            var enabled = profile.Enabled;
+            if (ImGui.Checkbox($"##launch-on-{profile.ProfileId}", ref enabled))
+            {
+                profile.Enabled = enabled;
+                changed = true;
+            }
+            ImGui.TableNextColumn();
+            var autoStart = profile.AllowAutoStart;
+            if (ImGui.Checkbox($"##launch-auto-{profile.ProfileId}", ref autoStart))
+            {
+                profile.AllowAutoStart = autoStart;
+                changed = true;
+            }
+            ImGui.TableNextColumn();
+            var dryRun = profile.DryRun;
+            if (ImGui.Checkbox($"##launch-dry-{profile.ProfileId}", ref dryRun))
+            {
+                profile.DryRun = dryRun;
+                changed = true;
+            }
+            ImGui.TableNextColumn();
+            var name = profile.DisplayName;
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.InputText($"##launch-name-{profile.ProfileId}", ref name, 128))
+            {
+                profile.DisplayName = name;
+                changed = true;
+            }
+            ImGui.TableNextColumn();
+            var accountKey = profile.AccountKey.Value;
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.InputText($"##launch-account-{profile.ProfileId}", ref accountKey, 128))
+            {
+                profile.AccountKey = new DadAccountKey(accountKey);
+                changed = true;
+            }
+            ImGui.TableNextColumn();
+            var timeout = profile.TimeoutSeconds;
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.InputInt($"##launch-timeout-{profile.ProfileId}", ref timeout))
+            {
+                profile.TimeoutSeconds = Math.Clamp(timeout, 30, 1800);
+                changed = true;
+            }
+            ImGui.TableNextColumn();
+            ImGui.TextWrapped($"{profile.BatchPath}\nExpected: {string.Join(", ", profile.ExpectedCharacterKeys.Select(static key => key.Value))}");
+
+            if (changed)
+            {
+                var ack = plugin.SchedulerService.UpdateLaunchProfile(new DadLaunchProfileUpdateRequest
+                {
+                    ExpectedRevision = profile.Revision,
+                    Profile = profile,
+                });
+                profileSaveStatus = ack.Summary;
+            }
+        }
+        ImGui.EndTable();
+    }
+
+    private void DrawProfileTree(IReadOnlyList<DadLaunchProfile> launchProfiles)
+    {
+        var catalogs = plugin.ProfileDirectoryService.GetCatalogs();
+        if (catalogs.Count == 0)
+        {
+            ImGui.TextDisabled("No owned account profiles available.");
+            return;
+        }
+
+        foreach (var catalog in catalogs)
+        {
+            var ownerKey = catalog.OwnerWorkerSessionId.IsEmpty
+                ? catalog.OwnerClientInstanceId
+                : catalog.OwnerWorkerSessionId.Value;
+            var ownerLabel = catalog.OwnerOnline
+                ? $"{catalog.OwnerClientInstanceId} (online)"
+                : $"{catalog.OwnerClientInstanceId} (offline cache)";
+            if (!ImGui.TreeNode($"{ownerLabel}##profile-owner-{ownerKey}"))
+                continue;
+
+            foreach (var account in catalog.Accounts)
+            {
+                if (!ImGui.TreeNode($"{account.AccountAlias} [{account.AccountKey}]##profile-account-{ownerKey}-{account.AccountKey}"))
+                    continue;
+
+                DrawProfileSelectable(catalog, account, null, "(Account default)", account.DefaultProfile, account.DefaultProfile.Revision);
+                foreach (var character in account.Characters)
+                {
+                    DrawProfileSelectable(
+                        catalog,
+                        account,
+                        character,
+                        character.CharacterKey.Value,
+                        character.Profile,
+                        character.Revision);
+                }
+
+                DrawPrimaryLaunchProfileEditor(catalog, account, launchProfiles);
+                ImGui.TreePop();
+            }
+
+            ImGui.TreePop();
+        }
+
+        if (string.IsNullOrWhiteSpace(selectedProfileAccount))
+            return;
+
+        ImGui.Separator();
+        ImGui.TextUnformatted(string.IsNullOrWhiteSpace(selectedProfileCharacter)
+            ? $"Editing account default: {selectedProfileAccount}"
+            : $"Editing character: {selectedProfileCharacter}");
+        var enabled = profileDraft.Enabled;
+        if (ImGui.Checkbox("Profile enabled##unified", ref enabled))
+            profileDraft.Enabled = enabled;
+        var allowStarts = profileDraft.AllowIpcStarts;
+        if (ImGui.Checkbox("Allow Dad starts##unified", ref allowStarts))
+            profileDraft.AllowIpcStarts = allowStarts;
+        var emote = profileDraft.BlundervilleEmoteCommand;
+        if (ImGui.InputText("Blunderville emote##unified", ref emote, 128))
+            profileDraft.BlundervilleEmoteCommand = emote;
+        var notes = profileDraft.TargetNotes;
+        if (ImGui.InputTextMultiline("Operator notes##unified", ref notes, 1024, new Vector2(-1f, 100f)))
+            profileDraft.TargetNotes = notes;
+
+        var selectedCatalog = catalogs.FirstOrDefault(catalog =>
+            string.Equals(
+                catalog.OwnerWorkerSessionId.IsEmpty ? catalog.OwnerClientInstanceId : catalog.OwnerWorkerSessionId.Value,
+                selectedProfileOwner,
+                StringComparison.OrdinalIgnoreCase));
+        var readOnly = selectedCatalog == null || selectedCatalog.ReadOnly || !selectedCatalog.OwnerOnline;
+        if (readOnly)
+            ImGui.BeginDisabled();
+        if (ImGui.Button("Save profile"))
+        {
+            var ack = plugin.ProfileDirectoryService.UpdateProfile(new DadProfileUpdateRequest
+            {
+                AccountKey = new DadAccountKey(selectedProfileAccount),
+                CharacterKey = new DadCharacterKey(selectedProfileCharacter),
+                UpdateAccountDefault = string.IsNullOrWhiteSpace(selectedProfileCharacter),
+                ExpectedAccountRevision = selectedProfileAccountRevision,
+                ExpectedProfileRevision = selectedProfileRevision,
+                Profile = profileDraft.Clone(),
+            });
+            profileSaveStatus = ack.Summary;
+            if (ack.Accepted)
+            {
+                selectedProfileAccountRevision = ack.AccountRevision;
+                selectedProfileRevision = ack.ProfileRevision;
+                profileDraft.Revision = ack.ProfileRevision;
+            }
+        }
+        if (readOnly)
+            ImGui.EndDisabled();
+        if (readOnly)
+            ImGui.TextDisabled("Offline remote profiles are read-only.");
+        if (!string.IsNullOrWhiteSpace(profileSaveStatus))
+            ImGui.TextWrapped(profileSaveStatus);
+    }
+
+    private void DrawProfileSelectable(
+        DadProfileCatalog catalog,
+        DadAccountProfileRecord account,
+        DadCharacterProfileRecord? character,
+        string label,
+        CharacterConfig profile,
+        long profileRevision)
+    {
+        var ownerKey = catalog.OwnerWorkerSessionId.IsEmpty
+            ? catalog.OwnerClientInstanceId
+            : catalog.OwnerWorkerSessionId.Value;
+        var characterKey = character?.CharacterKey.Value ?? string.Empty;
+        var selected = string.Equals(selectedProfileOwner, ownerKey, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(selectedProfileAccount, account.AccountKey.Value, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(selectedProfileCharacter, characterKey, StringComparison.OrdinalIgnoreCase);
+        if (!ImGui.Selectable($"{label}##profile-{ownerKey}-{account.AccountKey}-{characterKey}", selected))
+            return;
+
+        selectedProfileOwner = ownerKey;
+        selectedProfileAccount = account.AccountKey.Value;
+        selectedProfileCharacter = characterKey;
+        selectedProfileAccountRevision = account.Revision;
+        selectedProfileRevision = profileRevision;
+        profileDraft = profile.Clone();
+        profileSaveStatus = string.Empty;
+    }
+
+    private void DrawPrimaryLaunchProfileEditor(
+        DadProfileCatalog catalog,
+        DadAccountProfileRecord account,
+        IReadOnlyList<DadLaunchProfile> launchProfiles)
+    {
+        var localOwner = string.Equals(
+            catalog.OwnerWorkerSessionId.Value,
+            plugin.PresenceService.WorkerSessionId.Value,
+            StringComparison.OrdinalIgnoreCase);
+        var profiles = launchProfiles
+            .Where(profile => profile.AccountKey.IsEmpty || DadRosterIdentity.SameAccount(profile.AccountKey, account.AccountKey))
+            .ToList();
+        var current = profiles.FirstOrDefault(profile =>
+            string.Equals(profile.ProfileId, account.PrimaryLaunchProfileId, StringComparison.OrdinalIgnoreCase));
+        if (ImGui.BeginCombo($"Primary launch profile##{account.AccountKey}", current?.DisplayName ?? "(none)"))
+        {
+            if (ImGui.Selectable("(none)", string.IsNullOrWhiteSpace(account.PrimaryLaunchProfileId)))
+                UpdatePrimaryLaunchProfile(catalog, account, string.Empty, localOwner);
+            foreach (var profile in profiles)
+            {
+                if (ImGui.Selectable(profile.DisplayName, string.Equals(profile.ProfileId, account.PrimaryLaunchProfileId, StringComparison.OrdinalIgnoreCase)))
+                    UpdatePrimaryLaunchProfile(catalog, account, profile.ProfileId, localOwner);
+            }
+            ImGui.EndCombo();
+        }
+    }
+
+    private void UpdatePrimaryLaunchProfile(
+        DadProfileCatalog catalog,
+        DadAccountProfileRecord account,
+        string profileId,
+        bool localOwner)
+    {
+        if (!localOwner && (!catalog.OwnerOnline || catalog.ReadOnly))
+        {
+            profileSaveStatus = "Owning Client Dad is offline; launch mapping is read-only.";
+            return;
+        }
+
+        var ack = plugin.ProfileDirectoryService.UpdateProfile(new DadProfileUpdateRequest
+        {
+            AccountKey = account.AccountKey,
+            ExpectedAccountRevision = account.Revision,
+            ExpectedProfileRevision = account.DefaultProfile.Revision,
+            UpdatePrimaryLaunchProfile = true,
+            PrimaryLaunchProfileId = profileId,
+        });
+        profileSaveStatus = ack.Summary;
     }
 
     private void DrawCrewRosterSection(DadCharacterPool characterPool, DadAccountRosterCatalog catalog)
@@ -992,7 +1274,15 @@ public sealed class MainWindow : Window, IDisposable
     {
         var state = plugin.SchedulerService.CurrentState;
         var queue = plugin.SchedulerService.GetQueueSnapshot();
-        DrawSectionHeader("Active Job", "Launch/load/readiness state for current scheduler job.");
+        var run = plugin.RunCoordinatorService.GetLocalResult();
+        var worker = plugin.WorkerExecutionService.GetStatus();
+        DrawSectionHeader("Active Job", "Current orchestration, worker execution, launch/load readiness, and durable results.");
+        DrawStatusRow("Run", $"{run.Status} / {run.Phase} / {run.ModuleId}");
+        DrawStatusRow("Run summary", run.Summary);
+        DrawStatusRow("Worker", $"{worker.Role} / {worker.State} / {worker.Summary}");
+        DrawStatusRow("Leases", run.Leases.Count == 0
+            ? "(none)"
+            : string.Join(" | ", run.Leases.Select(static lease => $"{lease.SlotId}:{lease.State}@{lease.ExpiresUtc:HH:mm:ss}")));
         DrawStatusRow("State", $"{state.JobType} | {state.Phase}");
         DrawStatusRow("Summary", state.Summary);
         DrawStatusRow("Job", FormatText(state.JobId, "(none)"));
@@ -1007,6 +1297,7 @@ public sealed class MainWindow : Window, IDisposable
         if (state.Slots.Count == 0)
         {
             DrawMutedNotice("No active scheduler slot state.");
+            DrawRunHistory();
             return;
         }
 
@@ -1048,6 +1339,43 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted(FormatOperatorText(FormatText(slot.BlockedReason, slot.Summary), "(none)"));
         }
 
+        ImGui.EndTable();
+        DrawRunHistory();
+    }
+
+    private void DrawRunHistory()
+    {
+        var history = plugin.Configuration.RunHistory ?? [];
+        ImGui.Separator();
+        ImGui.TextUnformatted("Run history");
+        if (history.Count == 0)
+        {
+            ImGui.TextDisabled("No durable run results.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-run-history", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
+            return;
+        ImGui.TableSetupColumn("Completed");
+        ImGui.TableSetupColumn("Module");
+        ImGui.TableSetupColumn("Status");
+        ImGui.TableSetupColumn("Request");
+        ImGui.TableSetupColumn("Summary");
+        ImGui.TableHeadersRow();
+        foreach (var result in history)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(result.CompletedAtUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "-");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(result.ModuleId.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(result.Status.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(result.RequestId);
+            ImGui.TableNextColumn();
+            ImGui.TextWrapped(result.Summary);
+        }
         ImGui.EndTable();
     }
 

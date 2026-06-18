@@ -6,6 +6,7 @@ namespace dad.Services;
 public sealed class DadCoordinatorService
 {
     private static readonly TimeSpan ParticipantPollInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan WorkerStatusPollInterval = TimeSpan.FromMilliseconds(750);
 
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
@@ -15,6 +16,7 @@ public sealed class DadCoordinatorService
     private readonly DadClaimService claimService;
     private readonly DadPartyAssemblyService partyAssemblyService;
     private readonly DadQueueExecutionService queueExecutionService;
+    private readonly DadWorkerExecutionService workerExecutionService;
     private readonly DadPlannerService plannerService;
     private readonly IPluginLog log;
 
@@ -30,6 +32,8 @@ public sealed class DadCoordinatorService
     private bool loggedSingleWorkerAssemblyConfirmed;
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
     private string lastParticipantDiscoveryFilterSummary = string.Empty;
+    private readonly Dictionary<string, DadWorkerExecutionStatus> workerStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime nextWorkerStatusPollUtc = DateTime.MinValue;
 
     public DadCoordinatorService(
         Configuration configuration,
@@ -40,6 +44,7 @@ public sealed class DadCoordinatorService
         DadClaimService claimService,
         DadPartyAssemblyService partyAssemblyService,
         DadQueueExecutionService queueExecutionService,
+        DadWorkerExecutionService workerExecutionService,
         DadPlannerService plannerService,
         IPluginLog log)
     {
@@ -51,8 +56,10 @@ public sealed class DadCoordinatorService
         this.claimService = claimService;
         this.partyAssemblyService = partyAssemblyService;
         this.queueExecutionService = queueExecutionService;
+        this.workerExecutionService = workerExecutionService;
         this.plannerService = plannerService;
         this.log = log;
+        RecoverAbandonedRun();
     }
 
     public DadRunResult CurrentResult { get; private set; } = DadRunResult.Idle();
@@ -192,6 +199,8 @@ public sealed class DadCoordinatorService
         lastSingleWorkerAssemblyBlocker = string.Empty;
         lastParticipantDiscoveryFilterSummary = string.Empty;
         nextParticipantPollUtc = DateTime.MinValue;
+        nextWorkerStatusPollUtc = DateTime.MinValue;
+        workerStatuses.Clear();
         claimService.ReleaseClaims(plan.Request.RequestId);
         presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Server Dad planned {plan.Modules.Count} Dad module(s).");
         SeedLocalParticipantIfNeeded(plan);
@@ -212,6 +221,8 @@ public sealed class DadCoordinatorService
         CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         CurrentResult.Leases = [];
+        configuration.PersistedActiveRun = CurrentResult.Clone();
+        configuration.Save();
 
         Transition(plan.RequiresRemoteParticipants ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
             plan.RequiresRemoteParticipants ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
@@ -271,10 +282,22 @@ public sealed class DadCoordinatorService
         CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
         var remoteAcks = transportService.BroadcastCancel(command, activeParticipants);
         var localAck = presenceService.HandleCancelRun(command);
-        var executorCancel = queueExecutionService.CancelActiveExecutor("Cancelled by operator.");
+        var executorCancelAck = workerExecutionService.Cancel(new DadWorkerExecutionCancel
+        {
+            RunId = activePlan.Request.RequestId,
+            Reason = "Cancelled by operator.",
+        });
+        foreach (var participant in activeParticipants.Where(static participant => !participant.IsLocalClient))
+        {
+            transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
+            {
+                RunId = activePlan.Request.RequestId,
+                Reason = "Cancelled by Server Dad.",
+            });
+        }
         claimService.ReleaseClaims(activePlan.Request.RequestId);
-        if (!string.IsNullOrWhiteSpace(executorCancel.StepName))
-            stepResults.Add(executorCancel);
+        if (!string.IsNullOrWhiteSpace(executorCancelAck.Status.StepResult.StepName))
+            stepResults.Add(executorCancelAck.Status.StepResult.Clone());
 
         foreach (var participant in activeParticipants)
         {
@@ -559,16 +582,12 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
-        if (activeModuleIndex >= 0 && activeModuleIndex < activePlan.Modules.Count)
+        if (activeModuleIndex >= 0 &&
+            activeModuleIndex < activePlan.Modules.Count &&
+            workerStatuses.Count > 0)
         {
-            var activeStatus = queueExecutionService.GetActiveExecutorStatus();
-            if (activeStatus.IsActive)
-            {
-                var activeModule = activePlan.Modules[activeModuleIndex];
-                var updateResult = queueExecutionService.UpdateActiveExecutor();
-                ApplyModuleRoutingResult(activeModule, updateResult, replaceExisting: true);
-                return;
-            }
+            UpdateWorkerExecution(activePlan.Modules[activeModuleIndex]);
+            return;
         }
 
         activeModuleIndex++;
@@ -583,8 +602,188 @@ public sealed class DadCoordinatorService
 
         var module = activePlan.Modules[activeModuleIndex];
         MarkStopPolicyAttemptStarted(activePlan);
-        var result = queueExecutionService.ExecuteModule(activePlan, module, activeParticipants);
-        ApplyModuleRoutingResult(module, result, replaceExisting: false);
+        DispatchWorkerExecution(module);
+    }
+
+    private void DispatchWorkerExecution(DadPlannedModuleExecution module)
+    {
+        if (activePlan == null)
+            return;
+
+        workerStatuses.Clear();
+        nextWorkerStatusPollUtc = DateTime.MinValue;
+        var failures = new List<string>();
+        foreach (var participant in activeParticipants)
+        {
+            var command = new DadWorkerExecutionCommand
+            {
+                RunId = activePlan.Request.RequestId,
+                ModuleIndex = activeModuleIndex,
+                Role = participant.IsLocalClient
+                    ? DadWorkerExecutionRole.QueueLeader
+                    : DadWorkerExecutionRole.Participant,
+                Plan = activePlan,
+                Participants = activeParticipants.Select(static candidate => candidate.Clone()).ToList(),
+                TimeoutSeconds = Math.Max(
+                    60,
+                    activePlan.Orchestration.WaitPolicy.ParticipantReadyTimeoutSeconds +
+                    activePlan.Orchestration.WaitPolicy.AssemblyTimeoutSeconds +
+                    900),
+            };
+
+            participant.RunId = activePlan.Request.RequestId;
+            DadWorkerExecutionAck? ack = participant.IsLocalClient
+                ? workerExecutionService.Accept(command)
+                : transportService.SendWorkerExecutionCommand(participant, command);
+            if (ack == null || !ack.Accepted)
+            {
+                failures.Add(ack?.Summary ?? $"No worker assignment acknowledgement from {participant.ActiveCharacterKey}.");
+                continue;
+            }
+
+            workerStatuses[participant.WorkerSessionId.Value] = ack.Status.Clone();
+            participant.State = DadParticipantState.QueuePending;
+            participant.StatusText = ack.Summary;
+        }
+
+        if (failures.Count > 0)
+        {
+            var summary = string.Join(" | ", failures.Distinct(StringComparer.OrdinalIgnoreCase));
+            ApplyModuleRoutingResult(module, BuildWorkerFailureResult(module, summary), replaceExisting: false);
+            return;
+        }
+
+        ApplyModuleRoutingResult(
+            module,
+            BuildWorkerProgressResult(module, $"Assigned {workerStatuses.Count} worker(s); waiting for execution status."),
+            replaceExisting: false);
+    }
+
+    private void UpdateWorkerExecution(DadPlannedModuleExecution module)
+    {
+        if (activePlan == null || DateTime.UtcNow < nextWorkerStatusPollUtc)
+            return;
+
+        nextWorkerStatusPollUtc = DateTime.UtcNow + WorkerStatusPollInterval;
+        var failures = new List<string>();
+        foreach (var participant in activeParticipants)
+        {
+            DadWorkerExecutionStatus? workerStatus = participant.IsLocalClient
+                ? workerExecutionService.GetStatus()
+                : transportService.GetWorkerExecutionStatus(participant);
+            if (workerStatus == null ||
+                !string.Equals(workerStatus.RunId, activePlan.Request.RequestId, StringComparison.OrdinalIgnoreCase))
+            {
+                if (DateTime.UtcNow - participant.LastHeartbeatUtc >= activePlan.Orchestration.WaitPolicy.GetHeartbeatStaleThreshold())
+                    failures.Add($"Worker {participant.ActiveCharacterKey} heartbeat/status is stale.");
+                continue;
+            }
+
+            workerStatuses[participant.WorkerSessionId.Value] = workerStatus.Clone();
+            participant.State = workerStatus.State switch
+            {
+                DadWorkerExecutionState.Completed => DadParticipantState.Completed,
+                DadWorkerExecutionState.Failed or DadWorkerExecutionState.TimedOut => DadParticipantState.Failed,
+                DadWorkerExecutionState.Cancelled => DadParticipantState.Cancelled,
+                DadWorkerExecutionState.Running => DadParticipantState.Running,
+                _ => DadParticipantState.QueuePending,
+            };
+            participant.StatusText = workerStatus.Summary;
+            if (workerStatus.IsTerminal && !workerStatus.Success)
+                failures.Add(string.IsNullOrWhiteSpace(workerStatus.FailureReason) ? workerStatus.Summary : workerStatus.FailureReason);
+        }
+
+        if (failures.Count > 0)
+        {
+            foreach (var participant in activeParticipants.Where(static participant => !participant.IsLocalClient))
+            {
+                transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
+                {
+                    RunId = activePlan.Request.RequestId,
+                    Reason = "Peer worker failed; releasing run-owned work.",
+                });
+            }
+            workerExecutionService.Cancel(new DadWorkerExecutionCancel
+            {
+                RunId = activePlan.Request.RequestId,
+                Reason = "Peer worker failed; releasing run-owned work.",
+            });
+            ApplyModuleRoutingResult(
+                module,
+                BuildWorkerFailureResult(module, string.Join(" | ", failures.Distinct(StringComparer.OrdinalIgnoreCase))),
+                replaceExisting: true);
+            return;
+        }
+
+        var statuses = workerStatuses.Values.ToList();
+        var leaderStatus = statuses.FirstOrDefault(static worker => worker.Role == DadWorkerExecutionRole.QueueLeader);
+        if (statuses.Count == activeParticipants.Count && statuses.All(static worker => worker.IsTerminal && worker.Success))
+        {
+            var result = leaderStatus?.StepResult.Clone() ?? BuildWorkerProgressResult(module, $"All {statuses.Count} workers completed.");
+            result.Success = true;
+            result.Deferred = false;
+            result.ParticipantState = DadParticipantState.Completed;
+            result.Summary = $"All {statuses.Count} workers completed {module.DisplayName}. {result.Summary}".Trim();
+            result.ExecutorStatus.IsActive = false;
+            result.ExecutorStatus.Status = DadRunStatus.Completed;
+            result.ExecutorStatus.Phase = DadRunPhase.Finalizing;
+            result.ExecutorStatus.CompletedAtUtc ??= DateTime.UtcNow;
+            result.ExecutorStatus.UpdatedAtUtc = DateTime.UtcNow;
+            ApplyModuleRoutingResult(module, result, replaceExisting: true);
+            workerStatuses.Clear();
+            return;
+        }
+
+        var progress = leaderStatus?.StepResult.StepName?.Length > 0
+            ? leaderStatus.StepResult.Clone()
+            : BuildWorkerProgressResult(
+                module,
+                $"Workers: {statuses.Count(static worker => worker.State == DadWorkerExecutionState.Running)} running, " +
+                $"{statuses.Count(static worker => worker.State == DadWorkerExecutionState.WaitingForQueue)} waiting, " +
+                $"{statuses.Count(static worker => worker.IsTerminal)} complete.");
+        progress.ExecutorStatus.IsActive = true;
+        progress.ExecutorStatus.Status = DadRunStatus.Running;
+        ApplyModuleRoutingResult(module, progress, replaceExisting: true);
+    }
+
+    private DadRunStepResultDto BuildWorkerProgressResult(DadPlannedModuleExecution module, string summary)
+        => new()
+        {
+            RunId = activePlan?.Request.RequestId ?? string.Empty,
+            ModuleId = module.ModuleId,
+            StepName = module.DisplayName,
+            ParticipantState = DadParticipantState.QueuePending,
+            Success = true,
+            Summary = summary,
+            ExecutorStatus = new DadModuleExecutionStatusDto
+            {
+                RunId = activePlan?.Request.RequestId ?? string.Empty,
+                ModuleId = module.ModuleId,
+                DisplayName = module.DisplayName,
+                Phase = DadRunPhase.QueueStarting,
+                Status = DadRunStatus.Running,
+                StepName = "Distributed workers",
+                IsActive = true,
+                CanStart = true,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = summary,
+            },
+        };
+
+    private DadRunStepResultDto BuildWorkerFailureResult(DadPlannedModuleExecution module, string reason)
+    {
+        var result = BuildWorkerProgressResult(module, reason);
+        result.Success = false;
+        result.ParticipantState = DadParticipantState.Failed;
+        result.FailureReason = reason;
+        result.BlockedReason = reason;
+        result.ExecutorStatus.IsActive = false;
+        result.ExecutorStatus.Status = DadRunStatus.Failed;
+        result.ExecutorStatus.Phase = DadRunPhase.Finalizing;
+        result.ExecutorStatus.FailureReason = reason;
+        result.ExecutorStatus.BlockedReason = reason;
+        result.ExecutorStatus.CompletedAtUtc = DateTime.UtcNow;
+        return result;
     }
 
     private void ApplyModuleRoutingResult(DadPlannedModuleExecution module, DadRunStepResultDto result, bool replaceExisting)
@@ -718,6 +917,8 @@ public sealed class DadCoordinatorService
         lastSingleWorkerAssemblyBlocker = string.Empty;
         lastParticipantDiscoveryFilterSummary = string.Empty;
         nextParticipantPollUtc = DateTime.MinValue;
+        nextWorkerStatusPollUtc = DateTime.MinValue;
+        workerStatuses.Clear();
         claimService.ReleaseClaims(nextPlan.Request.RequestId);
         presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Server Dad repeating {module.DisplayName}; {stopProgress.Summary}");
         SeedLocalParticipantIfNeeded(nextPlan);
@@ -816,7 +1017,14 @@ public sealed class DadCoordinatorService
         var modules = new HashSet<DadModuleId>();
         foreach (var module in plan.Modules)
         {
-            if (module.ModuleId is DadModuleId.Duty or DadModuleId.DutySupport or DadModuleId.Trust or DadModuleId.PremadeDuty)
+            if (module.ModuleId is DadModuleId.Duty
+                or DadModuleId.Msq
+                or DadModuleId.DutySupport
+                or DadModuleId.Trust
+                or DadModuleId.PremadeDuty
+                or DadModuleId.Mogtome
+                or DadModuleId.Commendation
+                or DadModuleId.CustomDuty)
                 modules.Add(module.ModuleId);
         }
 
@@ -1123,6 +1331,8 @@ public sealed class DadCoordinatorService
         request.Orchestration.WaitPolicy.CancelAckTimeoutSeconds = request.Orchestration.WaitPolicy.CancelAckTimeoutSeconds <= 0
             ? configuration.CancelAckTimeoutSeconds
             : request.Orchestration.WaitPolicy.CancelAckTimeoutSeconds;
+        if (request.Blunderville != null && string.IsNullOrWhiteSpace(request.Blunderville.EmoteCommand))
+            request.Blunderville.EmoteCommand = configManager.GetActiveConfig().BlundervilleEmoteCommand;
         request.ApplyOrchestrationDefaults();
     }
 
@@ -1138,7 +1348,6 @@ public sealed class DadCoordinatorService
         }
 
         return request.Dungeon?.QueueViaLanParty == true ||
-               request.Msq != null ||
                request.PremadeDuty != null ||
                request.DailyMsq != null ||
                request.Mogtome != null ||
@@ -1197,10 +1406,19 @@ public sealed class DadCoordinatorService
         CurrentResult.ActiveTaskStatus = summary;
         CurrentResult.CompletedTaskCount = stepResults.Count(static step => step.Success);
 
+        configuration.RunHistory ??= [];
+        configuration.RunHistory.Insert(0, CurrentResult.Clone());
+        if (configuration.RunHistory.Count > 50)
+            configuration.RunHistory = configuration.RunHistory.Take(50).ToList();
+        configuration.PersistedActiveRun = null;
+        configuration.Save();
+
         activePlan = null;
         activeParticipants.Clear();
         activeModuleIndex = -1;
         activeStepResultIndex = -1;
+        workerStatuses.Clear();
+        nextWorkerStatusPollUtc = DateTime.MinValue;
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
         lastSingleWorkerAssemblyBlocker = string.Empty;
@@ -1208,6 +1426,32 @@ public sealed class DadCoordinatorService
 
         log.Information("[dad] Finalized run {RequestId}: {Status} {Summary}", CurrentResult.RequestId, status, summary);
         return PublishAndClone();
+    }
+
+    private void RecoverAbandonedRun()
+    {
+        configuration.RunHistory ??= [];
+        var abandoned = configuration.PersistedActiveRun;
+        if (abandoned == null || abandoned.IsTerminal)
+        {
+            configuration.PersistedActiveRun = null;
+            return;
+        }
+
+        var recovered = abandoned.Clone();
+        recovered.Status = DadRunStatus.Failed;
+        recovered.Phase = DadRunPhase.Finalizing;
+        recovered.Summary = "Run abandoned by plugin reload; explicit restart required.";
+        recovered.FailureReason = recovered.Summary;
+        recovered.CompletedAtUtc = DateTime.UtcNow;
+        recovered.Leases = [];
+        recovered.CurrentExecutorStatus = new DadModuleExecutionStatusDto();
+        configuration.RunHistory.Insert(0, recovered);
+        if (configuration.RunHistory.Count > 50)
+            configuration.RunHistory = configuration.RunHistory.Take(50).ToList();
+        configuration.PersistedActiveRun = null;
+        configuration.Save();
+        CurrentResult = recovered;
     }
 
     private void CopyParticipant(DadParticipantSnapshot target, DadParticipantSnapshot source)

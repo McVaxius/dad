@@ -74,13 +74,19 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
         var nextStatus = CanStart(plan, participants);
         nextStatus.StartedAtUtc = DateTime.UtcNow;
         nextStatus.UpdatedAtUtc = nextStatus.StartedAtUtc.Value;
-        nextStatus.CompletedAtUtc = nextStatus.CanStart ? nextStatus.StartedAtUtc : null;
+        nextStatus.CompletedAtUtc = nextStatus.StartedAtUtc;
         nextStatus.IsActive = false;
-        nextStatus.Status = nextStatus.CanStart ? DadRunStatus.Completed : DadRunStatus.Failed;
-        nextStatus.Summary = nextStatus.CanStart
-            ? $"Dad routed {nextStatus.DisplayName} with {participants.Count}/{ResolveModule(plan).ExpectedPartySize} ready participant(s)."
-            : nextStatus.Summary;
-        nextStatus.FailureReason = nextStatus.CanStart ? string.Empty : nextStatus.BlockedReason;
+        nextStatus.Status = nextStatus.Deferred || !nextStatus.CanStart
+            ? DadRunStatus.Failed
+            : DadRunStatus.Completed;
+        nextStatus.Summary = nextStatus.Deferred
+            ? $"{nextStatus.DisplayName} live execution is unavailable: {nextStatus.BlockedReason}"
+            : nextStatus.CanStart
+                ? $"Dad completed {nextStatus.DisplayName} routing."
+                : nextStatus.Summary;
+        nextStatus.FailureReason = nextStatus.Status == DadRunStatus.Failed
+            ? nextStatus.BlockedReason
+            : string.Empty;
         status = nextStatus;
 
         return new DadRunStepResultDto
@@ -89,7 +95,7 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
             ModuleId = nextStatus.ModuleId,
             StepName = nextStatus.DisplayName,
             ParticipantState = nextStatus.CanStart ? DadParticipantState.QueuePending : DadParticipantState.Failed,
-            Success = nextStatus.CanStart,
+            Success = nextStatus.Status == DadRunStatus.Completed,
             Deferred = nextStatus.Deferred,
             TimedOut = false,
             Summary = nextStatus.Summary,
@@ -1287,10 +1293,124 @@ public sealed class DadBlundervilleExecutor(
     Func<DadRunPlan, string> queueBlockerFactory)
     : DadDeferredModuleExecutor(moduleRegistry, "DadBlundervilleExecutor", DadModuleId.Blunderville, "Blunderville", queueBlockerFactory);
 
-public sealed class DadMogtomeExecutor(
-    DadModuleRegistry moduleRegistry,
-    Func<DadRunPlan, string> queueBlockerFactory)
-    : DadDeferredModuleExecutor(moduleRegistry, "DadMogtomeExecutor", DadModuleId.Mogtome, "MOGTOME", queueBlockerFactory);
+public sealed class DadMogtomeExecutor : IDadModuleExecutor
+{
+    private readonly DadMogtomeIpcService ipc;
+    private DadModuleExecutionStatusDto status = new();
+    private DadWorkerExecutionRole workerRole = DadWorkerExecutionRole.QueueLeader;
+
+    public DadMogtomeExecutor(DadMogtomeIpcService ipc)
+    {
+        this.ipc = ipc;
+    }
+
+    public string ExecutorId => "DadMogtomeExecutor";
+    public DadModuleId ModuleId => DadModuleId.Mogtome;
+
+    public void SetWorkerRole(DadWorkerExecutionRole role)
+        => workerRole = role;
+
+    public DadModuleExecutionStatusDto CanStart(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        var ready = ipc.IsReady();
+        var summary = ready
+            ? $"MOGTOME helper ready for {workerRole} handoff."
+            : "MOGTOME helper IPC is unavailable.";
+        return new DadModuleExecutionStatusDto
+        {
+            RunId = plan.Request.RequestId,
+            ModuleId = DadModuleId.Mogtome,
+            DisplayName = "MOGTOME",
+            Phase = DadRunPhase.QueuePreparing,
+            Status = ready ? DadRunStatus.Running : DadRunStatus.Failed,
+            StepName = ExecutorId,
+            CanStart = ready,
+            Deferred = false,
+            MaxRetryAttempts = 3,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Summary = summary,
+            FailureReason = ready ? string.Empty : summary,
+            BlockedReason = ready ? string.Empty : summary,
+        };
+    }
+
+    public DadRunStepResultDto Start(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        status = CanStart(plan, participants);
+        status.StartedAtUtc = DateTime.UtcNow;
+        if (!status.CanStart)
+            return BuildStep();
+
+        ApplyHelperStatus(ipc.Start(plan, workerRole));
+        return BuildStep();
+    }
+
+    public DadRunStepResultDto Update()
+    {
+        if (status.IsActive)
+            ApplyHelperStatus(ipc.GetStatus());
+        return BuildStep();
+    }
+
+    public DadRunStepResultDto Cancel(string reason)
+    {
+        ApplyHelperStatus(ipc.Stop(status.RunId, reason));
+        status.Status = DadRunStatus.Cancelled;
+        status.Phase = DadRunPhase.Finalizing;
+        status.IsActive = false;
+        status.CompletedAtUtc = DateTime.UtcNow;
+        status.Summary = string.IsNullOrWhiteSpace(reason) ? "MOGTOME helper cancelled." : reason;
+        return BuildStep();
+    }
+
+    public DadModuleExecutionStatusDto GetStatus()
+        => status.Clone();
+
+    private void ApplyHelperStatus(DadMogtomeRunStatus helper)
+    {
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.Summary = helper.Summary;
+        status.FailureReason = helper.FailureReason;
+        status.BlockedReason = helper.Accepted || helper.Success ? string.Empty : helper.FailureReason;
+        status.RetryAttempt = helper.CompletedAttempts;
+        status.MaxRetryAttempts = Math.Max(helper.AttemptLimit, status.MaxRetryAttempts);
+        status.IsActive = helper.IsRunning && !helper.IsTerminal;
+        status.Phase = helper.IsTerminal
+            ? DadRunPhase.Finalizing
+            : string.Equals(helper.EngineState, "InDuty", StringComparison.OrdinalIgnoreCase)
+                ? DadRunPhase.InDutyOrTask
+                : DadRunPhase.WaitingForQueuePop;
+        status.Status = helper.IsTerminal
+            ? helper.Success ? DadRunStatus.Completed : DadRunStatus.Failed
+            : helper.Accepted ? DadRunStatus.Running : DadRunStatus.Failed;
+        if (helper.IsTerminal)
+            status.CompletedAtUtc = DateTime.UtcNow;
+    }
+
+    private DadRunStepResultDto BuildStep()
+        => new()
+        {
+            RunId = status.RunId,
+            ModuleId = DadModuleId.Mogtome,
+            StepName = "MOGTOME",
+            ParticipantState = status.Status switch
+            {
+                DadRunStatus.Completed => DadParticipantState.Completed,
+                DadRunStatus.Cancelled => DadParticipantState.Cancelled,
+                DadRunStatus.Failed => DadParticipantState.Failed,
+                _ => status.Phase == DadRunPhase.InDutyOrTask
+                    ? DadParticipantState.Running
+                    : DadParticipantState.QueuePending,
+            },
+            Success = status.Status is DadRunStatus.Running or DadRunStatus.Completed,
+            Deferred = false,
+            Summary = status.Summary,
+            FailureReason = status.FailureReason,
+            BlockedReason = status.BlockedReason,
+            ExecutorStatus = status.Clone(),
+            ReportedAtUtc = DateTime.UtcNow,
+        };
+}
 
 public sealed class DadCommendationExecutor(
     DadModuleRegistry moduleRegistry,

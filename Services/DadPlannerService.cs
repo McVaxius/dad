@@ -59,6 +59,11 @@ public sealed class DadPlannerService
                 rejectionReason = "dad MSQ attempts must be greater than 0.";
                 return null;
             }
+            if (request.Msq.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(request.Msq.DutyName))
+            {
+                rejectionReason = "dad MSQ solo progression requires a selected Duty Finder duty.";
+                return null;
+            }
 
             var capability = moduleRegistry.GetCapability(DadModuleId.Msq);
             modules.Add(new DadPlannedModuleExecution
@@ -66,9 +71,9 @@ public sealed class DadPlannerService
                 ModuleId = DadModuleId.Msq,
                 DisplayName = "MSQ",
                 OwnerLabel = capability.OwnerLabel,
-                ExpectedPartySize = Math.Max(4, capability.RequiredPartySize),
-                RequiresPeers = true,
-                Summary = $"MSQ preset '{request.Msq.Preset}'",
+                ExpectedPartySize = 1,
+                RequiresPeers = false,
+                Summary = $"MSQ {request.Msq.DutyName} #{request.Msq.ContentFinderConditionId}; Trust then Duty Support fallback",
             });
         }
 
@@ -160,6 +165,14 @@ public sealed class DadPlannerService
                 rejectionReason = "dad Blunderville attempts must be greater than 0.";
                 return null;
             }
+            if (string.IsNullOrWhiteSpace(request.Blunderville.EmoteCommand) ||
+                !request.Blunderville.EmoteCommand.StartsWith("/", StringComparison.Ordinal) ||
+                request.Blunderville.EmoteCommand.Contains('\n') ||
+                request.Blunderville.EmoteCommand.Contains('\r'))
+            {
+                rejectionReason = "dad Blunderville requires a validated single-line per-character emote command.";
+                return null;
+            }
 
             var capability = moduleRegistry.GetCapability(DadModuleId.Blunderville);
             modules.Add(new DadPlannedModuleExecution
@@ -249,13 +262,14 @@ public sealed class DadPlannerService
             }
 
             var capability = moduleRegistry.GetCapability(DadModuleId.CustomDuty);
+            var expectedPartySize = Math.Clamp(request.CustomDuty.ExpectedPartySize, 1, 8);
             modules.Add(new DadPlannedModuleExecution
             {
                 ModuleId = DadModuleId.CustomDuty,
                 DisplayName = "Custom Duty",
                 OwnerLabel = capability.OwnerLabel,
-                ExpectedPartySize = 1,
-                RequiresPeers = false,
+                ExpectedPartySize = expectedPartySize,
+                RequiresPeers = expectedPartySize > 1,
                 Summary = $"Custom duty {request.CustomDuty.DutyName} #{request.CustomDuty.ContentFinderConditionId}",
             });
         }
@@ -651,20 +665,15 @@ public sealed class DadPlannerService
     private static DadTransportOwner ResolveTransportOwner(DadModuleId moduleId)
         => moduleId switch
         {
-            DadModuleId.Commendation or DadModuleId.Astrope => DadTransportOwner.AuraFarmer,
-            DadModuleId.Mogtome => DadTransportOwner.Mogtome,
-            DadModuleId.Blunderville => DadTransportOwner.Blunderville,
-            DadModuleId.Msq or DadModuleId.PremadeDuty or DadModuleId.DailyMsq => DadTransportOwner.LanParty,
+            DadModuleId.PremadeDuty or DadModuleId.DailyMsq => DadTransportOwner.LanParty,
             _ => DadTransportOwner.DadDirect,
         };
 
     private static DadQueueAuthority ResolveQueueAuthority(DadModuleId moduleId)
         => moduleId switch
         {
-            DadModuleId.Commendation or DadModuleId.Astrope => DadQueueAuthority.AuraFarmer,
-            DadModuleId.Mogtome => DadQueueAuthority.Mogtome,
-            DadModuleId.Blunderville => DadQueueAuthority.Blunderville,
-            DadModuleId.Msq or DadModuleId.PremadeDuty or DadModuleId.DailyMsq => DadQueueAuthority.Leader,
+            DadModuleId.Mogtome or DadModuleId.Commendation or DadModuleId.Astrope
+                or DadModuleId.PremadeDuty or DadModuleId.DailyMsq => DadQueueAuthority.Leader,
             _ => DadQueueAuthority.LocalOnly,
         };
 
@@ -686,20 +695,23 @@ public sealed class DadPlannerService
         if (request.DailyMsq != null)
             warnings.Add("Daily MSQ routes through Dad's internal premade lane.");
 
-        if (request.Msq != null || request.PremadeDuty != null || request.Mogtome != null)
-            warnings.Add("MSQ, Premade Duty, and MOGTOME require Server Dad authority and exact typed party workers.");
+        if (request.PremadeDuty != null || request.Mogtome != null)
+            warnings.Add("Premade Duty and MOGTOME require Server Dad authority and exact typed party workers.");
+
+        if (request.Msq != null)
+            warnings.Add("MSQ solo progression uses selected duty with Trust then Duty Support fallback.");
 
         if (request.DutySupport != null || request.Trust != null)
             warnings.Add("Duty Support and Trust route through Dad-owned guarded native local NPC duty lanes.");
 
         if (request.CustomDuty != null)
-            warnings.Add("Custom Duty remains a local typed duty lane until guarded live start is enabled.");
+            warnings.Add("Custom Duty uses typed CFC selection and routes by configured party size.");
 
         if (request.Blunderville != null)
-            warnings.Add("Blunderville routes through Dad-owned local lane with helper integration deferred.");
+            warnings.Add("Blunderville remains Dad-owned but blocks until guarded Gold Saucer callbacks are available.");
 
         if (request.Commendation != null || request.Astrope != null)
-            warnings.Add("Commendation and Astrope route through Dad's internal aura lane.");
+            warnings.Add("Commendation and Astrope remain Dad-owned; AuraFarmer is not required.");
 
         return warnings;
     }

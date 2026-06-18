@@ -19,6 +19,11 @@ public sealed class DadTransportService : IDisposable
     private const string MessageStartRun = "start-run";
     private const string MessageRosterCatalogRequest = "roster-catalog-request";
     private const string MessageRosterRefreshCommand = "roster-refresh-command";
+    private const string MessageProfileCatalogRequest = "profile-catalog-request";
+    private const string MessageProfileUpdateCommand = "profile-update-command";
+    private const string MessageWorkerExecutionCommand = "worker-execution-command";
+    private const string MessageWorkerExecutionStatus = "worker-execution-status";
+    private const string MessageWorkerExecutionCancel = "worker-execution-cancel";
     private static readonly TimeSpan RegistryFreshness = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan HeartbeatWriteInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SocketTimeout = TimeSpan.FromSeconds(2);
@@ -49,6 +54,11 @@ public sealed class DadTransportService : IDisposable
     private Func<DadCancelCommandDto, DadRunResult>? cancelRunHandler;
     private Func<DadAccountRosterCatalog>? rosterCatalogProvider;
     private Func<DadRosterRefreshCommandDto, DadRosterRefreshResultDto>? rosterRefreshHandler;
+    private Func<DadProfileCatalog>? profileCatalogProvider;
+    private Func<DadProfileUpdateRequest, DadProfileUpdateAck>? profileUpdateHandler;
+    private Func<DadWorkerExecutionCommand, DadWorkerExecutionAck>? workerExecutionHandler;
+    private Func<DadWorkerExecutionStatus>? workerStatusProvider;
+    private Func<DadWorkerExecutionCancel, DadWorkerExecutionAck>? workerCancelHandler;
 
     public DadTransportService(Configuration configuration, DadPresenceService presenceService, DadClaimService claimService, IPluginLog log)
     {
@@ -109,6 +119,24 @@ public sealed class DadTransportService : IDisposable
     {
         this.rosterCatalogProvider = rosterCatalogProvider;
         this.rosterRefreshHandler = rosterRefreshHandler;
+    }
+
+    public void ConfigureProfileHandlers(
+        Func<DadProfileCatalog> profileCatalogProvider,
+        Func<DadProfileUpdateRequest, DadProfileUpdateAck> profileUpdateHandler)
+    {
+        this.profileCatalogProvider = profileCatalogProvider;
+        this.profileUpdateHandler = profileUpdateHandler;
+    }
+
+    public void ConfigureWorkerExecutionHandlers(
+        Func<DadWorkerExecutionCommand, DadWorkerExecutionAck> workerExecutionHandler,
+        Func<DadWorkerExecutionStatus> workerStatusProvider,
+        Func<DadWorkerExecutionCancel, DadWorkerExecutionAck> workerCancelHandler)
+    {
+        this.workerExecutionHandler = workerExecutionHandler;
+        this.workerStatusProvider = workerStatusProvider;
+        this.workerCancelHandler = workerCancelHandler;
     }
 
     public void Dispose()
@@ -336,6 +364,60 @@ public sealed class DadTransportService : IDisposable
             MessageRosterRefreshCommand,
             command);
 
+    public IReadOnlyList<DadProfileCatalogResponse> RequestProfileCatalogs(string requestId)
+    {
+        RefreshKnownParticipants();
+        var responses = new List<DadProfileCatalogResponse>();
+        foreach (var participant in CurrentTransport.KnownParticipants.ToList())
+        {
+            var response = SendEnvelope<string, DadProfileCatalogResponse>(
+                participant.Endpoint,
+                MessageProfileCatalogRequest,
+                requestId);
+            if (response == null)
+                continue;
+
+            response.Catalog.OwnerEndpoint = participant.Endpoint;
+            response.Catalog.OwnerOnline = true;
+            response.Catalog.ReadOnly = false;
+            responses.Add(response);
+        }
+
+        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestStatus = responses.Count == 0
+            ? "No remote Dad profile catalogs discovered."
+            : $"Received {responses.Count} profile catalog response(s).";
+        return responses;
+    }
+
+    public DadProfileUpdateAck? SendProfileUpdate(string endpoint, DadProfileUpdateRequest request)
+        => SendEnvelope<DadProfileUpdateRequest, DadProfileUpdateAck>(
+            endpoint,
+            MessageProfileUpdateCommand,
+            request);
+
+    public DadWorkerExecutionAck? SendWorkerExecutionCommand(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command)
+        => SendEnvelope<DadWorkerExecutionCommand, DadWorkerExecutionAck>(
+            participant.Endpoint,
+            MessageWorkerExecutionCommand,
+            command);
+
+    public DadWorkerExecutionStatus? GetWorkerExecutionStatus(DadParticipantSnapshot participant)
+        => SendEnvelope<string, DadWorkerExecutionStatus>(
+            participant.Endpoint,
+            MessageWorkerExecutionStatus,
+            participant.RunId);
+
+    public DadWorkerExecutionAck? SendWorkerExecutionCancel(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCancel command)
+        => SendEnvelope<DadWorkerExecutionCancel, DadWorkerExecutionAck>(
+            participant.Endpoint,
+            MessageWorkerExecutionCancel,
+            command);
+
     public List<DadCancelAckDto> BroadcastCancel(DadCancelCommandDto command, IEnumerable<DadParticipantSnapshot> participants)
     {
         var acks = new List<DadCancelAckDto>();
@@ -451,6 +533,11 @@ public sealed class DadTransportService : IDisposable
                 MessageStartRun => DadIpcJson.Serialize(HandleStartRun(envelope.PayloadJson)),
                 MessageRosterCatalogRequest => DadIpcJson.Serialize(HandleRosterCatalogRequest(envelope.PayloadJson)),
                 MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(envelope.PayloadJson)),
+                MessageProfileCatalogRequest => DadIpcJson.Serialize(HandleProfileCatalogRequest(envelope.PayloadJson)),
+                MessageProfileUpdateCommand => DadIpcJson.Serialize(HandleProfileUpdateCommand(envelope.PayloadJson)),
+                MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(envelope.PayloadJson)),
+                MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
+                MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(envelope.PayloadJson)),
                 _ => string.Empty,
             };
 
@@ -667,6 +754,89 @@ public sealed class DadTransportService : IDisposable
         }
 
         return rosterRefreshHandler(command);
+    }
+
+    private DadProfileCatalogResponse HandleProfileCatalogRequest(string payloadJson)
+    {
+        var requestId = DadIpcJson.Deserialize<string>(payloadJson) ?? string.Empty;
+        var catalog = profileCatalogProvider?.Invoke() ?? new DadProfileCatalog
+        {
+            ReadOnly = true,
+        };
+        catalog.OwnerClientInstanceId = presenceService.ClientInstanceId;
+        catalog.OwnerWorkerSessionId = presenceService.WorkerSessionId;
+        catalog.OwnerEndpoint = CurrentTransport.ListenerEndpoint;
+        catalog.OwnerOnline = remoteMutationsAllowed;
+        catalog.ReadOnly = !remoteMutationsAllowed;
+        return new DadProfileCatalogResponse
+        {
+            RequestId = requestId,
+            Success = profileCatalogProvider != null,
+            Summary = profileCatalogProvider == null
+                ? "Dad profile catalog provider unavailable."
+                : $"Returned {catalog.Accounts.Count} owned account profile(s).",
+            Catalog = catalog,
+        };
+    }
+
+    private DadProfileUpdateAck HandleProfileUpdateCommand(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadProfileUpdateRequest>(payloadJson) ?? new DadProfileUpdateRequest();
+        if (!remoteMutationsAllowed)
+        {
+            return new DadProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                Summary = BuildRemoteMutationRejectedReason("remote profile update"),
+            };
+        }
+
+        return profileUpdateHandler?.Invoke(request) ?? new DadProfileUpdateAck
+        {
+            RequestId = request.RequestId,
+            Summary = "Dad profile update handler unavailable.",
+        };
+    }
+
+    private DadWorkerExecutionAck HandleWorkerExecutionCommand(string payloadJson)
+    {
+        var command = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(payloadJson) ?? new DadWorkerExecutionCommand();
+        if (!remoteMutationsAllowed)
+        {
+            return new DadWorkerExecutionAck
+            {
+                CommandId = command.CommandId,
+                RunId = command.RunId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                Summary = BuildRemoteMutationRejectedReason("worker execution command"),
+            };
+        }
+
+        return workerExecutionHandler?.Invoke(command) ?? new DadWorkerExecutionAck
+        {
+            CommandId = command.CommandId,
+            RunId = command.RunId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            Summary = "Dad worker execution handler unavailable.",
+        };
+    }
+
+    private DadWorkerExecutionStatus HandleWorkerExecutionStatus()
+        => workerStatusProvider?.Invoke() ?? new DadWorkerExecutionStatus
+        {
+            WorkerSessionId = presenceService.WorkerSessionId,
+            Summary = "Dad worker execution status unavailable.",
+        };
+
+    private DadWorkerExecutionAck HandleWorkerExecutionCancel(string payloadJson)
+    {
+        var command = DadIpcJson.Deserialize<DadWorkerExecutionCancel>(payloadJson) ?? new DadWorkerExecutionCancel();
+        return workerCancelHandler?.Invoke(command) ?? new DadWorkerExecutionAck
+        {
+            RunId = command.RunId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            Summary = "Dad worker execution cancel handler unavailable.",
+        };
     }
 
     private DadParticipantSnapshot BuildLocalTransportSnapshot()
