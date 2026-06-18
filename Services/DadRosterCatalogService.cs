@@ -13,6 +13,7 @@ public sealed class DadRosterCatalogService
     private readonly IPluginLog log;
     private DadAccountRosterCatalog currentCatalog = new() { Summary = "Roster catalog not refreshed yet." };
     private IReadOnlyList<DadPeerRosterCatalogResponse> lastPeerResponses = [];
+    private long catalogVersion;
 
     public DadRosterCatalogService(
         Configuration configuration,
@@ -36,6 +37,8 @@ public sealed class DadRosterCatalogService
     }
 
     public DadAccountRosterCatalog CurrentCatalog => currentCatalog.Clone();
+
+    public long CatalogVersion => catalogVersion;
 
     public IReadOnlyList<DadRosterAccountOption> GetAccountDirectory()
     {
@@ -80,6 +83,7 @@ public sealed class DadRosterCatalogService
         }
 
         currentCatalog = MergeCatalogs(allCatalogs, plan);
+        catalogVersion++;
         if (plan.LogDiagnostics)
             LogRosterDiagnostics(currentCatalog, plan);
 
@@ -165,14 +169,15 @@ public sealed class DadRosterCatalogService
         bool includeHidden = false,
         bool includeIgnored = false,
         bool includeNeedsUpdate = false)
+        => BuildPlannerRosterSnapshot(pool, includeHidden, includeIgnored, includeNeedsUpdate).CuratedPool;
+
+    public DadPlannerRosterSnapshot BuildPlannerRosterSnapshot(
+        DadCharacterPool pool,
+        bool includeHidden = false,
+        bool includeIgnored = false,
+        bool includeNeedsUpdate = false)
     {
-        var plan = new DadRosterRefreshPlan
-        {
-            IncludeHidden = true,
-            IncludeIgnored = true,
-            StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
-        };
-        var catalog = RefreshCatalog(pool, plan);
+        var catalog = BuildPlannerPreviewCatalog(pool);
 
         var filteredCharacters = catalog.Characters
             .Where(static character => !character.AccountKey.IsEmpty)
@@ -194,8 +199,40 @@ public sealed class DadRosterCatalogService
         };
 
         curated.LastSummary = $"{curated.Characters.Count} active roster row(s) | {catalog.Summary}";
-        return curated;
+        return new DadPlannerRosterSnapshot
+        {
+            CuratedPool = curated,
+            AccountOptions = catalog.Accounts
+                .Select(static account => account.Clone())
+                .ToList(),
+        };
     }
+
+    public DadAccountRosterCatalog BuildPlannerPreviewCatalog(DadCharacterPool pool)
+    {
+        var plan = new DadRosterRefreshPlan
+        {
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
+        };
+
+        var catalogs = new List<DadAccountRosterCatalog>();
+        var cachedCatalog = currentCatalog.Clone();
+        if (cachedCatalog.Characters.Count > 0 || cachedCatalog.Accounts.Count > 0)
+            catalogs.Add(cachedCatalog);
+        else
+            catalogs.Add(BuildKnownRosterCatalog());
+
+        var runtimeCatalog = BuildRuntimeOverlayCatalog(pool);
+        if (runtimeCatalog.Characters.Count > 0 || runtimeCatalog.Accounts.Count > 0)
+            catalogs.Add(runtimeCatalog);
+
+        return MergeCatalogs(catalogs, plan);
+    }
+
+    public IReadOnlyList<DadRosterAccountOption> BuildPlannerAccountOptions(DadCharacterPool pool)
+        => BuildPlannerRosterSnapshot(pool).AccountOptions;
 
     public DadRosterVisibility ResolveVisibility(DadCharacterKey characterKey, DadAccountKey accountKey)
     {
@@ -1161,6 +1198,78 @@ public sealed class DadRosterCatalogService
         return catalog;
     }
 
+    private DadAccountRosterCatalog BuildRuntimeOverlayCatalog(DadCharacterPool pool)
+    {
+        var catalog = new DadAccountRosterCatalog
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            SourceClientInstanceId = presenceService.ClientInstanceId,
+            SourceWorkerSessionId = presenceService.WorkerSessionId,
+            IsFullRosterAvailable = false,
+            SourceDiagnostics = new DadRosterSourceDiagnostics
+            {
+                LocalAccountKey = GetLocalClientAccountKey().Value,
+            },
+        };
+
+        var localAccountKey = GetLocalClientAccountKey();
+        var localAccountAlias = GetLocalClientAccountAlias();
+        foreach (var acquired in pool.Characters)
+        {
+            var rosterCharacter = FromAcquiredCharacter(acquired);
+            if (rosterCharacter.CharacterKey.IsEmpty && rosterCharacter.ContentId == 0)
+                continue;
+
+            if (acquired.Source == DadCharacterSource.LocalRuntime)
+            {
+                catalog.SourceDiagnostics.LocalRuntimeRows++;
+                rosterCharacter.SourceClientInstanceId = presenceService.ClientInstanceId;
+                rosterCharacter.SourceWorkerSessionId = presenceService.WorkerSessionId;
+                if (rosterCharacter.AccountKey.IsEmpty)
+                    StampCharacterAccount(rosterCharacter, localAccountKey, localAccountAlias);
+            }
+            else if (acquired.Source == DadCharacterSource.PeerRuntime)
+            {
+                StampPeerRuntimeSource(rosterCharacter, acquired, pool.PeerTransport.LastResponses);
+            }
+
+            UpsertRosterCharacter(catalog.Characters, rosterCharacter);
+        }
+
+        catalog.SourceDiagnostics.FinalLocalRows = catalog.Characters.Count;
+        catalog.Accounts = BuildLocalAccountDirectory(catalog.Characters, pool.PeerTransport.KnownParticipants).ToList();
+        catalog.Summary = BuildCatalogSummary(catalog);
+        return catalog;
+    }
+
+    private static void StampPeerRuntimeSource(
+        DadRosterCharacter rosterCharacter,
+        DadAcquiredCharacter acquired,
+        IReadOnlyList<DadPeerSnapshotResponse> peerResponses)
+    {
+        var response = peerResponses.FirstOrDefault(candidate =>
+            DadRosterIdentity.SameCharacter(
+                new DadCharacterKey(acquired.CharacterKey),
+                acquired.ContentId,
+                new DadCharacterKey(candidate.Character.CharacterKey),
+                candidate.Character.ContentId) ||
+            DadRosterIdentity.SameCharacter(
+                new DadCharacterKey(acquired.CharacterKey),
+                acquired.ContentId,
+                candidate.Participant.ActiveCharacterKey,
+                candidate.Participant.Character.ContentId));
+        if (response == null)
+            return;
+
+        var participant = response.Participant;
+        rosterCharacter.SourceClientInstanceId = string.IsNullOrWhiteSpace(response.ClientInstanceId)
+            ? participant.ClientInstanceId
+            : response.ClientInstanceId;
+        rosterCharacter.SourceWorkerSessionId = participant.WorkerSessionId;
+        if (rosterCharacter.AccountKey.IsEmpty && !participant.ManagedAccountKey.IsEmpty)
+            StampCharacterAccount(rosterCharacter, participant.ManagedAccountKey, participant.ManagedAccountAlias);
+    }
+
     private IReadOnlyList<DadRosterAccountOption> BuildMergedAccountDirectory(
         IReadOnlyList<DadAccountRosterCatalog> catalogs,
         IReadOnlyList<DadRosterCharacter> characters)
@@ -1793,4 +1902,10 @@ public sealed class DadRosterCatalogService
         var stale = catalog.Characters.Count(static character => character.IsStale);
         return $"{active} active, {hidden} hidden, {ignored} ignored, {needsUpdate} need update, {stale} stale.";
     }
+}
+
+public sealed class DadPlannerRosterSnapshot
+{
+    public DadCharacterPool CuratedPool { get; init; } = new();
+    public IReadOnlyList<DadRosterAccountOption> AccountOptions { get; init; } = [];
 }

@@ -39,6 +39,61 @@ public sealed class DadSchedulerService
 
     public DadSchedulerPresetState CurrentState => currentState.Clone();
 
+    internal DadSchedulerUiRevision GetPlannerUiRevision()
+    {
+        var schedulerHash = new HashCode();
+        schedulerHash.Add(currentState.SchedulerRunId, StringComparer.Ordinal);
+        schedulerHash.Add(currentState.JobId, StringComparer.Ordinal);
+        schedulerHash.Add(currentState.Phase);
+        schedulerHash.Add(currentState.UpdatedAtUtc.Ticks);
+        schedulerHash.Add(currentState.CompletedAtUtc?.Ticks ?? 0);
+        schedulerHash.Add(currentState.PlannerStarted);
+        schedulerHash.Add(currentState.Slots.Count);
+        foreach (var slot in currentState.Slots)
+        {
+            schedulerHash.Add(slot.SlotId, StringComparer.Ordinal);
+            schedulerHash.Add(slot.WakePolicy);
+            schedulerHash.Add(slot.LaunchStarted);
+            schedulerHash.Add(slot.LoadCommandSentUtc?.Ticks ?? 0);
+            schedulerHash.Add(slot.IsOnline);
+            schedulerHash.Add(slot.CorrectCharacter);
+            schedulerHash.Add(slot.Ready);
+            schedulerHash.Add(slot.BlockedReason, StringComparer.Ordinal);
+        }
+
+        schedulerHash.Add(configuration.SchedulerQueue?.Count ?? 0);
+        foreach (var job in configuration.SchedulerQueue ?? [])
+        {
+            schedulerHash.Add(job.JobId, StringComparer.Ordinal);
+            schedulerHash.Add(job.JobType);
+            schedulerHash.Add(job.GroupId, StringComparer.Ordinal);
+            schedulerHash.Add(job.Enabled);
+            schedulerHash.Add(job.DryRun);
+            schedulerHash.Add(job.NextEligibleTimeUtc?.Ticks ?? 0);
+            schedulerHash.Add(job.Priority);
+            schedulerHash.Add(job.StatusSummary, StringComparer.Ordinal);
+            schedulerHash.Add(job.BlockedReason, StringComparer.Ordinal);
+        }
+
+        var launchProfilesHash = new HashCode();
+        launchProfilesHash.Add(configuration.LaunchProfiles?.Count ?? 0);
+        foreach (var profile in configuration.LaunchProfiles ?? [])
+        {
+            launchProfilesHash.Add(profile.ProfileId, StringComparer.Ordinal);
+            launchProfilesHash.Add(profile.DisplayName, StringComparer.Ordinal);
+            launchProfilesHash.Add(profile.BatchPath, StringComparer.Ordinal);
+            launchProfilesHash.Add(profile.AccountKey.Value, StringComparer.Ordinal);
+            launchProfilesHash.Add(profile.Enabled);
+            launchProfilesHash.Add(profile.AllowAutoStart);
+            launchProfilesHash.Add(profile.TimeoutSeconds);
+            launchProfilesHash.Add(profile.DryRun);
+            foreach (var characterKey in profile.ExpectedCharacterKeys ?? [])
+                launchProfilesHash.Add(characterKey.Value, StringComparer.Ordinal);
+        }
+
+        return new DadSchedulerUiRevision(schedulerHash.ToHashCode(), launchProfilesHash.ToHashCode());
+    }
+
     public DadSchedulerQueueSnapshot GetQueueSnapshot()
     {
         NormalizeQueue();
@@ -1763,3 +1818,5 @@ public sealed class DadSchedulerService
         }
     }
 }
+
+internal readonly record struct DadSchedulerUiRevision(int SchedulerToken, int LaunchProfilesToken);

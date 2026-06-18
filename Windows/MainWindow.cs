@@ -19,6 +19,9 @@ public sealed class MainWindow : Window, IDisposable
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string plannerDutySearch = string.Empty;
+    private DadPlannerActivityMode? cachedPlannerDutySearchMode;
+    private string cachedPlannerDutySearchText = string.Empty;
+    private IReadOnlyList<DadPlannerDutyOption> cachedPlannerDutySearchResults = [];
     private string plannerGroupNameBuffer = string.Empty;
     private string pendingDeletePlannerGroupId = string.Empty;
     private string pendingDeleteAccountId = string.Empty;
@@ -842,16 +845,16 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawCrewPresetSection(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
-        var presetPool = plugin.RosterCatalogService.BuildCuratedPool(characterPool);
-        var plannerPreview = plugin.BuildPlannerPreview();
-        var requestPreview = plugin.BuildPlannerRunRequestPreview();
+        var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
+        var plannerPreview = plannerSnapshot.PlannerPreview;
+        var requestPreview = plannerSnapshot.RequestPreview;
         var plannerLocked = IsPlannerLocked(runState);
 
         DrawSectionHeader("Crew Presets", "Saved presets use Active roster rows by default.");
         DrawMutedNotice("Preset and scheduler pickers use assigned Active roster rows only.");
 
         ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerGroupControls(presetPool, plugin.PlannerOptions, plannerPreview, plannerLocked, debugUi: true);
+        DrawPlannerGroupControls(plannerSnapshot, plugin.PlannerOptions, plannerPreview, plannerLocked, debugUi: true);
         ImGui.EndDisabled();
 
         var selectedGroup = plugin.GetSelectedPlannerGroup();
@@ -2379,9 +2382,10 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         var plannerOptions = plugin.PlannerOptions;
-        var requestPreview = plugin.BuildPlannerRunRequestPreview();
+        var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
+        var requestPreview = plannerSnapshot.RequestPreview;
         var plannerPreview = requestPreview.PlannerPreview;
-        var plannerPool = plugin.BuildPlannerPool();
+        var plannerPool = plannerSnapshot.CuratedPool;
         var plannerLocked = IsPlannerLocked(runState);
         var debugUi = plugin.Configuration.DebugUiEnabled;
 
@@ -2400,7 +2404,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
             ImGui.BeginDisabled(plannerLocked);
-            DrawPlannerLanePanel(plannerPool, plannerOptions, requestPreview, runState, debugUi);
+            DrawPlannerLanePanel(plannerSnapshot, plannerOptions, runState, debugUi);
             ImGui.EndDisabled();
 
             ImGui.TableNextColumn();
@@ -2410,19 +2414,18 @@ public sealed class MainWindow : Window, IDisposable
             DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
 
         DrawPlannerLaneSummarySection(plannerPreview, requestPreview, runState, debugUi);
-        DrawPlannerActionStrip(requestPreview, runState, plannerLocked);
-        DrawPlannerConfigSection(plannerPool, plannerOptions, plannerPreview, requestPreview, plannerLocked, debugUi);
+        DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked);
+        DrawPlannerConfigSection(plannerSnapshot, plannerOptions, plannerPreview, requestPreview, plannerLocked, debugUi);
         DrawPlannerRosterSummarySection(plannerPreview, runState, debugUi);
         if (debugUi)
-            DrawPlannerDetailsSection(plannerOptions, plannerPreview, requestPreview, runState, plannerLocked);
+            DrawPlannerDetailsSection(plannerSnapshot, plannerOptions, plannerPreview, requestPreview, runState, plannerLocked);
         if (debugUi)
             ImGui.EndTable();
     }
 
     private void DrawPlannerLanePanel(
-        DadCharacterPool characterPool,
+        DadPlannerUiSnapshot plannerSnapshot,
         DadPresetPlannerOptions plannerOptions,
-        DadPlannerRunRequestPreview requestPreview,
         DadVisibleRunState runState,
         bool debugUi)
     {
@@ -2442,7 +2445,11 @@ public sealed class MainWindow : Window, IDisposable
         foreach (var family in plugin.PresetProviderService.GetPlannerRunFamilies())
         {
             var lane = ResolveFamilyPreviewLane(plannerOptions, family);
-            var laneCard = BuildPlannerLaneCard(characterPool, plannerOptions, requestPreview, runState, lane);
+            var lanePreview = plannerSnapshot.GetLanePreview(lane.ActivityMode);
+            if (lanePreview == null)
+                continue;
+
+            var laneCard = BuildPlannerLaneCard(lanePreview, runState);
             var accent = ParseHexColor(lane.AccentColorHex, laneCard.IsSelected ? 0.95f : 0.62f);
             var hovered = ParseHexColor(lane.AccentColorHex, 0.82f);
             var active = ParseHexColor(lane.AccentColorHex, 1f);
@@ -2484,7 +2491,7 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private void DrawPlannerConfigSection(
-        DadCharacterPool characterPool,
+        DadPlannerUiSnapshot plannerSnapshot,
         DadPresetPlannerOptions plannerOptions,
         DadActivityPreset plannerPreview,
         DadPlannerRunRequestPreview requestPreview,
@@ -2493,7 +2500,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         DrawSectionHeader("Plan", "Editable planner inputs plus lane-specific config. Read-only lanes stay explicit.");
         ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerGroupControls(characterPool, plannerOptions, plannerPreview, plannerLocked, debugUi);
+        DrawPlannerGroupControls(plannerSnapshot, plannerOptions, plannerPreview, plannerLocked, debugUi);
         ImGui.Spacing();
         DrawPlannerRunFamilySelector(plannerOptions);
         ImGui.SameLine();
@@ -2503,7 +2510,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             DrawPlannerOperatorModeSelector(plannerOptions);
             ImGui.SameLine();
-            DrawPlannerAccountFilterSelector(characterPool, plannerOptions);
+            DrawPlannerAccountFilterSelector(plannerSnapshot.AccountOptions, plannerOptions, plannerPreview.AccountFilterSummary);
 
             DrawPlannerTransportOwnerSelector(plannerOptions);
             ImGui.SameLine();
@@ -2537,7 +2544,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.Spacing();
         }
 
-        DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, debugUi);
+        DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi);
         ImGui.Spacing();
         DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
         ImGui.EndDisabled();
@@ -2598,6 +2605,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPlannerActionStrip(
         DadPlannerRunRequestPreview requestPreview,
+        DadSchedulerPreview schedulerPreview,
         DadVisibleRunState runState,
         bool plannerLocked)
     {
@@ -2605,7 +2613,6 @@ public sealed class MainWindow : Window, IDisposable
         var activeRun = GetActiveRun(runState);
         var blockers = BuildPlannerBlockerList(requestPreview);
         var firstBlocker = blockers.FirstOrDefault() ?? "(none)";
-        var schedulerPreview = plugin.BuildSchedulerPreview();
         var disabledReason = plannerLocked
             ? "A Dad run is active. Cancel it or wait for the run to reach a final state before starting another planner request."
             : requestPreview.CanStart
@@ -2737,6 +2744,7 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private void DrawPlannerDetailsSection(
+        DadPlannerUiSnapshot plannerSnapshot,
         DadPresetPlannerOptions plannerOptions,
         DadActivityPreset plannerPreview,
         DadPlannerRunRequestPreview requestPreview,
@@ -2744,6 +2752,18 @@ public sealed class MainWindow : Window, IDisposable
         bool plannerLocked)
     {
         DrawSectionHeader("Details", "Collapsed validation, JSON, runtime, roster tables, and debug actions.");
+
+        if (ImGui.TreeNode("Planner cache"))
+        {
+            var cacheStats = plugin.GetPlannerUiCacheStats();
+            DrawStatusRow("Generation", cacheStats.Generation.ToString(CultureInfo.InvariantCulture));
+            DrawStatusRow("Preview cache", $"{cacheStats.HitCount} hit / {cacheStats.MissCount} miss");
+            DrawStatusRow("Scheduler cache", $"{cacheStats.SchedulerHitCount} hit / {cacheStats.SchedulerMissCount} miss");
+            DrawStatusRow("Last rebuild", $"{cacheStats.LastRebuildMilliseconds:F2} ms | {cacheStats.LastRebuildReason}");
+            DrawStatusRow("Max rebuild", $"{cacheStats.MaxRebuildMilliseconds:F2} ms");
+            DrawStatusRow("Snapshot", $"{plannerSnapshot.RebuiltAtUtc:O} | generation {plannerSnapshot.Generation}");
+            ImGui.TreePop();
+        }
 
         if (ImGui.TreeNode("Validation, blockers, and filter counts"))
         {
@@ -2917,12 +2937,12 @@ public sealed class MainWindow : Window, IDisposable
     {
         DrawSectionHeader("Export And Test Controls", "Developer/operator diagnostics only. Start stays in the action strip.");
         if (ImGui.SmallButton("Planner to chat"))
-            plugin.PrintStatus(plugin.BuildPlannerSummary());
+            plugin.PrintStatus(requestPreview.PlannerPreview.PlannerSummary);
 
         ImGui.SameLine();
         if (ImGui.SmallButton("Copy planner summary"))
         {
-            ImGui.SetClipboardText(plugin.BuildPlannerSummary());
+            ImGui.SetClipboardText(requestPreview.PlannerPreview.PlannerSummary);
             plugin.PrintStatus("Copied dad planner summary.");
         }
 
@@ -2939,7 +2959,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.BeginDisabled(requestPreview.Request == null);
         if (ImGui.SmallButton("Copy request JSON"))
         {
-            ImGui.SetClipboardText(plugin.BuildPlannerRequestJson());
+            ImGui.SetClipboardText(requestPreview.RequestJson);
             plugin.PrintStatus("Copied dad planner request JSON.");
         }
         ImGui.EndDisabled();
@@ -2954,22 +2974,11 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private PlannerLaneCardView BuildPlannerLaneCard(
-        DadCharacterPool characterPool,
-        DadPresetPlannerOptions plannerOptions,
-        DadPlannerRunRequestPreview selectedRequestPreview,
-        DadVisibleRunState runState,
-        DadPlannerLaneDefinition lane)
+        DadPlannerLanePreviewSnapshot lanePreview,
+        DadVisibleRunState runState)
     {
-        var selected = IsSelectedPlannerLane(plannerOptions.ActivityMode, lane.ActivityMode);
-        var laneOptions = selected
-            ? plannerOptions
-            : ClonePlannerOptionsForLane(plannerOptions, lane);
-        var lanePreview = selected
-            ? selectedRequestPreview.PlannerPreview
-            : plugin.PresetProviderService.BuildPlannerPreview(characterPool, laneOptions);
-        var laneRequestPreview = selected
-            ? selectedRequestPreview
-            : plugin.BuildPlannerRunRequestPreview(laneOptions, lanePreview);
+        var lane = lanePreview.Lane;
+        var laneRequestPreview = lanePreview.RequestPreview;
         var blockers = laneRequestPreview.ContractPreview.Blockers;
         var laneRun = ResolveLaneRuntime(runState, lane);
         var startabilityLabel = FormatText(laneRequestPreview.ContractPreview.Startability, laneRequestPreview.CanStart ? "Startable" : "Blocked");
@@ -2978,7 +2987,7 @@ public sealed class MainWindow : Window, IDisposable
 
         return new PlannerLaneCardView(
             lane,
-            selected,
+            lanePreview.IsSelected,
             lane.MaturityLabel,
             expectedPartySize <= 0 ? "?" : expectedPartySize.ToString(CultureInfo.InvariantCulture),
             startabilityLabel,
@@ -3492,11 +3501,14 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Policy preview", requestPreview.StopPolicy.Describe());
     }
 
-    private void DrawPlannerLaneInputs(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane, bool debugUi)
+    private void DrawPlannerLaneInputs(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerLaneDefinition lane,
+        DadPlannerDutyOption? selectedDuty,
+        bool debugUi)
     {
         if (lane.RequiresDutySelector)
         {
-            var selectedDuty = plugin.PresetProviderService.GetPlannerSelectedDuty(plannerOptions);
             var dutyCompatible = selectedDuty == null || IsPlannerDutyCompatible(selectedDuty, lane);
             var dutyLabel = selectedDuty == null
                 ? "Select typed duty..."
@@ -3532,7 +3544,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.Separator();
                 if (ImGui.BeginChild($"dad-duty-results-{lane.ActivityMode}", new Vector2(popupContentWidth, 220f), true))
                 {
-                    var dutyOptions = plugin.PresetProviderService.SearchPlannerDutyOptions(lane.ActivityMode, plannerDutySearch, 96);
+                    var dutyOptions = GetCachedPlannerDutySearchResults(lane.ActivityMode);
                     if (dutyOptions.Count == 0)
                     {
                         ImGui.TextDisabled("No duties matched current search.");
@@ -3718,6 +3730,20 @@ public sealed class MainWindow : Window, IDisposable
                 DrawStatusRow("Astrope policy", "Timed farming window stays explicit in preview JSON even before live executor phase.");
             }
         }
+    }
+
+    private IReadOnlyList<DadPlannerDutyOption> GetCachedPlannerDutySearchResults(DadPlannerActivityMode activityMode)
+    {
+        if (cachedPlannerDutySearchMode == activityMode &&
+            string.Equals(cachedPlannerDutySearchText, plannerDutySearch, StringComparison.Ordinal))
+        {
+            return cachedPlannerDutySearchResults;
+        }
+
+        cachedPlannerDutySearchMode = activityMode;
+        cachedPlannerDutySearchText = plannerDutySearch;
+        cachedPlannerDutySearchResults = plugin.PresetProviderService.SearchPlannerDutyOptions(activityMode, plannerDutySearch, 96);
+        return cachedPlannerDutySearchResults;
     }
 
     private static float ResolvePlannerDutyPopupWidth()
@@ -4430,7 +4456,7 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private void DrawPlannerGroupControls(
-        DadCharacterPool characterPool,
+        DadPlannerUiSnapshot plannerSnapshot,
         DadPresetPlannerOptions plannerOptions,
         DadActivityPreset plannerPreview,
         bool plannerLocked,
@@ -4446,7 +4472,7 @@ public sealed class MainWindow : Window, IDisposable
             if (autoSelected)
                 ImGui.SetItemDefaultFocus();
 
-            foreach (var group in plugin.PlannerGroups.OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase))
+            foreach (var group in plannerSnapshot.PlannerGroups)
             {
                 var selected = selectedGroup != null &&
                                string.Equals(group.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase);
@@ -4535,7 +4561,7 @@ public sealed class MainWindow : Window, IDisposable
             plugin.TouchPlannerGroup(selectedGroup);
         }
 
-        DrawPlannerGroupSlotEditor(plugin.BuildPlannerPool(), selectedGroup);
+        DrawPlannerGroupSlotEditor(plannerSnapshot, selectedGroup);
     }
 
     private void DrawPlannerGroupScheduleControls(DadPlannerGroup group)
@@ -4644,7 +4670,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndPopup();
     }
 
-    private void DrawPlannerGroupSlotEditor(DadCharacterPool characterPool, DadPlannerGroup group)
+    private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)
     {
         if (!ImGui.BeginTable("dad-planner-group-slots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
@@ -4676,16 +4702,16 @@ public sealed class MainWindow : Window, IDisposable
             DrawPlannerGroupRoleCombo(group, slot, index);
 
             ImGui.TableNextColumn();
-            DrawPlannerGroupAccountCombo(characterPool, group, slot, index);
+            DrawPlannerGroupAccountCombo(plannerSnapshot.CuratedPool, plannerSnapshot.AccountOptions, group, slot, index);
 
             ImGui.TableNextColumn();
-            DrawPlannerGroupCharacterCombo(characterPool, group, slot, index);
+            DrawPlannerGroupCharacterCombo(plannerSnapshot, group, slot, index);
 
             ImGui.TableNextColumn();
             DrawPlannerGroupWakePolicyCombo(group, slot, index);
 
             ImGui.TableNextColumn();
-            DrawPlannerGroupLaunchProfileCombo(group, slot, index);
+            DrawPlannerGroupLaunchProfileCombo(plannerSnapshot.LaunchProfiles, group, slot, index);
 
             ImGui.TableNextColumn();
             var allowSubstitution = slot.AllowSubstitution;
@@ -4728,9 +4754,12 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndCombo();
     }
 
-    private void DrawPlannerGroupLaunchProfileCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
+    private void DrawPlannerGroupLaunchProfileCombo(
+        IReadOnlyList<DadLaunchProfile> profiles,
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index)
     {
-        var profiles = plugin.SchedulerService.GetLaunchProfiles();
         var selectedProfile = profiles.FirstOrDefault(profile =>
             string.Equals(profile.ProfileId, slot.LaunchProfileId, StringComparison.OrdinalIgnoreCase));
         var preview = selectedProfile?.DisplayName ?? "Auto";
@@ -4744,7 +4773,7 @@ public sealed class MainWindow : Window, IDisposable
             plugin.TouchPlannerGroup(group);
         }
 
-        foreach (var profile in profiles.OrderBy(static profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase))
+        foreach (var profile in profiles)
         {
             var selected = string.Equals(profile.ProfileId, slot.LaunchProfileId, StringComparison.OrdinalIgnoreCase);
             var label = string.IsNullOrWhiteSpace(profile.AccountKey.Value)
@@ -4785,11 +4814,11 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPlannerGroupAccountCombo(
         DadCharacterPool characterPool,
+        IReadOnlyList<DadRosterAccountOption> accountOptions,
         DadPlannerGroup group,
         DadPlannerGroupSlot slot,
         int index)
     {
-        var accountOptions = plugin.PresetProviderService.GetPlannerAccountOptions(characterPool);
         var selectedAccount = accountOptions.FirstOrDefault(option =>
             string.Equals(option.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
         var preview = slot.RequiredAccountKey.IsEmpty
@@ -4824,7 +4853,7 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private void DrawPlannerGroupCharacterCombo(
-        DadCharacterPool characterPool,
+        DadPlannerUiSnapshot plannerSnapshot,
         DadPlannerGroup group,
         DadPlannerGroupSlot slot,
         int index)
@@ -4845,10 +4874,7 @@ public sealed class MainWindow : Window, IDisposable
                 plugin.TouchPlannerGroup(group);
             }
 
-            foreach (var character in characterPool.Characters
-                         .Where(character => MatchesPlannerGroupAccount(character, slot.RequiredAccountKey))
-                         .Where(static character => character.RosterVisibility == DadRosterVisibility.Active && !character.NeedsRosterUpdate)
-                         .OrderBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase))
+            foreach (var character in plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey))
             {
                 var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
                                MatchesPlannerGroupAccount(character, slot.RequiredAccountKey);
@@ -4975,10 +5001,11 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndCombo();
     }
 
-    private void DrawPlannerAccountFilterSelector(DadCharacterPool characterPool, DadPresetPlannerOptions plannerOptions)
+    private void DrawPlannerAccountFilterSelector(
+        IReadOnlyList<DadRosterAccountOption> accountOptions,
+        DadPresetPlannerOptions plannerOptions,
+        string preview)
     {
-        var accountOptions = plugin.PresetProviderService.GetPlannerAccountOptions(characterPool);
-        var preview = plugin.PresetProviderService.GetPlannerAccountFilterLabel(characterPool, plannerOptions);
         if (!ImGui.BeginCombo("Account filter", preview))
             return;
 
