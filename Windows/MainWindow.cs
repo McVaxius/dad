@@ -770,24 +770,39 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetNextItemWidth(-1f);
             if (ImGui.InputText($"##launch-name-{profile.ProfileId}", ref name, 128))
             {
+                var committedSignature = BuildLaunchProfileEditableSignature(profile);
                 profile.DisplayName = name;
-                changed = true;
+                plugin.QueueDebouncedLaunchProfileUpdate(
+                    profile,
+                    committedSignature,
+                    BuildLaunchProfileEditableSignature,
+                    status => profileSaveStatus = status);
             }
             ImGui.TableNextColumn();
             var accountKey = profile.AccountKey.Value;
             ImGui.SetNextItemWidth(-1f);
             if (ImGui.InputText($"##launch-account-{profile.ProfileId}", ref accountKey, 128))
             {
+                var committedSignature = BuildLaunchProfileEditableSignature(profile);
                 profile.AccountKey = new DadAccountKey(accountKey);
-                changed = true;
+                plugin.QueueDebouncedLaunchProfileUpdate(
+                    profile,
+                    committedSignature,
+                    BuildLaunchProfileEditableSignature,
+                    status => profileSaveStatus = status);
             }
             ImGui.TableNextColumn();
             var timeout = profile.TimeoutSeconds;
             ImGui.SetNextItemWidth(-1f);
             if (ImGui.InputInt($"##launch-timeout-{profile.ProfileId}", ref timeout))
             {
+                var committedSignature = BuildLaunchProfileEditableSignature(profile);
                 profile.TimeoutSeconds = Math.Clamp(timeout, 30, 1800);
-                changed = true;
+                plugin.QueueDebouncedLaunchProfileUpdate(
+                    profile,
+                    committedSignature,
+                    BuildLaunchProfileEditableSignature,
+                    status => profileSaveStatus = status);
             }
             ImGui.TableNextColumn();
             ImGui.TextWrapped($"{profile.BatchPath}\nExpected: {string.Join(", ", profile.ExpectedCharacterKeys.Select(static key => key.Value))}");
@@ -1730,20 +1745,10 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextColumn();
             if (account != null)
             {
-                var alias = account.AccountAlias;
+                var alias = plugin.GetAccountAliasEditValue(accountKey, account.AccountAlias);
                 ImGui.SetNextItemWidth(-1f);
                 if (ImGui.InputText($"##dad-roster-account-alias-{accountId}", ref alias, 96))
-                {
-                    if (plugin.ConfigManager.UpdateAccountAlias(accountKey, alias))
-                    {
-                        plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
-                        {
-                            IncludeHidden = true,
-                            IncludeIgnored = true,
-                            StaleAfterHours = plugin.Configuration.RosterCatalog.StaleAfterHours,
-                        });
-                    }
-                }
+                    plugin.QueueDebouncedAccountAliasEdit(accountKey, account.AccountAlias, alias);
             }
             else
             {
@@ -3805,15 +3810,23 @@ public sealed class MainWindow : Window, IDisposable
             var targetLevel = stopPolicy.TargetLevel;
             if (ImGui.InputInt("Target level", ref targetLevel))
             {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
                 stopPolicy.TargetLevel = Math.Clamp(targetLevel, 1, 999);
-                plugin.SavePlannerOptions();
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
             }
 
             var safetyCap = stopPolicy.SafetyCap;
             if (ImGui.InputInt("Safety cap", ref safetyCap))
             {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
                 stopPolicy.SafetyCap = Math.Clamp(safetyCap, 1, 200);
-                plugin.SavePlannerOptions();
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
             }
         }
         else
@@ -3821,8 +3834,12 @@ public sealed class MainWindow : Window, IDisposable
             var afterRuns = stopPolicy.AfterRuns;
             if (ImGui.InputInt("Run count", ref afterRuns))
             {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
                 stopPolicy.AfterRuns = Math.Clamp(afterRuns, 1, 200);
-                plugin.SavePlannerOptions();
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
             }
         }
 
@@ -3935,8 +3952,12 @@ public sealed class MainWindow : Window, IDisposable
                     : plannerOptions.DutyExpectedPartySize);
                 if (ImGui.InputInt("Expected party size", ref partySize))
                 {
+                    var committedSignature = plannerOptions.DutyExpectedPartySize.ToString(CultureInfo.InvariantCulture);
                     plannerOptions.DutyExpectedPartySize = Math.Clamp(partySize, 2, 48);
-                    plugin.SavePlannerOptions();
+                    plugin.QueueDebouncedPlannerOptionsSave(
+                        "duty-party-size",
+                        committedSignature,
+                        () => plannerOptions.DutyExpectedPartySize.ToString(CultureInfo.InvariantCulture));
                 }
 
                 if (debugUi)
@@ -3986,8 +4007,12 @@ public sealed class MainWindow : Window, IDisposable
             var preset = plannerOptions.MogtomePreset;
             if (ImGui.InputText("MOGTOME preset", ref preset, 128))
             {
+                var committedSignature = plannerOptions.MogtomePreset;
                 plannerOptions.MogtomePreset = preset;
-                plugin.SavePlannerOptions();
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "mogtome-preset",
+                    committedSignature,
+                    () => plannerOptions.MogtomePreset);
             }
 
             var policies = plugin.PresetProviderService.GetMogtomeDutyPolicies().ToArray();
@@ -4262,15 +4287,23 @@ public sealed class MainWindow : Window, IDisposable
         var dutyId = unchecked((int)Math.Min(plannerOptions.DutyContentFinderConditionId, int.MaxValue));
         if (ImGui.InputInt("Content finder condition id", ref dutyId))
         {
+            var committedSignature = BuildPlannerRawDutyFallbackSignature(plannerOptions);
             plannerOptions.DutyContentFinderConditionId = (uint)Math.Clamp(dutyId, 0, int.MaxValue);
-            plugin.SavePlannerOptions();
+            plugin.QueueDebouncedPlannerOptionsSave(
+                "raw-duty-fallback",
+                committedSignature,
+                () => BuildPlannerRawDutyFallbackSignature(plannerOptions));
         }
 
         var dutyName = plannerOptions.DutyDisplayName;
         if (ImGui.InputText("Duty display name", ref dutyName, 128))
         {
+            var committedSignature = BuildPlannerRawDutyFallbackSignature(plannerOptions);
             plannerOptions.DutyDisplayName = dutyName;
-            plugin.SavePlannerOptions();
+            plugin.QueueDebouncedPlannerOptionsSave(
+                "raw-duty-fallback",
+                committedSignature,
+                () => BuildPlannerRawDutyFallbackSignature(plannerOptions));
         }
 
         ImGui.EndDisabled();
@@ -4906,32 +4939,52 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetNextItemWidth(100f);
         if (ImGui.InputInt("Priority", ref priority))
         {
+            var committedSignature = BuildPlannerGroupScheduleSignature(group);
             group.SchedulePriority = Math.Clamp(priority, -100, 100);
-            plugin.TouchPlannerGroup(group);
+            plugin.QueueDebouncedPlannerGroupTouch(
+                group,
+                "schedule",
+                committedSignature,
+                BuildPlannerGroupScheduleSignature);
         }
 
         var cadence = group.ScheduleCadenceHours <= 0 ? 18 : group.ScheduleCadenceHours;
         ImGui.SetNextItemWidth(120f);
         if (ImGui.InputInt("Cadence (h)", ref cadence))
         {
+            var committedSignature = BuildPlannerGroupScheduleSignature(group);
             group.ScheduleCadenceHours = Math.Clamp(cadence, 0, 24 * 30);
-            plugin.TouchPlannerGroup(group);
+            plugin.QueueDebouncedPlannerGroupTouch(
+                group,
+                "schedule",
+                committedSignature,
+                BuildPlannerGroupScheduleSignature);
         }
 
         var requester = group.ScheduleRequester;
         ImGui.SetNextItemWidth(MathF.Min(220f, ImGui.GetContentRegionAvail().X));
         if (ImGui.InputText("Requester", ref requester, 96))
         {
+            var committedSignature = BuildPlannerGroupScheduleSignature(group);
             group.ScheduleRequester = requester;
-            plugin.TouchPlannerGroup(group);
+            plugin.QueueDebouncedPlannerGroupTouch(
+                group,
+                "schedule",
+                committedSignature,
+                BuildPlannerGroupScheduleSignature);
         }
 
         var mapTemplate = group.MapRunTemplate;
         ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
         if (ImGui.InputText("Map/run template", ref mapTemplate, 160))
         {
+            var committedSignature = BuildPlannerGroupScheduleSignature(group);
             group.MapRunTemplate = mapTemplate;
-            plugin.TouchPlannerGroup(group);
+            plugin.QueueDebouncedPlannerGroupTouch(
+                group,
+                "schedule",
+                committedSignature,
+                BuildPlannerGroupScheduleSignature);
         }
 
         ImGui.SameLine();
@@ -5022,8 +5075,14 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetNextItemWidth(-1f);
             if (ImGui.InputText($"##dad-group-slot-id-{index}", ref slotId, 48))
             {
+                var committedSignature = slot.SlotId;
                 slot.SlotId = slotId;
-                plugin.TouchPlannerGroup(group);
+                plugin.QueueDebouncedPlannerGroupSlotTouch(
+                    group,
+                    slot,
+                    $"slot-id-{index}",
+                    committedSignature,
+                    static currentSlot => currentSlot.SlotId);
             }
 
             ImGui.TableNextColumn();
@@ -5370,6 +5429,18 @@ public sealed class MainWindow : Window, IDisposable
         else
             plannerOptions.IncludedAccountKeys.Add(accountKey);
     }
+
+    private static string BuildLaunchProfileEditableSignature(DadLaunchProfile profile)
+        => $"{profile.DisplayName}\n{profile.AccountKey.Value}\n{profile.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}";
+
+    private static string BuildPlannerStopPolicySignature(DadRunStopPolicy stopPolicy)
+        => $"{stopPolicy.AfterRuns.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.TargetLevel.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.SafetyCap.ToString(CultureInfo.InvariantCulture)}";
+
+    private static string BuildPlannerRawDutyFallbackSignature(DadPresetPlannerOptions plannerOptions)
+        => $"{plannerOptions.DutyContentFinderConditionId.ToString(CultureInfo.InvariantCulture)}\n{plannerOptions.DutyDisplayName}";
+
+    private static string BuildPlannerGroupScheduleSignature(DadPlannerGroup group)
+        => $"{group.SchedulePriority.ToString(CultureInfo.InvariantCulture)}\n{group.ScheduleCadenceHours.ToString(CultureInfo.InvariantCulture)}\n{group.ScheduleRequester}\n{group.MapRunTemplate}";
 
     private static string FormatDutyIpcAndBridgeStatus(
         DadDutyIpcStatus dutyIpc,

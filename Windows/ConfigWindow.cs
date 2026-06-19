@@ -168,17 +168,25 @@ public sealed class ConfigWindow : Window, IDisposable
         var onIcon = configuration.DtrIconEnabled;
         if (ImGui.InputText("DTR enabled glyph", ref onIcon, 8))
         {
+            var committedSignature = BuildDtrGlyphSignature(configuration);
             configuration.DtrIconEnabled = onIcon.Length <= 3 ? onIcon : onIcon[..3];
-            configuration.Save();
-            plugin.UpdateDtrBar();
+            plugin.QueueDebouncedConfigurationSave(
+                "dtr-glyphs",
+                committedSignature,
+                () => BuildDtrGlyphSignature(configuration),
+                plugin.UpdateDtrBar);
         }
 
         var offIcon = configuration.DtrIconDisabled;
         if (ImGui.InputText("DTR disabled glyph", ref offIcon, 8))
         {
+            var committedSignature = BuildDtrGlyphSignature(configuration);
             configuration.DtrIconDisabled = offIcon.Length <= 3 ? offIcon : offIcon[..3];
-            configuration.Save();
-            plugin.UpdateDtrBar();
+            plugin.QueueDebouncedConfigurationSave(
+                "dtr-glyphs",
+                committedSignature,
+                () => BuildDtrGlyphSignature(configuration),
+                plugin.UpdateDtrBar);
         }
 
         ImGui.Separator();
@@ -217,36 +225,56 @@ public sealed class ConfigWindow : Window, IDisposable
         var readyTimeout = configuration.ParticipantReadyTimeoutSeconds;
         if (ImGui.InputInt("Participant ready timeout (s)", ref readyTimeout))
         {
+            var committedSignature = BuildWaitPolicySignature(configuration);
             configuration.ParticipantReadyTimeoutSeconds = Math.Max(30, readyTimeout);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
         }
 
         var assemblyTimeout = configuration.AssemblyTimeoutSeconds;
         if (ImGui.InputInt("Assembly timeout (s)", ref assemblyTimeout))
         {
+            var committedSignature = BuildWaitPolicySignature(configuration);
             configuration.AssemblyTimeoutSeconds = Math.Max(10, assemblyTimeout);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
         }
 
         var staleTimeout = configuration.HeartbeatStaleSeconds;
         if (ImGui.InputInt("Heartbeat stale threshold (s)", ref staleTimeout))
         {
+            var committedSignature = BuildWaitPolicySignature(configuration);
             configuration.HeartbeatStaleSeconds = Math.Max(3, staleTimeout);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
         }
 
         var leaseDuration = configuration.LeaseDurationSeconds;
         if (ImGui.InputInt("Lease duration (s)", ref leaseDuration))
         {
+            var committedSignature = BuildWaitPolicySignature(configuration);
             configuration.LeaseDurationSeconds = Math.Max(5, leaseDuration);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
         }
 
         var cancelAck = configuration.CancelAckTimeoutSeconds;
         if (ImGui.InputInt("Cancel ack timeout (s)", ref cancelAck))
         {
+            var committedSignature = BuildWaitPolicySignature(configuration);
             configuration.CancelAckTimeoutSeconds = Math.Max(2, cancelAck);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
         }
 
         ImGui.Separator();
@@ -294,15 +322,23 @@ public sealed class ConfigWindow : Window, IDisposable
         var commandTemplate = instruction.CommandTemplate;
         if (ImGui.InputText("Command template", ref commandTemplate, 256))
         {
+            var committedSignature = BuildCharacterLoadSignature(instruction);
             instruction.CommandTemplate = commandTemplate;
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "character-load",
+                committedSignature,
+                () => BuildCharacterLoadSignature(instruction));
         }
 
         var loadTimeout = instruction.TimeoutSeconds;
         if (ImGui.InputInt("Load timeout (s)", ref loadTimeout))
         {
+            var committedSignature = BuildCharacterLoadSignature(instruction);
             instruction.TimeoutSeconds = Math.Clamp(loadTimeout, 30, 1800);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "character-load",
+                committedSignature,
+                () => BuildCharacterLoadSignature(instruction));
         }
 
         DrawStatusRow("Placeholders", "{Character}, {CharacterName}, {World}, {Account}");
@@ -314,8 +350,12 @@ public sealed class ConfigWindow : Window, IDisposable
         var staleHours = configuration.RosterCatalog.StaleAfterHours;
         if (ImGui.InputInt("Roster stale after (h)", ref staleHours))
         {
+            var committedSignature = configuration.RosterCatalog.StaleAfterHours.ToString();
             configuration.RosterCatalog.StaleAfterHours = Math.Clamp(staleHours, 1, 24 * 90);
-            configuration.Save();
+            plugin.QueueDebouncedConfigurationSave(
+                "roster-stale-hours",
+                committedSignature,
+                () => configuration.RosterCatalog.StaleAfterHours.ToString());
         }
 
         var showHidden = configuration.RosterCatalog.ShowHiddenInRoster;
@@ -373,20 +413,10 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(account.AccountId);
             ImGui.TableNextColumn();
-            var alias = account.AccountAlias;
+            var alias = plugin.GetAccountAliasEditValue(new DadAccountKey(account.AccountId), account.AccountAlias);
             ImGui.SetNextItemWidth(-1f);
             if (ImGui.InputText($"##dad-account-alias-{account.AccountId}", ref alias, 96))
-            {
-                if (plugin.ConfigManager.UpdateAccountAlias(new DadAccountKey(account.AccountId), alias))
-                {
-                    plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
-                    {
-                        IncludeHidden = true,
-                        IncludeIgnored = true,
-                        StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
-                    });
-                }
-            }
+                plugin.QueueDebouncedAccountAliasEdit(new DadAccountKey(account.AccountId), account.AccountAlias, alias);
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(account.Characters.Count.ToString());
@@ -754,4 +784,13 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private static string FormatText(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value;
+
+    private static string BuildDtrGlyphSignature(Configuration configuration)
+        => $"{configuration.DtrIconEnabled}\n{configuration.DtrIconDisabled}";
+
+    private static string BuildWaitPolicySignature(Configuration configuration)
+        => $"{configuration.ParticipantReadyTimeoutSeconds}\n{configuration.AssemblyTimeoutSeconds}\n{configuration.HeartbeatStaleSeconds}\n{configuration.LeaseDurationSeconds}\n{configuration.CancelAckTimeoutSeconds}";
+
+    private static string BuildCharacterLoadSignature(DadCharacterLoadInstruction instruction)
+        => $"{instruction.CommandTemplate}\n{instruction.TimeoutSeconds}";
 }

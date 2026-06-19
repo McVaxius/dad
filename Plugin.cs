@@ -21,6 +21,7 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan EndpointApplyAuthorityRefreshSuppression = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan PlannerUiCacheSlowRebuildThreshold = TimeSpan.FromMilliseconds(25);
     private static readonly TimeSpan PlannerUiCacheSlowRebuildLogCooldown = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DebouncedUiWriteDelay = TimeSpan.FromSeconds(3);
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -97,6 +98,16 @@ public sealed class Plugin : IDalamudPlugin
     private double plannerUiCacheMaxRebuildMilliseconds;
     private DateTime plannerUiCacheLastRebuiltAtUtc = DateTime.MinValue;
     private string plannerUiCacheLastRebuildReason = "cold";
+    private readonly Dictionary<string, DebouncedUiWrite> debouncedUiWrites = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class DebouncedUiWrite
+    {
+        public DateTime DueAtUtc { get; init; }
+        public Type ValueType { get; init; } = typeof(object);
+        public object? Baseline { get; init; }
+        public Func<bool> Commit { get; init; } = static () => false;
+    }
 
     public Plugin()
     {
@@ -225,6 +236,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         CommandManager.RemoveHandler(PluginInfo.Command);
+        FlushDebouncedUiWrites(force: true);
         WindowSystem.RemoveAllWindows();
         QuestionableBridge.Dispose();
         DutyIpcService.Dispose();
@@ -240,6 +252,274 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleConfigUi() => configWindow.Toggle();
 
     public void PrintStatus(string message) => ChatGui.Print($"[{PluginInfo.DisplayName}] {message}");
+
+    public void QueueDebouncedUiWrite<T>(
+        string key,
+        T committedValue,
+        Func<T> getCurrentValue,
+        Action<T> commitValue,
+        Func<T, T, bool>? areEqual = null)
+    {
+        key = key?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        var valueType = typeof(T);
+        var baseline = debouncedUiWrites.TryGetValue(key, out var existing) && existing.ValueType == valueType
+            ? (T)existing.Baseline!
+            : committedValue;
+        var equals = areEqual ?? EqualityComparer<T>.Default.Equals;
+
+        debouncedUiWrites[key] = new DebouncedUiWrite
+        {
+            DueAtUtc = DateTime.UtcNow.Add(DebouncedUiWriteDelay),
+            ValueType = valueType,
+            Baseline = baseline,
+            Commit = () =>
+            {
+                var current = getCurrentValue();
+                if (equals(baseline, current))
+                    return false;
+
+                commitValue(current);
+                return true;
+            },
+        };
+    }
+
+    public void QueueDebouncedConfigurationSave(
+        string key,
+        string committedSignature,
+        Func<string> currentSignature,
+        Action? afterSave = null)
+    {
+        QueueDebouncedUiWrite(
+            $"config:{key}",
+            committedSignature,
+            currentSignature,
+            _ =>
+            {
+                Configuration.Save();
+                afterSave?.Invoke();
+            },
+            static (left, right) => string.Equals(left, right, StringComparison.Ordinal));
+    }
+
+    public void QueueDebouncedPlannerOptionsSave(
+        string key,
+        string committedSignature,
+        Func<string> currentSignature)
+    {
+        QueueDebouncedUiWrite(
+            $"planner-options:{key}",
+            committedSignature,
+            currentSignature,
+            _ => SavePlannerOptions(),
+            static (left, right) => string.Equals(left, right, StringComparison.Ordinal));
+    }
+
+    public void QueueDebouncedPlannerGroupTouch(
+        DadPlannerGroup group,
+        string key,
+        string committedSignature,
+        Func<DadPlannerGroup, string> currentSignature)
+    {
+        var groupId = group.GroupId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(groupId))
+            return;
+
+        QueueDebouncedUiWrite(
+            $"planner-group:{groupId}:{key}",
+            committedSignature,
+            () =>
+            {
+                var currentGroup = ResolvePlannerGroup(groupId);
+                return currentGroup == null ? committedSignature : currentSignature(currentGroup);
+            },
+            _ =>
+            {
+                var currentGroup = ResolvePlannerGroup(groupId);
+                if (currentGroup != null)
+                    TouchPlannerGroup(currentGroup);
+            },
+            static (left, right) => string.Equals(left, right, StringComparison.Ordinal));
+    }
+
+    public void QueueDebouncedPlannerGroupSlotTouch(
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        string key,
+        string committedSignature,
+        Func<DadPlannerGroupSlot, string> currentSignature)
+    {
+        var groupId = group.GroupId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(groupId))
+            return;
+
+        QueueDebouncedUiWrite(
+            $"planner-group:{groupId}:slot:{key}",
+            committedSignature,
+            () =>
+            {
+                var currentGroup = ResolvePlannerGroup(groupId);
+                return currentGroup == null || !currentGroup.Slots.Any(candidate => ReferenceEquals(candidate, slot))
+                    ? committedSignature
+                    : currentSignature(slot);
+            },
+            _ =>
+            {
+                var currentGroup = ResolvePlannerGroup(groupId);
+                if (currentGroup != null && currentGroup.Slots.Any(candidate => ReferenceEquals(candidate, slot)))
+                    TouchPlannerGroup(currentGroup);
+            },
+            static (left, right) => string.Equals(left, right, StringComparison.Ordinal));
+    }
+
+    public void QueueDebouncedLaunchProfileUpdate(
+        DadLaunchProfile profile,
+        string committedSignature,
+        Func<DadLaunchProfile, string> currentSignature,
+        Action<string>? setStatus = null)
+    {
+        var profileId = profile.ProfileId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(profileId))
+            return;
+
+        var expectedRevision = profile.Revision;
+        QueueDebouncedUiWrite(
+            $"launch-profile:{profileId}",
+            committedSignature,
+            () => currentSignature(profile),
+            _ =>
+            {
+                var ack = SchedulerService.UpdateLaunchProfile(new DadLaunchProfileUpdateRequest
+                {
+                    ExpectedRevision = expectedRevision,
+                    Profile = profile,
+                });
+                setStatus?.Invoke(ack.Summary);
+            },
+            static (left, right) => string.Equals(left, right, StringComparison.Ordinal));
+    }
+
+    public string GetAccountAliasEditValue(DadAccountKey accountKey, string persistedAlias)
+    {
+        var key = NormalizeDebouncedAccountKey(accountKey);
+        return !string.IsNullOrWhiteSpace(key) && pendingAccountAliasDrafts.TryGetValue(key, out var draft)
+            ? draft
+            : persistedAlias;
+    }
+
+    public void QueueDebouncedAccountAliasEdit(DadAccountKey accountKey, string persistedAlias, string alias)
+    {
+        var key = NormalizeDebouncedAccountKey(accountKey);
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        pendingAccountAliasDrafts[key] = alias;
+        QueueDebouncedUiWrite(
+            $"account-alias:{key}",
+            NormalizeAccountAlias(persistedAlias),
+            () => pendingAccountAliasDrafts.TryGetValue(key, out var draft)
+                ? NormalizeAccountAlias(draft)
+                : NormalizeAccountAlias(persistedAlias),
+            _ =>
+            {
+                if (!pendingAccountAliasDrafts.TryGetValue(key, out var draft))
+                    return;
+
+                var account = ConfigManager.GetAccount(new DadAccountKey(key));
+                if (account == null)
+                {
+                    pendingAccountAliasDrafts.Remove(key);
+                    return;
+                }
+
+                var normalized = NormalizeAccountAlias(draft);
+                if (string.Equals(NormalizeAccountAlias(account.AccountAlias), normalized, StringComparison.Ordinal))
+                {
+                    pendingAccountAliasDrafts.Remove(key);
+                    return;
+                }
+
+                if (ConfigManager.UpdateAccountAlias(new DadAccountKey(key), normalized))
+                {
+                    RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
+                    {
+                        IncludeHidden = true,
+                        IncludeIgnored = true,
+                        StaleAfterHours = (Configuration.RosterCatalog ??= new DadRosterCatalogConfiguration()).StaleAfterHours,
+                    });
+                }
+
+                pendingAccountAliasDrafts.Remove(key);
+            },
+            static (left, right) => string.Equals(left, right, StringComparison.Ordinal));
+    }
+
+    private void DropDebouncedUiWrite(string key)
+    {
+        key = key?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(key))
+            debouncedUiWrites.Remove(key);
+    }
+
+    private void DropDebouncedUiWrites(string prefix)
+    {
+        prefix ??= string.Empty;
+        foreach (var key in debouncedUiWrites.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            debouncedUiWrites.Remove(key);
+    }
+
+    private void DropDebouncedAccountAlias(DadAccountKey accountKey)
+    {
+        var key = NormalizeDebouncedAccountKey(accountKey);
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        pendingAccountAliasDrafts.Remove(key);
+        DropDebouncedUiWrite($"account-alias:{key}");
+    }
+
+    private void ClearDebouncedAccountAliases()
+    {
+        pendingAccountAliasDrafts.Clear();
+        DropDebouncedUiWrites("account-alias:");
+    }
+
+    private void FlushDebouncedUiWrites(bool force)
+    {
+        if (debouncedUiWrites.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var pair in debouncedUiWrites.ToArray())
+        {
+            if (!force && pair.Value.DueAtUtc > now)
+                continue;
+            if (!debouncedUiWrites.TryGetValue(pair.Key, out var current) || !ReferenceEquals(current, pair.Value))
+                continue;
+
+            try
+            {
+                current.Commit();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "[dad] Debounced UI write failed for {Key}.", pair.Key);
+            }
+            finally
+            {
+                debouncedUiWrites.Remove(pair.Key);
+            }
+        }
+    }
+
+    private static string NormalizeDebouncedAccountKey(DadAccountKey accountKey)
+        => accountKey.Value?.Trim() ?? string.Empty;
+
+    private static string NormalizeAccountAlias(string alias)
+        => string.IsNullOrWhiteSpace(alias) ? "Account" : alias.Trim();
 
     private void EnsureClientAccountId()
     {
@@ -267,6 +547,8 @@ public sealed class Plugin : IDalamudPlugin
         if (resolvedAccountKey.IsEmpty)
             return false;
 
+        DropDebouncedAccountAlias(resolvedAccountKey);
+        DropDebouncedUiWrites("launch-profile:");
         var deletedConfig = ConfigManager.DeleteAccount(resolvedAccountKey);
         if (account != null && !deletedConfig)
             return false;
@@ -313,6 +595,8 @@ public sealed class Plugin : IDalamudPlugin
         if (!ConfigManager.MergeAccountInto(sourceKey, targetKey))
             return false;
 
+        DropDebouncedAccountAlias(sourceKey);
+        DropDebouncedUiWrites("launch-profile:");
         RosterCatalogService.MergeAccount(sourceKey, targetKey, targetAccount.AccountAlias);
         Configuration.LastAccountId = targetAccount.AccountId;
         Configuration.Save();
@@ -329,6 +613,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public DadAccountDataClearResult ClearAllDadAccountData()
     {
+        ClearDebouncedAccountAliases();
+        DropDebouncedUiWrites("launch-profile:");
         var result = ConfigManager.ClearAllAccounts();
         result.Merge(RosterCatalogService.ClearAccountData());
 
@@ -945,6 +1231,7 @@ public sealed class Plugin : IDalamudPlugin
         if (selected == null)
             return false;
 
+        DropDebouncedUiWrites($"planner-group:{selected.GroupId}:");
         Configuration.PlannerGroups.Remove(selected);
         PlannerOptions.SelectedPlannerGroupId = string.Empty;
         Configuration.Save();
@@ -2803,6 +3090,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        FlushDebouncedUiWrites(force: false);
         UpdateDtrBar();
         if (ClientState.IsLoggedIn && ObjectTable.LocalPlayer != null)
         {
