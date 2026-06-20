@@ -225,6 +225,13 @@ public sealed class DadXadbClient
             status.SnapshotQuality = ReadString(root, "snapshotQuality");
             status.SnapshotUtc = ReadNullableDateTime(root, "updatedUtc", "snapshotUtc", "capturedAtUtc", "lastSaveUtc");
             status.JobLevels = ReadJobLevels(root);
+            status.CurrentJobId = DadRosterCharacterMerge.ResolveCurrentJobId(
+                status.JobLevels,
+                status.CurrentJobId);
+            status.CurrentLevel = DadRosterCharacterMerge.ResolveCurrentLevel(
+                status.JobLevels,
+                status.CurrentJobId,
+                status.CurrentLevel);
 
             if (TryGetProperty(root, out var worldIdElement, "worldId", "WorldId"))
                 status.WorldId ??= ReadUInt32(worldIdElement);
@@ -374,6 +381,7 @@ public sealed class DadXadbClient
             Source = DadCharacterSource.XadbOnly,
         };
 
+        DadRosterCharacterMerge.NormalizeXadbSnapshot(rosterCharacter);
         rosterCharacter.IsStale = lastSnapshotUtc.HasValue && DateTime.UtcNow - lastSnapshotUtc.Value > TimeSpan.FromHours(72);
         catalog.Characters.Add(rosterCharacter);
     }

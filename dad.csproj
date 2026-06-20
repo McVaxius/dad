@@ -20,6 +20,7 @@
   <ItemGroup>
     <Compile Remove="backups\**" />
     <Compile Remove="**\backups\**" />
+    <Compile Remove="Tests\**" />
     <None Remove="backups\**" />
     <None Remove="**\backups\**" />
   </ItemGroup>

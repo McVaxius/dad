@@ -277,6 +277,9 @@ public sealed class DadPlannerService
         if (modules.Count == 0)
             return null;
 
+        if (!ValidateLocalNpcDutyRunner(request, pool, out rejectionReason))
+            return null;
+
         if (!ValidateStopPolicyAtStart(request, pool, out rejectionReason))
             return null;
 
@@ -451,6 +454,49 @@ public sealed class DadPlannerService
         return true;
     }
 
+    private bool ValidateLocalNpcDutyRunner(
+        DadRunRequest request,
+        DadCharacterPool pool,
+        out string rejectionReason)
+    {
+        rejectionReason = string.Empty;
+        var localNpcDuties = new List<(uint ContentFinderConditionId, string DutyName)>();
+        if (request.DutySupport != null)
+            localNpcDuties.Add((request.DutySupport.ContentFinderConditionId, request.DutySupport.DutyName));
+        if (request.Trust != null)
+            localNpcDuties.Add((request.Trust.ContentFinderConditionId, request.Trust.DutyName));
+        if (localNpcDuties.Count == 0)
+            return true;
+
+        var localCharacter = pool.Characters.FirstOrDefault(static character =>
+            character.Source == DadCharacterSource.LocalRuntime &&
+            character.IsLiveConnected);
+        if (localCharacter == null)
+        {
+            rejectionReason = "Duty Support/Trust requires a ready logged-in local character.";
+            return false;
+        }
+
+        foreach (var dutyRequest in localNpcDuties)
+        {
+            var duty = presetProviderService.GetPlannerDuty(dutyRequest.ContentFinderConditionId);
+            var blocker = DadNpcDutyEligibility.GetBlocker(
+                localCharacter,
+                string.IsNullOrWhiteSpace(dutyRequest.DutyName)
+                    ? duty?.DutyDisplayName ?? string.Empty
+                    : dutyRequest.DutyName,
+                dutyRequest.ContentFinderConditionId,
+                duty?.JobLevelRequired ?? 0);
+            if (string.IsNullOrWhiteSpace(blocker))
+                continue;
+
+            rejectionReason = blocker;
+            return false;
+        }
+
+        return true;
+    }
+
     private static bool ValidateStopPolicyAtStart(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
     {
         rejectionReason = string.Empty;
@@ -480,15 +526,19 @@ public sealed class DadPlannerService
             return false;
         }
 
-        if (!character.CurrentLevel.HasValue)
+        var currentLevel = DadRosterCharacterMerge.ResolveCurrentLevel(
+            character.JobLevels,
+            character.CurrentJobId,
+            character.CurrentLevel);
+        if (!currentLevel.HasValue)
         {
             rejectionReason = $"Target-level stop character '{targetKey}' has no current level data.";
             return false;
         }
 
-        if (character.CurrentLevel.Value >= policy.TargetLevel)
+        if (currentLevel.Value >= policy.TargetLevel)
         {
-            rejectionReason = $"Target-level stop character '{targetKey}' is already level {character.CurrentLevel.Value}/{policy.TargetLevel}.";
+            rejectionReason = $"Target-level stop character '{targetKey}' is already level {currentLevel.Value}/{policy.TargetLevel}.";
             return false;
         }
 

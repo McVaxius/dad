@@ -1014,7 +1014,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.SmallButton("Populate roster from connected Dads"))
         {
-            catalog = plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
+            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
             {
                 ForcePeerRefresh = true,
                 IncludeHidden = true,
@@ -4824,7 +4824,14 @@ public sealed class MainWindow : Window, IDisposable
         bool debugUi)
     {
         var selectedGroup = plugin.GetSelectedPlannerGroup();
-        var preview = selectedGroup == null ? "Auto roster" : selectedGroup.DisplayName;
+        var duplicateNames = plannerSnapshot.PlannerGroups
+            .GroupBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var preview = selectedGroup == null
+            ? "Auto roster"
+            : FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames);
         if (ImGui.BeginCombo("Preset", preview))
         {
             var autoSelected = selectedGroup == null;
@@ -4837,7 +4844,8 @@ public sealed class MainWindow : Window, IDisposable
             {
                 var selected = selectedGroup != null &&
                                string.Equals(group.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable(group.DisplayName, selected))
+                var choiceLabel = FormatPlannerGroupChoice(group.DisplayName, group.GroupId, duplicateNames);
+                if (ImGui.Selectable($"{choiceLabel}##planner-group-{group.GroupId}", selected))
                 {
                     plugin.SelectPlannerGroup(group.GroupId);
                     plannerGroupNameBuffer = group.DisplayName;
@@ -4855,12 +4863,25 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetNextItemWidth(MathF.Min(280f, ImGui.GetContentRegionAvail().X));
         ImGui.InputText("Preset name", ref plannerGroupNameBuffer, 96);
 
-        if (ImGui.SmallButton("Save current plan"))
+        ImGui.BeginDisabled(plannerLocked);
+        var saveLabel = selectedGroup == null ? "Create preset" : "Update selected preset";
+        if (ImGui.SmallButton(saveLabel))
         {
-            var group = plugin.SaveCurrentPlannerAsGroup(plannerGroupNameBuffer);
-            plannerGroupNameBuffer = group.DisplayName;
-            plugin.PrintStatus($"Saved preset '{group.DisplayName}'.");
+            var group = plugin.SaveCurrentPlannerGroup(
+                plannerGroupNameBuffer,
+                out var created,
+                out var rejectionReason);
+            if (group == null)
+            {
+                plugin.PrintStatus(rejectionReason);
+            }
+            else
+            {
+                plannerGroupNameBuffer = group.DisplayName;
+                plugin.PrintStatus($"{(created ? "Created" : "Updated")} preset '{group.DisplayName}'.");
+            }
         }
+        ImGui.EndDisabled();
 
         ImGui.SameLine();
         ImGui.BeginDisabled(selectedGroup == null || plannerLocked);
@@ -4898,7 +4919,9 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        DrawStatusRow("Selected preset", $"{selectedGroup.DisplayName} | {selectedGroup.Slots.Count} slot(s)");
+        DrawStatusRow(
+            "Selected preset",
+            $"{FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames)} | {selectedGroup.Slots.Count} slot(s)");
         DrawStatusRow("Preset submode", plugin.PresetProviderService.GetPlannerLaneDefinition(selectedGroup.ActivityMode).DisplayName);
         DrawPlannerGroupScheduleControls(selectedGroup);
         if (!debugUi)
@@ -4923,6 +4946,19 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawPlannerGroupSlotEditor(plannerSnapshot, selectedGroup);
+    }
+
+    private static string FormatPlannerGroupChoice(
+        string displayName,
+        string groupId,
+        IReadOnlySet<string> duplicateNames)
+    {
+        if (!duplicateNames.Contains(displayName))
+            return displayName;
+
+        var normalizedId = groupId?.Trim() ?? string.Empty;
+        var shortId = normalizedId[..Math.Min(8, normalizedId.Length)];
+        return $"{displayName} [{shortId}]";
     }
 
     private void DrawPlannerGroupScheduleControls(DadPlannerGroup group)

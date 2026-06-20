@@ -986,12 +986,17 @@ public sealed class DadCoordinatorService
         if (policy.Mode != DadPlannerStopMode.TargetLevel || policy.TargetCharacterKey.IsEmpty)
             return null;
 
-        return pool.Characters
+        var character = pool.Characters
             .FirstOrDefault(character => string.Equals(
                 character.CharacterKey,
                 policy.TargetCharacterKey.Value,
-                StringComparison.OrdinalIgnoreCase))
-            ?.CurrentLevel;
+                StringComparison.OrdinalIgnoreCase));
+        return character == null
+            ? null
+            : DadRosterCharacterMerge.ResolveCurrentLevel(
+                character.JobLevels,
+                character.CurrentJobId,
+                character.CurrentLevel);
     }
 
     private static string BuildStopProgressSummary(DadRunStopProgress progress)

@@ -134,8 +134,8 @@ public sealed class DadRosterCatalogService
 
         foreach (var character in localXadbCharacters)
         {
-            UpsertRosterCharacter(catalog.Characters, character);
-            accountSaveNeeded |= UpsertKnownCharacter(character);
+            UpsertRosterCharacter(catalog.Characters, character, xadbAuthoritative: true);
+            accountSaveNeeded |= UpsertKnownCharacter(character, xadbAuthoritative: true);
         }
 
         var localRuntimeRows = pool.Characters
@@ -163,6 +163,12 @@ public sealed class DadRosterCatalogService
         catalog.Summary = BuildCatalogSummary(catalog);
         return catalog;
     }
+
+    public DadAccountRosterCatalog BuildLocalXadbCatalog(DadRosterRefreshPlan? plan = null)
+        => BuildLocalCatalog(new DadCharacterPool
+        {
+            PeerTransport = transportService.CurrentTransport,
+        }, plan);
 
     public DadCharacterPool BuildCuratedPool(
         DadCharacterPool pool,
@@ -703,18 +709,23 @@ public sealed class DadRosterCatalogService
         catalog.Visibility = configuration.RosterCatalog.Visibility.Select(static record => record.Clone()).ToList();
     }
 
-    private static void UpsertRosterCharacter(List<DadRosterCharacter> characters, DadRosterCharacter candidate)
+    private static void UpsertRosterCharacter(
+        List<DadRosterCharacter> characters,
+        DadRosterCharacter candidate,
+        bool xadbAuthoritative = false)
     {
         var existing = characters.FindIndex(existingCharacter => DadRosterIdentity.SameRow(existingCharacter, candidate));
+        var incoming = candidate.Clone();
+        if (xadbAuthoritative)
+            DadRosterCharacterMerge.NormalizeXadbSnapshot(incoming);
 
         if (existing < 0)
         {
-            characters.Add(candidate.Clone());
+            characters.Add(incoming);
             return;
         }
 
         var merged = characters[existing];
-        var incoming = candidate.Clone();
         if (incoming.Source < merged.Source || merged.Source == DadCharacterSource.XadbOnly)
             merged.Source = incoming.Source;
         if (!string.IsNullOrWhiteSpace(incoming.SourceClientInstanceId))
@@ -739,18 +750,11 @@ public sealed class DadRosterCatalogService
             merged.DataCenterId = incoming.DataCenterId;
         if (!string.IsNullOrWhiteSpace(incoming.DataCenterName))
             merged.DataCenterName = incoming.DataCenterName;
-        merged.LastSnapshotUtc = MaxDate(merged.LastSnapshotUtc, incoming.LastSnapshotUtc);
         merged.LastRuntimeSeenUtc = MaxDate(merged.LastRuntimeSeenUtc, incoming.LastRuntimeSeenUtc);
-        foreach (var pair in incoming.JobLevels)
-            merged.JobLevels[pair.Key] = pair.Value;
-        merged.CurrentJobId ??= incoming.CurrentJobId;
-        if (string.IsNullOrWhiteSpace(merged.CurrentJobAbbrev))
-            merged.CurrentJobAbbrev = incoming.CurrentJobAbbrev;
-        merged.CurrentLevel ??= incoming.CurrentLevel;
-        if (string.IsNullOrWhiteSpace(merged.SnapshotQuality))
-            merged.SnapshotQuality = incoming.SnapshotQuality;
-        merged.SnapshotVersion ??= incoming.SnapshotVersion;
-        merged.XadbReady = merged.XadbReady || incoming.XadbReady;
+        if (xadbAuthoritative)
+            DadRosterCharacterMerge.ApplyAuthoritativeXadbSnapshot(merged, incoming);
+        else
+            DadRosterCharacterMerge.MergeNonAuthoritativeSnapshot(merged, incoming);
         merged.IsCurrent = merged.IsCurrent || incoming.IsCurrent;
         merged.MapEligible ??= incoming.MapEligible;
         if (string.IsNullOrWhiteSpace(merged.MapEligibilitySummary))
@@ -1450,7 +1454,9 @@ public sealed class DadRosterCatalogService
             warning.Contains("XADB account attribution", StringComparison.OrdinalIgnoreCase));
     }
 
-    private bool UpsertKnownCharacter(DadRosterCharacter character)
+    private bool UpsertKnownCharacter(
+        DadRosterCharacter character,
+        bool xadbAuthoritative = false)
     {
         configuration.RosterCatalog.KnownCharacters ??= [];
         if (character.AccountKey.IsEmpty || character.CharacterKey.IsEmpty && character.ContentId == 0)
@@ -1473,7 +1479,7 @@ public sealed class DadRosterCatalogService
 
         var existing = configuration.RosterCatalog.KnownCharacters[existingIndex];
         var mergeList = new List<DadRosterCharacter> { ToRosterCharacter(existing) };
-        UpsertRosterCharacter(mergeList, character);
+        UpsertRosterCharacter(mergeList, character, xadbAuthoritative);
         var merged = ToKnownRecord(mergeList[0]);
         if (KnownRecordPayloadEquals(existing, merged))
             return false;

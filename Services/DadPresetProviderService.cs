@@ -348,6 +348,12 @@ public sealed class DadPresetProviderService
         return duty;
     }
 
+    public DadPlannerDutyOption? GetPlannerDuty(uint contentFinderConditionId)
+        => contentFinderConditionId != 0 &&
+           GetPlannerDutyCatalogById().TryGetValue(contentFinderConditionId, out var duty)
+            ? duty
+            : null;
+
     public string GetPlannerAccountFilterLabel(DadCharacterPool pool, DadPresetPlannerOptions options)
     {
         NormalizePlannerOptions(options);
@@ -379,6 +385,11 @@ public sealed class DadPresetProviderService
         var stopPolicy = BuildResolvedStopPolicy(options.StopPolicy, selectedCharacters, availableCharacters);
         var stopPolicyBlockers = BuildStopPolicyBlockers(stopPolicy, selectedCharacters, availableCharacters);
         var groupBlockers = BuildPlannerGroupBlockers(effectiveSelectedGroup, selectedCharacters);
+        var localNpcEligibilityBlockers = BuildLocalNpcEligibilityBlockers(
+            options.ActivityMode,
+            selectedDuty,
+            selectedCharacters,
+            availableCharacters);
         var leaderCandidate = selectedCharacters
                                   .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
                                   .Select(slot => availableCharacters.FirstOrDefault(character =>
@@ -397,7 +408,8 @@ public sealed class DadPresetProviderService
                       || missingDutySelector
                       || insufficientPlannerPartyShell
                       || stopPolicyBlockers.Count > 0
-                      || groupBlockers.Count > 0;
+                      || groupBlockers.Count > 0
+                      || localNpcEligibilityBlockers.Count > 0;
         var localCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.LocalRuntime);
         var remoteCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.PeerRuntime);
 
@@ -449,6 +461,7 @@ public sealed class DadPresetProviderService
 
         preset.Blockers.AddRange(stopPolicyBlockers);
         preset.Blockers.AddRange(groupBlockers);
+        preset.Blockers.AddRange(localNpcEligibilityBlockers);
 
         if (selectedGroup != null)
         {
@@ -1330,16 +1343,48 @@ public sealed class DadPresetProviderService
             return blockers;
         }
 
-        if (!targetCharacter.CurrentLevel.HasValue)
+        var currentLevel = DadRosterCharacterMerge.ResolveCurrentLevel(
+            targetCharacter.JobLevels,
+            targetCharacter.CurrentJobId,
+            targetCharacter.CurrentLevel);
+        if (!currentLevel.HasValue)
         {
             blockers.Add($"Target-level stop character '{targetKey}' has no current level data.");
             return blockers;
         }
 
-        if (targetCharacter.CurrentLevel.Value >= stopPolicy.TargetLevel)
-            blockers.Add($"Target-level stop character '{targetKey}' is already level {targetCharacter.CurrentLevel.Value}/{stopPolicy.TargetLevel}.");
+        if (currentLevel.Value >= stopPolicy.TargetLevel)
+            blockers.Add($"Target-level stop character '{targetKey}' is already level {currentLevel.Value}/{stopPolicy.TargetLevel}.");
 
         return blockers;
+    }
+
+    private static List<string> BuildLocalNpcEligibilityBlockers(
+        DadPlannerActivityMode activityMode,
+        DadPlannerDutyOption? selectedDuty,
+        IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+    {
+        if (!IsLocalNpcLane(activityMode) || selectedDuty == null)
+            return [];
+
+        var selectedKey = selectedSlots
+            .Select(static slot => slot.CharacterKey)
+            .FirstOrDefault(static key => !string.IsNullOrWhiteSpace(key));
+        if (string.IsNullOrWhiteSpace(selectedKey))
+            return [];
+
+        var character = availableCharacters.FirstOrDefault(candidate =>
+            string.Equals(candidate.CharacterKey, selectedKey, StringComparison.OrdinalIgnoreCase));
+        if (character == null)
+            return [];
+
+        var blocker = DadNpcDutyEligibility.GetBlocker(
+            character,
+            selectedDuty.DutyDisplayName,
+            selectedDuty.ContentFinderConditionId,
+            selectedDuty.JobLevelRequired);
+        return string.IsNullOrWhiteSpace(blocker) ? [] : [blocker];
     }
 
     private static string FormatCharacterDisplay(DadAcquiredCharacter character)

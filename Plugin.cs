@@ -169,7 +169,7 @@ public sealed class Plugin : IDalamudPlugin
             request => RunCoordinatorService.StartTasks(request),
             _ => RunCoordinatorService.CancelActiveRun());
         TransportService.ConfigureRosterHandlers(
-            () => RosterCatalogService.BuildLocalCatalog(CharacterIntelligenceService.CurrentPool),
+            () => RosterCatalogService.BuildLocalXadbCatalog(),
             command => RosterCatalogService.RefreshLocalRosterCharacter(command, PresenceService.BuildSnapshotCopy()));
         TransportService.ConfigureProfileHandlers(
             ProfileDirectoryService.BuildLocalCatalog,
@@ -1182,14 +1182,55 @@ public sealed class Plugin : IDalamudPlugin
         return true;
     }
 
-    public DadPlannerGroup SaveCurrentPlannerAsGroup(string displayName)
+    public DadPlannerGroup? SaveCurrentPlannerGroup(
+        string displayName,
+        out bool created,
+        out string rejectionReason)
     {
-        var group = BuildPlannerGroupFromCurrentPlanner(displayName);
-        Configuration.PlannerGroups.Add(group);
-        PlannerOptions.SelectedPlannerGroupId = group.GroupId;
+        created = false;
+        rejectionReason = string.Empty;
+
+        DadAcquiredCharacter? localNpcRunner = null;
+        if (PlannerOptions.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust)
+        {
+            var refreshedPool = CharacterIntelligenceService.RefreshLocalCharacterPool("planner-group-save", logRefresh: false);
+            localNpcRunner = refreshedPool.Characters.FirstOrDefault(static character =>
+                character.Source == DadCharacterSource.LocalRuntime &&
+                character.IsLiveConnected);
+            if (localNpcRunner == null)
+            {
+                rejectionReason = "Cannot save Duty Support/Trust preset: no ready local character is logged in.";
+                return null;
+            }
+
+            RosterCatalogService.RefreshCatalog(refreshedPool);
+        }
+
+        var candidate = BuildPlannerGroupFromCurrentPlanner(displayName, localNpcRunner);
+        var selected = GetSelectedPlannerGroup();
+        DadPlannerGroup savedGroup;
+        if (selected == null)
+        {
+            Configuration.PlannerGroups.Add(candidate);
+            savedGroup = candidate;
+            created = true;
+        }
+        else
+        {
+            ApplyPlannerGroupPlan(selected, candidate);
+            savedGroup = selected;
+        }
+
+        PlannerOptions.SelectedPlannerGroupId = savedGroup.GroupId;
+        PlannerOptions.StopPolicy = savedGroup.StopPolicy.Clone();
+        PlannerOptions.IncludedAccountKeys = savedGroup.Slots
+            .Select(static slot => slot.RequiredAccountKey)
+            .Where(static key => !key.IsEmpty)
+            .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
         Configuration.Save();
-        InvalidatePlannerPreviewCache("planner group saved");
-        return group;
+        InvalidatePlannerPreviewCache(created ? "planner group created" : "planner group updated");
+        return savedGroup;
     }
 
     public DadPlannerGroup? DuplicateSelectedPlannerGroup(string displayName)
@@ -1414,7 +1455,7 @@ public sealed class Plugin : IDalamudPlugin
         }));
 
     public string RefreshPeerRosterCatalogJson()
-        => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.RequestPeerSnapshots(), new DadRosterRefreshPlan
+        => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
         {
             ForcePeerRefresh = true,
             IncludeHidden = true,
@@ -1585,13 +1626,30 @@ public sealed class Plugin : IDalamudPlugin
         };
     }
 
-    private DadPlannerGroup BuildPlannerGroupFromCurrentPlanner(string displayName)
+    private DadPlannerGroup BuildPlannerGroupFromCurrentPlanner(
+        string displayName,
+        DadAcquiredCharacter? localNpcRunner)
     {
-        var preview = BuildPlannerPreview();
+        var preview = localNpcRunner == null ? BuildPlannerPreview() : null;
+        var stopPolicy = localNpcRunner == null
+            ? preview!.StopPolicy.Clone().Normalize()
+            : PlannerOptions.StopPolicy.Clone().Normalize();
+        if (localNpcRunner != null && stopPolicy.Mode == DadPlannerStopMode.TargetLevel)
+        {
+            stopPolicy.TargetCharacterKey = new DadCharacterKey(localNpcRunner.CharacterKey);
+            stopPolicy.TargetCharacterLabel = string.IsNullOrWhiteSpace(localNpcRunner.CharacterName) ||
+                                              string.IsNullOrWhiteSpace(localNpcRunner.WorldName)
+                ? localNpcRunner.CharacterKey
+                : $"{localNpcRunner.CharacterName}@{localNpcRunner.WorldName}";
+        }
+
+        var now = DateTime.UtcNow;
         return new DadPlannerGroup
         {
             GroupId = Guid.NewGuid().ToString("N"),
-            DisplayName = string.IsNullOrWhiteSpace(displayName) ? $"{preview.LaneDefinition.DisplayName} Group" : displayName.Trim(),
+            DisplayName = string.IsNullOrWhiteSpace(displayName)
+                ? $"{PresetProviderService.GetPlannerLaneDefinition(PlannerOptions.ActivityMode).DisplayName} Group"
+                : displayName.Trim(),
             RunFamily = PlannerOptions.RunFamily,
             ActivityMode = PlannerOptions.ActivityMode,
             OperatorMode = PlannerOptions.OperatorMode,
@@ -1607,13 +1665,61 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = PlannerOptions.DutyExpectedPartySize,
             MogtomePreset = PlannerOptions.MogtomePreset,
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
-            StopPolicy = preview.StopPolicy.Clone(),
-            Slots = BuildPlannerGroupSlotsFromPreview(preview),
+            StopPolicy = stopPolicy,
+            Slots = localNpcRunner == null
+                ? BuildPlannerGroupSlotsFromPreview(preview!)
+                :
+                [
+                    new DadPlannerGroupSlot
+                    {
+                        SlotId = "Runner",
+                        RequiredRole = DadPartyRole.Any,
+                        RequiredAccountKey = ResolvePlannerAccountKey(localNpcRunner),
+                        RequiredCharacterKey = new DadCharacterKey(localNpcRunner.CharacterKey),
+                        AllowSubstitution = false,
+                    },
+                ],
             ScheduleCadenceHours = PlannerOptions.ActivityMode == DadPlannerActivityMode.CustomDuty ? 18 : 0,
-            CreatedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
         };
     }
+
+    private static void ApplyPlannerGroupPlan(DadPlannerGroup target, DadPlannerGroup source)
+    {
+        target.DisplayName = source.DisplayName;
+        target.RunFamily = source.RunFamily;
+        target.ActivityMode = source.ActivityMode;
+        target.OperatorMode = source.OperatorMode;
+        target.ConnectedOnly = source.ConnectedOnly;
+        target.SameDatacenterOnly = source.SameDatacenterOnly;
+        target.AllowStaleForPlanning = source.AllowStaleForPlanning;
+        target.TransportOwner = source.TransportOwner;
+        target.QueueAuthority = source.QueueAuthority;
+        target.InviteAuthority = source.InviteAuthority;
+        target.DutyContentFinderConditionId = source.DutyContentFinderConditionId;
+        target.DutyDisplayName = source.DutyDisplayName;
+        target.DutyUnsynced = source.DutyUnsynced;
+        target.DutyExpectedPartySize = source.DutyExpectedPartySize;
+        target.MogtomePreset = source.MogtomePreset;
+        target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
+        target.StopPolicy = source.StopPolicy.Clone();
+        target.Slots = source.Slots.Select(ClonePlannerGroupSlot).ToList();
+        target.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private static DadPlannerGroupSlot ClonePlannerGroupSlot(DadPlannerGroupSlot source)
+        => new()
+        {
+            SlotId = source.SlotId,
+            RequiredRole = source.RequiredRole,
+            RequiredAccountKey = source.RequiredAccountKey,
+            RequiredCharacterKey = source.RequiredCharacterKey,
+            WakePolicy = source.WakePolicy,
+            LaunchProfileId = source.LaunchProfileId,
+            CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
+            AllowSubstitution = source.AllowSubstitution,
+        };
 
     private List<DadPlannerGroupSlot> BuildPlannerGroupSlotsFromPreview(DadActivityPreset preview)
     {

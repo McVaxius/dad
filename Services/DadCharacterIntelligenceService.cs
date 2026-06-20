@@ -292,6 +292,14 @@ public sealed class DadCharacterIntelligenceService
         foreach (var pair in xadbStatus.JobLevels)
             character.JobLevels[pair.Key] = pair.Value;
 
+        character.CurrentJobId = DadRosterCharacterMerge.ResolveCurrentJobId(
+            character.JobLevels,
+            character.CurrentJobId);
+        character.CurrentLevel = DadRosterCharacterMerge.ResolveCurrentLevel(
+            character.JobLevels,
+            character.CurrentJobId,
+            character.CurrentLevel);
+
         if (character.JobLevels.Count == 0)
             AddBlocker(character, "Missing XADB job levels.");
 
