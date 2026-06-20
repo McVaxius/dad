@@ -15,6 +15,7 @@ public sealed class DadPremadeDutyExecutor(
     private bool enteredDuty;
     private bool dutyCompleted;
     private DadCombatRotationMode rotationMode = DadCombatRotationMode.UseFrenRider;
+    private string entryAutomationSummary = string.Empty;
 
     public string ExecutorId => "DadPremadeDutyExecutor";
     public DadModuleId ModuleId => DadModuleId.PremadeDuty;
@@ -114,6 +115,9 @@ public sealed class DadPremadeDutyExecutor(
             return BeginOrUpdatePostDutyStabilizing(now);
         }
 
+        if (enteredDuty && !TryApplyEntryAutomation())
+            return BuildStatusStep(status, DadParticipantState.Failed);
+
         if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
             dutyCompleted = true;
 
@@ -128,6 +132,9 @@ public sealed class DadPremadeDutyExecutor(
         ApplyPulse(pulse);
         if (pulse.Status == DadRunStatus.Failed)
             return BuildStatusStep(status, pulse.ParticipantState);
+
+        if (enteredDutyThisPulse && !TryApplyEntryAutomation())
+            return BuildStatusStep(status, DadParticipantState.Failed);
 
         if (enteredDuty)
         {
@@ -262,12 +269,30 @@ public sealed class DadPremadeDutyExecutor(
         status.Blockers = blockers ?? [];
     }
 
+    private bool TryApplyEntryAutomation()
+    {
+        if (rotationMode != DadCombatRotationMode.UseFrenRider)
+            return true;
+
+        var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
+            status.RunId,
+            DadModuleId.PremadeDuty,
+            DateTime.UtcNow,
+            out entryAutomationSummary);
+        if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
+            return true;
+
+        Fail(entryAutomationSummary);
+        return false;
+    }
+
     private void ResetRuntimeState(DateTime now)
     {
         runStartedAtUtc = now;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
+        entryAutomationSummary = string.Empty;
     }
 
     private void ClearRuntimeState()
@@ -276,6 +301,7 @@ public sealed class DadPremadeDutyExecutor(
         postDutyStabilizeUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
+        entryAutomationSummary = string.Empty;
     }
 
     private static DadPlannedModuleExecution ResolveModule(DadRunPlan plan)
@@ -308,7 +334,7 @@ public sealed class DadPremadeDutyExecutor(
         var baseSummary = $"Dad can start {syncMode} regular Duty Finder queue for Premade Duty {dutyName} with {expectedPartySize} Dad-verified participant(s); in-game party roster validation remains manual follow-up.";
         return mode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"{baseSummary} Dad will send /fr on before queue, then observe while FrenRider or the user owns duty behavior and exit.",
+            DadCombatRotationMode.UseFrenRider => $"{baseSummary} Dad will enable FrenRider after duty entry, then observe while FrenRider or the user owns duty behavior and exit.",
             DadCombatRotationMode.DoNothing => $"{baseSummary} No external automation commands will be sent.",
             _ => baseSummary,
         };
@@ -320,7 +346,7 @@ public sealed class DadPremadeDutyExecutor(
         var syncMode = content?.Unsynced == true ? "unsynced" : "synced";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: /fr on requested before queue; queueing {syncMode} Premade Duty {dutyName}.",
+            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: queueing {syncMode} Premade Duty {dutyName}; Dad will enable FrenRider after duty entry.",
             DadCombatRotationMode.DoNothing => $"Do Nothing mode: queueing {syncMode} Premade Duty {dutyName}.",
             _ => $"Queueing {syncMode} Premade Duty {dutyName}.",
         };
@@ -349,7 +375,9 @@ public sealed class DadPremadeDutyExecutor(
         var syncMode = resolvedContent?.Unsynced == true ? "unsynced" : "synced";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: in {syncMode} Premade Duty {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior.",
+            DadCombatRotationMode.UseFrenRider => string.IsNullOrWhiteSpace(entryAutomationSummary)
+                ? $"Use FrenRider mode: in {syncMode} Premade Duty {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior."
+                : $"{entryAutomationSummary} In {syncMode} Premade Duty {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior.",
             DadCombatRotationMode.DoNothing => $"Do Nothing mode: Dad queued {syncMode} Premade Duty {dutyName} and is observing completion/exit; user owns combat and leave.",
             _ => $"Dad is observing {syncMode} Premade Duty {dutyName}.",
         };

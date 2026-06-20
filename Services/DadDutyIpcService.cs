@@ -92,7 +92,6 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly DadPresetProviderService presetProviderService;
     private readonly DadDutySupportExecutor dutySupportExecutor;
     private readonly DadLocalDutyExecutor localDutyExecutor;
-    private readonly DadCombatRotationService combatRotationService;
     private readonly IPluginLog log;
     private readonly List<Action> disposeActions = [];
     private readonly DadDutyIpcStatus status = new();
@@ -133,7 +132,6 @@ public sealed class DadDutyIpcService : IDisposable
         this.presetProviderService = presetProviderService;
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
         dutySupportExecutor = new DadDutySupportExecutor(npcDutyQueueService, dutySupportAdsService, combatRotationService);
-        this.combatRotationService = combatRotationService;
         this.log = log;
 
         EnsureRegistered();
@@ -376,13 +374,6 @@ public sealed class DadDutyIpcService : IDisposable
             IDadModuleExecutor executor = activeRoute == DadDutyIpcRoute.DutySupport
                 ? dutySupportExecutor
                 : localDutyExecutor;
-            if (combatRotationService.CombatRotationMode == DadCombatRotationMode.UseFrenRider &&
-                !combatRotationService.TryPrepareFrenRiderForDutyOperation(executor.ModuleId, out var frenRiderFailure))
-            {
-                FailSession(frenRiderFailure);
-                return;
-            }
-
             activeExecutor = executor;
             activeExecutor.Start(plan, BuildLocalParticipants(plan.Request.RequestId));
             HandleActiveExecutorStatus();

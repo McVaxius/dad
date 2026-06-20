@@ -18,5 +18,6 @@
 
   <ItemGroup>
     <Compile Include="..\Services\DadRosterCharacterMerge.cs" Link="DadRosterCharacterMerge.cs" />
+    <Compile Include="..\Services\DadFrenRiderEntryEnableGate.cs" Link="DadFrenRiderEntryEnableGate.cs" />
   </ItemGroup>
 </Project>

@@ -25,9 +25,11 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
         AutoRotationCommand,
     ];
 
+    private readonly DadFrenRiderEntryEnableGate frenRiderEntryEnableGate = new();
+
     public DadCombatRotationMode CombatRotationMode => configuration.CombatRotationMode;
 
-    public string MissingFrenRiderBlocker => "FrenRider is not loaded; Dad cannot enable FrenRider before queueing a duty operation.";
+    public string MissingFrenRiderBlocker => "FrenRider is not loaded; Dad cannot enable FrenRider after duty entry.";
 
     public bool IsFrenRiderLoaded()
         => GetFrenRiderPluginState() == DadFrenRiderPluginState.Loaded;
@@ -62,29 +64,39 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
         }
     }
 
-    public bool TryPrepareFrenRiderForDutyOperation(DadModuleId moduleId, out string summary)
+    internal DadFrenRiderEntryEnableStatus TryEnableFrenRiderAfterDutyEntry(
+        string runId,
+        DadModuleId moduleId,
+        DateTime now,
+        out string summary)
     {
-        if (!IsFrenRiderLoaded())
+        var result = frenRiderEntryEnableGate.Apply(
+            $"{runId}|{moduleId}",
+            FormatDutyOperation(moduleId),
+            FrenRiderEnableCommand,
+            now,
+            () => SendCommand(FrenRiderEnableCommand),
+            out summary);
+
+        switch (result)
         {
-            summary = MissingFrenRiderBlocker;
-            log.Warning("[dad][CombatRotation] {Summary}", summary);
-            return false;
+            case DadFrenRiderEntryEnableStatus.Sent:
+                log.Information("[dad][CombatRotation] {Summary}", summary);
+                break;
+            case DadFrenRiderEntryEnableStatus.PendingRetry:
+                log.Debug("[dad][CombatRotation] {Summary}", summary);
+                break;
+            case DadFrenRiderEntryEnableStatus.Failed:
+                log.Warning("[dad][CombatRotation] {Summary}", summary);
+                break;
         }
 
-        if (!TrySendCommand(FrenRiderEnableCommand))
-        {
-            summary = $"FrenRider enable command failed before Dad queue start: {FrenRiderEnableCommand}.";
-            log.Warning("[dad][CombatRotation] {Summary}", summary);
-            return false;
-        }
-
-        summary = $"Use FrenRider mode sent {FrenRiderEnableCommand} before Dad started {FormatDutyOperation(moduleId)}.";
-        log.Information("[dad][CombatRotation] {Summary}", summary);
-        return true;
+        return result;
     }
 
     public bool TryApplyDutySupportEntryMode(
         DadCombatRotationMode mode,
+        string runId,
         out string summary,
         out bool shouldFailRun)
     {
@@ -93,9 +105,13 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
         switch (mode)
         {
             case DadCombatRotationMode.UseFrenRider:
-                summary = "Use FrenRider mode already requested FrenRider before queue; Dad sent no Duty Support entry command.";
-                log.Information("[dad][CombatRotation] {Summary}", summary);
-                return true;
+                var result = TryEnableFrenRiderAfterDutyEntry(
+                    runId,
+                    DadModuleId.DutySupport,
+                    DateTime.UtcNow,
+                    out summary);
+                shouldFailRun = result == DadFrenRiderEntryEnableStatus.Failed;
+                return result is DadFrenRiderEntryEnableStatus.Sent or DadFrenRiderEntryEnableStatus.AlreadySent;
             case DadCombatRotationMode.ForceCommands:
                 return TryBootstrapForceCommands(out summary);
             case DadCombatRotationMode.DoNothing:
@@ -133,19 +149,24 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
     }
 
     private bool TrySendCommand(string command)
+        => SendCommand(command).Succeeded;
+
+    private DadFrenRiderCommandResult SendCommand(string command)
     {
         try
         {
             if (Plugin.CommandManager.ProcessCommand(command))
-                return true;
+                return DadFrenRiderCommandResult.Success();
 
-            log.Warning("[dad][CombatRotation] Command manager rejected {Command}.", command);
-            return false;
+            var failure = $"Command manager rejected {command}";
+            log.Warning("[dad][CombatRotation] {Failure}.", failure);
+            return DadFrenRiderCommandResult.Failure(failure);
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "[dad][CombatRotation] Command threw during Duty Support bootstrap: {Command}.", command);
-            return false;
+            var failure = $"Command threw while processing {command}: {ex.Message}";
+            log.Warning(ex, "[dad][CombatRotation] {Failure}.", failure);
+            return DadFrenRiderCommandResult.Failure(failure);
         }
     }
 

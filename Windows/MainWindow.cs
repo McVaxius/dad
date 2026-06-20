@@ -3543,7 +3543,7 @@ public sealed class MainWindow : Window, IDisposable
             return "ADS force commands";
 
         if (ContainsAny(summary, "Use FrenRider mode", "FrenRider"))
-            return "FrenRider (pre-queue /fr on only)";
+            return "FrenRider (after-entry /fr on)";
 
         if (ContainsAny(summary, "Do Nothing mode", "user owns combat", "user-owned"))
             return "User-owned";
@@ -3611,11 +3611,12 @@ public sealed class MainWindow : Window, IDisposable
             "sent no Duty Support entry command",
             "sent no Trust entry command",
             "sent /bmrai on and /rotation auto after Duty Support entry",
+            "sent /fr on after duty entry",
+            "could not send /fr on after duty entry",
+            "failed to send /fr on after duty entry",
             "sent no FrenRider, ADS, or rotation command after duty entry",
             "sent no FrenRider, ADS, or rotation command after Trust entry",
-            "attempted rotation bootstrap",
-            "already requested FrenRider before queue",
-            "/fr on requested before queue");
+            "attempted rotation bootstrap");
         if (!string.IsNullOrWhiteSpace(entryAutomation))
             return entryAutomation;
 

@@ -367,6 +367,9 @@ public sealed class DadDutySupportExecutor(
             return BeginOrUpdatePostDutyStabilizing(now);
         }
 
+        if (enteredDuty && !TryApplyEntryAutomation())
+            return BuildStatusStep(status, DadParticipantState.Failed);
+
         if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
         {
             dutyCompleted = true;
@@ -597,9 +600,26 @@ public sealed class DadDutySupportExecutor(
         if (entryAutomationAttempted)
             return true;
 
+        if (rotationMode == DadCombatRotationMode.UseFrenRider)
+        {
+            var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
+                status.RunId,
+                DadModuleId.DutySupport,
+                DateTime.UtcNow,
+                out entryAutomationSummary);
+            if (entryEnableStatus != DadFrenRiderEntryEnableStatus.PendingRetry)
+                entryAutomationAttempted = true;
+            if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
+                return true;
+
+            Fail(entryAutomationSummary);
+            return false;
+        }
+
         entryAutomationAttempted = true;
         var succeeded = combatRotationService.TryApplyDutySupportEntryMode(
             rotationMode,
+            status.RunId,
             out entryAutomationSummary,
             out var shouldFailRun);
         if (succeeded || !shouldFailRun)
@@ -666,7 +686,7 @@ public sealed class DadDutySupportExecutor(
     private static string BuildCanStartSummary(string? dutyName, DadCombatRotationMode mode)
         => mode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Dad can start native Duty Support queue for {dutyName}; Dad will send /fr on before queue, then observe while FrenRider owns duty behavior and exit.",
+            DadCombatRotationMode.UseFrenRider => $"Dad can start native Duty Support queue for {dutyName}; Dad will enable FrenRider after duty entry, then observe while FrenRider owns duty behavior and exit.",
             DadCombatRotationMode.ForceCommands => $"Dad can start native Duty Support queue for {dutyName}; ADS and fixed rotation commands will be used.",
             DadCombatRotationMode.DoNothing => $"Dad can start native Duty Support queue for {dutyName}; no external automation commands will be sent.",
             _ => $"Dad can start native Duty Support queue for {dutyName}.",
@@ -675,7 +695,7 @@ public sealed class DadDutySupportExecutor(
     private string BuildStartSummary(string? dutyName)
         => rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: /fr on requested before queue; queueing native Duty Support for {dutyName}.",
+            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: queueing native Duty Support for {dutyName}; Dad will enable FrenRider after duty entry.",
             DadCombatRotationMode.ForceCommands => $"Force Commands mode: starting native Duty Support queue for {dutyName}.",
             DadCombatRotationMode.DoNothing => $"Do Nothing mode: starting native Duty Support queue for {dutyName}.",
             _ => $"Starting native Duty Support queue for {dutyName}.",
@@ -949,6 +969,9 @@ public sealed class DadTrustExecutor(
             return BeginOrUpdatePostDutyStabilizing(now);
         }
 
+        if (enteredDuty && !TryApplyEntryAutomation())
+            return BuildStatusStep(status, DadParticipantState.Failed);
+
         if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
             dutyCompleted = true;
 
@@ -964,8 +987,8 @@ public sealed class DadTrustExecutor(
         if (pulse.Status == DadRunStatus.Failed)
             return BuildStatusStep(status, pulse.ParticipantState);
 
-        if (enteredDutyThisPulse)
-            ApplyEntryObservationSummary();
+        if (enteredDutyThisPulse && !TryApplyEntryAutomation())
+            return BuildStatusStep(status, DadParticipantState.Failed);
 
         if (enteredDuty)
         {
@@ -1101,15 +1124,29 @@ public sealed class DadTrustExecutor(
         status.Blockers = blockers ?? [];
     }
 
-    private void ApplyEntryObservationSummary()
+    private bool TryApplyEntryAutomation()
     {
+        if (rotationMode == DadCombatRotationMode.UseFrenRider)
+        {
+            var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
+                status.RunId,
+                DadModuleId.Trust,
+                DateTime.UtcNow,
+                out entryAutomationSummary);
+            if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
+                return true;
+
+            Fail(entryAutomationSummary);
+            return false;
+        }
+
         entryAutomationSummary = rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => "Use FrenRider mode already requested FrenRider before queue; Dad sent no Trust entry command.",
             DadCombatRotationMode.DoNothing => "Do Nothing mode selected; Dad sent no FrenRider, ADS, or rotation command after Trust entry.",
             DadCombatRotationMode.ForceCommands => "Force Commands mode is not guarded for Trust; Dad sent no entry command.",
             _ => $"Unknown combat rotation mode {rotationMode}; Dad sent no Trust entry command.",
         };
+        return true;
     }
 
     private void ResetRuntimeState(DateTime now)
@@ -1142,7 +1179,7 @@ public sealed class DadTrustExecutor(
     private static string BuildCanStartSummary(string? dutyName, DadCombatRotationMode mode)
         => mode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Dad can start native Trust queue for {dutyName}; Dad will send /fr on before queue, then observe while FrenRider owns duty behavior and exit.",
+            DadCombatRotationMode.UseFrenRider => $"Dad can start native Trust queue for {dutyName}; Dad will enable FrenRider after duty entry, then observe while FrenRider owns duty behavior and exit.",
             DadCombatRotationMode.DoNothing => $"Dad can start native Trust queue for {dutyName}; no external automation commands will be sent.",
             _ => $"Dad can start native Trust queue for {dutyName}.",
         };
@@ -1150,7 +1187,7 @@ public sealed class DadTrustExecutor(
     private string BuildStartSummary(string? dutyName)
         => rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: /fr on requested before queue; queueing native Trust for {dutyName}.",
+            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: queueing native Trust for {dutyName}; Dad will enable FrenRider after duty entry.",
             DadCombatRotationMode.DoNothing => $"Do Nothing mode: starting native Trust queue for {dutyName}.",
             _ => $"Starting native Trust queue for {dutyName}.",
         };

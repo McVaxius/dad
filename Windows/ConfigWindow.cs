@@ -568,7 +568,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawCombatRotationTab(Configuration configuration)
     {
-        ImGui.TextWrapped("Select what Dad does when it starts a duty operation. Use FrenRider is the default: Dad sends /fr on once before queue/routing begins, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
+        ImGui.TextWrapped("Select what Dad does when it starts a duty operation. Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
         ImGui.Separator();
 
         DrawCombatRotationModeRadio(
@@ -622,7 +622,7 @@ public sealed class ConfigWindow : Window, IDisposable
         };
         var statusText = frenRiderState switch
         {
-            DadFrenRiderPluginState.Loaded => "FrenRider installed and loaded. Dad will send /fr on before starting a duty operation.",
+            DadFrenRiderPluginState.Loaded => "FrenRider installed and loaded. Dad will send /fr on after confirmed duty entry.",
             DadFrenRiderPluginState.InstalledNotLoaded => "FrenRider installed but not loaded. Dad will block Use FrenRider duty operations until it is loaded.",
             _ => "FrenRider not installed or not found. Dad will block Use FrenRider duty operations until it is installed and loaded.",
         };

@@ -4,7 +4,6 @@ namespace dad.Services;
 
 public sealed class DadQueueExecutionService
 {
-    private readonly DadCombatRotationService combatRotationService;
     private readonly DadLocalDutyExecutor localDutyExecutor;
     private readonly DadPremadeDutyExecutor premadeDutyExecutor;
     private readonly DadMsqExecutor msqExecutor;
@@ -28,7 +27,6 @@ public sealed class DadQueueExecutionService
         DadDutySupportAdsService dutySupportAdsService,
         DadCombatRotationService combatRotationService)
     {
-        this.combatRotationService = combatRotationService;
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
         premadeDutyExecutor = new DadPremadeDutyExecutor(localDutyQueueService, combatRotationService);
         msqExecutor = new DadMsqExecutor(
@@ -86,12 +84,6 @@ public sealed class DadQueueExecutionService
             (effectivePlan, effectiveModule) = BuildCustomDutyPlan(plan, module);
 
         activeExecutor = ResolveExecutor(effectivePlan, effectiveModule);
-
-        if (ShouldPrepareFrenRiderBeforeQueue(effectiveModule.ModuleId) &&
-            !combatRotationService.TryPrepareFrenRiderForDutyOperation(effectiveModule.ModuleId, out var frenRiderFailure))
-        {
-            return NormalizeReportedModule(BuildFrenRiderPreQueueFailure(effectivePlan, effectiveModule, frenRiderFailure));
-        }
 
         return NormalizeReportedModule(activeExecutor.Start(effectivePlan, participants));
     }
@@ -357,10 +349,6 @@ public sealed class DadQueueExecutionService
         return result;
     }
 
-    private bool ShouldPrepareFrenRiderBeforeQueue(DadModuleId moduleId)
-        => combatRotationService.CombatRotationMode == DadCombatRotationMode.UseFrenRider &&
-           moduleId is not DadModuleId.None and not DadModuleId.Mixed;
-
     private static DadPlannedModuleExecution ResolvePreviewModule(DadRunPlan plan)
         => plan.Modules.FirstOrDefault()
            ?? new DadPlannedModuleExecution
@@ -369,55 +357,4 @@ public sealed class DadQueueExecutionService
                DisplayName = plan.CompositeModuleId == DadModuleId.None ? "Dad" : plan.CompositeModuleId.ToString(),
                ExpectedPartySize = Math.Max(1, plan.RequiredParticipantCount),
            };
-
-    private static DadRunStepResultDto BuildFrenRiderPreQueueFailure(
-        DadRunPlan plan,
-        DadPlannedModuleExecution module,
-        string reason)
-    {
-        var now = DateTime.UtcNow;
-        var blocker = new DadModuleBlockerDto
-        {
-            ModuleId = module.ModuleId,
-            Capability = "FrenRiderPreQueue",
-            Severity = DadModuleBlockerSeverity.Blocked,
-            Summary = reason,
-        };
-        var status = new DadModuleExecutionStatusDto
-        {
-            RunId = plan.Request.RequestId,
-            ModuleId = module.ModuleId,
-            DisplayName = module.DisplayName,
-            Phase = DadRunPhase.QueuePreparing,
-            Status = DadRunStatus.Failed,
-            StepName = "FrenRider pre-queue",
-            IsActive = false,
-            CanStart = false,
-            Deferred = false,
-            StartedAtUtc = now,
-            UpdatedAtUtc = now,
-            CompletedAtUtc = now,
-            Summary = reason,
-            FailureReason = reason,
-            BlockedReason = reason,
-            Blockers = [blocker],
-        };
-
-        return new DadRunStepResultDto
-        {
-            RunId = plan.Request.RequestId,
-            ModuleId = module.ModuleId,
-            StepName = module.DisplayName,
-            ParticipantState = DadParticipantState.Failed,
-            Success = false,
-            Deferred = false,
-            TimedOut = false,
-            Summary = reason,
-            FailureReason = reason,
-            BlockedReason = reason,
-            ExecutorStatus = status,
-            ModuleBlockers = [blocker.Clone()],
-            ReportedAtUtc = now,
-        };
-    }
 }
