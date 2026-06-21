@@ -23,12 +23,22 @@ public sealed class Configuration : IPluginConfiguration
     public int DtrBarMode { get; set; } = 1;
     public string DtrIconEnabled { get; set; } = "\uE044";
     public string DtrIconDisabled { get; set; } = "\uE04C";
+    // Review M18 — config/account-store boundary:
+    //   * This Configuration blob owns planner/scheduler/run state: PlannerGroups, LaunchProfiles,
+    //     ProfileCatalogCache, RunHistory, SchedulerQueue/History, RosterCatalog, and the account *identity*
+    //     pointers below (ClientAccountId / LastAccountId).
+    //   * ConfigManager owns the per-account character roster (one {accountId}_dad.json file per account).
+    //   Account add/delete/merge must update BOTH stores; that scrub logic lives in Plugin (ClearAllDadAccountData
+    //   / DeleteDadAccount). Keep this split in mind — do not duplicate character rosters into this blob.
     public string ClientAccountId { get; set; } = string.Empty;
     public string LastAccountId { get; set; } = string.Empty;
     public string TransportBindHost { get; set; } = string.Empty;
     public int TransportBindPort { get; set; }
     public string AuthorityTargetHost { get; set; } = string.Empty;
     public int AuthorityTargetPort { get; set; }
+    // Review C2(b): optional shared secret. When set, every transport envelope carries an HMAC and inbound
+    // envelopes are rejected unless the HMAC matches — authenticates peers. Empty = no auth (loopback default).
+    public string TransportSharedSecret { get; set; } = string.Empty;
     public int ParticipantReadyTimeoutSeconds { get; set; } = 300;
     public int AssemblyTimeoutSeconds { get; set; } = 120;
     public int HeartbeatStaleSeconds { get; set; } = 12;
@@ -45,6 +55,26 @@ public sealed class Configuration : IPluginConfiguration
     public DadRosterCatalogConfiguration RosterCatalog { get; set; } = new();
     public List<DadScheduledCrewJob> SchedulerQueue { get; set; } = [];
     public List<DadScheduledCrewJobResult> SchedulerHistory { get; set; } = [];
+
+    // Review L3: was a machine-specific hardcoded const in DadSchedulerService; now operator-configurable.
+    public string ClientBootDirectory { get; set; } = @"Z:\!ff14clientboot";
+
+    // Review C2: secure-by-default gate for executing peer-supplied character-load commands over the
+    // transport. Off by default — a remote peer can no longer drive arbitrary slash commands unless the
+    // operator explicitly opts in. (Full HMAC envelope auth is tracked as follow-up work.)
+    public bool AllowRemoteCommandExecution { get; set; } = false;
+
+    // Feature batch A (dadfeatures20260620b):
+    // /dad advanced gate — when on, dangerous options (e.g. completion kill-client/PC) are honored/shown.
+    public bool AdvancedModeEnabled { get; set; } = false;
+    // AutoDuty-style party validation override — lets a run start despite party-composition validation. Default off.
+    public bool PartyValidationOverrideEnabled { get; set; } = false;
+    // Actions to run when a Dad run completes (sound / custom commands / dangerous shutdown).
+    public DadCompletionActions CompletionActions { get; set; } = new();
+
+    // Review M19: operator opt-out for the Questionable reflection bridge (invasive runtime field patching).
+    // Default on (preserves the AutoDuty/ADS handoff); disabling restores any patched values and stops it.
+    public bool QuestionableBridgeEnabled { get; set; } = true;
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

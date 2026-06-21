@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using Dalamud.Plugin.Services;
 using dad.Models;
@@ -38,10 +40,17 @@ public sealed class DadTransportService : IDisposable
     private readonly string registryFilePath;
     private readonly Dictionary<string, DadTransportRegistryEntry> cachedRegistryEntriesByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
+    private const int MaxConcurrentClients = 32;       // Review L4
+    private const int MaxRequestChars = 256 * 1024;    // Review M2
+    private readonly SemaphoreSlim clientSlots = new(MaxConcurrentClients, MaxConcurrentClients);
+    private readonly ConcurrentDictionary<Task, byte> activeClientTasks = new();
     private TcpListener? listener;
     private Task? acceptLoopTask;
     private DateTime nextHeartbeatWriteUtc = DateTime.MinValue;
     private DateTime lastRegistryWriteWarningUtc = DateTime.MinValue;
+    private static readonly TimeSpan AuthorityQueryFailureBackoff = TimeSpan.FromSeconds(10); // Review H1/M4
+    private string lastFailedAuthorityEndpoint = string.Empty;
+    private DateTime nextAuthorityQueryRetryUtc = DateTime.MinValue;
     private readonly Dictionary<string, DateTime> lastRegistryReadWarningUtcByPath = new(StringComparer.OrdinalIgnoreCase);
     private bool localAdvertisementActive;
     private bool localAdvertisementInitialized;
@@ -66,7 +75,9 @@ public sealed class DadTransportService : IDisposable
         this.presenceService = presenceService;
         this.claimService = claimService;
         this.log = log;
-        registryDirectory = Path.Combine(Path.GetTempPath(), "dad-orchestrator", "registry");
+        // Review M3: use the per-user plugin config directory (shared across this user's game instances
+        // for multibox discovery, but not world-readable like %TEMP%) instead of the shared temp root.
+        registryDirectory = Path.Combine(Plugin.PluginInterface.ConfigDirectory.FullName, "orchestrator-registry");
         Directory.CreateDirectory(registryDirectory);
         registryFilePath = Path.Combine(registryDirectory, $"{presenceService.ClientInstanceId}.json");
 
@@ -145,6 +156,9 @@ public sealed class DadTransportService : IDisposable
         {
             cancellation.Cancel();
             StopListener();
+            // Review M11: drain in-flight client handlers (bounded) so they don't run against disposed services.
+            try { Task.WaitAll(activeClientTasks.Keys.ToArray(), TimeSpan.FromSeconds(2)); }
+            catch { /* best-effort drain */ }
         }
         catch
         {
@@ -160,6 +174,10 @@ public sealed class DadTransportService : IDisposable
         {
             // Ignore registry cleanup failures.
         }
+
+        // Review M11: dispose owned synchronization primitives.
+        try { cancellation.Dispose(); } catch { /* ignore */ }
+        try { clientSlots.Dispose(); } catch { /* ignore */ }
     }
 
     public void UpdateHeartbeat(DadParticipantSnapshot localParticipant, bool pluginEnabled, bool localOnlyModeEnabled)
@@ -325,7 +343,29 @@ public sealed class DadTransportService : IDisposable
         => SendEnvelope<DadCharacterLoadCommandDto, DadCharacterLoadResultDto>(participant.Endpoint, MessageCharacterLoadCommand, command);
 
     public DadRunResult? QueryAuthorityStatus(string endpoint)
-        => SendEnvelope<string, DadRunResult>(endpoint, MessageStatusQuery, string.Empty);
+    {
+        // Review H1/M4: this is polled from the framework thread (~1/sec via the DTR refresh). SendEnvelope
+        // blocks up to the socket timeout, so after a failure back off before hammering a dead peer every tick.
+        if (string.Equals(endpoint, lastFailedAuthorityEndpoint, StringComparison.OrdinalIgnoreCase) &&
+            DateTime.UtcNow < nextAuthorityQueryRetryUtc)
+        {
+            return null;
+        }
+
+        var result = SendEnvelope<string, DadRunResult>(endpoint, MessageStatusQuery, string.Empty);
+        if (result == null)
+        {
+            lastFailedAuthorityEndpoint = endpoint;
+            nextAuthorityQueryRetryUtc = DateTime.UtcNow + AuthorityQueryFailureBackoff;
+        }
+        else if (string.Equals(endpoint, lastFailedAuthorityEndpoint, StringComparison.OrdinalIgnoreCase))
+        {
+            lastFailedAuthorityEndpoint = string.Empty;
+            nextAuthorityQueryRetryUtc = DateTime.MinValue;
+        }
+
+        return result;
+    }
 
     public DadRunResult? SendStartRunCommand(string endpoint, DadRunRequest request)
         => SendEnvelope<DadRunRequest, DadRunResult>(endpoint, MessageStartRun, request);
@@ -445,6 +485,17 @@ public sealed class DadTransportService : IDisposable
             CurrentTransport.Availability = "Ready";
             CurrentTransport.LastRequestStatus = $"Dad transport ready on {CurrentTransport.ListenerEndpoint}.";
             IsReady = true;
+
+            // Review C2(b): loud warning when listening on a non-loopback interface without a shared secret —
+            // anyone on the network could send commands. Set Configuration.TransportSharedSecret to require auth.
+            if (!IPAddress.IsLoopback(bindAddress) && string.IsNullOrEmpty(configuration.TransportSharedSecret))
+            {
+                log.Warning(
+                    "[dad] Transport bound to NON-LOOPBACK {Endpoint} without a shared secret — unauthenticated peers can drive this client. Set a TransportSharedSecret.",
+                    CurrentTransport.ListenerEndpoint);
+                CurrentTransport.LastRequestStatus += " (WARNING: non-loopback bind without shared secret.)";
+            }
+
             var activeListener = listener;
             acceptLoopTask = Task.Run(() => AcceptLoopAsync(activeListener, cancellation.Token), cancellation.Token);
         }
@@ -466,7 +517,8 @@ public sealed class DadTransportService : IDisposable
         try
         {
             activeListener?.Stop();
-            acceptLoopTask?.Wait(TimeSpan.FromSeconds(1));
+            // Review M13: don't block the framework thread waiting for the accept loop on a bind change —
+            // Stop()/cancellation makes AcceptTcpClientAsync throw and the loop exits on its own.
         }
         catch
         {
@@ -484,8 +536,23 @@ public sealed class DadTransportService : IDisposable
         {
             try
             {
-                var client = await activeListener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
-                _ = Task.Run(() => HandleClientAsync(client, cancellationToken), cancellationToken);
+                // Review L4: bound concurrent client handlers (backpressure against connection floods).
+                await clientSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                TcpClient client;
+                try
+                {
+                    client = await activeListener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    clientSlots.Release();
+                    throw;
+                }
+
+                // Review M11: track the handler so Dispose can drain in-flight requests.
+                var clientTask = HandleClientWithReleaseAsync(client, cancellationToken);
+                activeClientTasks[clientTask] = 0;
+                _ = clientTask.ContinueWith(t => activeClientTasks.TryRemove(t, out _), TaskScheduler.Default);
             }
             catch (OperationCanceledException)
             {
@@ -502,6 +569,19 @@ public sealed class DadTransportService : IDisposable
         }
     }
 
+    private async Task HandleClientWithReleaseAsync(TcpClient client, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await HandleClientAsync(client, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            client.Dispose();
+            clientSlots.Release();
+        }
+    }
+
     private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
     {
         await using var stream = client.GetStream();
@@ -514,32 +594,29 @@ public sealed class DadTransportService : IDisposable
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
+            // Review M2: cap inbound payload size before deserializing (DoS hardening).
+            if (line.Length > MaxRequestChars)
+            {
+                log.Warning("[dad] Rejected oversized transport request ({Length} chars).", line.Length);
+                return;
+            }
+
             var envelope = DadIpcJson.Deserialize<DadTransportEnvelope>(line);
             if (envelope == null)
                 return;
 
-            RefreshLocalAvailabilityFromConfiguration();
-
-            var response = envelope.MessageType switch
+            // Review C2(b): reject unauthenticated peers when a shared secret is configured.
+            if (!VerifyEnvelopeAuth(envelope))
             {
-                MessageSnapshotRequest => DadIpcJson.Serialize(HandleSnapshotRequest(envelope.PayloadJson)),
-                MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(envelope.PayloadJson)),
-                MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(envelope.PayloadJson)),
-                MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(envelope.PayloadJson)),
-                MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(envelope.PayloadJson)),
-                MessageCancelRun => DadIpcJson.Serialize(HandleCancelRun(envelope.PayloadJson)),
-                MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(envelope.PayloadJson)),
-                MessageStatusQuery => DadIpcJson.Serialize(HandleStatusQuery()),
-                MessageStartRun => DadIpcJson.Serialize(HandleStartRun(envelope.PayloadJson)),
-                MessageRosterCatalogRequest => DadIpcJson.Serialize(HandleRosterCatalogRequest(envelope.PayloadJson)),
-                MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(envelope.PayloadJson)),
-                MessageProfileCatalogRequest => DadIpcJson.Serialize(HandleProfileCatalogRequest(envelope.PayloadJson)),
-                MessageProfileUpdateCommand => DadIpcJson.Serialize(HandleProfileUpdateCommand(envelope.PayloadJson)),
-                MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(envelope.PayloadJson)),
-                MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
-                MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(envelope.PayloadJson)),
-                _ => string.Empty,
-            };
+                log.Warning("[dad] Rejected transport request with invalid/missing auth ({MessageType}).", envelope.MessageType);
+                return;
+            }
+
+            // Review C1/C3/C5/H5/H6: every inbound handler mutates coordinator/presence/claim/worker
+            // state and/or touches game memory. Run the whole dispatch on the Dalamud framework thread
+            // so that state is single-threaded; the socket thread only does I/O and blocks on the result.
+            var response = await Plugin.Framework.RunOnFrameworkThread(() => DispatchEnvelope(envelope))
+                .ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(response))
                 await writer.WriteLineAsync(response.AsMemory(), cancellationToken).ConfigureAwait(false);
@@ -548,6 +625,33 @@ public sealed class DadTransportService : IDisposable
         {
             log.Warning(ex, "[dad] Transport request handling fault.");
         }
+    }
+
+    // Runs on the Dalamud framework thread (see HandleClientAsync). Returns the serialized response.
+    private string DispatchEnvelope(DadTransportEnvelope envelope)
+    {
+        RefreshLocalAvailabilityFromConfiguration();
+
+        return envelope.MessageType switch
+        {
+            MessageSnapshotRequest => DadIpcJson.Serialize(HandleSnapshotRequest(envelope.PayloadJson)),
+            MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(envelope.PayloadJson)),
+            MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(envelope.PayloadJson)),
+            MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(envelope.PayloadJson)),
+            MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(envelope.PayloadJson)),
+            MessageCancelRun => DadIpcJson.Serialize(HandleCancelRun(envelope.PayloadJson)),
+            MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(envelope.PayloadJson)),
+            MessageStatusQuery => DadIpcJson.Serialize(HandleStatusQuery()),
+            MessageStartRun => DadIpcJson.Serialize(HandleStartRun(envelope.PayloadJson)),
+            MessageRosterCatalogRequest => DadIpcJson.Serialize(HandleRosterCatalogRequest(envelope.PayloadJson)),
+            MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(envelope.PayloadJson)),
+            MessageProfileCatalogRequest => DadIpcJson.Serialize(HandleProfileCatalogRequest(envelope.PayloadJson)),
+            MessageProfileUpdateCommand => DadIpcJson.Serialize(HandleProfileUpdateCommand(envelope.PayloadJson)),
+            MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(envelope.PayloadJson)),
+            MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
+            MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(envelope.PayloadJson)),
+            _ => string.Empty,
+        };
     }
 
     private DadPeerSnapshotResponse HandleSnapshotRequest(string payloadJson)
@@ -619,6 +723,21 @@ public sealed class DadTransportService : IDisposable
                 Accepted = true,
                 DryRun = true,
                 Summary = $"Dry-run character-load command accepted: {command.Command}",
+                Snapshot = presenceService.BuildSnapshotCopy(),
+            };
+        }
+
+        // Review C2: do NOT execute a peer-supplied raw command string unless the operator has explicitly
+        // opted in. This closes the remote-arbitrary-command-execution hole (default secure).
+        if (!configuration.AllowRemoteCommandExecution)
+        {
+            log.Warning("[dad] Rejected remote character-load command (AllowRemoteCommandExecution is off).");
+            return new DadCharacterLoadResultDto
+            {
+                CommandId = command.CommandId,
+                Accepted = false,
+                DryRun = false,
+                Summary = "Remote command execution is disabled (enable it in Dad settings to allow this).",
                 Snapshot = presenceService.BuildSnapshotCopy(),
             };
         }
@@ -831,6 +950,18 @@ public sealed class DadTransportService : IDisposable
     private DadWorkerExecutionAck HandleWorkerExecutionCancel(string payloadJson)
     {
         var command = DadIpcJson.Deserialize<DadWorkerExecutionCancel>(payloadJson) ?? new DadWorkerExecutionCancel();
+        if (!remoteMutationsAllowed)
+        {
+            // Review L1: every other mutating handler enforces this gate; cancel must too.
+            return new DadWorkerExecutionAck
+            {
+                RunId = command.RunId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                Accepted = false,
+                Summary = BuildLocalUnavailableReason(),
+            };
+        }
+
         return workerCancelHandler?.Invoke(command) ?? new DadWorkerExecutionAck
         {
             RunId = command.RunId,
@@ -960,10 +1091,12 @@ public sealed class DadTransportService : IDisposable
             using var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
             using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
 
+            var payloadJson = DadIpcJson.Serialize(request);
             var envelope = new DadTransportEnvelope
             {
                 MessageType = messageType,
-                PayloadJson = DadIpcJson.Serialize(request),
+                PayloadJson = payloadJson,
+                Auth = ComputeEnvelopeAuth(messageType, payloadJson), // Review C2(b)
             };
 
             writer.WriteLine(DadIpcJson.Serialize(envelope));
@@ -977,6 +1110,29 @@ public sealed class DadTransportService : IDisposable
             log.Debug(ex, "[dad] Transport send failure for {Endpoint} {MessageType}.", endpoint, messageType);
             return default;
         }
+    }
+
+    // Review C2(b): HMAC-SHA256 over the envelope when a shared secret is configured (empty = auth disabled).
+    private string ComputeEnvelopeAuth(string messageType, string payloadJson)
+    {
+        var secret = configuration.TransportSharedSecret;
+        if (string.IsNullOrEmpty(secret))
+            return string.Empty;
+
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes($"{messageType}\n{payloadJson}"));
+        return Convert.ToBase64String(hash);
+    }
+
+    private bool VerifyEnvelopeAuth(DadTransportEnvelope envelope)
+    {
+        if (string.IsNullOrEmpty(configuration.TransportSharedSecret))
+            return true;
+
+        var expected = ComputeEnvelopeAuth(envelope.MessageType, envelope.PayloadJson);
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(envelope.Auth ?? string.Empty));
     }
 
     private bool TryBuildConfiguredAuthorityEndpoint(out string endpoint)
@@ -1000,9 +1156,18 @@ public sealed class DadTransportService : IDisposable
         if (IPAddress.TryParse(trimmedHost, out var ipAddress))
             return ipAddress;
 
-        var resolved = Dns.GetHostAddresses(trimmedHost);
-        var ipv4 = resolved.FirstOrDefault(static address => address.AddressFamily == AddressFamily.InterNetwork);
-        return ipv4 ?? resolved.First();
+        // Review M10: DNS can throw (SocketException) or return nothing — don't let that crash StartListener
+        // (which would surface only a generic "failed to start"); fall back to loopback instead.
+        try
+        {
+            var resolved = Dns.GetHostAddresses(trimmedHost);
+            var ipv4 = resolved.FirstOrDefault(static address => address.AddressFamily == AddressFamily.InterNetwork);
+            return ipv4 ?? resolved.FirstOrDefault() ?? IPAddress.Loopback;
+        }
+        catch
+        {
+            return IPAddress.Loopback;
+        }
     }
 
     private static string GetAdvertisedListenerHost(string configuredHost, IPAddress boundAddress)
@@ -1302,6 +1467,7 @@ public sealed class DadTransportService : IDisposable
     {
         public string MessageType { get; set; } = string.Empty;
         public string PayloadJson { get; set; } = string.Empty;
+        public string Auth { get; set; } = string.Empty; // Review C2(b): HMAC over MessageType+PayloadJson
     }
 
     private sealed class DadTransportRegistryEntry

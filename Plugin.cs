@@ -126,7 +126,7 @@ public sealed class Plugin : IDalamudPlugin
         KrangleService = new DadKrangleService(Configuration);
         ModuleRegistry = new DadModuleRegistry();
         PresetProviderService = new DadPresetProviderService(ModuleRegistry, () => RosterCatalogService.GetAccountDirectory());
-        PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry);
+        PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry, Configuration);
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
         DutySupportAdsService = new DadDutySupportAdsService(Log);
@@ -223,7 +223,7 @@ public sealed class Plugin : IDalamudPlugin
             DutySupportAdsService,
             CombatRotationService,
             Log);
-        QuestionableBridge = new DadQuestionableReflectionBridge(PluginInterface, Framework, DutyIpcService, Log);
+        QuestionableBridge = new DadQuestionableReflectionBridge(PluginInterface, Framework, DutyIpcService, Log, () => Configuration.QuestionableBridgeEnabled);
 
         Log.Information("[dad] Plugin loaded.");
     }
@@ -1104,16 +1104,9 @@ public sealed class Plugin : IDalamudPlugin
         => ResolvePlannerGroup(PlannerOptions.SelectedPlannerGroupId);
 
     public DadPlannerGroup? ResolvePlannerGroup(string groupIdOrName)
-    {
-        var key = groupIdOrName?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(key))
-            return null;
-
-        return Configuration.PlannerGroups.FirstOrDefault(group =>
-                   string.Equals(group.GroupId, key, StringComparison.OrdinalIgnoreCase))
-               ?? Configuration.PlannerGroups.FirstOrDefault(group =>
-                   string.Equals(group.DisplayName, key, StringComparison.OrdinalIgnoreCase));
-    }
+        // Review M9: use the same ambiguity-rejecting resolver as the IPC path so duplicate
+        // GroupIds/DisplayNames return null instead of an arbitrary list-order pick (wrong roster).
+        => TryResolvePlannerGroupForIpc(groupIdOrName, out var group, out _) ? group : null;
 
     private bool TryResolvePlannerGroupForIpc(
         string groupIdOrName,
@@ -1251,6 +1244,37 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save();
         InvalidatePlannerPreviewCache("planner group duplicated");
         return duplicate;
+    }
+
+    // Feature batch B: create a reusable template from the selected group (drops character bindings).
+    public DadPlannerGroup? CreateTemplateFromSelectedPlannerGroup(string templateName)
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected == null)
+            return null;
+
+        var template = DadPresetTemplateService.CreateTemplateFrom(selected, templateName, DateTime.UtcNow);
+        Configuration.PlannerGroups.Add(template);
+        PlannerOptions.SelectedPlannerGroupId = template.GroupId;
+        Configuration.Save();
+        InvalidatePlannerPreviewCache("planner template created");
+        return template;
+    }
+
+    // Feature batch B: instantiate the selected template into a concrete group, auto-assigning the
+    // live roster to slots by role (no per-run character wiring).
+    public DadPlannerGroup? InstantiateSelectedPlannerTemplate()
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected is not { IsTemplate: true })
+            return null;
+
+        var instance = DadPresetTemplateService.Instantiate(selected, BuildPlannerPool(), DateTime.UtcNow);
+        Configuration.PlannerGroups.Add(instance);
+        PlannerOptions.SelectedPlannerGroupId = instance.GroupId;
+        Configuration.Save();
+        InvalidatePlannerPreviewCache("planner template instantiated");
+        return instance;
     }
 
     public bool RenameSelectedPlannerGroup(string displayName)
@@ -2306,7 +2330,7 @@ public sealed class Plugin : IDalamudPlugin
         var result = RunCoordinatorService.StartTasks(request);
         PrimeAuthorityCacheFromRun(request, result);
         PrintStatus(BuildShellRunSummary(label, request, result));
-        if (RequiresServerDadAuthority(request))
+        if (DadCoordinatorService.RequiresServerDadAuthority(request))
         {
             var authorityView = GetVisibleRunState(forceAuthorityRefresh: false).AuthorityView;
             PrintStatus($"Authority: {authorityView.TimelineText} | {authorityView.FreshnessText}");
@@ -2643,7 +2667,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private static string BuildShellRoutingText(DadRunRequest request, DadRunResult result)
     {
-        var routedToServerDad = RequiresServerDadAuthority(request);
+        var routedToServerDad = DadCoordinatorService.RequiresServerDadAuthority(request);
         if (!routedToServerDad)
         {
             return result.Status == DadRunStatus.Rejected
@@ -2658,7 +2682,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void PrimeAuthorityCacheFromRun(DadRunRequest request, DadRunResult result)
     {
-        if (!RequiresServerDadAuthority(request) || Configuration.LocalOnlyModeEnabled)
+        if (!DadCoordinatorService.RequiresServerDadAuthority(request) || Configuration.LocalOnlyModeEnabled)
             return;
 
         ApplyKnownAuthorityMetadata(result);
@@ -2708,6 +2732,38 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("debug off", StringComparison.OrdinalIgnoreCase))
         {
             SetDebugUiEnabled(false);
+            return;
+        }
+
+        // Feature batch A: gate for dangerous/hidden options (e.g. completion kill-client/PC).
+        if (trimmed.Equals("advanced", StringComparison.OrdinalIgnoreCase))
+        {
+            Configuration.AdvancedModeEnabled = !Configuration.AdvancedModeEnabled;
+            Configuration.Save();
+            PrintStatus($"Dad advanced mode {(Configuration.AdvancedModeEnabled ? "enabled — dangerous options available" : "disabled — dangerous options hidden")}.");
+            return;
+        }
+
+        if (trimmed.Equals("advanced on", StringComparison.OrdinalIgnoreCase))
+        {
+            Configuration.AdvancedModeEnabled = true;
+            Configuration.Save();
+            PrintStatus("Dad advanced mode enabled — dangerous options available.");
+            return;
+        }
+
+        if (trimmed.Equals("advanced off", StringComparison.OrdinalIgnoreCase))
+        {
+            Configuration.AdvancedModeEnabled = false;
+            Configuration.Save();
+            PrintStatus("Dad advanced mode disabled — dangerous options hidden.");
+            return;
+        }
+
+        // Feature batch A: anonymized diagnostic dump for GitHub issues.
+        if (trimmed.Equals("report", StringComparison.OrdinalIgnoreCase))
+        {
+            GenerateIssueReport();
             return;
         }
 
@@ -3175,64 +3231,109 @@ public sealed class Plugin : IDalamudPlugin
             runState.AuthorityView.FreshnessText);
     }
 
-    private static bool RequiresServerDadAuthority(DadRunRequest request)
+    // Feature batch A: write an anonymized diagnostic dump for GitHub issues (/dad report).
+    private void GenerateIssueReport()
     {
-        if (request.Orchestration.LocalOnlyOverride)
-            return false;
-
-        if (request.Orchestration.RosterIntent.RequireRemoteParticipants ||
-            request.Orchestration.RosterIntent.ExpectedPartySize > 1)
+        try
         {
-            return true;
-        }
+            var pool = CharacterIntelligenceService.CurrentPool;
+            var version = GetType().Assembly.GetName().Version?.ToString() ?? "unknown";
+            var lines = new List<string>
+            {
+                $"# Dad issue report ({DateTime.UtcNow:u})",
+                $"{PluginInfo.DisplayName} v{version} — character names / account ids anonymized (numpty0 / acct0 / ...).",
+                string.Empty,
+                "## Config",
+                $"- PluginEnabled={Configuration.PluginEnabled} ServerDad={Configuration.RunAsServerDad} LocalOnly={Configuration.LocalOnlyModeEnabled} Advanced={Configuration.AdvancedModeEnabled} PartyValidationOverride={Configuration.PartyValidationOverrideEnabled} AllowRemoteCmd={Configuration.AllowRemoteCommandExecution}",
+                $"- CombatRotationMode={Configuration.CombatRotationMode} DtrBarEnabled={Configuration.DtrBarEnabled}",
+                $"- Transport bind={Configuration.TransportBindHost}:{Configuration.TransportBindPort} authority={Configuration.AuthorityTargetHost}:{Configuration.AuthorityTargetPort}",
+                $"- RunHistory={Configuration.RunHistory?.Count ?? 0} PlannerGroups={Configuration.PlannerGroups?.Count ?? 0} LaunchProfiles={Configuration.LaunchProfiles?.Count ?? 0}",
+                string.Empty,
+                "## Transport",
+                "```json",
+                DadIpcJson.Serialize(TransportService.CurrentTransport),
+                "```",
+                "## Current run",
+                "```json",
+                DadIpcJson.Serialize(RunCoordinatorService.GetLocalResult()),
+                "```",
+                "## Character pool",
+                "```json",
+                DadIpcJson.Serialize(pool),
+                "```",
+            };
 
-        return request.Dungeon?.QueueViaLanParty == true ||
-               request.PremadeDuty != null ||
-               request.DailyMsq != null ||
-               request.Mogtome != null ||
-               request.Commendation != null ||
-               request.Astrope != null;
+            var anonymized = DadIssueReport.Anonymize(string.Join("\n", lines), DadIssueReport.BuildAnonymizationMap(pool, Configuration, PresenceService));
+            var path = Path.Combine(PluginInterface.ConfigDirectory.FullName, $"dad-issue-report-{DateTime.UtcNow:yyyyMMdd-HHmmss}.md");
+            File.WriteAllText(path, anonymized);
+            PrintStatus($"Dad issue report written (char names anonymized): {path}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[dad] Failed to generate issue report.");
+            PrintStatus("Failed to generate Dad issue report; see /xllog for detail.");
+        }
+    }
+
+    // Per-frame step isolation (review H7): one faulting service must not throw out of the
+    // Dalamud framework tick (which can auto-unsubscribe the handler and silently freeze the plugin).
+    private void RunFrameworkStep(string stepName, Action step)
+    {
+        try
+        {
+            step();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[dad] Framework step '{Step}' threw; continuing.", stepName);
+        }
     }
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        FlushDebouncedUiWrites(force: false);
-        UpdateDtrBar();
-        if (ClientState.IsLoggedIn && ObjectTable.LocalPlayer != null)
+        RunFrameworkStep("FlushDebouncedUiWrites", () => FlushDebouncedUiWrites(force: false));
+        RunFrameworkStep("UpdateDtrBar", UpdateDtrBar);
+        RunFrameworkStep("RuntimeIdentity", () =>
         {
-            var player = ObjectTable.LocalPlayer;
-            ConfigManager.EnsureRuntimeIdentity(
-                player.Name.ToString(),
-                player.HomeWorld.Value.Name.ToString(),
-                Configuration.ClientAccountId);
-
-            if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentAccountId)
-                && !string.Equals(Configuration.LastAccountId, ConfigManager.CurrentAccountId, StringComparison.Ordinal))
+            if (ClientState.IsLoggedIn && ObjectTable.LocalPlayer != null)
             {
-                Configuration.LastAccountId = ConfigManager.CurrentAccountId;
-                Configuration.Save();
-            }
-        }
+                var player = ObjectTable.LocalPlayer;
+                ConfigManager.EnsureRuntimeIdentity(
+                    player.Name.ToString(),
+                    player.HomeWorld.Value.Name.ToString(),
+                    Configuration.ClientAccountId);
 
-        CharacterIntelligenceService.Update();
-        PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
-        TransportService.UpdateHeartbeat(
+                if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentAccountId)
+                    && !string.Equals(Configuration.LastAccountId, ConfigManager.CurrentAccountId, StringComparison.Ordinal))
+                {
+                    Configuration.LastAccountId = ConfigManager.CurrentAccountId;
+                    Configuration.Save();
+                }
+            }
+        });
+
+        RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
+        RunFrameworkStep("Presence", () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint));
+        RunFrameworkStep("TransportHeartbeat", () => TransportService.UpdateHeartbeat(
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
-            Configuration.LocalOnlyModeEnabled);
-        ProfileDirectoryService.Update();
-        WorkerExecutionService.Update();
-        SchedulerService.TickScheduleEnqueue();
-        if (CanAdvanceSchedulerQueue())
+            Configuration.LocalOnlyModeEnabled));
+        RunFrameworkStep("ProfileDirectory", () => ProfileDirectoryService.Update());
+        RunFrameworkStep("WorkerExecution", () => WorkerExecutionService.Update());
+        RunFrameworkStep("SchedulerEnqueue", () => SchedulerService.TickScheduleEnqueue());
+        RunFrameworkStep("SchedulerUpdate", () =>
         {
-            SchedulerService.Update(
-                ResolvePlannerGroup,
-                BuildSchedulerPlannerPreview,
-                StartScheduledPlannerRequest);
-        }
-        RunCoordinatorService.Update();
-        DutyIpcService.Update();
-        DutyIpcService.EnsureRegistered();
+            if (CanAdvanceSchedulerQueue())
+            {
+                SchedulerService.Update(
+                    ResolvePlannerGroup,
+                    BuildSchedulerPlannerPreview,
+                    StartScheduledPlannerRequest);
+            }
+        });
+        RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
+        RunFrameworkStep("DutyIpc", () => DutyIpcService.Update());
+        RunFrameworkStep("DutyIpcRegister", () => DutyIpcService.EnsureRegistered());
     }
 
     private void OnLogin()

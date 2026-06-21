@@ -3,6 +3,12 @@ namespace dad.Services;
 internal static class DadIpcContract
 {
     public const string Prefix = "dad";
+
+    // Review M17: bump this on any breaking change to the dad.* gate payload shapes so external
+    // consumers / remote peers can detect schema drift via the dad.ApiVersion gate.
+    public const int ApiVersion = 1;
+    public const string Version = $"{Prefix}.ApiVersion";
+
     public const string IsReady = $"{Prefix}.IsReady";
     public const string GetStatus = $"{Prefix}.GetStatus";
     public const string GetLeaderStatus = $"{Prefix}.GetLeaderStatus";
@@ -30,6 +36,7 @@ internal static class DadIpcContract
     public const string CancelScheduledJob = $"{Prefix}.CancelScheduledJob";
     public const string GetModuleCapabilities = $"{Prefix}.GetModuleCapabilities";
     public const string GetSupportedJobHints = $"{Prefix}.GetSupportedJobHints";
+    // Review M17: StartRun is an alias of StartTasks (same handler/payload) kept for back-compat.
     public const string StartTasks = $"{Prefix}.StartTasks";
     public const string StartRun = $"{Prefix}.StartRun";
     public const string StartPlannerGroup = $"{Prefix}.StartPlannerGroup";
