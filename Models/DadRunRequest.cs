@@ -255,12 +255,15 @@ public sealed class DadRunStopPolicy
     public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
     public string TargetCharacterLabel { get; set; } = string.Empty;
     public int SafetyCap { get; set; } = DefaultSafetyCap;
+    public uint StopItemId { get; set; }              // feature batch A: ItemTarget mode
+    public int StopItemTargetCount { get; set; } = 1; // feature batch A: ItemTarget mode
 
     public DadRunStopPolicy Normalize()
     {
         AfterRuns = Math.Clamp(AfterRuns <= 0 ? 1 : AfterRuns, 1, 200);
         TargetLevel = Math.Clamp(TargetLevel <= 0 ? DefaultTargetLevel : TargetLevel, 1, 999);
         SafetyCap = Math.Clamp(SafetyCap <= 0 ? DefaultSafetyCap : SafetyCap, 1, 200);
+        StopItemTargetCount = Math.Clamp(StopItemTargetCount <= 0 ? 1 : StopItemTargetCount, 1, 99999);
         TargetCharacterKey = new DadCharacterKey((TargetCharacterKey.Value ?? string.Empty).Trim());
         TargetCharacterLabel = TargetCharacterLabel?.Trim() ?? string.Empty;
         return this;
@@ -275,6 +278,8 @@ public sealed class DadRunStopPolicy
             TargetCharacterKey = TargetCharacterKey,
             TargetCharacterLabel = TargetCharacterLabel,
             SafetyCap = SafetyCap,
+            StopItemId = StopItemId,
+            StopItemTargetCount = StopItemTargetCount,
         };
 
     public int GetSafetyCap()
@@ -288,6 +293,7 @@ public sealed class DadRunStopPolicy
             DadPlannerStopMode.TargetLevel => TargetCharacterKey.IsEmpty
                 ? $"target level {TargetLevel} for selected character, safety cap {GetSafetyCap()} run(s)"
                 : $"target level {TargetLevel} for {TargetCharacterKey}, safety cap {GetSafetyCap()} run(s)",
+            DadPlannerStopMode.ItemTarget => $"until item {StopItemId} reaches {Math.Max(1, StopItemTargetCount)}, safety cap {GetSafetyCap()} run(s)",
             _ => $"{Math.Max(1, AfterRuns)} run(s)",
         };
 }

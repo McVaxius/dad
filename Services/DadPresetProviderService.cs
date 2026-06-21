@@ -808,6 +808,7 @@ public sealed class DadPresetProviderService
         => stopMode switch
         {
             DadPlannerStopMode.TargetLevel => "Target level",
+            DadPlannerStopMode.ItemTarget => "Item target", // feature batch A
             _ => "After runs",
         };
 

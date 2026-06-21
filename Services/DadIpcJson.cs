@@ -4,7 +4,11 @@ namespace dad.Services;
 
 internal static class DadIpcJson
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // Review M2: cap nesting depth so a malicious/garbled peer payload can't exhaust the stack/CPU.
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        MaxDepth = 32,
+    };
 
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, JsonOptions);
 

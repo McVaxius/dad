@@ -4,91 +4,101 @@ namespace dad.Services;
 
 public sealed class DadClaimService
 {
+    // Review C4: lease state is read/written from both the framework thread (coordinator) and the
+    // transport background thread; every method that touches the dictionaries below holds this lock
+    // so check-then-act sequences are atomic and enumeration never races a Remove.
+    private readonly object gate = new();
     private readonly Dictionary<string, DadParticipantLeaseRecord> activeLeasesBySlot = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadParticipantLeaseRecord> localAcceptedLeasesByCharacter = new(StringComparer.OrdinalIgnoreCase);
 
     public DadParticipantLeaseRecord IssueLease(DadClaimRequestDto request, DadParticipantSnapshot participant, TimeSpan leaseDuration)
     {
-        var now = DateTime.UtcNow;
-        if (activeLeasesBySlot.TryGetValue(request.SlotId, out var existing) &&
-            string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal))
+        lock (gate)
         {
-            existing.RenewedUtc = now;
-            existing.ExpiresUtc = now + leaseDuration;
-            existing.State = DadParticipantLeaseState.Pending;
-            existing.Summary = $"Renewed lease for {request.RequiredCharacterKey}.";
-            return existing.Clone();
+            var now = DateTime.UtcNow;
+            if (activeLeasesBySlot.TryGetValue(request.SlotId, out var existing) &&
+                string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal))
+            {
+                existing.RenewedUtc = now;
+                existing.ExpiresUtc = now + leaseDuration;
+                existing.State = DadParticipantLeaseState.Pending;
+                existing.Summary = $"Renewed lease for {request.RequiredCharacterKey}.";
+                return existing.Clone();
+            }
+
+            var lease = new DadParticipantLeaseRecord
+            {
+                RunId = request.RunId,
+                SlotId = request.SlotId,
+                AssignedAccountKey = request.RequiredAccountKey,
+                AssignedCharacterKey = request.RequiredCharacterKey,
+                OwningWorkerSessionId = participant.WorkerSessionId,
+                IssuedUtc = now,
+                RenewedUtc = now,
+                ExpiresUtc = now + leaseDuration,
+                State = DadParticipantLeaseState.Pending,
+                Summary = $"Issued pending lease for {request.RequiredCharacterKey}.",
+            };
+
+            activeLeasesBySlot[request.SlotId] = lease.Clone();
+            return lease;
         }
-
-        var lease = new DadParticipantLeaseRecord
-        {
-            RunId = request.RunId,
-            SlotId = request.SlotId,
-            AssignedAccountKey = request.RequiredAccountKey,
-            AssignedCharacterKey = request.RequiredCharacterKey,
-            OwningWorkerSessionId = participant.WorkerSessionId,
-            IssuedUtc = now,
-            RenewedUtc = now,
-            ExpiresUtc = now + leaseDuration,
-            State = DadParticipantLeaseState.Pending,
-            Summary = $"Issued pending lease for {request.RequiredCharacterKey}.",
-        };
-
-        activeLeasesBySlot[request.SlotId] = lease.Clone();
-        return lease;
     }
 
     public DadClaimDecisionDto TryClaimLocal(DadClaimRequestDto request, DadParticipantSnapshot participant)
     {
-        var lease = request.Lease?.Clone() ?? new DadParticipantLeaseRecord
+        lock (gate)
         {
-            RunId = request.RunId,
-            SlotId = request.SlotId,
-            AssignedAccountKey = request.RequiredAccountKey,
-            AssignedCharacterKey = request.RequiredCharacterKey,
-            OwningWorkerSessionId = participant.WorkerSessionId,
-            IssuedUtc = DateTime.UtcNow,
-            RenewedUtc = DateTime.UtcNow,
-            ExpiresUtc = DateTime.UtcNow.AddSeconds(20),
-            State = DadParticipantLeaseState.Pending,
-        };
+            var lease = request.Lease?.Clone() ?? new DadParticipantLeaseRecord
+            {
+                RunId = request.RunId,
+                SlotId = request.SlotId,
+                AssignedAccountKey = request.RequiredAccountKey,
+                AssignedCharacterKey = request.RequiredCharacterKey,
+                OwningWorkerSessionId = participant.WorkerSessionId,
+                IssuedUtc = DateTime.UtcNow,
+                RenewedUtc = DateTime.UtcNow,
+                ExpiresUtc = DateTime.UtcNow.AddSeconds(20),
+                State = DadParticipantLeaseState.Pending,
+            };
 
-        var characterKey = participant.ActiveCharacterKey.ToString();
-        if (!string.IsNullOrWhiteSpace(request.RequiredAccountKey) &&
-            !string.Equals(participant.ManagedAccountKey, request.RequiredAccountKey.ToString(), StringComparison.OrdinalIgnoreCase))
-        {
-            lease.State = DadParticipantLeaseState.Denied;
-            lease.Summary = $"Wrong account active ({participant.ManagedAccountKey}).";
-            return BuildDecision(request, participant, granted: false, DadClaimState.Denied, DadParticipantLeaseState.Denied, lease.Summary, lease);
+            var characterKey = participant.ActiveCharacterKey.ToString();
+            if (!string.IsNullOrWhiteSpace(request.RequiredAccountKey) &&
+                !string.Equals(participant.ManagedAccountKey, request.RequiredAccountKey.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                lease.State = DadParticipantLeaseState.Denied;
+                lease.Summary = $"Wrong account active ({participant.ManagedAccountKey}).";
+                return BuildDecision(request, participant, granted: false, DadClaimState.Denied, DadParticipantLeaseState.Denied, lease.Summary, lease);
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.RequiredCharacterKey) &&
+                !string.Equals(characterKey, request.RequiredCharacterKey.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                lease.State = DadParticipantLeaseState.Denied;
+                lease.Summary = $"Wrong character active ({characterKey}).";
+                return BuildDecision(request, participant, granted: false, DadClaimState.Denied, DadParticipantLeaseState.Denied, lease.Summary, lease);
+            }
+
+            if (string.IsNullOrWhiteSpace(characterKey))
+            {
+                lease.State = DadParticipantLeaseState.Denied;
+                lease.Summary = "Worker has no claimable character key.";
+                return BuildDecision(request, participant, granted: false, DadClaimState.Denied, DadParticipantLeaseState.Denied, lease.Summary, lease);
+            }
+
+            if (localAcceptedLeasesByCharacter.TryGetValue(characterKey, out var existing) &&
+                !string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal))
+            {
+                lease.State = DadParticipantLeaseState.Collided;
+                lease.Summary = $"Character {characterKey} already leased by {existing.RunId}.";
+                return BuildDecision(request, participant, granted: false, DadClaimState.Collided, DadParticipantLeaseState.Collided, lease.Summary, lease);
+            }
+
+            lease.State = DadParticipantLeaseState.Granted;
+            lease.RenewedUtc = DateTime.UtcNow;
+            localAcceptedLeasesByCharacter[characterKey] = lease.Clone();
+            return BuildDecision(request, participant, granted: true, DadClaimState.Granted, DadParticipantLeaseState.Granted, $"Granted lease for {characterKey}.", lease);
         }
-
-        if (!string.IsNullOrWhiteSpace(request.RequiredCharacterKey) &&
-            !string.Equals(characterKey, request.RequiredCharacterKey.ToString(), StringComparison.OrdinalIgnoreCase))
-        {
-            lease.State = DadParticipantLeaseState.Denied;
-            lease.Summary = $"Wrong character active ({characterKey}).";
-            return BuildDecision(request, participant, granted: false, DadClaimState.Denied, DadParticipantLeaseState.Denied, lease.Summary, lease);
-        }
-
-        if (string.IsNullOrWhiteSpace(characterKey))
-        {
-            lease.State = DadParticipantLeaseState.Denied;
-            lease.Summary = "Worker has no claimable character key.";
-            return BuildDecision(request, participant, granted: false, DadClaimState.Denied, DadParticipantLeaseState.Denied, lease.Summary, lease);
-        }
-
-        if (localAcceptedLeasesByCharacter.TryGetValue(characterKey, out var existing) &&
-            !string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal))
-        {
-            lease.State = DadParticipantLeaseState.Collided;
-            lease.Summary = $"Character {characterKey} already leased by {existing.RunId}.";
-            return BuildDecision(request, participant, granted: false, DadClaimState.Collided, DadParticipantLeaseState.Collided, lease.Summary, lease);
-        }
-
-        lease.State = DadParticipantLeaseState.Granted;
-        lease.RenewedUtc = DateTime.UtcNow;
-        localAcceptedLeasesByCharacter[characterKey] = lease.Clone();
-        return BuildDecision(request, participant, granted: true, DadClaimState.Granted, DadParticipantLeaseState.Granted, $"Granted lease for {characterKey}.", lease);
     }
 
     public void AcknowledgeLease(DadClaimDecisionDto decision)
@@ -96,63 +106,77 @@ public sealed class DadClaimService
         if (decision.Lease == null || string.IsNullOrWhiteSpace(decision.Lease.SlotId))
             return;
 
-        if (decision.LeaseState == DadParticipantLeaseState.Released)
+        lock (gate)
         {
-            activeLeasesBySlot.Remove(decision.Lease.SlotId);
-            return;
-        }
+            if (decision.LeaseState == DadParticipantLeaseState.Released)
+            {
+                activeLeasesBySlot.Remove(decision.Lease.SlotId);
+                return;
+            }
 
-        activeLeasesBySlot[decision.Lease.SlotId] = decision.Lease.Clone();
+            activeLeasesBySlot[decision.Lease.SlotId] = decision.Lease.Clone();
+        }
     }
 
     public IReadOnlyList<DadParticipantLeaseRecord> GetLeasesForRun(string runId)
-        => activeLeasesBySlot.Values
-            .Where(lease => string.Equals(lease.RunId, runId, StringComparison.Ordinal))
-            .OrderBy(static lease => lease.SlotId, StringComparer.OrdinalIgnoreCase)
-            .Select(static lease => lease.Clone())
-            .ToList();
+    {
+        lock (gate)
+        {
+            return activeLeasesBySlot.Values
+                .Where(lease => string.Equals(lease.RunId, runId, StringComparison.Ordinal))
+                .OrderBy(static lease => lease.SlotId, StringComparer.OrdinalIgnoreCase)
+                .Select(static lease => lease.Clone())
+                .ToList();
+        }
+    }
 
     public IReadOnlyList<DadParticipantLeaseRecord> SweepExpiredLeases(DateTime utcNow)
     {
-        var expired = activeLeasesBySlot.Values
-            .Where(lease => utcNow >= lease.ExpiresUtc)
-            .Select(static lease => lease.Clone())
-            .ToList();
-
-        foreach (var lease in expired)
+        lock (gate)
         {
-            lease.State = DadParticipantLeaseState.Stale;
-            activeLeasesBySlot.Remove(lease.SlotId);
+            var expired = activeLeasesBySlot.Values
+                .Where(lease => utcNow >= lease.ExpiresUtc)
+                .Select(static lease => lease.Clone())
+                .ToList();
+
+            foreach (var lease in expired)
+            {
+                lease.State = DadParticipantLeaseState.Stale;
+                activeLeasesBySlot.Remove(lease.SlotId);
+            }
+
+            var localExpiredKeys = localAcceptedLeasesByCharacter
+                .Where(pair => utcNow >= pair.Value.ExpiresUtc)
+                .Select(static pair => pair.Key)
+                .ToList();
+
+            foreach (var key in localExpiredKeys)
+                localAcceptedLeasesByCharacter.Remove(key);
+
+            return expired;
         }
-
-        var localExpiredKeys = localAcceptedLeasesByCharacter
-            .Where(pair => utcNow >= pair.Value.ExpiresUtc)
-            .Select(static pair => pair.Key)
-            .ToList();
-
-        foreach (var key in localExpiredKeys)
-            localAcceptedLeasesByCharacter.Remove(key);
-
-        return expired;
     }
 
     public void ReleaseClaims(string runId)
     {
-        var slotIds = activeLeasesBySlot
-            .Where(pair => string.Equals(pair.Value.RunId, runId, StringComparison.Ordinal))
-            .Select(static pair => pair.Key)
-            .ToList();
+        lock (gate)
+        {
+            var slotIds = activeLeasesBySlot
+                .Where(pair => string.Equals(pair.Value.RunId, runId, StringComparison.Ordinal))
+                .Select(static pair => pair.Key)
+                .ToList();
 
-        foreach (var slotId in slotIds)
-            activeLeasesBySlot.Remove(slotId);
+            foreach (var slotId in slotIds)
+                activeLeasesBySlot.Remove(slotId);
 
-        var characterKeys = localAcceptedLeasesByCharacter
-            .Where(pair => string.Equals(pair.Value.RunId, runId, StringComparison.Ordinal))
-            .Select(static pair => pair.Key)
-            .ToList();
+            var characterKeys = localAcceptedLeasesByCharacter
+                .Where(pair => string.Equals(pair.Value.RunId, runId, StringComparison.Ordinal))
+                .Select(static pair => pair.Key)
+                .ToList();
 
-        foreach (var key in characterKeys)
-            localAcceptedLeasesByCharacter.Remove(key);
+            foreach (var key in characterKeys)
+                localAcceptedLeasesByCharacter.Remove(key);
+        }
     }
 
     private static DadClaimDecisionDto BuildDecision(

@@ -6,11 +6,13 @@ public sealed class DadPlannerService
 {
     private readonly DadPresetProviderService presetProviderService;
     private readonly DadModuleRegistry moduleRegistry;
+    private readonly Configuration configuration;
 
-    public DadPlannerService(DadPresetProviderService presetProviderService, DadModuleRegistry moduleRegistry)
+    public DadPlannerService(DadPresetProviderService presetProviderService, DadModuleRegistry moduleRegistry, Configuration configuration)
     {
         this.presetProviderService = presetProviderService;
         this.moduleRegistry = moduleRegistry;
+        this.configuration = configuration;
     }
 
     public DadRunPlan? BuildPlan(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
@@ -298,7 +300,7 @@ public sealed class DadPlannerService
             return null;
         }
 
-        if (!ValidateRequiredRuntimeParticipants(request, pool, out rejectionReason))
+        if (!ValidateRequiredRuntimeParticipants(request, pool, configuration.PartyValidationOverrideEnabled, out rejectionReason))
             return null;
 
         var localCharacterKey = pool.Characters
@@ -321,7 +323,7 @@ public sealed class DadPlannerService
         };
     }
 
-    private static bool ValidateRequiredRuntimeParticipants(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
+    private static bool ValidateRequiredRuntimeParticipants(DadRunRequest request, DadCharacterPool pool, bool partyValidationOverride, out string rejectionReason)
     {
         rejectionReason = string.Empty;
         var requiredAccounts = request.Orchestration.RequiredAccountKeys
@@ -358,6 +360,11 @@ public sealed class DadPlannerService
             rejectionReason = $"Required character '{duplicateCharacter}' appears in multiple planned slots.";
             return false;
         }
+
+        // Feature batch A: party-validation override skips runtime connectivity/readiness checks below.
+        // Duplicate-slot checks above are correctness (prevent double-claims) and stay enforced. Default off.
+        if (partyValidationOverride)
+            return true;
 
         foreach (var account in requiredAccounts)
         {

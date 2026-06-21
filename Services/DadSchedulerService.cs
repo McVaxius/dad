@@ -6,7 +6,7 @@ namespace dad.Services;
 
 public sealed class DadSchedulerService
 {
-    private const string ClientBootDirectory = @"Z:\!ff14clientboot";
+    private string ClientBootDirectory => configuration.ClientBootDirectory;
     private const int DefaultScheduleCadenceHours = 18;
     private const int MaxSchedulerHistory = 50;
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(2);
@@ -347,14 +347,14 @@ public sealed class DadSchedulerService
     {
         if (string.IsNullOrWhiteSpace(profile.BatchPath))
             return "Launch profile batch path is required.";
-        if (!IsAllowedBootBatchPath(profile.BatchPath))
+        if (!IsAllowedBootBatchPath(profile.BatchPath, ClientBootDirectory))
             return $"Launch profile must reference a .bat under {ClientBootDirectory}.";
         if (!File.Exists(profile.BatchPath))
             return $"Launch profile batch path not found: {profile.BatchPath}.";
         var normalizedIncomingPath = Path.GetFullPath(profile.BatchPath);
         if (configuration.LaunchProfiles.Any(existing =>
                 !string.Equals(existing.ProfileId, existingProfileId, StringComparison.OrdinalIgnoreCase) &&
-                IsAllowedBootBatchPath(existing.BatchPath) &&
+                IsAllowedBootBatchPath(existing.BatchPath, ClientBootDirectory) &&
                 string.Equals(Path.GetFullPath(existing.BatchPath), normalizedIncomingPath, StringComparison.OrdinalIgnoreCase)))
         {
             return $"Another launch profile already uses {profile.BatchPath}.";
@@ -1370,7 +1370,7 @@ public sealed class DadSchedulerService
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' is dry-run only; Dad will not start clients.";
             else if (string.IsNullOrWhiteSpace(profile.BatchPath))
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' has no batch path.";
-            else if (!IsAllowedBootBatchPath(profile.BatchPath))
+            else if (!IsAllowedBootBatchPath(profile.BatchPath, ClientBootDirectory))
                 state.BlockedReason = $"Launch profile '{profile.DisplayName}' must be an imported .bat under {ClientBootDirectory}.";
             else if (!File.Exists(profile.BatchPath))
                 state.BlockedReason = $"Launch profile batch path not found: {profile.BatchPath}.";
@@ -1576,7 +1576,7 @@ public sealed class DadSchedulerService
             return false;
         }
 
-        if (!IsAllowedBootBatchPath(profile.BatchPath))
+        if (!IsAllowedBootBatchPath(profile.BatchPath, ClientBootDirectory))
         {
             blocker = $"Launch profile '{profile.DisplayName}' must be an imported .bat under {ClientBootDirectory}.";
             return false;
@@ -1811,9 +1811,10 @@ public sealed class DadSchedulerService
     private static int ResolveScheduleCadenceHours(int cadenceHours)
         => Math.Clamp(cadenceHours <= 0 ? DefaultScheduleCadenceHours : cadenceHours, 1, 24 * 30);
 
-    private static bool IsAllowedBootBatchPath(string batchPath)
+    private static bool IsAllowedBootBatchPath(string batchPath, string bootDirectory)
     {
         if (string.IsNullOrWhiteSpace(batchPath) ||
+            string.IsNullOrWhiteSpace(bootDirectory) ||
             !string.Equals(Path.GetExtension(batchPath), ".bat", StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -1821,7 +1822,7 @@ public sealed class DadSchedulerService
 
         try
         {
-            var root = Path.GetFullPath(ClientBootDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar);
+            var root = Path.GetFullPath(bootDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar);
             var fullPath = Path.GetFullPath(batchPath);
             return fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase);
         }

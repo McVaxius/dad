@@ -10,8 +10,11 @@ namespace dad.Windows;
 public sealed class ConfigWindow : Window, IDisposable
 {
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
+    private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
     private readonly Plugin plugin;
+    private string draftCompletionCommands = string.Empty;
+    private bool completionDraftInitialized;
     private string draftTransportBindHost = string.Empty;
     private int draftTransportBindPort;
     private string draftAuthorityTargetHost = string.Empty;
@@ -100,6 +103,12 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Completion & Safety"))
+            {
+                DrawCompletionSafetyTab(configuration);
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("About"))
             {
                 DrawAboutTab();
@@ -109,6 +118,133 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.EndTabBar();
         }
     }
+
+    // Feature batch A (dadfeatures20260620b): exposes the advanced gate, party-validation override,
+    // and completion actions. Dangerous kill actions are only shown when Advanced mode is on.
+    private void DrawCompletionSafetyTab(Configuration configuration)
+    {
+        var advanced = configuration.AdvancedModeEnabled;
+        if (ImGui.Checkbox("Advanced mode (show dangerous options)", ref advanced))
+        {
+            configuration.AdvancedModeEnabled = advanced;
+            configuration.Save();
+        }
+
+        DrawStatusRow("Advanced mode", configuration.AdvancedModeEnabled
+            ? "On — dangerous options available."
+            : "Off. Also toggle with /dad advanced.");
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("Party validation");
+
+        var partyOverride = configuration.PartyValidationOverrideEnabled;
+        if (ImGui.Checkbox("Party validation override", ref partyOverride))
+        {
+            configuration.PartyValidationOverrideEnabled = partyOverride;
+            configuration.Save();
+        }
+
+        ImGui.TextWrapped("When on, Dad skips runtime connectivity/readiness checks before starting a run. Duplicate-slot checks stay enforced. Default off.");
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("Integrations");
+
+        var questionableBridge = configuration.QuestionableBridgeEnabled;
+        if (ImGui.Checkbox("Questionable reflection bridge (AutoDuty/ADS handoff)", ref questionableBridge))
+        {
+            configuration.QuestionableBridgeEnabled = questionableBridge;
+            configuration.Save();
+        }
+
+        ImGui.TextWrapped("Disabling restores any patched Questionable values and stops the bridge. Leave on unless it causes issues.");
+
+        var sharedSecret = configuration.TransportSharedSecret;
+        if (ImGui.InputText("Transport shared secret (HMAC auth)", ref sharedSecret, 128))
+        {
+            configuration.TransportSharedSecret = sharedSecret;
+            configuration.Save();
+        }
+
+        ImGui.TextWrapped("Optional peer authentication. When set, every transport message is HMAC-signed and all peers must use the same secret. Strongly recommended for non-loopback (LAN) binds. Empty = no auth (loopback only).");
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("Completion actions (run when a Dad run completes)");
+
+        var actions = configuration.CompletionActions;
+
+        var playSound = actions.PlaySound;
+        if (ImGui.Checkbox("Play sound on completion", ref playSound))
+        {
+            actions.PlaySound = playSound;
+            configuration.Save();
+        }
+
+        if (actions.PlaySound)
+        {
+            var soundId = actions.SoundEffectId;
+            if (ImGui.InputInt("Sound effect (1-16)", ref soundId))
+            {
+                actions.SoundEffectId = Math.Clamp(soundId, 1, 16);
+                configuration.Save();
+            }
+        }
+
+        var runCommands = actions.RunCommands;
+        if (ImGui.Checkbox("Run commands on completion", ref runCommands))
+        {
+            actions.RunCommands = runCommands;
+            configuration.Save();
+        }
+
+        if (actions.RunCommands)
+        {
+            if (!completionDraftInitialized)
+            {
+                draftCompletionCommands = string.Join("\n", actions.Commands);
+                completionDraftInitialized = true;
+            }
+
+            if (ImGui.InputTextMultiline("Commands (one per line)", ref draftCompletionCommands, 2048, new Vector2(-1f, 90f)))
+            {
+                var committedSignature = BuildCompletionCommandsSignature(configuration);
+                actions.Commands = draftCompletionCommands
+                    .Split('\n')
+                    .Select(static command => command.Trim())
+                    .Where(static command => command.Length > 0)
+                    .ToList();
+                plugin.QueueDebouncedConfigurationSave(
+                    "completion-commands",
+                    committedSignature,
+                    () => BuildCompletionCommandsSignature(configuration));
+            }
+
+            ImGui.TextDisabled("Runs after the run completes. Example: /vmx resume (or any slash command).");
+        }
+
+        ImGui.Separator();
+        if (configuration.AdvancedModeEnabled)
+        {
+            ImGui.TextUnformatted("Dangerous completion actions");
+            var killMode = (int)actions.KillMode;
+            if (ImGui.Combo("On completion (DANGER)", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            {
+                actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
+                configuration.Save();
+            }
+
+            ImGui.TextWrapped("Close game client = exits the game on completion. Shut down PC = schedules a 60s cancelable Windows shutdown (cancel with 'shutdown /a').");
+        }
+        else if (actions.KillMode != DadCompletionKillMode.None)
+        {
+            DrawStatusRow("Completion kill action", $"{actions.KillMode} configured but hidden — enable Advanced mode (/dad advanced) to view/change.");
+        }
+
+        ImGui.Separator();
+        DrawStatusRow("Issue report", "Run /dad report to write an anonymized diagnostic dump for GitHub issues.");
+    }
+
+    private static string BuildCompletionCommandsSignature(Configuration configuration)
+        => string.Join("\n", configuration.CompletionActions.Commands);
 
     private void DrawGeneralTab(Configuration configuration)
     {

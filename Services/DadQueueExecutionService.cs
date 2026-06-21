@@ -61,32 +61,55 @@ public sealed class DadQueueExecutionService
     public DadRunStepResultDto ExecuteModule(DadRunPlan plan, DadPlannedModuleExecution module, IReadOnlyList<DadParticipantSnapshot> participants)
     {
         activeReportedModuleId = module.ModuleId;
-        var effectivePlan = plan;
-        var effectiveModule = module;
-        if (module.ModuleId == DadModuleId.Commendation &&
-            plan.Request.Commendation is { } commendation &&
-            !string.Equals(commendation.StopMode, DadCommendationStopModes.Attempts, StringComparison.OrdinalIgnoreCase))
+        if (IsCommendationTruthUnavailable(plan, module))
         {
             return BuildUnavailableTruthResult(
                 plan,
                 module,
                 "Commendation total/gained target requires guarded API15 commendation truth; runtime adapter is unavailable.");
         }
-        if (module.ModuleId == DadModuleId.Msq && plan.Request.Msq != null)
-        {
-            (effectivePlan, effectiveModule) = BuildMsqPlan(plan, module, useTrust: true);
-            if (!trustExecutor.CanStart(effectivePlan, participants).CanStart)
-                (effectivePlan, effectiveModule) = BuildMsqPlan(plan, module, useTrust: false);
-        }
-        else if (module.ModuleId == DadModuleId.Commendation && plan.Request.Commendation != null)
-            (effectivePlan, effectiveModule) = BuildCommendationPlan(plan, module);
-        else if (module.ModuleId == DadModuleId.CustomDuty && plan.Request.CustomDuty != null)
-            (effectivePlan, effectiveModule) = BuildCustomDutyPlan(plan, module);
 
-        activeExecutor = ResolveExecutor(effectivePlan, effectiveModule);
+        // Review M5: resolve the effective plan/module exactly the same way preview does, so the executor
+        // that runs matches what the UI previewed.
+        var (effectivePlan, effectiveModule) = ResolveEffective(plan, module, participants);
+        var nextExecutor = ResolveExecutor(effectivePlan, effectiveModule);
 
+        // Review M6: don't orphan a still-running executor when switching modules — cancel it first so it
+        // doesn't keep driving game state behind the new one.
+        if (activeExecutor != null && !ReferenceEquals(activeExecutor, nextExecutor))
+            activeExecutor.Cancel("Superseded by next Dad module.");
+
+        activeExecutor = nextExecutor;
         return NormalizeReportedModule(activeExecutor.Start(effectivePlan, participants));
     }
+
+    // Review M5: single source of truth for plan/module transforms, shared by ExecuteModule and PreviewModuleStart.
+    private (DadRunPlan Plan, DadPlannedModuleExecution Module) ResolveEffective(
+        DadRunPlan plan,
+        DadPlannedModuleExecution module,
+        IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        if (module.ModuleId == DadModuleId.Msq && plan.Request.Msq != null)
+        {
+            var trust = BuildMsqPlan(plan, module, useTrust: true);
+            return trustExecutor.CanStart(trust.Plan, participants).CanStart
+                ? trust
+                : BuildMsqPlan(plan, module, useTrust: false);
+        }
+
+        if (module.ModuleId == DadModuleId.Commendation && plan.Request.Commendation != null)
+            return BuildCommendationPlan(plan, module);
+
+        if (module.ModuleId == DadModuleId.CustomDuty && plan.Request.CustomDuty != null)
+            return BuildCustomDutyPlan(plan, module);
+
+        return (plan, module);
+    }
+
+    private static bool IsCommendationTruthUnavailable(DadRunPlan plan, DadPlannedModuleExecution module)
+        => module.ModuleId == DadModuleId.Commendation &&
+           plan.Request.Commendation is { } commendation &&
+           !string.Equals(commendation.StopMode, DadCommendationStopModes.Attempts, StringComparison.OrdinalIgnoreCase);
 
     public void SetWorkerRole(DadWorkerExecutionRole role)
         => mogtomeExecutor.SetWorkerRole(role);
@@ -103,6 +126,22 @@ public sealed class DadQueueExecutionService
     public DadModuleExecutionStatusDto PreviewModuleStart(DadRunPlan plan)
     {
         var module = ResolvePreviewModule(plan);
+
+        // Review M5: mirror the runtime "commendation truth unavailable" gate so preview can't show a
+        // commendation lane as startable when ExecuteModule would immediately fail it.
+        if (IsCommendationTruthUnavailable(plan, module))
+        {
+            return new DadModuleExecutionStatusDto
+            {
+                RunId = plan.Request.RequestId,
+                ModuleId = module.ModuleId,
+                DisplayName = module.DisplayName,
+                CanStart = false,
+                Summary = "Commendation total/gained target requires guarded API15 commendation truth; runtime adapter is unavailable.",
+                BlockedReason = "Commendation runtime truth adapter is unavailable.",
+            };
+        }
+
         var participantCount = Math.Max(1, Math.Max(module.ExpectedPartySize, plan.RequiredParticipantCount));
         var participants = Enumerable.Range(0, participantCount)
             .Select(index => new DadParticipantSnapshot
@@ -122,7 +161,8 @@ public sealed class DadQueueExecutionService
             })
             .ToList();
 
-        return ResolveExecutor(plan, module).CanStart(plan, participants);
+        var (effectivePlan, effectiveModule) = ResolveEffective(plan, module, participants);
+        return ResolveExecutor(effectivePlan, effectiveModule).CanStart(effectivePlan, participants);
     }
 
     private IDadModuleExecutor ResolveExecutor(DadRunPlan plan, DadPlannedModuleExecution module)

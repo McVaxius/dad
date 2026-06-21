@@ -68,34 +68,77 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
-            if (activeCommand == null ||
-                !string.Equals(activeCommand.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
+            // Active command matches → cancel the running execution.
+            if (activeCommand != null &&
+                string.Equals(activeCommand.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
             {
+                if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
+                    status.ModuleId == DadModuleId.Mogtome)
+                    queueExecutionService.CancelActiveExecutor(cancel.Reason);
+
+                Finish(DadWorkerExecutionState.Cancelled, false, cancel.Reason, cancel.Reason);
                 return new DadWorkerExecutionAck
                 {
-                    RunId = cancel.RunId,
+                    CommandId = activeCommand.CommandId,
+                    RunId = activeCommand.RunId,
                     WorkerSessionId = presenceService.WorkerSessionId,
-                    Accepted = false,
-                    Summary = "Worker has no matching run-owned execution.",
+                    Accepted = true,
+                    Summary = status.Summary,
                     Status = status.Clone(),
                 };
             }
 
-            if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
-                status.ModuleId == DadModuleId.Mogtome)
-                queueExecutionService.CancelActiveExecutor(cancel.Reason);
+            // Review H3: a cancel can arrive after ACK but before Update() dequeues the command.
+            // Drain any matching pending command so it never starts on the next frame.
+            if (DrainPendingForRun(cancel.RunId))
+            {
+                status = new DadWorkerExecutionStatus
+                {
+                    RunId = cancel.RunId,
+                    WorkerSessionId = presenceService.WorkerSessionId,
+                    State = DadWorkerExecutionState.Cancelled,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Summary = "Pending worker assignment cancelled before start.",
+                };
+                return new DadWorkerExecutionAck
+                {
+                    RunId = cancel.RunId,
+                    WorkerSessionId = presenceService.WorkerSessionId,
+                    Accepted = true,
+                    Summary = status.Summary,
+                    Status = status.Clone(),
+                };
+            }
 
-            Finish(DadWorkerExecutionState.Cancelled, false, cancel.Reason, cancel.Reason);
             return new DadWorkerExecutionAck
             {
-                CommandId = activeCommand.CommandId,
-                RunId = activeCommand.RunId,
+                RunId = cancel.RunId,
                 WorkerSessionId = presenceService.WorkerSessionId,
-                Accepted = true,
-                Summary = status.Summary,
+                Accepted = false,
+                Summary = "Worker has no matching run-owned execution.",
                 Status = status.Clone(),
             };
         }
+    }
+
+    // Review H3: remove all pending (accepted-but-not-started) commands for a run id.
+    // Caller must hold stateLock. ConcurrentQueue has no arbitrary removal, so re-enqueue the keepers.
+    private bool DrainPendingForRun(string runId)
+    {
+        var removed = false;
+        var kept = new List<DadWorkerExecutionCommand>();
+        while (pendingCommands.TryDequeue(out var pending))
+        {
+            if (string.Equals(pending.RunId, runId, StringComparison.OrdinalIgnoreCase))
+                removed = true;
+            else
+                kept.Add(pending);
+        }
+
+        foreach (var keep in kept)
+            pendingCommands.Enqueue(keep);
+
+        return removed;
     }
 
     public DadWorkerExecutionStatus GetStatus()

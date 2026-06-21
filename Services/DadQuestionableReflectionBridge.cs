@@ -128,16 +128,20 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         public required IReadOnlyList<object> ExpectedEntries { get; init; }
     }
 
+    private readonly Func<bool> isEnabled;
+
     public DadQuestionableReflectionBridge(
         IDalamudPluginInterface pluginInterface,
         IFramework framework,
         DadDutyIpcService dutyIpcService,
-        IPluginLog log)
+        IPluginLog log,
+        Func<bool> isEnabled)
     {
         this.pluginInterface = pluginInterface;
         this.framework = framework;
         this.dutyIpcService = dutyIpcService;
         this.log = log;
+        this.isEnabled = isEnabled;
 
         pluginInterface.ActivePluginsChanged += OnActivePluginsChanged;
         framework.Update += OnFrameworkUpdate;
@@ -177,6 +181,19 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     private void MaintainBridge()
     {
         status.LastProbeUtc = DateTime.UtcNow;
+
+        // Review M19: operator opt-out — restore any owned patches and stop maintaining the bridge.
+        if (!isEnabled())
+        {
+            RestoreOwnedCosmeticValue();
+            RestoreOwnedValues();
+            status.Patched = false;
+            status.Pending = false;
+            status.CosmeticPatched = false;
+            status.PatchState = "Disabled by operator (QuestionableBridgeEnabled = false).";
+            return;
+        }
+
         MaintainRuntimeBridge();
         MaintainCosmeticPatch();
     }

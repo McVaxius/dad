@@ -955,9 +955,14 @@ public sealed class DadCoordinatorService
             stopProgress.CurrentLevel = ResolveStopPolicyCurrentLevel(policy, pool);
         }
 
-        stopProgress.StopReached = policy.Mode == DadPlannerStopMode.AfterRuns
-            ? stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns)
-            : stopProgress.CurrentLevel.HasValue && stopProgress.CurrentLevel.Value >= policy.TargetLevel;
+        stopProgress.StopReached = policy.Mode switch
+        {
+            DadPlannerStopMode.AfterRuns => stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns),
+            DadPlannerStopMode.TargetLevel => stopProgress.CurrentLevel.HasValue && stopProgress.CurrentLevel.Value >= policy.TargetLevel,
+            // Feature batch A: item-target stop condition (SafetyCap below still bounds the run).
+            DadPlannerStopMode.ItemTarget => DadGameStateReader.GetInventoryItemCount(policy.StopItemId) >= Math.Max(1, policy.StopItemTargetCount),
+            _ => stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns),
+        };
         stopProgress.SafetyCapReached = !stopProgress.StopReached &&
                                         stopProgress.CompletedRuns >= stopProgress.SafetyCap;
         stopProgress.Summary = BuildStopProgressSummary(stopProgress);
@@ -1341,7 +1346,8 @@ public sealed class DadCoordinatorService
         request.ApplyOrchestrationDefaults();
     }
 
-    private static bool RequiresServerDadAuthority(DadRunRequest request)
+    // Single source of truth (review L5): Plugin.cs previously held an identical private copy.
+    internal static bool RequiresServerDadAuthority(DadRunRequest request)
     {
         if (request.Orchestration.LocalOnlyOverride)
             return false;
@@ -1365,9 +1371,10 @@ public sealed class DadCoordinatorService
         if (forceRefresh)
             characterIntelligenceService.RequestPeerSnapshots();
 
-        return string.IsNullOrWhiteSpace(transportService.CurrentTransport.AuthorityEndpoint)
-            ? string.Empty
-            : transportService.CurrentTransport.AuthorityEndpoint;
+        // Review H2: use the same preferred endpoint the UI shows (configured target first,
+        // discovered peer endpoint as fallback) so start/cancel don't silently fail when peer
+        // discovery hasn't populated CurrentTransport.AuthorityEndpoint yet.
+        return transportService.GetPreferredAuthorityEndpoint();
     }
 
     private bool HasTimedOut(TimeSpan timeout)
@@ -1417,6 +1424,10 @@ public sealed class DadCoordinatorService
             configuration.RunHistory = configuration.RunHistory.Take(50).ToList();
         configuration.PersistedActiveRun = null;
         configuration.Save();
+
+        // Feature batch A: run operator-chosen completion actions (sound / commands / gated shutdown).
+        if (status == DadRunStatus.Completed)
+            DadCompletionActionRunner.Run(configuration, log);
 
         activePlan = null;
         activeParticipants.Clear();
