@@ -70,7 +70,7 @@ public sealed class DadRosterCharacterMergeTests
         var freshAt = new DateTime(2026, 6, 19, 0, 0, 0, DateTimeKind.Utc);
         var cached = new DadRosterCharacter
         {
-            AccountKey = "account-1",
+            AccountKey = new DadAccountKey("account-1"),
             LastSnapshotUtc = cachedAt,
             JobLevels = new Dictionary<uint, int>
             {
@@ -91,7 +91,7 @@ public sealed class DadRosterCharacterMergeTests
 
         DadRosterCharacterMerge.ApplyAuthoritativeXadbSnapshot(cached, fresh);
 
-        Assert.Equal("account-1", cached.AccountKey);
+        Assert.Equal("account-1", cached.AccountKey.ToString());
         Assert.Equal(freshAt, cached.LastSnapshotUtc);
         Assert.Equal(40, cached.CurrentLevel);
         Assert.Equal("WHM", cached.CurrentJobAbbrev);

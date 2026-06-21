@@ -35,6 +35,7 @@ public sealed class DadIpcService : IDisposable
         this.presetProviderService = presetProviderService;
         this.log = log;
 
+        Register(pluginInterface, DadIpcContract.Version, () => DadIpcContract.ApiVersion); // Review M17
         Register(pluginInterface, DadIpcContract.IsReady, () => coordinatorService.IsReady);
         Register(pluginInterface, DadIpcContract.GetStatus, () => DadIpcJson.Serialize(coordinatorService.GetLocalResult()));
         Register(pluginInterface, DadIpcContract.GetLeaderStatus, () => DadIpcJson.Serialize(coordinatorService.GetAuthorityAwareResult()));

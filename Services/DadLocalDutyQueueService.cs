@@ -75,6 +75,11 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private bool dutyEntryEvidenceObserved;
     private bool dutyEntryTransitionLogged;
     private bool transientMissingPlayerLogged;
+
+    // Review M7: remember and restore the Duty Finder's unrestricted/unsynced flag so an unsynced
+    // Dad run doesn't leak that setting into the player's later manual or synced queues.
+    private bool unrestrictedPartyOverridden;
+    private bool unrestrictedPartyPreviousValue;
     private bool dutySelectionCleared;
     private bool dutySelectionCallbackSent;
 
@@ -235,6 +240,23 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
     public DadLocalDutyQueuePulse Pulse(string runId, DadLocalDutyResolvedContent content)
     {
+        // Review M16: mutual exclusion on the shared queue — refuse a different run while one owns it, so the
+        // internal orchestrator and the external dad.Duty.* IPC path can't drive the same queue at once.
+        if (!string.IsNullOrEmpty(activeRunId) && !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        {
+            return new DadLocalDutyQueuePulse
+            {
+                Kind = DadLocalDutyQueuePulseKind.Waiting,
+                Phase = DadRunPhase.QueuePreparing,
+                Status = DadRunStatus.Running,
+                ParticipantState = DadParticipantState.QueuePending,
+                Success = false,
+                IsActive = false,
+                Summary = $"Local Duty queue is busy with another run ({activeRunId}).",
+                FailureReason = $"Local Duty queue owned by run {activeRunId}.",
+            };
+        }
+
         ResetForNewRun(runId);
 
         var commonPulse = BuildCommonQueuePulse(content);
@@ -290,10 +312,12 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         if (isBoundByDuty && isRequestedTerritory)
         {
             dutyEntryEvidenceObserved = true;
+            // Review M7: queue purpose fulfilled (in the duty) — restore the Duty Finder unsync flag.
+            RestoreUnrestrictedParty();
             return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered {content.LaneDisplayName} {content.DutyName}.");
         }
 
-        if (IsDutyEntryTransition(isBetweenAreas, isBetweenAreas51, isRequestedTerritory))
+        if (IsDutyEntryTransition(isBetweenAreas, isBetweenAreas51, isRequestedTerritory, isQueued || dutyEntryEvidenceObserved))
             return DutyEntryTransition(content, isLoggedIn, hasLocalPlayer, territoryType, isQueued, isBoundByDuty, isBetweenAreas, isBetweenAreas51);
 
         if (isBoundByDuty)
@@ -338,6 +362,12 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
             if (contentsFinder->IsUnrestrictedParty != content.Unsynced)
             {
+                if (!unrestrictedPartyOverridden)
+                {
+                    unrestrictedPartyPreviousValue = contentsFinder->IsUnrestrictedParty;
+                    unrestrictedPartyOverridden = true;
+                }
+
                 contentsFinder->IsUnrestrictedParty = content.Unsynced;
                 dutySelectionCleared = false;
                 dutySelectionCallbackSent = false;
@@ -422,6 +452,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         if (string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
             return;
 
+        // Review M7: restore any dangling unsync override from the previous run before starting fresh.
+        RestoreUnrestrictedParty();
         activeRunId = runId;
         nextOpenAttemptUtc = DateTime.MinValue;
         nextSelectAttemptUtc = DateTime.MinValue;
@@ -554,6 +586,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
     private void ClearRunState()
     {
+        RestoreUnrestrictedParty();
         activeRunId = string.Empty;
         nextOpenAttemptUtc = DateTime.MinValue;
         nextSelectAttemptUtc = DateTime.MinValue;
@@ -564,6 +597,25 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         transientMissingPlayerLogged = false;
         dutySelectionCleared = false;
         dutySelectionCallbackSent = false;
+    }
+
+    // Review M7: restore the Duty Finder unrestricted/unsynced flag to its pre-run value.
+    private void RestoreUnrestrictedParty()
+    {
+        if (!unrestrictedPartyOverridden)
+            return;
+
+        unrestrictedPartyOverridden = false;
+        try
+        {
+            var contentsFinder = ContentsFinder.Instance();
+            if (contentsFinder != null && contentsFinder->IsUnrestrictedParty != unrestrictedPartyPreviousValue)
+                contentsFinder->IsUnrestrictedParty = unrestrictedPartyPreviousValue;
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "[dad] Failed to restore Duty Finder unrestricted-party setting.");
+        }
     }
 
     private void TrySubscribeDutyState()
@@ -742,8 +794,11 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         addon->FireCallback(2, atkValues, true);
     }
 
-    private static bool IsDutyEntryTransition(bool isBetweenAreas, bool isBetweenAreas51, bool isRequestedTerritory)
-        => isBetweenAreas || isBetweenAreas51 || isRequestedTerritory;
+    // Review M8: being in the requested territory ALONE is not an entry transition — otherwise, if the player
+    // is already standing in that territory without a duty, Dad waits forever for "duty truth to settle".
+    // Treat it as a transition only with zone-load (betweenAreas) or actual queue/entry evidence.
+    private static bool IsDutyEntryTransition(bool isBetweenAreas, bool isBetweenAreas51, bool isRequestedTerritory, bool hasEntryEvidence)
+        => isBetweenAreas || isBetweenAreas51 || (isRequestedTerritory && hasEntryEvidence);
 
     private static DadLocalDutyQueuePulse Active(
         DadLocalDutyResolvedContent content,

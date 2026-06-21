@@ -176,6 +176,23 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
 
     public DadNpcDutyQueuePulse Pulse(string runId, DadNpcDutyResolvedContent content)
     {
+        // Review M16: mutual exclusion on the shared queue (see DadLocalDutyQueueService).
+        if (!string.IsNullOrEmpty(activeRunId) && !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        {
+            var busyLane = FormatLaneName(content.Mode);
+            return new DadNpcDutyQueuePulse
+            {
+                Kind = DadNpcDutyQueuePulseKind.WaitingForQueue,
+                Phase = DadRunPhase.QueuePreparing,
+                Status = DadRunStatus.Running,
+                ParticipantState = DadParticipantState.QueuePending,
+                Success = false,
+                IsActive = false,
+                Summary = $"{busyLane} queue is busy with another run ({activeRunId}).",
+                FailureReason = $"{busyLane} queue owned by run {activeRunId}.",
+            };
+        }
+
         ResetForNewRun(runId, content.Mode);
 
         var commonPulse = BuildCommonQueuePulse(content);
@@ -330,7 +347,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             return Active(content, DadNpcDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered {content.LaneName} duty {content.DutyName}.");
         }
 
-        if (IsDutyEntryTransition(isBetweenAreas, isBetweenAreas51, isRequestedTerritory))
+        if (IsDutyEntryTransition(isBetweenAreas, isBetweenAreas51, isRequestedTerritory, isQueued || dutyEntryEvidenceObserved))
             return DutyEntryTransition(content, isLoggedIn, hasLocalPlayer, territoryType, isQueued, isBoundByDuty, isBetweenAreas, isBetweenAreas51);
 
         if (isBoundByDuty)
@@ -511,6 +528,14 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             return false;
 
         var currentMembers = agent->Data->MemberData.GetMembers(agent->Data->MemberData.CurrentMembersIndex);
+        // Review H4: guard the native member pointer (null during zone/agent transitions) before
+        // dereferencing the fixed candidate offsets — the realistic crash vector here.
+        if (currentMembers == null)
+        {
+            failure = $"Trust member data is unavailable for {content.DutyName}.";
+            return false;
+        }
+
         foreach (var member in selectedMembers.OrderBy(static member => member.Role).ThenBy(static member => member.Index))
         {
             var entry = currentMembers[member.Index];
@@ -528,6 +553,10 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         var currentMembers = agent->Data->MemberData.GetMembers(agent->Data->MemberData.CurrentMembersIndex);
         var candidates = BuildTrustCandidates(content);
         var available = new List<DadTrustMemberCandidate>();
+        // Review H4: guard the native member pointer before dereferencing candidate offsets.
+        if (currentMembers == null)
+            return available;
+
         foreach (var candidate in candidates)
         {
             var entry = currentMembers[candidate.Index];
@@ -783,8 +812,9 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         };
     }
 
-    private static bool IsDutyEntryTransition(bool isBetweenAreas, bool isBetweenAreas51, bool isRequestedTerritory)
-        => isBetweenAreas || isBetweenAreas51 || isRequestedTerritory;
+    // Review M8: requested territory alone is not an entry transition (see DadLocalDutyQueueService).
+    private static bool IsDutyEntryTransition(bool isBetweenAreas, bool isBetweenAreas51, bool isRequestedTerritory, bool hasEntryEvidence)
+        => isBetweenAreas || isBetweenAreas51 || (isRequestedTerritory && hasEntryEvidence);
 
     private static string FormatLaneName(DadNpcDutyQueueMode mode)
         => mode == DadNpcDutyQueueMode.Trust ? "Trust" : "Duty Support";

@@ -52,7 +52,7 @@ public sealed class DadMogtomeIpcService
         }
         catch (Exception ex)
         {
-            return DadMogtomeRunStatus.Failed($"MOGTOME start IPC failed: {ex.Message}");
+            return DadMogtomeRunStatus.Failed($"MOGTOME start IPC failed ({ex.GetType().Name}).");
         }
     }
 
@@ -65,7 +65,7 @@ public sealed class DadMogtomeIpcService
         }
         catch (Exception ex)
         {
-            return DadMogtomeRunStatus.Failed($"MOGTOME status IPC failed: {ex.Message}");
+            return DadMogtomeRunStatus.Failed($"MOGTOME status IPC failed ({ex.GetType().Name}).");
         }
     }
 
@@ -83,7 +83,7 @@ public sealed class DadMogtomeIpcService
         }
         catch (Exception ex)
         {
-            return DadMogtomeRunStatus.Failed($"MOGTOME stop IPC failed: {ex.Message}");
+            return DadMogtomeRunStatus.Failed($"MOGTOME stop IPC failed ({ex.GetType().Name}).");
         }
     }
 }

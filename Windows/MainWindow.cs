@@ -3789,7 +3789,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetNextItemWidth(MathF.Min(260f, ImGui.GetContentRegionAvail().X));
         if (ImGui.BeginCombo("Stop condition", modeLabel))
         {
-            foreach (var mode in new[] { DadPlannerStopMode.AfterRuns, DadPlannerStopMode.TargetLevel })
+            foreach (var mode in new[] { DadPlannerStopMode.AfterRuns, DadPlannerStopMode.TargetLevel, DadPlannerStopMode.ItemTarget })
             {
                 var selected = stopPolicy.Mode == mode;
                 if (ImGui.Selectable(plugin.PresetProviderService.GetPlannerStopModeLabel(mode), selected))
@@ -3829,6 +3829,44 @@ public sealed class MainWindow : Window, IDisposable
                     committedSignature,
                     () => BuildPlannerStopPolicySignature(stopPolicy));
             }
+        }
+        else if (stopPolicy.Mode == DadPlannerStopMode.ItemTarget)
+        {
+            // Feature batch A: stop when an inventory item reaches a target count.
+            var itemId = (int)stopPolicy.StopItemId;
+            if (ImGui.InputInt("Target item id", ref itemId))
+            {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
+                stopPolicy.StopItemId = (uint)Math.Max(0, itemId);
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
+            }
+
+            var targetCount = stopPolicy.StopItemTargetCount;
+            if (ImGui.InputInt("Target count", ref targetCount))
+            {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
+                stopPolicy.StopItemTargetCount = Math.Clamp(targetCount, 1, 99999);
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
+            }
+
+            var itemSafetyCap = stopPolicy.SafetyCap;
+            if (ImGui.InputInt("Safety cap", ref itemSafetyCap))
+            {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
+                stopPolicy.SafetyCap = Math.Clamp(itemSafetyCap, 1, 200);
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
+            }
+
+            ImGui.TextDisabled("Stops when your inventory count of the item id reaches the target (safety cap still bounds runs).");
         }
         else
         {
@@ -4909,6 +4947,18 @@ public sealed class MainWindow : Window, IDisposable
             pendingDeletePlannerGroupId = selectedGroup?.GroupId ?? string.Empty;
             ImGui.OpenPopup("Confirm delete preset##dad-delete-preset");
         }
+
+        // Feature batch B: save the current preset as a reusable, character-agnostic template.
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Save as template"))
+        {
+            var template = plugin.CreateTemplateFromSelectedPlannerGroup(plannerGroupNameBuffer);
+            if (template != null)
+            {
+                plannerGroupNameBuffer = template.DisplayName;
+                plugin.PrintStatus($"Saved template '{template.DisplayName}' (character bindings cleared).");
+            }
+        }
         ImGui.EndDisabled();
 
         DrawDeletePresetPopup(plannerPreview);
@@ -4924,6 +4974,23 @@ public sealed class MainWindow : Window, IDisposable
             "Selected preset",
             $"{FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames)} | {selectedGroup.Slots.Count} slot(s)");
         DrawStatusRow("Preset submode", plugin.PresetProviderService.GetPlannerLaneDefinition(selectedGroup.ActivityMode).DisplayName);
+
+        // Feature batch B: a template can be instantiated against the live roster (auto-assign by role).
+        if (selectedGroup.IsTemplate)
+        {
+            DrawStatusRow("Preset kind", "Template — not bound to specific characters.");
+            if (ImGui.SmallButton("Instantiate template (auto-assign roster by role)"))
+            {
+                var instance = plugin.InstantiateSelectedPlannerTemplate();
+                if (instance != null)
+                {
+                    plannerGroupNameBuffer = instance.DisplayName;
+                    var assigned = DadPresetTemplateService.CountAssignedSlots(instance);
+                    plugin.PrintStatus($"Created instance '{instance.DisplayName}' with {assigned}/{instance.Slots.Count} slot(s) auto-assigned by role.");
+                }
+            }
+        }
+
         DrawPlannerGroupScheduleControls(selectedGroup);
         if (!debugUi)
             return;
@@ -5471,7 +5538,7 @@ public sealed class MainWindow : Window, IDisposable
         => $"{profile.DisplayName}\n{profile.AccountKey.Value}\n{profile.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}";
 
     private static string BuildPlannerStopPolicySignature(DadRunStopPolicy stopPolicy)
-        => $"{stopPolicy.AfterRuns.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.TargetLevel.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.SafetyCap.ToString(CultureInfo.InvariantCulture)}";
+        => $"{stopPolicy.AfterRuns.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.TargetLevel.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.SafetyCap.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.StopItemId.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.StopItemTargetCount.ToString(CultureInfo.InvariantCulture)}";
 
     private static string BuildPlannerRawDutyFallbackSignature(DadPresetPlannerOptions plannerOptions)
         => $"{plannerOptions.DutyContentFinderConditionId.ToString(CultureInfo.InvariantCulture)}\n{plannerOptions.DutyDisplayName}";

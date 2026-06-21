@@ -86,6 +86,7 @@ public enum DadPlannerStopMode
 {
     AfterRuns,
     TargetLevel,
+    ItemTarget, // feature batch A: stop when a target item reaches a target count
 }
 
 public enum DadPlannerOperatorMode
@@ -339,6 +340,9 @@ public sealed class DadPlannerGroup
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
+    // Feature batch B (dadfeatures20260620b line 56): a template is a reusable group whose slots are NOT
+    // bound to specific characters; it is instantiated against the live roster by role on demand.
+    public bool IsTemplate { get; set; }
     public bool ScheduleEnabled { get; set; }
     public int ScheduleCadenceHours { get; set; }
     public DateTime? NextEligibleTimeUtc { get; set; }

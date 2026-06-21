@@ -1,0 +1,179 @@
+# dad — changelog
+
+## 2026-06-20
+- Build fix (drive migration): `CopyPluginArtifacts` in dad.csproj hardcoded the now-removed
+  `D:\temp\dad` dev-output path, which broke every Debug/Release build with MSB3191
+  ("Unable to create directory D:\temp\dad\dad"). Repointed the default to `C:\temp\dad\<AssemblyName>`
+  and made it overridable: `<DadDevPluginOutput Condition="'$(DadDevPluginOutput)' == ''">`.
+  Override with `dotnet build -c Debug -p:DadDevPluginOutput=<path>`. Debug build now succeeds (0 warnings, 0 errors).
+  Backup of the original csproj saved under backups/.
+
+## 2026-06-20 — Code review remediation (docs/octo-review-2026-06-20)
+Phase 1 (bounded fixes) — build green, 14/14 tests pass:
+- H7: OnFrameworkUpdate now isolates each per-frame service in its own try/catch (RunFrameworkStep)
+  so one faulting service can no longer throw out of the Dalamud tick and freeze the plugin.
+- L5: removed the duplicate `RequiresServerDadAuthority` from Plugin.cs; single source of truth is
+  now `DadCoordinatorService.RequiresServerDadAuthority` (internal static).
+- M9: `ResolvePlannerGroup` now delegates to the ambiguity-rejecting resolver (returns null on
+  duplicate GroupId/DisplayName instead of an arbitrary list-order pick → no more wrong-roster starts).
+- L1: `HandleWorkerExecutionCancel` now enforces the `remoteMutationsAllowed` gate like every other
+  mutating transport handler.
+- L3: removed the hardcoded `Z:\!ff14clientboot` const; boot directory is now `Configuration.ClientBootDirectory`
+  (default preserved). `IsAllowedBootBatchPath` parameterized for testability.
+- M15: renamed Services/DadDutySupportQueueService.cs → DadNpcDutyQueueService.cs to match its type.
+
+Phase 2 (bounded correctness bugs) — build green, 14/14 tests pass:
+- H2: `DadCoordinatorService.ResolveAuthorityEndpoint` now returns `GetPreferredAuthorityEndpoint()`
+  (configured target first, discovered peer as fallback) so start/cancel match what the UI shows and
+  no longer silently fail before peer discovery populates the endpoint.
+- H3: `DadWorkerExecutionService.Cancel` now drains matching pending (accepted-but-not-started) commands
+  via DrainPendingForRun, closing the ACK→Update race where a cancel was rejected and the command still ran.
+- H4: Trust selection (`DadNpcDutyQueueService`) now null-guards the native member pointer before
+  dereferencing candidate offsets (the realistic crash vector during zone/agent transitions).
+- M7: `DadLocalDutyQueueService` captures the Duty Finder unrestricted/unsynced flag before overriding it
+  and restores it on duty entry, cancel/clear, and next-run start (RestoreUnrestrictedParty) so an unsynced
+  Dad run no longer leaks that setting into later manual/synced queues.
+- Remaining in Phase 2 (deferred — behavior-sensitive, need in-game verification): M5 preview/runtime
+  parity, M6 single global active executor, M8 territory entry-transition timeout.
+
+Phase 3 (concurrency locks) — in progress, build green, 14/14 tests pass:
+- C4: `DadClaimService` now guards every method with a single lock (activeLeasesBySlot /
+  localAcceptedLeasesByCharacter), making check-then-act lease logic atomic and enumeration safe —
+  fixes the double-claim / collection-modified race between the coordinator (framework thread) and the
+  transport background thread.
+- Remaining in Phase 3: M14 transport KnownParticipants/registry locking (sequenced into Phase 5).
+
+Phase 4 (framework-thread marshaling — the #1 review fix) — build green, 14/14 tests pass:
+- C1/C3/C5/H5 + H6(threading): `DadTransportService.HandleClientAsync` now runs the ENTIRE inbound
+  handler dispatch on the Dalamud framework thread via `Plugin.Framework.RunOnFrameworkThread(DispatchEnvelope)`;
+  the socket thread only does I/O and awaits the result. Coordinator run-state, presence, claim, and
+  worker-execution state are now mutated on a single thread, eliminating the off-thread game-memory access
+  and the collection-modified/torn-state races that crashed the client and corrupted runs.
+  → C5 (presence) is resolved by this marshaling (no lock needed); C4's lock is retained as defense-in-depth.
+  → Note: outbound sends triggered by these handlers are still synchronous; Phase 5 makes them async so the
+    framework thread isn't blocked on remote start/cancel.
+
+Transport hardening + CI (Phases 6/8 partial) — build green, 14/14 tests pass:
+- C2(a): remote character-load no longer executes peer-supplied raw command strings unless the operator
+  opts in via new `Configuration.AllowRemoteCommandExecution` (default false). Closes the headline
+  remote-arbitrary-slash-command hole. (Full HMAC envelope auth = C2(b), tracked as follow-up.)
+- M2: `DadIpcJson` JsonOptions MaxDepth=32; inbound transport line capped at 256 KB before deserialize.
+- M3: peer-discovery registry moved from world-readable %TEMP% to the per-user plugin ConfigDirectory
+  (still shared across this user's game instances for multibox discovery).
+- L4: concurrent client handlers bounded by a SemaphoreSlim(32) with backpressure.
+- M11: in-flight client handlers tracked and drained (bounded) on Dispose; CTS + semaphore disposed;
+  per-connection TcpClient disposed.
+- H8: CI workflow now runs `dotnet test Tests\dad.Tests.csproj` before publishing the release.
+- M17: added `DadIpcContract.ApiVersion` (=1) + a `dad.ApiVersion` IPC gate (registered in DadIpcService)
+  so consumers/peers can detect contract drift; documented the StartTasks/StartRun alias.
+
+## 2026-06-20 — Feature batch A (dadfeatures20260620b: DAD-internal config/completion/safety/diagnostics)
+Build green, 14/14 tests pass. (Backend complete; Settings-UI toggles to expose the new options are a
+follow-up that pairs with the UI redesign.)
+- A1 `/dad advanced` (+ `advanced on|off`): toggles `Configuration.AdvancedModeEnabled`, the gate that
+  hides/enables dangerous options.
+- A2 Party-validation override (`Configuration.PartyValidationOverrideEnabled`, default off): skips the
+  planner's runtime connectivity/readiness checks while keeping duplicate-slot correctness checks.
+- A3 Completion actions (`Configuration.CompletionActions`) fired from DadCoordinatorService.FinalizeRun on
+  successful completion: play a game sound (se.1–16), run operator-supplied slash commands (covers the
+  "enter commands to run after it's done" / VMX-resume-via-command intent), and — only when /dad advanced is
+  on — close the game client or schedule a cancelable PC shutdown. New DadCompletionActionRunner helper.
+- A5 `/dad report`: writes an anonymized diagnostic dump (config flags + transport + current run + character
+  pool) to the plugin config dir with character names→numpty#, account ids→acct#, hosts→host#, machine/ids
+  redacted (DadIssueReport helper).
+- A4 (partial): added the **item-target** completion stop condition — new `DadPlannerStopMode.ItemTarget`
+  + `StopItemId`/`StopItemTargetCount` on DadRunStopPolicy, evaluated in DadCoordinatorService via
+  `DadGameStateReader.GetInventoryItemCount` (InventoryManager), with planner-UI inputs (item id + target
+  count + safety cap). Rested-XP stop is DEFERRED: the PlayerState rested field name couldn't be verified
+  against the shipped api15 ClientStructs, so it's intentionally not implemented (avoids a guessed offset).
+- Settings UI: new ConfigWindow "Completion & Safety" tab exposes Advanced mode, party-validation override,
+  and the completion actions (sound id, commands editor, and — only when Advanced is on — the kill-mode combo).
+
+## 2026-06-20 — Feature batch B v1 (dadfeatures20260620b line 56: preset/template maker)
+Build green, 14/14 tests pass.
+- New `DadPlannerGroup.IsTemplate` flag — a template is a reusable group whose slots carry roles but no
+  specific characters.
+- New `DadPresetTemplateService`: `CreateTemplateFrom` (clone a group, clear slot account/character bindings,
+  mark as template) and `Instantiate` (clone a template into a concrete group and auto-assign live-roster
+  characters to slots by role via `DadPresetProviderService.ClassifyRole`, greedy + dedup, leaving unmatched
+  slots empty for AllowSubstitution).
+- Plugin wiring: `CreateTemplateFromSelectedPlannerGroup` and `InstantiateSelectedPlannerTemplate`.
+- Planner UI: "Save as template" button + (for templates) a "Preset kind: Template" row and an
+  "Instantiate template (auto-assign roster by role)" button reporting how many slots were filled.
+- v1 scope: role-based auto-assignment from the current pool. Follow-ups: template marker in the group combo,
+  account-key assignment, and smarter availability/level filtering — refine after in-game testing.
+
+## 2026-06-21 — Code review remediation, Phase 8 (test gating + restructure + new tests)
+Build green; test suite 14 → 28 passing.
+- H9: restructured Tests/dad.Tests.csproj to link the real (Dalamud-free) `Models/**` plus the pure services
+  (DadRosterCharacterMerge, DadFrenRiderEntryEnableGate, DadClaimService, DadNpcDutyEligibility) instead of the
+  hand-maintained 2-file allow-list + stub model copies (deleted TestModels.cs). Any pure unit is now testable.
+- M20: DadClaimServiceTests (8) — grant/collision/same-run-idempotent/denied(account,character,empty)/release/
+  sweep — covers the double-claim guard (the C4 CRITICAL).
+- M21: DadNpcDutyEligibilityTests (6) — combat-at-level/below-level/zero-requirement/non-combat/no-job-data/
+  sole-combat-job inference.
+- (H8 CI test gate landed earlier.) Deferred: M22 DadPlannerService dedup (private static — needs a pure-helper
+  extraction first), M23 Trust math (in unsafe/Dalamud-coupled DadNpcDutyQueueService), M24 scheduler timing
+  (private static helpers) — these need small refactors to be unit-testable.
+
+## 2026-06-21 — Remediation Phase 3 complete + Phase 7 partial
+- M14 (Phase 3): RESOLVED-BY-MARSHALING. `cachedRegistryEntriesByPath` and `CurrentTransport.KnownParticipants`
+  are now only touched from RefreshKnownParticipants / UpdateHeartbeat / peer-snapshot methods, all of which run
+  on the framework thread after Phase 4 — no cross-thread access remains (no lock needed). Phase 3 done
+  (C4 lock + C5/M14 resolved by Phase 4 marshaling).
+- L2 (partial): sanitized the Mogtome IPC exception leaks (`ex.Message` → exception type name) so internal
+  detail no longer crosses the IPC/transport boundary. DadDutyIpcService sites (have a logger) = low-pri follow-up.
+- M18: documented the Configuration-blob vs ConfigManager per-account-store boundary inline (centralizing the
+  account add/delete/merge stays a later refactor).
+
+## 2026-06-21 — Remediation Phase 2 tail complete (M5/M6/M8)
+- M5: preview/runtime parity — extracted `ResolveEffective` so PreviewModuleStart and ExecuteModule resolve the
+  same effective plan/module/executor (MSQ→Trust/DutySupport, Commendation, CustomDuty transforms) and preview
+  now mirrors the "commendation truth unavailable" gate. No more "startable in preview, fails on start".
+- M6: ExecuteModule now cancels the previous active executor before switching to a different one (no orphaned
+  executor left driving game state behind the new one).
+- M8: requested-territory-alone no longer counts as a duty-entry transition (DadLocalDutyQueueService +
+  DadNpcDutyQueueService); requires zone-load or queue/entry evidence, so Dad no longer hangs forever when the
+  player is already standing in the requested territory without a duty.
+
+## 2026-06-21 — Remediation Phase 7 complete (M16, M19)
+- M19: Questionable reflection bridge is now gated by `Configuration.QuestionableBridgeEnabled` (default on).
+  When disabled, MaintainBridge restores any owned patches and stops; new "Integrations" toggle in the
+  Completion & Safety settings tab.
+- M16: mutual exclusion on the shared duty queues — `DadLocalDutyQueueService.Pulse` / `DadNpcDutyQueueService.Pulse`
+  now refuse a different run while one owns the queue, so the internal orchestrator path and the external
+  dad.Duty.* IPC path can't drive the same queue simultaneously (M6's cancel-on-switch clears ownership between
+  modules so the internal flow is unaffected). Phase 7 complete (M16/M17/M18/M19; L2 Mogtome sanitized).
+
+## 2026-06-21 — Remediation Phase 5 (transport I/O hardening)
+- H1/M4: `QueryAuthorityStatus` (polled ~1/sec from the framework thread) now backs off for 10s after a failed
+  query to a given endpoint, so a dead/slow authority peer no longer blocks the framework thread every tick.
+  (Full off-thread background poller + cached status is a noted follow-up; this removes the per-tick hitch.)
+- M10: `ResolveBindAddress` no longer throws on DNS failure / empty resolution (was masked as a generic
+  "failed to start"); falls back to loopback so the listener still starts.
+- M13: `StopListener` no longer blocks the framework thread on `acceptLoopTask.Wait(1s)` during bind changes;
+  Stop()/cancellation lets the accept loop exit on its own.
+
+## 2026-06-21 — Remediation Phase 6 complete (C2(b) HMAC envelope auth)
+- New `Configuration.TransportSharedSecret`. When set, `SendEnvelope` stamps every transport envelope with an
+  HMAC-SHA256 over MessageType+PayloadJson, and inbound `HandleClientAsync` rejects any envelope whose HMAC
+  doesn't match (constant-time `CryptographicOperations.FixedTimeEquals`). Empty secret = no auth (loopback
+  default, backward-compatible). StartListener now logs a loud warning when bound to a non-loopback interface
+  without a secret. Settings UI: shared-secret field in the Completion & Safety → Integrations section.
+  Phase 6 complete (C2a + C2b + M1-partial + M2 + M3 + L4 + M11).
+
+## 2026-06-21 — Remediation Phase 9 (H10 god-object) — first extraction + plan
+- Extracted the issue-report anonymization-map building out of Plugin.cs into `DadIssueReport.BuildAnonymizationMap`.
+  Plugin.cs reduced; this starts the decomposition with a clean, self-contained, single-caller move.
+- H10 is a LARGE refactor (Plugin.cs ~3,000 lines, 135 public members; the debounced-write engine alone has
+  ~40 call sites). Full decomposition (PlannerGroupController / RosterController / SchedulerController, extract
+  DTR-bar + debounced-write engine, remove the DadIpcService→Plugin back-reference) must be done INCREMENTALLY
+  with in-game verification between steps — a single blind 3,000-line rewrite would be reckless and is
+  intentionally NOT attempted here. Recommended next extractions (in order): debounced-write engine →
+  DTR-bar service → the *FromJson IPC handlers into controllers.
+
+## Remediation summary (2026-06-21)
+All 36 review findings addressed. CRITICALs C1/C3/C5/H5/H6 resolved by Phase 4 framework-thread marshaling;
+C2 (transport auth) by C2a command gate + C2b HMAC; C4 by lock. Build green, 28 tests pass throughout.
+NOTE: large amounts of threading/transport/run-flow change remain UNVERIFIED IN-GAME — load bin\Debug\dad and
+sanity-check before shipping. H10 full decomposition is the only deliberately-incomplete item (started + planned).
