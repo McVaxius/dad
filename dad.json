@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/goatcorp/Dalamud/master/Dalamud/Configuration/PluginManifest/pluginmanifest.schema.json",
-  "Author": "DhogGPT",
+  "Author": "DhogGPT, XA",
   "Name": "dad",
-  "Punchline": "Private Dad duty operations shell.",
+  "Punchline": "scheduling everything wheeeeeeeeeeeeeeeeeeee",
   "Description": "Private Dad duty operations shell with multiplayer status, preset planning, queue routing, and Duty Support automation.",
   "InternalName": "dad",
   "AssemblyVersion": "0.0.2.1",
