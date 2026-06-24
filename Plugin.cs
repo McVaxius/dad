@@ -71,6 +71,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private readonly DadIpcService dadIpcService;
+    private readonly DadAuthorityStatusPoller authorityStatusPoller;
     private IDtrBarEntry? dtrEntry;
     private DadRunResult? cachedAuthorityRun;
     private string cachedAuthorityEndpoint = string.Empty;
@@ -120,6 +121,7 @@ public sealed class Plugin : IDalamudPlugin
         PresenceService = new DadPresenceService(Configuration, ConfigManager, Log);
         ClaimService = new DadClaimService();
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
+        authorityStatusPoller = new DadAuthorityStatusPoller(TransportService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
@@ -243,6 +245,8 @@ public sealed class Plugin : IDalamudPlugin
         dadIpcService.Dispose();
         LocalDutyQueueService.Dispose();
         NpcDutyQueueService.Dispose();
+        ProfileDirectoryService.Dispose();
+        authorityStatusPoller.Dispose();
         TransportService.Dispose();
         dtrEntry?.Remove();
     }
@@ -2207,6 +2211,7 @@ public sealed class Plugin : IDalamudPlugin
         if (RunCoordinatorService.IsServerDad || !Configuration.PluginEnabled || Configuration.LocalOnlyModeEnabled)
         {
             ResetAuthorityCache(clearFreshness: true);
+            authorityStatusPoller.ClearTarget();
             return localRun;
         }
 
@@ -2216,6 +2221,7 @@ public sealed class Plugin : IDalamudPlugin
         if (!hasRemoteAuthority)
         {
             ResetAuthorityCache(clearFreshness: true);
+            authorityStatusPoller.ClearTarget();
             return BuildUnavailableAuthorityResult(
                 "No Server Dad authority discovered.",
                 "No Server Dad authority discovered from peer registry and no authority target is configured.",
@@ -2227,13 +2233,12 @@ public sealed class Plugin : IDalamudPlugin
         if (!string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
             cachedAuthorityRun = null;
 
-        if (!forceRefresh &&
-            cachedAuthorityRun != null &&
-            string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase) &&
-            DateTime.UtcNow < nextAuthorityStatusRefreshUtc)
-        {
-            return CloneAuthorityRun(cachedAuthorityRun);
-        }
+        authorityStatusPoller.UpdateTarget(
+            authorityEndpoint,
+            transport.AuthorityWorkerSessionId,
+            transport.AuthorityRole,
+            enabled: true,
+            scheduleImmediate: forceRefresh);
 
         if (!forceRefresh && DateTime.UtcNow < suppressRemoteAuthorityRefreshUntilUtc)
         {
@@ -2245,22 +2250,27 @@ public sealed class Plugin : IDalamudPlugin
                 transport.AuthorityRole);
         }
 
-        var remote = string.IsNullOrWhiteSpace(authorityEndpoint)
-            ? null
-            : TransportService.QueryAuthorityStatus(authorityEndpoint);
+        var statusSnapshot = authorityStatusPoller.GetSnapshot();
+        var remote = string.Equals(statusSnapshot.Endpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase)
+            ? statusSnapshot.Result
+            : null;
         if (remote != null)
         {
             ApplyKnownAuthorityMetadata(remote);
             cachedAuthorityRun = remote.Clone();
             cachedAuthorityEndpoint = authorityEndpoint;
             nextAuthorityStatusRefreshUtc = DateTime.UtcNow + RemoteAuthorityStatusRefreshInterval;
-            lastAuthorityRefreshSucceededUtc = DateTime.UtcNow;
+            lastAuthorityRefreshSucceededUtc = statusSnapshot.LastSuccessUtc ?? DateTime.UtcNow;
             LogAuthorityRefreshSuccess(remote);
             return remote;
         }
 
-        nextAuthorityStatusRefreshUtc = DateTime.UtcNow + RemoteAuthorityStatusRefreshInterval;
-        LogAuthorityRefreshFailure(authorityEndpoint, transport.AuthorityWorkerSessionId);
+        if (statusSnapshot.LastFailureUtc.HasValue &&
+            string.Equals(statusSnapshot.Endpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
+        {
+            LogAuthorityRefreshFailure(authorityEndpoint, transport.AuthorityWorkerSessionId);
+        }
+
         if (cachedAuthorityRun != null &&
             string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
         {

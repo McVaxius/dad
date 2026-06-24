@@ -3,7 +3,7 @@ using dad.Models;
 
 namespace dad.Services;
 
-public sealed class DadProfileDirectoryService
+public sealed class DadProfileDirectoryService : IDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan OfflineAfter = TimeSpan.FromSeconds(15);
@@ -13,6 +13,9 @@ public sealed class DadProfileDirectoryService
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
+    private readonly object refreshGate = new();
+    private readonly CancellationTokenSource refreshCancellation = new();
+    private Task? refreshTask;
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private string cacheSignature = string.Empty;
     private IReadOnlyList<DadProfileCatalog> currentCatalogs = [];
@@ -40,8 +43,8 @@ public sealed class DadProfileDirectoryService
             return;
 
         nextRefreshUtc = DateTime.UtcNow + RefreshInterval;
-        RefreshRemoteCatalogs();
         RebuildCurrentCatalogs();
+        ScheduleRemoteCatalogRefresh();
     }
 
     public DadProfileCatalog BuildLocalCatalog()
@@ -127,19 +130,91 @@ public sealed class DadProfileDirectoryService
             }))
             .ToList());
 
-    private void RefreshRemoteCatalogs()
+    public void Dispose()
     {
-        if (!configuration.PluginEnabled || configuration.LocalOnlyModeEnabled)
+        try { refreshCancellation.Cancel(); } catch { /* ignore */ }
+        if (refreshTask is not { IsCompleted: false })
+        {
+            try { refreshCancellation.Dispose(); } catch { /* ignore */ }
+        }
+    }
+
+    private void ScheduleRemoteCatalogRefresh()
+    {
+        lock (refreshGate)
+        {
+            if (refreshTask is { IsCompleted: false })
+                return;
+
+            var request = new DadProfileCatalogRefreshRequest(
+                Guid.NewGuid().ToString("N"),
+                configuration.PluginEnabled,
+                configuration.LocalOnlyModeEnabled,
+                transportService.GetKnownParticipantsSnapshot());
+            refreshTask = Task.Run(
+                () => RefreshRemoteCatalogsAsync(request, refreshCancellation.Token),
+                refreshCancellation.Token);
+        }
+    }
+
+    private async Task RefreshRemoteCatalogsAsync(
+        DadProfileCatalogRefreshRequest request,
+        CancellationToken cancellationToken)
+    {
+        DadProfileCatalogRefreshResult result;
+        if (!request.PluginEnabled || request.LocalOnlyModeEnabled)
+        {
+            result = DadProfileCatalogRefreshResult.MarkOffline(request.RequestId);
+        }
+        else
+        {
+            try
+            {
+                var responses = await transportService.RequestProfileCatalogsAsync(
+                    request.RequestId,
+                    request.Participants,
+                    cancellationToken).ConfigureAwait(false);
+                result = DadProfileCatalogRefreshResult.FromResponses(request.RequestId, responses);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                log.Debug(ex, "[dad][Profiles] Profile catalog refresh failed.");
+                result = DadProfileCatalogRefreshResult.MarkOffline(request.RequestId);
+            }
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
+        try
+        {
+            await Plugin.Framework.RunOnFrameworkThread(() => ApplyRemoteCatalogRefresh(result))
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Normal shutdown.
+        }
+    }
+
+    private void ApplyRemoteCatalogRefresh(DadProfileCatalogRefreshResult result)
+    {
+        transportService.RecordProfileCatalogRefreshResult(result.Responses.Count);
+        if (result.MarkOwnersOffline)
         {
             MarkCachedOwnersOffline();
+            RebuildCurrentCatalogs();
             return;
         }
 
         try
         {
-            var responses = transportService.RequestProfileCatalogs(Guid.NewGuid().ToString("N"));
             var seenOwners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var response in responses.Where(static response => response.Success))
+            foreach (var response in result.Responses.Where(static response => response.Success))
             {
                 var catalog = response.Catalog.Clone();
                 catalog.GeneratedAtUtc = DateTime.UtcNow;
@@ -165,11 +240,13 @@ public sealed class DadProfileDirectoryService
             }
 
             SaveCacheIfChanged();
+            RebuildCurrentCatalogs();
         }
         catch (Exception ex)
         {
-            log.Debug(ex, "[dad][Profiles] Profile catalog refresh failed.");
+            log.Debug(ex, "[dad][Profiles] Failed to apply profile catalog refresh.");
             MarkCachedOwnersOffline();
+            RebuildCurrentCatalogs();
         }
     }
 
@@ -217,5 +294,31 @@ public sealed class DadProfileDirectoryService
             .OrderByDescending(static catalog => catalog.OwnerOnline)
             .ThenBy(static catalog => catalog.OwnerClientInstanceId, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private sealed record DadProfileCatalogRefreshRequest(
+        string RequestId,
+        bool PluginEnabled,
+        bool LocalOnlyModeEnabled,
+        IReadOnlyList<DadParticipantSnapshot> Participants);
+
+    private sealed record DadProfileCatalogRefreshResult(
+        string RequestId,
+        IReadOnlyList<DadProfileCatalogResponse> Responses,
+        bool MarkOwnersOffline)
+    {
+        public static DadProfileCatalogRefreshResult FromResponses(
+            string requestId,
+            IReadOnlyList<DadProfileCatalogResponse> responses)
+            => new(requestId, responses.Select(static response => new DadProfileCatalogResponse
+            {
+                RequestId = response.RequestId,
+                Success = response.Success,
+                Summary = response.Summary,
+                Catalog = response.Catalog.Clone(),
+            }).ToList(), MarkOwnersOffline: false);
+
+        public static DadProfileCatalogRefreshResult MarkOffline(string requestId)
+            => new(requestId, [], MarkOwnersOffline: true);
     }
 }

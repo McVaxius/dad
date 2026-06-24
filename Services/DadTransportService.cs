@@ -39,19 +39,21 @@ public sealed class DadTransportService : IDisposable
     private readonly string registryDirectory;
     private readonly string registryFilePath;
     private readonly Dictionary<string, DadTransportRegistryEntry> cachedRegistryEntriesByPath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DadRegistryWorker registryWorker;
     private readonly CancellationTokenSource cancellation = new();
     private const int MaxConcurrentClients = 32;       // Review L4
+    private const int MaxConcurrentRecurringPeerCalls = 4;
     private const int MaxRequestChars = 256 * 1024;    // Review M2
     private readonly SemaphoreSlim clientSlots = new(MaxConcurrentClients, MaxConcurrentClients);
+    private readonly SemaphoreSlim recurringPeerSlots = new(MaxConcurrentRecurringPeerCalls, MaxConcurrentRecurringPeerCalls);
     private readonly ConcurrentDictionary<Task, byte> activeClientTasks = new();
+    private readonly ConcurrentDictionary<string, byte> activeRecurringEndpoints = new(StringComparer.OrdinalIgnoreCase);
     private TcpListener? listener;
     private Task? acceptLoopTask;
     private DateTime nextHeartbeatWriteUtc = DateTime.MinValue;
-    private DateTime lastRegistryWriteWarningUtc = DateTime.MinValue;
     private static readonly TimeSpan AuthorityQueryFailureBackoff = TimeSpan.FromSeconds(10); // Review H1/M4
     private string lastFailedAuthorityEndpoint = string.Empty;
     private DateTime nextAuthorityQueryRetryUtc = DateTime.MinValue;
-    private readonly Dictionary<string, DateTime> lastRegistryReadWarningUtcByPath = new(StringComparer.OrdinalIgnoreCase);
     private bool localAdvertisementActive;
     private bool localAdvertisementInitialized;
     private bool localPluginEnabled;
@@ -80,6 +82,7 @@ public sealed class DadTransportService : IDisposable
         registryDirectory = Path.Combine(Plugin.PluginInterface.ConfigDirectory.FullName, "orchestrator-registry");
         Directory.CreateDirectory(registryDirectory);
         registryFilePath = Path.Combine(registryDirectory, $"{presenceService.ClientInstanceId}.json");
+        registryWorker = new DadRegistryWorker(registryDirectory, registryFilePath, presenceService.ClientInstanceId, log);
 
         CurrentTransport = new DadPeerTransportSnapshot
         {
@@ -165,24 +168,18 @@ public sealed class DadTransportService : IDisposable
             // Best-effort shutdown only.
         }
 
-        try
-        {
-            if (File.Exists(registryFilePath))
-                File.Delete(registryFilePath);
-        }
-        catch
-        {
-            // Ignore registry cleanup failures.
-        }
+        try { registryWorker.Dispose(); } catch { /* ignore */ }
 
         // Review M11: dispose owned synchronization primitives.
         try { cancellation.Dispose(); } catch { /* ignore */ }
         try { clientSlots.Dispose(); } catch { /* ignore */ }
+        try { recurringPeerSlots.Dispose(); } catch { /* ignore */ }
     }
 
     public void UpdateHeartbeat(DadParticipantSnapshot localParticipant, bool pluginEnabled, bool localOnlyModeEnabled)
     {
         UpdateLocalAvailability(pluginEnabled, localOnlyModeEnabled);
+        registryWorker.EnsureReadScheduled();
 
         if (!remoteMutationsAllowed)
         {
@@ -192,8 +189,9 @@ public sealed class DadTransportService : IDisposable
         }
 
         ResumeLocalAdvertisement();
+        var now = DateTime.UtcNow;
 
-        if (!IsReady || DateTime.UtcNow < nextHeartbeatWriteUtc)
+        if (!IsReady || now < nextHeartbeatWriteUtc)
         {
             RefreshKnownParticipants();
             return;
@@ -208,27 +206,9 @@ public sealed class DadTransportService : IDisposable
             Participant = localParticipant.Clone(),
         };
 
-        try
-        {
-            WriteRegistryEntryAtomically(entry);
-            nextHeartbeatWriteUtc = DateTime.UtcNow + HeartbeatWriteInterval;
-        }
-        catch (IOException ex)
-        {
-            nextHeartbeatWriteUtc = DateTime.UtcNow + HeartbeatWriteInterval;
-            if (ShouldLogRegistryWarning(ref lastRegistryWriteWarningUtc))
-                log.Warning(ex, "[dad] Transport registry heartbeat collision for {RegistryFilePath}; keeping previous discovery entry.", registryFilePath);
-            else
-                log.Debug(ex, "[dad] Transport registry heartbeat collision for {RegistryFilePath}.", registryFilePath);
-        }
-        catch (Exception ex)
-        {
-            nextHeartbeatWriteUtc = DateTime.UtcNow + HeartbeatWriteInterval;
-            if (ShouldLogRegistryWarning(ref lastRegistryWriteWarningUtc))
-                log.Warning(ex, "[dad] Failed to write transport registry entry.");
-            else
-                log.Debug(ex, "[dad] Failed to write transport registry entry.");
-        }
+        cachedRegistryEntriesByPath[registryFilePath] = entry.Clone();
+        registryWorker.QueueHeartbeat(entry);
+        nextHeartbeatWriteUtc = now + HeartbeatWriteInterval;
 
         RefreshKnownParticipants();
     }
@@ -367,6 +347,22 @@ public sealed class DadTransportService : IDisposable
         return result;
     }
 
+    public Task<DadRunResult?> QueryAuthorityStatusAsync(string endpoint, CancellationToken cancellationToken = default)
+        => SendRecurringEnvelopeAsync<string, DadRunResult>(
+            endpoint,
+            MessageStatusQuery,
+            string.Empty,
+            cancellationToken);
+
+    internal Task<DadRecurringTransportResult<DadRunResult>> QueryAuthorityStatusPollAsync(
+        string endpoint,
+        CancellationToken cancellationToken = default)
+        => SendRecurringEnvelopeResultAsync<string, DadRunResult>(
+            endpoint,
+            MessageStatusQuery,
+            string.Empty,
+            cancellationToken);
+
     public DadRunResult? SendStartRunCommand(string endpoint, DadRunRequest request)
         => SendEnvelope<DadRunRequest, DadRunResult>(endpoint, MessageStartRun, request);
 
@@ -407,27 +403,39 @@ public sealed class DadTransportService : IDisposable
     public IReadOnlyList<DadProfileCatalogResponse> RequestProfileCatalogs(string requestId)
     {
         RefreshKnownParticipants();
-        var responses = new List<DadProfileCatalogResponse>();
-        foreach (var participant in CurrentTransport.KnownParticipants.ToList())
-        {
-            var response = SendEnvelope<string, DadProfileCatalogResponse>(
-                participant.Endpoint,
-                MessageProfileCatalogRequest,
-                requestId);
-            if (response == null)
-                continue;
+        var responses = RequestProfileCatalogsAsync(requestId, GetKnownParticipantsSnapshot(), cancellation.Token)
+            .GetAwaiter()
+            .GetResult();
 
-            response.Catalog.OwnerEndpoint = participant.Endpoint;
-            response.Catalog.OwnerOnline = true;
-            response.Catalog.ReadOnly = false;
-            responses.Add(response);
-        }
-
-        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
-        CurrentTransport.LastRequestStatus = responses.Count == 0
-            ? "No remote Dad profile catalogs discovered."
-            : $"Received {responses.Count} profile catalog response(s).";
+        RecordProfileCatalogRefreshResult(responses.Count);
         return responses;
+    }
+
+    public async Task<IReadOnlyList<DadProfileCatalogResponse>> RequestProfileCatalogsAsync(
+        string requestId,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        CancellationToken cancellationToken = default)
+    {
+        var tasks = participants
+            .Where(static participant => !participant.IsLocalClient && !string.IsNullOrWhiteSpace(participant.Endpoint))
+            .Select(participant => RequestProfileCatalogAsync(requestId, participant, cancellationToken))
+            .ToList();
+        if (tasks.Count == 0)
+            return [];
+
+        var responses = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return responses
+            .Where(static response => response is { Success: true })
+            .Select(static response => response!)
+            .ToList();
+    }
+
+    internal void RecordProfileCatalogRefreshResult(int responseCount)
+    {
+        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestStatus = responseCount == 0
+            ? "No remote Dad profile catalogs discovered."
+            : $"Received {responseCount} profile catalog response(s).";
     }
 
     public DadProfileUpdateAck? SendProfileUpdate(string endpoint, DadProfileUpdateRequest request)
@@ -1074,20 +1082,100 @@ public sealed class DadTransportService : IDisposable
     }
 
     private TResponse? SendEnvelope<TRequest, TResponse>(string endpoint, string messageType, TRequest request)
+        => SendEnvelopeAsync<TRequest, TResponse>(endpoint, messageType, request, cancellation.Token)
+            .GetAwaiter()
+            .GetResult();
+
+    private async Task<TResponse?> SendRecurringEnvelopeAsync<TRequest, TResponse>(
+        string endpoint,
+        string messageType,
+        TRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await SendRecurringEnvelopeResultAsync<TRequest, TResponse>(
+            endpoint,
+            messageType,
+            request,
+            cancellationToken).ConfigureAwait(false);
+        return result.Response;
+    }
+
+    private async Task<DadRecurringTransportResult<TResponse>> SendRecurringEnvelopeResultAsync<TRequest, TResponse>(
+        string endpoint,
+        string messageType,
+        TRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+            return DadRecurringTransportResult<TResponse>.Skipped();
+
+        if (!activeRecurringEndpoints.TryAdd(endpoint, 0))
+            return DadRecurringTransportResult<TResponse>.Skipped();
+
+        try
+        {
+            await recurringPeerSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var response = await SendEnvelopeAsync<TRequest, TResponse>(
+                    endpoint,
+                    messageType,
+                    request,
+                    cancellationToken).ConfigureAwait(false);
+                return DadRecurringTransportResult<TResponse>.Completed(response);
+            }
+            finally
+            {
+                recurringPeerSlots.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return DadRecurringTransportResult<TResponse>.Skipped();
+        }
+        finally
+        {
+            activeRecurringEndpoints.TryRemove(endpoint, out _);
+        }
+    }
+
+    private async Task<DadProfileCatalogResponse?> RequestProfileCatalogAsync(
+        string requestId,
+        DadParticipantSnapshot participant,
+        CancellationToken cancellationToken)
+    {
+        var response = await SendRecurringEnvelopeAsync<string, DadProfileCatalogResponse>(
+            participant.Endpoint,
+            MessageProfileCatalogRequest,
+            requestId,
+            cancellationToken).ConfigureAwait(false);
+        if (response == null)
+            return null;
+
+        response.Catalog.OwnerEndpoint = participant.Endpoint;
+        response.Catalog.OwnerOnline = true;
+        response.Catalog.ReadOnly = false;
+        return response;
+    }
+
+    private async Task<TResponse?> SendEnvelopeAsync<TRequest, TResponse>(
+        string endpoint,
+        string messageType,
+        TRequest request,
+        CancellationToken cancellationToken = default)
     {
         if (!TryParseEndpoint(endpoint, out var host, out var port))
             return default;
 
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(SocketTimeout);
+            var token = timeout.Token;
             using var client = new TcpClient();
-            var connectTask = client.ConnectAsync(host, port);
-            if (!connectTask.Wait(SocketTimeout))
-                return default;
+            await client.ConnectAsync(host, port, token).ConfigureAwait(false);
 
-            using var stream = client.GetStream();
-            stream.ReadTimeout = (int)SocketTimeout.TotalMilliseconds;
-            stream.WriteTimeout = (int)SocketTimeout.TotalMilliseconds;
+            await using var stream = client.GetStream();
             using var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
             using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
 
@@ -1099,11 +1187,16 @@ public sealed class DadTransportService : IDisposable
                 Auth = ComputeEnvelopeAuth(messageType, payloadJson), // Review C2(b)
             };
 
-            writer.WriteLine(DadIpcJson.Serialize(envelope));
-            var responseJson = reader.ReadLine();
+            await writer.WriteLineAsync(DadIpcJson.Serialize(envelope).AsMemory(), token).ConfigureAwait(false);
+            var responseJson = await reader.ReadLineAsync(token).ConfigureAwait(false);
             return string.IsNullOrWhiteSpace(responseJson)
                 ? default
                 : DadIpcJson.Deserialize<TResponse>(responseJson);
+        }
+        catch (OperationCanceledException ex)
+        {
+            log.Debug(ex, "[DAD] Transport send timed out/cancelled for {Endpoint} {MessageType}.", endpoint, messageType);
+            return default;
         }
         catch (Exception ex)
         {
@@ -1222,14 +1315,18 @@ public sealed class DadTransportService : IDisposable
     private void RefreshKnownParticipants()
     {
         var now = DateTime.UtcNow;
-        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in Directory.GetFiles(registryDirectory, "*.json"))
+        registryWorker.EnsureReadScheduled();
+        if (registryWorker.TryConsumeLatestSnapshot(out var registrySnapshot))
         {
-            seenPaths.Add(path);
-            TryRefreshCachedRegistryEntry(path);
-        }
+            foreach (var (path, entry) in registrySnapshot.Entries)
+                cachedRegistryEntriesByPath[path] = entry.Clone();
 
-        TrimExpiredRegistryEntries(now, seenPaths);
+            TrimExpiredRegistryEntries(now, registrySnapshot.SeenPaths);
+        }
+        else
+        {
+            TrimExpiredRegistryEntries(now, null);
+        }
 
         var peers = new List<DadParticipantSnapshot>();
         foreach (var entry in cachedRegistryEntriesByPath.Values)
@@ -1295,6 +1392,14 @@ public sealed class DadTransportService : IDisposable
         }
     }
 
+    public IReadOnlyList<DadParticipantSnapshot> GetKnownParticipantsSnapshot()
+    {
+        RefreshKnownParticipants();
+        return CurrentTransport.KnownParticipants
+            .Select(static participant => participant.Clone())
+            .ToList();
+    }
+
     private void ApplySnapshotResponsesToKnownParticipants(IReadOnlyList<DadPeerSnapshotResponse> responses)
     {
         if (responses.Count == 0)
@@ -1337,81 +1442,7 @@ public sealed class DadTransportService : IDisposable
             .OrderBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
 
-    private void WriteRegistryEntryAtomically(DadTransportRegistryEntry entry)
-    {
-        var tempPath = Path.Combine(
-            registryDirectory,
-            $"{presenceService.ClientInstanceId}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
-        var payload = DadIpcJson.Serialize(entry);
-
-        try
-        {
-            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
-            {
-                writer.Write(payload);
-                writer.Flush();
-                stream.Flush(flushToDisk: true);
-            }
-
-            if (File.Exists(registryFilePath))
-                File.Replace(tempPath, registryFilePath, null, ignoreMetadataErrors: true);
-            else
-                File.Move(tempPath, registryFilePath);
-
-            cachedRegistryEntriesByPath[registryFilePath] = entry;
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(tempPath))
-                    File.Delete(tempPath);
-            }
-            catch
-            {
-                // Best-effort temp cleanup only.
-            }
-        }
-    }
-
-    private void TryRefreshCachedRegistryEntry(string path)
-    {
-        try
-        {
-            var entry = ReadRegistryEntry(path);
-            if (entry != null)
-                cachedRegistryEntriesByPath[path] = entry;
-        }
-        catch (FileNotFoundException)
-        {
-            ForgetRegistryPath(path);
-        }
-        catch (IOException ex)
-        {
-            if (ShouldLogRegistryWarning(path))
-                log.Warning(ex, "[dad] Transport registry read collision for {RegistryFilePath}; keeping cached peer state until heartbeat expires.", path);
-            else
-                log.Debug(ex, "[dad] Transport registry read collision for {RegistryFilePath}.", path);
-        }
-        catch (Exception ex)
-        {
-            if (ShouldLogRegistryWarning(path))
-                log.Warning(ex, "[dad] Failed to read transport registry entry {RegistryFilePath}; keeping cached peer state until heartbeat expires.", path);
-            else
-                log.Debug(ex, "[dad] Failed to read transport registry entry {RegistryFilePath}.", path);
-        }
-    }
-
-    private static DadTransportRegistryEntry? ReadRegistryEntry(string path)
-    {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        var json = reader.ReadToEnd();
-        return DadIpcJson.Deserialize<DadTransportRegistryEntry>(json);
-    }
-
-    private void TrimExpiredRegistryEntries(DateTime now, IReadOnlySet<string> seenPaths)
+    private void TrimExpiredRegistryEntries(DateTime now, IReadOnlySet<string>? seenPaths)
     {
         var expiredPaths = cachedRegistryEntriesByPath
             .Where(pair => now - pair.Value.HeartbeatUtc > RegistryFreshness)
@@ -1419,48 +1450,19 @@ public sealed class DadTransportService : IDisposable
             .ToList();
 
         foreach (var path in expiredPaths)
-        {
             cachedRegistryEntriesByPath.Remove(path);
-            lastRegistryReadWarningUtcByPath.Remove(path);
-        }
 
-        foreach (var path in lastRegistryReadWarningUtcByPath.Keys.Except(seenPaths, StringComparer.OrdinalIgnoreCase).ToList())
+        if (seenPaths == null)
+            return;
+
+        foreach (var path in cachedRegistryEntriesByPath.Keys.Except(seenPaths, StringComparer.OrdinalIgnoreCase).ToList())
         {
-            if (!cachedRegistryEntriesByPath.ContainsKey(path))
-                lastRegistryReadWarningUtcByPath.Remove(path);
+            if (!cachedRegistryEntriesByPath.TryGetValue(path, out var entry) ||
+                now - entry.HeartbeatUtc > RegistryFreshness)
+            {
+                cachedRegistryEntriesByPath.Remove(path);
+            }
         }
-    }
-
-    private void ForgetRegistryPath(string path)
-    {
-        cachedRegistryEntriesByPath.Remove(path);
-        lastRegistryReadWarningUtcByPath.Remove(path);
-    }
-
-    private bool ShouldLogRegistryWarning(string path)
-    {
-        if (!lastRegistryReadWarningUtcByPath.TryGetValue(path, out var lastLoggedUtc))
-        {
-            lastRegistryReadWarningUtcByPath[path] = DateTime.UtcNow;
-            return true;
-        }
-
-        if (DateTime.UtcNow - lastLoggedUtc < RegistryCollisionWarningInterval)
-            return false;
-
-        lastRegistryReadWarningUtcByPath[path] = DateTime.UtcNow;
-        return true;
-    }
-
-    private static bool ShouldLogRegistryWarning(ref DateTime lastLoggedUtc)
-    {
-        if (lastLoggedUtc == DateTime.MinValue || DateTime.UtcNow - lastLoggedUtc >= RegistryCollisionWarningInterval)
-        {
-            lastLoggedUtc = DateTime.UtcNow;
-            return true;
-        }
-
-        return false;
     }
 
     private sealed class DadTransportEnvelope
@@ -1470,12 +1472,13 @@ public sealed class DadTransportService : IDisposable
         public string Auth { get; set; } = string.Empty; // Review C2(b): HMAC over MessageType+PayloadJson
     }
 
-    private sealed class DadTransportRegistryEntry
-    {
-        public string ClientInstanceId { get; set; } = string.Empty;
-        public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
-        public string Endpoint { get; set; } = string.Empty;
-        public DateTime HeartbeatUtc { get; set; } = DateTime.UtcNow;
-        public DadParticipantSnapshot Participant { get; set; } = new();
-    }
+}
+
+internal readonly record struct DadRecurringTransportResult<TResponse>(bool Sent, TResponse? Response)
+{
+    public static DadRecurringTransportResult<TResponse> Skipped()
+        => new(false, default);
+
+    public static DadRecurringTransportResult<TResponse> Completed(TResponse? response)
+        => new(true, response);
 }
