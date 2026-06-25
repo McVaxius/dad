@@ -15,6 +15,8 @@ public sealed class DadQueueExecutionService
     private readonly DadCommendationExecutor commendationExecutor;
     private readonly DadAstropeExecutor astropeExecutor;
     private readonly DadCustomDutyExecutor customDutyExecutor;
+    private readonly DadSquadronExecutor squadronExecutor;
+    private readonly DadVariantVvdExecutor variantVvdExecutor;
     private IDadModuleExecutor? activeExecutor;
     private DadModuleId activeReportedModuleId = DadModuleId.None;
 
@@ -56,6 +58,16 @@ public sealed class DadQueueExecutionService
             _ => moduleRegistry.GetCapability(DadModuleId.CustomDuty).Blockers
                 .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
                  ?? moduleRegistry.GetCapability(DadModuleId.CustomDuty).Notes);
+        squadronExecutor = new DadSquadronExecutor(
+            moduleRegistry,
+            _ => moduleRegistry.GetCapability(DadModuleId.Squadron).Blockers
+                .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
+                 ?? moduleRegistry.GetCapability(DadModuleId.Squadron).Notes);
+        variantVvdExecutor = new DadVariantVvdExecutor(
+            moduleRegistry,
+            _ => moduleRegistry.GetCapability(DadModuleId.VariantVvd).Blockers
+                .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
+                 ?? moduleRegistry.GetCapability(DadModuleId.VariantVvd).Notes);
     }
 
     public DadRunStepResultDto ExecuteModule(DadRunPlan plan, DadPlannedModuleExecution module, IReadOnlyList<DadParticipantSnapshot> participants)
@@ -180,6 +192,8 @@ public sealed class DadQueueExecutionService
             DadModuleId.Commendation => commendationExecutor,
             DadModuleId.Astrope => astropeExecutor,
             DadModuleId.CustomDuty => customDutyExecutor,
+            DadModuleId.Squadron => squadronExecutor,
+            DadModuleId.VariantVvd => variantVvdExecutor,
             _ => localDutyExecutor,
         };
 

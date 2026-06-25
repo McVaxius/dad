@@ -7,6 +7,7 @@ public sealed class DadCoordinatorService
 {
     private static readonly TimeSpan ParticipantPollInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan WorkerStatusPollInterval = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan PartyCommandCooldown = TimeSpan.FromSeconds(5);
 
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
@@ -33,6 +34,8 @@ public sealed class DadCoordinatorService
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
     private string lastParticipantDiscoveryFilterSummary = string.Empty;
     private readonly Dictionary<string, DadWorkerExecutionStatus> workerStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> partyCommandsSentUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> partyCommandBlockers = new(StringComparer.OrdinalIgnoreCase);
     private DateTime nextWorkerStatusPollUtc = DateTime.MinValue;
 
     public DadCoordinatorService(
@@ -201,6 +204,8 @@ public sealed class DadCoordinatorService
         nextParticipantPollUtc = DateTime.MinValue;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
+        partyCommandsSentUtc.Clear();
+        partyCommandBlockers.Clear();
         claimService.ReleaseClaims(plan.Request.RequestId);
         presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Server Dad planned {plan.Modules.Count} Dad module(s).");
         SeedLocalParticipantIfNeeded(plan);
@@ -533,19 +538,16 @@ public sealed class DadCoordinatorService
         }
 
         var blockers = new List<string>();
-        foreach (var instruction in instructions)
+        foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.FormParty))
         {
-            var participant = activeParticipants.FirstOrDefault(candidate =>
-                string.Equals(candidate.ActiveCharacterKey, instruction.RequiredCharacterKey.ToString(), StringComparison.OrdinalIgnoreCase));
+            var participant = ResolveParticipantForInstruction(instruction);
             if (participant == null)
                 continue;
 
             participant.State = DadParticipantState.AssemblyPending;
-
             DadRunStepResultDto? result = participant.IsLocalClient
                 ? presenceService.HandleAssemblyInstruction(instruction)
                 : transportService.SendAssemblyInstruction(participant, instruction);
-
             if (result == null || !result.Success)
             {
                 blockers.Add(result?.FailureReason ?? $"Assembly acknowledgement missing for {participant.ActiveCharacterKey}.");
@@ -554,6 +556,35 @@ public sealed class DadCoordinatorService
 
             participant.State = DadParticipantState.AssemblyConfirmed;
             participant.StatusText = result.Summary;
+        }
+
+        var partyMembers = BuildLocalPartySnapshot(out var partySnapshotBlocker);
+        if (!string.IsNullOrWhiteSpace(partySnapshotBlocker))
+            blockers.Add(partySnapshotBlocker);
+        else
+            IssueLeaderPartyInvites(activePlan, instructions, partyMembers, blockers);
+
+        foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty))
+        {
+            var participant = ResolveParticipantForInstruction(instruction);
+            if (participant == null)
+                continue;
+
+            participant.State = DadParticipantState.AssemblyPending;
+            DadRunStepResultDto? result = participant.IsLocalClient
+                ? presenceService.HandleAssemblyInstruction(instruction)
+                : transportService.SendAssemblyInstruction(participant, instruction);
+
+            if (result == null || (!result.Success && !result.Deferred))
+            {
+                blockers.Add(result?.FailureReason ?? $"Assembly acknowledgement missing for {participant.ActiveCharacterKey}.");
+                continue;
+            }
+
+            participant.State = result.Success ? DadParticipantState.AssemblyConfirmed : DadParticipantState.AssemblyPending;
+            participant.StatusText = result.Summary;
+            if (!result.Success && !string.IsNullOrWhiteSpace(result.BlockedReason))
+                blockers.Add(result.BlockedReason);
         }
 
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
@@ -574,7 +605,180 @@ public sealed class DadCoordinatorService
             return;
         }
 
+        partyMembers = BuildLocalPartySnapshot(out partySnapshotBlocker);
+        var verified = partyAssemblyService.VerifyPartyMembership(activePlan, activeParticipants, partyMembers, out var verificationBlocker);
+        if (!string.IsNullOrWhiteSpace(partySnapshotBlocker) || !verified)
+        {
+            var blockerSummary = string.IsNullOrWhiteSpace(partySnapshotBlocker) ? verificationBlocker : partySnapshotBlocker;
+            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            {
+                FinalizeRun(DadRunStatus.TimedOut, "Dad run timed out during party assembly.", blockerSummary);
+                return;
+            }
+
+            CurrentResult.ActiveTaskStatus = blockerSummary;
+            CurrentResult.BlockedReason = blockerSummary;
+            Publish();
+            return;
+        }
+
         Transition(DadRunPhase.QueuePreparing, DadRunStatus.Running, "Dad party assembly confirmed; preparing queue executor.");
+    }
+
+    private DadParticipantSnapshot? ResolveParticipantForInstruction(DadAssemblyInstructionDto instruction)
+        => activeParticipants.FirstOrDefault(candidate =>
+            string.Equals(candidate.ActiveCharacterKey.Value, instruction.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase));
+
+    private IReadOnlyList<DadPartyMemberSnapshot> BuildLocalPartySnapshot(out string blocker)
+    {
+        blocker = string.Empty;
+        var members = new List<DadPartyMemberSnapshot>();
+
+        try
+        {
+            foreach (var member in Plugin.PartyList)
+            {
+                var name = member.Name.ToString();
+                members.Add(new DadPartyMemberSnapshot
+                {
+                    CharacterKey = new DadCharacterKey(string.Empty),
+                    ContentId = member.ContentId,
+                    CharacterName = name,
+                    IsLocalPlayer = member.ContentId != 0 && member.ContentId == Plugin.PlayerState.ContentId,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            blocker = $"Unable to read local PartyList for Dad assembly verification: {ex.Message}";
+            return [];
+        }
+
+        var local = presenceService.BuildSnapshotCopy();
+        if (!local.ActiveCharacterKey.IsEmpty &&
+            members.All(member => !IsSamePartyMember(member, local)))
+        {
+            members.Add(new DadPartyMemberSnapshot
+            {
+                CharacterKey = local.ActiveCharacterKey,
+                ContentId = local.Character.ContentId,
+                CharacterName = local.Character.CharacterName,
+                WorldName = local.Character.WorldName,
+                IsLocalPlayer = true,
+            });
+        }
+
+        return members;
+    }
+
+    private static bool IsSamePartyMember(DadPartyMemberSnapshot member, DadParticipantSnapshot participant)
+    {
+        if (participant.Character.ContentId != 0 && member.ContentId == participant.Character.ContentId)
+            return true;
+
+        return !member.CharacterKey.IsEmpty &&
+               string.Equals(member.CharacterKey.Value, participant.ActiveCharacterKey.Value, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void IssueLeaderPartyInvites(
+        DadRunPlan plan,
+        IReadOnlyList<DadAssemblyInstructionDto> instructions,
+        IReadOnlyList<DadPartyMemberSnapshot> partyMembers,
+        List<string> blockers)
+    {
+        if (plan.RequiredParticipantCount <= 1)
+            return;
+
+        var leader = activeParticipants.FirstOrDefault(participant =>
+            participant.IsLocalClient &&
+            string.Equals(participant.ActiveCharacterKey.Value, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase));
+        if (leader == null)
+        {
+            blockers.Add($"Configured leader {plan.LeaderCharacterKey} is not loaded on this Server Dad client; cannot send party invites.");
+            return;
+        }
+
+        if (plan.Orchestration.QueueAuthority != DadQueueAuthority.Leader)
+        {
+            blockers.Add($"Party invite authority must be the leader; request has {plan.Orchestration.QueueAuthority}.");
+            return;
+        }
+
+        foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty))
+        {
+            var participant = ResolveParticipantForInstruction(instruction);
+            if (participant == null || DadPartyAssemblyService.IsParticipantInParty(participant, partyMembers))
+                continue;
+
+            var target = FormatPartyInviteTarget(participant);
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                blockers.Add($"Cannot invite {participant.ActiveCharacterKey}: missing character name/world.");
+                continue;
+            }
+
+            var command = $"/pcmd add \"{target}\"";
+            var commandKey = $"{plan.Request.RequestId}:invite:{participant.ActiveCharacterKey.Value}";
+            if (!TrySendPartyCommand(commandKey, command, out var commandBlocker))
+                blockers.Add(commandBlocker);
+            else
+                participant.StatusText = $"Party invite requested for {participant.ActiveCharacterKey}.";
+        }
+    }
+
+    private static string FormatPartyInviteTarget(DadParticipantSnapshot participant)
+    {
+        var name = SanitizePartyCommandTarget(participant.Character.CharacterName);
+        var world = SanitizePartyCommandTarget(participant.Character.WorldName);
+        if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(world))
+            return $"{name}@{world}";
+
+        var key = SanitizePartyCommandTarget(participant.ActiveCharacterKey.Value);
+        return key;
+    }
+
+    private static string SanitizePartyCommandTarget(string value)
+        => (value ?? string.Empty)
+            .Replace("\"", string.Empty, StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal)
+            .Trim();
+
+    private bool TrySendPartyCommand(string commandKey, string command, out string blocker)
+    {
+        blocker = string.Empty;
+        if (partyCommandsSentUtc.TryGetValue(commandKey, out var sentAt) &&
+            DateTime.UtcNow - sentAt < PartyCommandCooldown)
+        {
+            if (partyCommandBlockers.TryGetValue(commandKey, out var previousBlocker))
+            {
+                blocker = previousBlocker;
+                return false;
+            }
+
+            return true;
+        }
+
+        try
+        {
+            partyCommandsSentUtc[commandKey] = DateTime.UtcNow;
+            if (!Plugin.CommandManager.ProcessCommand(command))
+            {
+                blocker = $"Command manager rejected party command: {command}.";
+                partyCommandBlockers[commandKey] = blocker;
+                return false;
+            }
+
+            partyCommandBlockers.Remove(commandKey);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            blocker = $"Party command threw: {ex.Message}";
+            partyCommandBlockers[commandKey] = blocker;
+            log.Warning(ex, "[dad] Party command threw while assembling a run.");
+            return false;
+        }
     }
 
     private void UpdateModuleRouting()
@@ -611,6 +815,8 @@ public sealed class DadCoordinatorService
             return;
 
         workerStatuses.Clear();
+        partyCommandsSentUtc.Clear();
+        partyCommandBlockers.Clear();
         nextWorkerStatusPollUtc = DateTime.MinValue;
         var failures = new List<string>();
         foreach (var participant in activeParticipants)
@@ -955,12 +1161,17 @@ public sealed class DadCoordinatorService
             stopProgress.CurrentLevel = ResolveStopPolicyCurrentLevel(policy, pool);
         }
 
+        stopProgress.RestedExperience = policy.Mode == DadPlannerStopMode.RestedXpDepleted
+            ? DadGameStateReader.GetRestedExperience()
+            : null;
+
         stopProgress.StopReached = policy.Mode switch
         {
             DadPlannerStopMode.AfterRuns => stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns),
             DadPlannerStopMode.TargetLevel => stopProgress.CurrentLevel.HasValue && stopProgress.CurrentLevel.Value >= policy.TargetLevel,
             // Feature batch A: item-target stop condition (SafetyCap below still bounds the run).
             DadPlannerStopMode.ItemTarget => DadGameStateReader.GetInventoryItemCount(policy.StopItemId) >= Math.Max(1, policy.StopItemTargetCount),
+            DadPlannerStopMode.RestedXpDepleted => stopProgress.RestedExperience == 0,
             _ => stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns),
         };
         stopProgress.SafetyCapReached = !stopProgress.StopReached &&
@@ -1007,11 +1218,17 @@ public sealed class DadCoordinatorService
     private static string BuildStopProgressSummary(DadRunStopProgress progress)
     {
         var policy = progress.StopPolicy;
-        return policy.Mode == DadPlannerStopMode.TargetLevel
-            ? progress.CurrentLevel.HasValue
+        return policy.Mode switch
+        {
+            DadPlannerStopMode.TargetLevel => progress.CurrentLevel.HasValue
                 ? $"target level {policy.TargetLevel}; current {progress.CurrentLevel.Value}; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)"
-                : $"target level {policy.TargetLevel}; current level unknown; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)"
-            : $"completed {progress.CompletedRuns}/{Math.Max(1, policy.AfterRuns)} run(s)";
+                : $"target level {policy.TargetLevel}; current level unknown; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)",
+            DadPlannerStopMode.ItemTarget => $"item {policy.StopItemId} target {Math.Max(1, policy.StopItemTargetCount)}; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)",
+            DadPlannerStopMode.RestedXpDepleted => progress.RestedExperience.HasValue
+                ? $"rested XP {progress.RestedExperience.Value}; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)"
+                : $"rested XP unknown; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)",
+            _ => $"completed {progress.CompletedRuns}/{Math.Max(1, policy.AfterRuns)} run(s)",
+        };
     }
 
     private static bool IsStopPolicyLoopEligible(DadRunPlan plan)
@@ -1431,7 +1648,7 @@ public sealed class DadCoordinatorService
 
         // Feature batch A: run operator-chosen completion actions (sound / commands / gated shutdown).
         if (status == DadRunStatus.Completed)
-            DadCompletionActionRunner.Run(configuration, log);
+            DadCompletionActionRunner.Enqueue(configuration, log);
 
         activePlan = null;
         activeParticipants.Clear();

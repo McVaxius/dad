@@ -147,6 +147,7 @@ public sealed class DadRunStopProgress
     public int CompletedRuns { get; set; }
     public int SafetyCap { get; set; } = 1;
     public int? CurrentLevel { get; set; }
+    public uint? RestedExperience { get; set; }
     public bool StopReached { get; set; }
     public bool SafetyCapReached { get; set; }
     public string Summary { get; set; } = "Stop policy: after 1 run.";
@@ -170,6 +171,7 @@ public sealed class DadRunStopProgress
             CompletedRuns = CompletedRuns,
             SafetyCap = SafetyCap,
             CurrentLevel = CurrentLevel,
+            RestedExperience = RestedExperience,
             StopReached = StopReached,
             SafetyCapReached = SafetyCapReached,
             Summary = Summary,

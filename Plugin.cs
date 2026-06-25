@@ -67,6 +67,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadDutyIpcService DutyIpcService { get; }
     public DadQuestionableReflectionBridge QuestionableBridge { get; }
     public WindowSystem WindowSystem { get; } = new(PluginInfo.InternalName);
+    public string LastIssueReportStatus { get; private set; } = "No Dad issue report generated this session.";
+    public string LastIssueReportPath { get; private set; } = string.Empty;
+    public DateTime? LastIssueReportUtc { get; private set; }
 
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
@@ -1104,6 +1107,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = source.DutyExpectedPartySize,
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             IncludedAccountKeys = [..source.IncludedAccountKeys],
         };
@@ -1203,7 +1207,10 @@ public sealed class Plugin : IDalamudPlugin
         rejectionReason = string.Empty;
 
         DadAcquiredCharacter? localNpcRunner = null;
-        if (PlannerOptions.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust)
+        if (PlannerOptions.ActivityMode is DadPlannerActivityMode.DutySupport
+            or DadPlannerActivityMode.Trust
+            or DadPlannerActivityMode.DutySupportLeveling
+            or DadPlannerActivityMode.TrustLeveling)
         {
             var refreshedPool = CharacterIntelligenceService.RefreshLocalCharacterPool("planner-group-save", logRefresh: false);
             localNpcRunner = refreshedPool.Characters.FirstOrDefault(static character =>
@@ -1708,6 +1715,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = PlannerOptions.DutyExpectedPartySize,
             MogtomePreset = PlannerOptions.MogtomePreset,
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = PlannerOptions.RefreshTrustNpcLevels,
             StopPolicy = stopPolicy,
             Slots = localNpcRunner == null
                 ? BuildPlannerGroupSlotsFromPreview(preview!)
@@ -1746,6 +1754,7 @@ public sealed class Plugin : IDalamudPlugin
         target.DutyExpectedPartySize = source.DutyExpectedPartySize;
         target.MogtomePreset = source.MogtomePreset;
         target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
+        target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
         target.StopPolicy = source.StopPolicy.Clone();
         target.Slots = source.Slots.Select(ClonePlannerGroupSlot).ToList();
         target.UpdatedAtUtc = DateTime.UtcNow;
@@ -1844,6 +1853,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = group.DutyExpectedPartySize,
             MogtomePreset = group.MogtomePreset,
             MogtomeDutyPolicy = group.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
             StopPolicy = group.StopPolicy.Clone(),
             IncludedAccountKeys = group.Slots
                 .Select(static slot => slot.RequiredAccountKey)
@@ -1888,6 +1898,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyExpectedPartySize = source.DutyExpectedPartySize,
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
             {
@@ -1930,6 +1941,7 @@ public sealed class Plugin : IDalamudPlugin
         options.DutyExpectedPartySize = group.DutyExpectedPartySize;
         options.MogtomePreset = group.MogtomePreset;
         options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
+        options.RefreshTrustNpcLevels = group.RefreshTrustNpcLevels;
         options.StopPolicy = group.StopPolicy.Clone();
         options.IncludedAccountKeys = group.Slots
             .Select(static slot => slot.RequiredAccountKey)
@@ -2174,6 +2186,7 @@ public sealed class Plugin : IDalamudPlugin
             $"accounts={accountKeys}",
             $"duty={options.DutyContentFinderConditionId}:{options.DutyDisplayName.Trim()}:{options.DutyUnsynced}:{options.DutyExpectedPartySize}",
             $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
+            $"trustRefresh={options.RefreshTrustNpcLevels}",
             $"stop={plannerPreview.StopPolicy.Mode}:{plannerPreview.StopPolicy.AfterRuns}:{plannerPreview.StopPolicy.TargetLevel}:{plannerPreview.StopPolicy.TargetCharacterKey}:{plannerPreview.StopPolicy.SafetyCap}",
             "blunderville=emote-run",
             $"leader={plannerPreview.LeaderCharacterKey}",
@@ -3316,10 +3329,11 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // Feature batch A: write an anonymized diagnostic dump for GitHub issues (/dad report).
-    private void GenerateIssueReport()
+    public void GenerateIssueReport()
     {
         try
         {
+            LastIssueReportStatus = "Generating anonymized Dad issue report...";
             var pool = CharacterIntelligenceService.CurrentPool;
             var version = GetType().Assembly.GetName().Version?.ToString() ?? "unknown";
             var lines = new List<string>
@@ -3350,11 +3364,17 @@ public sealed class Plugin : IDalamudPlugin
             var anonymized = DadIssueReport.Anonymize(string.Join("\n", lines), DadIssueReport.BuildAnonymizationMap(pool, Configuration, PresenceService));
             var path = Path.Combine(PluginInterface.ConfigDirectory.FullName, $"dad-issue-report-{DateTime.UtcNow:yyyyMMdd-HHmmss}.md");
             File.WriteAllText(path, anonymized);
+            LastIssueReportPath = path;
+            LastIssueReportUtc = DateTime.UtcNow;
+            LastIssueReportStatus = $"Dad issue report written: {path}";
             PrintStatus($"Dad issue report written (char names anonymized): {path}");
         }
         catch (Exception ex)
         {
             Log.Error(ex, "[dad] Failed to generate issue report.");
+            LastIssueReportStatus = $"Failed to generate Dad issue report: {ex.Message}";
+            LastIssueReportPath = string.Empty;
+            LastIssueReportUtc = DateTime.UtcNow;
             PrintStatus("Failed to generate Dad issue report; see /xllog for detail.");
         }
     }
@@ -3416,6 +3436,7 @@ public sealed class Plugin : IDalamudPlugin
             }
         });
         RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
+        RunFrameworkStep("CompletionActions", () => DadCompletionActionRunner.Update(Configuration, Log));
         RunFrameworkStep("DutyIpc", () => DutyIpcService.Update());
         RunFrameworkStep("DutyIpcRegister", () => DutyIpcService.EnsureRegistered());
     }

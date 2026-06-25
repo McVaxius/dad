@@ -6,6 +6,8 @@ namespace dad.Services;
 
 public sealed class DadPresenceService
 {
+    private static readonly TimeSpan PartyJoinCommandCooldown = TimeSpan.FromSeconds(5);
+
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
     private readonly IPluginLog log;
@@ -15,6 +17,9 @@ public sealed class DadPresenceService
     private DadAccountKey requiredAccountKey = new(string.Empty);
     private DadCharacterKey requiredCharacterKey = new(string.Empty);
     private string assignedSlotId = string.Empty;
+    private DateTime lastPartyJoinCommandUtc = DateTime.MinValue;
+    private string lastPartyJoinRunId = string.Empty;
+    private string lastPartyJoinFailure = string.Empty;
 
     public DadPresenceService(Configuration configuration, ConfigManager configManager, IPluginLog log)
     {
@@ -222,8 +227,32 @@ public sealed class DadPresenceService
             };
         }
 
+        var summary = instruction.Summary;
+        if (instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty)
+        {
+            var joinResult = TrySendPartyJoinCommand(instruction.RunId);
+            if (!joinResult.Success)
+            {
+                CurrentParticipant.State = DadParticipantState.AssemblyPending;
+                CurrentParticipant.StatusText = joinResult.Summary;
+                return new DadRunStepResultDto
+                {
+                    RunId = instruction.RunId,
+                    ModuleId = instruction.ModuleId,
+                    StepName = "Assembly",
+                    ParticipantState = CurrentParticipant.State,
+                    Deferred = true,
+                    Summary = joinResult.Summary,
+                    FailureReason = joinResult.Summary,
+                    BlockedReason = joinResult.Summary,
+                };
+            }
+
+            summary = joinResult.Summary;
+        }
+
         CurrentParticipant.State = DadParticipantState.AssemblyConfirmed;
-        CurrentParticipant.StatusText = instruction.Summary;
+        CurrentParticipant.StatusText = summary;
         return new DadRunStepResultDto
         {
             RunId = instruction.RunId,
@@ -231,7 +260,7 @@ public sealed class DadPresenceService
             StepName = "Assembly",
             ParticipantState = CurrentParticipant.State,
             Success = true,
-            Summary = instruction.Summary,
+            Summary = summary,
         };
     }
 
@@ -469,6 +498,39 @@ public sealed class DadPresenceService
         log.Warning("[dad] Presence warning for {WorkerSessionId}: {Warning}", WorkerSessionId, warning);
     }
 
+    private (bool Success, string Summary) TrySendPartyJoinCommand(string runId)
+    {
+        if (string.Equals(lastPartyJoinRunId, runId, StringComparison.Ordinal) &&
+            DateTime.UtcNow - lastPartyJoinCommandUtc < PartyJoinCommandCooldown)
+        {
+            if (!string.IsNullOrWhiteSpace(lastPartyJoinFailure))
+                return (false, lastPartyJoinFailure);
+
+            return (true, "Party join already requested; waiting for PartyList confirmation.");
+        }
+
+        const string command = "/pcmd join";
+        try
+        {
+            lastPartyJoinRunId = runId;
+            lastPartyJoinCommandUtc = DateTime.UtcNow;
+            if (!Plugin.CommandManager.ProcessCommand(command))
+            {
+                lastPartyJoinFailure = "Command manager rejected /pcmd join.";
+                return (false, "Command manager rejected /pcmd join.");
+            }
+
+            lastPartyJoinFailure = string.Empty;
+            return (true, "Sent /pcmd join; waiting for PartyList confirmation.");
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad] Party join command threw.");
+            lastPartyJoinFailure = $"Party join command threw: {ex.Message}";
+            return (false, lastPartyJoinFailure);
+        }
+    }
+
     private void ResetRunContext()
     {
         currentRunId = string.Empty;
@@ -477,5 +539,8 @@ public sealed class DadPresenceService
         requiredAccountKey = new DadAccountKey(string.Empty);
         requiredCharacterKey = new DadCharacterKey(string.Empty);
         assignedSlotId = string.Empty;
+        lastPartyJoinRunId = string.Empty;
+        lastPartyJoinCommandUtc = DateTime.MinValue;
+        lastPartyJoinFailure = string.Empty;
     }
 }

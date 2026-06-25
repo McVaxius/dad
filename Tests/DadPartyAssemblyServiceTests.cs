@@ -1,0 +1,114 @@
+using dad.Models;
+using dad.Services;
+using Xunit;
+
+namespace dad.Tests;
+
+public sealed class DadPartyAssemblyServiceTests
+{
+    [Fact]
+    public void BuildInstructionsKeepsConfiguredLeaderFirst()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(queueAuthority: DadQueueAuthority.Leader);
+        var participants = new[]
+        {
+            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2"),
+            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
+        };
+
+        var instructions = service.BuildInstructions(plan, participants, out var blocker);
+
+        Assert.Equal(string.Empty, blocker);
+        Assert.Equal(2, instructions.Count);
+        Assert.Equal("Leader@Alpha", instructions[0].RequiredCharacterKey.Value);
+        Assert.Equal(DadAssemblyInstructionKind.FormParty, instructions[0].InstructionKind);
+        Assert.Equal("Member@Alpha", instructions[1].RequiredCharacterKey.Value);
+        Assert.Equal(DadAssemblyInstructionKind.JoinParty, instructions[1].InstructionKind);
+    }
+
+    [Fact]
+    public void BuildInstructionsBlocksInvalidQueueAuthority()
+    {
+        var service = new DadPartyAssemblyService();
+        var instructions = service.BuildInstructions(
+            Plan(queueAuthority: DadQueueAuthority.LanParty),
+            [
+                Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
+                Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2"),
+            ],
+            out var blocker);
+
+        Assert.Empty(instructions);
+        Assert.Contains("leader queue authority", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void VerifyPartyMembershipReportsMissingMembers()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(queueAuthority: DadQueueAuthority.Leader);
+        var participants = new[]
+        {
+            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
+            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2"),
+        };
+
+        var complete = service.VerifyPartyMembership(
+            plan,
+            participants,
+            [PartyMember("Leader@Alpha", 100), PartyMember("Member@Alpha", 200)],
+            out var completeBlocker);
+        var missing = service.VerifyPartyMembership(
+            plan,
+            participants,
+            [PartyMember("Leader@Alpha", 100)],
+            out var missingBlocker);
+
+        Assert.True(complete);
+        Assert.Equal(string.Empty, completeBlocker);
+        Assert.False(missing);
+        Assert.Contains("1/2", missingBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static DadRunPlan Plan(DadQueueAuthority queueAuthority)
+        => new()
+        {
+            Request = new DadRunRequest { RequestId = "run" },
+            CompositeModuleId = DadModuleId.PremadeDuty,
+            RequiredParticipantCount = 2,
+            LeaderCharacterKey = "Leader@Alpha",
+            Orchestration = new DadOrchestrationIntent
+            {
+                QueueAuthority = queueAuthority,
+                RosterIntent = new DadRosterIntent { ExpectedPartySize = 2, RequireRemoteParticipants = true },
+            },
+        };
+
+    private static DadParticipantSnapshot Participant(string characterKey, ulong contentId, bool isLocal, bool isAuthority, string slot)
+        => new()
+        {
+            ActiveCharacterKey = new DadCharacterKey(characterKey),
+            Character = new DadAcquiredCharacter
+            {
+                CharacterKey = characterKey,
+                ContentId = contentId,
+                CharacterName = characterKey.Split('@')[0],
+                WorldName = "Alpha",
+            },
+            IsLocalClient = isLocal,
+            IsAuthority = isAuthority,
+            PostArReady = true,
+            AssignedSlotId = slot,
+            WorkerSessionId = new DadWorkerSessionId(characterKey),
+        };
+
+    private static DadPartyMemberSnapshot PartyMember(string characterKey, ulong contentId)
+        => new()
+        {
+            CharacterKey = new DadCharacterKey(characterKey),
+            ContentId = contentId,
+            CharacterName = characterKey.Split('@')[0],
+            WorldName = "Alpha",
+        };
+}

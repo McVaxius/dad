@@ -65,6 +65,7 @@ public sealed class DadNpcDutyResolvedContent
     public string SheetDutyName { get; set; } = string.Empty;
     public bool HasDutySupportData { get; set; }
     public bool HasTrustData { get; set; }
+    public bool RefreshTrustNpcLevelsBeforeQueue { get; set; }
 }
 
 public sealed class DadNpcDutyQueuePulse
@@ -103,6 +104,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     private bool transientMissingPlayerLogged;
     private bool trustPartyCleared;
     private bool trustPartySelected;
+    private bool trustNpcLevelsRefreshed;
 
     public DadNpcDutyQueueService(IPluginLog log)
     {
@@ -137,6 +139,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             DadNpcDutyQueueMode.DutySupport,
             task.ContentFinderConditionId,
             task.DutyName,
+            refreshTrustNpcLevelsBeforeQueue: false,
             out blocker);
     }
 
@@ -152,6 +155,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             DadNpcDutyQueueMode.Trust,
             task.ContentFinderConditionId,
             task.DutyName,
+            task.RefreshNpcLevelsBeforeQueue,
             out blocker);
     }
 
@@ -240,6 +244,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         DadNpcDutyQueueMode mode,
         uint contentFinderConditionId,
         string dutyName,
+        bool refreshTrustNpcLevelsBeforeQueue,
         out string blocker)
     {
         blocker = string.Empty;
@@ -327,6 +332,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             SheetDutyName = string.IsNullOrWhiteSpace(sheetDutyName) ? dutyName.Trim() : sheetDutyName,
             HasDutySupportData = hasDutySupportData,
             HasTrustData = hasTrustData,
+            RefreshTrustNpcLevelsBeforeQueue = refreshTrustNpcLevelsBeforeQueue,
         };
     }
 
@@ -471,6 +477,13 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
                 RaptureAtkModule.Instance()->OpenDawn(content.ContentFinderConditionId);
                 nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
                 return Active(content, DadNpcDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting Trust duty {content.DutyName}.");
+            }
+
+            if (content.RefreshTrustNpcLevelsBeforeQueue && !trustNpcLevelsRefreshed)
+            {
+                agent->UpdateAddon();
+                trustNpcLevelsRefreshed = true;
+                return Active(content, DadNpcDutyQueuePulseKind.PreparedTrustParty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Refreshed Trust NPC level data for {content.DutyName}.");
             }
 
             if (!trustPartyCleared)
@@ -658,6 +671,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         transientMissingPlayerLogged = false;
         trustPartyCleared = false;
         trustPartySelected = false;
+        trustNpcLevelsRefreshed = false;
     }
 
     private void ClearRunState()
@@ -672,6 +686,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         transientMissingPlayerLogged = false;
         trustPartyCleared = false;
         trustPartySelected = false;
+        trustNpcLevelsRefreshed = false;
     }
 
     private void TrySubscribeDutyState()

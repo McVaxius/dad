@@ -21,6 +21,8 @@ public sealed class DadModuleRegistry
             [DadModuleId.Commendation] = BuildCapability(DadModuleId.Commendation, "Commendation", 4, true, false, true, "Attempt-limited commendation farming queues typed Under the Armour duty. API15 total/gained target modes block unless runtime truth is verifiable.", string.Empty, canStartQueue: true, canTrackCompletion: true, canRequeue: true, canExecuteLiveQueue: true),
             [DadModuleId.Astrope] = BuildCapability(DadModuleId.Astrope, "Astrope", 4, true, false, true, "Astrope queue/task start is deferred.", "Astrope queue/task start is not enabled yet."),
             [DadModuleId.CustomDuty] = BuildCapability(DadModuleId.CustomDuty, "Custom Duty", 1, false, true, true, "Typed ContentFinderCondition custom duty routes through the guarded local or premade executor based on configured party size.", string.Empty, canStartQueue: true, canTrackCompletion: true, canRequeue: true, canExecuteLiveQueue: true),
+            [DadModuleId.Squadron] = BuildCapability(DadModuleId.Squadron, "Squadron", 1, false, true, false, "Squadron command mission planner is available; live addon callbacks are guarded/deferred until in-game validation.", "Squadron command mission queue start is not enabled until callback validation is complete."),
+            [DadModuleId.VariantVvd] = BuildCapability(DadModuleId.VariantVvd, "Variant / VVD", 1, false, true, true, "Variant/VVD planner is available; live queue callbacks are guarded/deferred until in-game validation and ADS solving coverage are ready.", "Variant/VVD queue start is not enabled until callback validation is complete."),
         };
     }
 

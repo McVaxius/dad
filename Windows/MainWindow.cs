@@ -3299,6 +3299,20 @@ public sealed class MainWindow : Window, IDisposable
         }
         ImGui.EndDisabled();
 
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Write issue report"))
+            plugin.GenerateIssueReport();
+
+        DrawStatusRow("Issue report", plugin.LastIssueReportStatus);
+        if (!string.IsNullOrWhiteSpace(plugin.LastIssueReportPath))
+        {
+            if (ImGui.SmallButton("Copy report path"))
+            {
+                ImGui.SetClipboardText(plugin.LastIssueReportPath);
+                plugin.PrintStatus("Copied dad issue report path.");
+            }
+        }
+
         ImGui.BeginDisabled(plannerLocked);
         if (ImGui.SmallButton("Load Local Sastasha test"))
             LoadPlannerTestDuty(plannerOptions, DadPlannerActivityMode.LocalDuty);
@@ -3355,6 +3369,7 @@ public sealed class MainWindow : Window, IDisposable
             DutyExpectedPartySize = source.DutyExpectedPartySize,
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             IncludedAccountKeys = [..source.IncludedAccountKeys],
         };
@@ -3791,7 +3806,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetNextItemWidth(MathF.Min(260f, ImGui.GetContentRegionAvail().X));
         if (ImGui.BeginCombo("Stop condition", modeLabel))
         {
-            foreach (var mode in new[] { DadPlannerStopMode.AfterRuns, DadPlannerStopMode.TargetLevel, DadPlannerStopMode.ItemTarget })
+            foreach (var mode in new[] { DadPlannerStopMode.AfterRuns, DadPlannerStopMode.TargetLevel, DadPlannerStopMode.ItemTarget, DadPlannerStopMode.RestedXpDepleted })
             {
                 var selected = stopPolicy.Mode == mode;
                 if (ImGui.Selectable(plugin.PresetProviderService.GetPlannerStopModeLabel(mode), selected))
@@ -3870,6 +3885,21 @@ public sealed class MainWindow : Window, IDisposable
 
             ImGui.TextDisabled("Stops when your inventory count of the item id reaches the target (safety cap still bounds runs).");
         }
+        else if (stopPolicy.Mode == DadPlannerStopMode.RestedXpDepleted)
+        {
+            var restedSafetyCap = stopPolicy.SafetyCap;
+            if (ImGui.InputInt("Safety cap", ref restedSafetyCap))
+            {
+                var committedSignature = BuildPlannerStopPolicySignature(stopPolicy);
+                stopPolicy.SafetyCap = Math.Clamp(restedSafetyCap, 1, 200);
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "stop-policy",
+                    committedSignature,
+                    () => BuildPlannerStopPolicySignature(stopPolicy));
+            }
+
+            ImGui.TextDisabled("Stops when the local HUD rested-XP value reads zero; safety cap still bounds runs.");
+        }
         else
         {
             var afterRuns = stopPolicy.AfterRuns;
@@ -3893,6 +3923,46 @@ public sealed class MainWindow : Window, IDisposable
         DadPlannerDutyOption? selectedDuty,
         bool debugUi)
     {
+        if (lane.ActivityMode is DadPlannerActivityMode.DutySupportLeveling or DadPlannerActivityMode.TrustLeveling)
+        {
+            DrawStatusRow("Auto selector", selectedDuty == null
+                ? "No eligible duty found for the current local job/level."
+                : selectedDuty.SelectionLabel);
+            DrawStatusRow("Runner count", "1 local runner");
+            if (lane.ActivityMode == DadPlannerActivityMode.TrustLeveling)
+            {
+                var refreshTrustLevels = plannerOptions.RefreshTrustNpcLevels;
+                if (ImGui.Checkbox("Refresh Trust NPC levels before queue", ref refreshTrustLevels))
+                {
+                    plannerOptions.RefreshTrustNpcLevels = refreshTrustLevels;
+                    plugin.SavePlannerOptions();
+                }
+            }
+
+            if (debugUi)
+                DrawStatusRow("Request shape", "Solo local auto-level lane. Dad selects the highest eligible NPC duty at preview/start time.");
+        }
+
+        if (lane.ActivityMode is DadPlannerActivityMode.Squadron or DadPlannerActivityMode.VariantVvd)
+        {
+            DrawStatusRow("Executor", "Guarded deferred until in-game callback validation is complete.");
+            if (lane.ActivityMode == DadPlannerActivityMode.VariantVvd)
+            {
+                var partySize = Math.Clamp(plannerOptions.DutyExpectedPartySize <= 0
+                    ? selectedDuty?.QueueSize ?? lane.ExpectedPartySize
+                    : plannerOptions.DutyExpectedPartySize, 1, 4);
+                if (ImGui.InputInt("Expected party size", ref partySize))
+                {
+                    var committedSignature = plannerOptions.DutyExpectedPartySize.ToString(CultureInfo.InvariantCulture);
+                    plannerOptions.DutyExpectedPartySize = Math.Clamp(partySize, 1, 4);
+                    plugin.QueueDebouncedPlannerOptionsSave(
+                        "variant-party-size",
+                        committedSignature,
+                        () => plannerOptions.DutyExpectedPartySize.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+        }
+
         if (lane.RequiresDutySelector)
         {
             var dutyCompatible = selectedDuty == null || IsPlannerDutyCompatible(selectedDuty, lane);
@@ -5540,7 +5610,7 @@ public sealed class MainWindow : Window, IDisposable
         => $"{profile.DisplayName}\n{profile.AccountKey.Value}\n{profile.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}";
 
     private static string BuildPlannerStopPolicySignature(DadRunStopPolicy stopPolicy)
-        => $"{stopPolicy.AfterRuns.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.TargetLevel.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.SafetyCap.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.StopItemId.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.StopItemTargetCount.ToString(CultureInfo.InvariantCulture)}";
+        => $"{stopPolicy.Mode}\n{stopPolicy.AfterRuns.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.TargetLevel.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.SafetyCap.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.StopItemId.ToString(CultureInfo.InvariantCulture)}\n{stopPolicy.StopItemTargetCount.ToString(CultureInfo.InvariantCulture)}";
 
     private static string BuildPlannerRawDutyFallbackSignature(DadPresetPlannerOptions plannerOptions)
         => $"{plannerOptions.DutyContentFinderConditionId.ToString(CultureInfo.InvariantCulture)}\n{plannerOptions.DutyDisplayName}";

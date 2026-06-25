@@ -1215,6 +1215,7 @@ public sealed class DadSchedulerService
             DutyExpectedPartySize = source.DutyExpectedPartySize,
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             Slots = slots.Select(CloneSchedulerGroupSlot).ToList(),
             ScheduleEnabled = source.ScheduleEnabled,

@@ -1,4 +1,5 @@
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 
 namespace dad.Services;
 
@@ -22,7 +23,16 @@ internal static unsafe class DadGameStateReader
         }
     }
 
-    // NOTE (rested-XP stop): deferred. The rested-XP field name on PlayerState differs across ClientStructs
-    // versions and could not be verified against the shipped api15 build, so the RestedXpDepleted stop mode
-    // is intentionally not implemented yet — adding a guessed field offset risks wrong behavior in-game.
+    public static uint? GetRestedExperience()
+    {
+        try
+        {
+            var hud = AgentHUD.Instance();
+            return hud == null ? null : hud->ExpRestedExperience;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }

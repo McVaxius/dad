@@ -118,6 +118,8 @@ public enum DadModuleId
     Commendation,
     Astrope,
     CustomDuty,
+    Squadron,
+    VariantVvd,
     Mixed,
 }
 
@@ -381,6 +383,15 @@ public sealed class DadAssemblyInstructionDto
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public DadAssemblyInstructionKind InstructionKind { get; set; } = DadAssemblyInstructionKind.None;
     public string Summary { get; set; } = string.Empty;
+}
+
+public sealed class DadPartyMemberSnapshot
+{
+    public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
+    public ulong ContentId { get; set; }
+    public string CharacterName { get; set; } = string.Empty;
+    public string WorldName { get; set; } = string.Empty;
+    public bool IsLocalPlayer { get; set; }
 }
 
 public sealed class DadCancelCommandDto

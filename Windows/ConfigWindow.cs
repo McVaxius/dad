@@ -220,6 +220,48 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Separator();
+        ImGui.TextUnformatted("Post-run utilities");
+        var utilities = actions.Utilities ??= new DadPostRunUtilities();
+
+        var openGearCoffers = utilities.OpenGearCoffers;
+        if (ImGui.Checkbox("Open gear coffers", ref openGearCoffers))
+        {
+            utilities.OpenGearCoffers = openGearCoffers;
+            configuration.Save();
+        }
+
+        var registerTripleTriad = utilities.RegisterTripleTriadCards;
+        if (ImGui.Checkbox("Register Triple Triad cards", ref registerTripleTriad))
+        {
+            utilities.RegisterTripleTriadCards = registerTripleTriad;
+            configuration.Save();
+        }
+
+        var sellTripleTriad = utilities.SellTripleTriadCards;
+        if (ImGui.Checkbox("Sell Triple Triad cards", ref sellTripleTriad))
+        {
+            utilities.SellTripleTriadCards = sellTripleTriad;
+            configuration.Save();
+        }
+
+        var gcHandIn = utilities.GrandCompanyHandInViaAutoRetainer;
+        if (ImGui.Checkbox("Grand Company hand-in via AutoRetainer", ref gcHandIn))
+        {
+            utilities.GrandCompanyHandInViaAutoRetainer = gcHandIn;
+            configuration.Save();
+        }
+
+        if (utilities.GrandCompanyHandInViaAutoRetainer)
+        {
+            var gcCommand = utilities.GrandCompanyHandInCommand;
+            if (ImGui.InputText("AutoRetainer GC command", ref gcCommand, 128))
+            {
+                utilities.GrandCompanyHandInCommand = gcCommand.Trim();
+                configuration.Save();
+            }
+        }
+
+        ImGui.Separator();
         if (configuration.AdvancedModeEnabled)
         {
             ImGui.TextUnformatted("Dangerous completion actions");

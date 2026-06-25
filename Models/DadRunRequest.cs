@@ -36,6 +36,8 @@ public sealed class DadRunRequest
     public DadCommendationTask? Commendation { get; set; }
     public DadAstropeTask? Astrope { get; set; }
     public DadCustomDutyTask? CustomDuty { get; set; }
+    public DadSquadronTask? Squadron { get; set; }
+    public DadVariantVvdTask? VariantVvd { get; set; }
 
     public int GetConfiguredTaskCount()
     {
@@ -51,6 +53,8 @@ public sealed class DadRunRequest
         if (Commendation != null) count++;
         if (Astrope != null) count++;
         if (CustomDuty != null) count++;
+        if (Squadron != null) count++;
+        if (VariantVvd != null) count++;
         return count;
     }
 
@@ -78,10 +82,17 @@ public sealed class DadRunRequest
             parts.Add($"MSQ preset '{Msq.Preset}' ({Msq.Attempts} attempt(s) / legacy {Msq.LegacyQueuePreset})");
 
         if (DutySupport != null)
-            parts.Add($"Duty Support ({DutySupport.DutyName} #{DutySupport.ContentFinderConditionId})");
+        {
+            var selector = DutySupport.AutoSelectHighestEligible ? "auto-level" : $"{DutySupport.DutyName} #{DutySupport.ContentFinderConditionId}";
+            parts.Add($"Duty Support ({selector})");
+        }
 
         if (Trust != null)
-            parts.Add($"Trust ({Trust.DutyName} #{Trust.ContentFinderConditionId})");
+        {
+            var selector = Trust.AutoSelectHighestEligible ? "auto-level" : $"{Trust.DutyName} #{Trust.ContentFinderConditionId}";
+            var refresh = Trust.RefreshNpcLevelsBeforeQueue ? "refresh NPC levels" : "no NPC refresh";
+            parts.Add($"Trust ({selector}, {refresh})");
+        }
 
         if (PremadeDuty != null)
         {
@@ -108,6 +119,12 @@ public sealed class DadRunRequest
 
         if (CustomDuty != null)
             parts.Add($"Custom duty ({CustomDuty.DutyName} #{CustomDuty.ContentFinderConditionId})");
+
+        if (Squadron != null)
+            parts.Add($"Squadron command mission ({Squadron.DutyName} #{Squadron.ContentFinderConditionId})");
+
+        if (VariantVvd != null)
+            parts.Add($"Variant/VVD ({VariantVvd.DutyName} #{VariantVvd.ContentFinderConditionId}, party {VariantVvd.ExpectedPartySize})");
 
         if (parts.Count == 0)
             return "No dad tasks configured.";
@@ -163,12 +180,18 @@ public sealed class DadRunRequest
                 _ when Commendation != null => DadModuleId.Commendation,
                 _ when Astrope != null => DadModuleId.Astrope,
                 _ when CustomDuty != null => DadModuleId.CustomDuty,
+                _ when Squadron != null => DadModuleId.Squadron,
+                _ when VariantVvd != null => DadModuleId.VariantVvd,
                 _ => DadModuleId.Duty,
             };
         }
 
-        if (Orchestration.RosterIntent.ExpectedPartySize <= 0)
-            Orchestration.RosterIntent.ExpectedPartySize = DetermineExpectedPartySize();
+        var inferredPartySize = DetermineExpectedPartySize();
+        if (Orchestration.RosterIntent.ExpectedPartySize <= 0 ||
+            (Orchestration.RosterIntent.ExpectedPartySize == 1 && inferredPartySize > 1))
+        {
+            Orchestration.RosterIntent.ExpectedPartySize = inferredPartySize;
+        }
 
         Orchestration.RosterIntent.RequireRemoteParticipants = Orchestration.RosterIntent.ExpectedPartySize > 1;
 
@@ -216,6 +239,8 @@ public sealed class DadRunRequest
                     DadModuleId.Commendation => "CommendationAuraLane",
                     DadModuleId.Astrope => "AstropeAuraLane",
                     DadModuleId.CustomDuty => "CustomDuty",
+                    DadModuleId.Squadron => "Squadron",
+                    DadModuleId.VariantVvd => "VariantVvd",
                     _ => Orchestration.LocalOnlyOverride ? "LocalOnly" : "ServerDad",
                 };
         }
@@ -236,6 +261,9 @@ public sealed class DadRunRequest
 
         if (CustomDuty != null)
             return Math.Clamp(CustomDuty.ExpectedPartySize, 1, 8);
+
+        if (VariantVvd != null)
+            return Math.Clamp(VariantVvd.ExpectedPartySize, 1, 4);
 
         if (Dungeon?.QueueViaLanParty == true)
             return 4;
@@ -294,6 +322,7 @@ public sealed class DadRunStopPolicy
                 ? $"target level {TargetLevel} for selected character, safety cap {GetSafetyCap()} run(s)"
                 : $"target level {TargetLevel} for {TargetCharacterKey}, safety cap {GetSafetyCap()} run(s)",
             DadPlannerStopMode.ItemTarget => $"until item {StopItemId} reaches {Math.Max(1, StopItemTargetCount)}, safety cap {GetSafetyCap()} run(s)",
+            DadPlannerStopMode.RestedXpDepleted => $"until rested XP is depleted, safety cap {GetSafetyCap()} run(s)",
             _ => $"{Math.Max(1, AfterRuns)} run(s)",
         };
 }
@@ -336,6 +365,7 @@ public sealed class DadDutySupportTask
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
+    public bool AutoSelectHighestEligible { get; set; }
 }
 
 public sealed class DadTrustTask
@@ -343,6 +373,8 @@ public sealed class DadTrustTask
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
+    public bool AutoSelectHighestEligible { get; set; }
+    public bool RefreshNpcLevelsBeforeQueue { get; set; } = true;
 }
 
 public sealed class DadPremadeDutyTask
@@ -399,6 +431,22 @@ public sealed class DadAstropeTask
 public sealed class DadCustomDutyTask
 {
     public DadQueueTarget QueueTarget { get; set; } = new();
+    public uint ContentFinderConditionId { get; set; }
+    public string DutyName { get; set; } = string.Empty;
+    public int ExpectedPartySize { get; set; } = 1;
+    public bool Unsynced { get; set; }
+    public int Attempts { get; set; } = 1;
+}
+
+public sealed class DadSquadronTask
+{
+    public uint ContentFinderConditionId { get; set; }
+    public string DutyName { get; set; } = string.Empty;
+    public int Attempts { get; set; } = 1;
+}
+
+public sealed class DadVariantVvdTask
+{
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int ExpectedPartySize { get; set; } = 1;

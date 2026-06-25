@@ -20,6 +20,7 @@ public sealed class DadCompletionActions
 
     // Dangerous shutdown actions — gated behind AdvancedModeEnabled.
     public DadCompletionKillMode KillMode { get; set; } = DadCompletionKillMode.None;
+    public DadPostRunUtilities Utilities { get; set; } = new();
 
     public DadCompletionActions Clone()
         => new()
@@ -29,5 +30,25 @@ public sealed class DadCompletionActions
             RunCommands = RunCommands,
             Commands = [..Commands],
             KillMode = KillMode,
+            Utilities = Utilities.Clone(),
+        };
+}
+
+public sealed class DadPostRunUtilities
+{
+    public bool OpenGearCoffers { get; set; }
+    public bool RegisterTripleTriadCards { get; set; }
+    public bool SellTripleTriadCards { get; set; }
+    public bool GrandCompanyHandInViaAutoRetainer { get; set; }
+    public string GrandCompanyHandInCommand { get; set; } = "/ays gc";
+
+    public DadPostRunUtilities Clone()
+        => new()
+        {
+            OpenGearCoffers = OpenGearCoffers,
+            RegisterTripleTriadCards = RegisterTripleTriadCards,
+            SellTripleTriadCards = SellTripleTriadCards,
+            GrandCompanyHandInViaAutoRetainer = GrandCompanyHandInViaAutoRetainer,
+            GrandCompanyHandInCommand = GrandCompanyHandInCommand,
         };
 }

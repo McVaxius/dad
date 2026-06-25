@@ -32,12 +32,11 @@
   <Target Name="CopyPluginArtifacts" AfterTargets="DefaultDalamudPackagerDebug;DefaultDalamudPackagerRelease">
     <PropertyGroup>
       <PluginOutput>$(OutputPath)$(AssemblyName)</PluginOutput>
-      <DadDevPluginOutput>D:\temp\dad\$(AssemblyName)</DadDevPluginOutput>
     </PropertyGroup>
 
     <MakeDir Directories="$(PluginOutput)" />
-    <MakeDir Directories="$(DadDevPluginOutput)" />
-    <RemoveDir Directories="$(DadDevPluginOutput)\bin" Condition="Exists('$(DadDevPluginOutput)\bin')" />
+    <MakeDir Directories="$(DadDevPluginOutput)" Condition="'$(DadDevPluginOutput)' != ''" />
+    <RemoveDir Directories="$(DadDevPluginOutput)\bin" Condition="'$(DadDevPluginOutput)' != '' and Exists('$(DadDevPluginOutput)\bin')" />
 
     <ItemGroup>
       <PluginFiles Include="$(TargetPath)" />
@@ -46,6 +45,6 @@
     </ItemGroup>
 
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(PluginOutput)" />
-    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(DadDevPluginOutput)" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(DadDevPluginOutput)" Condition="'$(DadDevPluginOutput)' != ''" />
   </Target>
 </Project>

@@ -2,12 +2,10 @@ using dad.Models;
 
 namespace dad.Services;
 
-// Feature batch B (dadfeatures20260620b line 56): reusable preset TEMPLATES.
-// A template is a planner group whose slots carry roles but NOT specific characters, so the operator
-// defines it once and instantiates it against whatever roster is live — no per-run character wiring.
+// Feature batch B (dadfeatures20260620b line 56): reusable preset templates.
+// A template is a planner group whose slots carry roles but not specific characters.
 internal static class DadPresetTemplateService
 {
-    // Build a template copy of a group: keep family/duty/options/slots+roles, drop the character/account bindings.
     public static DadPlannerGroup CreateTemplateFrom(DadPlannerGroup group, string templateName, DateTime nowUtc)
     {
         var template = CloneGroup(group) ?? new DadPlannerGroup();
@@ -28,8 +26,6 @@ internal static class DadPresetTemplateService
         return template;
     }
 
-    // Instantiate a template into a concrete group, auto-assigning available roster characters to slots by role.
-    // Slots with no role match are left empty (AllowSubstitution lets the planner fill them later).
     public static DadPlannerGroup Instantiate(DadPlannerGroup template, DadCharacterPool pool, DateTime nowUtc)
     {
         var instance = CloneGroup(template) ?? new DadPlannerGroup();
@@ -43,27 +39,54 @@ internal static class DadPresetTemplateService
 
         var available = (pool?.Characters ?? [])
             .Where(static character => !string.IsNullOrWhiteSpace(character.CharacterKey))
+            .OrderByDescending(static character => character.IsLiveConnected)
+            .ThenByDescending(static character => character.Readiness == DadReadinessState.Ready)
+            .ThenByDescending(static character => character.Source == DadCharacterSource.LocalRuntime)
+            .ThenBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var usedAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var slot in instance.Slots)
         {
-            // Respect any character a template author pinned explicitly.
             if (!slot.RequiredCharacterKey.IsEmpty)
             {
-                used.Add(slot.RequiredCharacterKey.Value);
+                var pinned = available.FirstOrDefault(character =>
+                    string.Equals(character.CharacterKey, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase));
+                if (pinned != null)
+                {
+                    var account = ResolveAccountKey(pinned);
+                    if (slot.RequiredAccountKey.IsEmpty && !string.IsNullOrWhiteSpace(account))
+                        slot.RequiredAccountKey = new DadAccountKey(account);
+                    used.Add(pinned.CharacterKey);
+                    if (!string.IsNullOrWhiteSpace(account))
+                        usedAccounts.Add(account);
+                }
+                else
+                {
+                    used.Add(slot.RequiredCharacterKey.Value);
+                    if (!slot.RequiredAccountKey.IsEmpty)
+                        usedAccounts.Add(slot.RequiredAccountKey.Value);
+                }
+
                 continue;
             }
 
             var match = available.FirstOrDefault(character =>
                 !used.Contains(character.CharacterKey) &&
-                RoleMatches(slot.RequiredRole, DadPresetProviderService.ClassifyRole(character)));
+                !IsAccountUsed(character, usedAccounts) &&
+                RoleMatches(slot.RequiredRole, ClassifyRole(character)));
 
             if (match == null)
                 continue;
 
             slot.RequiredCharacterKey = new DadCharacterKey(match.CharacterKey);
+            var accountKey = ResolveAccountKey(match);
+            if (!string.IsNullOrWhiteSpace(accountKey))
+                slot.RequiredAccountKey = new DadAccountKey(accountKey);
             used.Add(match.CharacterKey);
+            if (!string.IsNullOrWhiteSpace(accountKey))
+                usedAccounts.Add(accountKey);
         }
 
         return instance;
@@ -79,6 +102,32 @@ internal static class DadPresetTemplateService
             DadPartyRole.Dps => actual is DadPartyRole.Melee or DadPartyRole.PhysicalRanged or DadPartyRole.Caster,
             _ => required == actual,
         };
+
+    private static DadPartyRole ClassifyRole(DadAcquiredCharacter character)
+    {
+        var job = character.CurrentJobAbbrev.Trim().ToUpperInvariant();
+        return job switch
+        {
+            "PLD" or "WAR" or "DRK" or "GNB" => DadPartyRole.Tank,
+            "WHM" or "SCH" or "AST" or "SGE" => DadPartyRole.Healer,
+            "MNK" or "DRG" or "NIN" or "SAM" or "RPR" or "VPR" => DadPartyRole.Melee,
+            "BRD" or "MCH" or "DNC" => DadPartyRole.PhysicalRanged,
+            "BLM" or "SMN" or "RDM" or "PCT" => DadPartyRole.Caster,
+            "BLU" => DadPartyRole.Limited,
+            _ => DadPartyRole.Any,
+        };
+    }
+
+    private static bool IsAccountUsed(DadAcquiredCharacter character, HashSet<string> usedAccounts)
+    {
+        var accountKey = ResolveAccountKey(character);
+        return !string.IsNullOrWhiteSpace(accountKey) && usedAccounts.Contains(accountKey);
+    }
+
+    private static string ResolveAccountKey(DadAcquiredCharacter character)
+        => !string.IsNullOrWhiteSpace(character.AccountId)
+            ? character.AccountId
+            : character.AccountAlias;
 
     private static DadPlannerGroup? CloneGroup(DadPlannerGroup group)
         => DadIpcJson.Deserialize<DadPlannerGroup>(DadIpcJson.Serialize(group));

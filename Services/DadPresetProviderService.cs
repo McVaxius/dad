@@ -10,6 +10,8 @@ public sealed class DadPresetProviderService
         DadPlannerActivityMode.Msq,
         DadPlannerActivityMode.DutySupport,
         DadPlannerActivityMode.Trust,
+        DadPlannerActivityMode.DutySupportLeveling,
+        DadPlannerActivityMode.TrustLeveling,
         DadPlannerActivityMode.PremadeDuty,
         DadPlannerActivityMode.DutyPremade,
         DadPlannerActivityMode.DailyMsqPremade,
@@ -19,6 +21,8 @@ public sealed class DadPresetProviderService
         DadPlannerActivityMode.Astrope,
         DadPlannerActivityMode.LocalDuty,
         DadPlannerActivityMode.CustomDuty,
+        DadPlannerActivityMode.Squadron,
+        DadPlannerActivityMode.VariantVvd,
     ];
 
     private static readonly DadPlannerLaneDefinition[] PlannerLaneDefinitions =
@@ -91,6 +95,38 @@ public sealed class DadPresetProviderService
             RequiresRemoteParty = true,
             RequiresDutySelector = true,
             NextAction = "Manual-test full premade synced/unsynced starts, blockers, cancel, duty exit, and DTR/status text.",
+        },
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.DutySupportLeveling,
+            RunFamily = DadPlannerRunFamily.LevelingNpc,
+            ModuleId = DadModuleId.DutySupport,
+            DisplayName = "Duty Support Leveling",
+            Summary = "Solo Duty Support auto-leveling lane; Dad selects the highest eligible Duty Support duty for the current job.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Auto-select",
+            AccentColorHex = "#10B981",
+            DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
+            ExpectedPartySize = 1,
+            NextAction = "Start on the character/job to level; Dad selects the highest eligible Duty Support duty.",
+        },
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.TrustLeveling,
+            RunFamily = DadPlannerRunFamily.LevelingNpc,
+            ModuleId = DadModuleId.Trust,
+            DisplayName = "Trust Leveling",
+            Summary = "Solo Trust auto-leveling lane; Dad selects the highest eligible Trust duty and refreshes NPC level data before party selection.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Auto-select",
+            AccentColorHex = "#10B981",
+            DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
+            ExpectedPartySize = 1,
+            NextAction = "Start on the character/job to level; Dad selects Trust content and refreshes NPC levels.",
         },
         new()
         {
@@ -193,6 +229,40 @@ public sealed class DadPresetProviderService
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
             NextAction = "Select CFC duty and party size, then start guarded local/premade queue.",
+        },
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.Squadron,
+            RunFamily = DadPlannerRunFamily.LevelingNpc,
+            ModuleId = DadModuleId.Squadron,
+            DisplayName = "Squadron",
+            Summary = "Command Squadron mission planner lane; guarded live callbacks remain blocked until in-game validation.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Guarded deferred",
+            AccentColorHex = "#F59E0B",
+            DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
+            ExpectedPartySize = 1,
+            RequiresDutySelector = true,
+            NextAction = "Select command mission duty; live start blocks until callback research is verified.",
+        },
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.VariantVvd,
+            RunFamily = DadPlannerRunFamily.DutyFinder,
+            ModuleId = DadModuleId.VariantVvd,
+            DisplayName = "Variant / VVD",
+            Summary = "Variant and Variant/VVD planner lane; guarded live callbacks remain blocked until ADS has solving coverage.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Guarded deferred",
+            AccentColorHex = "#F59E0B",
+            DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
+            ExpectedPartySize = 1,
+            RequiresDutySelector = true,
+            NextAction = "Select Variant/VVD content; live start blocks until guarded queue callbacks are validated.",
         },
     ];
 
@@ -348,11 +418,44 @@ public sealed class DadPresetProviderService
         return duty;
     }
 
+    private DadPlannerDutyOption? ResolvePlannerSelectedDuty(
+        DadPresetPlannerOptions options,
+        DadCharacterPool pool,
+        DadAcquiredCharacter? localCharacter,
+        out string autoLevelBlocker)
+    {
+        autoLevelBlocker = string.Empty;
+        if (options.ActivityMode is not DadPlannerActivityMode.DutySupportLeveling
+            and not DadPlannerActivityMode.TrustLeveling)
+        {
+            return GetPlannerSelectedDuty(options);
+        }
+
+        var lane = options.ActivityMode == DadPlannerActivityMode.TrustLeveling
+            ? DadNpcAutoLevelLane.Trust
+            : DadNpcAutoLevelLane.DutySupport;
+        return DadNpcAutoLevelSelector.SelectHighestEligibleDuty(
+            GetPlannerDutyCatalog(),
+            localCharacter ?? pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime),
+            lane,
+            out autoLevelBlocker);
+    }
+
     public DadPlannerDutyOption? GetPlannerDuty(uint contentFinderConditionId)
         => contentFinderConditionId != 0 &&
            GetPlannerDutyCatalogById().TryGetValue(contentFinderConditionId, out var duty)
             ? duty
             : null;
+
+    public DadPlannerDutyOption? SelectHighestEligibleNpcDuty(
+        DadAcquiredCharacter? character,
+        DadNpcAutoLevelLane lane,
+        out string blocker)
+        => DadNpcAutoLevelSelector.SelectHighestEligibleDuty(
+            GetPlannerDutyCatalog(),
+            character,
+            lane,
+            out blocker);
 
     public string GetPlannerAccountFilterLabel(DadCharacterPool pool, DadPresetPlannerOptions options)
     {
@@ -368,12 +471,14 @@ public sealed class DadPresetProviderService
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
         var lane = ResolveLaneDefinition(options.ActivityMode);
-        var selectedDuty = GetPlannerSelectedDuty(options);
-        var dutySelectorBlocker = BuildDutySelectorBlocker(lane, selectedDuty);
         selectedGroup = NormalizeSelectedGroup(selectedGroup);
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(options.ActivityMode, selectedGroup, pool.Characters);
 
         var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
+        var selectedDuty = ResolvePlannerSelectedDuty(options, pool, localCharacter, out var autoLevelBlocker);
+        var dutySelectorBlocker = string.IsNullOrWhiteSpace(autoLevelBlocker)
+            ? BuildDutySelectorBlocker(lane, selectedDuty)
+            : autoLevelBlocker;
         var effectiveInviteAuthority = ResolveEffectiveInviteAuthority(options);
         var filterStats = BuildFilterStats(pool, localCharacter, options);
         var accountFilterSummary = BuildAccountFilterSummary(pool, options);
@@ -541,8 +646,11 @@ public sealed class DadPresetProviderService
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(options.ActivityMode, selectedGroup, pool.Characters);
         var lane = ResolveLaneDefinition(options.ActivityMode);
         var requestModuleId = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane);
-        var selectedDuty = GetPlannerSelectedDuty(options);
+        var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
+        var selectedDuty = ResolvePlannerSelectedDuty(options, pool, localCharacter, out var autoLevelBlocker);
         var dutySelectorBlocker = BuildDutySelectorBlocker(lane, selectedDuty);
+        if (!string.IsNullOrWhiteSpace(autoLevelBlocker))
+            dutySelectorBlocker = autoLevelBlocker;
         var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
         var capability = moduleRegistry.GetCapability(requestModuleId);
 
@@ -674,19 +782,24 @@ public sealed class DadPresetProviderService
                 };
                 break;
             case DadPlannerActivityMode.DutySupport:
+            case DadPlannerActivityMode.DutySupportLeveling:
                 request.DutySupport = new DadDutySupportTask
                 {
                     ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
                     DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Attempts = 1,
+                    AutoSelectHighestEligible = options.ActivityMode == DadPlannerActivityMode.DutySupportLeveling,
                 };
                 break;
             case DadPlannerActivityMode.Trust:
+            case DadPlannerActivityMode.TrustLeveling:
                 request.Trust = new DadTrustTask
                 {
                     ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
                     DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
                     Attempts = 1,
+                    AutoSelectHighestEligible = options.ActivityMode == DadPlannerActivityMode.TrustLeveling,
+                    RefreshNpcLevelsBeforeQueue = options.RefreshTrustNpcLevels,
                 };
                 break;
             case DadPlannerActivityMode.PremadeDuty:
@@ -768,6 +881,24 @@ public sealed class DadPresetProviderService
                     Attempts = 1,
                 };
                 break;
+            case DadPlannerActivityMode.Squadron:
+                request.Squadron = new DadSquadronTask
+                {
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
+                    Attempts = 1,
+                };
+                break;
+            case DadPlannerActivityMode.VariantVvd:
+                request.VariantVvd = new DadVariantVvdTask
+                {
+                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    DutyName = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
+                    ExpectedPartySize = Math.Clamp(requestedPartySize, 1, 4),
+                    Unsynced = options.DutyUnsynced,
+                    Attempts = 1,
+                };
+                break;
         }
     }
 
@@ -783,6 +914,8 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ",
             DadPlannerActivityMode.DutySupport => "Duty Support",
             DadPlannerActivityMode.Trust => "Trust",
+            DadPlannerActivityMode.DutySupportLeveling => "Duty Support Leveling",
+            DadPlannerActivityMode.TrustLeveling => "Trust Leveling",
             DadPlannerActivityMode.PremadeDuty or DadPlannerActivityMode.DutyPremade => "Premade Duty",
             DadPlannerActivityMode.Blunderville => "Blunderville",
             DadPlannerActivityMode.Mogtome => "MOGTOME",
@@ -790,6 +923,8 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Astrope => "Astrope",
             DadPlannerActivityMode.LocalDuty => "Local Duty / Unsync",
             DadPlannerActivityMode.CustomDuty => "Custom Duty",
+            DadPlannerActivityMode.Squadron => "Squadron",
+            DadPlannerActivityMode.VariantVvd => "Variant / VVD",
             _ => activityMode.ToString(),
         };
 
@@ -809,6 +944,7 @@ public sealed class DadPresetProviderService
         {
             DadPlannerStopMode.TargetLevel => "Target level",
             DadPlannerStopMode.ItemTarget => "Item target", // feature batch A
+            DadPlannerStopMode.RestedXpDepleted => "Rested XP depleted",
             _ => "After runs",
         };
 
@@ -901,6 +1037,8 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ",
             DadPlannerActivityMode.DutySupport => "Duty Support",
             DadPlannerActivityMode.Trust => "Trust",
+            DadPlannerActivityMode.DutySupportLeveling => "Duty Support Leveling",
+            DadPlannerActivityMode.TrustLeveling => "Trust Leveling",
             DadPlannerActivityMode.PremadeDuty or DadPlannerActivityMode.DutyPremade => "Premade Duty",
             DadPlannerActivityMode.Blunderville => "Blunderville",
             DadPlannerActivityMode.Mogtome => "MOGTOME",
@@ -908,6 +1046,8 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Astrope => "Astrope",
             DadPlannerActivityMode.LocalDuty => "Local Duty / Unsync",
             DadPlannerActivityMode.CustomDuty => "Custom Duty",
+            DadPlannerActivityMode.Squadron => "Squadron",
+            DadPlannerActivityMode.VariantVvd => "Variant / VVD",
             _ => options.ActivityName,
         };
         options.PresetName = options.ActivityMode switch
@@ -915,6 +1055,8 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ Main Group",
             DadPlannerActivityMode.DutySupport => "Duty Support",
             DadPlannerActivityMode.Trust => "Trust",
+            DadPlannerActivityMode.DutySupportLeveling => "Duty Support Leveling",
+            DadPlannerActivityMode.TrustLeveling => "Trust Leveling",
             DadPlannerActivityMode.PremadeDuty or DadPlannerActivityMode.DutyPremade => "Premade Duty Group",
             DadPlannerActivityMode.Blunderville => "Blunderville",
             DadPlannerActivityMode.Mogtome => "MOGTOME Group",
@@ -922,6 +1064,8 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Astrope => "Astrope Group",
             DadPlannerActivityMode.LocalDuty => "Local Duty",
             DadPlannerActivityMode.CustomDuty => "Custom Duty",
+            DadPlannerActivityMode.Squadron => "Squadron",
+            DadPlannerActivityMode.VariantVvd => "Variant / VVD",
             _ => "Dad Planner",
         };
         var lane = ResolveLaneDefinition(options.ActivityMode);
@@ -1020,6 +1164,7 @@ public sealed class DadPresetProviderService
             DutyExpectedPartySize = source.DutyExpectedPartySize,
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             Slots = slots.Select(ClonePlannerGroupSlot).ToList(),
             ScheduleEnabled = source.ScheduleEnabled,
@@ -1552,6 +1697,7 @@ public sealed class DadPresetProviderService
                 request.DutySupport.ContentFinderConditionId,
                 request.DutySupport.DutyName,
                 execution = "DutySupportOnly",
+                request.DutySupport.AutoSelectHighestEligible,
                 request.DutySupport.Attempts,
                 dutyMetadata,
             };
@@ -1564,6 +1710,8 @@ public sealed class DadPresetProviderService
                 request.Trust.ContentFinderConditionId,
                 request.Trust.DutyName,
                 execution = "TrustOnly",
+                request.Trust.AutoSelectHighestEligible,
+                request.Trust.RefreshNpcLevelsBeforeQueue,
                 request.Trust.Attempts,
                 dutyMetadata,
             };
@@ -1637,6 +1785,32 @@ public sealed class DadPresetProviderService
                 request.CustomDuty.DutyName,
                 request.CustomDuty.Attempts,
                 policy = "TypedCustomDuty",
+                dutyMetadata,
+            };
+        }
+
+        if (request.Squadron != null)
+        {
+            return new
+            {
+                request.Squadron.ContentFinderConditionId,
+                request.Squadron.DutyName,
+                request.Squadron.Attempts,
+                policy = "GuardedCommandMission",
+                dutyMetadata,
+            };
+        }
+
+        if (request.VariantVvd != null)
+        {
+            return new
+            {
+                request.VariantVvd.ContentFinderConditionId,
+                request.VariantVvd.DutyName,
+                syncMode = request.VariantVvd.Unsynced ? "Unsynced" : "Synced",
+                request.VariantVvd.ExpectedPartySize,
+                request.VariantVvd.Attempts,
+                policy = "GuardedVariant",
                 dutyMetadata,
             };
         }
@@ -1730,8 +1904,8 @@ public sealed class DadPresetProviderService
 
         return lane.ActivityMode switch
         {
-            DadPlannerActivityMode.DutySupport => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Duty Support content.",
-            DadPlannerActivityMode.Trust => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Trust content.",
+            DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.DutySupportLeveling => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Duty Support content.",
+            DadPlannerActivityMode.Trust or DadPlannerActivityMode.TrustLeveling => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not marked as Trust content.",
             _ => $"{selectedDuty.DutyDisplayName} #{selectedDuty.ContentFinderConditionId} is not valid for {lane.DisplayName}.",
         };
     }
@@ -1746,6 +1920,10 @@ public sealed class DadPresetProviderService
                 => Math.Max(2, options.DutyExpectedPartySize > 0
                     ? options.DutyExpectedPartySize
                     : selectedDuty?.QueueSize ?? lane.ExpectedPartySize),
+            DadPlannerActivityMode.VariantVvd
+                => Math.Clamp(options.DutyExpectedPartySize > 0
+                    ? options.DutyExpectedPartySize
+                    : selectedDuty?.QueueSize ?? lane.ExpectedPartySize, 1, 4),
             _ when lane.RequiresRemoteParty => Math.Max(1, lane.ExpectedPartySize),
             _ => 1,
         };
@@ -1753,8 +1931,10 @@ public sealed class DadPresetProviderService
     private static bool MatchesPlannerLaneDuty(DadPlannerDutyOption option, DadPlannerActivityMode activityMode)
         => activityMode switch
         {
-            DadPlannerActivityMode.DutySupport => option.SupportsDutySupport,
-            DadPlannerActivityMode.Trust => option.SupportsTrust,
+            DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.DutySupportLeveling => option.SupportsDutySupport,
+            DadPlannerActivityMode.Trust or DadPlannerActivityMode.TrustLeveling => option.SupportsTrust,
+            DadPlannerActivityMode.Squadron => option.QueueSize == 1,
+            DadPlannerActivityMode.VariantVvd => option.QueueSize <= 4,
             _ => true,
         };
 
@@ -2064,11 +2244,17 @@ public sealed class DadPresetProviderService
         {
             DadPlannerActivityMode.DailyMsqPremade => DadModuleId.DailyMsq,
             DadPlannerActivityMode.DutyPremade => DadModuleId.PremadeDuty,
+            DadPlannerActivityMode.DutySupportLeveling => DadModuleId.DutySupport,
+            DadPlannerActivityMode.TrustLeveling => DadModuleId.Trust,
             _ => lane.ModuleId,
         };
 
     private static bool IsLocalNpcLane(DadPlannerActivityMode activityMode)
-        => activityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust;
+        => activityMode is DadPlannerActivityMode.DutySupport
+            or DadPlannerActivityMode.Trust
+            or DadPlannerActivityMode.DutySupportLeveling
+            or DadPlannerActivityMode.TrustLeveling
+            or DadPlannerActivityMode.Squadron;
 
     private static bool MatchesPlannerFilters(DadAcquiredCharacter character, DadAcquiredCharacter? localCharacter, DadPresetPlannerOptions options)
     {

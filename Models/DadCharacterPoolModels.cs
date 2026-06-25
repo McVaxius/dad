@@ -71,6 +71,10 @@ public enum DadPlannerActivityMode
     Astrope,
     LocalDuty,
     CustomDuty,
+    DutySupportLeveling,
+    TrustLeveling,
+    Squadron,
+    VariantVvd,
 }
 
 public enum DadPlannerRunFamily
@@ -87,6 +91,7 @@ public enum DadPlannerStopMode
     AfterRuns,
     TargetLevel,
     ItemTarget, // feature batch A: stop when a target item reaches a target count
+    RestedXpDepleted,
 }
 
 public enum DadPlannerOperatorMode
@@ -319,6 +324,7 @@ public sealed class DadPresetPlannerOptions
     public int DutyExpectedPartySize { get; set; } = 4;
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public List<DadAccountKey> IncludedAccountKeys { get; set; } = [];
 }
@@ -342,6 +348,7 @@ public sealed class DadPlannerGroup
     public int DutyExpectedPartySize { get; set; } = 4;
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
     // Feature batch B (dadfeatures20260620b line 56): a template is a reusable group whose slots are NOT

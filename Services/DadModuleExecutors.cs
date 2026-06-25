@@ -185,7 +185,9 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
            || (plan.Request.Mogtome?.Attempts ?? 0) > 1
            || (plan.Request.Commendation?.Attempts ?? 0) > 1
            || (plan.Request.Astrope?.Attempts ?? 0) > 1
-           || (plan.Request.CustomDuty?.Attempts ?? 0) > 1;
+           || (plan.Request.CustomDuty?.Attempts ?? 0) > 1
+           || (plan.Request.Squadron?.Attempts ?? 0) > 1
+           || (plan.Request.VariantVvd?.Attempts ?? 0) > 1;
 
     private static DadModuleBlockerDto BuildBlocker(
         DadModuleId moduleId,
@@ -1463,3 +1465,13 @@ public sealed class DadCustomDutyExecutor(
     DadModuleRegistry moduleRegistry,
     Func<DadRunPlan, string> queueBlockerFactory)
     : DadDeferredModuleExecutor(moduleRegistry, "DadCustomDutyExecutor", DadModuleId.CustomDuty, "Custom Duty", queueBlockerFactory);
+
+public sealed class DadSquadronExecutor(
+    DadModuleRegistry moduleRegistry,
+    Func<DadRunPlan, string> queueBlockerFactory)
+    : DadDeferredModuleExecutor(moduleRegistry, "DadSquadronExecutor", DadModuleId.Squadron, "Squadron", queueBlockerFactory);
+
+public sealed class DadVariantVvdExecutor(
+    DadModuleRegistry moduleRegistry,
+    Func<DadRunPlan, string> queueBlockerFactory)
+    : DadDeferredModuleExecutor(moduleRegistry, "DadVariantVvdExecutor", DadModuleId.VariantVvd, "Variant / VVD", queueBlockerFactory);

@@ -20,6 +20,9 @@ public sealed class DadPlannerService
         rejectionReason = "No dad tasks were configured.";
         request.ApplyOrchestrationDefaults();
 
+        if (!ResolveNpcAutoLevelSelections(request, pool, out rejectionReason))
+            return null;
+
         var modules = new List<DadPlannedModuleExecution>();
         if (request.Dungeon != null)
         {
@@ -276,6 +279,47 @@ public sealed class DadPlannerService
             });
         }
 
+        if (request.Squadron != null)
+        {
+            if (request.Squadron.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(request.Squadron.DutyName))
+            {
+                rejectionReason = "dad Squadron requires a Duty Finder row id and duty name.";
+                return null;
+            }
+
+            var capability = moduleRegistry.GetCapability(DadModuleId.Squadron);
+            modules.Add(new DadPlannedModuleExecution
+            {
+                ModuleId = DadModuleId.Squadron,
+                DisplayName = "Squadron",
+                OwnerLabel = capability.OwnerLabel,
+                ExpectedPartySize = 1,
+                RequiresPeers = false,
+                Summary = $"Squadron {request.Squadron.DutyName} #{request.Squadron.ContentFinderConditionId}",
+            });
+        }
+
+        if (request.VariantVvd != null)
+        {
+            if (request.VariantVvd.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(request.VariantVvd.DutyName))
+            {
+                rejectionReason = "dad Variant/VVD requires a Duty Finder row id and duty name.";
+                return null;
+            }
+
+            var capability = moduleRegistry.GetCapability(DadModuleId.VariantVvd);
+            var expectedPartySize = Math.Clamp(request.VariantVvd.ExpectedPartySize, 1, 4);
+            modules.Add(new DadPlannedModuleExecution
+            {
+                ModuleId = DadModuleId.VariantVvd,
+                DisplayName = "Variant / VVD",
+                OwnerLabel = capability.OwnerLabel,
+                ExpectedPartySize = expectedPartySize,
+                RequiresPeers = expectedPartySize > 1,
+                Summary = $"Variant/VVD {request.VariantVvd.DutyName} #{request.VariantVvd.ContentFinderConditionId}",
+            });
+        }
+
         if (modules.Count == 0)
             return null;
 
@@ -295,6 +339,7 @@ public sealed class DadPlannerService
                 DadModuleId.Mogtome => "dad local-only is enabled, but MOGTOME requires Server Dad party workers.",
                 DadModuleId.Commendation => "dad local-only is enabled, but commendation requires Server Dad party workers.",
                 DadModuleId.Astrope => "dad local-only is enabled, but Astrope requires Server Dad party workers.",
+                DadModuleId.VariantVvd => "dad local-only is enabled, but Variant/VVD party mode requires Server Dad party workers.",
                 _ => "dad local-only is enabled, but this run requires peer workers.",
             };
             return null;
@@ -461,6 +506,50 @@ public sealed class DadPlannerService
         return true;
     }
 
+    private bool ResolveNpcAutoLevelSelections(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
+    {
+        rejectionReason = string.Empty;
+        var localCharacter = pool.Characters.FirstOrDefault(static character =>
+            character.Source == DadCharacterSource.LocalRuntime &&
+            character.IsLiveConnected);
+
+        if (request.DutySupport is { AutoSelectHighestEligible: true } dutySupport &&
+            (dutySupport.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(dutySupport.DutyName)))
+        {
+            var selected = presetProviderService.SelectHighestEligibleNpcDuty(
+                localCharacter,
+                DadNpcAutoLevelLane.DutySupport,
+                out var blocker);
+            if (selected == null)
+            {
+                rejectionReason = blocker;
+                return false;
+            }
+
+            dutySupport.ContentFinderConditionId = selected.ContentFinderConditionId;
+            dutySupport.DutyName = selected.DutyDisplayName;
+        }
+
+        if (request.Trust is { AutoSelectHighestEligible: true } trust &&
+            (trust.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(trust.DutyName)))
+        {
+            var selected = presetProviderService.SelectHighestEligibleNpcDuty(
+                localCharacter,
+                DadNpcAutoLevelLane.Trust,
+                out var blocker);
+            if (selected == null)
+            {
+                rejectionReason = blocker;
+                return false;
+            }
+
+            trust.ContentFinderConditionId = selected.ContentFinderConditionId;
+            trust.DutyName = selected.DutyDisplayName;
+        }
+
+        return true;
+    }
+
     private bool ValidateLocalNpcDutyRunner(
         DadRunRequest request,
         DadCharacterPool pool,
@@ -597,6 +686,8 @@ public sealed class DadPlannerService
                 DadModuleId.Commendation => DadPlannerActivityMode.Commendation,
                 DadModuleId.Astrope => DadPlannerActivityMode.Astrope,
                 DadModuleId.CustomDuty => DadPlannerActivityMode.CustomDuty,
+                DadModuleId.Squadron => DadPlannerActivityMode.Squadron,
+                DadModuleId.VariantVvd => DadPlannerActivityMode.VariantVvd,
                 DadModuleId.Duty => DadPlannerActivityMode.LocalDuty,
                 _ => DadPlannerActivityMode.DutyPremade,
             },
@@ -722,7 +813,7 @@ public sealed class DadPlannerService
     private static DadTransportOwner ResolveTransportOwner(DadModuleId moduleId)
         => moduleId switch
         {
-            DadModuleId.PremadeDuty or DadModuleId.DailyMsq => DadTransportOwner.LanParty,
+            DadModuleId.PremadeDuty or DadModuleId.DailyMsq or DadModuleId.VariantVvd => DadTransportOwner.LanParty,
             _ => DadTransportOwner.DadDirect,
         };
 
@@ -730,7 +821,7 @@ public sealed class DadPlannerService
         => moduleId switch
         {
             DadModuleId.Mogtome or DadModuleId.Commendation or DadModuleId.Astrope
-                or DadModuleId.PremadeDuty or DadModuleId.DailyMsq => DadQueueAuthority.Leader,
+                or DadModuleId.PremadeDuty or DadModuleId.DailyMsq or DadModuleId.VariantVvd => DadQueueAuthority.Leader,
             _ => DadQueueAuthority.LocalOnly,
         };
 
@@ -763,6 +854,12 @@ public sealed class DadPlannerService
 
         if (request.CustomDuty != null)
             warnings.Add("Custom Duty uses typed CFC selection and routes by configured party size.");
+
+        if (request.Squadron != null)
+            warnings.Add("Squadron is Dad-owned planning with guarded live callbacks deferred until in-game validation.");
+
+        if (request.VariantVvd != null)
+            warnings.Add("Variant/VVD is Dad-owned planning; live queue start is guarded/deferred until callback validation and ADS solving coverage are ready.");
 
         if (request.Blunderville != null)
             warnings.Add("Blunderville remains Dad-owned but blocks until guarded Gold Saucer callbacks are available.");
