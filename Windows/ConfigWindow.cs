@@ -18,6 +18,8 @@ public sealed class ConfigWindow : Window, IDisposable
     private string draftServerHost = string.Empty;
     private int draftServerPort;
     private bool endpointDraftInitialized;
+    private IReadOnlyList<DadEndpointHostOption> endpointHostOptions = [];
+    private DateTime endpointHostOptionsLoadedUtc = DateTime.MinValue;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string pendingDeleteAccountId = string.Empty;
@@ -374,7 +376,14 @@ public sealed class ConfigWindow : Window, IDisposable
             ? "Listen on 127.0.0.1 for same-host clients. Use a LAN interface address and shared secret for multi-host clients."
             : "Enter the Dad Coordinator LAN IP/DNS or 127.0.0.1 for same-host use.");
 
-        ImGui.InputText(configuration.RunAsServerDad ? "Listen host" : "Dad Coordinator host", ref draftServerHost, 128);
+        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Listen host" : "Dad Coordinator host");
+        var comboWidth = 220f;
+        var hostInputWidth = MathF.Max(180f, ImGui.GetContentRegionAvail().X - comboWidth - ImGui.GetStyle().ItemSpacing.X);
+        ImGui.SetNextItemWidth(hostInputWidth);
+        ImGui.InputText("##dad-endpoint-host-input", ref draftServerHost, 128);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(comboWidth);
+        DrawEndpointHostDropdown();
         ImGui.InputInt(configuration.RunAsServerDad ? "Listen port" : "Dad Coordinator port", ref draftServerPort);
         draftServerPort = Math.Clamp(draftServerPort, 1, 65535);
 
@@ -960,6 +969,40 @@ public sealed class ConfigWindow : Window, IDisposable
         endpointDraftInitialized = true;
 
         plugin.ApplyEndpointConfiguration(endpointChanged: true);
+    }
+
+    private void DrawEndpointHostDropdown()
+    {
+        var options = GetEndpointHostOptions();
+        var current = options.FirstOrDefault(option =>
+            string.Equals(option.Host, draftServerHost.Trim(), StringComparison.OrdinalIgnoreCase));
+        var preview = current?.Label ?? "Select IP/host";
+        if (!ImGui.BeginCombo("##dad-endpoint-host-options", preview))
+            return;
+
+        foreach (var option in options)
+        {
+            var selected = string.Equals(option.Host, draftServerHost.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable($"{option.Label}##{option.Host}", selected))
+                draftServerHost = option.Host;
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private IReadOnlyList<DadEndpointHostOption> GetEndpointHostOptions()
+    {
+        if (endpointHostOptions.Count > 0 &&
+            DateTime.UtcNow - endpointHostOptionsLoadedUtc < TimeSpan.FromSeconds(10))
+        {
+            return endpointHostOptions;
+        }
+
+        endpointHostOptions = DadEndpointHostOptions.GetLocalIpv4Options();
+        endpointHostOptionsLoadedUtc = DateTime.UtcNow;
+        return endpointHostOptions;
     }
 
     private static string FormatText(string? value, string fallback)

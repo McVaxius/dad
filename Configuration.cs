@@ -15,7 +15,7 @@ public sealed class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 3;
     public bool PluginEnabled { get; set; } = false;
-    public bool RunAsServerDad { get; set; } = true;
+    public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
     public bool DebugUiEnabled { get; set; }
     public bool KrangleOperatorNamesEnabled { get; set; }

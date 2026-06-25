@@ -18,8 +18,8 @@ public static class DadRosterTransportCatalogRuntime
             .Where(HasUsableCharacterIdentity)
             .ToList();
 
-        if (localRows.Count == 0 && TryBuildFallbackLocalCharacter(fallbackSnapshot, out var fallbackCharacter))
-            localRows.Add(fallbackCharacter);
+        if (TryBuildFallbackLocalCharacter(fallbackSnapshot, out var fallbackCharacter))
+            UpsertPresenceFallbackLocalCharacter(localRows, fallbackCharacter);
 
         return new DadCharacterPool
         {
@@ -107,6 +107,71 @@ public static class DadRosterTransportCatalogRuntime
         }
 
         return false;
+    }
+
+    public static bool IsRequesterCatalogResponse(
+        DadPeerRosterCatalogResponse response,
+        DadWorkerSessionId requesterWorkerSessionId,
+        string requesterClientInstanceId)
+    {
+        requesterClientInstanceId = requesterClientInstanceId?.Trim() ?? string.Empty;
+        if (requesterWorkerSessionId.IsEmpty && string.IsNullOrWhiteSpace(requesterClientInstanceId))
+            return false;
+
+        return MatchesRosterOwner(
+                   response.WorkerSessionId,
+                   response.ClientInstanceId,
+                   requesterWorkerSessionId,
+                   requesterClientInstanceId) ||
+               MatchesRosterOwner(
+                   response.Catalog.SourceWorkerSessionId,
+                   response.Catalog.SourceClientInstanceId,
+                   requesterWorkerSessionId,
+                   requesterClientInstanceId);
+    }
+
+    public static DadPeerRosterCatalogResponse WithoutRequesterCatalogRows(
+        DadPeerRosterCatalogResponse response,
+        DadWorkerSessionId requesterWorkerSessionId,
+        string requesterClientInstanceId)
+    {
+        requesterClientInstanceId = requesterClientInstanceId?.Trim() ?? string.Empty;
+        if (requesterWorkerSessionId.IsEmpty && string.IsNullOrWhiteSpace(requesterClientInstanceId))
+            return response;
+
+        var catalog = response.Catalog.Clone();
+        var originalCharacterCount = catalog.Characters.Count;
+        var originalAccountCount = catalog.Accounts.Count;
+        catalog.Characters = catalog.Characters
+            .Where(character => !MatchesRosterOwner(
+                character.SourceWorkerSessionId,
+                character.SourceClientInstanceId,
+                requesterWorkerSessionId,
+                requesterClientInstanceId))
+            .ToList();
+        catalog.Accounts = catalog.Accounts
+            .Where(account => !MatchesRosterOwner(
+                account.SourceWorkerSessionId,
+                account.SourceClientInstanceId,
+                requesterWorkerSessionId,
+                requesterClientInstanceId))
+            .ToList();
+
+        if (catalog.Characters.Count == originalCharacterCount &&
+            catalog.Accounts.Count == originalAccountCount)
+        {
+            return response;
+        }
+
+        return new DadPeerRosterCatalogResponse
+        {
+            RequestId = response.RequestId,
+            RespondedAtUtc = response.RespondedAtUtc,
+            ClientInstanceId = response.ClientInstanceId,
+            WorkerSessionId = response.WorkerSessionId,
+            Catalog = catalog,
+            Warnings = [..response.Warnings],
+        };
     }
 
     private static bool AggregateResponseMatchesRosterOwner(
@@ -220,6 +285,64 @@ public static class DadRosterTransportCatalogRuntime
             XadbReady = participant.Character.XadbReady,
             Warnings = [..participant.Warnings],
         };
+
+    private static void UpsertPresenceFallbackLocalCharacter(
+        List<DadAcquiredCharacter> localRows,
+        DadAcquiredCharacter fallbackCharacter)
+    {
+        var existingIndex = localRows.FindIndex(row => SameRuntimeCharacter(row, fallbackCharacter));
+        if (existingIndex < 0)
+        {
+            if (localRows.Count > 0 && localRows.All(row => !SameRuntimeAccount(row, fallbackCharacter)))
+                return;
+
+            localRows.Clear();
+            localRows.Add(fallbackCharacter);
+            return;
+        }
+
+        localRows[existingIndex] = MergeLocalRuntimeCharacter(localRows[existingIndex], fallbackCharacter);
+    }
+
+    private static DadAcquiredCharacter MergeLocalRuntimeCharacter(
+        DadAcquiredCharacter current,
+        DadAcquiredCharacter fallback)
+    {
+        var merged = current.Clone();
+        if (string.IsNullOrWhiteSpace(merged.AccountId))
+            merged.AccountId = fallback.AccountId;
+        if (string.IsNullOrWhiteSpace(merged.AccountAlias))
+            merged.AccountAlias = fallback.AccountAlias;
+        if (merged.ContentId == 0)
+            merged.ContentId = fallback.ContentId;
+        if (string.IsNullOrWhiteSpace(merged.CharacterName))
+            merged.CharacterName = fallback.CharacterName;
+        if (string.IsNullOrWhiteSpace(merged.WorldName))
+            merged.WorldName = fallback.WorldName;
+        if (merged.LastSeenUtc == null || fallback.LastSeenUtc > merged.LastSeenUtc)
+            merged.LastSeenUtc = fallback.LastSeenUtc;
+        if (merged.Freshness == DadSnapshotFreshness.Unknown)
+            merged.Freshness = fallback.Freshness;
+        if (merged.Readiness == DadReadinessState.Unknown)
+            merged.Readiness = fallback.Readiness;
+        return merged;
+    }
+
+    private static bool SameRuntimeCharacter(DadAcquiredCharacter left, DadAcquiredCharacter right)
+        => DadRosterIdentity.SameCharacter(
+            new DadCharacterKey(left.CharacterKey),
+            left.ContentId,
+            new DadCharacterKey(right.CharacterKey),
+            right.ContentId);
+
+    private static bool SameRuntimeAccount(DadAcquiredCharacter left, DadAcquiredCharacter right)
+    {
+        var leftAccount = DadRosterIdentity.ResolveAccountKey(left.AccountId, left.AccountAlias);
+        var rightAccount = DadRosterIdentity.ResolveAccountKey(right.AccountId, right.AccountAlias);
+        return !leftAccount.IsEmpty &&
+               !rightAccount.IsEmpty &&
+               DadRosterIdentity.SameAccount(leftAccount, rightAccount);
+    }
 
     private static bool IsConnectedFallbackParticipant(DadParticipantSnapshot participant)
         => participant.State != DadParticipantState.Stale &&

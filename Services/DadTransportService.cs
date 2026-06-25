@@ -1721,14 +1721,24 @@ public sealed class DadTransportService : IDisposable
     {
         foreach (var response in source.Responses)
         {
+            var mergedResponse = response;
             if (excludeLocal &&
-                string.Equals(response.WorkerSessionId.Value, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+                DadRosterTransportCatalogRuntime.IsRequesterCatalogResponse(
+                    response,
+                    presenceService.WorkerSessionId,
+                    presenceService.ClientInstanceId))
             {
                 continue;
             }
 
-            target.Responses.Add(response);
-            rosterCatalogs[response.WorkerSessionId.Value] = response;
+            if (excludeLocal)
+                mergedResponse = DadRosterTransportCatalogRuntime.WithoutRequesterCatalogRows(
+                    response,
+                    presenceService.WorkerSessionId,
+                    presenceService.ClientInstanceId);
+
+            target.Responses.Add(mergedResponse);
+            rosterCatalogs[mergedResponse.WorkerSessionId.Value] = mergedResponse;
         }
 
         foreach (var warning in source.Warnings)
@@ -2142,13 +2152,16 @@ public sealed class DadTransportService : IDisposable
 
     private void RefreshTransportSnapshot()
     {
+        RefreshLocalMutationState();
         var now = DateTime.UtcNow;
         var staleAfter = TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds));
         var participants = new List<DadParticipantSnapshot>();
 
         if (configuration.RunAsServerDad)
         {
-            RefreshLocalMutationState();
+            CurrentTransport.ListenerEndpoint = FormatEndpoint(
+                configuration.ServerListenHost,
+                configuration.ServerListenPort);
             var local = GetLocalParticipant();
             local.Endpoint = CurrentTransport.ListenerEndpoint;
             local.IsLocalClient = true;
@@ -2182,29 +2195,39 @@ public sealed class DadTransportService : IDisposable
                 participants.Add(participant);
             }
 
-            CurrentTransport.ListenerEndpoint = FormatEndpoint(
-                configuration.ServerListenHost,
-                configuration.ServerListenPort);
             CurrentTransport.AuthorityEndpoint = CurrentTransport.ListenerEndpoint;
             CurrentTransport.AuthorityWorkerSessionId = presenceService.WorkerSessionId;
             CurrentTransport.AuthorityRole = DadWorkerRole.ServerDad;
         }
-        else if (serverParticipant != null)
+        else
         {
-            var participant = DadHubParticipants.PrepareRemoteWithStaleState(
-                serverParticipant,
-                clientConnection?.LastHeartbeatUtc ?? serverParticipant.LastHeartbeatUtc,
-                now,
-                clientConnection is { IsOpen: true } ? TimeSpan.MaxValue : staleAfter,
-                "Dad Coordinator connection lost.");
+            var local = GetLocalParticipant();
+            local.Endpoint = string.Empty;
+            local.IsLocalClient = true;
+            local.IsAuthority = false;
+            if (!remoteMutationsAllowed)
+                MarkSnapshotUnavailable(local, BuildLocalUnavailableReason());
+            participants.Add(local);
 
-            participants.Add(participant);
             CurrentTransport.ListenerEndpoint = string.Empty;
             CurrentTransport.AuthorityEndpoint = FormatEndpoint(
                 configuration.ServerDadHost,
                 configuration.ServerDadPort);
-            CurrentTransport.AuthorityWorkerSessionId = participant.WorkerSessionId;
             CurrentTransport.AuthorityRole = DadWorkerRole.ServerDad;
+            CurrentTransport.AuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
+
+            if (serverParticipant != null)
+            {
+                var participant = DadHubParticipants.PrepareRemoteWithStaleState(
+                    serverParticipant,
+                    clientConnection?.LastHeartbeatUtc ?? serverParticipant.LastHeartbeatUtc,
+                    now,
+                    clientConnection is { IsOpen: true } ? TimeSpan.MaxValue : staleAfter,
+                    "Dad Coordinator connection lost.");
+
+                participants.Add(participant);
+                CurrentTransport.AuthorityWorkerSessionId = participant.WorkerSessionId;
+            }
         }
 
         CurrentTransport.KnownParticipants = participants

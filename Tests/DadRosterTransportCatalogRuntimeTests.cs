@@ -52,6 +52,25 @@ public sealed class DadRosterTransportCatalogRuntimeTests
     }
 
     [Fact]
+    public void LocalTransportPoolReplacesStaleLocalRowWithCurrentPresenceFallback()
+    {
+        var fallback = Snapshot("dad-w", "worker-w", "acct-w", "Current Character@Alpha", 101);
+
+        var transportPool = DadRosterTransportCatalogRuntime.BuildLocalTransportPool(
+            new DadCharacterPool
+            {
+                Characters = [Character("Stale Character@Alpha", "acct-w", DadCharacterSource.LocalRuntime, contentId: 202)],
+            },
+            fallback,
+            new DadPeerTransportSnapshot { LocalClientInstanceId = "dad-w" });
+
+        var character = Assert.Single(transportPool.Characters);
+        Assert.Equal("Current Character@Alpha", character.CharacterKey);
+        Assert.Equal(101UL, character.ContentId);
+        Assert.Equal("acct-w", character.AccountId);
+    }
+
+    [Fact]
     public void EmptyPeerCatalogResponseStillAllowsRuntimeFallback()
     {
         var runtime = PeerSnapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
@@ -120,6 +139,38 @@ public sealed class DadRosterTransportCatalogRuntimeTests
         Assert.Equal(DadCharacterSource.PeerRuntime, row.Source);
         Assert.Equal("client-w", row.SourceClientInstanceId);
         Assert.Equal("worker-w", row.SourceWorkerSessionId.Value);
+    }
+
+    [Fact]
+    public void ClientDadTransportRuntimeKeepsLocalSelfCoordinatorAndSiblingCatalogVisible()
+    {
+        var local = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        local.IsLocalClient = true;
+        local.State = DadParticipantState.Ready;
+        var server = Snapshot("client-w", "worker-w", "acct-w", "W Character@Alpha", 101);
+        server.IsAuthority = true;
+        server.State = DadParticipantState.Ready;
+        var siblingCatalog = PeerCatalog(
+            "client-y",
+            "worker-y",
+            RosterCharacter("acct-y", "Y Character@Alpha", 303, "client-y", "worker-y"));
+        var transport = Transport("client-x", "worker-x", local, server);
+        transport.AuthorityEndpoint = "192.168.1.10:4647";
+
+        var fallbackRows = DadRosterTransportCatalogRuntime.BuildParticipantRuntimeFallbackRows(
+            transport,
+            [siblingCatalog]);
+
+        Assert.Equal(["acct-w", "acct-x"], fallbackRows.Select(static row => row.AccountKey.Value).Order().ToArray());
+        Assert.Contains(fallbackRows, static row => row.Source == DadCharacterSource.LocalRuntime &&
+                                                    row.SourceWorkerSessionId.Value == "worker-x");
+        Assert.Contains(fallbackRows, static row => row.Source == DadCharacterSource.PeerRuntime &&
+                                                    row.SourceWorkerSessionId.Value == "worker-w");
+        Assert.True(DadRosterTransportCatalogRuntime.IsRosterOwnerReachable(
+            new DadWorkerSessionId("worker-y"),
+            "client-y",
+            transport,
+            [siblingCatalog]));
     }
 
     [Fact]
@@ -291,6 +342,82 @@ public sealed class DadRosterTransportCatalogRuntimeTests
     }
 
     [Fact]
+    public void RequesterCatalogResponseFilterDoesNotMatchCoordinatorOrSiblingRows()
+    {
+        var requester = PeerCatalog(
+            "client-x",
+            "worker-x",
+            RosterCharacter("acct-x", "X Character@Alpha", 202, "client-x", "worker-x"));
+        var coordinator = PeerCatalog(
+            "client-w",
+            "worker-w",
+            RosterCharacter("acct-w", "W Character@Alpha", 101, "client-w", "worker-w"));
+        var sibling = PeerCatalog(
+            "client-y",
+            "worker-y",
+            RosterCharacter("acct-y", "Y Character@Alpha", 303, "client-y", "worker-y"));
+
+        Assert.True(DadRosterTransportCatalogRuntime.IsRequesterCatalogResponse(
+            requester,
+            new DadWorkerSessionId("worker-x"),
+            "client-x"));
+        Assert.False(DadRosterTransportCatalogRuntime.IsRequesterCatalogResponse(
+            coordinator,
+            new DadWorkerSessionId("worker-x"),
+            "client-x"));
+        Assert.False(DadRosterTransportCatalogRuntime.IsRequesterCatalogResponse(
+            sibling,
+            new DadWorkerSessionId("worker-x"),
+            "client-x"));
+    }
+
+    [Fact]
+    public void RequesterCatalogRowFilterRemovesOnlyRequesterRowsFromAggregateStyleCoordinatorResponse()
+    {
+        var aggregateStyleCoordinator = PeerCatalog(
+            "client-w",
+            "worker-w",
+            RosterCharacter("acct-w", "W Character@Alpha", 101, "client-w", "worker-w"),
+            RosterCharacter("acct-x", "X Character@Alpha", 202, "client-x", "worker-x"),
+            RosterCharacter("acct-y", "Y Character@Alpha", 303, "client-y", "worker-y"));
+        aggregateStyleCoordinator.Catalog.Accounts =
+        [
+            Account("acct-w", "client-w", "worker-w"),
+            Account("acct-x", "client-x", "worker-x"),
+            Account("acct-y", "client-y", "worker-y"),
+        ];
+
+        var filtered = DadRosterTransportCatalogRuntime.WithoutRequesterCatalogRows(
+            aggregateStyleCoordinator,
+            new DadWorkerSessionId("worker-x"),
+            "client-x");
+
+        Assert.Equal("worker-w", filtered.WorkerSessionId.Value);
+        Assert.Equal(["acct-w", "acct-y"], filtered.Catalog.Characters.Select(static row => row.AccountKey.Value).Order().ToArray());
+        Assert.Equal(["acct-w", "acct-y"], filtered.Catalog.Accounts.Select(static account => account.AccountKey.Value).Order().ToArray());
+    }
+
+    [Fact]
+    public void RosterOwnerReachabilityDoesNotRequireDiscoveryDirectory()
+    {
+        var transport = new DadPeerTransportSnapshot
+        {
+            LocalClientInstanceId = "client-x",
+            LocalWorkerSessionId = new DadWorkerSessionId("worker-x"),
+            KnownParticipants =
+            [
+                Snapshot("client-w", "worker-w", "acct-w", "W Character@Alpha", 101),
+            ],
+        };
+
+        Assert.True(DadRosterTransportCatalogRuntime.IsRosterOwnerReachable(
+            new DadWorkerSessionId("worker-w"),
+            "client-w",
+            transport,
+            []));
+    }
+
+    [Fact]
     public void DistinctAccountScopedServerAndClientFallbackRowsRemainDistinct()
     {
         var server = Snapshot("client-w", "worker-w", "acct-w", "Shared Character@Alpha", 303);
@@ -429,4 +556,19 @@ public sealed class DadRosterTransportCatalogRuntimeTests
             LastRuntimeSeenUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
         };
     }
+
+    private static DadRosterAccountOption Account(
+        string accountId,
+        string clientId,
+        string workerId)
+        => new()
+        {
+            AccountKey = new DadAccountKey(accountId),
+            AccountAlias = $"Dad {accountId}",
+            DisplayName = $"Dad {accountId}",
+            SourceClientInstanceId = clientId,
+            SourceWorkerSessionId = new DadWorkerSessionId(workerId),
+            OwnerOnline = true,
+            AssignedCharacterCount = 1,
+        };
 }
