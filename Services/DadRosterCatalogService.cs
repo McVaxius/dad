@@ -36,16 +36,33 @@ public sealed class DadRosterCatalogService
         NormalizeRosterVisibilityRecords(saveIfChanged: true);
     }
 
-    public DadAccountRosterCatalog CurrentCatalog => ApplyOwnerConnectivity(currentCatalog.Clone());
+    public DadAccountRosterCatalog CurrentCatalog
+    {
+        get
+        {
+            var catalog = ApplyOwnerConnectivity(currentCatalog.Clone());
+            catalog.Accounts = BuildCurrentAccountDirectory(catalog).ToList();
+            return catalog;
+        }
+    }
 
     public long CatalogVersion => catalogVersion;
 
     public IReadOnlyList<DadRosterAccountOption> GetAccountDirectory()
     {
         var connectedCatalog = ApplyOwnerConnectivity(currentCatalog.Clone());
-        var accounts = connectedCatalog.Accounts.Count > 0
-            ? connectedCatalog.Accounts
-            : BuildLocalAccountDirectory([], transportService.CurrentTransport.KnownParticipants);
+        return BuildCurrentAccountDirectory(connectedCatalog);
+    }
+
+    private IReadOnlyList<DadRosterAccountOption> BuildCurrentAccountDirectory(DadAccountRosterCatalog connectedCatalog)
+    {
+        var accounts = connectedCatalog.Accounts.Select(static account => account.Clone()).ToList();
+        foreach (var account in BuildLocalAccountDirectory(
+                     connectedCatalog.Characters,
+                     transportService.CurrentTransport.KnownParticipants))
+        {
+            UpsertAccountOption(accounts, account);
+        }
 
         return accounts
             .Select(static account => account.Clone())

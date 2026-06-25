@@ -191,6 +191,96 @@ public sealed class DadHubProtocolTests
         DadHubProtocol.ValidateFrame(roundTrip, "shared-secret");
     }
 
+    [Fact]
+    public async Task NotificationFrameCarriesHubRosterPublish()
+    {
+        var publish = new DadHubRosterPublish
+        {
+            Generation = 7,
+            PublishedAtUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
+            AuthorityEndpoint = "127.0.0.1:4647",
+            AuthorityWorkerSessionId = new DadWorkerSessionId("worker-w"),
+            CoordinatorParticipant = Participant("client-w", "worker-w", "acct-w", "W Character@Alpha", isAuthority: true),
+            ClientParticipants =
+            [
+                Participant("client-x", "worker-x", "acct-x", "X Character@Alpha"),
+            ],
+        };
+        publish.Participants = [publish.CoordinatorParticipant, ..publish.ClientParticipants];
+
+        var frame = DadHubProtocol.CreateFrame(
+            DadHubFrameKind.Notification,
+            new DadWorkerSessionId("worker-w"),
+            new DadWorkerSessionId("worker-x"),
+            "hub-roster-publish",
+            string.Empty,
+            DadIpcJson.Serialize(publish),
+            "shared-secret");
+
+        var roundTrip = await RoundTripAsync(frame);
+        var payload = Assert.IsType<DadHubRosterPublish>(
+            DadIpcJson.Deserialize<DadHubRosterPublish>(roundTrip.PayloadJson));
+
+        Assert.Equal(DadHubFrameKind.Notification, roundTrip.Kind);
+        Assert.Equal(7, payload.Generation);
+        Assert.Equal("worker-w", payload.AuthorityWorkerSessionId.Value);
+        Assert.Equal(["worker-w", "worker-x"], payload.Participants.Select(static participant => participant.WorkerSessionId.Value).ToArray());
+        DadHubProtocol.ValidateFrame(roundTrip, "shared-secret");
+    }
+
+    [Fact]
+    public void PublishedRosterConvergesAcrossClients()
+    {
+        var publish = new DadHubRosterPublish
+        {
+            Generation = 8,
+            PublishedAtUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
+            AuthorityEndpoint = "127.0.0.1:4647",
+            AuthorityWorkerSessionId = new DadWorkerSessionId("worker-w"),
+            CoordinatorParticipant = Participant("client-w", "worker-w", "acct-w", "W Character@Alpha", isAuthority: true),
+            ClientParticipants =
+            [
+                Participant("client-x", "worker-x", "acct-x", "X Character@Alpha"),
+                Participant("client-y", "worker-y", "acct-y", "Y Character@Alpha"),
+                Participant("client-z", "worker-z", "acct-z", "Z Character@Alpha"),
+            ],
+        };
+        publish.Participants = [publish.CoordinatorParticipant, ..publish.ClientParticipants];
+
+        var xView = DadHubRosterPublishRuntime.BuildParticipantView(
+            publish,
+            Participant("client-x", "worker-x", "acct-x", "X Character@Alpha"),
+            new DadWorkerSessionId("worker-x"),
+            "client-x");
+        var yView = DadHubRosterPublishRuntime.BuildParticipantView(
+            publish,
+            Participant("client-y", "worker-y", "acct-y", "Y Character@Alpha"),
+            new DadWorkerSessionId("worker-y"),
+            "client-y");
+
+        Assert.Equal(
+            xView.Select(static participant => participant.WorkerSessionId.Value).Order().ToArray(),
+            yView.Select(static participant => participant.WorkerSessionId.Value).Order().ToArray());
+        Assert.Equal(["acct-w", "acct-x", "acct-y", "acct-z"], xView.Select(static participant => participant.ManagedAccountKey.Value).Order().ToArray());
+        Assert.Contains(xView, static participant => participant.WorkerSessionId.Value == "worker-w" && participant.IsAuthority);
+        Assert.Contains(xView, static participant => participant.WorkerSessionId.Value == "worker-x" && participant.IsLocalClient);
+        Assert.Contains(yView, static participant => participant.WorkerSessionId.Value == "worker-y" && participant.IsLocalClient);
+    }
+
+    [Fact]
+    public void StaleHubRosterPublishIsDetectable()
+    {
+        var now = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc);
+        var publish = new DadHubRosterPublish
+        {
+            Generation = 9,
+            PublishedAtUtc = now.AddSeconds(-20),
+        };
+
+        Assert.False(DadHubRosterPublishRuntime.IsFresh(publish, now, TimeSpan.FromSeconds(12)));
+        Assert.True(DadHubRosterPublishRuntime.IsFresh(publish, now, TimeSpan.FromSeconds(30)));
+    }
+
     [Theory]
     [InlineData("profile-catalog-request")]
     [InlineData("profile-update-command")]
@@ -373,6 +463,41 @@ public sealed class DadHubProtocolTests
         stream.Position = 0;
         return Assert.IsType<DadHubFrame>(
             await DadHubProtocol.ReadFrameAsync(stream, CancellationToken.None));
+    }
+
+    private static DadParticipantSnapshot Participant(
+        string clientId,
+        string workerId,
+        string accountId,
+        string characterKey,
+        bool isAuthority = false)
+    {
+        var parts = characterKey.Split('@', 2, StringSplitOptions.TrimEntries);
+        return new DadParticipantSnapshot
+        {
+            ClientInstanceId = clientId,
+            WorkerSessionId = new DadWorkerSessionId(workerId),
+            ManagedAccountKey = new DadAccountKey(accountId),
+            ManagedAccountAlias = $"Dad {accountId}",
+            ActiveCharacterKey = new DadCharacterKey(characterKey),
+            IsAvailable = true,
+            IsEligibleForRun = true,
+            IsAuthority = isAuthority,
+            WorkerRole = isAuthority ? DadWorkerRole.ServerDad : DadWorkerRole.ClientDad,
+            State = DadParticipantState.Ready,
+            LastHeartbeatUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
+            Character = new DadAcquiredCharacter
+            {
+                AccountId = accountId,
+                AccountAlias = $"Dad {accountId}",
+                CharacterKey = characterKey,
+                CharacterName = parts[0],
+                WorldName = parts.Length == 2 ? parts[1] : string.Empty,
+                Source = DadCharacterSource.LocalRuntime,
+                Freshness = DadSnapshotFreshness.Live,
+                Readiness = DadReadinessState.Ready,
+            },
+        };
     }
 
     private sealed class TestSession

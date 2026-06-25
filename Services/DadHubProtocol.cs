@@ -12,6 +12,7 @@ internal enum DadHubFrameKind
     Hello,
     HelloAck,
     Heartbeat,
+    Notification,
     Request,
     Response,
     Error,
@@ -43,6 +44,31 @@ internal sealed class DadHubHeartbeat
 {
     public DateTime SentAtUtc { get; set; } = DateTime.UtcNow;
     public DadParticipantSnapshot Participant { get; set; } = new();
+}
+
+internal sealed class DadHubRosterPublish
+{
+    public long Generation { get; set; }
+    public DateTime PublishedAtUtc { get; set; } = DateTime.UtcNow;
+    public string AuthorityEndpoint { get; set; } = string.Empty;
+    public DadWorkerSessionId AuthorityWorkerSessionId { get; set; } = new(string.Empty);
+    public DadParticipantSnapshot CoordinatorParticipant { get; set; } = new();
+    public List<DadParticipantSnapshot> ClientParticipants { get; set; } = [];
+    public List<DadParticipantSnapshot> DisconnectedParticipants { get; set; } = [];
+    public List<DadParticipantSnapshot> Participants { get; set; } = [];
+
+    public DadHubRosterPublish Clone()
+        => new()
+        {
+            Generation = Generation,
+            PublishedAtUtc = PublishedAtUtc,
+            AuthorityEndpoint = AuthorityEndpoint,
+            AuthorityWorkerSessionId = AuthorityWorkerSessionId,
+            CoordinatorParticipant = CoordinatorParticipant.Clone(),
+            ClientParticipants = ClientParticipants.Select(static participant => participant.Clone()).ToList(),
+            DisconnectedParticipants = DisconnectedParticipants.Select(static participant => participant.Clone()).ToList(),
+            Participants = Participants.Select(static participant => participant.Clone()).ToList(),
+        };
 }
 
 internal sealed class DadHubProtocolException : IOException
@@ -340,5 +366,137 @@ internal static class DadHubParticipants
         participant.Character.Readiness = DadReadinessState.Stale;
         if (participant.Warnings.All(warning => !string.Equals(warning, reason, StringComparison.OrdinalIgnoreCase)))
             participant.Warnings.Add(reason);
+    }
+}
+
+internal static class DadHubRosterPublishRuntime
+{
+    public static bool IsFresh(DadHubRosterPublish publish, DateTime nowUtc, TimeSpan staleAfter)
+        => publish.PublishedAtUtc != default && nowUtc - publish.PublishedAtUtc < staleAfter;
+
+    public static List<DadParticipantSnapshot> BuildParticipantView(
+        DadHubRosterPublish publish,
+        DadParticipantSnapshot? localParticipant,
+        DadWorkerSessionId localWorkerSessionId,
+        string localClientInstanceId)
+    {
+        var participants = EnumeratePublishedParticipants(publish)
+            .Select(static participant => participant.Clone())
+            .ToList();
+        var localMatched = false;
+
+        for (var index = 0; index < participants.Count; index++)
+        {
+            var participant = participants[index];
+            var isLocal = MatchesLocal(participant, localWorkerSessionId, localClientInstanceId);
+            if (isLocal)
+            {
+                localMatched = true;
+                if (localParticipant != null)
+                {
+                    var replacement = localParticipant.Clone();
+                    replacement.IsLocalClient = true;
+                    replacement.Endpoint = string.Empty;
+                    replacement.IsAuthority = string.Equals(
+                        replacement.WorkerSessionId.Value,
+                        publish.AuthorityWorkerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase);
+                    participants[index] = replacement;
+                    continue;
+                }
+            }
+
+            participant.IsLocalClient = false;
+            if (string.Equals(
+                    participant.WorkerSessionId.Value,
+                    publish.AuthorityWorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                participant.IsAuthority = true;
+                participant.WorkerRole = DadWorkerRole.ServerDad;
+                participant.Endpoint = publish.AuthorityEndpoint;
+            }
+            else
+            {
+                participant.IsAuthority = false;
+                participant.Endpoint = string.Empty;
+            }
+        }
+
+        if (!localMatched && localParticipant != null)
+        {
+            var local = localParticipant.Clone();
+            local.IsLocalClient = true;
+            local.Endpoint = string.Empty;
+            participants.Add(local);
+        }
+
+        return participants
+            .DistinctBy(BuildParticipantKey, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static participant => participant.ManagedAccountAlias, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static participant => participant.ActiveCharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public static List<DadPeerSnapshotResponse> BuildSnapshotResponses(IEnumerable<DadParticipantSnapshot> participants)
+        => participants
+            .Select(static participant => new DadPeerSnapshotResponse
+            {
+                RespondedAtUtc = participant.LastHeartbeatUtc,
+                ClientInstanceId = participant.ClientInstanceId,
+                ProcessId = participant.ProcessId,
+                Character = participant.Character.Clone(),
+                Participant = participant.Clone(),
+                XadbReady = participant.Character.XadbReady,
+                Warnings = [..participant.Warnings],
+            })
+            .ToList();
+
+    private static IEnumerable<DadParticipantSnapshot> EnumeratePublishedParticipants(DadHubRosterPublish publish)
+    {
+        if (publish.Participants.Count > 0)
+        {
+            foreach (var participant in publish.Participants)
+                yield return participant;
+            yield break;
+        }
+
+        if (!publish.CoordinatorParticipant.WorkerSessionId.IsEmpty ||
+            !string.IsNullOrWhiteSpace(publish.CoordinatorParticipant.ClientInstanceId))
+        {
+            yield return publish.CoordinatorParticipant;
+        }
+
+        foreach (var participant in publish.ClientParticipants)
+            yield return participant;
+        foreach (var participant in publish.DisconnectedParticipants)
+            yield return participant;
+    }
+
+    private static bool MatchesLocal(
+        DadParticipantSnapshot participant,
+        DadWorkerSessionId localWorkerSessionId,
+        string localClientInstanceId)
+        => (!participant.WorkerSessionId.IsEmpty &&
+            !localWorkerSessionId.IsEmpty &&
+            string.Equals(
+                participant.WorkerSessionId.Value,
+                localWorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase)) ||
+           (!string.IsNullOrWhiteSpace(participant.ClientInstanceId) &&
+            !string.IsNullOrWhiteSpace(localClientInstanceId) &&
+            string.Equals(
+                participant.ClientInstanceId.Trim(),
+                localClientInstanceId.Trim(),
+                StringComparison.OrdinalIgnoreCase));
+
+    private static string BuildParticipantKey(DadParticipantSnapshot participant)
+    {
+        if (!participant.WorkerSessionId.IsEmpty)
+            return $"worker:{participant.WorkerSessionId.Value}";
+        if (!string.IsNullOrWhiteSpace(participant.ClientInstanceId))
+            return $"client:{participant.ClientInstanceId.Trim()}";
+        return $"character:{participant.ActiveCharacterKey.Value}";
     }
 }
