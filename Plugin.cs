@@ -1498,7 +1498,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         var request = DadIpcJson.Deserialize<DadLaunchProfileUpdateRequest>(json);
         return DadIpcJson.Serialize(!Configuration.RunAsServerDad
-            ? new DadLaunchProfileUpdateAck { Summary = "Only Server Dad may update launch profiles." }
+            ? new DadLaunchProfileUpdateAck { Summary = "Only Dad Coordinator may update launch profiles." }
             : request == null
             ? new DadLaunchProfileUpdateAck { Summary = "Unreadable launch profile update payload." }
             : SchedulerService.UpdateLaunchProfile(request));
@@ -2370,8 +2370,8 @@ public sealed class Plugin : IDalamudPlugin
         {
             ResetAuthorityCache(clearFreshness: true);
             return BuildUnavailableAuthorityResult(
-                "No Server Dad authority discovered.",
-                "No Server Dad hub session is connected.",
+                "No Dad Coordinator authority discovered.",
+                "No Dad Coordinator hub session is connected.",
                 authorityEndpoint,
                 transport.AuthorityWorkerSessionId,
                 transport.AuthorityRole);
@@ -2398,8 +2398,8 @@ public sealed class Plugin : IDalamudPlugin
         if (!forceRefresh && DateTime.UtcNow < suppressUntilUtc)
         {
             return BuildUnavailableAuthorityResult(
-                "Server Dad status refresh deferred.",
-                "Server Dad status refresh deferred while endpoint changes settle.",
+                "Dad Coordinator status refresh deferred.",
+                "Dad Coordinator status refresh deferred while endpoint changes settle.",
                 authorityEndpoint,
                 transport.AuthorityWorkerSessionId,
                 transport.AuthorityRole);
@@ -2409,8 +2409,8 @@ public sealed class Plugin : IDalamudPlugin
             return CloneAuthorityRun(cached);
 
         return BuildUnavailableAuthorityResult(
-            "Server Dad status refresh pending.",
-            "Server Dad status refresh has not completed yet.",
+            "Dad Coordinator status refresh pending.",
+            "Dad Coordinator status refresh has not completed yet.",
             authorityEndpoint,
             transport.AuthorityWorkerSessionId,
             transport.AuthorityRole);
@@ -2646,20 +2646,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void OpenExternalLink(string url, string description)
     {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = url,
-                UseShellExecute = true,
-            });
-            PrintStatus($"Opened {description}.");
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "[dad] Failed to open {Description}.", description);
-            PrintStatus($"Failed to open {description}.");
-        }
+        PrintStatus($"{description}: {url}");
     }
 
     public void PrintStatusReport()
@@ -2820,8 +2807,8 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         return result.Status == DadRunStatus.Rejected
-            ? "forwarded to Server Dad, rejected"
-            : "forwarded to Server Dad, accepted";
+            ? "forwarded to Dad Coordinator, rejected"
+            : "forwarded to Dad Coordinator, accepted";
     }
 
     private void PrimeAuthorityCacheFromRun(DadRunRequest request, DadRunResult result)
@@ -2882,12 +2869,12 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        // Feature batch A: gate for dangerous/hidden options (e.g. completion kill-client/PC).
+        // Feature batch A: gate for advanced/legacy options.
         if (trimmed.Equals("advanced", StringComparison.OrdinalIgnoreCase))
         {
             Configuration.AdvancedModeEnabled = !Configuration.AdvancedModeEnabled;
             Configuration.Save();
-            PrintStatus($"Dad advanced mode {(Configuration.AdvancedModeEnabled ? "enabled — dangerous options available" : "disabled — dangerous options hidden")}.");
+            PrintStatus($"Dad advanced mode {(Configuration.AdvancedModeEnabled ? "enabled - advanced options visible" : "disabled - advanced options hidden")}.");
             return;
         }
 
@@ -2895,7 +2882,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             Configuration.AdvancedModeEnabled = true;
             Configuration.Save();
-            PrintStatus("Dad advanced mode enabled — dangerous options available.");
+            PrintStatus("Dad advanced mode enabled - advanced options visible.");
             return;
         }
 
@@ -2903,7 +2890,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             Configuration.AdvancedModeEnabled = false;
             Configuration.Save();
-            PrintStatus("Dad advanced mode disabled — dangerous options hidden.");
+            PrintStatus("Dad advanced mode disabled - advanced options hidden.");
             return;
         }
 
@@ -2963,7 +2950,8 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (trimmed.Equals("run server", StringComparison.OrdinalIgnoreCase))
+        if (trimmed.Equals("run coordinator", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("run server", StringComparison.OrdinalIgnoreCase))
         {
             StartServerDemoRunFromShell();
             return;
@@ -3070,7 +3058,7 @@ public sealed class Plugin : IDalamudPlugin
         PrintStatus($"Worker local {status.WorkerSessionId}: run={status.RunId}, role={status.Role}, state={status.State}, terminal={status.IsTerminal}, summary={status.Summary}");
         PrintStatus($"Worker peers: {transport.KnownParticipants.Count} discovered, authority={transport.AuthorityWorkerSessionId}, endpoint={transport.AuthorityEndpoint}.");
         foreach (var participant in transport.KnownParticipants)
-            PrintStatus($"Worker peer {participant.WorkerSessionId}: {participant.ActiveCharacterKey}, state={participant.State}, heartbeat={participant.LastHeartbeatUtc:O}, route=Server Dad hub.");
+            PrintStatus($"Worker peer {participant.WorkerSessionId}: {participant.ActiveCharacterKey}, state={participant.State}, heartbeat={participant.LastHeartbeatUtc:O}, route=Dad Coordinator hub.");
     }
 
     private void RunDutyIpcDiagnosticsFromShell(string arguments)

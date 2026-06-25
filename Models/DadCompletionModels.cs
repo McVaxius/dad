@@ -4,8 +4,8 @@ namespace dad.Models;
 public enum DadCompletionKillMode
 {
     None = 0,
-    CloseGameClient = 1, // dangerous — only honored when AdvancedModeEnabled (/dad advanced)
-    ShutDownPc = 2,      // dangerous — only honored when AdvancedModeEnabled; uses a cancelable delay
+    CloseGameClient = 1, // legacy setting preserved but disabled
+    ShutDownPc = 2,      // legacy setting preserved but disabled
 }
 
 public sealed class DadCompletionActions
@@ -18,7 +18,7 @@ public sealed class DadCompletionActions
     public bool RunCommands { get; set; } = false;
     public List<string> Commands { get; set; } = [];
 
-    // Dangerous shutdown actions — gated behind AdvancedModeEnabled.
+    // Legacy kill actions are kept for config compatibility but disabled at runtime.
     public DadCompletionKillMode KillMode { get; set; } = DadCompletionKillMode.None;
     public DadPostRunUtilities Utilities { get; set; } = new();
 

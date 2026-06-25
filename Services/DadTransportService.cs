@@ -154,8 +154,8 @@ public sealed class DadTransportService : IDisposable
             IsReady = false;
             CurrentTransport.Availability = "Starting";
             CurrentTransport.LastRequestStatus = configuration.RunAsServerDad
-                ? "Starting Server Dad listener."
-                : "Connecting to Server Dad.";
+                ? "Starting Dad Coordinator listener."
+                : "Connecting to Dad Coordinator.";
         }
 
         previous.Cancel();
@@ -268,7 +268,7 @@ public sealed class DadTransportService : IDisposable
         CurrentTransport.LastRequestUtc = DateTime.UtcNow;
         CurrentTransport.LastRequestStatus = CurrentTransport.LastResponses.Count == 0
             ? "No connected Dad workers."
-            : $"Read {CurrentTransport.LastResponses.Count} worker snapshot(s) from Server Dad hub sessions.";
+            : $"Read {CurrentTransport.LastResponses.Count} worker snapshot(s) from Dad Coordinator hub sessions.";
         return CurrentTransport;
     }
 
@@ -330,7 +330,7 @@ public sealed class DadTransportService : IDisposable
         return result ?? DadRunResult.FromRequest(
             request,
             DadRunStatus.Queued,
-            "Forwarded run to Server Dad; awaiting authority status.");
+            "Forwarded run to Dad Coordinator; awaiting authority status.");
     }
 
     public DadRunResult? SendCancelCommand(string endpoint, DadCancelCommandDto command)
@@ -351,7 +351,7 @@ public sealed class DadTransportService : IDisposable
             CancellationState = DadRunCancellationState.Requested,
             AuthorityWorkerSessionId = target,
             AuthorityEndpoint = GetPreferredAuthorityEndpoint(),
-            Summary = "Forwarded cancellation to Server Dad; awaiting authority status.",
+            Summary = "Forwarded cancellation to Dad Coordinator; awaiting authority status.",
         };
     }
 
@@ -441,7 +441,7 @@ public sealed class DadTransportService : IDisposable
         return new DadProfileUpdateAck
         {
             RequestId = request.RequestId,
-            Summary = "Profile update queued through Server Dad hub.",
+            Summary = "Profile update queued through Dad Coordinator hub.",
         };
     }
 
@@ -470,7 +470,7 @@ public sealed class DadTransportService : IDisposable
             RunId = command.RunId,
             WorkerSessionId = participant.WorkerSessionId,
             Accepted = true,
-            Summary = "Worker command queued through Server Dad hub.",
+            Summary = "Worker command queued through Dad Coordinator hub.",
             Status = new DadWorkerExecutionStatus
             {
                 CommandId = command.CommandId,
@@ -547,7 +547,7 @@ public sealed class DadTransportService : IDisposable
             }
             catch (DadHubProtocolException ex)
             {
-                SetTransportError("Server Dad requires a shared secret for non-loopback listeners.");
+                SetTransportError("Dad Coordinator requires a shared secret for non-loopback listeners.");
                 log.Warning("[dad] {Code}: {Message}", ex.Code, ex.Message);
                 return;
             }
@@ -570,7 +570,7 @@ public sealed class DadTransportService : IDisposable
                 CurrentTransport.ListenerEndpoint,
                 DadAuthorityMode.ServerDad);
             CurrentTransport.Availability = "Ready";
-            CurrentTransport.ConnectionStatus = $"Server Dad listening on {CurrentTransport.ListenerEndpoint}.";
+            CurrentTransport.ConnectionStatus = $"Dad Coordinator listening on {CurrentTransport.ListenerEndpoint}.";
             CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
             IsReady = true;
 
@@ -600,8 +600,8 @@ public sealed class DadTransportService : IDisposable
         }
         catch (Exception ex)
         {
-            SetTransportError($"Server Dad listener failed: {ex.Message}");
-            log.Error(ex, "[dad] Server Dad listener failed.");
+            SetTransportError($"Dad Coordinator listener failed: {ex.Message}");
+            log.Error(ex, "[dad] Dad Coordinator listener failed.");
         }
         finally
         {
@@ -750,7 +750,7 @@ public sealed class DadTransportService : IDisposable
                 }
                 catch (DadHubProtocolException ex)
                 {
-                    SetTransportError("Client Dad requires a shared secret for non-loopback Server Dad connections.");
+                    SetTransportError("Client Dad requires a shared secret for non-loopback Dad Coordinator connections.");
                     log.Warning("[dad] {Code}: {Message}", ex.Code, ex.Message);
                     return;
                 }
@@ -794,16 +794,16 @@ public sealed class DadTransportService : IDisposable
                         connection.Cancellation.Token)
                     .ConfigureAwait(false);
                 if (response == null)
-                    throw new DadHubProtocolException("hello-missing", "Server Dad closed before hello acknowledgement.");
+                    throw new DadHubProtocolException("hello-missing", "Dad Coordinator closed before hello acknowledgement.");
                 if (response.Kind == DadHubFrameKind.Error)
                     throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
 
                 DadHubProtocol.ValidateFrame(response, configuration.TransportSharedSecret);
                 if (response.Kind != DadHubFrameKind.HelloAck)
-                    throw new DadHubProtocolException("hello-invalid", "Server Dad did not return hello acknowledgement.");
+                    throw new DadHubProtocolException("hello-invalid", "Dad Coordinator did not return hello acknowledgement.");
 
                 var serverHello = DadIpcJson.Deserialize<DadHubHello>(response.PayloadJson)
-                                  ?? throw new DadHubProtocolException("hello-invalid", "Server Dad hello payload is invalid.");
+                                  ?? throw new DadHubProtocolException("hello-invalid", "Dad Coordinator hello payload is invalid.");
                 serverParticipant = DadHubParticipants.PrepareRemote(serverHello.Participant, DateTime.UtcNow);
                 connection.RemoteWorkerSessionId = serverHello.WorkerSessionId;
                 connection.Participant = serverParticipant.Clone();
@@ -812,7 +812,7 @@ public sealed class DadTransportService : IDisposable
                 nextHeartbeatUtc = DateTime.MinValue;
                 IsReady = true;
                 CurrentTransport.Availability = "Ready";
-                CurrentTransport.ConnectionStatus = $"Connected to Server Dad at {FormatEndpoint(host, port)}.";
+                CurrentTransport.ConnectionStatus = $"Connected to Dad Coordinator at {FormatEndpoint(host, port)}.";
                 CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
                 RefreshTransportSnapshot();
 
@@ -821,11 +821,11 @@ public sealed class DadTransportService : IDisposable
             catch (DadHubProtocolException ex)
             {
                 SetTransportError($"{ex.Code}: {ex.Message}");
-                log.Warning("[dad] Server Dad connection rejected: {Code}: {Message}", ex.Code, ex.Message);
+                log.Warning("[dad] Dad Coordinator connection rejected: {Code}: {Message}", ex.Code, ex.Message);
             }
             catch (TimeoutException)
             {
-                SetTransportError("Timed out connecting to Server Dad.");
+                SetTransportError("Timed out connecting to Dad Coordinator.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -837,8 +837,8 @@ public sealed class DadTransportService : IDisposable
             }
             catch (Exception ex)
             {
-                SetTransportError($"Server Dad connection failed: {ex.Message}");
-                log.Debug(ex, "[dad] Server Dad connection failed.");
+                SetTransportError($"Dad Coordinator connection failed: {ex.Message}");
+                log.Debug(ex, "[dad] Dad Coordinator connection failed.");
             }
             finally
             {
@@ -1160,13 +1160,13 @@ public sealed class DadTransportService : IDisposable
             return DadRunResult.Rejected(null, BuildRemoteMutationRejectedReason("remote cancel command"));
 
         return cancelRunHandler?.Invoke(command)
-               ?? DadRunResult.Rejected(null, "Server Dad cancel handler unavailable.");
+               ?? DadRunResult.Rejected(null, "Dad Coordinator cancel handler unavailable.");
     }
 
     private DadRunResult HandleStatusQuery()
     {
         var result = statusProvider?.Invoke()
-                     ?? DadRunResult.Rejected(null, "Server Dad status unavailable.");
+                     ?? DadRunResult.Rejected(null, "Dad Coordinator status unavailable.");
         if (remoteMutationsAllowed)
             return result;
 
@@ -1182,12 +1182,12 @@ public sealed class DadTransportService : IDisposable
     {
         var request = DadIpcJson.Deserialize<DadRunRequest>(payloadJson) ?? new DadRunRequest();
         if (!configuration.RunAsServerDad)
-            return DadRunResult.Rejected(request, "Only Server Dad accepts remote run starts.");
+            return DadRunResult.Rejected(request, "Only Dad Coordinator accepts remote run starts.");
         if (!remoteMutationsAllowed)
             return DadRunResult.Rejected(request, BuildRemoteMutationRejectedReason("remote start command"));
 
         return startRunHandler?.Invoke(request)
-               ?? DadRunResult.Rejected(request, "Server Dad start handler unavailable.");
+               ?? DadRunResult.Rejected(request, "Dad Coordinator start handler unavailable.");
     }
 
     private DadPeerRosterCatalogResponse HandleRosterCatalogRequest(string payloadJson)
@@ -1410,7 +1410,7 @@ public sealed class DadTransportService : IDisposable
         var target = ResolveAuthorityWorkerSessionId();
         if (target.IsEmpty)
         {
-            AddWarning(aggregate.Warnings, "Server Dad is not connected; roster catalog refresh returned local catalog only.");
+            AddWarning(aggregate.Warnings, "Dad Coordinator is not connected; roster catalog refresh returned local catalog only.");
             FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1);
             return aggregate;
         }
@@ -1430,7 +1430,7 @@ public sealed class DadTransportService : IDisposable
         if (serverAggregate == null)
         {
             AddWarning(aggregate.Warnings, string.IsNullOrWhiteSpace(error)
-                ? "Server Dad aggregate roster catalog refresh did not return a response."
+                ? "Dad Coordinator aggregate roster catalog refresh did not return a response."
                 : error);
             FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1);
             return aggregate;
@@ -1479,7 +1479,7 @@ public sealed class DadTransportService : IDisposable
         var target = ResolveAuthorityWorkerSessionId();
         if (target.IsEmpty)
         {
-            AddWarning(aggregate.Warnings, "Server Dad is not connected; profile catalog refresh returned local catalog only.");
+            AddWarning(aggregate.Warnings, "Dad Coordinator is not connected; profile catalog refresh returned local catalog only.");
             FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1);
             return aggregate;
         }
@@ -1498,7 +1498,7 @@ public sealed class DadTransportService : IDisposable
         if (serverAggregate == null)
         {
             AddWarning(aggregate.Warnings, string.IsNullOrWhiteSpace(error)
-                ? "Server Dad aggregate profile catalog refresh did not return a response."
+                ? "Dad Coordinator aggregate profile catalog refresh did not return a response."
                 : error);
             FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1);
             return aggregate;
@@ -2196,7 +2196,7 @@ public sealed class DadTransportService : IDisposable
                 clientConnection?.LastHeartbeatUtc ?? serverParticipant.LastHeartbeatUtc,
                 now,
                 clientConnection is { IsOpen: true } ? TimeSpan.MaxValue : staleAfter,
-                "Server Dad connection lost.");
+                "Dad Coordinator connection lost.");
 
             participants.Add(participant);
             CurrentTransport.ListenerEndpoint = string.Empty;

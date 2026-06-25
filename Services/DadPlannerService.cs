@@ -333,13 +333,13 @@ public sealed class DadPlannerService
         {
             rejectionReason = request.Orchestration.ModuleTarget switch
             {
-                DadModuleId.Msq => "dad local-only is enabled, but MSQ requires Server Dad party workers.",
-                DadModuleId.PremadeDuty => "dad local-only is enabled, but Premade Duty requires Server Dad party workers.",
-                DadModuleId.DailyMsq => "dad local-only is enabled, but Daily MSQ requires Server Dad party workers.",
-                DadModuleId.Mogtome => "dad local-only is enabled, but MOGTOME requires Server Dad party workers.",
-                DadModuleId.Commendation => "dad local-only is enabled, but commendation requires Server Dad party workers.",
-                DadModuleId.Astrope => "dad local-only is enabled, but Astrope requires Server Dad party workers.",
-                DadModuleId.VariantVvd => "dad local-only is enabled, but Variant/VVD party mode requires Server Dad party workers.",
+                DadModuleId.Msq => "dad local-only is enabled, but MSQ requires Dad Coordinator party workers.",
+                DadModuleId.PremadeDuty => "dad local-only is enabled, but Premade Duty requires Dad Coordinator party workers.",
+                DadModuleId.DailyMsq => "dad local-only is enabled, but Daily MSQ requires Dad Coordinator party workers.",
+                DadModuleId.Mogtome => "dad local-only is enabled, but MOGTOME requires Dad Coordinator party workers.",
+                DadModuleId.Commendation => "dad local-only is enabled, but commendation requires Dad Coordinator party workers.",
+                DadModuleId.Astrope => "dad local-only is enabled, but Astrope requires Dad Coordinator party workers.",
+                DadModuleId.VariantVvd => "dad local-only is enabled, but Variant/VVD party mode requires Dad Coordinator party workers.",
                 _ => "dad local-only is enabled, but this run requires peer workers.",
             };
             return null;
@@ -440,7 +440,7 @@ public sealed class DadPlannerService
 
         if (request.Orchestration.InviteAuthority == DadInviteAuthority.External)
         {
-            rejectionReason = "External party inviter is not executable by Dad; select Preset leader or Server Dad.";
+            rejectionReason = "External party inviter is not executable by Dad; select Preset leader or Dad Coordinator.";
             return false;
         }
 
@@ -474,13 +474,13 @@ public sealed class DadPlannerService
         {
             if (inviter.Source != DadCharacterSource.LocalRuntime)
             {
-                rejectionReason = $"Server Dad inviter '{inviterCharacterKey}' is not loaded on this Dad client.";
+                rejectionReason = $"Dad Coordinator inviter '{inviterCharacterKey}' is not loaded on this Dad client.";
                 return false;
             }
 
             if (!IsPlannedPartyCharacter(request, inviterCharacterKey))
             {
-                rejectionReason = $"Server Dad inviter '{inviterCharacterKey}' is not one of the planned party characters.";
+                rejectionReason = $"Dad Coordinator inviter '{inviterCharacterKey}' is not one of the planned party characters.";
                 return false;
             }
         }
@@ -973,7 +973,7 @@ public sealed class DadPlannerService
             warnings.Add("Daily MSQ routes through Dad's internal premade lane.");
 
         if (request.PremadeDuty != null || request.Mogtome != null)
-            warnings.Add("Premade Duty and MOGTOME require Server Dad authority and exact typed party workers.");
+            warnings.Add("Premade Duty and MOGTOME require Dad Coordinator authority and exact typed party workers.");
 
         if (request.Msq != null)
             warnings.Add("MSQ solo progression uses selected duty with Trust then Duty Support fallback.");

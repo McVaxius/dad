@@ -988,7 +988,7 @@ public sealed class DadPresetProviderService
         => authority switch
         {
             DadQueueAuthority.LocalOnly => "Local Only",
-            DadQueueAuthority.Leader => "Server Dad",
+            DadQueueAuthority.Leader => "Dad Coordinator",
             DadQueueAuthority.DadDirect => "Dad duty lane",
             DadQueueAuthority.LanParty => "Dad premade lane",
             DadQueueAuthority.AuraFarmer => "Dad aura lane",
@@ -1002,7 +1002,7 @@ public sealed class DadPresetProviderService
         {
             DadInviteAuthority.NotNeeded => "Not needed",
             DadInviteAuthority.PresetLeader => "Slot1 leader",
-            DadInviteAuthority.ServerDad => "Server Dad",
+            DadInviteAuthority.ServerDad => "Dad Coordinator",
             DadInviteAuthority.External => "External",
             _ => authority.ToString(),
         };
@@ -2419,7 +2419,7 @@ public sealed class DadPresetProviderService
 
         if (lane.RequiresRemoteParty && leader.Source != DadCharacterSource.LocalRuntime)
         {
-            blockers.Add($"Slot1 leader/inviter '{leader.CharacterKey}' is not valid for this party: queue ownership currently requires the local Server Dad client.");
+            blockers.Add($"Slot1 leader/inviter '{leader.CharacterKey}' is not valid for this party: queue ownership currently requires the local Dad Coordinator client.");
         }
 
         var partyBlockers = leader.Blockers

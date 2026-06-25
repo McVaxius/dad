@@ -175,7 +175,7 @@ public sealed class DadPresenceService
         }
 
         CurrentParticipant.State = DadParticipantState.Ready;
-        CurrentParticipant.StatusText = "Worker ready for Server Dad lease.";
+        CurrentParticipant.StatusText = "Worker ready for Dad Coordinator lease.";
         return BuildReadyResponse(blockerSummary: string.Empty, acceptedAssignment: true);
     }
 
@@ -281,7 +281,7 @@ public sealed class DadPresenceService
 
         CurrentParticipant.CancellationState = DadRunCancellationState.Acknowledged;
         CurrentParticipant.State = DadParticipantState.Cancelled;
-        CurrentParticipant.StatusText = string.IsNullOrWhiteSpace(command.Reason) ? "Cancelled by Server Dad." : command.Reason;
+        CurrentParticipant.StatusText = string.IsNullOrWhiteSpace(command.Reason) ? "Cancelled by Dad Coordinator." : command.Reason;
         CurrentParticipant.ClaimState = DadClaimState.Released;
         CurrentParticipant.LeaseState = DadParticipantLeaseState.Released;
         CurrentParticipant.LeaseExpiresUtc = DateTime.UtcNow;
@@ -478,7 +478,7 @@ public sealed class DadPresenceService
         return state switch
         {
             DadParticipantState.Assigned => $"Assigned slot {assignedSlotId}.",
-            DadParticipantState.Claimed => "Server Dad lease granted.",
+            DadParticipantState.Claimed => "Dad Coordinator lease granted.",
             DadParticipantState.AssemblyPending => "Assembly pending.",
             DadParticipantState.AssemblyConfirmed => "Assembly acknowledged.",
             DadParticipantState.QueuePending => "Queue pending.",

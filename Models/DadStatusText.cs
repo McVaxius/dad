@@ -5,7 +5,7 @@ public static class DadStatusText
     public static string FormatWorkerRole(DadWorkerRole role)
         => role switch
         {
-            DadWorkerRole.ServerDad => "Server Dad",
+            DadWorkerRole.ServerDad => "Dad Coordinator",
             DadWorkerRole.ClientDad => "Client Dad",
             _ => "(none)",
         };

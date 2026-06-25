@@ -10,7 +10,7 @@ namespace dad.Windows;
 public sealed class ConfigWindow : Window, IDisposable
 {
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
-    private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
+    private static readonly string[] CompletionKillModes = { "None", "Close game client (disabled)", "Shut down PC (disabled)" };
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
     private readonly Plugin plugin;
     private string draftCompletionCommands = string.Empty;
@@ -118,18 +118,18 @@ public sealed class ConfigWindow : Window, IDisposable
     }
 
     // Feature batch A (dadfeatures20260620b): exposes the advanced gate, party-validation override,
-    // and completion actions. Dangerous kill actions are only shown when Advanced mode is on.
+    // and completion actions. Legacy kill settings are only shown when Advanced mode is on.
     private void DrawCompletionSafetyTab(Configuration configuration)
     {
         var advanced = configuration.AdvancedModeEnabled;
-        if (ImGui.Checkbox("Advanced mode (show dangerous options)", ref advanced))
+        if (ImGui.Checkbox("Advanced mode (show legacy options)", ref advanced))
         {
             configuration.AdvancedModeEnabled = advanced;
             configuration.Save();
         }
 
         DrawStatusRow("Advanced mode", configuration.AdvancedModeEnabled
-            ? "On — dangerous options available."
+            ? "On - advanced options visible."
             : "Off. Also toggle with /dad advanced.");
 
         ImGui.Separator();
@@ -265,19 +265,19 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Separator();
         if (configuration.AdvancedModeEnabled)
         {
-            ImGui.TextUnformatted("Dangerous completion actions");
+            ImGui.TextUnformatted("Legacy completion kill actions");
             var killMode = (int)actions.KillMode;
-            if (ImGui.Combo("On completion (DANGER)", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            if (ImGui.Combo("On completion (disabled)", ref killMode, CompletionKillModes, CompletionKillModes.Length))
             {
                 actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
                 configuration.Save();
             }
 
-            ImGui.TextWrapped("Close game client = exits the game on completion. Shut down PC = schedules a 60s cancelable Windows shutdown (cancel with 'shutdown /a').");
+            ImGui.TextWrapped("Legacy kill actions are preserved for config compatibility but disabled. Dad will not close the game client or schedule OS shutdown.");
         }
         else if (actions.KillMode != DadCompletionKillMode.None)
         {
-            DrawStatusRow("Completion kill action", $"{actions.KillMode} configured but hidden — enable Advanced mode (/dad advanced) to view/change.");
+            DrawStatusRow("Completion kill action", $"{actions.KillMode} configured but disabled. Enable Advanced mode (/dad advanced) only to view/change it.");
         }
 
         ImGui.Separator();
@@ -296,7 +296,7 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.SetPluginEnabled(enabled, printStatus: false);
 
         var runAsServerDad = configuration.RunAsServerDad;
-        if (ImGui.Checkbox("Run as Server Dad", ref runAsServerDad))
+        if (ImGui.Checkbox("Run as Dad Coordinator", ref runAsServerDad))
         {
             configuration.RunAsServerDad = runAsServerDad;
             configuration.Save();
@@ -369,13 +369,13 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Separator();
-        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Server Dad listener" : "Server Dad connection");
+        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Dad Coordinator listener" : "Dad Coordinator connection");
         ImGui.TextWrapped(configuration.RunAsServerDad
             ? "Listen on 127.0.0.1 for same-host clients. Use a LAN interface address and shared secret for multi-host clients."
-            : "Enter the Server Dad LAN IP/DNS or 127.0.0.1 for same-host use.");
+            : "Enter the Dad Coordinator LAN IP/DNS or 127.0.0.1 for same-host use.");
 
-        ImGui.InputText(configuration.RunAsServerDad ? "Listen host" : "Server Dad host", ref draftServerHost, 128);
-        ImGui.InputInt(configuration.RunAsServerDad ? "Listen port" : "Server Dad port", ref draftServerPort);
+        ImGui.InputText(configuration.RunAsServerDad ? "Listen host" : "Dad Coordinator host", ref draftServerHost, 128);
+        ImGui.InputInt(configuration.RunAsServerDad ? "Listen port" : "Dad Coordinator port", ref draftServerPort);
         draftServerPort = Math.Clamp(draftServerPort, 1, 65535);
 
         var hasPendingEndpointDraftChanges = HasPendingEndpointDraftChanges(configuration);
@@ -462,9 +462,9 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
         ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
         ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
-        ImGui.BulletText("/dad run server -> start a Server Dad Sastasha premade demo");
-        ImGui.BulletText("/dad run msq -> start a Server Dad Daily MSQ demo");
-        ImGui.BulletText("/dad run commend -> start a Server Dad commendation demo");
+        ImGui.BulletText("/dad run coordinator -> start a Dad Coordinator Sastasha premade demo");
+        ImGui.BulletText("/dad run msq -> start a Dad Coordinator Daily MSQ demo");
+        ImGui.BulletText("/dad run commend -> start a Dad Coordinator commendation demo");
         ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
         ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
         ImGui.BulletText("/dad test profiles -> profile owner/cache/revision diagnostics");

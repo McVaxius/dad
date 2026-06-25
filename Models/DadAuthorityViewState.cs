@@ -21,7 +21,7 @@ public sealed record DadAuthorityViewState
     public bool IsFresh { get; init; }
     public DateTime? LastSuccessfulRefreshUtc { get; init; }
     public string StateText { get; init; } = "No remote authority";
-    public string TimelineText { get; init; } = "No Server Dad authority discovered.";
+    public string TimelineText { get; init; } = "No Dad Coordinator authority discovered.";
     public string FreshnessText { get; init; } = "Remote freshness unavailable.";
     public string ClientPerspectiveText { get; init; } = "observer";
     public string OwnershipText { get; init; } = "Authority not discovered.";
@@ -229,8 +229,8 @@ public static class DadAuthorityViewBuilder
         var age = utcNow - lastSuccessfulRefreshUtc.Value;
         var ageText = $"{Math.Max(0, age.TotalSeconds):F1}s";
         return age <= staleThreshold
-            ? $"Fresh ({ageText} since last Server Dad refresh)."
-            : $"Stale ({ageText} since last Server Dad refresh).";
+            ? $"Fresh ({ageText} since last Dad Coordinator refresh)."
+            : $"Stale ({ageText} since last Dad Coordinator refresh).";
     }
 
     private static string BuildTimelineText(
@@ -244,18 +244,18 @@ public static class DadAuthorityViewBuilder
     {
         var timeline = kind switch
         {
-            DadAuthorityViewKind.LocalOnly => "Local-only mode enabled. This client is isolated from Server Dad authority.",
+            DadAuthorityViewKind.LocalOnly => "Local-only mode enabled. This client is isolated from Dad Coordinator authority.",
             DadAuthorityViewKind.NoRemoteAuthority when localRun.WorkerRole == DadWorkerRole.ServerDad && localRun.Role == DadOrchestrationRole.Leader
-                => "This instance owns Server Dad authority locally.",
-            DadAuthorityViewKind.NoRemoteAuthority => "No Server Dad hub connection is available.",
-            DadAuthorityViewKind.RemoteIdle => $"Server Dad idle. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteQueued => $"Server Dad queued {payloadText}. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteWaiting => $"Server Dad waiting on participants for {payloadText}. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteRunning => $"Server Dad running {payloadText}. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteCompleted => $"Server Dad {authorityRun.Status.ToString().ToLowerInvariant()} {payloadText}. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteCancelled => $"Server Dad cancelled {payloadText}. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteRejected => $"Server Dad rejected {payloadText}. This client is {clientPerspective}.",
-            DadAuthorityViewKind.RemoteStale => $"Server Dad status is stale for {payloadText}. Last known result was {authorityRun.Status}/{authorityRun.Phase}.",
+                => "This instance owns Dad Coordinator authority locally.",
+            DadAuthorityViewKind.NoRemoteAuthority => "No Dad Coordinator hub connection is available.",
+            DadAuthorityViewKind.RemoteIdle => $"Dad Coordinator idle. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteQueued => $"Dad Coordinator queued {payloadText}. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteWaiting => $"Dad Coordinator waiting on participants for {payloadText}. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteRunning => $"Dad Coordinator running {payloadText}. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteCompleted => $"Dad Coordinator {authorityRun.Status.ToString().ToLowerInvariant()} {payloadText}. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteCancelled => $"Dad Coordinator cancelled {payloadText}. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteRejected => $"Dad Coordinator rejected {payloadText}. This client is {clientPerspective}.",
+            DadAuthorityViewKind.RemoteStale => $"Dad Coordinator status is stale for {payloadText}. Last known result was {authorityRun.Status}/{authorityRun.Phase}.",
             _ => "Authority view unavailable.",
         };
 

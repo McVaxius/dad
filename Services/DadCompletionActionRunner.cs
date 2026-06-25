@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dalamud.Plugin.Services;
 using dad.Models;
 
@@ -54,9 +53,9 @@ internal static class DadCompletionActionRunner
             }
         }
 
-        // Dangerous shutdown actions are only honored when the operator has explicitly enabled
-        // advanced mode (/dad advanced). Hidden + gated per the feature spec.
-        if (configuration.AdvancedModeEnabled && actions.KillMode != DadCompletionKillMode.None)
+        // Legacy kill actions are preserved in config for compatibility, but self-contained
+        // Dad no longer closes the game client or launches OS shutdown commands.
+        if (actions.KillMode != DadCompletionKillMode.None)
             PendingSteps.Enqueue(new PendingStep(StepKind.KillAction, ((int)actions.KillMode).ToString()));
 
         if (PendingSteps.Count > 0)
@@ -105,8 +104,7 @@ internal static class DadCompletionActionRunner
                 Plugin.CommandManager.ProcessCommand(step.Payload);
                 break;
             case StepKind.KillAction:
-                if (configuration.AdvancedModeEnabled &&
-                    int.TryParse(step.Payload, out var killMode) &&
+                if (int.TryParse(step.Payload, out var killMode) &&
                     Enum.IsDefined(typeof(DadCompletionKillMode), killMode))
                 {
                     RunKillAction((DadCompletionKillMode)killMode, log);
@@ -135,29 +133,6 @@ internal static class DadCompletionActionRunner
 
     private static void RunKillAction(DadCompletionKillMode mode, IPluginLog log)
     {
-        try
-        {
-            switch (mode)
-            {
-                case DadCompletionKillMode.CloseGameClient:
-                    log.Warning("[dad] Completion action: closing game client.");
-                    Environment.Exit(0);
-                    break;
-
-                case DadCompletionKillMode.ShutDownPc:
-                    // Cancelable 60s delay so an operator can abort with `shutdown /a`.
-                    log.Warning("[dad] Completion action: scheduling PC shutdown in 60s (cancel with 'shutdown /a').");
-                    Process.Start(new ProcessStartInfo("shutdown", "/s /t 60")
-                    {
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                    });
-                    break;
-            }
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "[dad] Completion kill action failed.");
-        }
+        log.Warning("[dad] Completion kill action {Mode} is configured but disabled; no OS process action was taken.", mode);
     }
 }

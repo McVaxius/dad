@@ -70,11 +70,11 @@ public sealed class Configuration : IPluginConfiguration
     public bool AllowRemoteCommandExecution { get; set; } = false;
 
     // Feature batch A (dadfeatures20260620b):
-    // /dad advanced gate — when on, dangerous options (e.g. completion kill-client/PC) are honored/shown.
+    // /dad advanced gate - when on, legacy/advanced options are shown.
     public bool AdvancedModeEnabled { get; set; } = false;
     // AutoDuty-style party validation override — lets a run start despite party-composition validation. Default off.
     public bool PartyValidationOverrideEnabled { get; set; } = false;
-    // Actions to run when a Dad run completes (sound / custom commands / dangerous shutdown).
+    // Actions to run when a Dad run completes. Legacy kill modes are kept for config compatibility but disabled.
     public DadCompletionActions CompletionActions { get; set; } = new();
 
     // Review M19: operator opt-out for the Questionable reflection bridge (invasive runtime field patching).

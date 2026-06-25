@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using System.Reflection;
@@ -131,9 +130,12 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Text($"{PluginInfo.DisplayName} v{version}");
         ImGui.SameLine(MathF.Max(0f, ImGui.GetWindowWidth() - 150f));
         if (ImGui.SmallButton("\u2661 Ko-fi \u2661"))
-            Process.Start(new ProcessStartInfo { FileName = PluginInfo.SupportUrl, UseShellExecute = true });
+        {
+            ImGui.SetClipboardText(PluginInfo.SupportUrl);
+            plugin.PrintStatus($"Copied Ko-fi URL: {PluginInfo.SupportUrl}");
+        }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Support development on Ko-fi");
+            ImGui.SetTooltip("Copy Ko-fi URL");
 
         ImGui.Separator();
 
@@ -1185,7 +1187,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawCrewQueueSection()
     {
         var queue = plugin.SchedulerService.GetQueueSnapshot();
-        DrawSectionHeader("Queue", "Server Dad runs one active job; new requests wait behind it.");
+        DrawSectionHeader("Queue", "Dad Coordinator runs one active job; new requests wait behind it.");
         DrawStatusRow("Summary", queue.Summary);
         DrawStatusRow("Active owner", FormatText(queue.ActiveQueueOwner, "(none)"));
 
@@ -3459,7 +3461,7 @@ public sealed class MainWindow : Window, IDisposable
             return "Switch off local-only mode before testing remote-party lanes.";
 
         if (runState.AuthorityView.Kind == DadAuthorityViewKind.NoRemoteAuthority)
-            return "Discover or configure Server Dad authority before starting remote lanes.";
+            return "Discover or configure Dad Coordinator authority before starting remote lanes.";
 
         return "Pick a planner lane, verify typed roster coverage, then start from Preset Planner.";
     }
@@ -3732,7 +3734,7 @@ public sealed class MainWindow : Window, IDisposable
         if (participant.AvailableCharacterKeys.Count > 0)
             parts.Add($"avail {plugin.KrangleService.FormatCharacterKeys(participant.AvailableCharacterKeys)}");
         if (!participant.IsLocalClient && !participant.WorkerSessionId.IsEmpty)
-            parts.Add("Server Dad hub");
+            parts.Add("Dad Coordinator hub");
         return string.Join(" | ", parts);
     }
 

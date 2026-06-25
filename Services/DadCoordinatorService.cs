@@ -128,8 +128,8 @@ public sealed class DadCoordinatorService
             var unavailable = localResult.Clone();
             unavailable.AuthorityEndpoint = authorityEndpoint;
             unavailable.AuthorityWorkerSessionId = transportService.CurrentTransport.AuthorityWorkerSessionId;
-            unavailable.Summary = "Server Dad status unavailable.";
-            unavailable.BlockedReason = "Server Dad status query failed.";
+            unavailable.Summary = "Dad Coordinator status unavailable.";
+            unavailable.BlockedReason = "Dad Coordinator status query failed.";
             return unavailable;
         }
 
@@ -164,16 +164,16 @@ public sealed class DadCoordinatorService
         {
             var authorityEndpoint = ResolveAuthorityEndpoint(forceRefresh: true);
             if (string.IsNullOrWhiteSpace(authorityEndpoint))
-                return DadRunResult.Rejected(request, "No Server Dad hub connection is available.");
+                return DadRunResult.Rejected(request, "No Dad Coordinator hub connection is available.");
 
-            log.Information("[dad] Forwarding run {RequestId} to Server Dad at {Endpoint}: {Payload}",
+            log.Information("[dad] Forwarding run {RequestId} to Dad Coordinator at {Endpoint}: {Payload}",
                 request.RequestId,
                 authorityEndpoint,
                 request.DescribeRequestedWork());
             var forwarded = transportService.SendStartRunCommand(authorityEndpoint, request);
             if (forwarded != null)
             {
-                log.Information("[dad] Server Dad responded for forwarded run {RequestId}: {Status}/{Phase}/{Module} {Summary}",
+                log.Information("[dad] Dad Coordinator responded for forwarded run {RequestId}: {Status}/{Phase}/{Module} {Summary}",
                     forwarded.RequestId,
                     forwarded.Status,
                     forwarded.Phase,
@@ -182,8 +182,8 @@ public sealed class DadCoordinatorService
                 return forwarded;
             }
 
-            log.Warning("[dad] Server Dad did not answer forwarded run {RequestId} for {Payload}", request.RequestId, request.DescribeRequestedWork());
-            return DadRunResult.Rejected(request, "Server Dad did not accept forwarded run start.");
+            log.Warning("[dad] Dad Coordinator did not answer forwarded run {RequestId} for {Payload}", request.RequestId, request.DescribeRequestedWork());
+            return DadRunResult.Rejected(request, "Dad Coordinator did not accept forwarded run start.");
         }
 
         var pool = characterIntelligenceService.RefreshLocalCharacterPool("run-start", logRefresh: false);
@@ -207,7 +207,7 @@ public sealed class DadCoordinatorService
         partyCommandsSentUtc.Clear();
         partyCommandBlockers.Clear();
         claimService.ReleaseClaims(plan.Request.RequestId);
-        presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Server Dad planned {plan.Modules.Count} Dad module(s).");
+        presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Dad Coordinator planned {plan.Modules.Count} Dad module(s).");
         SeedLocalParticipantIfNeeded(plan);
 
         CurrentResult = DadRunResult.FromPlan(plan, DadRunStatus.Queued, $"Queued Dad orchestration: {plan.Summary}");
@@ -232,7 +232,7 @@ public sealed class DadCoordinatorService
         Transition(plan.RequiresRemoteParticipants ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
             plan.RequiresRemoteParticipants ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
             plan.RequiresRemoteParticipants
-                ? $"Server Dad waiting for {plan.RequiredParticipantCount} participant(s)."
+                ? $"Dad Coordinator waiting for {plan.RequiredParticipantCount} participant(s)."
                 : plan.Orchestration.LocalOnlyOverride
                     ? "Local-only Dad orchestration is ready to claim local slot."
                     : "Single-worker Dad orchestration is ready to claim local slot.");
@@ -248,7 +248,7 @@ public sealed class DadCoordinatorService
             var authorityEndpoint = ResolveAuthorityEndpoint(forceRefresh: true);
             if (!string.IsNullOrWhiteSpace(authorityEndpoint))
             {
-                log.Information("[dad] Forwarding cancel to Server Dad at {Endpoint}: request {RequestId}",
+                log.Information("[dad] Forwarding cancel to Dad Coordinator at {Endpoint}: request {RequestId}",
                     authorityEndpoint,
                     string.IsNullOrWhiteSpace(CurrentResult.RequestId) ? "(none)" : CurrentResult.RequestId);
                 var forwarded = transportService.SendCancelCommand(authorityEndpoint, new DadCancelCommandDto
@@ -261,14 +261,14 @@ public sealed class DadCoordinatorService
 
                 if (forwarded != null)
                 {
-                    log.Information("[dad] Server Dad responded to forwarded cancel {RequestId}: {Status} {Summary}",
+                    log.Information("[dad] Dad Coordinator responded to forwarded cancel {RequestId}: {Status} {Summary}",
                         string.IsNullOrWhiteSpace(forwarded.RequestId) ? "(none)" : forwarded.RequestId,
                         forwarded.Status,
                         forwarded.Summary);
                     return forwarded;
                 }
 
-                log.Warning("[dad] Forwarded cancel did not receive a Server Dad response for request {RequestId}",
+                log.Warning("[dad] Forwarded cancel did not receive a Dad Coordinator response for request {RequestId}",
                     string.IsNullOrWhiteSpace(CurrentResult.RequestId) ? "(none)" : CurrentResult.RequestId);
             }
         }
@@ -297,7 +297,7 @@ public sealed class DadCoordinatorService
             transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
             {
                 RunId = activePlan.Request.RequestId,
-                Reason = "Cancelled by Server Dad.",
+                Reason = "Cancelled by Dad Coordinator.",
             });
         }
         claimService.ReleaseClaims(activePlan.Request.RequestId);
@@ -793,7 +793,7 @@ public sealed class DadCoordinatorService
                 candidate.IsLocalClient &&
                 string.Equals(candidate.ActiveCharacterKey.Value, requiredInviterKey, StringComparison.OrdinalIgnoreCase)))
         {
-            blocker = $"Server Dad inviter {requiredInviterKey} is not the loaded local character.";
+            blocker = $"Dad Coordinator inviter {requiredInviterKey} is not the loaded local character.";
             return false;
         }
 
@@ -1222,7 +1222,7 @@ public sealed class DadCoordinatorService
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
         claimService.ReleaseClaims(nextPlan.Request.RequestId);
-        presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Server Dad repeating {module.DisplayName}; {stopProgress.Summary}");
+        presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Dad Coordinator repeating {module.DisplayName}; {stopProgress.Summary}");
         SeedLocalParticipantIfNeeded(nextPlan);
 
         CurrentResult.Request = nextPlan.Request;
@@ -1547,7 +1547,7 @@ public sealed class DadCoordinatorService
         else
         {
             clone.State = DadParticipantState.Discovered;
-            clone.StatusText = "Discovered by Server Dad.";
+            clone.StatusText = "Discovered by Dad Coordinator.";
         }
 
         clone.IsEligibleForRun = IsRemoteParticipantEligibleForWork(clone);
@@ -1742,7 +1742,7 @@ public sealed class DadCoordinatorService
         configuration.PersistedActiveRun = null;
         configuration.Save();
 
-        // Feature batch A: run operator-chosen completion actions (sound / commands / gated shutdown).
+        // Feature batch A: run operator-chosen completion actions (sound / commands / legacy kill settings).
         if (status == DadRunStatus.Completed)
             DadCompletionActionRunner.Enqueue(configuration, log, activePlan?.Request);
 

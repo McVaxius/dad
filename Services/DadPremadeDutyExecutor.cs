@@ -446,12 +446,12 @@ public sealed class DadPremadeDutyExecutor(
         var localLeader = participants.FirstOrDefault(static participant => participant.IsLocalClient);
         if (localLeader == null)
         {
-            blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Premade Duty requires the Server Dad local client to be present as the queue leader.", DadModuleBlockerSeverity.Blocked));
+            blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Premade Duty requires the Dad Coordinator local client to be present as the queue leader.", DadModuleBlockerSeverity.Blocked));
         }
         else
         {
             if (!localLeader.IsAuthority)
-                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Local client is not marked as Server Dad authority for this premade queue.", DadModuleBlockerSeverity.Blocked));
+                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Local client is not marked as Dad Coordinator authority for this premade queue.", DadModuleBlockerSeverity.Blocked));
 
             if (!string.Equals(localLeader.AssignedSlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase))
                 blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", $"Local client is assigned to '{localLeader.AssignedSlotId}', not Slot1.", DadModuleBlockerSeverity.Blocked));
@@ -464,7 +464,7 @@ public sealed class DadPremadeDutyExecutor(
         }
 
         if (plan.Orchestration.AuthorityMode != DadAuthorityMode.ServerDad)
-            blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Premade Duty requires Server Dad authority, not local-only authority.", DadModuleBlockerSeverity.Blocked));
+            blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Premade Duty requires Dad Coordinator authority, not local-only authority.", DadModuleBlockerSeverity.Blocked));
 
         if (plan.Orchestration.QueueAuthority is not (DadQueueAuthority.Leader or DadQueueAuthority.LanParty))
             blockers.Add(BuildBlocker(module.ModuleId, "QueueAuthority", $"Premade Duty requires leader/Dad premade queue authority; current authority is {plan.Orchestration.QueueAuthority}.", DadModuleBlockerSeverity.Blocked));

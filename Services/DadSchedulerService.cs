@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dalamud.Plugin.Services;
 using dad.Models;
 
@@ -290,7 +289,7 @@ public sealed class DadSchedulerService
             return new DadLaunchProfileUpdateAck
             {
                 RequestId = request.RequestId,
-                Summary = "Only Server Dad may update launch profiles.",
+                Summary = "Only Dad Coordinator may update launch profiles.",
             };
         }
 
@@ -1588,43 +1587,8 @@ public sealed class DadSchedulerService
             return false;
         }
 
-        if (!IsAllowedBootBatchPath(profile.BatchPath, ClientBootDirectory))
-        {
-            blocker = $"Launch profile '{profile.DisplayName}' must be an imported .bat under {ClientBootDirectory}.";
-            return false;
-        }
-
-        if (!File.Exists(profile.BatchPath))
-        {
-            blocker = $"Launch profile batch path not found: {profile.BatchPath}.";
-            return false;
-        }
-
-        try
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = profile.BatchPath,
-                UseShellExecute = true,
-                WorkingDirectory = Path.GetDirectoryName(profile.BatchPath) ?? string.Empty,
-            };
-            Process.Start(startInfo);
-            slot.LaunchStarted = true;
-            slot.LaunchStartedUtc = DateTime.UtcNow;
-            slot.Summary = $"Started launch profile '{profile.DisplayName}' for account {profile.AccountKey}; waiting for Dad heartbeat.";
-            currentState.Phase = DadSchedulerPresetPhase.WaitingForHeartbeat;
-            log.Information("[dad][Scheduler] Started launch profile {ProfileId} ({BatchPath}) for slot {SlotId}.",
-                profile.ProfileId,
-                profile.BatchPath,
-                slot.SlotId);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            blocker = $"Failed to start launch profile '{profile.DisplayName}': {ex.Message}";
-            log.Warning(ex, "[dad][Scheduler] {Blocker}", blocker);
-            return false;
-        }
+        blocker = $"Launch profile '{profile.DisplayName}' cannot start {profile.BatchPath}; local OS process launching is disabled. Start the client manually.";
+        return false;
     }
 
     private bool TrySendCharacterLoadCommand(DadSchedulerSlotState slot, out string blocker)

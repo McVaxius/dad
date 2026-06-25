@@ -122,7 +122,7 @@ public sealed class DadProfileDirectoryService : IDisposable
             return new DadProfileUpdateAck
             {
                 RequestId = request.RequestId,
-                Summary = "Could not queue profile update through Server Dad hub.",
+                Summary = "Could not queue profile update through Dad Coordinator hub.",
             };
         }
 

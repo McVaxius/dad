@@ -5,7 +5,7 @@ internal static class PluginInfo
     public const string DisplayName = "dad";
     public const string InternalName = "dad";
     public const string Command = "/dad";
-    public const string Summary = "Private Dad duty operations shell with Server Dad authority, Client Dad workers, preset planning, queue routing, and Duty Support automation.";
+    public const string Summary = "Private Dad duty operations shell with Dad Coordinator authority, Client Dad workers, preset planning, queue routing, and Duty Support automation.";
     public const string SupportUrl = "https://ko-fi.com/mcvaxius";
 
     public static readonly string[] Services =
@@ -48,7 +48,7 @@ internal static class PluginInfo
         "Verify /dad ws and /dad j",
         "Verify Dad IPC ready and orchestration lifecycle",
         "Verify localhost worker discovery and post-AR readiness waits",
-        "Verify VERMAXION can start Dad and cancel through Server Dad authority",
+        "Verify VERMAXION can start Dad and cancel through Dad Coordinator authority",
         "Verify status names worker role, authority, phase, module, and blockers",
         "Verify Multiplayer surface shows account/character/session/lease authority",
         "Verify transport bind and authority target settings update the listener/authority endpoint surfaces",
