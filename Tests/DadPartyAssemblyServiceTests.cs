@@ -44,6 +44,41 @@ public sealed class DadPartyAssemblyServiceTests
     }
 
     [Fact]
+    public void BuildInstructionsBlocksWhenConfiguredLeaderIsNotLeaderSlot()
+    {
+        var service = new DadPartyAssemblyService();
+        var instructions = service.BuildInstructions(
+            Plan(queueAuthority: DadQueueAuthority.Leader),
+            [
+                Participant("Member@Alpha", 200, isLocal: true, isAuthority: true, slot: "Party 2"),
+                Participant("Other@Alpha", 300, isLocal: false, isAuthority: false, slot: "Leader"),
+            ],
+            out var blocker);
+
+        Assert.Empty(instructions);
+        Assert.Contains("Configured leader", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildInstructionsBlocksWhenParticipantNotPostArReady()
+    {
+        var service = new DadPartyAssemblyService();
+        var member = Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2");
+        member.PostArReady = false;
+
+        var instructions = service.BuildInstructions(
+            Plan(queueAuthority: DadQueueAuthority.Leader),
+            [
+                Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
+                member,
+            ],
+            out var blocker);
+
+        Assert.Empty(instructions);
+        Assert.Contains("post-AR ready", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void VerifyPartyMembershipReportsMissingMembers()
     {
         var service = new DadPartyAssemblyService();

@@ -473,6 +473,28 @@ public sealed class DadPeerRosterCatalogResponse
     public List<string> Warnings { get; set; } = [];
 }
 
+public sealed class DadAggregateRosterCatalogRequest
+{
+    public string RequestId { get; set; } = Guid.NewGuid().ToString("N");
+    public DadWorkerSessionId RequestingWorkerSessionId { get; set; } = new(string.Empty);
+    public bool IncludeRequester { get; set; }
+    public DadRosterRefreshPlan Plan { get; set; } = new();
+}
+
+public sealed class DadAggregateRosterCatalogResponse
+{
+    public string RequestId { get; set; } = string.Empty;
+    public DateTime RespondedAtUtc { get; set; } = DateTime.UtcNow;
+    public int ExpectedCatalogCount { get; set; }
+    public int RespondedCatalogCount { get; set; }
+    public int PendingCatalogCount { get; set; }
+    public int TimedOutCatalogCount { get; set; }
+    public bool Complete { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public List<DadPeerRosterCatalogResponse> Responses { get; set; } = [];
+    public List<string> Warnings { get; set; } = [];
+}
+
 public sealed class DadRosterRefreshCommandDto
 {
     public string CommandId { get; set; } = Guid.NewGuid().ToString("N");

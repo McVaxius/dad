@@ -28,10 +28,19 @@ public sealed class DadCompletionActions
             PlaySound = PlaySound,
             SoundEffectId = SoundEffectId,
             RunCommands = RunCommands,
-            Commands = [..Commands],
+            Commands = Commands == null ? [] : [..Commands],
             KillMode = KillMode,
-            Utilities = Utilities.Clone(),
+            Utilities = (Utilities ?? new DadPostRunUtilities()).Clone(),
         };
+}
+
+public static class DadCompletionActionSnapshots
+{
+    public static DadCompletionActions Resolve(DadCompletionActions? snapshot, DadCompletionActions? fallback)
+        => (snapshot ?? fallback ?? new DadCompletionActions()).Clone();
+
+    public static string DescribeSource(DadCompletionActions? snapshot)
+        => snapshot == null ? "Global defaults" : "Preset override";
 }
 
 public sealed class DadPostRunUtilities

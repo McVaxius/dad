@@ -188,6 +188,14 @@ public sealed class DadProfileDirectoryService : IDisposable
                 foreach (var response in responses.Where(static response => response.Success))
                 {
                     var catalog = response.Catalog.Clone();
+                    if (string.Equals(
+                        catalog.OwnerWorkerSessionId.Value,
+                        presenceService.WorkerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
                     catalog.GeneratedAtUtc = DateTime.UtcNow;
                     catalog.OwnerOnline = true;
                     catalog.ReadOnly = false;

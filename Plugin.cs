@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Dalamud.Game.Command;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Gui.Dtr;
@@ -797,7 +798,8 @@ public sealed class Plugin : IDalamudPlugin
             requestId,
             requestedAtUtc,
             plannerPreviewOverride: plannerPreview,
-            selectedGroup: selectedGroup);
+            selectedGroup: selectedGroup,
+            completionFallback: Configuration.CompletionActions);
         return ApplyPlannerRuntimeTruth(requestPreview, pool);
     }
 
@@ -1109,6 +1111,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            CompletionActions = source.CompletionActions?.Clone(),
             IncludedAccountKeys = [..source.IncludedAccountKeys],
         };
 
@@ -1242,6 +1245,7 @@ public sealed class Plugin : IDalamudPlugin
 
         PlannerOptions.SelectedPlannerGroupId = savedGroup.GroupId;
         PlannerOptions.StopPolicy = savedGroup.StopPolicy.Clone();
+        PlannerOptions.CompletionActions = savedGroup.CompletionActions?.Clone();
         PlannerOptions.IncludedAccountKeys = savedGroup.Slots
             .Select(static slot => slot.RequiredAccountKey)
             .Where(static key => !key.IsEmpty)
@@ -1717,6 +1721,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = PlannerOptions.RefreshTrustNpcLevels,
             StopPolicy = stopPolicy,
+            CompletionActions = DadCompletionActionSnapshots.Resolve(PlannerOptions.CompletionActions, Configuration.CompletionActions),
             Slots = localNpcRunner == null
                 ? BuildPlannerGroupSlotsFromPreview(preview!)
                 :
@@ -1756,6 +1761,7 @@ public sealed class Plugin : IDalamudPlugin
         target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
         target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
         target.StopPolicy = source.StopPolicy.Clone();
+        target.CompletionActions = source.CompletionActions?.Clone();
         target.Slots = source.Slots.Select(ClonePlannerGroupSlot).ToList();
         target.UpdatedAtUtc = DateTime.UtcNow;
     }
@@ -1855,6 +1861,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = group.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
             StopPolicy = group.StopPolicy.Clone(),
+            CompletionActions = group.CompletionActions?.Clone(),
             IncludedAccountKeys = group.Slots
                 .Select(static slot => slot.RequiredAccountKey)
                 .Where(static key => !key.IsEmpty)
@@ -1900,6 +1907,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            CompletionActions = source.CompletionActions?.Clone(),
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
@@ -1943,6 +1951,7 @@ public sealed class Plugin : IDalamudPlugin
         options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
         options.RefreshTrustNpcLevels = group.RefreshTrustNpcLevels;
         options.StopPolicy = group.StopPolicy.Clone();
+        options.CompletionActions = group.CompletionActions?.Clone();
         options.IncludedAccountKeys = group.Slots
             .Select(static slot => slot.RequiredAccountKey)
             .Where(static key => !key.IsEmpty)
@@ -2188,10 +2197,32 @@ public sealed class Plugin : IDalamudPlugin
             $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
             $"trustRefresh={options.RefreshTrustNpcLevels}",
             $"stop={plannerPreview.StopPolicy.Mode}:{plannerPreview.StopPolicy.AfterRuns}:{plannerPreview.StopPolicy.TargetLevel}:{plannerPreview.StopPolicy.TargetCharacterKey}:{plannerPreview.StopPolicy.SafetyCap}",
+            $"completion={BuildCompletionActionSignature(options.CompletionActions)}",
             "blunderville=emote-run",
             $"leader={plannerPreview.LeaderCharacterKey}",
             $"slots={selectedSlots}",
             $"selected={selectedCharacters}",
+        });
+    }
+
+    private static string BuildCompletionActionSignature(DadCompletionActions? actions)
+    {
+        if (actions == null)
+            return "global-defaults";
+
+        var utilities = actions.Utilities ?? new DadPostRunUtilities();
+        return string.Join(":", new[]
+        {
+            actions.PlaySound.ToString(),
+            actions.SoundEffectId.ToString(CultureInfo.InvariantCulture),
+            actions.RunCommands.ToString(),
+            string.Join("\n", actions.Commands ?? []),
+            actions.KillMode.ToString(),
+            utilities.OpenGearCoffers.ToString(),
+            utilities.RegisterTripleTriadCards.ToString(),
+            utilities.SellTripleTriadCards.ToString(),
+            utilities.GrandCompanyHandInViaAutoRetainer.ToString(),
+            utilities.GrandCompanyHandInCommand,
         });
     }
 

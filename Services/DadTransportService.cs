@@ -18,8 +18,10 @@ public sealed class DadTransportService : IDisposable
     private const string MessageStatusQuery = "status-query";
     private const string MessageStartRun = "start-run";
     private const string MessageRosterCatalogRequest = "roster-catalog-request";
+    private const string MessageRosterAggregateCatalogRequest = "roster-aggregate-catalog-request";
     private const string MessageRosterRefreshCommand = "roster-refresh-command";
     private const string MessageProfileCatalogRequest = "profile-catalog-request";
+    private const string MessageProfileAggregateCatalogRequest = "profile-aggregate-catalog-request";
     private const string MessageProfileUpdateCommand = "profile-update-command";
     private const string MessageWorkerExecutionCommand = "worker-execution-command";
     private const string MessageWorkerExecutionStatus = "worker-execution-status";
@@ -354,23 +356,49 @@ public sealed class DadTransportService : IDisposable
     }
 
     public IReadOnlyList<DadPeerRosterCatalogResponse> RequestRosterCatalogs(DadRosterRefreshPlan request)
+        => RequestAggregateRosterCatalogs(request).Responses;
+
+    public DadAggregateRosterCatalogResponse RequestAggregateRosterCatalogs(DadRosterRefreshPlan request)
     {
+        RefreshLocalMutationState();
+        request ??= new DadRosterRefreshPlan();
+        request.PlanId = string.IsNullOrWhiteSpace(request.PlanId)
+            ? Guid.NewGuid().ToString("N")
+            : request.PlanId;
+
+        DadAggregateRosterCatalogResponse aggregate;
         if (configuration.RunAsServerDad)
         {
-            foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
-                QueueRosterCatalogRefresh(connection, force: true, request);
+            aggregate = BuildServerRosterAggregate(
+                request,
+                requestingWorkerSessionId: new DadWorkerSessionId(string.Empty),
+                includeRequester: true);
+        }
+        else
+        {
+            aggregate = BuildClientRosterAggregate(request);
         }
 
-        var onlineWorkers = CurrentOnlineWorkerIds();
-        var responses = rosterCatalogs
-            .Where(pair => onlineWorkers.Contains(pair.Key))
-            .Select(static pair => pair.Value)
-            .ToList();
         CurrentTransport.LastRequestUtc = DateTime.UtcNow;
-        CurrentTransport.LastRequestStatus = responses.Count == 0
-            ? "No connected Dad roster catalogs cached yet."
-            : $"Read {responses.Count} roster catalog(s) from Server Dad hub.";
-        return responses;
+        CurrentTransport.LastRequestStatus = aggregate.Summary;
+        return aggregate;
+    }
+
+    public DadAggregateProfileCatalogResponse RequestAggregateProfileCatalogs(string requestId)
+    {
+        RefreshLocalMutationState();
+        requestId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId;
+
+        var aggregate = configuration.RunAsServerDad
+            ? BuildServerProfileAggregate(
+                requestId,
+                requestingWorkerSessionId: new DadWorkerSessionId(string.Empty),
+                includeRequester: true)
+            : BuildClientProfileAggregate(requestId);
+
+        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestStatus = aggregate.Summary;
+        return aggregate;
     }
 
     public DadRosterRefreshResultDto? SendRosterRefreshCommand(
@@ -383,31 +411,7 @@ public sealed class DadTransportService : IDisposable
             $"roster-refresh:{participant.WorkerSessionId.Value}:{command.CommandId}");
 
     public IReadOnlyList<DadProfileCatalogResponse> RequestProfileCatalogs(string requestId)
-    {
-        if (configuration.RunAsServerDad)
-        {
-            foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
-                QueueProfileCatalogRefresh(connection, force: true, requestId);
-        }
-
-        var onlineWorkers = CurrentOnlineWorkerIds();
-        var responses = profileCatalogs
-            .Where(pair => onlineWorkers.Contains(pair.Key))
-            .Select(static pair =>
-            {
-                var response = pair.Value;
-                response.Catalog.OwnerOnline = true;
-                response.Catalog.ReadOnly = false;
-                response.Catalog.OwnerEndpoint = string.Empty;
-                return response;
-            })
-            .ToList();
-        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
-        CurrentTransport.LastRequestStatus = responses.Count == 0
-            ? "No connected Dad profile catalogs cached yet."
-            : $"Read {responses.Count} profile catalog(s) from Server Dad hub.";
-        return responses;
-    }
+        => RequestAggregateProfileCatalogs(requestId).Responses;
 
     public DadProfileUpdateAck? SendProfileUpdate(
         DadWorkerSessionId ownerWorkerSessionId,
@@ -1003,9 +1007,7 @@ public sealed class DadTransportService : IDisposable
 
     private string DispatchRequest(string messageType, string payloadJson)
     {
-        localPluginEnabled = configuration.PluginEnabled;
-        localOnlyModeEnabled = configuration.LocalOnlyModeEnabled;
-        remoteMutationsAllowed = localPluginEnabled && !localOnlyModeEnabled;
+        RefreshLocalMutationState();
 
         return messageType switch
         {
@@ -1019,14 +1021,23 @@ public sealed class DadTransportService : IDisposable
             MessageStatusQuery => DadIpcJson.Serialize(HandleStatusQuery()),
             MessageStartRun => DadIpcJson.Serialize(HandleStartRun(payloadJson)),
             MessageRosterCatalogRequest => DadIpcJson.Serialize(HandleRosterCatalogRequest(payloadJson)),
+            MessageRosterAggregateCatalogRequest => DadIpcJson.Serialize(HandleAggregateRosterCatalogRequest(payloadJson)),
             MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(payloadJson)),
             MessageProfileCatalogRequest => DadIpcJson.Serialize(HandleProfileCatalogRequest(payloadJson)),
+            MessageProfileAggregateCatalogRequest => DadIpcJson.Serialize(HandleAggregateProfileCatalogRequest(payloadJson)),
             MessageProfileUpdateCommand => DadIpcJson.Serialize(HandleProfileUpdateCommand(payloadJson)),
             MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(payloadJson)),
             MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
             MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(payloadJson)),
             _ => throw new InvalidOperationException($"Unsupported Dad hub message type '{messageType}'."),
         };
+    }
+
+    private void RefreshLocalMutationState()
+    {
+        localPluginEnabled = configuration.PluginEnabled;
+        localOnlyModeEnabled = configuration.LocalOnlyModeEnabled;
+        remoteMutationsAllowed = localPluginEnabled && !localOnlyModeEnabled;
     }
 
     private DadPeerSnapshotResponse HandleSnapshotRequest(string payloadJson)
@@ -1182,6 +1193,28 @@ public sealed class DadTransportService : IDisposable
     private DadPeerRosterCatalogResponse HandleRosterCatalogRequest(string payloadJson)
     {
         var request = DadIpcJson.Deserialize<DadRosterRefreshPlan>(payloadJson) ?? new DadRosterRefreshPlan();
+        return BuildLocalRosterCatalogResponse(request);
+    }
+
+    private DadAggregateRosterCatalogResponse HandleAggregateRosterCatalogRequest(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadAggregateRosterCatalogRequest>(payloadJson)
+                      ?? new DadAggregateRosterCatalogRequest();
+        request.Plan ??= new DadRosterRefreshPlan();
+        request.Plan.PlanId = string.IsNullOrWhiteSpace(request.Plan.PlanId)
+            ? request.RequestId
+            : request.Plan.PlanId;
+        request.RequestId = string.IsNullOrWhiteSpace(request.RequestId)
+            ? request.Plan.PlanId
+            : request.RequestId;
+        return BuildServerRosterAggregate(
+            request.Plan,
+            request.RequestingWorkerSessionId,
+            request.IncludeRequester);
+    }
+
+    private DadPeerRosterCatalogResponse BuildLocalRosterCatalogResponse(DadRosterRefreshPlan request)
+    {
         var catalog = rosterCatalogProvider?.Invoke() ?? new DadAccountRosterCatalog
         {
             Summary = "Dad roster catalog provider unavailable.",
@@ -1231,6 +1264,24 @@ public sealed class DadTransportService : IDisposable
     private DadProfileCatalogResponse HandleProfileCatalogRequest(string payloadJson)
     {
         var requestId = DadIpcJson.Deserialize<string>(payloadJson) ?? string.Empty;
+        return BuildLocalProfileCatalogResponse(requestId);
+    }
+
+    private DadAggregateProfileCatalogResponse HandleAggregateProfileCatalogRequest(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadAggregateProfileCatalogRequest>(payloadJson)
+                      ?? new DadAggregateProfileCatalogRequest();
+        request.RequestId = string.IsNullOrWhiteSpace(request.RequestId)
+            ? Guid.NewGuid().ToString("N")
+            : request.RequestId;
+        return BuildServerProfileAggregate(
+            request.RequestId,
+            request.RequestingWorkerSessionId,
+            request.IncludeRequester);
+    }
+
+    private DadProfileCatalogResponse BuildLocalProfileCatalogResponse(string requestId)
+    {
         var catalog = profileCatalogProvider?.Invoke() ?? new DadProfileCatalog { ReadOnly = true };
         catalog.OwnerClientInstanceId = presenceService.ClientInstanceId;
         catalog.OwnerWorkerSessionId = presenceService.WorkerSessionId;
@@ -1349,6 +1400,448 @@ public sealed class DadTransportService : IDisposable
             return default;
 
         return DadIpcJson.Deserialize<TResponse>(completed.PayloadJson);
+    }
+
+    private DadAggregateRosterCatalogResponse BuildClientRosterAggregate(DadRosterRefreshPlan plan)
+    {
+        var aggregate = CreateRosterAggregate(plan.PlanId);
+        aggregate.Responses.Add(BuildLocalRosterCatalogResponse(plan));
+
+        var target = ResolveAuthorityWorkerSessionId();
+        if (target.IsEmpty)
+        {
+            AddWarning(aggregate.Warnings, "Server Dad is not connected; roster catalog refresh returned local catalog only.");
+            FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1);
+            return aggregate;
+        }
+
+        var request = new DadAggregateRosterCatalogRequest
+        {
+            RequestId = plan.PlanId,
+            RequestingWorkerSessionId = presenceService.WorkerSessionId,
+            IncludeRequester = false,
+            Plan = CloneRosterRefreshPlan(plan),
+        };
+        var serverAggregate = TryDirectRequest<DadAggregateRosterCatalogRequest, DadAggregateRosterCatalogResponse>(
+            target,
+            MessageRosterAggregateCatalogRequest,
+            request,
+            out var error);
+        if (serverAggregate == null)
+        {
+            AddWarning(aggregate.Warnings, string.IsNullOrWhiteSpace(error)
+                ? "Server Dad aggregate roster catalog refresh did not return a response."
+                : error);
+            FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1);
+            return aggregate;
+        }
+
+        MergeRosterAggregate(aggregate, serverAggregate, excludeLocal: true);
+        aggregate.PendingCatalogCount += serverAggregate.PendingCatalogCount;
+        aggregate.TimedOutCatalogCount += serverAggregate.TimedOutCatalogCount;
+        FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1 + serverAggregate.ExpectedCatalogCount);
+        return aggregate;
+    }
+
+    private DadAggregateRosterCatalogResponse BuildServerRosterAggregate(
+        DadRosterRefreshPlan plan,
+        DadWorkerSessionId requestingWorkerSessionId,
+        bool includeRequester)
+    {
+        var aggregate = CreateRosterAggregate(plan.PlanId);
+        var skipRequester = !requestingWorkerSessionId.IsEmpty && !includeRequester
+            ? requestingWorkerSessionId.Value
+            : string.Empty;
+
+        if (!string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+            aggregate.Responses.Add(BuildLocalRosterCatalogResponse(plan));
+
+        var targets = serverSessions.Snapshot()
+            .Where(static connection => connection.IsOpen)
+            .Where(connection => string.IsNullOrWhiteSpace(skipRequester) ||
+                                 !string.Equals(connection.WorkerSessionId.Value, skipRequester, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var tasks = targets
+            .Select(connection => RequestRosterCatalogDirectAsync(connection.WorkerSessionId, CloneRosterRefreshPlan(plan)))
+            .ToList();
+        WaitForAggregateTasks(tasks);
+
+        AddRosterTaskResponses(aggregate, tasks);
+        FinalizeRosterAggregate(aggregate, aggregate.Responses.Count + targets.Count - tasks.Count(static task => task.IsCompletedSuccessfully && task.Result != null));
+        return aggregate;
+    }
+
+    private DadAggregateProfileCatalogResponse BuildClientProfileAggregate(string requestId)
+    {
+        var aggregate = CreateProfileAggregate(requestId);
+        aggregate.Responses.Add(BuildLocalProfileCatalogResponse(requestId));
+
+        var target = ResolveAuthorityWorkerSessionId();
+        if (target.IsEmpty)
+        {
+            AddWarning(aggregate.Warnings, "Server Dad is not connected; profile catalog refresh returned local catalog only.");
+            FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1);
+            return aggregate;
+        }
+
+        var request = new DadAggregateProfileCatalogRequest
+        {
+            RequestId = requestId,
+            RequestingWorkerSessionId = presenceService.WorkerSessionId,
+            IncludeRequester = false,
+        };
+        var serverAggregate = TryDirectRequest<DadAggregateProfileCatalogRequest, DadAggregateProfileCatalogResponse>(
+            target,
+            MessageProfileAggregateCatalogRequest,
+            request,
+            out var error);
+        if (serverAggregate == null)
+        {
+            AddWarning(aggregate.Warnings, string.IsNullOrWhiteSpace(error)
+                ? "Server Dad aggregate profile catalog refresh did not return a response."
+                : error);
+            FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1);
+            return aggregate;
+        }
+
+        MergeProfileAggregate(aggregate, serverAggregate, excludeLocal: true);
+        aggregate.PendingCatalogCount += serverAggregate.PendingCatalogCount;
+        aggregate.TimedOutCatalogCount += serverAggregate.TimedOutCatalogCount;
+        FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1 + serverAggregate.ExpectedCatalogCount);
+        return aggregate;
+    }
+
+    private DadAggregateProfileCatalogResponse BuildServerProfileAggregate(
+        string requestId,
+        DadWorkerSessionId requestingWorkerSessionId,
+        bool includeRequester)
+    {
+        var aggregate = CreateProfileAggregate(requestId);
+        var skipRequester = !requestingWorkerSessionId.IsEmpty && !includeRequester
+            ? requestingWorkerSessionId.Value
+            : string.Empty;
+
+        if (!string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+            aggregate.Responses.Add(BuildLocalProfileCatalogResponse(requestId));
+
+        var targets = serverSessions.Snapshot()
+            .Where(static connection => connection.IsOpen)
+            .Where(connection => string.IsNullOrWhiteSpace(skipRequester) ||
+                                 !string.Equals(connection.WorkerSessionId.Value, skipRequester, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var tasks = targets
+            .Select(connection => RequestProfileCatalogDirectAsync(connection.WorkerSessionId, requestId))
+            .ToList();
+        WaitForAggregateTasks(tasks);
+
+        AddProfileTaskResponses(aggregate, tasks);
+        FinalizeProfileAggregate(aggregate, aggregate.Responses.Count + targets.Count - tasks.Count(static task => task.IsCompletedSuccessfully && task.Result != null));
+        return aggregate;
+    }
+
+    private async Task<DadPeerRosterCatalogResponse?> RequestRosterCatalogDirectAsync(
+        DadWorkerSessionId workerSessionId,
+        DadRosterRefreshPlan plan)
+    {
+        var frame = await SendRequestAsync(
+                workerSessionId,
+                MessageRosterCatalogRequest,
+                DadIpcJson.Serialize(plan),
+                roleCancellation.Token)
+            .ConfigureAwait(false);
+        if (frame.Kind == DadHubFrameKind.Error)
+            throw new DadHubProtocolException(frame.ErrorCode, frame.ErrorMessage);
+
+        return DadIpcJson.Deserialize<DadPeerRosterCatalogResponse>(frame.PayloadJson);
+    }
+
+    private async Task<DadProfileCatalogResponse?> RequestProfileCatalogDirectAsync(
+        DadWorkerSessionId workerSessionId,
+        string requestId)
+    {
+        var frame = await SendRequestAsync(
+                workerSessionId,
+                MessageProfileCatalogRequest,
+                DadIpcJson.Serialize(requestId),
+                roleCancellation.Token)
+            .ConfigureAwait(false);
+        if (frame.Kind == DadHubFrameKind.Error)
+            throw new DadHubProtocolException(frame.ErrorCode, frame.ErrorMessage);
+
+        return DadIpcJson.Deserialize<DadProfileCatalogResponse>(frame.PayloadJson);
+    }
+
+    private TResponse? TryDirectRequest<TRequest, TResponse>(
+        DadWorkerSessionId targetWorkerSessionId,
+        string messageType,
+        TRequest request,
+        out string error)
+    {
+        error = string.Empty;
+        try
+        {
+            var frame = SendRequestAsync(
+                    targetWorkerSessionId,
+                    messageType,
+                    DadIpcJson.Serialize(request),
+                    roleCancellation.Token)
+                .GetAwaiter()
+                .GetResult();
+            if (frame.Kind == DadHubFrameKind.Error)
+            {
+                error = $"{messageType} failed: {frame.ErrorMessage}";
+                return default;
+            }
+
+            return DadIpcJson.Deserialize<TResponse>(frame.PayloadJson);
+        }
+        catch (Exception ex) when (!DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
+        {
+            error = $"{messageType} failed: {ex.Message}";
+            log.Debug(ex, "[dad] Direct hub request {MessageType} failed for {WorkerSessionId}.", messageType, targetWorkerSessionId);
+            return default;
+        }
+    }
+
+    private static void WaitForAggregateTasks<TResponse>(IReadOnlyList<Task<TResponse?>> tasks)
+    {
+        if (tasks.Count == 0)
+            return;
+
+        try
+        {
+            Task.WaitAll(tasks.Cast<Task>().ToArray(), RequestTimeout + TimeSpan.FromMilliseconds(250));
+        }
+        catch
+        {
+            // Individual task faults are converted into aggregate warnings below.
+        }
+    }
+
+    private static DadAggregateRosterCatalogResponse CreateRosterAggregate(string requestId)
+        => new()
+        {
+            RequestId = requestId,
+            RespondedAtUtc = DateTime.UtcNow,
+        };
+
+    private static DadAggregateProfileCatalogResponse CreateProfileAggregate(string requestId)
+        => new()
+        {
+            RequestId = requestId,
+            RespondedAtUtc = DateTime.UtcNow,
+        };
+
+    private void AddRosterTaskResponses(
+        DadAggregateRosterCatalogResponse aggregate,
+        IReadOnlyList<Task<DadPeerRosterCatalogResponse?>> tasks)
+    {
+        foreach (var task in tasks)
+        {
+            if (!task.IsCompleted)
+            {
+                aggregate.PendingCatalogCount++;
+                AddWarning(aggregate.Warnings, "Roster catalog refresh is still pending for one connected Dad.");
+                continue;
+            }
+
+            if (task.IsCanceled)
+            {
+                aggregate.TimedOutCatalogCount++;
+                AddWarning(aggregate.Warnings, "Roster catalog refresh was cancelled for one connected Dad.");
+                continue;
+            }
+
+            if (task.IsFaulted)
+            {
+                var message = task.Exception?.GetBaseException().Message ?? "Roster catalog refresh failed for one connected Dad.";
+                if (message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+                    aggregate.TimedOutCatalogCount++;
+                AddWarning(aggregate.Warnings, message);
+                continue;
+            }
+
+            if (task.Result == null)
+            {
+                AddWarning(aggregate.Warnings, "Roster catalog refresh returned an empty response for one connected Dad.");
+                continue;
+            }
+
+            aggregate.Responses.Add(task.Result);
+            rosterCatalogs[task.Result.WorkerSessionId.Value] = task.Result;
+        }
+    }
+
+    private void AddProfileTaskResponses(
+        DadAggregateProfileCatalogResponse aggregate,
+        IReadOnlyList<Task<DadProfileCatalogResponse?>> tasks)
+    {
+        foreach (var task in tasks)
+        {
+            if (!task.IsCompleted)
+            {
+                aggregate.PendingCatalogCount++;
+                AddWarning(aggregate.Warnings, "Profile catalog refresh is still pending for one connected Dad.");
+                continue;
+            }
+
+            if (task.IsCanceled)
+            {
+                aggregate.TimedOutCatalogCount++;
+                AddWarning(aggregate.Warnings, "Profile catalog refresh was cancelled for one connected Dad.");
+                continue;
+            }
+
+            if (task.IsFaulted)
+            {
+                var message = task.Exception?.GetBaseException().Message ?? "Profile catalog refresh failed for one connected Dad.";
+                if (message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+                    aggregate.TimedOutCatalogCount++;
+                AddWarning(aggregate.Warnings, message);
+                continue;
+            }
+
+            if (task.Result == null)
+            {
+                AddWarning(aggregate.Warnings, "Profile catalog refresh returned an empty response for one connected Dad.");
+                continue;
+            }
+
+            aggregate.Responses.Add(task.Result);
+            var workerId = task.Result.Catalog.OwnerWorkerSessionId.Value;
+            if (!string.IsNullOrWhiteSpace(workerId))
+                profileCatalogs[workerId] = task.Result;
+        }
+    }
+
+    private void MergeRosterAggregate(
+        DadAggregateRosterCatalogResponse target,
+        DadAggregateRosterCatalogResponse source,
+        bool excludeLocal)
+    {
+        foreach (var response in source.Responses)
+        {
+            if (excludeLocal &&
+                string.Equals(response.WorkerSessionId.Value, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            target.Responses.Add(response);
+            rosterCatalogs[response.WorkerSessionId.Value] = response;
+        }
+
+        foreach (var warning in source.Warnings)
+            AddWarning(target.Warnings, warning);
+    }
+
+    private void MergeProfileAggregate(
+        DadAggregateProfileCatalogResponse target,
+        DadAggregateProfileCatalogResponse source,
+        bool excludeLocal)
+    {
+        foreach (var response in source.Responses)
+        {
+            if (excludeLocal &&
+                string.Equals(response.Catalog.OwnerWorkerSessionId.Value, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            target.Responses.Add(response);
+            var workerId = response.Catalog.OwnerWorkerSessionId.Value;
+            if (!string.IsNullOrWhiteSpace(workerId))
+                profileCatalogs[workerId] = response;
+        }
+
+        foreach (var warning in source.Warnings)
+            AddWarning(target.Warnings, warning);
+    }
+
+    private static void FinalizeRosterAggregate(DadAggregateRosterCatalogResponse aggregate, int expectedCatalogCount)
+    {
+        aggregate.ExpectedCatalogCount = Math.Max(0, expectedCatalogCount);
+        aggregate.RespondedCatalogCount = aggregate.Responses.Count;
+        aggregate.Complete = aggregate.RespondedCatalogCount >= aggregate.ExpectedCatalogCount &&
+                             aggregate.PendingCatalogCount == 0 &&
+                             aggregate.TimedOutCatalogCount == 0;
+        aggregate.Summary = BuildAggregateCatalogSummary(
+            "roster",
+            aggregate.ExpectedCatalogCount,
+            aggregate.RespondedCatalogCount,
+            aggregate.PendingCatalogCount,
+            aggregate.TimedOutCatalogCount);
+    }
+
+    private static void FinalizeProfileAggregate(DadAggregateProfileCatalogResponse aggregate, int expectedCatalogCount)
+    {
+        aggregate.ExpectedCatalogCount = Math.Max(0, expectedCatalogCount);
+        aggregate.RespondedCatalogCount = aggregate.Responses.Count;
+        aggregate.Complete = aggregate.RespondedCatalogCount >= aggregate.ExpectedCatalogCount &&
+                             aggregate.PendingCatalogCount == 0 &&
+                             aggregate.TimedOutCatalogCount == 0;
+        aggregate.Summary = BuildAggregateCatalogSummary(
+            "profile",
+            aggregate.ExpectedCatalogCount,
+            aggregate.RespondedCatalogCount,
+            aggregate.PendingCatalogCount,
+            aggregate.TimedOutCatalogCount);
+    }
+
+    private static string BuildAggregateCatalogSummary(
+        string catalogKind,
+        int expectedCatalogCount,
+        int respondedCatalogCount,
+        int pendingCatalogCount,
+        int timedOutCatalogCount)
+    {
+        if (expectedCatalogCount == 0)
+            return $"No Dad {catalogKind} catalogs were expected.";
+
+        var baseText = respondedCatalogCount >= expectedCatalogCount &&
+                       pendingCatalogCount == 0 &&
+                       timedOutCatalogCount == 0
+            ? $"Read all {respondedCatalogCount}/{expectedCatalogCount} Dad {catalogKind} catalog(s)."
+            : $"Read partial Dad {catalogKind} catalogs: {respondedCatalogCount}/{expectedCatalogCount}.";
+        var details = new List<string>();
+        if (pendingCatalogCount > 0)
+            details.Add($"{pendingCatalogCount} pending");
+        if (timedOutCatalogCount > 0)
+            details.Add($"{timedOutCatalogCount} timed out");
+        return details.Count == 0
+            ? baseText
+            : $"{baseText} {string.Join(", ", details)}.";
+    }
+
+    private static DadRosterRefreshPlan CloneRosterRefreshPlan(DadRosterRefreshPlan source)
+        => new()
+        {
+            PlanId = source.PlanId,
+            RequestedAtUtc = source.RequestedAtUtc,
+            ForcePeerRefresh = source.ForcePeerRefresh,
+            IncludeHidden = source.IncludeHidden,
+            IncludeIgnored = source.IncludeIgnored,
+            StaleAfterHours = source.StaleAfterHours,
+            CharacterRefs = source.CharacterRefs.Select(static reference => new DadRosterCharacterRef
+            {
+                AccountKey = reference.AccountKey,
+                CharacterKey = reference.CharacterKey,
+                ContentId = reference.ContentId,
+            }).ToList(),
+            AccountKeys = [..source.AccountKeys],
+            CharacterKeys = [..source.CharacterKeys],
+            DryRun = source.DryRun,
+            LogDiagnostics = source.LogDiagnostics,
+            DiagnosticsReason = source.DiagnosticsReason,
+        };
+
+    private static void AddWarning(ICollection<string> warnings, string warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+            return;
+
+        if (warnings.All(existing => !string.Equals(existing, warning, StringComparison.OrdinalIgnoreCase)))
+            warnings.Add(warning);
     }
 
     private void QueueOperation<TRequest, TResponse>(
@@ -1655,6 +2148,15 @@ public sealed class DadTransportService : IDisposable
 
         if (configuration.RunAsServerDad)
         {
+            RefreshLocalMutationState();
+            var local = GetLocalParticipant();
+            local.Endpoint = CurrentTransport.ListenerEndpoint;
+            local.IsLocalClient = true;
+            local.IsAuthority = true;
+            if (!remoteMutationsAllowed)
+                MarkSnapshotUnavailable(local, BuildLocalUnavailableReason());
+            participants.Add(local);
+
             foreach (var connection in serverSessions.Snapshot())
             {
                 var participant = DadHubParticipants.PrepareRemoteWithStaleState(

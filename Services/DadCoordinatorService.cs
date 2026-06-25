@@ -340,15 +340,29 @@ public sealed class DadCoordinatorService
         nextParticipantPollUtc = DateTime.UtcNow + ParticipantPollInterval;
 
         activeParticipants.Clear();
-        activeParticipants.Add(BuildLocalAssignment(activePlan.LeaderCharacterKey, activePlan.Orchestration.AuthorityMode, slotId: "Leader"));
-
-        foreach (var character in plannedCharacters.Where(static character => character.Source != DadCharacterSource.LocalRuntime))
+        var orderedPlannedCharacters = plannedCharacters
+            .Take(activePlan.RequiredParticipantCount)
+            .ToList();
+        if (orderedPlannedCharacters.Count == 0 && activePlan.RequiredParticipantCount <= 1)
         {
+            activeParticipants.Add(BuildLocalAssignment(activePlan.LeaderCharacterKey, activePlan.Orchestration.AuthorityMode, slotId: "Leader"));
+        }
+
+        for (var index = 0; index < orderedPlannedCharacters.Count; index++)
+        {
+            var character = orderedPlannedCharacters[index];
+            var slotId = index == 0 ? "Leader" : $"Party {index + 1}";
+            if (character.Source == DadCharacterSource.LocalRuntime)
+            {
+                activeParticipants.Add(BuildLocalAssignment(character.CharacterKey, activePlan.Orchestration.AuthorityMode, slotId));
+                continue;
+            }
+
             var participant = ResolvePeerParticipant(character, pool.PeerTransport.KnownParticipants);
             if (participant != null)
             {
                 participant.AssignedSlotId = string.IsNullOrWhiteSpace(participant.AssignedSlotId)
-                    ? $"Party {activeParticipants.Count + 1}"
+                    ? slotId
                     : participant.AssignedSlotId;
                 activeParticipants.Add(participant);
             }
@@ -689,18 +703,15 @@ public sealed class DadCoordinatorService
         if (plan.RequiredParticipantCount <= 1)
             return;
 
-        var leader = activeParticipants.FirstOrDefault(participant =>
-            participant.IsLocalClient &&
-            string.Equals(participant.ActiveCharacterKey.Value, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase));
-        if (leader == null)
-        {
-            blockers.Add($"Configured leader {plan.LeaderCharacterKey} is not loaded on this Server Dad client; cannot send party invites.");
-            return;
-        }
-
         if (plan.Orchestration.QueueAuthority != DadQueueAuthority.Leader)
         {
             blockers.Add($"Party invite authority must be the leader; request has {plan.Orchestration.QueueAuthority}.");
+            return;
+        }
+
+        if (!TryResolveLocalPartyInviter(plan, out _, out var inviteBlocker))
+        {
+            blockers.Add(inviteBlocker);
             return;
         }
 
@@ -724,6 +735,70 @@ public sealed class DadCoordinatorService
             else
                 participant.StatusText = $"Party invite requested for {participant.ActiveCharacterKey}.";
         }
+    }
+
+    private bool TryResolveLocalPartyInviter(
+        DadRunPlan plan,
+        out DadParticipantSnapshot inviter,
+        out string blocker)
+    {
+        inviter = new DadParticipantSnapshot();
+        blocker = string.Empty;
+
+        if (plan.Orchestration.InviteAuthority == DadInviteAuthority.External)
+        {
+            blocker = "External party inviter is not executable by Dad.";
+            return false;
+        }
+
+        if (plan.Orchestration.InviteAuthority == DadInviteAuthority.NotNeeded)
+        {
+            blocker = "Party invite authority is Not needed, but this run requires party invites.";
+            return false;
+        }
+
+        var requiredInviterKey = plan.Orchestration.InviteAuthority == DadInviteAuthority.ServerDad
+            ? plan.InviterCharacterKey
+            : string.IsNullOrWhiteSpace(plan.InviterCharacterKey)
+                ? plan.LeaderCharacterKey
+                : plan.InviterCharacterKey;
+        if (string.IsNullOrWhiteSpace(requiredInviterKey))
+        {
+            blocker = "Party inviter is not selected.";
+            return false;
+        }
+
+        var participant = activeParticipants.FirstOrDefault(candidate =>
+            string.Equals(candidate.ActiveCharacterKey.Value, requiredInviterKey, StringComparison.OrdinalIgnoreCase));
+        if (participant == null)
+        {
+            blocker = $"Configured inviter {requiredInviterKey} is offline or not part of this Dad party.";
+            return false;
+        }
+
+        if (!participant.IsLocalClient)
+        {
+            blocker = $"Configured inviter {requiredInviterKey} is not loaded on this Dad client; remote party invite execution is not available.";
+            return false;
+        }
+
+        if (!participant.PostArReady)
+        {
+            blocker = $"Configured inviter {requiredInviterKey} is not post-AR ready.";
+            return false;
+        }
+
+        if (plan.Orchestration.InviteAuthority == DadInviteAuthority.ServerDad &&
+            !activeParticipants.Any(candidate =>
+                candidate.IsLocalClient &&
+                string.Equals(candidate.ActiveCharacterKey.Value, requiredInviterKey, StringComparison.OrdinalIgnoreCase)))
+        {
+            blocker = $"Server Dad inviter {requiredInviterKey} is not the loaded local character.";
+            return false;
+        }
+
+        inviter = participant;
+        return true;
     }
 
     private static string FormatPartyInviteTarget(DadParticipantSnapshot participant)
@@ -821,15 +896,16 @@ public sealed class DadCoordinatorService
         var failures = new List<string>();
         foreach (var participant in activeParticipants)
         {
+            var role = IsQueueLeaderParticipant(activePlan, participant)
+                ? DadWorkerExecutionRole.QueueLeader
+                : DadWorkerExecutionRole.Participant;
             var command = new DadWorkerExecutionCommand
             {
                 RunId = activePlan.Request.RequestId,
                 ModuleIndex = activeModuleIndex,
-                Role = participant.IsLocalClient
-                    ? DadWorkerExecutionRole.QueueLeader
-                    : DadWorkerExecutionRole.Participant,
+                Role = role,
                 Plan = activePlan,
-                Participants = activeParticipants.Select(static candidate => candidate.Clone()).ToList(),
+                Participants = BuildWorkerParticipantView(participant, role),
                 TimeoutSeconds = Math.Max(
                     60,
                     activePlan.Orchestration.WaitPolicy.ParticipantReadyTimeoutSeconds +
@@ -864,6 +940,26 @@ public sealed class DadCoordinatorService
             BuildWorkerProgressResult(module, $"Assigned {workerStatuses.Count} worker(s); waiting for execution status."),
             replaceExisting: false);
     }
+
+    private static bool IsQueueLeaderParticipant(DadRunPlan plan, DadParticipantSnapshot participant)
+        => !string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) &&
+           string.Equals(participant.ActiveCharacterKey.Value, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase);
+
+    private List<DadParticipantSnapshot> BuildWorkerParticipantView(
+        DadParticipantSnapshot targetParticipant,
+        DadWorkerExecutionRole targetRole)
+        => activeParticipants.Select(candidate =>
+        {
+            var clone = candidate.Clone();
+            var isTarget = string.Equals(
+                candidate.WorkerSessionId.Value,
+                targetParticipant.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase);
+            clone.IsLocalClient = isTarget;
+            if (isTarget && targetRole == DadWorkerExecutionRole.QueueLeader)
+                clone.IsAuthority = true;
+            return clone;
+        }).ToList();
 
     private void UpdateWorkerExecution(DadPlannedModuleExecution module)
     {
@@ -1648,7 +1744,7 @@ public sealed class DadCoordinatorService
 
         // Feature batch A: run operator-chosen completion actions (sound / commands / gated shutdown).
         if (status == DadRunStatus.Completed)
-            DadCompletionActionRunner.Enqueue(configuration, log);
+            DadCompletionActionRunner.Enqueue(configuration, log, activePlan?.Request);
 
         activePlan = null;
         activeParticipants.Clear();

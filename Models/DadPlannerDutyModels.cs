@@ -28,6 +28,7 @@ public sealed class DadPlannerRequestContractPreview
     public DadModuleId ModuleId { get; set; } = DadModuleId.None;
     public object? TaskConfig { get; set; }
     public DadRunStopPolicy StopPolicy { get; set; } = new();
+    public DadCompletionActions? CompletionActions { get; set; }
     public List<DadCharacterKey> RequiredCharacterKeys { get; set; } = [];
     public List<DadAccountKey> RequiredAccountKeys { get; set; } = [];
     public int PartySize { get; set; }

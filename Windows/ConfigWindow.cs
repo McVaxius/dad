@@ -166,7 +166,8 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextWrapped("Optional peer authentication. When set, every transport message is HMAC-signed and all peers must use the same secret. Strongly recommended for non-loopback (LAN) binds. Empty = no auth (loopback only).");
 
         ImGui.Separator();
-        ImGui.TextUnformatted("Completion actions (run when a Dad run completes)");
+        ImGui.TextUnformatted("Global completion defaults");
+        ImGui.TextWrapped("Used by presets that do not define their own completion actions.");
 
         var actions = configuration.CompletionActions;
 

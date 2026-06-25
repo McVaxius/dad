@@ -70,7 +70,17 @@ public sealed class DadRosterCatalogService
 
         if (plan.ForcePeerRefresh)
         {
-            lastPeerResponses = transportService.RequestRosterCatalogs(plan);
+            var aggregate = transportService.RequestAggregateRosterCatalogs(plan);
+            lastPeerResponses = aggregate.Responses
+                .Where(response => !string.Equals(
+                    response.WorkerSessionId.Value,
+                    presenceService.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (!aggregate.Complete)
+                AddWarning(localCatalog.Warnings, aggregate.Summary);
+            foreach (var warning in aggregate.Warnings)
+                AddWarning(localCatalog.Warnings, warning);
             foreach (var response in lastPeerResponses)
             {
                 foreach (var warning in response.Warnings)

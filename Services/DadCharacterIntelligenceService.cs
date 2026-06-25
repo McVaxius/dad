@@ -116,6 +116,15 @@ public sealed class DadCharacterIntelligenceService
 
         foreach (var response in peerTransport.LastResponses)
         {
+            if (response.Participant.IsLocalClient ||
+                string.Equals(
+                    response.Participant.WorkerSessionId.Value,
+                    peerTransport.LocalWorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             var character = response.Participant.Character.Clone();
             character.Source = DadCharacterSource.PeerRuntime;
             character.Freshness = ResolvePeerFreshness(response);

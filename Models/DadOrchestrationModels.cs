@@ -197,11 +197,13 @@ public sealed class DadOrchestrationIntent
     public bool LocalOnlyOverride { get; set; }
     public DadModuleId ModuleTarget { get; set; } = DadModuleId.None;
     public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.Leader;
+    public DadInviteAuthority InviteAuthority { get; set; } = DadInviteAuthority.PresetLeader;
     public DadTransportMode TransportMode { get; set; } = DadTransportMode.LocalOnly;
     public DadRosterIntent RosterIntent { get; set; } = new();
     public bool RequirePostArReady { get; set; } = true;
     public bool PreferTypedRosterPool { get; set; } = true;
     public DadCharacterKey PreferredLeaderCharacterKey { get; set; } = new(string.Empty);
+    public DadCharacterKey PreferredInviterCharacterKey { get; set; } = new(string.Empty);
     public List<DadAccountKey> PreferredAccountKeys { get; set; } = [];
     public List<DadAccountKey> RequiredAccountKeys { get; set; } = [];
     public List<DadRosterCharacterRef> PreferredRosterCharacters { get; set; } = [];
@@ -576,6 +578,7 @@ public sealed class DadRunPlan
     public int RequiredParticipantCount { get; set; } = 1;
     public bool RequiresRemoteParticipants { get; set; }
     public string LeaderCharacterKey { get; set; } = string.Empty;
+    public string InviterCharacterKey { get; set; } = string.Empty;
     public List<DadPlannedModuleExecution> Modules { get; set; } = [];
     public List<string> PlannerWarnings { get; set; } = [];
 }

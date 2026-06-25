@@ -25,11 +25,9 @@ internal static class DadCompletionActionRunner
 
     public static bool HasPendingWork => PendingSteps.Count > 0;
 
-    public static void Enqueue(Configuration configuration, IPluginLog log)
+    public static void Enqueue(Configuration configuration, IPluginLog log, DadRunRequest? request = null)
     {
-        var actions = configuration.CompletionActions;
-        if (actions == null)
-            return;
+        var actions = DadCompletionActionSnapshots.Resolve(request?.CompletionActions, configuration.CompletionActions);
 
         PendingSteps.Clear();
         if (actions.PlaySound)

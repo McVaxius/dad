@@ -1217,6 +1217,7 @@ public sealed class DadSchedulerService
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            CompletionActions = source.CompletionActions?.Clone(),
             Slots = slots.Select(CloneSchedulerGroupSlot).ToList(),
             ScheduleEnabled = source.ScheduleEnabled,
             ScheduleCadenceHours = source.ScheduleCadenceHours,

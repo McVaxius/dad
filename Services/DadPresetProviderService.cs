@@ -638,7 +638,8 @@ public sealed class DadPresetProviderService
         string? requestId = null,
         DateTime? requestedAtUtc = null,
         DadActivityPreset? plannerPreviewOverride = null,
-        DadPlannerGroup? selectedGroup = null)
+        DadPlannerGroup? selectedGroup = null,
+        DadCompletionActions? completionFallback = null)
     {
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
@@ -663,6 +664,7 @@ public sealed class DadPresetProviderService
             RequestedAtUtc = requestedAtUtc ?? DateTime.UtcNow,
             RequestedBy = previewOnly ? "planner-preview" : selectedGroup == null ? "planner" : $"planner-group:{selectedGroup.DisplayName}",
             StopPolicy = plannerPreview.StopPolicy.Clone().Normalize(),
+            CompletionActions = ResolvePlannerCompletionActions(options, effectiveSelectedGroup, completionFallback),
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty, effectiveSelectedGroup),
         };
 
@@ -1166,6 +1168,7 @@ public sealed class DadPresetProviderService
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            CompletionActions = source.CompletionActions?.Clone(),
             Slots = slots.Select(ClonePlannerGroupSlot).ToList(),
             ScheduleEnabled = source.ScheduleEnabled,
             ScheduleCadenceHours = source.ScheduleCadenceHours,
@@ -1461,6 +1464,12 @@ public sealed class DadPresetProviderService
         return policy;
     }
 
+    private static DadCompletionActions? ResolvePlannerCompletionActions(
+        DadPresetPlannerOptions options,
+        DadPlannerGroup? selectedGroup,
+        DadCompletionActions? completionFallback)
+        => (options.CompletionActions ?? selectedGroup?.CompletionActions ?? completionFallback)?.Clone();
+
     private static List<string> BuildStopPolicyBlockers(
         DadRunStopPolicy stopPolicy,
         IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
@@ -1654,6 +1663,7 @@ public sealed class DadPresetProviderService
             ModuleId = request.Orchestration.ModuleTarget,
             TaskConfig = BuildContractTaskConfig(request, selectedDuty),
             StopPolicy = request.StopPolicy.Clone(),
+            CompletionActions = request.CompletionActions?.Clone(),
             RequiredCharacterKeys = [..result.RequiredCharacterKeys],
             RequiredAccountKeys = [..result.RequiredAccountKeys],
             PartySize = request.Orchestration.RosterIntent.ExpectedPartySize,
@@ -2207,6 +2217,9 @@ public sealed class DadPresetProviderService
         var expectedPartySize = previewOnly || forceLocalNpc
             ? 1
             : ResolveRequestedPartySize(options, selectedDuty, lane);
+        var inviteAuthority = previewOnly || forceLocalNpc || expectedPartySize <= 1
+            ? DadInviteAuthority.NotNeeded
+            : ResolveEffectiveInviteAuthority(options);
 
         return new DadOrchestrationIntent
         {
@@ -2215,7 +2228,11 @@ public sealed class DadPresetProviderService
             TransportMode = previewOnly || forceLocalNpc || !lane.RequiresRemoteParty ? DadTransportMode.LocalOnly : DadTransportMode.ServerHub,
             ModuleTarget = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane),
             QueueAuthority = previewOnly || forceLocalNpc ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
+            InviteAuthority = inviteAuthority,
             PreferredLeaderCharacterKey = new DadCharacterKey(plannerPreview.LeaderCharacterKey),
+            PreferredInviterCharacterKey = inviteAuthority == DadInviteAuthority.PresetLeader
+                ? new DadCharacterKey(plannerPreview.LeaderCharacterKey)
+                : new DadCharacterKey(string.Empty),
             RequiredAccountKeys = requiredAccountKeys,
             PreferredRosterCharacters = selectedRosterCharacters,
             RequiredRosterCharacters = selectedGroup == null && previewOnly

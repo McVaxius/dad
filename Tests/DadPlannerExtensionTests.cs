@@ -43,6 +43,57 @@ public sealed class DadPlannerExtensionTests
     }
 
     [Fact]
+    public void RemotePartyDefaultsInviteAuthorityToPresetLeader()
+    {
+        var request = new DadRunRequest
+        {
+            PremadeDuty = new DadPremadeDutyTask
+            {
+                ContentFinderConditionId = 300,
+                DutyName = "Premade",
+                ExpectedPartySize = 4,
+            },
+            Orchestration = new DadOrchestrationIntent
+            {
+                PreferredLeaderCharacterKey = new DadCharacterKey("Leader@Alpha"),
+                RosterIntent = new DadRosterIntent { ExpectedPartySize = 4 },
+                InviteAuthority = DadInviteAuthority.NotNeeded,
+            },
+        };
+
+        request.ApplyOrchestrationDefaults();
+
+        Assert.Equal(DadInviteAuthority.PresetLeader, request.Orchestration.InviteAuthority);
+        Assert.Equal("Leader@Alpha", request.Orchestration.PreferredInviterCharacterKey.Value);
+    }
+
+    [Fact]
+    public void ApplyOrchestrationDefaultsTrimsConfiguredAuthorityKeys()
+    {
+        var request = new DadRunRequest
+        {
+            PremadeDuty = new DadPremadeDutyTask
+            {
+                ContentFinderConditionId = 400,
+                DutyName = "Premade",
+                ExpectedPartySize = 2,
+            },
+            Orchestration = new DadOrchestrationIntent
+            {
+                PreferredLeaderCharacterKey = new DadCharacterKey(" Leader@Alpha "),
+                PreferredInviterCharacterKey = new DadCharacterKey(" Inviter@Alpha "),
+                InviteAuthority = DadInviteAuthority.PresetLeader,
+                RosterIntent = new DadRosterIntent { ExpectedPartySize = 2 },
+            },
+        };
+
+        request.ApplyOrchestrationDefaults();
+
+        Assert.Equal("Leader@Alpha", request.Orchestration.PreferredLeaderCharacterKey.Value);
+        Assert.Equal("Inviter@Alpha", request.Orchestration.PreferredInviterCharacterKey.Value);
+    }
+
+    [Fact]
     public void SquadronAndVariantCapabilitiesArePreviewBlocked()
     {
         var registry = new DadModuleRegistry();

@@ -13,6 +13,7 @@ namespace dad.Windows;
 public sealed class MainWindow : Window, IDisposable
 {
     private static readonly Vector2 MinimumWindowSize = new(760f, 600f);
+    private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
     private const string RosterUnassignedAccountFilter = "__unassigned";
     private const string RosterNeedsUpdateFilter = "NeedsUpdate";
     private readonly Plugin plugin;
@@ -45,6 +46,8 @@ public sealed class MainWindow : Window, IDisposable
     private long selectedProfileRevision;
     private CharacterConfig profileDraft = new();
     private string profileSaveStatus = string.Empty;
+    private string draftPlannerCompletionCommands = string.Empty;
+    private string plannerCompletionDraftOwner = string.Empty;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -2841,6 +2844,10 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
         ImGui.Spacing();
+        DrawPlannerQueueAuthoritySelector(plannerOptions);
+        ImGui.SameLine();
+        DrawPlannerInviteAuthoritySelector(plannerOptions);
+        ImGui.Spacing();
         if (debugUi)
         {
             DrawPlannerOperatorModeSelector(plannerOptions);
@@ -2848,10 +2855,6 @@ public sealed class MainWindow : Window, IDisposable
             DrawPlannerAccountFilterSelector(plannerSnapshot.AccountOptions, plannerOptions, plannerPreview.AccountFilterSummary);
 
             DrawPlannerTransportOwnerSelector(plannerOptions);
-            ImGui.SameLine();
-            DrawPlannerQueueAuthoritySelector(plannerOptions);
-            ImGui.SameLine();
-            DrawPlannerInviteAuthoritySelector(plannerOptions);
 
             var connectedOnly = plannerOptions.ConnectedOnly;
             if (ImGui.Checkbox("Connected only", ref connectedOnly))
@@ -2882,6 +2885,8 @@ public sealed class MainWindow : Window, IDisposable
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi);
         ImGui.Spacing();
         DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
+        ImGui.Spacing();
+        DrawPlannerCompletionActionsControls(plannerOptions, requestPreview);
         ImGui.EndDisabled();
     }
 
@@ -3371,6 +3376,7 @@ public sealed class MainWindow : Window, IDisposable
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            CompletionActions = source.CompletionActions?.Clone(),
             IncludedAccountKeys = [..source.IncludedAccountKeys],
         };
 
@@ -3915,6 +3921,187 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawStatusRow("Policy preview", requestPreview.StopPolicy.Describe());
+    }
+
+    private void DrawPlannerCompletionActionsControls(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerRunRequestPreview requestPreview)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted("Completion actions");
+        DrawStatusRow("Completion source", DadCompletionActionSnapshots.DescribeSource(plannerOptions.CompletionActions));
+
+        var hasOverride = plannerOptions.CompletionActions != null;
+        if (ImGui.Checkbox("Override completion defaults for this preset", ref hasOverride))
+        {
+            plannerOptions.CompletionActions = hasOverride
+                ? DadCompletionActionSnapshots.Resolve(null, plugin.Configuration.CompletionActions)
+                : null;
+            draftPlannerCompletionCommands = plannerOptions.CompletionActions == null
+                ? string.Empty
+                : string.Join("\n", plannerOptions.CompletionActions.Commands);
+            plannerCompletionDraftOwner = BuildPlannerCompletionDraftOwner(plannerOptions);
+            plugin.SavePlannerOptions();
+        }
+
+        var actions = plannerOptions.CompletionActions;
+        if (actions == null)
+        {
+            DrawStatusRow("Effective actions", BuildCompletionActionsSummary(requestPreview.ContractPreview.CompletionActions ?? plugin.Configuration.CompletionActions));
+            ImGui.TextDisabled("This preset uses the global defaults from Settings > Completion & Safety.");
+            return;
+        }
+
+        var playSound = actions.PlaySound;
+        if (ImGui.Checkbox("Play sound on preset completion", ref playSound))
+        {
+            actions.PlaySound = playSound;
+            plugin.SavePlannerOptions();
+        }
+
+        if (actions.PlaySound)
+        {
+            var soundId = actions.SoundEffectId;
+            if (ImGui.InputInt("Preset sound effect (1-16)", ref soundId))
+            {
+                actions.SoundEffectId = Math.Clamp(soundId, 1, 16);
+                plugin.SavePlannerOptions();
+            }
+        }
+
+        var runCommands = actions.RunCommands;
+        if (ImGui.Checkbox("Run preset commands on completion", ref runCommands))
+        {
+            actions.RunCommands = runCommands;
+            plugin.SavePlannerOptions();
+        }
+
+        if (actions.RunCommands)
+        {
+            var draftOwner = BuildPlannerCompletionDraftOwner(plannerOptions);
+            if (!string.Equals(plannerCompletionDraftOwner, draftOwner, StringComparison.Ordinal))
+            {
+                draftPlannerCompletionCommands = string.Join("\n", actions.Commands ?? []);
+                plannerCompletionDraftOwner = draftOwner;
+            }
+
+            if (ImGui.InputTextMultiline("Preset commands (one per line)", ref draftPlannerCompletionCommands, 2048, new Vector2(-1f, 90f)))
+            {
+                var committedSignature = BuildPlannerCompletionActionSignature(actions);
+                actions.Commands = draftPlannerCompletionCommands
+                    .Split('\n')
+                    .Select(static command => command.Trim())
+                    .Where(static command => command.Length > 0)
+                    .ToList();
+                plugin.QueueDebouncedPlannerOptionsSave(
+                    "planner-completion-commands",
+                    committedSignature,
+                    () => BuildPlannerCompletionActionSignature(plannerOptions.CompletionActions));
+            }
+        }
+
+        ImGui.TextUnformatted("Post-run utilities");
+        var utilities = actions.Utilities ??= new DadPostRunUtilities();
+
+        var openGearCoffers = utilities.OpenGearCoffers;
+        if (ImGui.Checkbox("Open preset gear coffers", ref openGearCoffers))
+        {
+            utilities.OpenGearCoffers = openGearCoffers;
+            plugin.SavePlannerOptions();
+        }
+
+        var registerTripleTriad = utilities.RegisterTripleTriadCards;
+        if (ImGui.Checkbox("Register preset Triple Triad cards", ref registerTripleTriad))
+        {
+            utilities.RegisterTripleTriadCards = registerTripleTriad;
+            plugin.SavePlannerOptions();
+        }
+
+        var sellTripleTriad = utilities.SellTripleTriadCards;
+        if (ImGui.Checkbox("Sell preset Triple Triad cards", ref sellTripleTriad))
+        {
+            utilities.SellTripleTriadCards = sellTripleTriad;
+            plugin.SavePlannerOptions();
+        }
+
+        var gcHandIn = utilities.GrandCompanyHandInViaAutoRetainer;
+        if (ImGui.Checkbox("Preset Grand Company hand-in via AutoRetainer", ref gcHandIn))
+        {
+            utilities.GrandCompanyHandInViaAutoRetainer = gcHandIn;
+            plugin.SavePlannerOptions();
+        }
+
+        if (utilities.GrandCompanyHandInViaAutoRetainer)
+        {
+            var gcCommand = utilities.GrandCompanyHandInCommand;
+            if (ImGui.InputText("Preset AutoRetainer GC command", ref gcCommand, 128))
+            {
+                utilities.GrandCompanyHandInCommand = gcCommand.Trim();
+                plugin.SavePlannerOptions();
+            }
+        }
+
+        if (plugin.Configuration.AdvancedModeEnabled)
+        {
+            var killMode = (int)actions.KillMode;
+            if (ImGui.Combo("Preset completion action (DANGER)", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            {
+                actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
+                plugin.SavePlannerOptions();
+            }
+        }
+        else if (actions.KillMode != DadCompletionKillMode.None)
+        {
+            DrawStatusRow("Preset kill action", $"{actions.KillMode} configured but hidden; enable Advanced mode (/dad advanced) to view/change.");
+        }
+
+        DrawStatusRow("Effective actions", BuildCompletionActionsSummary(actions));
+    }
+
+    private static string BuildPlannerCompletionDraftOwner(DadPresetPlannerOptions plannerOptions)
+        => $"{plannerOptions.SelectedPlannerGroupId}|{plannerOptions.ActivityMode}|{plannerOptions.CompletionActions != null}";
+
+    private static string BuildPlannerCompletionActionSignature(DadCompletionActions? actions)
+    {
+        if (actions == null)
+            return "global-defaults";
+
+        var utilities = actions.Utilities ?? new DadPostRunUtilities();
+        return string.Join("|", new[]
+        {
+            actions.PlaySound.ToString(),
+            actions.SoundEffectId.ToString(CultureInfo.InvariantCulture),
+            actions.RunCommands.ToString(),
+            string.Join("\n", actions.Commands ?? []),
+            actions.KillMode.ToString(),
+            utilities.OpenGearCoffers.ToString(),
+            utilities.RegisterTripleTriadCards.ToString(),
+            utilities.SellTripleTriadCards.ToString(),
+            utilities.GrandCompanyHandInViaAutoRetainer.ToString(),
+            utilities.GrandCompanyHandInCommand,
+        });
+    }
+
+    private static string BuildCompletionActionsSummary(DadCompletionActions actions)
+    {
+        var enabled = new List<string>();
+        if (actions.PlaySound)
+            enabled.Add($"sound se.{Math.Clamp(actions.SoundEffectId, 1, 16)}");
+        var commandCount = actions.Commands?.Count ?? 0;
+        if (actions.RunCommands && commandCount > 0)
+            enabled.Add($"{commandCount} command(s)");
+        if (actions.Utilities?.OpenGearCoffers == true)
+            enabled.Add("open coffers");
+        if (actions.Utilities?.RegisterTripleTriadCards == true)
+            enabled.Add("register cards");
+        if (actions.Utilities?.SellTripleTriadCards == true)
+            enabled.Add("sell cards");
+        if (actions.Utilities?.GrandCompanyHandInViaAutoRetainer == true)
+            enabled.Add("GC hand-in");
+        if (actions.KillMode != DadCompletionKillMode.None)
+            enabled.Add(actions.KillMode.ToString());
+
+        return enabled.Count == 0 ? "No completion actions enabled." : string.Join(", ", enabled);
     }
 
     private void DrawPlannerLaneInputs(

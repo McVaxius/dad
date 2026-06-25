@@ -218,6 +218,7 @@ public sealed class DadQueueExecutionService
             RequestedAtUtc = plan.Request.RequestedAtUtc,
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = plan.Request.StopPolicy,
+            CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
         };
         if (premade)
@@ -252,6 +253,7 @@ public sealed class DadQueueExecutionService
             RequiredParticipantCount = plan.RequiredParticipantCount,
             RequiresRemoteParticipants = plan.RequiresRemoteParticipants,
             LeaderCharacterKey = plan.LeaderCharacterKey,
+            InviterCharacterKey = plan.InviterCharacterKey,
             Modules = [effectiveModule],
             PlannerWarnings = [..plan.PlannerWarnings],
         }, effectiveModule);
@@ -278,6 +280,7 @@ public sealed class DadQueueExecutionService
             RequestedAtUtc = plan.Request.RequestedAtUtc,
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = plan.Request.StopPolicy,
+            CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
         };
         if (useTrust)
@@ -308,6 +311,7 @@ public sealed class DadQueueExecutionService
             RequiredParticipantCount = 1,
             RequiresRemoteParticipants = false,
             LeaderCharacterKey = plan.LeaderCharacterKey,
+            InviterCharacterKey = plan.InviterCharacterKey,
             Modules = [effectiveModule],
             PlannerWarnings = [..plan.PlannerWarnings],
         }, effectiveModule);
@@ -333,6 +337,7 @@ public sealed class DadQueueExecutionService
             RequestedAtUtc = plan.Request.RequestedAtUtc,
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = plan.Request.StopPolicy,
+            CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
             PremadeDuty = new DadPremadeDutyTask
             {
@@ -351,6 +356,7 @@ public sealed class DadQueueExecutionService
             RequiredParticipantCount = plan.RequiredParticipantCount,
             RequiresRemoteParticipants = true,
             LeaderCharacterKey = plan.LeaderCharacterKey,
+            InviterCharacterKey = plan.InviterCharacterKey,
             Modules = [effectiveModule],
             PlannerWarnings = [..plan.PlannerWarnings],
         }, effectiveModule);

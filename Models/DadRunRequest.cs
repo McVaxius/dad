@@ -24,6 +24,7 @@ public sealed class DadRunRequest
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
     public string RequestedBy { get; set; } = string.Empty;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
+    public DadCompletionActions? CompletionActions { get; set; }
     public DadOrchestrationIntent Orchestration { get; set; } = new();
     public DadDungeonTask? Dungeon { get; set; }
     public DadMsqTask? Msq { get; set; }
@@ -129,7 +130,7 @@ public sealed class DadRunRequest
         if (parts.Count == 0)
             return "No dad tasks configured.";
 
-        parts.Add($"authority mode {DadStatusText.FormatAuthorityMode(Orchestration.AuthorityMode)}/transport {Orchestration.TransportMode}/queue {Orchestration.QueueAuthority}/party {Orchestration.RosterIntent.ExpectedPartySize}");
+        parts.Add($"authority mode {DadStatusText.FormatAuthorityMode(Orchestration.AuthorityMode)}/transport {Orchestration.TransportMode}/queue {Orchestration.QueueAuthority}/invite {Orchestration.InviteAuthority}/party {Orchestration.RosterIntent.ExpectedPartySize}");
         if (Orchestration.LocalOnlyOverride)
             parts.Add("local-only");
         if (Orchestration.RequiredAccountKeys.Count > 0)
@@ -163,6 +164,8 @@ public sealed class DadRunRequest
         Orchestration.RequiredAccountKeys ??= [];
         Orchestration.PreferredCharacterKeys ??= [];
         Orchestration.RequiredCharacterKeys ??= [];
+        Orchestration.PreferredInviterCharacterKey = new DadCharacterKey((Orchestration.PreferredInviterCharacterKey.Value ?? string.Empty).Trim());
+        Orchestration.PreferredLeaderCharacterKey = new DadCharacterKey((Orchestration.PreferredLeaderCharacterKey.Value ?? string.Empty).Trim());
 
         if (Orchestration.ModuleTarget == DadModuleId.None)
         {
@@ -217,6 +220,18 @@ public sealed class DadRunRequest
             {
                 Orchestration.QueueAuthority = DadQueueAuthority.Leader;
             }
+        }
+
+        if (Orchestration.RosterIntent.RequireRemoteParticipants &&
+            Orchestration.InviteAuthority == DadInviteAuthority.NotNeeded)
+        {
+            Orchestration.InviteAuthority = DadInviteAuthority.PresetLeader;
+        }
+
+        if (Orchestration.InviteAuthority == DadInviteAuthority.PresetLeader &&
+            Orchestration.PreferredInviterCharacterKey.IsEmpty)
+        {
+            Orchestration.PreferredInviterCharacterKey = Orchestration.PreferredLeaderCharacterKey;
         }
 
         if (string.IsNullOrWhiteSpace(Orchestration.ExecutionConstraintSummary))
