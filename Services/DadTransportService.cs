@@ -1294,11 +1294,13 @@ public sealed class DadTransportService : IDisposable
 
     private DadPeerRosterCatalogResponse BuildLocalRosterCatalogResponse(DadRosterRefreshPlan request)
     {
-        var catalog = rosterCatalogProvider?.Invoke() ?? new DadAccountRosterCatalog
-        {
-            Summary = "Dad roster catalog provider unavailable.",
-            Warnings = ["Dad roster catalog provider unavailable."],
-        };
+        var catalog = request.LiveConnectedOnly
+            ? BuildLocalLiveConnectedRosterCatalog()
+            : rosterCatalogProvider?.Invoke() ?? new DadAccountRosterCatalog
+            {
+                Summary = "Dad roster catalog provider unavailable.",
+                Warnings = ["Dad roster catalog provider unavailable."],
+            };
         catalog.SourceClientInstanceId = presenceService.ClientInstanceId;
         catalog.SourceWorkerSessionId = presenceService.WorkerSessionId;
         return new DadPeerRosterCatalogResponse
@@ -1310,6 +1312,23 @@ public sealed class DadTransportService : IDisposable
             Catalog = catalog,
             Warnings = remoteMutationsAllowed ? [] : [BuildLocalUnavailableReason()],
         };
+    }
+
+    private DadAccountRosterCatalog BuildLocalLiveConnectedRosterCatalog()
+    {
+        var local = BuildLocalTransportSnapshot();
+        local.IsLocalClient = true;
+        local.IsAuthority = configuration.RunAsServerDad;
+        local.WorkerRole = configuration.RunAsServerDad
+            ? DadWorkerRole.ServerDad
+            : DadWorkerRole.ClientDad;
+
+        return DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(new DadPeerTransportSnapshot
+        {
+            LocalClientInstanceId = presenceService.ClientInstanceId,
+            LocalWorkerSessionId = presenceService.WorkerSessionId,
+            KnownParticipants = [local],
+        });
     }
 
     private DadRosterRefreshResultDto HandleRosterRefreshCommand(string payloadJson)
@@ -1909,6 +1928,7 @@ public sealed class DadTransportService : IDisposable
             PlanId = source.PlanId,
             RequestedAtUtc = source.RequestedAtUtc,
             ForcePeerRefresh = source.ForcePeerRefresh,
+            LiveConnectedOnly = source.LiveConnectedOnly,
             IncludeHidden = source.IncludeHidden,
             IncludeIgnored = source.IncludeIgnored,
             StaleAfterHours = source.StaleAfterHours,

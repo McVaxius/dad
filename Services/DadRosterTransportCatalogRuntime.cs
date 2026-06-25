@@ -56,6 +56,49 @@ public static class DadRosterTransportCatalogRuntime
         return rows;
     }
 
+    public static DadAccountRosterCatalog BuildLiveConnectedCatalog(DadPeerTransportSnapshot currentTransport)
+    {
+        var catalog = new DadAccountRosterCatalog
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            SourceClientInstanceId = currentTransport.LocalClientInstanceId,
+            SourceWorkerSessionId = currentTransport.LocalWorkerSessionId,
+            IsFullRosterAvailable = false,
+            IsLiveConnectedCatalog = true,
+            SourceDiagnostics = new DadRosterSourceDiagnostics
+            {
+                LocalAccountKey = string.Empty,
+            },
+        };
+
+        foreach (var participant in currentTransport.KnownParticipants)
+        {
+            if (!IsLiveConnectedCatalogParticipant(participant))
+                continue;
+            if (!TryBuildParticipantFallbackRosterCharacter(
+                    participant,
+                    currentTransport,
+                    out var row,
+                    requireManagedAccountKey: true))
+            {
+                continue;
+            }
+
+            UpsertLiveConnectedRosterCharacter(catalog.Characters, row);
+        }
+
+        catalog.Characters = catalog.Characters
+            .OrderBy(static character => character.AccountAlias, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        catalog.Accounts = BuildLiveConnectedAccountOptions(catalog.Characters, currentTransport).ToList();
+        catalog.SourceDiagnostics.LocalRuntimeRows = catalog.Characters.Count(static character => character.Source == DadCharacterSource.LocalRuntime);
+        catalog.SourceDiagnostics.FinalLocalRows = catalog.SourceDiagnostics.LocalRuntimeRows;
+        catalog.Summary = BuildLiveConnectedCatalogSummary(catalog);
+        return catalog;
+    }
+
     public static bool IsRosterOwnerReachable(
         DadWorkerSessionId ownerWorkerSessionId,
         string? ownerClientInstanceId,
@@ -348,10 +391,14 @@ public static class DadRosterTransportCatalogRuntime
         => participant.State != DadParticipantState.Stale &&
            (!participant.WorkerSessionId.IsEmpty || !string.IsNullOrWhiteSpace(participant.ClientInstanceId));
 
+    private static bool IsLiveConnectedCatalogParticipant(DadParticipantSnapshot participant)
+        => IsConnectedFallbackParticipant(participant) && !participant.ManagedAccountKey.IsEmpty;
+
     private static bool TryBuildParticipantFallbackRosterCharacter(
         DadParticipantSnapshot participant,
         DadPeerTransportSnapshot currentTransport,
-        out DadRosterCharacter row)
+        out DadRosterCharacter row,
+        bool requireManagedAccountKey = false)
     {
         row = new DadRosterCharacter();
         var character = participant.Character.Clone();
@@ -359,8 +406,10 @@ public static class DadRosterTransportCatalogRuntime
         if (string.IsNullOrWhiteSpace(characterKey) && character.ContentId == 0)
             return false;
 
-        var accountKey = ResolveParticipantAccountKey(participant);
-        if (accountKey.IsEmpty)
+        var accountKey = requireManagedAccountKey
+            ? participant.ManagedAccountKey
+            : ResolveParticipantAccountKey(participant);
+        if (!requireManagedAccountKey && accountKey.IsEmpty)
             accountKey = DadRosterIdentity.ResolveAccountKey(character.AccountId, character.AccountAlias);
         if (accountKey.IsEmpty)
             return false;
@@ -404,6 +453,70 @@ public static class DadRosterTransportCatalogRuntime
         };
         return true;
     }
+
+    private static void UpsertLiveConnectedRosterCharacter(
+        List<DadRosterCharacter> rows,
+        DadRosterCharacter candidate)
+    {
+        var incoming = candidate.Clone();
+        var existingIndex = rows.FindIndex(row => DadRosterIdentity.SameRow(row, incoming));
+        if (existingIndex < 0)
+        {
+            rows.Add(incoming);
+            return;
+        }
+
+        var existing = rows[existingIndex];
+        if (incoming.Source == DadCharacterSource.LocalRuntime || existing.Source != DadCharacterSource.LocalRuntime)
+            rows[existingIndex] = incoming;
+    }
+
+    private static IReadOnlyList<DadRosterAccountOption> BuildLiveConnectedAccountOptions(
+        IReadOnlyList<DadRosterCharacter> characters,
+        DadPeerTransportSnapshot currentTransport)
+        => characters
+            .Where(static character => !character.AccountKey.IsEmpty)
+            .GroupBy(static character => character.AccountKey.Value.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var rows = group.ToList();
+                var source = rows.FirstOrDefault(row => IsLocalRosterOwner(row, currentTransport)) ?? rows[0];
+                return new DadRosterAccountOption
+                {
+                    AccountKey = source.AccountKey,
+                    AccountAlias = source.AccountAlias,
+                    DisplayName = BuildAccountDisplayName(source.AccountKey.Value, source.AccountAlias),
+                    SourceClientInstanceId = source.SourceClientInstanceId,
+                    SourceWorkerSessionId = source.SourceWorkerSessionId,
+                    IsLocal = rows.Any(row => IsLocalRosterOwner(row, currentTransport)),
+                    OwnerOnline = true,
+                    AssignedCharacterCount = rows
+                        .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+                        .Count(),
+                };
+            })
+            .OrderByDescending(static account => account.IsLocal)
+            .ThenBy(static account => account.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static account => account.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static account => account.SourceClientInstanceId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static bool IsLocalRosterOwner(
+        DadRosterCharacter row,
+        DadPeerTransportSnapshot currentTransport)
+        => MatchesRosterOwner(
+            row.SourceWorkerSessionId,
+            row.SourceClientInstanceId,
+            currentTransport.LocalWorkerSessionId,
+            currentTransport.LocalClientInstanceId?.Trim() ?? string.Empty);
+
+    private static string BuildAccountDisplayName(string accountKey, string accountAlias)
+        => string.IsNullOrWhiteSpace(accountAlias)
+            ? accountKey
+            : accountAlias.Trim();
+
+    private static string BuildLiveConnectedCatalogSummary(DadAccountRosterCatalog catalog)
+        => $"{catalog.Characters.Count} live connected Dad roster row(s).";
 
     private static DadAccountKey ResolveParticipantAccountKey(DadParticipantSnapshot participant)
         => !participant.ManagedAccountKey.IsEmpty

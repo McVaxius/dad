@@ -1022,6 +1022,7 @@ public sealed class MainWindow : Window, IDisposable
             catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
             {
                 ForcePeerRefresh = true,
+                LiveConnectedOnly = true,
                 IncludeHidden = true,
                 IncludeIgnored = true,
                 LogDiagnostics = true,

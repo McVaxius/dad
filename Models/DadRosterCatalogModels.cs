@@ -403,6 +403,7 @@ public sealed class DadAccountRosterCatalog
     public string SourceClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId SourceWorkerSessionId { get; set; } = new(string.Empty);
     public bool IsFullRosterAvailable { get; set; }
+    public bool IsLiveConnectedCatalog { get; set; }
     public string Summary { get; set; } = string.Empty;
     public List<DadRosterAccountOption> Accounts { get; set; } = [];
     public List<DadRosterCharacter> Characters { get; set; } = [];
@@ -420,6 +421,7 @@ public sealed class DadAccountRosterCatalog
             SourceClientInstanceId = SourceClientInstanceId,
             SourceWorkerSessionId = SourceWorkerSessionId,
             IsFullRosterAvailable = IsFullRosterAvailable,
+            IsLiveConnectedCatalog = IsLiveConnectedCatalog,
             Summary = Summary,
             Accounts = Accounts.Select(static account => account.Clone()).ToList(),
             Characters = Characters.Select(static character => character.Clone()).ToList(),
@@ -434,6 +436,7 @@ public sealed class DadRosterRefreshPlan
     public string PlanId { get; set; } = Guid.NewGuid().ToString("N");
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
     public bool ForcePeerRefresh { get; set; }
+    public bool LiveConnectedOnly { get; set; }
     public bool IncludeHidden { get; set; }
     public bool IncludeIgnored { get; set; }
     public int StaleAfterHours { get; set; } = 72;

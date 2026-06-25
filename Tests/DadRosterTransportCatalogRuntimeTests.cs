@@ -439,6 +439,131 @@ public sealed class DadRosterTransportCatalogRuntimeTests
                                             row.Source == DadCharacterSource.PeerRuntime);
     }
 
+    [Fact]
+    public void LiveConnectedCatalogFromServerSnapshotKeepsCoordinatorAndFiveF2PClients()
+    {
+        var participants = new List<DadParticipantSnapshot>
+        {
+            Snapshot("client-w", "worker-w", "acct-w", "W Character@Alpha", 101),
+            Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202),
+        };
+        participants[0].IsLocalClient = true;
+        participants[0].IsAuthority = true;
+        participants[0].WorkerRole = DadWorkerRole.ServerDad;
+        participants[1].WorkerRole = DadWorkerRole.ClientDad;
+        for (var index = 1; index <= 5; index++)
+        {
+            var participant = Snapshot(
+                $"client-f2p-{index}",
+                $"worker-f2p-{index}",
+                $"acct-f2p-{index}",
+                $"F2P {index}@Alpha",
+                (ulong)(300 + index));
+            participant.WorkerRole = DadWorkerRole.ClientDad;
+            participants.Add(participant);
+        }
+
+        foreach (var participant in participants)
+            participant.State = DadParticipantState.Ready;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", participants.ToArray()));
+
+        Assert.True(catalog.IsLiveConnectedCatalog);
+        Assert.Equal(7, catalog.Characters.Count);
+        Assert.Equal(7, catalog.Accounts.Count);
+        Assert.Contains(catalog.Characters, static row => row.AccountKey.Value == "acct-w" &&
+                                                          row.SourceWorkerSessionId.Value == "worker-w" &&
+                                                          row.Source == DadCharacterSource.LocalRuntime);
+        Assert.Equal(
+            ["acct-f2p-1", "acct-f2p-2", "acct-f2p-3", "acct-f2p-4", "acct-f2p-5", "acct-w", "acct-x"],
+            catalog.Characters.Select(static row => row.AccountKey.Value).Order().ToArray());
+    }
+
+    [Fact]
+    public void LiveConnectedCatalogFromClientSnapshotKeepsSelfCoordinatorAndSiblings()
+    {
+        var local = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        local.IsLocalClient = true;
+        local.WorkerRole = DadWorkerRole.ClientDad;
+        var coordinator = Snapshot("client-w", "worker-w", "acct-w", "W Character@Alpha", 101);
+        coordinator.IsAuthority = true;
+        coordinator.WorkerRole = DadWorkerRole.ServerDad;
+        var siblingY = Snapshot("client-y", "worker-y", "acct-y", "Y Character@Alpha", 303);
+        siblingY.WorkerRole = DadWorkerRole.ClientDad;
+        var siblingT = Snapshot("client-t", "worker-t", "acct-t", "T Character@Alpha", 404);
+        siblingT.WorkerRole = DadWorkerRole.ClientDad;
+        foreach (var participant in new[] { local, coordinator, siblingY, siblingT })
+            participant.State = DadParticipantState.Ready;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-x", "worker-x", local, coordinator, siblingY, siblingT));
+
+        Assert.Equal(["acct-t", "acct-w", "acct-x", "acct-y"], catalog.Characters.Select(static row => row.AccountKey.Value).Order().ToArray());
+        Assert.Contains(catalog.Accounts, static account => account.AccountKey.Value == "acct-x" && account.IsLocal);
+        Assert.Contains(catalog.Characters, static row => row.AccountKey.Value == "acct-w" &&
+                                                          row.SourceWorkerSessionId.Value == "worker-w" &&
+                                                          row.Source == DadCharacterSource.PeerRuntime);
+        Assert.Contains(catalog.Characters, static row => row.AccountKey.Value == "acct-y" &&
+                                                          row.SourceWorkerSessionId.Value == "worker-y");
+        Assert.Contains(catalog.Characters, static row => row.AccountKey.Value == "acct-t" &&
+                                                          row.SourceWorkerSessionId.Value == "worker-t");
+    }
+
+    [Fact]
+    public void LiveConnectedCatalogRequiresRealManagedAccountKey()
+    {
+        var aliasOnly = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        aliasOnly.ManagedAccountKey = new DadAccountKey(string.Empty);
+        aliasOnly.ManagedAccountAlias = "Alias Only";
+        aliasOnly.Character.AccountId = string.Empty;
+        aliasOnly.Character.AccountAlias = "Alias Only";
+        aliasOnly.State = DadParticipantState.Ready;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", aliasOnly));
+
+        Assert.Empty(catalog.Characters);
+        Assert.Empty(catalog.Accounts);
+    }
+
+    [Fact]
+    public void LiveConnectedCatalogAccountOptionsComeOnlyFromUsableLiveRows()
+    {
+        var valid = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        valid.State = DadParticipantState.Ready;
+        var noCurrentCharacter = Snapshot("client-config", "worker-config", "acct-config", "Unknown", 0);
+        noCurrentCharacter.State = DadParticipantState.Ready;
+        noCurrentCharacter.ActiveCharacterKey = new DadCharacterKey("Unknown");
+        noCurrentCharacter.Character.CharacterKey = "Unknown";
+        noCurrentCharacter.Character.ContentId = 0;
+        noCurrentCharacter.Character.CharacterName = string.Empty;
+        noCurrentCharacter.Character.WorldName = string.Empty;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", valid, noCurrentCharacter));
+
+        var account = Assert.Single(catalog.Accounts);
+        Assert.Equal("acct-x", account.AccountKey.Value);
+        Assert.Equal(Assert.Single(catalog.Characters).AccountKey.Value, account.AccountKey.Value);
+        Assert.DoesNotContain(catalog.Accounts, static option => option.AccountKey.Value == "acct-config");
+    }
+
+    [Fact]
+    public void LiveConnectedCatalogExcludesStaleParticipants()
+    {
+        var live = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        live.State = DadParticipantState.Ready;
+        var stale = Snapshot("client-y", "worker-y", "acct-y", "Y Character@Alpha", 303);
+        stale.State = DadParticipantState.Stale;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", live, stale));
+
+        Assert.Equal(["acct-x"], catalog.Characters.Select(static row => row.AccountKey.Value).ToArray());
+        Assert.Equal(["acct-x"], catalog.Accounts.Select(static account => account.AccountKey.Value).ToArray());
+    }
+
     private static DadAcquiredCharacter Character(
         string characterKey,
         string accountId,
