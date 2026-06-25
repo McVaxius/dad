@@ -49,6 +49,7 @@ internal sealed class DadHubHeartbeat
 internal sealed class DadHubRosterPublish
 {
     public long Generation { get; set; }
+    public string AuthorityEpochId { get; set; } = string.Empty;
     public DateTime PublishedAtUtc { get; set; } = DateTime.UtcNow;
     public string AuthorityEndpoint { get; set; } = string.Empty;
     public DadWorkerSessionId AuthorityWorkerSessionId { get; set; } = new(string.Empty);
@@ -61,6 +62,7 @@ internal sealed class DadHubRosterPublish
         => new()
         {
             Generation = Generation,
+            AuthorityEpochId = AuthorityEpochId,
             PublishedAtUtc = PublishedAtUtc,
             AuthorityEndpoint = AuthorityEndpoint,
             AuthorityWorkerSessionId = AuthorityWorkerSessionId,
@@ -69,6 +71,43 @@ internal sealed class DadHubRosterPublish
             DisconnectedParticipants = DisconnectedParticipants.Select(static participant => participant.Clone()).ToList(),
             Participants = Participants.Select(static participant => participant.Clone()).ToList(),
         };
+}
+
+internal readonly record struct DadHubRosterPublishCursor(
+    DadWorkerSessionId AuthorityWorkerSessionId,
+    string AuthorityEpochId,
+    long Generation)
+{
+    public static DadHubRosterPublishCursor Empty { get; } = new(new DadWorkerSessionId(string.Empty), string.Empty, 0);
+
+    public static DadHubRosterPublishCursor FromPublish(DadHubRosterPublish publish)
+        => new(
+            publish.AuthorityWorkerSessionId,
+            NormalizeEpoch(publish.AuthorityEpochId),
+            publish.Generation);
+
+    public static bool ShouldApply(DadHubRosterPublish publish, DadHubRosterPublishCursor lastApplied)
+    {
+        if (publish.Generation <= 0)
+            return true;
+
+        if (!SameAuthorityWorker(publish.AuthorityWorkerSessionId, lastApplied.AuthorityWorkerSessionId) ||
+            !SameEpoch(publish.AuthorityEpochId, lastApplied.AuthorityEpochId))
+        {
+            return true;
+        }
+
+        return publish.Generation > lastApplied.Generation;
+    }
+
+    private static bool SameAuthorityWorker(DadWorkerSessionId left, DadWorkerSessionId right)
+        => string.Equals(left.Value, right.Value, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameEpoch(string? left, string? right)
+        => string.Equals(NormalizeEpoch(left), NormalizeEpoch(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeEpoch(string? epoch)
+        => epoch?.Trim() ?? string.Empty;
 }
 
 internal sealed class DadHubProtocolException : IOException
@@ -215,7 +254,7 @@ internal static class DadHubProtocol
         }
 
         if (!VerifyAuth(frame, sharedSecret))
-            throw new DadHubProtocolException("authentication-failed", "Dad hub shared secret is missing or incorrect.");
+            throw new DadHubProtocolException("authentication-failed", "Shared secret mismatch");
     }
 
     private static string BuildAuthPayload(DadHubFrame frame)
@@ -373,6 +412,9 @@ internal static class DadHubRosterPublishRuntime
 {
     public static bool IsFresh(DadHubRosterPublish publish, DateTime nowUtc, TimeSpan staleAfter)
         => publish.PublishedAtUtc != default && nowUtc - publish.PublishedAtUtc < staleAfter;
+
+    public static int CountPublishedParticipants(DadHubRosterPublish? publish)
+        => publish == null ? 0 : EnumeratePublishedParticipants(publish).Count();
 
     public static List<DadParticipantSnapshot> BuildParticipantView(
         DadHubRosterPublish publish,

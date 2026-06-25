@@ -197,6 +197,7 @@ public sealed class DadHubProtocolTests
         var publish = new DadHubRosterPublish
         {
             Generation = 7,
+            AuthorityEpochId = "epoch-w-1",
             PublishedAtUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
             AuthorityEndpoint = "127.0.0.1:4647",
             AuthorityWorkerSessionId = new DadWorkerSessionId("worker-w"),
@@ -223,6 +224,7 @@ public sealed class DadHubProtocolTests
 
         Assert.Equal(DadHubFrameKind.Notification, roundTrip.Kind);
         Assert.Equal(7, payload.Generation);
+        Assert.Equal("epoch-w-1", payload.AuthorityEpochId);
         Assert.Equal("worker-w", payload.AuthorityWorkerSessionId.Value);
         Assert.Equal(["worker-w", "worker-x"], payload.Participants.Select(static participant => participant.WorkerSessionId.Value).ToArray());
         DadHubProtocol.ValidateFrame(roundTrip, "shared-secret");
@@ -234,6 +236,7 @@ public sealed class DadHubProtocolTests
         var publish = new DadHubRosterPublish
         {
             Generation = 8,
+            AuthorityEpochId = "epoch-w-1",
             PublishedAtUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
             AuthorityEndpoint = "127.0.0.1:4647",
             AuthorityWorkerSessionId = new DadWorkerSessionId("worker-w"),
@@ -261,6 +264,7 @@ public sealed class DadHubProtocolTests
         Assert.Equal(
             xView.Select(static participant => participant.WorkerSessionId.Value).Order().ToArray(),
             yView.Select(static participant => participant.WorkerSessionId.Value).Order().ToArray());
+        Assert.Equal(4, DadHubRosterPublishRuntime.CountPublishedParticipants(publish));
         Assert.Equal(["acct-w", "acct-x", "acct-y", "acct-z"], xView.Select(static participant => participant.ManagedAccountKey.Value).Order().ToArray());
         Assert.Contains(xView, static participant => participant.WorkerSessionId.Value == "worker-w" && participant.IsAuthority);
         Assert.Contains(xView, static participant => participant.WorkerSessionId.Value == "worker-x" && participant.IsLocalClient);
@@ -279,6 +283,32 @@ public sealed class DadHubProtocolTests
 
         Assert.False(DadHubRosterPublishRuntime.IsFresh(publish, now, TimeSpan.FromSeconds(12)));
         Assert.True(DadHubRosterPublishRuntime.IsFresh(publish, now, TimeSpan.FromSeconds(30)));
+    }
+
+    [Fact]
+    public void SameAuthorityEpochStalePublishGenerationIsIgnored()
+    {
+        var cursor = DadHubRosterPublishCursor.FromPublish(Publish("worker-w", "epoch-w-1", 12));
+
+        Assert.False(DadHubRosterPublishCursor.ShouldApply(Publish("worker-w", "epoch-w-1", 11), cursor));
+        Assert.False(DadHubRosterPublishCursor.ShouldApply(Publish("worker-w", "epoch-w-1", 12), cursor));
+        Assert.True(DadHubRosterPublishCursor.ShouldApply(Publish("worker-w", "epoch-w-1", 13), cursor));
+    }
+
+    [Fact]
+    public void NewAuthorityEpochAcceptsLowerPublishGeneration()
+    {
+        var cursor = DadHubRosterPublishCursor.FromPublish(Publish("worker-w", "epoch-w-1", 12));
+
+        Assert.True(DadHubRosterPublishCursor.ShouldApply(Publish("worker-w", "epoch-w-2", 1), cursor));
+    }
+
+    [Fact]
+    public void NewAuthorityWorkerAcceptsLowerPublishGeneration()
+    {
+        var cursor = DadHubRosterPublishCursor.FromPublish(Publish("worker-w", "epoch-w-1", 12));
+
+        Assert.True(DadHubRosterPublishCursor.ShouldApply(Publish("worker-w-reloaded", "epoch-w-1", 1), cursor));
     }
 
     [Theory]
@@ -325,6 +355,22 @@ public sealed class DadHubProtocolTests
             () => DadHubProtocol.ValidateFrame(frame, "wrong-secret"));
 
         Assert.Equal("authentication-failed", error.Code);
+        Assert.Equal("Shared secret mismatch", error.Message);
+    }
+
+    [Fact]
+    public void MatchingSecretValidates()
+    {
+        var frame = DadHubProtocol.CreateFrame(
+            DadHubFrameKind.Hello,
+            new DadWorkerSessionId("client-x"),
+            new DadWorkerSessionId(string.Empty),
+            "hello",
+            "corr",
+            "{}",
+            "correct-secret");
+
+        DadHubProtocol.ValidateFrame(frame, "correct-secret");
     }
 
     [Fact]
@@ -499,6 +545,15 @@ public sealed class DadHubProtocolTests
             },
         };
     }
+
+    private static DadHubRosterPublish Publish(string workerId, string epochId, long generation)
+        => new()
+        {
+            Generation = generation,
+            AuthorityEpochId = epochId,
+            AuthorityWorkerSessionId = new DadWorkerSessionId(workerId),
+            PublishedAtUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
+        };
 
     private sealed class TestSession
     {

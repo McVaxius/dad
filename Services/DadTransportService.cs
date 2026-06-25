@@ -64,7 +64,9 @@ public sealed class DadTransportService : IDisposable
     private DadParticipantSnapshot? serverParticipant;
     private DadHubRosterPublish? lastHubRosterPublish;
     private long hubRosterGeneration;
-    private long lastAppliedHubRosterGeneration;
+    private DadHubRosterPublishCursor lastAppliedHubRosterPublish = DadHubRosterPublishCursor.Empty;
+    private string hubRosterAuthorityEpochId = Guid.NewGuid().ToString("N");
+    private string lastAuthOrProtocolError = string.Empty;
     private DateTime nextHeartbeatUtc = DateTime.MinValue;
     private bool localPluginEnabled;
     private bool localOnlyModeEnabled;
@@ -104,6 +106,7 @@ public sealed class DadTransportService : IDisposable
             ProtocolVersion = DadHubProtocol.CurrentVersion,
             LastRequestStatus = "Dad hub starting.",
         };
+        UpdateLanDiagnostics();
 
         RestartTransport();
     }
@@ -168,12 +171,21 @@ public sealed class DadTransportService : IDisposable
             completedOperations.Clear();
             workerCommandAcks.Clear();
             lastHubRosterPublish = null;
-            lastAppliedHubRosterGeneration = 0;
+            lastAppliedHubRosterPublish = DadHubRosterPublishCursor.Empty;
+            lastAuthOrProtocolError = string.Empty;
+            if (configuration.RunAsServerDad)
+            {
+                hubRosterAuthorityEpochId = Guid.NewGuid().ToString("N");
+                Interlocked.Exchange(ref hubRosterGeneration, 0);
+            }
             IsReady = false;
+            CurrentTransport.ListenerEndpoint = string.Empty;
+            CurrentTransport.AdvertisedEndpoint = string.Empty;
             CurrentTransport.Availability = "Starting";
             CurrentTransport.LastRequestStatus = configuration.RunAsServerDad
                 ? "Starting Dad Coordinator listener."
                 : "Connecting to Dad Coordinator.";
+            UpdateLanDiagnostics();
         }
 
         previous.Cancel();
@@ -580,7 +592,7 @@ public sealed class DadTransportService : IDisposable
             }
             catch (DadHubProtocolException ex)
             {
-                SetTransportError("Dad Coordinator requires a shared secret for non-loopback listeners.");
+                SetTransportAuthOrProtocolError("LAN Dad Coordinator requires a shared secret");
                 log.Warning("[dad] {Code}: {Message}", ex.Code, ex.Message);
                 return;
             }
@@ -605,6 +617,8 @@ public sealed class DadTransportService : IDisposable
             CurrentTransport.Availability = "Ready";
             CurrentTransport.ConnectionStatus = $"Dad Coordinator listening on {CurrentTransport.ListenerEndpoint}.";
             CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
+            ClearTransportAuthOrProtocolError();
+            UpdateLanDiagnostics();
             IsReady = true;
 
             while (!cancellationToken.IsCancellationRequested)
@@ -671,13 +685,15 @@ public sealed class DadTransportService : IDisposable
 
             if (helloFrame.ProtocolVersion != DadHubProtocol.CurrentVersion)
             {
+                var message = $"Dad hub protocol {helloFrame.ProtocolVersion} is incompatible; expected {DadHubProtocol.CurrentVersion}.";
+                RecordAuthOrProtocolError(new DadHubProtocolException("protocol-mismatch", message));
                 await connection.SendAsync(
                     DadHubProtocol.CreateError(
                         presenceService.WorkerSessionId,
                         helloFrame.SourceWorkerSessionId,
                         helloFrame.CorrelationId,
                         "protocol-mismatch",
-                        $"Dad hub protocol {helloFrame.ProtocolVersion} is incompatible; expected {DadHubProtocol.CurrentVersion}.",
+                        message,
                         configuration.TransportSharedSecret),
                     connection.Cancellation.Token).ConfigureAwait(false);
                 return;
@@ -689,6 +705,7 @@ public sealed class DadTransportService : IDisposable
             }
             catch (DadHubProtocolException ex)
             {
+                RecordAuthOrProtocolError(ex);
                 await connection.SendAsync(
                     DadHubProtocol.CreateError(
                         presenceService.WorkerSessionId,
@@ -784,7 +801,7 @@ public sealed class DadTransportService : IDisposable
                 }
                 catch (DadHubProtocolException ex)
                 {
-                    SetTransportError("Client Dad requires a shared secret for non-loopback Dad Coordinator connections.");
+                    SetTransportAuthOrProtocolError("LAN connection requires W's shared secret");
                     log.Warning("[dad] {Code}: {Message}", ex.Code, ex.Message);
                     return;
                 }
@@ -848,13 +865,17 @@ public sealed class DadTransportService : IDisposable
                 CurrentTransport.Availability = "Ready";
                 CurrentTransport.ConnectionStatus = $"Connected to Dad Coordinator at {FormatEndpoint(host, port)}.";
                 CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
+                ClearTransportAuthOrProtocolError();
                 RefreshTransportSnapshot();
 
                 await RunConnectionReaderAsync(connection, isServerSide: false).ConfigureAwait(false);
             }
             catch (DadHubProtocolException ex)
             {
-                SetTransportError($"{ex.Code}: {ex.Message}");
+                if (IsAuthOrProtocolException(ex))
+                    SetTransportAuthOrProtocolError(ex.Message);
+                else
+                    SetTransportError($"{ex.Code}: {ex.Message}");
                 log.Warning("[dad] Dad Coordinator connection rejected: {Code}: {Message}", ex.Code, ex.Message);
             }
             catch (TimeoutException)
@@ -1502,6 +1523,12 @@ public sealed class DadTransportService : IDisposable
 
     private DadAggregateRosterCatalogResponse BuildClientRosterAggregate(DadRosterRefreshPlan plan)
     {
+        if (!localOnlyModeEnabled)
+        {
+            RequestHubRosterPublish(BuildLocalTransportSnapshot());
+            RefreshTransportSnapshot();
+        }
+
         var aggregate = CreateRosterAggregate(plan.PlanId);
         aggregate.Responses.Add(BuildLocalRosterCatalogResponse(plan));
 
@@ -1546,6 +1573,7 @@ public sealed class DadTransportService : IDisposable
         DadWorkerSessionId requestingWorkerSessionId,
         bool includeRequester)
     {
+        PublishHubRoster("Dad Coordinator roster catalog aggregate requested.");
         var aggregate = CreateRosterAggregate(plan.PlanId);
         var skipRequester = !requestingWorkerSessionId.IsEmpty && !includeRequester
             ? requestingWorkerSessionId.Value
@@ -1566,7 +1594,9 @@ public sealed class DadTransportService : IDisposable
 
         AddRosterTaskResponses(aggregate, tasks);
         PublishHubRoster("Dad Coordinator roster catalog aggregate refreshed.");
-        FinalizeRosterAggregate(aggregate, aggregate.Responses.Count + targets.Count - tasks.Count(static task => task.IsCompletedSuccessfully && task.Result != null));
+        FinalizeRosterAggregate(
+            aggregate,
+            (string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ? 0 : 1) + targets.Count);
         return aggregate;
     }
 
@@ -2250,6 +2280,7 @@ public sealed class DadTransportService : IDisposable
         return new DadHubRosterPublish
         {
             Generation = Interlocked.Increment(ref hubRosterGeneration),
+            AuthorityEpochId = hubRosterAuthorityEpochId,
             PublishedAtUtc = now,
             AuthorityEndpoint = authorityEndpoint,
             AuthorityWorkerSessionId = presenceService.WorkerSessionId,
@@ -2325,14 +2356,14 @@ public sealed class DadTransportService : IDisposable
         if (configuration.RunAsServerDad || localOnlyModeEnabled)
             return;
 
-        if (publish.Generation > 0 && publish.Generation <= lastAppliedHubRosterGeneration)
+        if (!DadHubRosterPublishCursor.ShouldApply(publish, lastAppliedHubRosterPublish))
             return;
 
-        lastAppliedHubRosterGeneration = publish.Generation;
+        lastAppliedHubRosterPublish = DadHubRosterPublishCursor.FromPublish(publish);
         lastHubRosterPublish = publish.Clone();
         serverParticipant = publish.CoordinatorParticipant.Clone();
         RefreshTransportSnapshot();
-        CurrentTransport.LastRequestStatus = $"Dad Coordinator published roster generation {publish.Generation} with {publish.Participants.Count} participant(s).";
+        CurrentTransport.LastRequestStatus = $"Dad Coordinator published roster generation {publish.Generation} with {DadHubRosterPublishRuntime.CountPublishedParticipants(publish)} participant(s).";
     }
 
     private void ApplyHubRosterPublishToTransport(DadHubRosterPublish publish)
@@ -2354,6 +2385,7 @@ public sealed class DadTransportService : IDisposable
         CurrentTransport.AuthorityWorkerSessionId = publish.AuthorityWorkerSessionId;
         CurrentTransport.AuthorityRole = DadWorkerRole.ServerDad;
         CurrentTransport.ConnectedPeerCount = serverSessions.Snapshot().Count(static connection => connection.IsOpen);
+        UpdateLanDiagnostics();
     }
 
     private bool TryBuildPublishedClientRoster(
@@ -2390,6 +2422,7 @@ public sealed class DadTransportService : IDisposable
     private void SetTransportRoster(IReadOnlyList<DadParticipantSnapshot> participants)
     {
         CurrentTransport.KnownParticipants = SortParticipants(participants);
+        CurrentTransport.KnownParticipantCount = CurrentTransport.KnownParticipants.Count;
         CurrentTransport.LastResponses = DadHubRosterPublishRuntime.BuildSnapshotResponses(CurrentTransport.KnownParticipants);
     }
 
@@ -2504,9 +2537,11 @@ public sealed class DadTransportService : IDisposable
 
         if (configuration.RunAsServerDad)
         {
-            CurrentTransport.ListenerEndpoint = FormatEndpoint(
+            var configuredListenerEndpoint = FormatEndpoint(
                 configuration.ServerListenHost,
                 configuration.ServerListenPort);
+            if (string.IsNullOrWhiteSpace(CurrentTransport.ListenerEndpoint) || !IsReady)
+                CurrentTransport.ListenerEndpoint = configuredListenerEndpoint;
             var local = GetLocalParticipant();
             local.Endpoint = CurrentTransport.ListenerEndpoint;
             local.IsLocalClient = true;
@@ -2621,6 +2656,7 @@ public sealed class DadTransportService : IDisposable
                 DadAuthorityMode.ServerDad);
         if (!string.IsNullOrWhiteSpace(rosterFallbackWarning))
             CurrentTransport.LastRequestStatus = rosterFallbackWarning;
+        UpdateLanDiagnostics();
     }
 
     private void SweepDisconnectedParticipants()
@@ -2796,7 +2832,87 @@ public sealed class DadTransportService : IDisposable
         CurrentTransport.Availability = $"Unavailable: {message}";
         CurrentTransport.ConnectionStatus = message;
         CurrentTransport.LastRequestStatus = message;
+        UpdateLanDiagnostics();
     }
+
+    private void SetTransportAuthOrProtocolError(string message)
+    {
+        lastAuthOrProtocolError = message;
+        SetTransportError(message);
+    }
+
+    private void ClearTransportAuthOrProtocolError()
+    {
+        lastAuthOrProtocolError = string.Empty;
+        UpdateLanDiagnostics();
+    }
+
+    private void RecordAuthOrProtocolError(DadHubProtocolException exception)
+    {
+        if (!IsAuthOrProtocolException(exception))
+            return;
+
+        lastAuthOrProtocolError = exception.Message;
+        CurrentTransport.LastRequestStatus = exception.Message;
+        UpdateLanDiagnostics();
+    }
+
+    private static bool IsAuthOrProtocolException(DadHubProtocolException exception)
+        => exception.Code.StartsWith("authentication-", StringComparison.OrdinalIgnoreCase) ||
+           exception.Code.Equals("protocol-mismatch", StringComparison.OrdinalIgnoreCase);
+
+    private void UpdateLanDiagnostics()
+    {
+        CurrentTransport.ConfiguredEndpoint = GetConfiguredAuthorityEndpoint();
+        CurrentTransport.AdvertisedEndpoint = configuration.RunAsServerDad
+            ? FirstNonEmpty(CurrentTransport.ListenerEndpoint, CurrentTransport.ConfiguredEndpoint)
+            : FirstNonEmpty(CurrentTransport.AuthorityEndpoint, CurrentTransport.ConfiguredEndpoint);
+        CurrentTransport.SharedSecretConfigured = !string.IsNullOrWhiteSpace(configuration.TransportSharedSecret);
+        CurrentTransport.SharedSecretRequired = IsSharedSecretRequiredForConfiguredEndpoint();
+        CurrentTransport.LastAuthOrProtocolError = lastAuthOrProtocolError;
+        CurrentTransport.KnownParticipantCount = CurrentTransport.KnownParticipants.Count;
+
+        if (lastHubRosterPublish != null)
+        {
+            CurrentTransport.HubRosterPublishEpochId = lastHubRosterPublish.AuthorityEpochId;
+            CurrentTransport.HubRosterPublishGeneration = lastHubRosterPublish.Generation;
+            CurrentTransport.PublishedParticipantCount = DadHubRosterPublishRuntime.CountPublishedParticipants(lastHubRosterPublish);
+        }
+        else
+        {
+            CurrentTransport.HubRosterPublishEpochId = configuration.RunAsServerDad ? hubRosterAuthorityEpochId : string.Empty;
+            CurrentTransport.HubRosterPublishGeneration = configuration.RunAsServerDad ? Volatile.Read(ref hubRosterGeneration) : 0;
+            CurrentTransport.PublishedParticipantCount = 0;
+        }
+    }
+
+    private bool IsSharedSecretRequiredForConfiguredEndpoint()
+    {
+        var host = configuration.RunAsServerDad
+            ? configuration.ServerListenHost
+            : configuration.ServerDadHost;
+        return IsHostLikelyNonLoopback(host);
+    }
+
+    private static bool IsHostLikelyNonLoopback(string host)
+    {
+        var normalized = NormalizeHost(host).Trim();
+        if (normalized.StartsWith("[", StringComparison.Ordinal) &&
+            normalized.EndsWith("]", StringComparison.Ordinal) &&
+            normalized.Length > 2)
+        {
+            normalized = normalized[1..^1];
+        }
+
+        if (string.Equals(normalized, "localhost", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return !IPAddress.TryParse(normalized, out var address) ||
+               DadHubProtocol.RequiresSharedSecret(address);
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 
     private static async Task<DadHubFrame?> ReadWithTimeoutAsync(
         Stream stream,

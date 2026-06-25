@@ -498,7 +498,14 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Peer transport", peerTransport.Availability);
         DrawStatusRow("Connected peers", peerTransport.ConnectedPeerCount.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Last peer request", FormatTime(peerTransport.LastRequestUtc));
+        DrawStatusRow("Configured endpoint", FormatText(peerTransport.ConfiguredEndpoint, "(none)"));
+        DrawStatusRow("Advertised endpoint", FormatText(peerTransport.AdvertisedEndpoint, "(none)"));
         DrawStatusRow("Listener", FormatText(peerTransport.ListenerEndpoint, "(none)"));
+        DrawStatusRow("LAN secret", $"{(peerTransport.SharedSecretRequired ? "required" : "loopback optional")} | configured {(peerTransport.SharedSecretConfigured ? "yes" : "no")}");
+        if (!string.IsNullOrWhiteSpace(peerTransport.LastAuthOrProtocolError))
+            DrawStatusRow("Auth/protocol", peerTransport.LastAuthOrProtocolError);
+        DrawStatusRow("Roster publish", $"epoch {FormatText(peerTransport.HubRosterPublishEpochId, "(none)")} | generation {peerTransport.HubRosterPublishGeneration.ToString(CultureInfo.InvariantCulture)}");
+        DrawStatusRow("Hub roster", $"{peerTransport.PublishedParticipantCount.ToString(CultureInfo.InvariantCulture)} published | {peerTransport.KnownParticipantCount.ToString(CultureInfo.InvariantCulture)} known");
         DrawStatusRow("Participants discovered", participants.Count.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Eligible for run", readyCount.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Post-AR ready", postArReadyCount.ToString(CultureInfo.InvariantCulture));
@@ -1019,14 +1026,9 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.SmallButton("Populate roster from connected Dads"))
         {
-            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
-            {
-                ForcePeerRefresh = true,
-                IncludeHidden = true,
-                IncludeIgnored = true,
-                LogDiagnostics = true,
-                DiagnosticsReason = "manual connected roster refresh",
-            });
+            catalog = plugin.RosterCatalogService.RefreshCatalog(
+                characterPool,
+                DadRosterRefreshPlan.ConnectedDads("manual connected roster refresh"));
             ResetRosterBrowseFilters(catalog, RosterBrowseResetMode.AllRows);
         }
 

@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Reflection;
+using System.Security.Cryptography;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using dad.Models;
@@ -18,6 +19,8 @@ public sealed class ConfigWindow : Window, IDisposable
     private string draftServerHost = string.Empty;
     private int draftServerPort;
     private bool endpointDraftInitialized;
+    private string draftSharedSecret = string.Empty;
+    private bool sharedSecretDraftInitialized;
     private IReadOnlyList<DadEndpointHostOption> endpointHostOptions = [];
     private DateTime endpointHostOptionsLoadedUtc = DateTime.MinValue;
     private Vector2? pendingPosition;
@@ -157,15 +160,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.TextWrapped("Disabling restores any patched Questionable values and stops the bridge. Leave on unless it causes issues.");
-
-        var sharedSecret = configuration.TransportSharedSecret;
-        if (ImGui.InputText("Transport shared secret (HMAC auth)", ref sharedSecret, 128))
-        {
-            configuration.TransportSharedSecret = sharedSecret;
-            configuration.Save();
-        }
-
-        ImGui.TextWrapped("Optional peer authentication. When set, every transport message is HMAC-signed and all peers must use the same secret. Strongly recommended for non-loopback (LAN) binds. Empty = no auth (loopback only).");
 
         ImGui.Separator();
         ImGui.TextUnformatted("Global completion defaults");
@@ -404,6 +398,7 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawStatusRow("Hub endpoint", FormatText(plugin.TransportService.GetConfiguredAuthorityEndpoint(), "(invalid endpoint)"));
         DrawStatusRow("Connection", plugin.TransportService.CurrentTransport.ConnectionStatus);
         DrawStatusRow("Protocol", plugin.TransportService.CurrentTransport.ProtocolVersion.ToString());
+        DrawLanSharedSecretSetup(configuration);
 
         ImGui.Separator();
         ImGui.TextUnformatted("Wait policy");
@@ -970,6 +965,105 @@ public sealed class ConfigWindow : Window, IDisposable
 
         plugin.ApplyEndpointConfiguration(endpointChanged: true);
     }
+
+    private void DrawLanSharedSecretSetup(Configuration configuration)
+    {
+        EnsureSharedSecretDraft(configuration);
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("LAN shared secret");
+        ImGui.TextWrapped(configuration.RunAsServerDad
+            ? "Use this W instance as the shared-secret source. Paste the same secret into every Client Dad. Dad never sends the secret over the transport."
+            : "Paste W's shared secret here. Dad never fetches or sends the secret over the transport.");
+
+        ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
+        var label = configuration.RunAsServerDad ? "Shared secret" : "Paste shared secret";
+        ImGui.InputText(label, ref draftSharedSecret, 128);
+
+        var hasPendingSecretChanges = HasPendingSharedSecretDraftChanges(configuration);
+        if (hasPendingSecretChanges)
+            ImGui.TextDisabled("Shared secret draft has unapplied changes.");
+
+        if (ImGui.Button("Apply shared secret"))
+            ApplySharedSecretDraft(configuration);
+        if (!hasPendingSecretChanges)
+            ImGui.BeginDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("Revert shared secret"))
+            ResetSharedSecretDraft(configuration);
+        if (!hasPendingSecretChanges)
+            ImGui.EndDisabled();
+
+        if (configuration.RunAsServerDad)
+        {
+            if (ImGui.Button("Generate LAN shared secret"))
+                SetSharedSecret(configuration, GenerateLanSharedSecret());
+
+            ImGui.SameLine();
+            if (string.IsNullOrWhiteSpace(configuration.TransportSharedSecret))
+                ImGui.BeginDisabled();
+            if (ImGui.Button("Copy shared secret"))
+            {
+                ImGui.SetClipboardText(configuration.TransportSharedSecret);
+                plugin.PrintStatus("Copied LAN shared secret.");
+            }
+            if (string.IsNullOrWhiteSpace(configuration.TransportSharedSecret))
+                ImGui.EndDisabled();
+        }
+
+        var transport = plugin.TransportService.CurrentTransport;
+        DrawStatusRow("Configured endpoint", FormatText(transport.ConfiguredEndpoint, "(none)"));
+        DrawStatusRow("Advertised endpoint", FormatText(transport.AdvertisedEndpoint, "(none)"));
+        DrawStatusRow("Secret required", transport.SharedSecretRequired ? "Yes" : "No (loopback endpoint)");
+        DrawStatusRow("Secret configured", transport.SharedSecretConfigured ? "Yes" : "No");
+        if (!string.IsNullOrWhiteSpace(transport.LastAuthOrProtocolError))
+            DrawStatusRow("Auth/protocol", transport.LastAuthOrProtocolError);
+        DrawStatusRow("Publish epoch", FormatText(transport.HubRosterPublishEpochId, "(none)"));
+        DrawStatusRow("Publish generation", transport.HubRosterPublishGeneration.ToString());
+        DrawStatusRow("Roster participants", $"{transport.PublishedParticipantCount} published | {transport.KnownParticipantCount} known");
+    }
+
+    private void EnsureSharedSecretDraft(Configuration configuration)
+    {
+        if (sharedSecretDraftInitialized &&
+            string.Equals(draftSharedSecret, configuration.TransportSharedSecret, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!sharedSecretDraftInitialized || !HasPendingSharedSecretDraftChanges(configuration))
+            ResetSharedSecretDraft(configuration);
+    }
+
+    private void ResetSharedSecretDraft(Configuration configuration)
+    {
+        draftSharedSecret = configuration.TransportSharedSecret;
+        sharedSecretDraftInitialized = true;
+    }
+
+    private bool HasPendingSharedSecretDraftChanges(Configuration configuration)
+        => !string.Equals(draftSharedSecret.Trim(), configuration.TransportSharedSecret, StringComparison.Ordinal);
+
+    private void ApplySharedSecretDraft(Configuration configuration)
+        => SetSharedSecret(configuration, draftSharedSecret.Trim());
+
+    private void SetSharedSecret(Configuration configuration, string sharedSecret)
+    {
+        sharedSecret = sharedSecret.Trim();
+        if (string.Equals(configuration.TransportSharedSecret, sharedSecret, StringComparison.Ordinal))
+        {
+            ResetSharedSecretDraft(configuration);
+            return;
+        }
+
+        configuration.TransportSharedSecret = sharedSecret;
+        configuration.Save();
+        ResetSharedSecretDraft(configuration);
+        plugin.ApplyTransportRoleConfiguration();
+    }
+
+    private static string GenerateLanSharedSecret()
+        => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
     private void DrawEndpointHostDropdown()
     {

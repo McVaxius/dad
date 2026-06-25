@@ -265,6 +265,15 @@ public sealed class DadPeerTransportSnapshot
     [Obsolete("Filesystem discovery was removed. This value remains empty.")]
     public string DiscoveryDirectory { get; set; } = string.Empty;
     public string ListenerEndpoint { get; set; } = string.Empty;
+    public string ConfiguredEndpoint { get; set; } = string.Empty;
+    public string AdvertisedEndpoint { get; set; } = string.Empty;
+    public bool SharedSecretRequired { get; set; }
+    public bool SharedSecretConfigured { get; set; }
+    public string LastAuthOrProtocolError { get; set; } = string.Empty;
+    public string HubRosterPublishEpochId { get; set; } = string.Empty;
+    public long HubRosterPublishGeneration { get; set; }
+    public int PublishedParticipantCount { get; set; }
+    public int KnownParticipantCount { get; set; }
     public string LocalClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId LocalWorkerSessionId { get; set; } = new(string.Empty);
     public DadWorkerSessionId AuthorityWorkerSessionId { get; set; } = new(string.Empty);

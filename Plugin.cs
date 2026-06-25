@@ -1517,14 +1517,9 @@ public sealed class Plugin : IDalamudPlugin
         }));
 
     public string RefreshPeerRosterCatalogJson()
-        => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
-        {
-            ForcePeerRefresh = true,
-            IncludeHidden = true,
-            IncludeIgnored = true,
-            LogDiagnostics = true,
-            DiagnosticsReason = "json connected roster refresh",
-        }));
+        => DadIpcJson.Serialize(RosterCatalogService.RefreshCatalog(
+            CharacterIntelligenceService.CurrentPool,
+            DadRosterRefreshPlan.ConnectedDads("json connected roster refresh")));
 
     public string SetRosterVisibilityFromJson(string json)
     {
@@ -2592,12 +2587,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadCharacterPool RequestPeerSnapshotsFromShell()
     {
         var pool = CharacterIntelligenceService.RequestPeerSnapshots();
-        RosterCatalogService.RefreshCatalog(pool, new DadRosterRefreshPlan
-        {
-            ForcePeerRefresh = true,
-            LogDiagnostics = true,
-            DiagnosticsReason = "shell connected roster refresh",
-        });
+        RosterCatalogService.RefreshCatalog(
+            pool,
+            DadRosterRefreshPlan.ConnectedDads("shell connected roster refresh"));
         PrintStatus($"dad peer snapshot request status: {pool.PeerTransport.LastRequestStatus}");
         return pool;
     }
@@ -3055,8 +3047,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         var status = WorkerExecutionService.GetStatus();
         var transport = TransportService.CurrentTransport;
+        var authProtocol = string.IsNullOrWhiteSpace(transport.LastAuthOrProtocolError) ? "(none)" : transport.LastAuthOrProtocolError;
+        var publishEpoch = string.IsNullOrWhiteSpace(transport.HubRosterPublishEpochId) ? "(none)" : transport.HubRosterPublishEpochId;
         PrintStatus($"Worker local {status.WorkerSessionId}: run={status.RunId}, role={status.Role}, state={status.State}, terminal={status.IsTerminal}, summary={status.Summary}");
         PrintStatus($"Worker peers: {transport.KnownParticipants.Count} discovered, authority={transport.AuthorityWorkerSessionId}, endpoint={transport.AuthorityEndpoint}.");
+        PrintStatus($"LAN transport: configured={transport.ConfiguredEndpoint}, advertised={transport.AdvertisedEndpoint}, secretRequired={transport.SharedSecretRequired}, secretConfigured={transport.SharedSecretConfigured}, authProtocol={authProtocol}, publish={publishEpoch}/{transport.HubRosterPublishGeneration}, published={transport.PublishedParticipantCount}, known={transport.KnownParticipantCount}.");
         foreach (var participant in transport.KnownParticipants)
             PrintStatus($"Worker peer {participant.WorkerSessionId}: {participant.ActiveCharacterKey}, state={participant.State}, heartbeat={participant.LastHeartbeatUtc:O}, route=Dad Coordinator hub.");
     }
@@ -3382,7 +3377,7 @@ public sealed class Plugin : IDalamudPlugin
                 "## Config",
                 $"- PluginEnabled={Configuration.PluginEnabled} ServerDad={Configuration.RunAsServerDad} LocalOnly={Configuration.LocalOnlyModeEnabled} Advanced={Configuration.AdvancedModeEnabled} PartyValidationOverride={Configuration.PartyValidationOverrideEnabled} AllowRemoteCmd={Configuration.AllowRemoteCommandExecution}",
                 $"- CombatRotationMode={Configuration.CombatRotationMode} DtrBarEnabled={Configuration.DtrBarEnabled}",
-                $"- Transport role={(Configuration.RunAsServerDad ? "server" : "client")} listen={Configuration.ServerListenHost}:{Configuration.ServerListenPort} server={Configuration.ServerDadHost}:{Configuration.ServerDadPort} protocol={DadHubProtocol.CurrentVersion}",
+                $"- Transport role={(Configuration.RunAsServerDad ? "server" : "client")} listen={Configuration.ServerListenHost}:{Configuration.ServerListenPort} server={Configuration.ServerDadHost}:{Configuration.ServerDadPort} protocol={DadHubProtocol.CurrentVersion} sharedSecretConfigured={!string.IsNullOrWhiteSpace(Configuration.TransportSharedSecret)}",
                 $"- RunHistory={Configuration.RunHistory?.Count ?? 0} PlannerGroups={Configuration.PlannerGroups?.Count ?? 0} LaunchProfiles={Configuration.LaunchProfiles?.Count ?? 0}",
                 string.Empty,
                 "## Transport",

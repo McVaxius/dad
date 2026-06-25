@@ -446,6 +446,17 @@ public sealed class DadRosterRefreshPlan
     public bool DryRun { get; set; }
     public bool LogDiagnostics { get; set; }
     public string DiagnosticsReason { get; set; } = string.Empty;
+
+    public static DadRosterRefreshPlan ConnectedDads(string diagnosticsReason = "", bool logDiagnostics = true)
+        => new()
+        {
+            ForcePeerRefresh = true,
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            LiveConnectedOnly = false,
+            LogDiagnostics = logDiagnostics,
+            DiagnosticsReason = diagnosticsReason,
+        };
 }
 
 public sealed class DadRosterVisibilityChangeRequest

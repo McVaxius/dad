@@ -7,6 +7,19 @@ namespace dad.Tests;
 public sealed class DadRosterTransportCatalogRuntimeTests
 {
     [Fact]
+    public void ConnectedDadsRefreshPlanRequestsFullPeerCatalogs()
+    {
+        var plan = DadRosterRefreshPlan.ConnectedDads("manual connected roster refresh");
+
+        Assert.True(plan.ForcePeerRefresh);
+        Assert.False(plan.LiveConnectedOnly);
+        Assert.True(plan.IncludeHidden);
+        Assert.True(plan.IncludeIgnored);
+        Assert.True(plan.LogDiagnostics);
+        Assert.Equal("manual connected roster refresh", plan.DiagnosticsReason);
+    }
+
+    [Fact]
     public void LocalTransportPoolUsesCurrentLocalRuntimeRowsOnly()
     {
         var pool = new DadCharacterPool
