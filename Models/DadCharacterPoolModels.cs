@@ -370,12 +370,14 @@ public sealed class DadPlannerGroup
 public sealed class DadPlannerGroupSlot
 {
     public string SlotId { get; set; } = string.Empty;
+    public bool IsSubstitute { get; set; }
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.AlreadyOnlineOnly;
     public string LaunchProfileId { get; set; } = string.Empty;
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
+    // Legacy config field only. Runtime fallback is driven by explicit IsSubstitute rows.
     public bool AllowSubstitution { get; set; } = true;
 }
 

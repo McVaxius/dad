@@ -181,6 +181,17 @@ public sealed class DadRosterCatalogService
             PeerTransport = transportService.CurrentTransport,
         }, plan);
 
+    public DadAccountRosterCatalog BuildLocalTransportCatalog(
+        DadCharacterPool currentPool,
+        DadParticipantSnapshot fallbackSnapshot,
+        DadRosterRefreshPlan? plan = null)
+        => BuildLocalCatalog(
+            DadRosterTransportCatalogRuntime.BuildLocalTransportPool(
+                currentPool,
+                fallbackSnapshot,
+                transportService.CurrentTransport),
+            plan);
+
     public DadCharacterPool BuildCuratedPool(
         DadCharacterPool pool,
         bool includeHidden = false,
@@ -1148,14 +1159,6 @@ public sealed class DadRosterCatalogService
         DadCharacterPool pool,
         IReadOnlyList<DadPeerRosterCatalogResponse> peerCatalogResponses)
     {
-        var respondedClientIds = peerCatalogResponses
-            .Select(static response => response.ClientInstanceId)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var respondedWorkerIds = peerCatalogResponses
-            .Select(static response => response.WorkerSessionId.Value)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var catalog = new DadAccountRosterCatalog
         {
             GeneratedAtUtc = DateTime.UtcNow,
@@ -1170,16 +1173,13 @@ public sealed class DadRosterCatalogService
 
         foreach (var response in pool.PeerTransport.LastResponses)
         {
+            if (!DadRosterTransportCatalogRuntime.ShouldUsePeerRuntimeFallback(response, peerCatalogResponses))
+                continue;
+
             var participant = response.Participant;
             var clientId = string.IsNullOrWhiteSpace(response.ClientInstanceId)
                 ? participant.ClientInstanceId
                 : response.ClientInstanceId;
-            var workerSessionId = participant.WorkerSessionId.Value;
-            if (!string.IsNullOrWhiteSpace(clientId) && respondedClientIds.Contains(clientId) ||
-                !string.IsNullOrWhiteSpace(workerSessionId) && respondedWorkerIds.Contains(workerSessionId))
-            {
-                continue;
-            }
 
             var acquired = participant.Character.Clone();
             acquired.Source = DadCharacterSource.PeerRuntime;

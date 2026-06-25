@@ -13,8 +13,8 @@ public sealed class DadPartyAssemblyServiceTests
         var plan = Plan(queueAuthority: DadQueueAuthority.Leader);
         var participants = new[]
         {
-            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2"),
-            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
+            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Slot2"),
+            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Slot1"),
         };
 
         var instructions = service.BuildInstructions(plan, participants, out var blocker);
@@ -22,8 +22,10 @@ public sealed class DadPartyAssemblyServiceTests
         Assert.Equal(string.Empty, blocker);
         Assert.Equal(2, instructions.Count);
         Assert.Equal("Leader@Alpha", instructions[0].RequiredCharacterKey.Value);
+        Assert.Equal("Slot1", instructions[0].SlotId);
         Assert.Equal(DadAssemblyInstructionKind.FormParty, instructions[0].InstructionKind);
         Assert.Equal("Member@Alpha", instructions[1].RequiredCharacterKey.Value);
+        Assert.Equal("Slot2", instructions[1].SlotId);
         Assert.Equal(DadAssemblyInstructionKind.JoinParty, instructions[1].InstructionKind);
     }
 
@@ -34,8 +36,8 @@ public sealed class DadPartyAssemblyServiceTests
         var instructions = service.BuildInstructions(
             Plan(queueAuthority: DadQueueAuthority.LanParty),
             [
-                Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
-                Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2"),
+                Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Slot1"),
+                Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Slot2"),
             ],
             out var blocker);
 
@@ -50,8 +52,8 @@ public sealed class DadPartyAssemblyServiceTests
         var instructions = service.BuildInstructions(
             Plan(queueAuthority: DadQueueAuthority.Leader),
             [
-                Participant("Member@Alpha", 200, isLocal: true, isAuthority: true, slot: "Party 2"),
-                Participant("Other@Alpha", 300, isLocal: false, isAuthority: false, slot: "Leader"),
+                Participant("Member@Alpha", 200, isLocal: true, isAuthority: true, slot: "Slot2"),
+                Participant("Other@Alpha", 300, isLocal: false, isAuthority: false, slot: "Slot1"),
             ],
             out var blocker);
 
@@ -63,13 +65,13 @@ public sealed class DadPartyAssemblyServiceTests
     public void BuildInstructionsBlocksWhenParticipantNotPostArReady()
     {
         var service = new DadPartyAssemblyService();
-        var member = Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2");
+        var member = Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Slot2");
         member.PostArReady = false;
 
         var instructions = service.BuildInstructions(
             Plan(queueAuthority: DadQueueAuthority.Leader),
             [
-                Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
+                Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Slot1"),
                 member,
             ],
             out var blocker);
@@ -85,8 +87,8 @@ public sealed class DadPartyAssemblyServiceTests
         var plan = Plan(queueAuthority: DadQueueAuthority.Leader);
         var participants = new[]
         {
-            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Leader"),
-            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Party 2"),
+            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Slot1"),
+            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Slot2"),
         };
 
         var complete = service.VerifyPartyMembership(

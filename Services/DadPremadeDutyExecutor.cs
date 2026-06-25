@@ -453,8 +453,8 @@ public sealed class DadPremadeDutyExecutor(
             if (!localLeader.IsAuthority)
                 blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Local client is not marked as Server Dad authority for this premade queue.", DadModuleBlockerSeverity.Blocked));
 
-            if (!string.Equals(localLeader.AssignedSlotId, "Leader", StringComparison.OrdinalIgnoreCase))
-                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", $"Local client is assigned to '{localLeader.AssignedSlotId}', not Leader.", DadModuleBlockerSeverity.Blocked));
+            if (!string.Equals(localLeader.AssignedSlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase))
+                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", $"Local client is assigned to '{localLeader.AssignedSlotId}', not Slot1.", DadModuleBlockerSeverity.Blocked));
 
             if (!string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) &&
                 !string.Equals(localLeader.ActiveCharacterKey.ToString(), plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))

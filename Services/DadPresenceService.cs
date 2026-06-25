@@ -107,7 +107,7 @@ public sealed class DadPresenceService
         currentAuthorityMode = authorityMode;
         requiredAccountKey = CurrentParticipant.ManagedAccountKey;
         requiredCharacterKey = CurrentParticipant.ActiveCharacterKey;
-        assignedSlotId = "Leader";
+        assignedSlotId = DadPlannerSlotRules.LeaderSlotId;
         CurrentParticipant.Role = DadOrchestrationRole.Leader;
         CurrentParticipant.WorkerRole = GetConfiguredWorkerRole();
         CurrentParticipant.State = DadParticipantState.Ready;

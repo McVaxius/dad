@@ -1190,7 +1190,10 @@ public sealed class DadSchedulerService
                                             (slot.RequiredCharacterKey.IsEmpty ||
                                              MatchesSlotCharacter(participant, slot))));
 
-        return CloneSchedulerGroupSlot(matchingSlot ?? slots[0]);
+        var effectiveSlot = CloneSchedulerGroupSlot(matchingSlot ?? slots[0]);
+        effectiveSlot.SlotId = DadPlannerSlotRules.LeaderSlotId;
+        effectiveSlot.IsSubstitute = false;
+        return effectiveSlot;
     }
 
     private static DadPlannerGroup CloneSchedulerGroupWithSlots(
@@ -1208,7 +1211,7 @@ public sealed class DadSchedulerService
             AllowStaleForPlanning = source.AllowStaleForPlanning,
             TransportOwner = source.TransportOwner,
             QueueAuthority = source.QueueAuthority,
-            InviteAuthority = source.InviteAuthority,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
             DutyContentFinderConditionId = source.DutyContentFinderConditionId,
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
@@ -1234,6 +1237,7 @@ public sealed class DadSchedulerService
         => new()
         {
             SlotId = source.SlotId,
+            IsSubstitute = source.IsSubstitute,
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,

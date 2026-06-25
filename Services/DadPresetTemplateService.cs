@@ -16,6 +16,8 @@ internal static class DadPresetTemplateService
         template.NextEligibleTimeUtc = null;
         template.CreatedAtUtc = nowUtc;
         template.UpdatedAtUtc = nowUtc;
+        template.InviteAuthority = DadInviteAuthority.PresetLeader;
+        template.Slots = DadPlannerSlotRules.NormalizeGroupSlots(template.Slots);
 
         foreach (var slot in template.Slots)
         {
@@ -36,6 +38,8 @@ internal static class DadPresetTemplateService
         instance.NextEligibleTimeUtc = null;
         instance.CreatedAtUtc = nowUtc;
         instance.UpdatedAtUtc = nowUtc;
+        instance.InviteAuthority = DadInviteAuthority.PresetLeader;
+        instance.Slots = DadPlannerSlotRules.NormalizeGroupSlots(instance.Slots);
 
         var available = (pool?.Characters ?? [])
             .Where(static character => !string.IsNullOrWhiteSpace(character.CharacterKey))
@@ -93,7 +97,8 @@ internal static class DadPresetTemplateService
     }
 
     public static int CountAssignedSlots(DadPlannerGroup group)
-        => group.Slots.Count(static slot => !slot.RequiredCharacterKey.IsEmpty);
+        => DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
+            .Count(static slot => !slot.IsSubstitute && !slot.RequiredCharacterKey.IsEmpty);
 
     private static bool RoleMatches(DadPartyRole required, DadPartyRole actual)
         => required switch

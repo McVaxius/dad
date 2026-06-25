@@ -26,7 +26,7 @@ public sealed class DadPartyAssemblyService
             ordered.Count > 0 &&
             !string.Equals(ordered[0].ActiveCharacterKey, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))
         {
-            blocker = $"Configured leader {plan.LeaderCharacterKey} is not online on the leader slot.";
+            blocker = $"Configured leader {plan.LeaderCharacterKey} is not online on Slot1.";
             return [];
         }
 
@@ -44,7 +44,9 @@ public sealed class DadPartyAssemblyService
                 RunId = plan.Request.RequestId,
                 AuthorityWorkerSessionId = participant.IsAuthority ? participant.WorkerSessionId : new DadWorkerSessionId(string.Empty),
                 ModuleId = plan.CompositeModuleId,
-                SlotId = index == 0 ? "Leader" : $"Party {index + 1}",
+                SlotId = string.IsNullOrWhiteSpace(participant.AssignedSlotId)
+                    ? DadPlannerSlotRules.FormatSlotId(index + 1)
+                    : participant.AssignedSlotId,
                 RequiredCharacterKey = participant.Character.CharacterKey,
                 InstructionKind = index == 0 ? DadAssemblyInstructionKind.FormParty : DadAssemblyInstructionKind.JoinParty,
                 Summary = index == 0
@@ -95,6 +97,7 @@ public sealed class DadPartyAssemblyService
                                                string.Equals(participant.ActiveCharacterKey, leaderKey, StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(static participant => participant.IsAuthority)
             .ThenByDescending(static participant => participant.IsLocalClient)
+            .ThenBy(static participant => DadPlannerSlotRules.GetSlotSortKey(participant.AssignedSlotId))
             .ThenBy(static participant => participant.AssignedSlotId, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static participant => participant.Character.CharacterKey, StringComparer.OrdinalIgnoreCase)
             .ToList();

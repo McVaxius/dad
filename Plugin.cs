@@ -179,7 +179,9 @@ public sealed class Plugin : IDalamudPlugin
             request => RunCoordinatorService.StartTasks(request),
             _ => RunCoordinatorService.CancelActiveRun());
         TransportService.ConfigureRosterHandlers(
-            () => RosterCatalogService.BuildLocalXadbCatalog(),
+            () => RosterCatalogService.BuildLocalTransportCatalog(
+                CharacterIntelligenceService.CurrentPool,
+                PresenceService.BuildSnapshotCopy()),
             command => RosterCatalogService.RefreshLocalRosterCharacter(command, PresenceService.BuildSnapshotCopy()));
         TransportService.ConfigureProfileHandlers(
             ProfileDirectoryService.BuildLocalCatalog,
@@ -1102,7 +1104,7 @@ public sealed class Plugin : IDalamudPlugin
             AllowStaleForPlanning = source.AllowStaleForPlanning,
             TransportOwner = lane.DefaultTransportOwner,
             QueueAuthority = lane.DefaultQueueAuthority,
-            InviteAuthority = source.InviteAuthority,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
             DutyContentFinderConditionId = source.DutyContentFinderConditionId,
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
@@ -1229,6 +1231,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var candidate = BuildPlannerGroupFromCurrentPlanner(displayName, localNpcRunner);
+        NormalizePlannerGroupForStorage(candidate);
         var selected = GetSelectedPlannerGroup();
         DadPlannerGroup savedGroup;
         if (selected == null)
@@ -1246,7 +1249,7 @@ public sealed class Plugin : IDalamudPlugin
         PlannerOptions.SelectedPlannerGroupId = savedGroup.GroupId;
         PlannerOptions.StopPolicy = savedGroup.StopPolicy.Clone();
         PlannerOptions.CompletionActions = savedGroup.CompletionActions?.Clone();
-        PlannerOptions.IncludedAccountKeys = savedGroup.Slots
+        PlannerOptions.IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(savedGroup.Slots)
             .Select(static slot => slot.RequiredAccountKey)
             .Where(static key => !key.IsEmpty)
             .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
@@ -1269,6 +1272,7 @@ public sealed class Plugin : IDalamudPlugin
             : displayName.Trim();
         duplicate.CreatedAtUtc = DateTime.UtcNow;
         duplicate.UpdatedAtUtc = duplicate.CreatedAtUtc;
+        NormalizePlannerGroupForStorage(duplicate);
         Configuration.PlannerGroups.Add(duplicate);
         PlannerOptions.SelectedPlannerGroupId = duplicate.GroupId;
         Configuration.Save();
@@ -1284,6 +1288,7 @@ public sealed class Plugin : IDalamudPlugin
             return null;
 
         var template = DadPresetTemplateService.CreateTemplateFrom(selected, templateName, DateTime.UtcNow);
+        NormalizePlannerGroupForStorage(template);
         Configuration.PlannerGroups.Add(template);
         PlannerOptions.SelectedPlannerGroupId = template.GroupId;
         Configuration.Save();
@@ -1300,6 +1305,7 @@ public sealed class Plugin : IDalamudPlugin
             return null;
 
         var instance = DadPresetTemplateService.Instantiate(selected, BuildPlannerPool(), DateTime.UtcNow);
+        NormalizePlannerGroupForStorage(instance);
         Configuration.PlannerGroups.Add(instance);
         PlannerOptions.SelectedPlannerGroupId = instance.GroupId;
         Configuration.Save();
@@ -1336,6 +1342,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void TouchPlannerGroup(DadPlannerGroup group)
     {
+        NormalizePlannerGroupForStorage(group);
         group.UpdatedAtUtc = DateTime.UtcNow;
         Configuration.Save();
         InvalidatePlannerPreviewCache("planner group touched");
@@ -1349,6 +1356,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var preview = BuildPlannerPreview();
         selected.Slots = BuildPlannerGroupSlotsFromPreview(preview);
+        NormalizePlannerGroupForStorage(selected);
         selected.UpdatedAtUtc = DateTime.UtcNow;
         Configuration.Save();
         InvalidatePlannerPreviewCache("planner group slots replaced");
@@ -1712,7 +1720,7 @@ public sealed class Plugin : IDalamudPlugin
             AllowStaleForPlanning = PlannerOptions.AllowStaleForPlanning,
             TransportOwner = PlannerOptions.TransportOwner,
             QueueAuthority = PlannerOptions.QueueAuthority,
-            InviteAuthority = PlannerOptions.InviteAuthority,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
             DutyContentFinderConditionId = PlannerOptions.DutyContentFinderConditionId,
             DutyDisplayName = PlannerOptions.DutyDisplayName,
             DutyUnsynced = PlannerOptions.DutyUnsynced,
@@ -1728,7 +1736,7 @@ public sealed class Plugin : IDalamudPlugin
                 [
                     new DadPlannerGroupSlot
                     {
-                        SlotId = "Runner",
+                        SlotId = DadPlannerSlotRules.LeaderSlotId,
                         RequiredRole = DadPartyRole.Any,
                         RequiredAccountKey = ResolvePlannerAccountKey(localNpcRunner),
                         RequiredCharacterKey = new DadCharacterKey(localNpcRunner.CharacterKey),
@@ -1752,7 +1760,7 @@ public sealed class Plugin : IDalamudPlugin
         target.AllowStaleForPlanning = source.AllowStaleForPlanning;
         target.TransportOwner = source.TransportOwner;
         target.QueueAuthority = source.QueueAuthority;
-        target.InviteAuthority = source.InviteAuthority;
+        target.InviteAuthority = DadInviteAuthority.PresetLeader;
         target.DutyContentFinderConditionId = source.DutyContentFinderConditionId;
         target.DutyDisplayName = source.DutyDisplayName;
         target.DutyUnsynced = source.DutyUnsynced;
@@ -1762,7 +1770,7 @@ public sealed class Plugin : IDalamudPlugin
         target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
         target.StopPolicy = source.StopPolicy.Clone();
         target.CompletionActions = source.CompletionActions?.Clone();
-        target.Slots = source.Slots.Select(ClonePlannerGroupSlot).ToList();
+        target.Slots = DadPlannerSlotRules.NormalizeGroupSlots(source.Slots.Select(ClonePlannerGroupSlot));
         target.UpdatedAtUtc = DateTime.UtcNow;
     }
 
@@ -1770,6 +1778,7 @@ public sealed class Plugin : IDalamudPlugin
         => new()
         {
             SlotId = source.SlotId,
+            IsSubstitute = source.IsSubstitute,
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
@@ -1781,7 +1790,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private List<DadPlannerGroupSlot> BuildPlannerGroupSlotsFromPreview(DadActivityPreset preview)
     {
-        return preview.SelectedCharacters.Select(slot =>
+        return DadPlannerSlotRules.NormalizeGroupSlots(preview.SelectedCharacters.Select(slot =>
         {
             var character = preview.AvailableCharacters.FirstOrDefault(candidate =>
                 string.Equals(candidate.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
@@ -1794,14 +1803,15 @@ public sealed class Plugin : IDalamudPlugin
             return new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
+                IsSubstitute = false,
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = accountKey,
                 RequiredCharacterKey = string.IsNullOrWhiteSpace(slot.CharacterKey)
                     ? new DadCharacterKey(string.Empty)
                     : new DadCharacterKey(slot.CharacterKey),
-                AllowSubstitution = slot.AllowSubstitution,
+                AllowSubstitution = false,
             };
-        }).ToList();
+        }));
     }
 
     private static bool MatchesPlannerSlotAccount(DadAcquiredCharacter character, DadAccountKey accountKey)
@@ -1813,12 +1823,14 @@ public sealed class Plugin : IDalamudPlugin
     private DadPlannerGroupSummary BuildPlannerGroupSummary(DadPlannerGroup group)
     {
         var lane = PresetProviderService.GetPlannerLaneDefinition(group.ActivityMode);
-        var requiredAccounts = group.Slots
+        var normalizedSlots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
+        var primarySlotCount = normalizedSlots.Count(static slot => !slot.IsSubstitute);
+        var requiredAccounts = normalizedSlots
             .Select(static slot => slot.RequiredAccountKey.Value)
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
-        var requiredCharacters = group.Slots
+        var requiredCharacters = normalizedSlots
             .Where(static slot => !slot.RequiredCharacterKey.IsEmpty)
             .Select(static slot => $"{slot.RequiredAccountKey.Value}:{slot.RequiredCharacterKey.Value}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -1829,10 +1841,10 @@ public sealed class Plugin : IDalamudPlugin
             DisplayName = group.DisplayName,
             ActivityMode = group.ActivityMode,
             Lane = lane.DisplayName,
-            SlotCount = group.Slots.Count,
+            SlotCount = primarySlotCount,
             RequiredAccountCount = requiredAccounts,
             RequiredCharacterCount = requiredCharacters,
-            Summary = $"{lane.DisplayName} | {group.Slots.Count} slot(s) | accounts {requiredAccounts} | characters {requiredCharacters}",
+            Summary = $"{lane.DisplayName} | {primarySlotCount} slot(s) | accounts {requiredAccounts} | characters {requiredCharacters}",
         };
     }
 
@@ -1852,7 +1864,7 @@ public sealed class Plugin : IDalamudPlugin
             AllowStaleForPlanning = group.AllowStaleForPlanning,
             TransportOwner = group.TransportOwner,
             QueueAuthority = group.QueueAuthority,
-            InviteAuthority = group.InviteAuthority,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
             DutyContentFinderConditionId = startRequest?.DutyContentFinderConditionId ?? group.DutyContentFinderConditionId,
             DutyDisplayName = group.DutyDisplayName,
             DutyUnsynced = group.DutyUnsynced,
@@ -1862,7 +1874,7 @@ public sealed class Plugin : IDalamudPlugin
             RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
             StopPolicy = group.StopPolicy.Clone(),
             CompletionActions = group.CompletionActions?.Clone(),
-            IncludedAccountKeys = group.Slots
+            IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
                 .Select(static slot => slot.RequiredAccountKey)
                 .Where(static key => !key.IsEmpty)
                 .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
@@ -1898,7 +1910,7 @@ public sealed class Plugin : IDalamudPlugin
             AllowStaleForPlanning = source.AllowStaleForPlanning,
             TransportOwner = source.TransportOwner,
             QueueAuthority = source.QueueAuthority,
-            InviteAuthority = source.InviteAuthority,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
             DutyContentFinderConditionId = source.DutyContentFinderConditionId,
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
@@ -1911,6 +1923,7 @@ public sealed class Plugin : IDalamudPlugin
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
+                IsSubstitute = slot.IsSubstitute,
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
@@ -1942,7 +1955,7 @@ public sealed class Plugin : IDalamudPlugin
         options.AllowStaleForPlanning = group.AllowStaleForPlanning;
         options.TransportOwner = group.TransportOwner;
         options.QueueAuthority = group.QueueAuthority;
-        options.InviteAuthority = group.InviteAuthority;
+        options.InviteAuthority = DadInviteAuthority.PresetLeader;
         options.DutyContentFinderConditionId = group.DutyContentFinderConditionId;
         options.DutyDisplayName = group.DutyDisplayName;
         options.DutyUnsynced = group.DutyUnsynced;
@@ -1952,11 +1965,17 @@ public sealed class Plugin : IDalamudPlugin
         options.RefreshTrustNpcLevels = group.RefreshTrustNpcLevels;
         options.StopPolicy = group.StopPolicy.Clone();
         options.CompletionActions = group.CompletionActions?.Clone();
-        options.IncludedAccountKeys = group.Slots
+        options.IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
             .Select(static slot => slot.RequiredAccountKey)
             .Where(static key => !key.IsEmpty)
             .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static void NormalizePlannerGroupForStorage(DadPlannerGroup group)
+    {
+        group.InviteAuthority = DadInviteAuthority.PresetLeader;
+        group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
     }
 
     private static DadAccountKey ResolvePlannerAccountKey(DadAcquiredCharacter character)

@@ -905,7 +905,7 @@ public sealed class DadDutyIpcService : IDisposable
                 IsAvailable = true,
                 IsEligibleForRun = true,
                 PostArReady = true,
-                AssignedSlotId = "Leader",
+                AssignedSlotId = DadPlannerSlotRules.LeaderSlotId,
                 StatusText = "Dad duty IPC local participant.",
             },
         ];

@@ -169,7 +169,7 @@ public sealed class DadQueueExecutionService
                 ActiveCharacterKey = index == 0 && !string.IsNullOrWhiteSpace(plan.LeaderCharacterKey)
                     ? new DadCharacterKey(plan.LeaderCharacterKey)
                     : new DadCharacterKey($"Preview-{index + 1}"),
-                AssignedSlotId = index == 0 ? "Leader" : $"Party {index + 1}",
+                AssignedSlotId = DadPlannerSlotRules.FormatSlotId(index + 1),
             })
             .ToList();
 

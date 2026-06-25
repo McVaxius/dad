@@ -2845,8 +2845,6 @@ public sealed class MainWindow : Window, IDisposable
         DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
         ImGui.Spacing();
         DrawPlannerQueueAuthoritySelector(plannerOptions);
-        ImGui.SameLine();
-        DrawPlannerInviteAuthoritySelector(plannerOptions);
         ImGui.Spacing();
         if (debugUi)
         {
@@ -2915,7 +2913,7 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Operator mode", plannerPreview.OperatorModeLabel);
             DrawStatusRow("Transport", plugin.PresetProviderService.GetTransportOwnerLabel(plannerPreview.TransportOwner));
             DrawStatusRow("Queue authority", plugin.PresetProviderService.GetQueueAuthorityLabel(plannerPreview.QueueAuthority));
-            DrawStatusRow("Invite owner", plugin.PresetProviderService.GetInviteAuthorityLabel(plannerPreview.InviteAuthority));
+            DrawStatusRow("Inviter", plugin.PresetProviderService.GetInviteAuthorityLabel(plannerPreview.InviteAuthority));
             DrawStatusRow("Account filter", FormatOperatorText(plannerPreview.AccountFilterSummary, "(none)"));
             DrawStatusRow("Roster source", plugin.PresetProviderService.GetRosterSourceLabel(plannerPreview.RosterSource));
             DrawStatusRow("Leader", FormatOperatorText(plannerPreview.LeaderStatusText, "(none)"));
@@ -5231,7 +5229,7 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawStatusRow(
             "Selected preset",
-            $"{FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames)} | {selectedGroup.Slots.Count} slot(s)");
+            $"{FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames)} | {DadPlannerSlotRules.CountPrimarySlots(selectedGroup.Slots)} slot(s)");
         DrawStatusRow("Preset submode", plugin.PresetProviderService.GetPlannerLaneDefinition(selectedGroup.ActivityMode).DisplayName);
 
         // Feature batch B: a template can be instantiated against the live roster (auto-assign by role).
@@ -5251,28 +5249,46 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawPlannerGroupScheduleControls(selectedGroup);
-        if (!debugUi)
-            return;
-
-        if (ImGui.SmallButton("Refresh group slots from current planner"))
+        if (debugUi && ImGui.SmallButton("Refresh group slots from current planner"))
         {
             plugin.ReplaceSelectedPlannerGroupSlotsFromCurrentPreview();
             plugin.PrintStatus($"Updated preset '{selectedGroup.DisplayName}' slots from current preview.");
         }
 
-        ImGui.SameLine();
+        if (debugUi)
+            ImGui.SameLine();
+        var slotCap = ResolvePlannerGroupSlotCap(selectedGroup, plannerSnapshot.SelectedDuty);
+        var nextSlotNumber = DadPlannerSlotRules.NextPrimarySlotNumber(selectedGroup.Slots, slotCap);
+        ImGui.BeginDisabled(nextSlotNumber == 0);
         if (ImGui.SmallButton("Add empty slot"))
         {
             selectedGroup.Slots.Add(new DadPlannerGroupSlot
             {
-                SlotId = $"Slot{selectedGroup.Slots.Count + 1}",
+                SlotId = DadPlannerSlotRules.FormatSlotId(nextSlotNumber),
                 RequiredRole = DadPartyRole.Any,
-                AllowSubstitution = true,
+                AllowSubstitution = false,
             });
             plugin.TouchPlannerGroup(selectedGroup);
         }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(nextSlotNumber == 0
+                ? $"All Slot1-Slot{slotCap.ToString(CultureInfo.InvariantCulture)} rows already exist."
+                : "Adds the next generated SlotN row.");
+        ImGui.EndDisabled();
 
         DrawPlannerGroupSlotEditor(plannerSnapshot, selectedGroup);
+    }
+
+    private int ResolvePlannerGroupSlotCap(DadPlannerGroup group, DadPlannerDutyOption? selectedDuty)
+    {
+        var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(group.ActivityMode);
+        if (!lane.RequiresDutySelector)
+            return DadPlannerSlotRules.MaxSlotNumber;
+
+        var fallbackSize = group.DutyExpectedPartySize > 0
+            ? group.DutyExpectedPartySize
+            : selectedDuty?.QueueSize ?? lane.ExpectedPartySize;
+        return Math.Clamp(fallbackSize <= 0 ? 1 : fallbackSize, DadPlannerSlotRules.MinSlotNumber, DadPlannerSlotRules.MaxSlotNumber);
     }
 
     private static string FormatPlannerGroupChoice(
@@ -5324,33 +5340,6 @@ public sealed class MainWindow : Window, IDisposable
                 BuildPlannerGroupScheduleSignature);
         }
 
-        var requester = group.ScheduleRequester;
-        ImGui.SetNextItemWidth(MathF.Min(220f, ImGui.GetContentRegionAvail().X));
-        if (ImGui.InputText("Requester", ref requester, 96))
-        {
-            var committedSignature = BuildPlannerGroupScheduleSignature(group);
-            group.ScheduleRequester = requester;
-            plugin.QueueDebouncedPlannerGroupTouch(
-                group,
-                "schedule",
-                committedSignature,
-                BuildPlannerGroupScheduleSignature);
-        }
-
-        var mapTemplate = group.MapRunTemplate;
-        ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
-        if (ImGui.InputText("Map/run template", ref mapTemplate, 160))
-        {
-            var committedSignature = BuildPlannerGroupScheduleSignature(group);
-            group.MapRunTemplate = mapTemplate;
-            plugin.QueueDebouncedPlannerGroupTouch(
-                group,
-                "schedule",
-                committedSignature,
-                BuildPlannerGroupScheduleSignature);
-        }
-
-        ImGui.SameLine();
         DrawPlannerGroupMapModeCombo(group);
     }
 
@@ -5416,16 +5405,17 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)
     {
+        group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
         if (!ImGui.BeginTable("dad-planner-group-slots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
         ImGui.TableSetupColumn("Slot");
+        ImGui.TableSetupColumn("Type");
         ImGui.TableSetupColumn("Role");
         ImGui.TableSetupColumn("Account");
         ImGui.TableSetupColumn("Character");
         ImGui.TableSetupColumn("Wake");
         ImGui.TableSetupColumn("Profile");
-        ImGui.TableSetupColumn("Sub");
         ImGui.TableSetupColumn("Edit");
         ImGui.TableHeadersRow();
 
@@ -5434,19 +5424,16 @@ public sealed class MainWindow : Window, IDisposable
             var slot = group.Slots[index];
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            var slotId = slot.SlotId;
-            ImGui.SetNextItemWidth(-1f);
-            if (ImGui.InputText($"##dad-group-slot-id-{index}", ref slotId, 48))
-            {
-                var committedSignature = slot.SlotId;
-                slot.SlotId = slotId;
-                plugin.QueueDebouncedPlannerGroupSlotTouch(
-                    group,
-                    slot,
-                    $"slot-id-{index}",
-                    committedSignature,
-                    static currentSlot => currentSlot.SlotId);
-            }
+            ImGui.TextUnformatted(slot.SlotId);
+            if (DadPlannerSlotRules.IsLeaderSlot(slot.SlotId) && !slot.IsSubstitute && ImGui.IsItemHovered())
+                ImGui.SetTooltip("Slot1 is the party leader and inviter for this preset.");
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(slot.IsSubstitute ? "Substitute" : "Primary");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(slot.IsSubstitute
+                    ? "Substitute rows are tried only if the primary row for this same SlotN does not resolve; rows are tried in UI order."
+                    : "Primary rows are resolved before substitute rows for the same SlotN.");
 
             ImGui.TableNextColumn();
             DrawPlannerGroupRoleCombo(group, slot, index);
@@ -5464,14 +5451,28 @@ public sealed class MainWindow : Window, IDisposable
             DrawPlannerGroupLaunchProfileCombo(plannerSnapshot.LaunchProfiles, group, slot, index);
 
             ImGui.TableNextColumn();
-            var allowSubstitution = slot.AllowSubstitution;
-            if (ImGui.Checkbox($"##dad-group-sub-{index}", ref allowSubstitution))
+            if (!slot.IsSubstitute)
             {
-                slot.AllowSubstitution = allowSubstitution;
-                plugin.TouchPlannerGroup(group);
+                if (ImGui.SmallButton($"+ Sub##dad-group-slot-sub-{index}"))
+                {
+                    group.Slots.Insert(FindSubstituteInsertIndex(group.Slots, index), new DadPlannerGroupSlot
+                    {
+                        SlotId = slot.SlotId,
+                        IsSubstitute = true,
+                        RequiredRole = slot.RequiredRole,
+                        WakePolicy = slot.WakePolicy,
+                        AllowSubstitution = false,
+                    });
+                    plugin.TouchPlannerGroup(group);
+                    break;
+                }
+
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Adds an explicit fallback row for this same SlotN. Primary rows are tried first, then substitute rows in UI order.");
+
+                ImGui.SameLine();
             }
 
-            ImGui.TableNextColumn();
             if (ImGui.SmallButton($"Remove##dad-group-slot-remove-{index}"))
             {
                 group.Slots.RemoveAt(index);
@@ -5481,6 +5482,20 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.EndTable();
+    }
+
+    private static int FindSubstituteInsertIndex(IReadOnlyList<DadPlannerGroupSlot> slots, int primaryIndex)
+    {
+        var primarySlotId = slots[primaryIndex].SlotId;
+        var insertIndex = primaryIndex + 1;
+        while (insertIndex < slots.Count &&
+               string.Equals(slots[insertIndex].SlotId, primarySlotId, StringComparison.OrdinalIgnoreCase) &&
+               slots[insertIndex].IsSubstitute)
+        {
+            insertIndex++;
+        }
+
+        return insertIndex;
     }
 
     private void DrawPlannerGroupWakePolicyCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
@@ -5717,31 +5732,6 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.Selectable(plugin.PresetProviderService.GetQueueAuthorityLabel(option), selected))
             {
                 plannerOptions.QueueAuthority = option;
-                plugin.SavePlannerOptions();
-            }
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private void DrawPlannerInviteAuthoritySelector(DadPresetPlannerOptions plannerOptions)
-    {
-        var authorities = Enum.GetValues<DadInviteAuthority>();
-        var currentIndex = Array.IndexOf(authorities, plannerOptions.InviteAuthority);
-        currentIndex = currentIndex < 0 ? 0 : currentIndex;
-        var preview = plugin.PresetProviderService.GetEffectiveInviteAuthorityLabel(plannerOptions);
-        if (!ImGui.BeginCombo("Invite owner", preview))
-            return;
-
-        for (var index = 0; index < authorities.Length; index++)
-        {
-            var option = authorities[index];
-            var selected = option == plannerOptions.InviteAuthority;
-            if (ImGui.Selectable(plugin.PresetProviderService.GetInviteAuthorityLabel(option), selected))
-            {
-                plannerOptions.InviteAuthority = option;
                 plugin.SavePlannerOptions();
             }
             if (selected)

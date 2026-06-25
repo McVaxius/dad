@@ -345,13 +345,13 @@ public sealed class DadCoordinatorService
             .ToList();
         if (orderedPlannedCharacters.Count == 0 && activePlan.RequiredParticipantCount <= 1)
         {
-            activeParticipants.Add(BuildLocalAssignment(activePlan.LeaderCharacterKey, activePlan.Orchestration.AuthorityMode, slotId: "Leader"));
+            activeParticipants.Add(BuildLocalAssignment(activePlan.LeaderCharacterKey, activePlan.Orchestration.AuthorityMode, slotId: DadPlannerSlotRules.LeaderSlotId));
         }
 
         for (var index = 0; index < orderedPlannedCharacters.Count; index++)
         {
             var character = orderedPlannedCharacters[index];
-            var slotId = index == 0 ? "Leader" : $"Party {index + 1}";
+            var slotId = DadPlannerSlotRules.FormatSlotId(index + 1);
             if (character.Source == DadCharacterSource.LocalRuntime)
             {
                 activeParticipants.Add(BuildLocalAssignment(character.CharacterKey, activePlan.Orchestration.AuthorityMode, slotId));
@@ -1415,7 +1415,7 @@ public sealed class DadCoordinatorService
         if (plan.RequiresRemoteParticipants || activeParticipants.Any(static participant => participant.IsLocalClient))
             return;
 
-        var participant = BuildLocalAssignment(plan.LeaderCharacterKey, plan.Orchestration.AuthorityMode, "Leader");
+        var participant = BuildLocalAssignment(plan.LeaderCharacterKey, plan.Orchestration.AuthorityMode, DadPlannerSlotRules.LeaderSlotId);
         activeParticipants.Add(participant);
 
         if (loggedSingleWorkerSeed)
@@ -1531,7 +1531,7 @@ public sealed class DadCoordinatorService
 
         var clone = participant.Clone();
         clone.AssignedSlotId = string.IsNullOrWhiteSpace(clone.AssignedSlotId)
-            ? $"Party {activeParticipants.Count + 1}"
+            ? DadPlannerSlotRules.FormatSlotId(activeParticipants.Count + 1)
             : clone.AssignedSlotId;
 
         if (!string.Equals(clone.ActiveCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase))
