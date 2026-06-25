@@ -51,7 +51,7 @@ internal static class DadIssueReport
         }
 
         var hostIndex = 0;
-        foreach (var host in new[] { configuration.TransportBindHost, configuration.AuthorityTargetHost }
+        foreach (var host in new[] { configuration.ServerListenHost, configuration.ServerDadHost }
                      .Where(static value => !string.IsNullOrWhiteSpace(value)
                                             && !string.Equals(value, "localhost", StringComparison.OrdinalIgnoreCase))
                      .Distinct(StringComparer.OrdinalIgnoreCase))

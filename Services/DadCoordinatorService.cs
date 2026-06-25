@@ -161,7 +161,7 @@ public sealed class DadCoordinatorService
         {
             var authorityEndpoint = ResolveAuthorityEndpoint(forceRefresh: true);
             if (string.IsNullOrWhiteSpace(authorityEndpoint))
-                return DadRunResult.Rejected(request, "No Server Dad authority discovered on localhost.");
+                return DadRunResult.Rejected(request, "No Server Dad hub connection is available.");
 
             log.Information("[dad] Forwarding run {RequestId} to Server Dad at {Endpoint}: {Payload}",
                 request.RequestId,
@@ -1241,10 +1241,11 @@ public sealed class DadCoordinatorService
         return clone;
     }
 
-    private static bool IsRemoteParticipantEligibleForWork(DadParticipantSnapshot peer)
+    private bool IsRemoteParticipantEligibleForWork(DadParticipantSnapshot peer)
         => peer.IsAvailable
            && peer.IsEligibleForRun
-           && !string.IsNullOrWhiteSpace(peer.Endpoint)
+           && !peer.WorkerSessionId.IsEmpty
+           && transportService.IsWorkerOnline(peer.WorkerSessionId)
            && peer.AuthorityMode != DadAuthorityMode.LocalOnly
            && peer.State != DadParticipantState.Stale
            && peer.ClaimState != DadClaimState.Stale
@@ -1271,7 +1272,7 @@ public sealed class DadCoordinatorService
             : $"Remote participant filter skipped {string.Join(", ", skipped)}.";
     }
 
-    private static string GetRemoteParticipantSkipReason(DadParticipantSnapshot peer)
+    private string GetRemoteParticipantSkipReason(DadParticipantSnapshot peer)
     {
         if (HasLocalIsolationReason(peer))
             return "disabled/local-only peer(s)";
@@ -1292,8 +1293,11 @@ public sealed class DadCoordinatorService
         if (!peer.IsEligibleForRun)
             return "ineligible peer(s)";
 
-        if (string.IsNullOrWhiteSpace(peer.Endpoint))
-            return "peer(s) missing endpoint";
+        if (peer.WorkerSessionId.IsEmpty)
+            return "peer(s) missing worker session";
+
+        if (!transportService.IsWorkerOnline(peer.WorkerSessionId))
+            return "disconnected peer(s)";
 
         return string.Empty;
     }

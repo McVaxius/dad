@@ -2032,7 +2032,7 @@ public sealed class DadPresetProviderService
         {
             LocalOnlyOverride = previewOnly || forceLocalNpc,
             AuthorityMode = previewOnly || forceLocalNpc ? DadAuthorityMode.LocalOnly : lane.DefaultAuthorityMode,
-            TransportMode = previewOnly || forceLocalNpc || !lane.RequiresRemoteParty ? DadTransportMode.LocalOnly : DadTransportMode.LocalhostHybrid,
+            TransportMode = previewOnly || forceLocalNpc || !lane.RequiresRemoteParty ? DadTransportMode.LocalOnly : DadTransportMode.ServerHub,
             ModuleTarget = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane),
             QueueAuthority = previewOnly || forceLocalNpc ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
             PreferredLeaderCharacterKey = new DadCharacterKey(plannerPreview.LeaderCharacterKey),

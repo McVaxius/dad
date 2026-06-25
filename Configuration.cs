@@ -13,7 +13,7 @@ public enum DadCombatRotationMode
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = true;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -32,6 +32,11 @@ public sealed class Configuration : IPluginConfiguration
     //   / DeleteDadAccount). Keep this split in mind — do not duplicate character rosters into this blob.
     public string ClientAccountId { get; set; } = string.Empty;
     public string LastAccountId { get; set; } = string.Empty;
+    public string ServerListenHost { get; set; } = "127.0.0.1";
+    public int ServerListenPort { get; set; } = 4647;
+    public string ServerDadHost { get; set; } = "127.0.0.1";
+    public int ServerDadPort { get; set; } = 4647;
+    // Legacy migration fields. Runtime transport does not read them after Version 3 migration.
     public string TransportBindHost { get; set; } = string.Empty;
     public int TransportBindPort { get; set; }
     public string AuthorityTargetHost { get; set; } = string.Empty;
@@ -75,6 +80,44 @@ public sealed class Configuration : IPluginConfiguration
     // Review M19: operator opt-out for the Questionable reflection bridge (invasive runtime field patching).
     // Default on (preserves the AutoDuty/ADS handoff); disabling restores any patched values and stops it.
     public bool QuestionableBridgeEnabled { get; set; } = true;
+
+    public bool MigrateTransportSettings()
+    {
+        var changed = false;
+        if (Version < 3)
+        {
+            if (!string.IsNullOrWhiteSpace(TransportBindHost))
+                ServerListenHost = TransportBindHost.Trim();
+            if (TransportBindPort is > 0 and <= 65535)
+                ServerListenPort = TransportBindPort;
+            if (!string.IsNullOrWhiteSpace(AuthorityTargetHost))
+                ServerDadHost = AuthorityTargetHost.Trim();
+            if (AuthorityTargetPort is > 0 and <= 65535)
+                ServerDadPort = AuthorityTargetPort;
+
+            Version = 3;
+            changed = true;
+        }
+
+        var serverListen = NormalizeEndpoint(ServerListenHost, ServerListenPort);
+        ServerListenHost = serverListen.Host;
+        ServerListenPort = serverListen.Port;
+        changed |= serverListen.Changed;
+
+        var serverDad = NormalizeEndpoint(ServerDadHost, ServerDadPort);
+        ServerDadHost = serverDad.Host;
+        ServerDadPort = serverDad.Port;
+        changed |= serverDad.Changed;
+        return changed;
+    }
+
+    private static (string Host, int Port, bool Changed) NormalizeEndpoint(string host, int port)
+    {
+        var normalizedHost = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host.Trim();
+        var normalizedPort = port is > 0 and <= 65535 ? port : 4647;
+        var changed = !string.Equals(host, normalizedHost, StringComparison.Ordinal) || port != normalizedPort;
+        return (normalizedHost, normalizedPort, changed);
+    }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

@@ -15,10 +15,8 @@ public sealed class ConfigWindow : Window, IDisposable
     private readonly Plugin plugin;
     private string draftCompletionCommands = string.Empty;
     private bool completionDraftInitialized;
-    private string draftTransportBindHost = string.Empty;
-    private int draftTransportBindPort;
-    private string draftAuthorityTargetHost = string.Empty;
-    private int draftAuthorityTargetPort;
+    private string draftServerHost = string.Empty;
+    private int draftServerPort;
     private bool endpointDraftInitialized;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
@@ -259,6 +257,8 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             configuration.RunAsServerDad = runAsServerDad;
             configuration.Save();
+            ResetEndpointDraft(configuration);
+            plugin.ApplyTransportRoleConfiguration();
         }
 
         var localOnly = configuration.LocalOnlyModeEnabled;
@@ -326,16 +326,14 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Separator();
-        ImGui.TextUnformatted("Transport endpoints");
-        ImGui.TextWrapped("Blank bind host with port 0 preserves the current loopback/ephemeral listener. Blank authority target preserves peer-discovered Server Dad authority.");
+        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Server Dad listener" : "Server Dad connection");
+        ImGui.TextWrapped(configuration.RunAsServerDad
+            ? "Listen on 127.0.0.1 for same-host clients. Use a LAN interface address and shared secret for multi-host clients."
+            : "Enter the Server Dad LAN IP/DNS or 127.0.0.1 for same-host use.");
 
-        ImGui.InputText("Transport bind host", ref draftTransportBindHost, 128);
-        ImGui.InputInt("Transport bind port", ref draftTransportBindPort);
-        ImGui.InputText("Authority target host", ref draftAuthorityTargetHost, 128);
-        ImGui.InputInt("Authority target port", ref draftAuthorityTargetPort);
-
-        draftTransportBindPort = Math.Clamp(draftTransportBindPort, 0, 65535);
-        draftAuthorityTargetPort = Math.Clamp(draftAuthorityTargetPort, 0, 65535);
+        ImGui.InputText(configuration.RunAsServerDad ? "Listen host" : "Server Dad host", ref draftServerHost, 128);
+        ImGui.InputInt(configuration.RunAsServerDad ? "Listen port" : "Server Dad port", ref draftServerPort);
+        draftServerPort = Math.Clamp(draftServerPort, 1, 65535);
 
         var hasPendingEndpointDraftChanges = HasPendingEndpointDraftChanges(configuration);
         if (hasPendingEndpointDraftChanges)
@@ -351,9 +349,9 @@ public sealed class ConfigWindow : Window, IDisposable
         if (!hasPendingEndpointDraftChanges)
             ImGui.EndDisabled();
 
-        DrawStatusRow("Listener endpoint", FormatText(plugin.TransportService.CurrentTransport.ListenerEndpoint, "(listener unavailable)"));
-        DrawStatusRow("Configured authority target", FormatText(plugin.TransportService.GetConfiguredAuthorityEndpoint(), "(peer discovery)"));
-        DrawStatusRow("Effective authority target", FormatText(plugin.TransportService.GetPreferredAuthorityEndpoint(), "(none)"));
+        DrawStatusRow("Hub endpoint", FormatText(plugin.TransportService.GetConfiguredAuthorityEndpoint(), "(invalid endpoint)"));
+        DrawStatusRow("Connection", plugin.TransportService.CurrentTransport.ConnectionStatus);
+        DrawStatusRow("Protocol", plugin.TransportService.CurrentTransport.ProtocolVersion.ToString());
 
         ImGui.Separator();
         ImGui.TextUnformatted("Wait policy");
@@ -874,48 +872,51 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void ResetEndpointDraft(Configuration configuration)
     {
-        draftTransportBindHost = configuration.TransportBindHost;
-        draftTransportBindPort = configuration.TransportBindPort;
-        draftAuthorityTargetHost = configuration.AuthorityTargetHost;
-        draftAuthorityTargetPort = configuration.AuthorityTargetPort;
+        draftServerHost = configuration.RunAsServerDad
+            ? configuration.ServerListenHost
+            : configuration.ServerDadHost;
+        draftServerPort = configuration.RunAsServerDad
+            ? configuration.ServerListenPort
+            : configuration.ServerDadPort;
         endpointDraftInitialized = true;
     }
 
     private bool HasPendingEndpointDraftChanges(Configuration configuration)
     {
-        return !string.Equals(draftTransportBindHost.Trim(), configuration.TransportBindHost, StringComparison.Ordinal)
-               || Math.Clamp(draftTransportBindPort, 0, 65535) != configuration.TransportBindPort
-               || !string.Equals(draftAuthorityTargetHost.Trim(), configuration.AuthorityTargetHost, StringComparison.Ordinal)
-               || Math.Clamp(draftAuthorityTargetPort, 0, 65535) != configuration.AuthorityTargetPort;
+        var configuredHost = configuration.RunAsServerDad
+            ? configuration.ServerListenHost
+            : configuration.ServerDadHost;
+        var configuredPort = configuration.RunAsServerDad
+            ? configuration.ServerListenPort
+            : configuration.ServerDadPort;
+        return !string.Equals(draftServerHost.Trim(), configuredHost, StringComparison.Ordinal)
+               || Math.Clamp(draftServerPort, 1, 65535) != configuredPort;
     }
 
     private void ApplyEndpointDraft(Configuration configuration)
     {
-        var bindHost = draftTransportBindHost.Trim();
-        var bindPort = Math.Clamp(draftTransportBindPort, 0, 65535);
-        var authorityTargetHost = draftAuthorityTargetHost.Trim();
-        var authorityTargetPort = Math.Clamp(draftAuthorityTargetPort, 0, 65535);
-
-        var bindChanged = !string.Equals(bindHost, configuration.TransportBindHost, StringComparison.Ordinal)
-                          || bindPort != configuration.TransportBindPort;
-        var authorityTargetChanged = !string.Equals(authorityTargetHost, configuration.AuthorityTargetHost, StringComparison.Ordinal)
-                                     || authorityTargetPort != configuration.AuthorityTargetPort;
-        if (!bindChanged && !authorityTargetChanged)
+        var host = string.IsNullOrWhiteSpace(draftServerHost) ? "127.0.0.1" : draftServerHost.Trim();
+        var port = Math.Clamp(draftServerPort, 1, 65535);
+        if (!HasPendingEndpointDraftChanges(configuration))
             return;
 
-        configuration.TransportBindHost = bindHost;
-        configuration.TransportBindPort = bindPort;
-        configuration.AuthorityTargetHost = authorityTargetHost;
-        configuration.AuthorityTargetPort = authorityTargetPort;
+        if (configuration.RunAsServerDad)
+        {
+            configuration.ServerListenHost = host;
+            configuration.ServerListenPort = port;
+        }
+        else
+        {
+            configuration.ServerDadHost = host;
+            configuration.ServerDadPort = port;
+        }
         configuration.Save();
 
-        draftTransportBindHost = bindHost;
-        draftTransportBindPort = bindPort;
-        draftAuthorityTargetHost = authorityTargetHost;
-        draftAuthorityTargetPort = authorityTargetPort;
+        draftServerHost = host;
+        draftServerPort = port;
         endpointDraftInitialized = true;
 
-        plugin.ApplyEndpointConfiguration(bindChanged, authorityTargetChanged);
+        plugin.ApplyEndpointConfiguration(endpointChanged: true);
     }
 
     private static string FormatText(string? value, string fallback)

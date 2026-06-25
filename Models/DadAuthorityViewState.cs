@@ -247,7 +247,7 @@ public static class DadAuthorityViewBuilder
             DadAuthorityViewKind.LocalOnly => "Local-only mode enabled. This client is isolated from Server Dad authority.",
             DadAuthorityViewKind.NoRemoteAuthority when localRun.WorkerRole == DadWorkerRole.ServerDad && localRun.Role == DadOrchestrationRole.Leader
                 => "This instance owns Server Dad authority locally.",
-            DadAuthorityViewKind.NoRemoteAuthority => "No Server Dad authority discovered on localhost.",
+            DadAuthorityViewKind.NoRemoteAuthority => "No Server Dad hub connection is available.",
             DadAuthorityViewKind.RemoteIdle => $"Server Dad idle. This client is {clientPerspective}.",
             DadAuthorityViewKind.RemoteQueued => $"Server Dad queued {payloadText}. This client is {clientPerspective}.",
             DadAuthorityViewKind.RemoteWaiting => $"Server Dad waiting on participants for {payloadText}. This client is {clientPerspective}.",

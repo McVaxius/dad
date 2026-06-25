@@ -124,7 +124,9 @@ public enum DadModuleId
 public enum DadTransportMode
 {
     LocalOnly,
-    LocalhostHybrid,
+    ServerHub,
+    [Obsolete("Use ServerHub. Numeric value retained for stored configuration compatibility.")]
+    LocalhostHybrid = ServerHub,
 }
 
 public enum DadRunPhase

@@ -71,7 +71,9 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private readonly DadIpcService dadIpcService;
-    private readonly DadAuthorityStatusPoller authorityStatusPoller;
+    private readonly DadBackgroundTaskObserver backgroundTasks;
+    private readonly CancellationTokenSource backgroundCancellation = new();
+    private readonly object authorityCacheGate = new();
     private IDtrBarEntry? dtrEntry;
     private DadRunResult? cachedAuthorityRun;
     private string cachedAuthorityEndpoint = string.Empty;
@@ -112,7 +114,10 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
+        backgroundTasks = new DadBackgroundTaskObserver(Log, "plugin");
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        if (Configuration.MigrateTransportSettings())
+            Configuration.Save();
         EnsureClientAccountId();
         ConfigManager = new ConfigManager(PluginInterface, Log);
         ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
@@ -121,7 +126,6 @@ public sealed class Plugin : IDalamudPlugin
         PresenceService = new DadPresenceService(Configuration, ConfigManager, Log);
         ClaimService = new DadClaimService();
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
-        authorityStatusPoller = new DadAuthorityStatusPoller(TransportService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
@@ -204,6 +208,9 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
         Framework.Update += OnFrameworkUpdate;
+        backgroundTasks.Track(
+            RunAuthorityStatusPollLoopAsync(backgroundCancellation.Token),
+            "authority status poll loop");
 
         SetupDtrBar();
         UpdateDtrBar();
@@ -232,6 +239,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        backgroundCancellation.Cancel();
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
@@ -243,11 +251,12 @@ public sealed class Plugin : IDalamudPlugin
         QuestionableBridge.Dispose();
         DutyIpcService.Dispose();
         dadIpcService.Dispose();
+        ProfileDirectoryService.Dispose();
         LocalDutyQueueService.Dispose();
         NpcDutyQueueService.Dispose();
-        ProfileDirectoryService.Dispose();
-        authorityStatusPoller.Dispose();
         TransportService.Dispose();
+        backgroundCancellation.Dispose();
+        backgroundTasks.Dispose();
         dtrEntry?.Remove();
     }
 
@@ -715,18 +724,24 @@ public sealed class Plugin : IDalamudPlugin
         return cleared;
     }
 
-    public void ApplyEndpointConfiguration(bool bindChanged, bool authorityTargetChanged)
+    public void ApplyEndpointConfiguration(bool endpointChanged)
     {
-        if (!bindChanged && !authorityTargetChanged)
+        if (!endpointChanged)
             return;
 
-        if (bindChanged)
-            TransportService.RestartListener();
+        TransportService.RestartTransport();
+        ResetAuthorityCache(clearFreshness: false);
+        lock (authorityCacheGate)
+            suppressRemoteAuthorityRefreshUntilUtc = DateTime.UtcNow + EndpointApplyAuthorityRefreshSuppression;
+    }
 
-        if (bindChanged || authorityTargetChanged)
-            ResetAuthorityCache(clearFreshness: false);
-
-        suppressRemoteAuthorityRefreshUntilUtc = DateTime.UtcNow + EndpointApplyAuthorityRefreshSuppression;
+    public void ApplyTransportRoleConfiguration()
+    {
+        TransportService.RestartTransport();
+        PresenceService.Update(CharacterIntelligenceService.CurrentPool, string.Empty);
+        ResetAuthorityCache(clearFreshness: true);
+        lock (authorityCacheGate)
+            suppressRemoteAuthorityRefreshUntilUtc = DateTime.UtcNow + EndpointApplyAuthorityRefreshSuppression;
     }
 
     public DadActivityPreset BuildPlannerPreview()
@@ -2172,7 +2187,8 @@ public sealed class Plugin : IDalamudPlugin
         if (RunCoordinatorService.IsServerDad)
             return TransportService.IsReady && !string.IsNullOrWhiteSpace(TransportService.CurrentTransport.ListenerEndpoint);
 
-        return !string.IsNullOrWhiteSpace(TransportService.GetPreferredAuthorityEndpoint());
+        return TransportService.IsReady &&
+               !TransportService.CurrentTransport.AuthorityWorkerSessionId.IsEmpty;
     }
 
     public DadVisibleRunState GetVisibleRunState(bool forceAuthorityRefresh = false)
@@ -2195,15 +2211,85 @@ public sealed class Plugin : IDalamudPlugin
         => BuildAuthorityView(localRun, authorityRun).Kind is not DadAuthorityViewKind.LocalOnly and not DadAuthorityViewKind.NoRemoteAuthority;
 
     private DadAuthorityViewState BuildAuthorityView(DadRunResult localRun, DadRunResult authorityRun)
-        => DadAuthorityViewBuilder.Build(
+    {
+        DateTime? lastRefreshSucceededUtc;
+        lock (authorityCacheGate)
+            lastRefreshSucceededUtc = lastAuthorityRefreshSucceededUtc;
+
+        return DadAuthorityViewBuilder.Build(
             localRun,
             authorityRun,
             TransportService.CurrentTransport,
             PresenceService.WorkerSessionId,
             Configuration.LocalOnlyModeEnabled,
-            lastAuthorityRefreshSucceededUtc,
+            lastRefreshSucceededUtc,
             DateTime.UtcNow,
             RemoteAuthorityStatusStaleThreshold);
+    }
+
+    private async Task RunAuthorityStatusPollLoopAsync(CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                RefreshAuthorityStatusCacheFromBackground(cancellationToken);
+            }
+            catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
+            {
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "[dad] Authority status poll failed.");
+            }
+
+            await Task.Delay(RemoteAuthorityStatusRefreshInterval, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void RefreshAuthorityStatusCacheFromBackground(CancellationToken cancellationToken)
+    {
+        if (RunCoordinatorService.IsServerDad || !Configuration.PluginEnabled || Configuration.LocalOnlyModeEnabled)
+            return;
+
+        var transport = TransportService.CurrentTransport;
+        var authorityEndpoint = TransportService.GetPreferredAuthorityEndpoint();
+        var hasRemoteAuthority = !string.IsNullOrWhiteSpace(authorityEndpoint) || !transport.AuthorityWorkerSessionId.IsEmpty;
+        if (!hasRemoteAuthority || string.IsNullOrWhiteSpace(authorityEndpoint))
+            return;
+
+        var now = DateTime.UtcNow;
+        lock (authorityCacheGate)
+        {
+            if (!string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
+            {
+                cachedAuthorityRun = null;
+                cachedAuthorityEndpoint = authorityEndpoint;
+                nextAuthorityStatusRefreshUtc = DateTime.MinValue;
+            }
+
+            if (now < suppressRemoteAuthorityRefreshUntilUtc || now < nextAuthorityStatusRefreshUtc)
+                return;
+
+            nextAuthorityStatusRefreshUtc = now + RemoteAuthorityStatusRefreshInterval;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var remote = TransportService.QueryAuthorityStatus(authorityEndpoint);
+        if (remote == null)
+            return;
+
+        ApplyKnownAuthorityMetadata(remote);
+        lock (authorityCacheGate)
+        {
+            cachedAuthorityRun = remote.Clone();
+            cachedAuthorityEndpoint = authorityEndpoint;
+            lastAuthorityRefreshSucceededUtc = DateTime.UtcNow;
+        }
+
+        LogAuthorityRefreshSuccess(remote);
+    }
 
     private DadRunResult GetAuthorityRunForUi(bool forceRefresh)
     {
@@ -2211,7 +2297,6 @@ public sealed class Plugin : IDalamudPlugin
         if (RunCoordinatorService.IsServerDad || !Configuration.PluginEnabled || Configuration.LocalOnlyModeEnabled)
         {
             ResetAuthorityCache(clearFreshness: true);
-            authorityStatusPoller.ClearTarget();
             return localRun;
         }
 
@@ -2221,26 +2306,33 @@ public sealed class Plugin : IDalamudPlugin
         if (!hasRemoteAuthority)
         {
             ResetAuthorityCache(clearFreshness: true);
-            authorityStatusPoller.ClearTarget();
             return BuildUnavailableAuthorityResult(
                 "No Server Dad authority discovered.",
-                "No Server Dad authority discovered from peer registry and no authority target is configured.",
+                "No Server Dad hub session is connected.",
                 authorityEndpoint,
                 transport.AuthorityWorkerSessionId,
                 transport.AuthorityRole);
         }
 
-        if (!string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
-            cachedAuthorityRun = null;
+        DadRunResult? cached;
+        DateTime suppressUntilUtc;
+        lock (authorityCacheGate)
+        {
+            if (!string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
+            {
+                cachedAuthorityRun = null;
+                cachedAuthorityEndpoint = authorityEndpoint;
+                nextAuthorityStatusRefreshUtc = DateTime.MinValue;
+            }
 
-        authorityStatusPoller.UpdateTarget(
-            authorityEndpoint,
-            transport.AuthorityWorkerSessionId,
-            transport.AuthorityRole,
-            enabled: true,
-            scheduleImmediate: forceRefresh);
+            if (forceRefresh)
+                nextAuthorityStatusRefreshUtc = DateTime.MinValue;
 
-        if (!forceRefresh && DateTime.UtcNow < suppressRemoteAuthorityRefreshUntilUtc)
+            cached = cachedAuthorityRun?.Clone();
+            suppressUntilUtc = suppressRemoteAuthorityRefreshUntilUtc;
+        }
+
+        if (!forceRefresh && DateTime.UtcNow < suppressUntilUtc)
         {
             return BuildUnavailableAuthorityResult(
                 "Server Dad status refresh deferred.",
@@ -2250,36 +2342,12 @@ public sealed class Plugin : IDalamudPlugin
                 transport.AuthorityRole);
         }
 
-        var statusSnapshot = authorityStatusPoller.GetSnapshot();
-        var remote = string.Equals(statusSnapshot.Endpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase)
-            ? statusSnapshot.Result
-            : null;
-        if (remote != null)
-        {
-            ApplyKnownAuthorityMetadata(remote);
-            cachedAuthorityRun = remote.Clone();
-            cachedAuthorityEndpoint = authorityEndpoint;
-            nextAuthorityStatusRefreshUtc = DateTime.UtcNow + RemoteAuthorityStatusRefreshInterval;
-            lastAuthorityRefreshSucceededUtc = statusSnapshot.LastSuccessUtc ?? DateTime.UtcNow;
-            LogAuthorityRefreshSuccess(remote);
-            return remote;
-        }
-
-        if (statusSnapshot.LastFailureUtc.HasValue &&
-            string.Equals(statusSnapshot.Endpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
-        {
-            LogAuthorityRefreshFailure(authorityEndpoint, transport.AuthorityWorkerSessionId);
-        }
-
-        if (cachedAuthorityRun != null &&
-            string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
-        {
-            return CloneAuthorityRun(cachedAuthorityRun);
-        }
+        if (cached != null)
+            return CloneAuthorityRun(cached);
 
         return BuildUnavailableAuthorityResult(
-            "Server Dad status unavailable.",
-            "Server Dad status query failed.",
+            "Server Dad status refresh pending.",
+            "Server Dad status refresh has not completed yet.",
             authorityEndpoint,
             transport.AuthorityWorkerSessionId,
             transport.AuthorityRole);
@@ -2294,12 +2362,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private void ResetAuthorityCache(bool clearFreshness)
     {
-        cachedAuthorityRun = null;
-        cachedAuthorityEndpoint = string.Empty;
-        nextAuthorityStatusRefreshUtc = DateTime.MinValue;
-        if (clearFreshness)
+        lock (authorityCacheGate)
         {
-            lastAuthorityRefreshSucceededUtc = null;
+            cachedAuthorityRun = null;
+            cachedAuthorityEndpoint = string.Empty;
+            nextAuthorityStatusRefreshUtc = DateTime.MinValue;
+            if (clearFreshness)
+            {
+                lastAuthorityRefreshSucceededUtc = null;
+            }
         }
     }
 
@@ -2415,7 +2486,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             LocalOnlyOverride = false,
             AuthorityMode = DadAuthorityMode.ServerDad,
-            TransportMode = DadTransportMode.LocalhostHybrid,
+            TransportMode = DadTransportMode.ServerHub,
             QueueAuthority = DadQueueAuthority.Leader,
             RosterIntent = new DadRosterIntent
             {
@@ -2699,10 +2770,13 @@ public sealed class Plugin : IDalamudPlugin
         if (string.IsNullOrWhiteSpace(result.AuthorityEndpoint) && result.AuthorityWorkerSessionId.IsEmpty)
             return;
 
-        cachedAuthorityRun = result.Clone();
-        cachedAuthorityEndpoint = result.AuthorityEndpoint;
-        nextAuthorityStatusRefreshUtc = DateTime.UtcNow + RemoteAuthorityStatusRefreshInterval;
-        lastAuthorityRefreshSucceededUtc = DateTime.UtcNow;
+        lock (authorityCacheGate)
+        {
+            cachedAuthorityRun = result.Clone();
+            cachedAuthorityEndpoint = result.AuthorityEndpoint;
+            nextAuthorityStatusRefreshUtc = DateTime.UtcNow + RemoteAuthorityStatusRefreshInterval;
+            lastAuthorityRefreshSucceededUtc = DateTime.UtcNow;
+        }
     }
 
     private void OnCommand(string command, string arguments)
@@ -2933,7 +3007,7 @@ public sealed class Plugin : IDalamudPlugin
         PrintStatus($"Worker local {status.WorkerSessionId}: run={status.RunId}, role={status.Role}, state={status.State}, terminal={status.IsTerminal}, summary={status.Summary}");
         PrintStatus($"Worker peers: {transport.KnownParticipants.Count} discovered, authority={transport.AuthorityWorkerSessionId}, endpoint={transport.AuthorityEndpoint}.");
         foreach (var participant in transport.KnownParticipants)
-            PrintStatus($"Worker peer {participant.WorkerSessionId}: {participant.ActiveCharacterKey}, state={participant.State}, heartbeat={participant.LastHeartbeatUtc:O}, endpoint={participant.Endpoint}.");
+            PrintStatus($"Worker peer {participant.WorkerSessionId}: {participant.ActiveCharacterKey}, state={participant.State}, heartbeat={participant.LastHeartbeatUtc:O}, route=Server Dad hub.");
     }
 
     private void RunDutyIpcDiagnosticsFromShell(string arguments)
@@ -3256,7 +3330,7 @@ public sealed class Plugin : IDalamudPlugin
                 "## Config",
                 $"- PluginEnabled={Configuration.PluginEnabled} ServerDad={Configuration.RunAsServerDad} LocalOnly={Configuration.LocalOnlyModeEnabled} Advanced={Configuration.AdvancedModeEnabled} PartyValidationOverride={Configuration.PartyValidationOverrideEnabled} AllowRemoteCmd={Configuration.AllowRemoteCommandExecution}",
                 $"- CombatRotationMode={Configuration.CombatRotationMode} DtrBarEnabled={Configuration.DtrBarEnabled}",
-                $"- Transport bind={Configuration.TransportBindHost}:{Configuration.TransportBindPort} authority={Configuration.AuthorityTargetHost}:{Configuration.AuthorityTargetPort}",
+                $"- Transport role={(Configuration.RunAsServerDad ? "server" : "client")} listen={Configuration.ServerListenHost}:{Configuration.ServerListenPort} server={Configuration.ServerDadHost}:{Configuration.ServerDadPort} protocol={DadHubProtocol.CurrentVersion}",
                 $"- RunHistory={Configuration.RunHistory?.Count ?? 0} PlannerGroups={Configuration.PlannerGroups?.Count ?? 0} LaunchProfiles={Configuration.LaunchProfiles?.Count ?? 0}",
                 string.Empty,
                 "## Transport",

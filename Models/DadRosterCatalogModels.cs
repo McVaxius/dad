@@ -154,6 +154,7 @@ public sealed class DadRosterAccountOption
     public string SourceClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId SourceWorkerSessionId { get; set; } = new(string.Empty);
     public bool IsLocal { get; set; }
+    public bool OwnerOnline { get; set; }
     public int AssignedCharacterCount { get; set; }
 
     public DadRosterAccountOption Clone()
@@ -165,6 +166,7 @@ public sealed class DadRosterAccountOption
             SourceClientInstanceId = SourceClientInstanceId,
             SourceWorkerSessionId = SourceWorkerSessionId,
             IsLocal = IsLocal,
+            OwnerOnline = OwnerOnline,
             AssignedCharacterCount = AssignedCharacterCount,
         };
 }

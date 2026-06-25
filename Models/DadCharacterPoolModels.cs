@@ -251,9 +251,13 @@ public sealed class DadXadbStatus
 public sealed class DadPeerTransportSnapshot
 {
     public string Availability { get; set; } = "Unavailable";
+    public int ProtocolVersion { get; set; }
     public int ConnectedPeerCount { get; set; }
+    public int ReconnectAttempt { get; set; }
     public DateTime? LastRequestUtc { get; set; }
     public DadTransportMode TransportMode { get; set; } = DadTransportMode.LocalOnly;
+    public string ConnectionStatus { get; set; } = "Disconnected";
+    [Obsolete("Filesystem discovery was removed. This value remains empty.")]
     public string DiscoveryDirectory { get; set; } = string.Empty;
     public string ListenerEndpoint { get; set; } = string.Empty;
     public string LocalClientInstanceId { get; set; } = string.Empty;

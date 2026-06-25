@@ -36,14 +36,15 @@ public sealed class DadRosterCatalogService
         NormalizeRosterVisibilityRecords(saveIfChanged: true);
     }
 
-    public DadAccountRosterCatalog CurrentCatalog => currentCatalog.Clone();
+    public DadAccountRosterCatalog CurrentCatalog => ApplyOwnerConnectivity(currentCatalog.Clone());
 
     public long CatalogVersion => catalogVersion;
 
     public IReadOnlyList<DadRosterAccountOption> GetAccountDirectory()
     {
-        var accounts = currentCatalog.Accounts.Count > 0
-            ? currentCatalog.Accounts
+        var connectedCatalog = ApplyOwnerConnectivity(currentCatalog.Clone());
+        var accounts = connectedCatalog.Accounts.Count > 0
+            ? connectedCatalog.Accounts
             : BuildLocalAccountDirectory([], transportService.CurrentTransport.KnownParticipants);
 
         return accounts
@@ -82,7 +83,7 @@ public sealed class DadRosterCatalogService
                 allCatalogs.Add(peerRuntimeFallback);
         }
 
-        currentCatalog = MergeCatalogs(allCatalogs, plan);
+        currentCatalog = ApplyOwnerConnectivity(MergeCatalogs(allCatalogs, plan));
         catalogVersion++;
         if (plan.LogDiagnostics)
             LogRosterDiagnostics(currentCatalog, plan);
@@ -224,7 +225,7 @@ public sealed class DadRosterCatalogService
         };
 
         var catalogs = new List<DadAccountRosterCatalog>();
-        var cachedCatalog = currentCatalog.Clone();
+        var cachedCatalog = ApplyOwnerConnectivity(currentCatalog.Clone());
         if (cachedCatalog.Characters.Count > 0 || cachedCatalog.Accounts.Count > 0)
             catalogs.Add(cachedCatalog);
         else
@@ -1075,6 +1076,7 @@ public sealed class DadRosterCatalogService
                 SourceClientInstanceId = presenceService.ClientInstanceId,
                 SourceWorkerSessionId = presenceService.WorkerSessionId,
                 IsLocal = true,
+                OwnerOnline = true,
                 AssignedCharacterCount = account.Characters.Count,
             });
         }
@@ -1104,7 +1106,7 @@ public sealed class DadRosterCatalogService
         }
     }
 
-    private static void AddParticipantAccountOption(
+    private void AddParticipantAccountOption(
         List<DadRosterAccountOption> options,
         DadParticipantSnapshot participant,
         bool isLocal)
@@ -1127,6 +1129,7 @@ public sealed class DadRosterCatalogService
             SourceClientInstanceId = participant.ClientInstanceId,
             SourceWorkerSessionId = participant.WorkerSessionId,
             IsLocal = isLocal,
+            OwnerOnline = isLocal || transportService.IsWorkerOnline(participant.WorkerSessionId),
             AssignedCharacterCount = assignedCharacterCount,
         });
     }
@@ -1348,6 +1351,7 @@ public sealed class DadRosterCatalogService
         if (existing.SourceWorkerSessionId.IsEmpty || candidate.IsLocal && !existing.IsLocal)
             existing.SourceWorkerSessionId = candidate.SourceWorkerSessionId;
         existing.IsLocal |= candidate.IsLocal;
+        existing.OwnerOnline |= candidate.OwnerOnline || candidate.IsLocal;
         existing.AssignedCharacterCount = Math.Max(existing.AssignedCharacterCount, candidate.AssignedCharacterCount);
     }
 
@@ -1359,6 +1363,38 @@ public sealed class DadRosterCatalogService
             .ThenBy(static option => option.SourceClientInstanceId, StringComparer.OrdinalIgnoreCase)
             .Select(static option => option.Clone())
             .ToList();
+
+    private DadAccountRosterCatalog ApplyOwnerConnectivity(DadAccountRosterCatalog catalog)
+    {
+        foreach (var account in catalog.Accounts)
+        {
+            account.OwnerOnline = account.IsLocal ||
+                                  (!account.SourceWorkerSessionId.IsEmpty &&
+                                   transportService.IsWorkerOnline(account.SourceWorkerSessionId));
+        }
+
+        foreach (var character in catalog.Characters)
+        {
+            var localOwner = character.SourceWorkerSessionId.IsEmpty ||
+                             string.Equals(
+                                 character.SourceWorkerSessionId.Value,
+                                 presenceService.WorkerSessionId.Value,
+                                 StringComparison.OrdinalIgnoreCase);
+            if (localOwner || transportService.IsWorkerOnline(character.SourceWorkerSessionId))
+                continue;
+
+            character.IsCurrent = false;
+            character.IsStale = true;
+            const string warning = "Owning Client Dad is offline.";
+            if (character.Warnings.All(existing =>
+                    !string.Equals(existing, warning, StringComparison.OrdinalIgnoreCase)))
+            {
+                character.Warnings.Add(warning);
+            }
+        }
+
+        return catalog;
+    }
 
     private static string BuildAccountDisplayName(string accountKey, string accountAlias)
         => string.IsNullOrWhiteSpace(accountAlias)
@@ -1404,6 +1440,7 @@ public sealed class DadRosterCatalogService
             SourceClientInstanceId = presenceService.ClientInstanceId,
             SourceWorkerSessionId = presenceService.WorkerSessionId,
             IsLocal = true,
+            OwnerOnline = true,
             AssignedCharacterCount = account?.Characters.Count ?? 0,
         });
     }

@@ -567,7 +567,8 @@ public sealed class DadSchedulerService
             {
                 if (!TrySendCharacterLoadCommand(slot, out var loadBlocker))
                 {
-                    BlockActive(loadBlocker);
+                    if (!string.IsNullOrWhiteSpace(loadBlocker))
+                        BlockActive(loadBlocker);
                     return;
                 }
             }
@@ -918,7 +919,8 @@ public sealed class DadSchedulerService
             {
                 if (!TrySendCharacterLoadCommand(slot, out var loadBlocker))
                 {
-                    BlockActive(loadBlocker);
+                    if (!string.IsNullOrWhiteSpace(loadBlocker))
+                        BlockActive(loadBlocker);
                     return;
                 }
             }
@@ -955,6 +957,7 @@ public sealed class DadSchedulerService
 
             var command = new DadRosterRefreshCommandDto
             {
+                CommandId = $"{currentState.JobId}:{slot.SlotId}:roster-refresh",
                 AccountKey = slot.RequiredAccountKey,
                 CharacterKey = slot.RequiredCharacterKey,
                 ContentId = ResolveSlotContentId(slot),
@@ -966,7 +969,9 @@ public sealed class DadSchedulerService
                 : transportService.SendRosterRefreshCommand(participant, command);
             if (result == null)
             {
-                BlockActive($"No roster refresh acknowledgement from {slot.RequiredCharacterKey}.");
+                currentState.Phase = DadSchedulerPresetPhase.Resolving;
+                currentState.Summary = $"Roster update awaiting acknowledgement from {slot.RequiredCharacterKey}.";
+                currentState.UpdatedAtUtc = DateTime.UtcNow;
                 return;
             }
 
@@ -1028,7 +1033,8 @@ public sealed class DadSchedulerService
             {
                 if (!TrySendCharacterLoadCommand(slot, out var loadBlocker))
                 {
-                    BlockActive(loadBlocker);
+                    if (!string.IsNullOrWhiteSpace(loadBlocker))
+                        BlockActive(loadBlocker);
                     return;
                 }
             }
@@ -1634,6 +1640,7 @@ public sealed class DadSchedulerService
 
         var commandDto = new DadCharacterLoadCommandDto
         {
+            CommandId = $"{currentState.JobId}:{slot.SlotId}:character-load",
             AccountKey = slot.RequiredAccountKey,
             CharacterKey = slot.RequiredCharacterKey,
             Command = command,
@@ -1668,7 +1675,14 @@ public sealed class DadSchedulerService
 
         if (result?.Accepted != true)
         {
-            blocker = result?.Summary ?? $"No character-load acknowledgement from {participant.ActiveCharacterKey}.";
+            if (result == null)
+            {
+                slot.Summary = $"Character-load command queued for {slot.RequiredCharacterKey}; awaiting acknowledgement.";
+                currentState.Phase = DadSchedulerPresetPhase.LoadingCharacters;
+                return false;
+            }
+
+            blocker = result.Summary;
             return false;
         }
 

@@ -1820,6 +1820,7 @@ public sealed class MainWindow : Window, IDisposable
                     ? account.AccountId
                     : account.AccountAlias.Trim(),
                 IsLocal = true,
+                OwnerOnline = true,
                 AssignedCharacterCount = account.Characters.Count,
             });
         }
@@ -2390,16 +2391,17 @@ public sealed class MainWindow : Window, IDisposable
     {
         var accountKey = option.AccountKey.Value?.Trim() ?? string.Empty;
         var displayName = ResolveRosterAccountDisplayName(option);
+        var onlineSuffix = option.OwnerOnline ? string.Empty : " [offline]";
         if (string.IsNullOrWhiteSpace(displayName))
-            return string.IsNullOrWhiteSpace(accountKey) ? "(account)" : accountKey;
+            return (string.IsNullOrWhiteSpace(accountKey) ? "(account)" : accountKey) + onlineSuffix;
 
         if (string.IsNullOrWhiteSpace(accountKey) ||
             string.Equals(displayName, accountKey, StringComparison.OrdinalIgnoreCase))
         {
-            return displayName;
+            return displayName + onlineSuffix;
         }
 
-        return $"{displayName} ({accountKey})";
+        return $"{displayName} ({accountKey}){onlineSuffix}";
     }
 
     private static string FormatRosterTargets(IReadOnlyList<DadRosterCharacterRef> targets, string fallback = "-")
@@ -3710,8 +3712,8 @@ public sealed class MainWindow : Window, IDisposable
             parts.Add(participant.StatusText);
         if (participant.AvailableCharacterKeys.Count > 0)
             parts.Add($"avail {plugin.KrangleService.FormatCharacterKeys(participant.AvailableCharacterKeys)}");
-        if (!string.IsNullOrWhiteSpace(participant.Endpoint))
-            parts.Add(participant.IsLocalClient ? "(local)" : participant.Endpoint);
+        if (!participant.IsLocalClient && !participant.WorkerSessionId.IsEmpty)
+            parts.Add("Server Dad hub");
         return string.Join(" | ", parts);
     }
 

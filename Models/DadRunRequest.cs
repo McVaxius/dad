@@ -186,7 +186,7 @@ public sealed class DadRunRequest
         {
             Orchestration.AuthorityMode = DadAuthorityMode.ServerDad;
             Orchestration.TransportMode = Orchestration.RosterIntent.RequireRemoteParticipants
-                ? DadTransportMode.LocalhostHybrid
+                ? DadTransportMode.ServerHub
                 : DadTransportMode.LocalOnly;
 
             if (Orchestration.QueueAuthority == DadQueueAuthority.LocalOnly &&

@@ -13,9 +13,12 @@ public sealed class DadProfileDirectoryService : IDisposable
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
-    private readonly object refreshGate = new();
+    private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly CancellationTokenSource refreshCancellation = new();
+    private readonly object refreshGate = new();
+    private readonly object cacheGate = new();
     private Task? refreshTask;
+    private bool disposed;
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private string cacheSignature = string.Empty;
     private IReadOnlyList<DadProfileCatalog> currentCatalogs = [];
@@ -32,26 +35,41 @@ public sealed class DadProfileDirectoryService : IDisposable
         this.presenceService = presenceService;
         this.transportService = transportService;
         this.log = log;
+        backgroundTasks = new DadBackgroundTaskObserver(log, "profile directory");
         configuration.ProfileCatalogCache ??= [];
         MarkCachedOwnersOffline();
         RebuildCurrentCatalogs();
     }
 
+    public void Dispose()
+    {
+        if (disposed)
+            return;
+
+        disposed = true;
+        refreshCancellation.Cancel();
+        refreshCancellation.Dispose();
+        backgroundTasks.Dispose();
+    }
+
     public void Update()
     {
         if (DateTime.UtcNow < nextRefreshUtc)
+        {
+            RebuildCurrentCatalogs();
             return;
+        }
 
         nextRefreshUtc = DateTime.UtcNow + RefreshInterval;
+        QueueRefreshRemoteCatalogs();
         RebuildCurrentCatalogs();
-        ScheduleRemoteCatalogRefresh();
     }
 
     public DadProfileCatalog BuildLocalCatalog()
         => configManager.BuildLocalProfileCatalog(
             presenceService.ClientInstanceId,
             presenceService.WorkerSessionId,
-            transportService.CurrentTransport.ListenerEndpoint,
+            string.Empty,
             configuration.PluginEnabled && !configuration.LocalOnlyModeEnabled);
 
     public IReadOnlyList<DadProfileCatalog> GetCatalogs()
@@ -67,8 +85,12 @@ public sealed class DadProfileDirectoryService : IDisposable
             return localAck;
         }
 
-        var owner = (configuration.ProfileCatalogCache ?? []).FirstOrDefault(catalog =>
-            catalog.Accounts.Any(account => DadRosterIdentity.SameAccount(account.AccountKey, request.AccountKey)));
+        DadProfileCatalog? owner;
+        lock (cacheGate)
+        {
+            owner = (configuration.ProfileCatalogCache ?? []).FirstOrDefault(catalog =>
+                catalog.Accounts.Any(account => DadRosterIdentity.SameAccount(account.AccountKey, request.AccountKey)))?.Clone();
+        }
         if (owner == null)
         {
             return new DadProfileUpdateAck
@@ -78,7 +100,10 @@ public sealed class DadProfileDirectoryService : IDisposable
             };
         }
 
-        if (!owner.OwnerOnline || owner.ReadOnly || string.IsNullOrWhiteSpace(owner.OwnerEndpoint))
+        if (!owner.OwnerOnline ||
+            owner.ReadOnly ||
+            owner.OwnerWorkerSessionId.IsEmpty ||
+            !transportService.IsWorkerOnline(owner.OwnerWorkerSessionId))
         {
             return new DadProfileUpdateAck
             {
@@ -87,28 +112,22 @@ public sealed class DadProfileDirectoryService : IDisposable
             };
         }
 
-        var ack = transportService.SendProfileUpdate(owner.OwnerEndpoint, request);
+        var ownerKey = GetOwnerKey(owner);
+        var ack = transportService.SendProfileUpdate(
+            owner.OwnerWorkerSessionId,
+            request,
+            completed => ApplyRemoteProfileAck(ownerKey, completed));
         if (ack == null)
         {
-            owner.OwnerOnline = false;
-            owner.ReadOnly = true;
-            SaveCacheIfChanged();
-            RebuildCurrentCatalogs();
             return new DadProfileUpdateAck
             {
                 RequestId = request.RequestId,
-                Summary = "Owning Client Dad did not acknowledge profile update.",
+                Summary = "Could not queue profile update through Server Dad hub.",
             };
         }
 
         if (ack.Account != null)
-        {
-            owner.Accounts.RemoveAll(account => DadRosterIdentity.SameAccount(account.AccountKey, ack.Account.AccountKey));
-            owner.Accounts.Add(ack.Account.Clone());
-            owner.GeneratedAtUtc = DateTime.UtcNow;
-            SaveCacheIfChanged();
-            RebuildCurrentCatalogs();
-        }
+            ApplyRemoteProfileAck(ownerKey, ack);
 
         return ack;
     }
@@ -123,157 +142,115 @@ public sealed class DadProfileDirectoryService : IDisposable
                 account.PrimaryLaunchProfileId,
                 catalog.OwnerClientInstanceId,
                 catalog.OwnerWorkerSessionId,
-                catalog.OwnerEndpoint,
                 catalog.OwnerOnline,
                 catalog.ReadOnly,
                 CharacterCount = account.Characters.Count,
             }))
             .ToList());
 
-    public void Dispose()
+    private void QueueRefreshRemoteCatalogs()
     {
-        try { refreshCancellation.Cancel(); } catch { /* ignore */ }
-        if (refreshTask is not { IsCompleted: false })
-        {
-            try { refreshCancellation.Dispose(); } catch { /* ignore */ }
-        }
-    }
+        if (disposed)
+            return;
 
-    private void ScheduleRemoteCatalogRefresh()
-    {
         lock (refreshGate)
         {
             if (refreshTask is { IsCompleted: false })
                 return;
 
-            var request = new DadProfileCatalogRefreshRequest(
-                Guid.NewGuid().ToString("N"),
-                configuration.PluginEnabled,
-                configuration.LocalOnlyModeEnabled,
-                transportService.GetKnownParticipantsSnapshot());
-            refreshTask = Task.Run(
-                () => RefreshRemoteCatalogsAsync(request, refreshCancellation.Token),
-                refreshCancellation.Token);
+            refreshTask = RefreshRemoteCatalogsAsync(refreshCancellation.Token);
+            backgroundTasks.Track(refreshTask, "remote profile catalog refresh");
         }
     }
 
-    private async Task RefreshRemoteCatalogsAsync(
-        DadProfileCatalogRefreshRequest request,
-        CancellationToken cancellationToken)
+    private async Task RefreshRemoteCatalogsAsync(CancellationToken cancellationToken)
     {
-        DadProfileCatalogRefreshResult result;
-        if (!request.PluginEnabled || request.LocalOnlyModeEnabled)
-        {
-            result = DadProfileCatalogRefreshResult.MarkOffline(request.RequestId);
-        }
-        else
-        {
-            try
-            {
-                var responses = await transportService.RequestProfileCatalogsAsync(
-                    request.RequestId,
-                    request.Participants,
-                    cancellationToken).ConfigureAwait(false);
-                result = DadProfileCatalogRefreshResult.FromResponses(request.RequestId, responses);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                log.Debug(ex, "[dad][Profiles] Profile catalog refresh failed.");
-                result = DadProfileCatalogRefreshResult.MarkOffline(request.RequestId);
-            }
-        }
-
-        if (cancellationToken.IsCancellationRequested)
-            return;
-
-        try
-        {
-            await Plugin.Framework.RunOnFrameworkThread(() => ApplyRemoteCatalogRefresh(result))
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Normal shutdown.
-        }
+        await Task.Yield();
+        cancellationToken.ThrowIfCancellationRequested();
+        RefreshRemoteCatalogs();
+        RebuildCurrentCatalogs();
     }
 
-    private void ApplyRemoteCatalogRefresh(DadProfileCatalogRefreshResult result)
+    private void RefreshRemoteCatalogs()
     {
-        transportService.RecordProfileCatalogRefreshResult(result.Responses.Count);
-        if (result.MarkOwnersOffline)
+        if (!configuration.PluginEnabled || configuration.LocalOnlyModeEnabled)
         {
             MarkCachedOwnersOffline();
-            RebuildCurrentCatalogs();
             return;
         }
 
         try
         {
-            var seenOwners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var response in result.Responses.Where(static response => response.Success))
+            var responses = transportService.RequestProfileCatalogs(Guid.NewGuid().ToString("N"));
+            lock (cacheGate)
             {
-                var catalog = response.Catalog.Clone();
-                catalog.GeneratedAtUtc = DateTime.UtcNow;
-                catalog.OwnerOnline = true;
-                catalog.ReadOnly = false;
-                var ownerKey = GetOwnerKey(catalog);
-                seenOwners.Add(ownerKey);
-                configuration.ProfileCatalogCache.RemoveAll(existing =>
-                    string.Equals(GetOwnerKey(existing), ownerKey, StringComparison.OrdinalIgnoreCase));
-                configuration.ProfileCatalogCache.Add(catalog);
-            }
-
-            foreach (var cached in configuration.ProfileCatalogCache)
-            {
-                if (seenOwners.Contains(GetOwnerKey(cached)))
-                    continue;
-
-                if (DateTime.UtcNow - cached.GeneratedAtUtc >= OfflineAfter)
+                var seenOwners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var response in responses.Where(static response => response.Success))
                 {
-                    cached.OwnerOnline = false;
-                    cached.ReadOnly = true;
+                    var catalog = response.Catalog.Clone();
+                    catalog.GeneratedAtUtc = DateTime.UtcNow;
+                    catalog.OwnerOnline = true;
+                    catalog.ReadOnly = false;
+                    var ownerKey = GetOwnerKey(catalog);
+                    seenOwners.Add(ownerKey);
+                    configuration.ProfileCatalogCache.RemoveAll(existing =>
+                        string.Equals(GetOwnerKey(existing), ownerKey, StringComparison.OrdinalIgnoreCase));
+                    configuration.ProfileCatalogCache.Add(catalog);
                 }
-            }
 
-            SaveCacheIfChanged();
-            RebuildCurrentCatalogs();
+                foreach (var cached in configuration.ProfileCatalogCache)
+                {
+                    if (seenOwners.Contains(GetOwnerKey(cached)))
+                        continue;
+
+                    if (!transportService.IsWorkerOnline(cached.OwnerWorkerSessionId) ||
+                        DateTime.UtcNow - cached.GeneratedAtUtc >= OfflineAfter)
+                    {
+                        cached.OwnerOnline = false;
+                        cached.ReadOnly = true;
+                    }
+                }
+
+                SaveCacheIfChanged();
+            }
         }
         catch (Exception ex)
         {
-            log.Debug(ex, "[dad][Profiles] Failed to apply profile catalog refresh.");
+            log.Debug(ex, "[dad][Profiles] Profile catalog refresh failed.");
             MarkCachedOwnersOffline();
-            RebuildCurrentCatalogs();
         }
     }
 
     private void MarkCachedOwnersOffline()
     {
-        foreach (var catalog in configuration.ProfileCatalogCache ?? [])
+        lock (cacheGate)
         {
-            catalog.OwnerOnline = false;
-            catalog.ReadOnly = true;
-        }
+            foreach (var catalog in configuration.ProfileCatalogCache ?? [])
+            {
+                catalog.OwnerOnline = false;
+                catalog.ReadOnly = true;
+            }
 
-        SaveCacheIfChanged();
+            SaveCacheIfChanged();
+        }
     }
 
     private void SaveCacheIfChanged()
     {
-        configuration.ProfileCatalogCache ??= [];
-        var signature = string.Join(
-            "\n",
-            configuration.ProfileCatalogCache
-                .OrderBy(GetOwnerKey, StringComparer.OrdinalIgnoreCase)
-                .Select(catalog => $"{GetOwnerKey(catalog)}|{catalog.OwnerOnline}|{catalog.ReadOnly}|{string.Join(",", catalog.Accounts.OrderBy(static account => account.AccountKey.Value, StringComparer.OrdinalIgnoreCase).Select(static account => $"{account.AccountKey.Value}:{account.Revision}:{account.Characters.Count}:{string.Join(".", account.Characters.Select(static character => character.Revision))}"))}"));
-        if (string.Equals(signature, cacheSignature, StringComparison.Ordinal))
-            return;
+        lock (cacheGate)
+        {
+            configuration.ProfileCatalogCache ??= [];
+            var signature = string.Join(
+                "\n",
+                configuration.ProfileCatalogCache
+                    .OrderBy(GetOwnerKey, StringComparer.OrdinalIgnoreCase)
+                    .Select(catalog => $"{GetOwnerKey(catalog)}|{catalog.OwnerOnline}|{catalog.ReadOnly}|{string.Join(",", catalog.Accounts.OrderBy(static account => account.AccountKey.Value, StringComparer.OrdinalIgnoreCase).Select(static account => $"{account.AccountKey.Value}:{account.Revision}:{account.Characters.Count}:{string.Join(".", account.Characters.Select(static character => character.Revision))}"))}"));
+            if (string.Equals(signature, cacheSignature, StringComparison.Ordinal))
+                return;
 
-        cacheSignature = signature;
-        configuration.Save();
+            cacheSignature = signature;
+            configuration.Save();
+        }
     }
 
     private static string GetOwnerKey(DadProfileCatalog catalog)
@@ -281,44 +258,45 @@ public sealed class DadProfileDirectoryService : IDisposable
             ? catalog.OwnerWorkerSessionId.Value
             : catalog.OwnerClientInstanceId;
 
+    private void ApplyRemoteProfileAck(string ownerKey, DadProfileUpdateAck ack)
+    {
+        if (ack.Account == null)
+            return;
+
+        lock (cacheGate)
+        {
+            var owner = (configuration.ProfileCatalogCache ?? []).FirstOrDefault(catalog =>
+                string.Equals(GetOwnerKey(catalog), ownerKey, StringComparison.OrdinalIgnoreCase));
+            if (owner == null)
+                return;
+
+            owner.Accounts.RemoveAll(account => DadRosterIdentity.SameAccount(account.AccountKey, ack.Account.AccountKey));
+            owner.Accounts.Add(ack.Account.Clone());
+            owner.GeneratedAtUtc = DateTime.UtcNow;
+            owner.OwnerOnline = transportService.IsWorkerOnline(owner.OwnerWorkerSessionId);
+            owner.ReadOnly = !owner.OwnerOnline;
+            SaveCacheIfChanged();
+        }
+
+        RebuildCurrentCatalogs();
+    }
+
     private void RebuildCurrentCatalogs()
     {
         var catalogs = new List<DadProfileCatalog> { BuildLocalCatalog() };
-        catalogs.AddRange((configuration.ProfileCatalogCache ?? [])
-            .Where(catalog => !string.Equals(
-                catalog.OwnerWorkerSessionId.Value,
-                presenceService.WorkerSessionId.Value,
-                StringComparison.OrdinalIgnoreCase))
-            .Select(static catalog => catalog.Clone()));
+        lock (cacheGate)
+        {
+            catalogs.AddRange((configuration.ProfileCatalogCache ?? [])
+                .Where(catalog => !string.Equals(
+                    catalog.OwnerWorkerSessionId.Value,
+                    presenceService.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(static catalog => catalog.Clone()));
+        }
+
         currentCatalogs = catalogs
             .OrderByDescending(static catalog => catalog.OwnerOnline)
             .ThenBy(static catalog => catalog.OwnerClientInstanceId, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private sealed record DadProfileCatalogRefreshRequest(
-        string RequestId,
-        bool PluginEnabled,
-        bool LocalOnlyModeEnabled,
-        IReadOnlyList<DadParticipantSnapshot> Participants);
-
-    private sealed record DadProfileCatalogRefreshResult(
-        string RequestId,
-        IReadOnlyList<DadProfileCatalogResponse> Responses,
-        bool MarkOwnersOffline)
-    {
-        public static DadProfileCatalogRefreshResult FromResponses(
-            string requestId,
-            IReadOnlyList<DadProfileCatalogResponse> responses)
-            => new(requestId, responses.Select(static response => new DadProfileCatalogResponse
-            {
-                RequestId = response.RequestId,
-                Success = response.Success,
-                Summary = response.Summary,
-                Catalog = response.Catalog.Clone(),
-            }).ToList(), MarkOwnersOffline: false);
-
-        public static DadProfileCatalogRefreshResult MarkOffline(string requestId)
-            => new(requestId, [], MarkOwnersOffline: true);
     }
 }

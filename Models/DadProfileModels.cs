@@ -6,6 +6,7 @@ public sealed class DadProfileCatalog
     public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
     public string OwnerClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId OwnerWorkerSessionId { get; set; } = new(string.Empty);
+    // Legacy serialized field. Routing uses OwnerWorkerSessionId only.
     public string OwnerEndpoint { get; set; } = string.Empty;
     public bool OwnerOnline { get; set; }
     public bool ReadOnly { get; set; }
