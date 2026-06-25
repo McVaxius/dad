@@ -4,6 +4,8 @@ namespace dad.Services;
 
 public static class DadRosterTransportCatalogRuntime
 {
+    private static readonly TimeSpan RecentAggregateRosterResponseTtl = TimeSpan.FromMinutes(15);
+
     public static DadCharacterPool BuildLocalTransportPool(
         DadCharacterPool? currentPool,
         DadParticipantSnapshot? fallbackSnapshot,
@@ -34,6 +36,63 @@ public static class DadRosterTransportCatalogRuntime
         IReadOnlyList<DadPeerRosterCatalogResponse> peerCatalogResponses)
         => !PeerCatalogContainsUsableRuntimeRow(runtimeResponse, peerCatalogResponses);
 
+    public static IReadOnlyList<DadRosterCharacter> BuildParticipantRuntimeFallbackRows(
+        DadPeerTransportSnapshot currentTransport,
+        IReadOnlyList<DadPeerRosterCatalogResponse> catalogResponses)
+    {
+        var rows = new List<DadRosterCharacter>();
+        foreach (var response in EnumerateTransportRuntimeResponses(currentTransport))
+        {
+            if (!IsConnectedFallbackParticipant(response.Participant))
+                continue;
+            if (!ShouldUsePeerRuntimeFallback(response, catalogResponses))
+                continue;
+            if (!TryBuildParticipantFallbackRosterCharacter(response.Participant, currentTransport, out var row))
+                continue;
+
+            rows.Add(row);
+        }
+
+        return rows;
+    }
+
+    public static bool IsRosterOwnerReachable(
+        DadWorkerSessionId ownerWorkerSessionId,
+        string? ownerClientInstanceId,
+        DadPeerTransportSnapshot currentTransport,
+        IReadOnlyList<DadPeerRosterCatalogResponse> aggregateResponses,
+        DateTime? nowUtc = null)
+    {
+        ownerClientInstanceId = ownerClientInstanceId?.Trim() ?? string.Empty;
+        if (ownerWorkerSessionId.IsEmpty && string.IsNullOrWhiteSpace(ownerClientInstanceId))
+            return false;
+
+        if (MatchesRosterOwner(
+                currentTransport.LocalWorkerSessionId,
+                currentTransport.LocalClientInstanceId,
+                ownerWorkerSessionId,
+                ownerClientInstanceId))
+        {
+            return true;
+        }
+
+        if (currentTransport.KnownParticipants.Any(participant =>
+                participant.State != DadParticipantState.Stale &&
+                MatchesRosterOwner(
+                    participant.WorkerSessionId,
+                    participant.ClientInstanceId,
+                    ownerWorkerSessionId,
+                    ownerClientInstanceId)))
+        {
+            return true;
+        }
+
+        var now = nowUtc ?? DateTime.UtcNow;
+        return aggregateResponses.Any(response =>
+            IsRecentAggregateResponse(response, now) &&
+            AggregateResponseMatchesRosterOwner(response, ownerWorkerSessionId, ownerClientInstanceId));
+    }
+
     public static bool PeerCatalogContainsUsableRuntimeRow(
         DadPeerSnapshotResponse runtimeResponse,
         IReadOnlyList<DadPeerRosterCatalogResponse> peerCatalogResponses)
@@ -50,6 +109,62 @@ public static class DadRosterTransportCatalogRuntime
         return false;
     }
 
+    private static bool AggregateResponseMatchesRosterOwner(
+        DadPeerRosterCatalogResponse response,
+        DadWorkerSessionId ownerWorkerSessionId,
+        string ownerClientInstanceId)
+    {
+        if (MatchesRosterOwner(response.WorkerSessionId, response.ClientInstanceId, ownerWorkerSessionId, ownerClientInstanceId) ||
+            MatchesRosterOwner(
+                response.Catalog.SourceWorkerSessionId,
+                response.Catalog.SourceClientInstanceId,
+                ownerWorkerSessionId,
+                ownerClientInstanceId))
+        {
+            return true;
+        }
+
+        return response.Catalog.Accounts.Any(account =>
+                   MatchesRosterOwner(
+                       account.SourceWorkerSessionId,
+                       account.SourceClientInstanceId,
+                       ownerWorkerSessionId,
+                       ownerClientInstanceId)) ||
+               response.Catalog.Characters.Any(character =>
+                   MatchesRosterOwner(
+                       character.SourceWorkerSessionId,
+                       character.SourceClientInstanceId,
+                       ownerWorkerSessionId,
+                       ownerClientInstanceId));
+    }
+
+    private static bool IsRecentAggregateResponse(DadPeerRosterCatalogResponse response, DateTime nowUtc)
+        => nowUtc - response.RespondedAtUtc <= RecentAggregateRosterResponseTtl;
+
+    private static bool MatchesRosterOwner(
+        DadWorkerSessionId candidateWorkerSessionId,
+        string? candidateClientInstanceId,
+        DadWorkerSessionId ownerWorkerSessionId,
+        string ownerClientInstanceId)
+        => MatchesWorker(candidateWorkerSessionId, ownerWorkerSessionId) ||
+           MatchesClient(candidateClientInstanceId, ownerClientInstanceId);
+
+    private static bool MatchesWorker(DadWorkerSessionId candidateWorkerSessionId, DadWorkerSessionId ownerWorkerSessionId)
+        => !candidateWorkerSessionId.IsEmpty &&
+           !ownerWorkerSessionId.IsEmpty &&
+           string.Equals(
+               candidateWorkerSessionId.Value,
+               ownerWorkerSessionId.Value,
+               StringComparison.OrdinalIgnoreCase);
+
+    private static bool MatchesClient(string? candidateClientInstanceId, string ownerClientInstanceId)
+        => !string.IsNullOrWhiteSpace(candidateClientInstanceId) &&
+           !string.IsNullOrWhiteSpace(ownerClientInstanceId) &&
+           string.Equals(
+               candidateClientInstanceId.Trim(),
+               ownerClientInstanceId,
+               StringComparison.OrdinalIgnoreCase);
+
     private static bool CatalogRowMatchesRuntime(
         DadRosterCharacter row,
         DadPeerRosterCatalogResponse catalogResponse,
@@ -62,9 +177,9 @@ public static class DadRosterTransportCatalogRuntime
         if (!MatchesRuntimeOwner(row, catalogResponse, runtimeResponse, participant))
             return false;
 
-        if (!participant.ManagedAccountKey.IsEmpty &&
-            !row.AccountKey.IsEmpty &&
-            !DadRosterIdentity.SameAccount(row.AccountKey, participant.ManagedAccountKey))
+        var participantAccountKey = ResolveParticipantAccountKey(participant);
+        if (!participantAccountKey.IsEmpty &&
+            (row.AccountKey.IsEmpty || !DadRosterIdentity.SameAccount(row.AccountKey, participantAccountKey)))
         {
             return false;
         }
@@ -76,6 +191,126 @@ public static class DadRosterTransportCatalogRuntime
                    row.ContentId,
                    participant.ActiveCharacterKey,
                    participant.Character.ContentId);
+    }
+
+    private static IEnumerable<DadPeerSnapshotResponse> EnumerateTransportRuntimeResponses(
+        DadPeerTransportSnapshot currentTransport)
+    {
+        if (currentTransport.LastResponses.Count > 0)
+        {
+            foreach (var response in currentTransport.LastResponses)
+                yield return response;
+            yield break;
+        }
+
+        foreach (var participant in currentTransport.KnownParticipants)
+            yield return BuildRuntimeResponse(participant);
+    }
+
+    private static DadPeerSnapshotResponse BuildRuntimeResponse(DadParticipantSnapshot participant)
+        => new()
+        {
+            RespondedAtUtc = participant.LastHeartbeatUtc == default
+                ? DateTime.UtcNow
+                : participant.LastHeartbeatUtc,
+            ClientInstanceId = participant.ClientInstanceId,
+            ProcessId = participant.ProcessId,
+            Character = participant.Character.Clone(),
+            Participant = participant.Clone(),
+            XadbReady = participant.Character.XadbReady,
+            Warnings = [..participant.Warnings],
+        };
+
+    private static bool IsConnectedFallbackParticipant(DadParticipantSnapshot participant)
+        => participant.State != DadParticipantState.Stale &&
+           (!participant.WorkerSessionId.IsEmpty || !string.IsNullOrWhiteSpace(participant.ClientInstanceId));
+
+    private static bool TryBuildParticipantFallbackRosterCharacter(
+        DadParticipantSnapshot participant,
+        DadPeerTransportSnapshot currentTransport,
+        out DadRosterCharacter row)
+    {
+        row = new DadRosterCharacter();
+        var character = participant.Character.Clone();
+        var characterKey = ResolveParticipantCharacterKey(character, participant);
+        if (string.IsNullOrWhiteSpace(characterKey) && character.ContentId == 0)
+            return false;
+
+        var accountKey = ResolveParticipantAccountKey(participant);
+        if (accountKey.IsEmpty)
+            accountKey = DadRosterIdentity.ResolveAccountKey(character.AccountId, character.AccountAlias);
+        if (accountKey.IsEmpty)
+            return false;
+
+        var parsed = ParseCharacterKey(characterKey);
+        var lastRuntimeSeenUtc = character.LastSeenUtc ??
+                                 (participant.LastHeartbeatUtc == default
+                                     ? DateTime.UtcNow
+                                     : participant.LastHeartbeatUtc);
+
+        row = new DadRosterCharacter
+        {
+            AccountKey = accountKey,
+            AccountAlias = FirstNonEmpty(participant.ManagedAccountAlias, character.AccountAlias),
+            CharacterKey = new DadCharacterKey(characterKey),
+            ContentId = character.ContentId,
+            CharacterName = FirstNonEmpty(character.CharacterName, parsed.CharacterName),
+            WorldId = character.WorldId == 0 ? null : character.WorldId,
+            WorldName = FirstNonEmpty(character.WorldName, parsed.WorldName),
+            DataCenterId = character.DataCenterId,
+            DataCenterName = character.DataCenterName,
+            LastSnapshotUtc = character.XadbSnapshotUtc,
+            LastRuntimeSeenUtc = lastRuntimeSeenUtc,
+            JobLevels = new Dictionary<uint, int>(character.JobLevels),
+            CurrentJobId = character.CurrentJobId,
+            CurrentJobAbbrev = character.CurrentJobAbbrev,
+            CurrentLevel = character.CurrentLevel,
+            SnapshotQuality = character.SnapshotQuality,
+            SnapshotVersion = character.SnapshotVersion,
+            XadbReady = character.XadbReady,
+            IsCurrent = true,
+            Source = IsLocalTransportParticipant(participant, currentTransport)
+                ? DadCharacterSource.LocalRuntime
+                : DadCharacterSource.PeerRuntime,
+            SourceClientInstanceId = participant.ClientInstanceId,
+            SourceWorkerSessionId = participant.WorkerSessionId,
+            MapEligible = character.MapEligible,
+            MapEligibilitySummary = character.MapEligibilitySummary,
+            Blockers = [..character.Blockers],
+            Warnings = [..participant.Warnings],
+        };
+        return true;
+    }
+
+    private static DadAccountKey ResolveParticipantAccountKey(DadParticipantSnapshot participant)
+        => !participant.ManagedAccountKey.IsEmpty
+            ? participant.ManagedAccountKey
+            : DadRosterIdentity.ResolveAccountKey(string.Empty, participant.ManagedAccountAlias);
+
+    private static string ResolveParticipantCharacterKey(
+        DadAcquiredCharacter character,
+        DadParticipantSnapshot participant)
+    {
+        if (IsUsableCharacterKey(character.CharacterKey))
+            return character.CharacterKey.Trim();
+        if (IsUsableCharacterKey(participant.ActiveCharacterKey.Value))
+            return participant.ActiveCharacterKey.Value.Trim();
+
+        return string.Empty;
+    }
+
+    private static bool IsLocalTransportParticipant(
+        DadParticipantSnapshot participant,
+        DadPeerTransportSnapshot currentTransport)
+    {
+        if (participant.IsLocalClient)
+            return true;
+
+        return MatchesRosterOwner(
+            currentTransport.LocalWorkerSessionId,
+            currentTransport.LocalClientInstanceId,
+            participant.WorkerSessionId,
+            participant.ClientInstanceId?.Trim() ?? string.Empty);
     }
 
     private static bool MatchesRuntimeOwner(

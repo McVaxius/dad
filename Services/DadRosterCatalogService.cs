@@ -65,7 +65,10 @@ public sealed class DadRosterCatalogService
             StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
         };
 
-        var localCatalog = BuildLocalCatalog(pool, plan);
+        var effectivePool = plan.ForcePeerRefresh
+            ? WithCurrentTransport(pool, transportService.RequestSnapshots(new DadPeerSnapshotRequest()))
+            : pool;
+        var localCatalog = BuildLocalCatalog(effectivePool, plan);
         var allCatalogs = new List<DadAccountRosterCatalog> { localCatalog };
 
         if (plan.ForcePeerRefresh)
@@ -88,7 +91,21 @@ public sealed class DadRosterCatalogService
             }
 
             allCatalogs.AddRange(lastPeerResponses.Select(static response => response.Catalog));
-            var peerRuntimeFallback = BuildPeerRuntimeFallbackCatalog(pool, lastPeerResponses);
+            var fallbackSuppressionResponses = new List<DadPeerRosterCatalogResponse>
+            {
+                new()
+                {
+                    RequestId = plan.PlanId,
+                    RespondedAtUtc = localCatalog.GeneratedAtUtc,
+                    ClientInstanceId = localCatalog.SourceClientInstanceId,
+                    WorkerSessionId = localCatalog.SourceWorkerSessionId,
+                    Catalog = localCatalog,
+                },
+            };
+            fallbackSuppressionResponses.AddRange(lastPeerResponses);
+            var peerRuntimeFallback = BuildPeerRuntimeFallbackCatalog(
+                transportService.CurrentTransport,
+                fallbackSuppressionResponses);
             if (peerRuntimeFallback.Characters.Count > 0)
                 allCatalogs.Add(peerRuntimeFallback);
         }
@@ -1155,9 +1172,21 @@ public sealed class DadRosterCatalogService
         });
     }
 
-    private DadAccountRosterCatalog BuildPeerRuntimeFallbackCatalog(
+    private static DadCharacterPool WithCurrentTransport(
         DadCharacterPool pool,
-        IReadOnlyList<DadPeerRosterCatalogResponse> peerCatalogResponses)
+        DadPeerTransportSnapshot currentTransport)
+        => new()
+        {
+            LastUpdatedUtc = pool.LastUpdatedUtc,
+            XadbStatus = pool.XadbStatus,
+            PeerTransport = currentTransport,
+            LastSummary = pool.LastSummary,
+            Characters = pool.Characters.Select(static character => character.Clone()).ToList(),
+        };
+
+    private DadAccountRosterCatalog BuildPeerRuntimeFallbackCatalog(
+        DadPeerTransportSnapshot currentTransport,
+        IReadOnlyList<DadPeerRosterCatalogResponse> catalogResponses)
     {
         var catalog = new DadAccountRosterCatalog
         {
@@ -1171,44 +1200,19 @@ public sealed class DadRosterCatalogService
             },
         };
 
-        foreach (var response in pool.PeerTransport.LastResponses)
-        {
-            if (!DadRosterTransportCatalogRuntime.ShouldUsePeerRuntimeFallback(response, peerCatalogResponses))
-                continue;
-
-            var participant = response.Participant;
-            var clientId = string.IsNullOrWhiteSpace(response.ClientInstanceId)
-                ? participant.ClientInstanceId
-                : response.ClientInstanceId;
-
-            var acquired = participant.Character.Clone();
-            acquired.Source = DadCharacterSource.PeerRuntime;
-            acquired.Freshness = response.Character.Freshness;
-            acquired.Readiness = response.Character.Readiness;
-            if (!participant.ManagedAccountKey.IsEmpty)
-                acquired.AccountId = participant.ManagedAccountKey.Value;
-            if (!string.IsNullOrWhiteSpace(participant.ManagedAccountAlias))
-                acquired.AccountAlias = participant.ManagedAccountAlias;
-            if (string.IsNullOrWhiteSpace(acquired.CharacterKey) && !participant.ActiveCharacterKey.IsEmpty)
-                acquired.CharacterKey = participant.ActiveCharacterKey.Value;
-            if (string.IsNullOrWhiteSpace(acquired.CharacterKey) && acquired.ContentId == 0)
-                continue;
-
-            var rosterCharacter = FromAcquiredCharacter(acquired);
-            rosterCharacter.SourceClientInstanceId = clientId;
-            rosterCharacter.SourceWorkerSessionId = participant.WorkerSessionId;
-            if (rosterCharacter.AccountKey.IsEmpty && !participant.ManagedAccountKey.IsEmpty)
-                StampCharacterAccount(rosterCharacter, participant.ManagedAccountKey, participant.ManagedAccountAlias);
+        var fallbackRows = DadRosterTransportCatalogRuntime.BuildParticipantRuntimeFallbackRows(
+            currentTransport,
+            catalogResponses);
+        foreach (var rosterCharacter in fallbackRows)
             UpsertRosterCharacter(catalog.Characters, rosterCharacter);
-            AddParticipantAccountOption(catalog.Accounts, participant, isLocal: false);
-        }
 
         if (catalog.Characters.Count == 0)
             return catalog;
 
+        AddCharacterAccountOptions(catalog.Accounts, catalog.Characters);
         RefreshAccountCharacterCounts(catalog.Accounts, catalog.Characters);
         catalog.Accounts = SortAccountOptions(catalog.Accounts).ToList();
-        var warning = "Peer roster catalog unavailable; using current runtime character fallback.";
+        var warning = "Peer roster catalog unavailable or incomplete; using current hub participant fallback.";
         AddWarning(catalog.Warnings, warning);
         AddWarning(catalog.SourceDiagnostics.Warnings, warning);
         catalog.Summary = BuildCatalogSummary(catalog);
@@ -1379,19 +1383,26 @@ public sealed class DadRosterCatalogService
         foreach (var account in catalog.Accounts)
         {
             account.OwnerOnline = account.IsLocal ||
-                                  (!account.SourceWorkerSessionId.IsEmpty &&
-                                   transportService.IsWorkerOnline(account.SourceWorkerSessionId));
+                                  DadRosterTransportCatalogRuntime.IsRosterOwnerReachable(
+                                      account.SourceWorkerSessionId,
+                                      account.SourceClientInstanceId,
+                                      transportService.CurrentTransport,
+                                      lastPeerResponses);
         }
 
         foreach (var character in catalog.Characters)
         {
-            var localOwner = character.SourceWorkerSessionId.IsEmpty ||
-                             string.Equals(
-                                 character.SourceWorkerSessionId.Value,
-                                 presenceService.WorkerSessionId.Value,
-                                 StringComparison.OrdinalIgnoreCase);
-            if (localOwner || transportService.IsWorkerOnline(character.SourceWorkerSessionId))
+            var hasOwnerIdentity = !character.SourceWorkerSessionId.IsEmpty ||
+                                   !string.IsNullOrWhiteSpace(character.SourceClientInstanceId);
+            if (!hasOwnerIdentity ||
+                DadRosterTransportCatalogRuntime.IsRosterOwnerReachable(
+                    character.SourceWorkerSessionId,
+                    character.SourceClientInstanceId,
+                    transportService.CurrentTransport,
+                    lastPeerResponses))
+            {
                 continue;
+            }
 
             character.IsCurrent = false;
             character.IsStale = true;
