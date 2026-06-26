@@ -29,12 +29,14 @@ public sealed class DadTransportService : IDisposable
     private const string MessageWorkerExecutionStatus = "worker-execution-status";
     private const string MessageWorkerExecutionCancel = "worker-execution-cancel";
 
-    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan CatalogRefreshInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan OutboundWriteTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxReconnectBackoff = TimeSpan.FromSeconds(10);
     private const int MaxConcurrentConnections = 32;
+    private const int MaxConcurrentOutboundOperations = 8;
+    private const int MaxTransportEventsPerFrame = 64;
+    private const int MaxTransportEventBacklog = 2048;
 
     private readonly Configuration configuration;
     private readonly DadPresenceService presenceService;
@@ -53,9 +55,13 @@ public sealed class DadTransportService : IDisposable
     private readonly ConcurrentDictionary<string, DadWorkerExecutionAck> workerCommandAcks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> nextRosterRefreshUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> nextProfileRefreshUtc = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentQueue<Action> frameworkCallbacks = new();
+    private readonly DadBoundedFrameworkEventQueue frameworkCallbacks = new(MaxTransportEventBacklog);
+    private readonly DadBoundedFrameworkEventQueue transportEvents = new(MaxTransportEventBacklog);
     private readonly SemaphoreSlim connectionSlots = new(MaxConcurrentConnections, MaxConcurrentConnections);
+    private readonly SemaphoreSlim outboundSlots = new(MaxConcurrentOutboundOperations, MaxConcurrentOutboundOperations);
+    private readonly DadRosterPublishCoalescer rosterPublishCoalescer = new();
     private readonly DadBackgroundTaskObserver backgroundTasks;
+    private long pendingOutboundOperations;
 
     private CancellationTokenSource roleCancellation = new();
     private TcpListener? listener;
@@ -172,6 +178,9 @@ public sealed class DadTransportService : IDisposable
             workerCommandAcks.Clear();
             lastHubRosterPublish = null;
             lastAppliedHubRosterPublish = DadHubRosterPublishCursor.Empty;
+            rosterPublishCoalescer.Reset();
+            frameworkCallbacks.Clear();
+            transportEvents.Clear();
             lastAuthOrProtocolError = string.Empty;
             if (configuration.RunAsServerDad)
             {
@@ -248,6 +257,8 @@ public sealed class DadTransportService : IDisposable
 
         lifetimeCancellation.Dispose();
         roleCancellation.Dispose();
+        connectionSlots.Dispose();
+        outboundSlots.Dispose();
         backgroundTasks.Dispose();
     }
 
@@ -268,18 +279,20 @@ public sealed class DadTransportService : IDisposable
         lock (localParticipantGate)
             localParticipant = snapshot;
 
+        DrainTransportEvents();
         DrainFrameworkCallbacks();
         SweepDisconnectedParticipants();
         SweepCompletedOperations();
 
-        if (DateTime.UtcNow >= nextHeartbeatUtc)
+        var now = DateTime.UtcNow;
+        if (now >= nextHeartbeatUtc)
         {
-            nextHeartbeatUtc = DateTime.UtcNow + HeartbeatInterval;
+            nextHeartbeatUtc = now + GetHeartbeatInterval();
             if (configuration.RunAsServerDad)
             {
                 foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
                     Track(SendHeartbeatAsync(connection, snapshot, roleCancellation.Token), "server heartbeat");
-                PublishHubRoster(string.Empty);
+                MarkHubRosterDirty("Dad Coordinator heartbeat.", fast: false);
             }
             else if (clientConnection is { IsOpen: true } connection)
             {
@@ -290,6 +303,7 @@ public sealed class DadTransportService : IDisposable
         if (configuration.RunAsServerDad)
             RefreshRemoteCatalogCaches();
 
+        FlushHubRosterPublishIfDue(now);
         RefreshTransportSnapshot();
     }
 
@@ -298,7 +312,7 @@ public sealed class DadTransportService : IDisposable
         RefreshLocalMutationState();
         if (configuration.RunAsServerDad)
         {
-            PublishHubRoster("Dad Coordinator snapshot request.");
+            MarkHubRosterDirty("Dad Coordinator snapshot request.", fast: true);
         }
         else if (!localOnlyModeEnabled)
         {
@@ -687,7 +701,8 @@ public sealed class DadTransportService : IDisposable
             {
                 var message = $"Dad hub protocol {helloFrame.ProtocolVersion} is incompatible; expected {DadHubProtocol.CurrentVersion}.";
                 RecordAuthOrProtocolError(new DadHubProtocolException("protocol-mismatch", message));
-                await connection.SendAsync(
+                await SendFrameAsync(
+                    connection,
                     DadHubProtocol.CreateError(
                         presenceService.WorkerSessionId,
                         helloFrame.SourceWorkerSessionId,
@@ -695,6 +710,7 @@ public sealed class DadTransportService : IDisposable
                         "protocol-mismatch",
                         message,
                         configuration.TransportSharedSecret),
+                    "protocol-mismatch",
                     connection.Cancellation.Token).ConfigureAwait(false);
                 return;
             }
@@ -706,7 +722,8 @@ public sealed class DadTransportService : IDisposable
             catch (DadHubProtocolException ex)
             {
                 RecordAuthOrProtocolError(ex);
-                await connection.SendAsync(
+                await SendFrameAsync(
+                    connection,
                     DadHubProtocol.CreateError(
                         presenceService.WorkerSessionId,
                         helloFrame.SourceWorkerSessionId,
@@ -714,6 +731,7 @@ public sealed class DadTransportService : IDisposable
                         ex.Code,
                         ex.Message,
                         configuration.TransportSharedSecret),
+                    ex.Code,
                     connection.Cancellation.Token).ConfigureAwait(false);
                 return;
             }
@@ -746,7 +764,8 @@ public sealed class DadTransportService : IDisposable
                 BuildVersion = GetBuildVersion(),
                 Participant = GetLocalParticipant(),
             };
-            await connection.SendAsync(
+            await SendFrameAsync(
+                connection,
                 DadHubProtocol.CreateFrame(
                     DadHubFrameKind.HelloAck,
                     presenceService.WorkerSessionId,
@@ -755,9 +774,10 @@ public sealed class DadTransportService : IDisposable
                     helloFrame.CorrelationId,
                     DadIpcJson.Serialize(ack),
                     configuration.TransportSharedSecret),
+                "hello-ack",
                 connection.Cancellation.Token).ConfigureAwait(false);
 
-            PublishHubRoster($"Client Dad {connection.WorkerSessionId} connected.");
+            MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} connected.", fast: true);
             await RunConnectionReaderAsync(connection, isServerSide: true).ConfigureAwait(false);
         }
         catch (DadHubProtocolException ex)
@@ -828,7 +848,8 @@ public sealed class DadTransportService : IDisposable
                     Participant = GetLocalParticipant(),
                 };
                 var correlationId = Guid.NewGuid().ToString("N");
-                await connection.SendAsync(
+                await SendFrameAsync(
+                    connection,
                     DadHubProtocol.CreateFrame(
                         DadHubFrameKind.Hello,
                         presenceService.WorkerSessionId,
@@ -837,6 +858,7 @@ public sealed class DadTransportService : IDisposable
                         correlationId,
                         DadIpcJson.Serialize(hello),
                         configuration.TransportSharedSecret),
+                    "hello",
                     connection.Cancellation.Token).ConfigureAwait(false);
 
                 var response = await ReadWithTimeoutAsync(
@@ -974,18 +996,23 @@ public sealed class DadTransportService : IDisposable
         if (heartbeat == null)
             return;
 
-        var now = DateTime.UtcNow;
-        connection.LastHeartbeatUtc = now;
-        connection.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
-        if (isServerSide)
-        {
-            disconnectedParticipants.TryRemove(connection.WorkerSessionId.Value, out _);
-            PublishHubRoster(string.Empty);
-        }
-        else
-        {
-            serverParticipant = connection.Participant.Clone();
-        }
+        QueueTransportEvent(
+            () =>
+            {
+                var now = DateTime.UtcNow;
+                connection.LastHeartbeatUtc = now;
+                connection.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
+                if (isServerSide)
+                {
+                    disconnectedParticipants.TryRemove(connection.WorkerSessionId.Value, out _);
+                    MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} heartbeat.", fast: false);
+                }
+                else
+                {
+                    serverParticipant = connection.Participant.Clone();
+                }
+            },
+            "heartbeat");
     }
 
     private void HandleNotification(DadHubFrame frame, bool isServerSide)
@@ -1048,7 +1075,7 @@ public sealed class DadTransportService : IDisposable
                 configuration.TransportSharedSecret);
         }
 
-        await origin.SendAsync(response, origin.Cancellation.Token).ConfigureAwait(false);
+        await SendFrameAsync(origin, response, request.MessageType, origin.Cancellation.Token).ConfigureAwait(false);
     }
 
     private DadHubFrame HandleHubRosterPublishRequest(DadHubConnection origin, DadHubFrame request)
@@ -1062,7 +1089,9 @@ public sealed class DadTransportService : IDisposable
             disconnectedParticipants.TryRemove(origin.WorkerSessionId.Value, out _);
         }
 
-        var publish = PublishHubRoster($"Client Dad {origin.WorkerSessionId} requested roster publish.")
+        var reason = $"Client Dad {origin.WorkerSessionId} requested roster publish.";
+        MarkHubRosterDirty(reason, fast: true);
+        var publish = CreateHubRosterPublish(reason)
                       ?? throw new DadHubProtocolException(
                           "roster-publish-disabled",
                           "Dad Coordinator roster publish is disabled in local-only mode.");
@@ -1540,31 +1569,18 @@ public sealed class DadTransportService : IDisposable
             return aggregate;
         }
 
-        var request = new DadAggregateRosterCatalogRequest
+        QueueCoordinatorRosterAggregateRefresh(target, plan);
+        AddCachedRosterResponses(aggregate, skipWorkerId: presenceService.WorkerSessionId.Value);
+
+        var expectedRemoteCount = Math.Max(1, EstimateExpectedRemoteRosterCatalogCount(skipWorkerId: presenceService.WorkerSessionId.Value));
+        var pendingCount = Math.Max(0, expectedRemoteCount - (aggregate.Responses.Count - 1));
+        if (pendingCount > 0)
         {
-            RequestId = plan.PlanId,
-            RequestingWorkerSessionId = presenceService.WorkerSessionId,
-            IncludeRequester = false,
-            Plan = CloneRosterRefreshPlan(plan),
-        };
-        var serverAggregate = TryDirectRequest<DadAggregateRosterCatalogRequest, DadAggregateRosterCatalogResponse>(
-            target,
-            MessageRosterAggregateCatalogRequest,
-            request,
-            out var error);
-        if (serverAggregate == null)
-        {
-            AddWarning(aggregate.Warnings, string.IsNullOrWhiteSpace(error)
-                ? "Dad Coordinator aggregate roster catalog refresh did not return a response."
-                : error);
-            FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1);
-            return aggregate;
+            aggregate.PendingCatalogCount += pendingCount;
+            AddWarning(aggregate.Warnings, "Dad Coordinator roster catalog refresh is queued; showing cached connected-Dad catalog data.");
         }
 
-        MergeRosterAggregate(aggregate, serverAggregate, excludeLocal: true);
-        aggregate.PendingCatalogCount += serverAggregate.PendingCatalogCount;
-        aggregate.TimedOutCatalogCount += serverAggregate.TimedOutCatalogCount;
-        FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1 + serverAggregate.ExpectedCatalogCount);
+        FinalizeRosterAggregate(aggregate, expectedCatalogCount: 1 + expectedRemoteCount);
         return aggregate;
     }
 
@@ -1573,7 +1589,7 @@ public sealed class DadTransportService : IDisposable
         DadWorkerSessionId requestingWorkerSessionId,
         bool includeRequester)
     {
-        PublishHubRoster("Dad Coordinator roster catalog aggregate requested.");
+        MarkHubRosterDirty("Dad Coordinator roster catalog aggregate requested.", fast: false);
         var aggregate = CreateRosterAggregate(plan.PlanId);
         var skipRequester = !requestingWorkerSessionId.IsEmpty && !includeRequester
             ? requestingWorkerSessionId.Value
@@ -1587,13 +1603,23 @@ public sealed class DadTransportService : IDisposable
             .Where(connection => string.IsNullOrWhiteSpace(skipRequester) ||
                                  !string.Equals(connection.WorkerSessionId.Value, skipRequester, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        var tasks = targets
-            .Select(connection => RequestRosterCatalogDirectAsync(connection.WorkerSessionId, CloneRosterRefreshPlan(plan)))
-            .ToList();
-        WaitForAggregateTasks(tasks);
+        foreach (var connection in targets)
+            QueueRosterCatalogRefresh(connection, force: plan.ForcePeerRefresh, CloneRosterRefreshPlan(plan));
 
-        AddRosterTaskResponses(aggregate, tasks);
-        PublishHubRoster("Dad Coordinator roster catalog aggregate refreshed.");
+        AddCachedRosterResponses(
+            aggregate,
+            targets.Select(static connection => connection.WorkerSessionId.Value).ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+        var targetResponses = aggregate.Responses.Count -
+                              (string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ? 0 : 1);
+        var pendingCount = Math.Max(0, targets.Count - targetResponses);
+        if (pendingCount > 0)
+        {
+            aggregate.PendingCatalogCount += pendingCount;
+            AddWarning(aggregate.Warnings, $"{pendingCount} connected Dad roster catalog refresh(es) are pending; showing cached catalog data.");
+        }
+
+        MarkHubRosterDirty("Dad Coordinator roster catalog aggregate queued.", fast: false);
         FinalizeRosterAggregate(
             aggregate,
             (string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ? 0 : 1) + targets.Count);
@@ -1613,30 +1639,18 @@ public sealed class DadTransportService : IDisposable
             return aggregate;
         }
 
-        var request = new DadAggregateProfileCatalogRequest
+        QueueCoordinatorProfileAggregateRefresh(target, requestId);
+        AddCachedProfileResponses(aggregate, skipWorkerId: presenceService.WorkerSessionId.Value);
+
+        var expectedRemoteCount = Math.Max(1, EstimateExpectedRemoteProfileCatalogCount(skipWorkerId: presenceService.WorkerSessionId.Value));
+        var pendingCount = Math.Max(0, expectedRemoteCount - (aggregate.Responses.Count - 1));
+        if (pendingCount > 0)
         {
-            RequestId = requestId,
-            RequestingWorkerSessionId = presenceService.WorkerSessionId,
-            IncludeRequester = false,
-        };
-        var serverAggregate = TryDirectRequest<DadAggregateProfileCatalogRequest, DadAggregateProfileCatalogResponse>(
-            target,
-            MessageProfileAggregateCatalogRequest,
-            request,
-            out var error);
-        if (serverAggregate == null)
-        {
-            AddWarning(aggregate.Warnings, string.IsNullOrWhiteSpace(error)
-                ? "Dad Coordinator aggregate profile catalog refresh did not return a response."
-                : error);
-            FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1);
-            return aggregate;
+            aggregate.PendingCatalogCount += pendingCount;
+            AddWarning(aggregate.Warnings, "Dad Coordinator profile catalog refresh is queued; showing cached connected-Dad profile data.");
         }
 
-        MergeProfileAggregate(aggregate, serverAggregate, excludeLocal: true);
-        aggregate.PendingCatalogCount += serverAggregate.PendingCatalogCount;
-        aggregate.TimedOutCatalogCount += serverAggregate.TimedOutCatalogCount;
-        FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1 + serverAggregate.ExpectedCatalogCount);
+        FinalizeProfileAggregate(aggregate, expectedCatalogCount: 1 + expectedRemoteCount);
         return aggregate;
     }
 
@@ -1658,94 +1672,159 @@ public sealed class DadTransportService : IDisposable
             .Where(connection => string.IsNullOrWhiteSpace(skipRequester) ||
                                  !string.Equals(connection.WorkerSessionId.Value, skipRequester, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        var tasks = targets
-            .Select(connection => RequestProfileCatalogDirectAsync(connection.WorkerSessionId, requestId))
-            .ToList();
-        WaitForAggregateTasks(tasks);
+        foreach (var connection in targets)
+            QueueProfileCatalogRefresh(connection, force: true, requestId);
 
-        AddProfileTaskResponses(aggregate, tasks);
-        FinalizeProfileAggregate(aggregate, aggregate.Responses.Count + targets.Count - tasks.Count(static task => task.IsCompletedSuccessfully && task.Result != null));
+        AddCachedProfileResponses(
+            aggregate,
+            targets.Select(static connection => connection.WorkerSessionId.Value).ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+        var targetResponses = aggregate.Responses.Count -
+                              (string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ? 0 : 1);
+        var pendingCount = Math.Max(0, targets.Count - targetResponses);
+        if (pendingCount > 0)
+        {
+            aggregate.PendingCatalogCount += pendingCount;
+            AddWarning(aggregate.Warnings, $"{pendingCount} connected Dad profile catalog refresh(es) are pending; showing cached profile data.");
+        }
+
+        FinalizeProfileAggregate(
+            aggregate,
+            (string.Equals(skipRequester, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ? 0 : 1) + targets.Count);
         return aggregate;
     }
 
-    private async Task<DadPeerRosterCatalogResponse?> RequestRosterCatalogDirectAsync(
-        DadWorkerSessionId workerSessionId,
+    private void QueueCoordinatorRosterAggregateRefresh(
+        DadWorkerSessionId target,
         DadRosterRefreshPlan plan)
     {
-        var frame = await SendRequestAsync(
-                workerSessionId,
-                MessageRosterCatalogRequest,
-                DadIpcJson.Serialize(plan),
-                roleCancellation.Token)
-            .ConfigureAwait(false);
-        if (frame.Kind == DadHubFrameKind.Error)
-            throw new DadHubProtocolException(frame.ErrorCode, frame.ErrorMessage);
-
-        return DadIpcJson.Deserialize<DadPeerRosterCatalogResponse>(frame.PayloadJson);
-    }
-
-    private async Task<DadProfileCatalogResponse?> RequestProfileCatalogDirectAsync(
-        DadWorkerSessionId workerSessionId,
-        string requestId)
-    {
-        var frame = await SendRequestAsync(
-                workerSessionId,
-                MessageProfileCatalogRequest,
-                DadIpcJson.Serialize(requestId),
-                roleCancellation.Token)
-            .ConfigureAwait(false);
-        if (frame.Kind == DadHubFrameKind.Error)
-            throw new DadHubProtocolException(frame.ErrorCode, frame.ErrorMessage);
-
-        return DadIpcJson.Deserialize<DadProfileCatalogResponse>(frame.PayloadJson);
-    }
-
-    private TResponse? TryDirectRequest<TRequest, TResponse>(
-        DadWorkerSessionId targetWorkerSessionId,
-        string messageType,
-        TRequest request,
-        out string error)
-    {
-        error = string.Empty;
-        try
-        {
-            var frame = SendRequestAsync(
-                    targetWorkerSessionId,
-                    messageType,
-                    DadIpcJson.Serialize(request),
-                    roleCancellation.Token)
-                .GetAwaiter()
-                .GetResult();
-            if (frame.Kind == DadHubFrameKind.Error)
-            {
-                error = $"{messageType} failed: {frame.ErrorMessage}";
-                return default;
-            }
-
-            return DadIpcJson.Deserialize<TResponse>(frame.PayloadJson);
-        }
-        catch (Exception ex) when (!DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
-        {
-            error = $"{messageType} failed: {ex.Message}";
-            log.Debug(ex, "[dad] Direct hub request {MessageType} failed for {WorkerSessionId}.", messageType, targetWorkerSessionId);
-            return default;
-        }
-    }
-
-    private static void WaitForAggregateTasks<TResponse>(IReadOnlyList<Task<TResponse?>> tasks)
-    {
-        if (tasks.Count == 0)
+        var key = $"catalog-roster-aggregate:{target.Value}";
+        if (operations.ContainsKey(key))
             return;
 
-        try
+        var request = new DadAggregateRosterCatalogRequest
         {
-            Task.WaitAll(tasks.Cast<Task>().ToArray(), RequestTimeout + TimeSpan.FromMilliseconds(250));
-        }
-        catch
+            RequestId = plan.PlanId,
+            RequestingWorkerSessionId = presenceService.WorkerSessionId,
+            IncludeRequester = false,
+            Plan = CloneRosterRefreshPlan(plan),
+        };
+        QueueOperation<DadAggregateRosterCatalogRequest, DadAggregateRosterCatalogResponse>(
+            key,
+            target,
+            MessageRosterAggregateCatalogRequest,
+            request,
+            response =>
+            {
+                CacheRosterAggregateResponse(response, excludeLocal: true);
+                CurrentTransport.LastRequestStatus = response.Summary;
+            });
+    }
+
+    private void QueueCoordinatorProfileAggregateRefresh(
+        DadWorkerSessionId target,
+        string requestId)
+    {
+        var key = $"catalog-profile-aggregate:{target.Value}";
+        if (operations.ContainsKey(key))
+            return;
+
+        QueueOperation<DadAggregateProfileCatalogRequest, DadAggregateProfileCatalogResponse>(
+            key,
+            target,
+            MessageProfileAggregateCatalogRequest,
+            new DadAggregateProfileCatalogRequest
+            {
+                RequestId = requestId,
+                RequestingWorkerSessionId = presenceService.WorkerSessionId,
+                IncludeRequester = false,
+            },
+            response =>
+            {
+                CacheProfileAggregateResponse(response, excludeLocal: true);
+                CurrentTransport.LastRequestStatus = response.Summary;
+            });
+    }
+
+    private void CacheRosterAggregateResponse(DadAggregateRosterCatalogResponse response, bool excludeLocal)
+    {
+        var cacheTarget = CreateRosterAggregate(response.RequestId);
+        MergeRosterAggregate(cacheTarget, response, excludeLocal);
+    }
+
+    private void CacheProfileAggregateResponse(DadAggregateProfileCatalogResponse response, bool excludeLocal)
+    {
+        var cacheTarget = CreateProfileAggregate(response.RequestId);
+        MergeProfileAggregate(cacheTarget, response, excludeLocal);
+    }
+
+    private void AddCachedRosterResponses(
+        DadAggregateRosterCatalogResponse aggregate,
+        string skipWorkerId)
+    {
+        foreach (var response in rosterCatalogs.Values.OrderBy(static response => response.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase))
         {
-            // Individual task faults are converted into aggregate warnings below.
+            if (!string.IsNullOrWhiteSpace(skipWorkerId) &&
+                string.Equals(response.WorkerSessionId.Value, skipWorkerId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            aggregate.Responses.Add(response);
         }
     }
+
+    private void AddCachedRosterResponses(
+        DadAggregateRosterCatalogResponse aggregate,
+        ISet<string> targetWorkerIds)
+    {
+        foreach (var workerId in targetWorkerIds.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            if (rosterCatalogs.TryGetValue(workerId, out var response))
+                aggregate.Responses.Add(response);
+        }
+    }
+
+    private void AddCachedProfileResponses(
+        DadAggregateProfileCatalogResponse aggregate,
+        string skipWorkerId)
+    {
+        foreach (var response in profileCatalogs.Values.OrderBy(static response => response.Catalog.OwnerWorkerSessionId.Value, StringComparer.OrdinalIgnoreCase))
+        {
+            var workerId = response.Catalog.OwnerWorkerSessionId.Value;
+            if (!string.IsNullOrWhiteSpace(skipWorkerId) &&
+                string.Equals(workerId, skipWorkerId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            aggregate.Responses.Add(response);
+        }
+    }
+
+    private void AddCachedProfileResponses(
+        DadAggregateProfileCatalogResponse aggregate,
+        ISet<string> targetWorkerIds)
+    {
+        foreach (var workerId in targetWorkerIds.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            if (profileCatalogs.TryGetValue(workerId, out var response))
+                aggregate.Responses.Add(response);
+        }
+    }
+
+    private int EstimateExpectedRemoteRosterCatalogCount(string skipWorkerId)
+        => CurrentTransport.KnownParticipants
+            .Where(participant => participant.State != DadParticipantState.Stale)
+            .Select(static participant => participant.WorkerSessionId.Value)
+            .Where(workerId => !string.IsNullOrWhiteSpace(workerId))
+            .Where(workerId => string.IsNullOrWhiteSpace(skipWorkerId) ||
+                               !string.Equals(workerId, skipWorkerId, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+    private int EstimateExpectedRemoteProfileCatalogCount(string skipWorkerId)
+        => EstimateExpectedRemoteRosterCatalogCount(skipWorkerId);
 
     private static DadAggregateRosterCatalogResponse CreateRosterAggregate(string requestId)
         => new()
@@ -1760,88 +1839,6 @@ public sealed class DadTransportService : IDisposable
             RequestId = requestId,
             RespondedAtUtc = DateTime.UtcNow,
         };
-
-    private void AddRosterTaskResponses(
-        DadAggregateRosterCatalogResponse aggregate,
-        IReadOnlyList<Task<DadPeerRosterCatalogResponse?>> tasks)
-    {
-        foreach (var task in tasks)
-        {
-            if (!task.IsCompleted)
-            {
-                aggregate.PendingCatalogCount++;
-                AddWarning(aggregate.Warnings, "Roster catalog refresh is still pending for one connected Dad.");
-                continue;
-            }
-
-            if (task.IsCanceled)
-            {
-                aggregate.TimedOutCatalogCount++;
-                AddWarning(aggregate.Warnings, "Roster catalog refresh was cancelled for one connected Dad.");
-                continue;
-            }
-
-            if (task.IsFaulted)
-            {
-                var message = task.Exception?.GetBaseException().Message ?? "Roster catalog refresh failed for one connected Dad.";
-                if (message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
-                    aggregate.TimedOutCatalogCount++;
-                AddWarning(aggregate.Warnings, message);
-                continue;
-            }
-
-            if (task.Result == null)
-            {
-                AddWarning(aggregate.Warnings, "Roster catalog refresh returned an empty response for one connected Dad.");
-                continue;
-            }
-
-            aggregate.Responses.Add(task.Result);
-            rosterCatalogs[task.Result.WorkerSessionId.Value] = task.Result;
-        }
-    }
-
-    private void AddProfileTaskResponses(
-        DadAggregateProfileCatalogResponse aggregate,
-        IReadOnlyList<Task<DadProfileCatalogResponse?>> tasks)
-    {
-        foreach (var task in tasks)
-        {
-            if (!task.IsCompleted)
-            {
-                aggregate.PendingCatalogCount++;
-                AddWarning(aggregate.Warnings, "Profile catalog refresh is still pending for one connected Dad.");
-                continue;
-            }
-
-            if (task.IsCanceled)
-            {
-                aggregate.TimedOutCatalogCount++;
-                AddWarning(aggregate.Warnings, "Profile catalog refresh was cancelled for one connected Dad.");
-                continue;
-            }
-
-            if (task.IsFaulted)
-            {
-                var message = task.Exception?.GetBaseException().Message ?? "Profile catalog refresh failed for one connected Dad.";
-                if (message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
-                    aggregate.TimedOutCatalogCount++;
-                AddWarning(aggregate.Warnings, message);
-                continue;
-            }
-
-            if (task.Result == null)
-            {
-                AddWarning(aggregate.Warnings, "Profile catalog refresh returned an empty response for one connected Dad.");
-                continue;
-            }
-
-            aggregate.Responses.Add(task.Result);
-            var workerId = task.Result.Catalog.OwnerWorkerSessionId.Value;
-            if (!string.IsNullOrWhiteSpace(workerId))
-                profileCatalogs[workerId] = task.Result;
-        }
-    }
 
     private void MergeRosterAggregate(
         DadAggregateRosterCatalogResponse target,
@@ -2037,8 +2034,11 @@ public sealed class DadTransportService : IDisposable
             if (completed != null)
             {
                 var typed = DadIpcJson.Deserialize<TResponse>(response.PayloadJson);
-                if (typed != null)
-                    frameworkCallbacks.Enqueue(() => completed(typed));
+                if (typed != null &&
+                    !frameworkCallbacks.Enqueue(() => completed(typed)))
+                {
+                    CurrentTransport.LastTransportTimeoutSummary = $"{messageType} completion callback dropped because the framework queue is full.";
+                }
             }
         }
         catch (OperationCanceledException)
@@ -2091,7 +2091,8 @@ public sealed class DadTransportService : IDisposable
 
         try
         {
-            await connection.SendAsync(
+            await SendFrameAsync(
+                connection,
                 DadHubProtocol.CreateFrame(
                     DadHubFrameKind.Request,
                     presenceService.WorkerSessionId,
@@ -2100,6 +2101,7 @@ public sealed class DadTransportService : IDisposable
                     correlationId,
                     payloadJson,
                     configuration.TransportSharedSecret),
+                messageType,
                 cancellationToken).ConfigureAwait(false);
 
             return await completion.Task.WaitAsync(RequestTimeout, cancellationToken).ConfigureAwait(false);
@@ -2114,6 +2116,48 @@ public sealed class DadTransportService : IDisposable
         {
             pendingRequests.TryRemove(correlationId, out _);
         }
+    }
+
+    private async Task SendFrameAsync(
+        DadHubConnection connection,
+        DadHubFrame frame,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        var slotAcquired = false;
+        Interlocked.Increment(ref pendingOutboundOperations);
+        UpdateTransportQueueDiagnostics();
+        try
+        {
+            await outboundSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+            slotAcquired = true;
+            await connection.SendAsync(frame, OutboundWriteTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DadHubProtocolException ex) when (string.Equals(ex.Code, "write-timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            RecordTransportTimeout(connection, $"{operationName} write timed out after {OutboundWriteTimeout.TotalSeconds:F0}s.");
+            throw;
+        }
+        finally
+        {
+            if (slotAcquired)
+                outboundSlots.Release();
+            Interlocked.Decrement(ref pendingOutboundOperations);
+            UpdateTransportQueueDiagnostics();
+        }
+    }
+
+    private void RecordTransportTimeout(DadHubConnection connection, string summary)
+    {
+        var worker = connection.WorkerSessionId.IsEmpty ? connection.RemoteWorkerSessionId : connection.WorkerSessionId;
+        CurrentTransport.LastTransportTimeoutSummary = worker.IsEmpty
+            ? summary
+            : $"{summary} Closed {worker}.";
+        MarkHubRosterDirty(CurrentTransport.LastTransportTimeoutSummary, fast: true);
+        if (configuration.RunAsServerDad && !connection.WorkerSessionId.IsEmpty)
+            MarkServerSessionDisconnected(connection);
+        else
+            connection.Close();
     }
 
     private DadHubConnection? ResolveConnection(DadWorkerSessionId targetWorkerSessionId)
@@ -2161,6 +2205,12 @@ public sealed class DadTransportService : IDisposable
         if (connection.Replaced)
             return;
 
+        if (!QueueTransportEvent(() => ApplyServerSessionDisconnected(connection), "disconnect"))
+            ApplyServerSessionDisconnected(connection);
+    }
+
+    private void ApplyServerSessionDisconnected(DadHubConnection connection)
+    {
         if (serverSessions.RemoveIfCurrent(connection.WorkerSessionId, connection))
         {
             disconnectedParticipants[connection.WorkerSessionId.Value] = new DisconnectedParticipant
@@ -2170,7 +2220,7 @@ public sealed class DadTransportService : IDisposable
                 LastHeartbeatUtc = connection.LastHeartbeatUtc,
             };
             CurrentTransport.LastRequestStatus = $"Client Dad {connection.WorkerSessionId} disconnected.";
-            PublishHubRoster(CurrentTransport.LastRequestStatus);
+            MarkHubRosterDirty(CurrentTransport.LastRequestStatus, fast: true);
         }
     }
 
@@ -2181,7 +2231,8 @@ public sealed class DadTransportService : IDisposable
     {
         try
         {
-            await connection.SendAsync(
+            await SendFrameAsync(
+                connection,
                 DadHubProtocol.CreateFrame(
                     DadHubFrameKind.Heartbeat,
                     presenceService.WorkerSessionId,
@@ -2194,6 +2245,7 @@ public sealed class DadTransportService : IDisposable
                         Participant = participant,
                     }),
                     configuration.TransportSharedSecret),
+                "heartbeat",
                 cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
@@ -2202,11 +2254,33 @@ public sealed class DadTransportService : IDisposable
         catch (Exception ex)
         {
             log.Debug(ex, "[dad] Client Dad heartbeat failed.");
-            connection.Close();
+            if (configuration.RunAsServerDad)
+                MarkServerSessionDisconnected(connection);
+            else
+                connection.Close();
         }
     }
 
-    private DadHubRosterPublish? PublishHubRoster(string status)
+    private void MarkHubRosterDirty(string reason, bool fast)
+    {
+        if (!configuration.RunAsServerDad || localOnlyModeEnabled)
+            return;
+
+        rosterPublishCoalescer.MarkDirty(reason, fast, DateTime.UtcNow);
+        UpdateTransportQueueDiagnostics();
+    }
+
+    private void FlushHubRosterPublishIfDue(DateTime nowUtc)
+    {
+        if (!rosterPublishCoalescer.TryFlush(nowUtc, out var reason))
+            return;
+
+        var publish = CreateHubRosterPublish(reason);
+        if (publish != null)
+            Track(BroadcastHubRosterPublishAsync(publish, roleCancellation.Token), "hub roster publish");
+    }
+
+    private DadHubRosterPublish? CreateHubRosterPublish(string status)
     {
         RefreshLocalMutationState();
         if (!configuration.RunAsServerDad || localOnlyModeEnabled)
@@ -2217,14 +2291,16 @@ public sealed class DadTransportService : IDisposable
         ApplyHubRosterPublishToTransport(publish);
         if (!string.IsNullOrWhiteSpace(status))
             CurrentTransport.LastRequestStatus = status;
-        Track(BroadcastHubRosterPublishAsync(publish, roleCancellation.Token), "hub roster publish");
+        CurrentTransport.LastRosterPublishReason = status;
+        CurrentTransport.LastRosterPublishUtc = publish.PublishedAtUtc;
+        CurrentTransport.CoalescedRosterPublishCount = rosterPublishCoalescer.CoalescedCount;
         return publish;
     }
 
     private DadHubRosterPublish BuildHubRosterPublish()
     {
         var now = DateTime.UtcNow;
-        var staleAfter = TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds));
+        var staleAfter = GetHeartbeatStaleThreshold();
         var authorityEndpoint = !string.IsNullOrWhiteSpace(CurrentTransport.ListenerEndpoint)
             ? CurrentTransport.ListenerEndpoint
             : FormatEndpoint(configuration.ServerListenHost, configuration.ServerListenPort);
@@ -2295,29 +2371,44 @@ public sealed class DadTransportService : IDisposable
         DadHubRosterPublish publish,
         CancellationToken cancellationToken)
     {
-        foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
+        var payloadJson = DadIpcJson.Serialize(publish);
+        var sends = serverSessions.Snapshot()
+            .Where(static connection => connection.IsOpen)
+            .Select(connection => SendHubRosterPublishAsync(connection, payloadJson, cancellationToken))
+            .ToList();
+        if (sends.Count == 0)
+            return;
+
+        await Task.WhenAll(sends).ConfigureAwait(false);
+    }
+
+    private async Task SendHubRosterPublishAsync(
+        DadHubConnection connection,
+        string payloadJson,
+        CancellationToken cancellationToken)
+    {
+        try
         {
-            try
-            {
-                await connection.SendAsync(
-                    DadHubProtocol.CreateFrame(
-                        DadHubFrameKind.Notification,
-                        presenceService.WorkerSessionId,
-                        connection.WorkerSessionId,
-                        MessageHubRosterPublish,
-                        string.Empty,
-                        DadIpcJson.Serialize(publish),
-                        configuration.TransportSharedSecret),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
-            {
-            }
-            catch (Exception ex)
-            {
-                log.Debug(ex, "[dad] Hub roster publish failed for {WorkerSessionId}.", connection.WorkerSessionId);
-                connection.Close();
-            }
+            await SendFrameAsync(
+                connection,
+                DadHubProtocol.CreateFrame(
+                    DadHubFrameKind.Notification,
+                    presenceService.WorkerSessionId,
+                    connection.WorkerSessionId,
+                    MessageHubRosterPublish,
+                    string.Empty,
+                    payloadJson,
+                    configuration.TransportSharedSecret),
+                MessageHubRosterPublish,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
+        {
+        }
+        catch (Exception ex)
+        {
+            log.Debug(ex, "[dad] Hub roster publish failed for {WorkerSessionId}.", connection.WorkerSessionId);
+            MarkServerSessionDisconnected(connection);
         }
     }
 
@@ -2330,7 +2421,15 @@ public sealed class DadTransportService : IDisposable
         if (target.IsEmpty)
             return;
 
-        var publish = TryDirectRequest<DadHubHeartbeat, DadHubRosterPublish>(
+        var key = $"hub-roster-publish:{target.Value}";
+        if (operations.ContainsKey(key))
+        {
+            CurrentTransport.LastRequestStatus = "Dad Coordinator roster publish request is pending.";
+            return;
+        }
+
+        QueueOperation<DadHubHeartbeat, DadHubRosterPublish>(
+            key,
             target,
             MessageHubRosterPublishRequest,
             new DadHubHeartbeat
@@ -2338,16 +2437,8 @@ public sealed class DadTransportService : IDisposable
                 SentAtUtc = DateTime.UtcNow,
                 Participant = participant,
             },
-            out var error);
-        if (publish != null)
-        {
-            ApplyHubRosterPublish(publish);
-            return;
-        }
-
-        CurrentTransport.LastRequestStatus = string.IsNullOrWhiteSpace(error)
-            ? "Dad Coordinator roster publish request did not return a response."
-            : error;
+            ApplyHubRosterPublish);
+        CurrentTransport.LastRequestStatus = "Dad Coordinator roster publish request queued; using cached roster until it arrives.";
     }
 
     private void ApplyHubRosterPublish(DadHubRosterPublish publish)
@@ -2416,8 +2507,21 @@ public sealed class DadTransportService : IDisposable
         return participants.Count > 0;
     }
 
+    private TimeSpan GetHeartbeatInterval()
+        => TimeSpan.FromSeconds(Math.Max(2, configuration.HeartbeatIntervalSeconds));
+
+    private TimeSpan GetHeartbeatStaleThreshold()
+    {
+        var configuredStaleSeconds = Math.Max(3, configuration.HeartbeatStaleSeconds);
+        var heartbeatMinimumSeconds = Math.Max(2, configuration.HeartbeatIntervalSeconds) * 3;
+        return TimeSpan.FromSeconds(Math.Max(configuredStaleSeconds, heartbeatMinimumSeconds));
+    }
+
+    private TimeSpan GetPeerCatalogRefreshInterval()
+        => TimeSpan.FromSeconds(Math.Max(10, configuration.PeerCatalogRefreshIntervalSeconds));
+
     private TimeSpan GetHubRosterPublishStaleAfter()
-        => TimeSpan.FromSeconds(Math.Max(6, configuration.HeartbeatStaleSeconds));
+        => TimeSpan.FromSeconds(Math.Max(6, GetHeartbeatStaleThreshold().TotalSeconds));
 
     private void SetTransportRoster(IReadOnlyList<DadParticipantSnapshot> participants)
     {
@@ -2474,7 +2578,7 @@ public sealed class DadTransportService : IDisposable
             return;
         }
 
-        nextRosterRefreshUtc[workerId] = DateTime.UtcNow + CatalogRefreshInterval;
+        nextRosterRefreshUtc[workerId] = DateTime.UtcNow + GetPeerCatalogRefreshInterval();
         var key = $"catalog-roster:{workerId}";
         if (operations.ContainsKey(key))
             return;
@@ -2490,7 +2594,7 @@ public sealed class DadTransportService : IDisposable
             response =>
             {
                 rosterCatalogs[workerId] = response;
-                PublishHubRoster($"Client Dad {connection.WorkerSessionId} roster catalog response.");
+                MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} roster catalog response.", fast: false);
             });
     }
 
@@ -2507,7 +2611,7 @@ public sealed class DadTransportService : IDisposable
             return;
         }
 
-        nextProfileRefreshUtc[workerId] = DateTime.UtcNow + CatalogRefreshInterval;
+        nextProfileRefreshUtc[workerId] = DateTime.UtcNow + GetPeerCatalogRefreshInterval();
         var key = $"catalog-profile:{workerId}";
         if (operations.ContainsKey(key))
             return;
@@ -2531,7 +2635,7 @@ public sealed class DadTransportService : IDisposable
     {
         RefreshLocalMutationState();
         var now = DateTime.UtcNow;
-        var staleAfter = TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds));
+        var staleAfter = GetHeartbeatStaleThreshold();
         var participants = new List<DadParticipantSnapshot>();
         var rosterFallbackWarning = string.Empty;
 
@@ -2661,7 +2765,7 @@ public sealed class DadTransportService : IDisposable
 
     private void SweepDisconnectedParticipants()
     {
-        var retention = TimeSpan.FromSeconds(Math.Max(15, configuration.HeartbeatStaleSeconds * 3));
+        var retention = TimeSpan.FromSeconds(Math.Max(15, GetHeartbeatStaleThreshold().TotalSeconds * 3));
         foreach (var pair in disconnectedParticipants)
         {
             if (DateTime.UtcNow - pair.Value.DisconnectedAtUtc >= retention)
@@ -2800,17 +2904,42 @@ public sealed class DadTransportService : IDisposable
 
     private void DrainFrameworkCallbacks()
     {
-        while (frameworkCallbacks.TryDequeue(out var callback))
+        frameworkCallbacks.Drain(
+            MaxTransportEventsPerFrame,
+            ex => log.Warning(ex, "[dad] Hub completion callback failed."));
+        UpdateTransportQueueDiagnostics();
+    }
+
+    private bool QueueTransportEvent(Action action, string reason)
+    {
+        if (!transportEvents.Enqueue(action))
         {
-            try
-            {
-                callback();
-            }
-            catch (Exception ex)
-            {
-                log.Warning(ex, "[dad] Hub completion callback failed.");
-            }
+            CurrentTransport.LastTransportTimeoutSummary = $"Dropped transport event '{reason}' because the framework queue is full.";
+            MarkHubRosterDirty(CurrentTransport.LastTransportTimeoutSummary, fast: true);
+            return false;
         }
+
+        UpdateTransportQueueDiagnostics();
+        return true;
+    }
+
+    private void DrainTransportEvents()
+    {
+        transportEvents.Drain(
+            MaxTransportEventsPerFrame,
+            ex => log.Warning(ex, "[dad] Transport event callback failed."));
+        UpdateTransportQueueDiagnostics();
+    }
+
+    private void UpdateTransportQueueDiagnostics()
+    {
+        CurrentTransport.PendingTransportEventCount = transportEvents.Count + frameworkCallbacks.Count;
+        CurrentTransport.PendingOutboundOperationCount = Math.Max(0, (int)Interlocked.Read(ref pendingOutboundOperations));
+        CurrentTransport.CoalescedRosterPublishCount = rosterPublishCoalescer.CoalescedCount + transportEvents.DroppedCount + frameworkCallbacks.DroppedCount;
+        if (!string.IsNullOrWhiteSpace(rosterPublishCoalescer.LastPublishReason))
+            CurrentTransport.LastRosterPublishReason = rosterPublishCoalescer.LastPublishReason;
+        if (rosterPublishCoalescer.LastPublishUtc.HasValue)
+            CurrentTransport.LastRosterPublishUtc = rosterPublishCoalescer.LastPublishUtc;
     }
 
     private void CloseAllConnections(string reason)
@@ -2871,6 +3000,7 @@ public sealed class DadTransportService : IDisposable
         CurrentTransport.SharedSecretRequired = IsSharedSecretRequiredForConfiguredEndpoint();
         CurrentTransport.LastAuthOrProtocolError = lastAuthOrProtocolError;
         CurrentTransport.KnownParticipantCount = CurrentTransport.KnownParticipants.Count;
+        UpdateTransportQueueDiagnostics();
 
         if (lastHubRosterPublish != null)
         {
@@ -2991,16 +3121,35 @@ public sealed class DadTransportService : IDisposable
         public bool Replaced { get; set; }
         public bool IsOpen => !Cancellation.IsCancellationRequested && client.Connected;
 
-        public async Task SendAsync(DadHubFrame frame, CancellationToken cancellationToken)
+        public async Task SendAsync(
+            DadHubFrame frame,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
         {
-            await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var acquired = false;
+            using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                Cancellation.Token);
+            if (timeout > TimeSpan.Zero)
+                timeoutCancellation.CancelAfter(timeout);
+
             try
             {
-                await DadHubProtocol.WriteFrameAsync(Stream, frame, cancellationToken).ConfigureAwait(false);
+                await writeGate.WaitAsync(timeoutCancellation.Token).ConfigureAwait(false);
+                acquired = true;
+                await DadHubProtocol.WriteFrameAsync(Stream, frame, timeoutCancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
+                                                    !Cancellation.IsCancellationRequested)
+            {
+                throw new DadHubProtocolException(
+                    "write-timeout",
+                    $"Dad hub write timed out after {timeout.TotalSeconds:F0}s.");
             }
             finally
             {
-                writeGate.Release();
+                if (acquired)
+                    writeGate.Release();
             }
         }
 

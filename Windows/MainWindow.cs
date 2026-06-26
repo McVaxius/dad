@@ -537,6 +537,12 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Auth/protocol", peerTransport.LastAuthOrProtocolError);
         DrawStatusRow("Roster publish", $"epoch {FormatText(peerTransport.HubRosterPublishEpochId, "(none)")} | generation {peerTransport.HubRosterPublishGeneration.ToString(CultureInfo.InvariantCulture)}");
         DrawStatusRow("Hub roster", $"{peerTransport.PublishedParticipantCount.ToString(CultureInfo.InvariantCulture)} published | {peerTransport.KnownParticipantCount.ToString(CultureInfo.InvariantCulture)} known");
+        DrawStatusRow("Transport queues", $"{peerTransport.PendingTransportEventCount.ToString(CultureInfo.InvariantCulture)} event(s) | {peerTransport.PendingOutboundOperationCount.ToString(CultureInfo.InvariantCulture)} outbound");
+        DrawStatusRow("Last publish", $"{FormatTime(peerTransport.LastRosterPublishUtc)} | {FormatText(peerTransport.LastRosterPublishReason, "(none)")}");
+        if (peerTransport.CoalescedRosterPublishCount > 0)
+            DrawStatusRow("Coalesced publishes", peerTransport.CoalescedRosterPublishCount.ToString(CultureInfo.InvariantCulture));
+        if (!string.IsNullOrWhiteSpace(peerTransport.LastTransportTimeoutSummary))
+            DrawStatusRow("Transport timeout", peerTransport.LastTransportTimeoutSummary);
         DrawStatusRow("Participants discovered", participants.Count.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Eligible for run", readyCount.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Post-AR ready", postArReadyCount.ToString(CultureInfo.InvariantCulture));

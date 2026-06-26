@@ -26,6 +26,7 @@
     <Compile Include="..\Services\DadFrenRiderEntryEnableGate.cs" Link="DadFrenRiderEntryEnableGate.cs" />
     <Compile Include="..\Services\DadClaimService.cs" Link="DadClaimService.cs" />
     <Compile Include="..\Services\DadHubProtocol.cs" Link="DadHubProtocol.cs" />
+    <Compile Include="..\Services\DadTransportRuntime.cs" Link="DadTransportRuntime.cs" />
     <Compile Include="..\Services\DadIpcJson.cs" Link="DadIpcJson.cs" />
     <Compile Include="..\Services\DadNpcDutyEligibility.cs" Link="DadNpcDutyEligibility.cs" />
     <Compile Include="..\Services\DadPresetTemplateService.cs" Link="DadPresetTemplateService.cs" />

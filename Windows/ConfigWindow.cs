@@ -433,6 +433,28 @@ public sealed class ConfigWindow : Window, IDisposable
                 () => BuildWaitPolicySignature(configuration));
         }
 
+        var heartbeatInterval = configuration.HeartbeatIntervalSeconds;
+        if (ImGui.InputInt("Heartbeat interval (s)", ref heartbeatInterval))
+        {
+            var committedSignature = BuildWaitPolicySignature(configuration);
+            configuration.HeartbeatIntervalSeconds = Math.Max(2, heartbeatInterval);
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
+        }
+
+        var peerCatalogRefreshInterval = configuration.PeerCatalogRefreshIntervalSeconds;
+        if (ImGui.InputInt("Peer catalog refresh interval (s)", ref peerCatalogRefreshInterval))
+        {
+            var committedSignature = BuildWaitPolicySignature(configuration);
+            configuration.PeerCatalogRefreshIntervalSeconds = Math.Max(10, peerCatalogRefreshInterval);
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
+        }
+
         var leaseDuration = configuration.LeaseDurationSeconds;
         if (ImGui.InputInt("Lease duration (s)", ref leaseDuration))
         {
@@ -1007,6 +1029,12 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawStatusRow("Publish epoch", FormatText(transport.HubRosterPublishEpochId, "(none)"));
         DrawStatusRow("Publish generation", transport.HubRosterPublishGeneration.ToString());
         DrawStatusRow("Roster participants", $"{transport.PublishedParticipantCount} published | {transport.KnownParticipantCount} known");
+        DrawStatusRow("Transport queues", $"{transport.PendingTransportEventCount} event(s) | {transport.PendingOutboundOperationCount} outbound");
+        DrawStatusRow("Last publish", $"{FormatTime(transport.LastRosterPublishUtc)} | {FormatText(transport.LastRosterPublishReason, "(none)")}");
+        if (transport.CoalescedRosterPublishCount > 0)
+            DrawStatusRow("Coalesced publishes", transport.CoalescedRosterPublishCount.ToString());
+        if (!string.IsNullOrWhiteSpace(transport.LastTransportTimeoutSummary))
+            DrawStatusRow("Transport timeout", transport.LastTransportTimeoutSummary);
     }
 
     private void EnsureSharedSecretDraft(Configuration configuration)
@@ -1077,11 +1105,14 @@ public sealed class ConfigWindow : Window, IDisposable
     private static string FormatText(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
+    private static string FormatTime(DateTime? value)
+        => value.HasValue ? value.Value.ToLocalTime().ToString("HH:mm:ss") : "never";
+
     private static string BuildDtrGlyphSignature(Configuration configuration)
         => $"{configuration.DtrIconEnabled}\n{configuration.DtrIconDisabled}";
 
     private static string BuildWaitPolicySignature(Configuration configuration)
-        => $"{configuration.ParticipantReadyTimeoutSeconds}\n{configuration.AssemblyTimeoutSeconds}\n{configuration.HeartbeatStaleSeconds}\n{configuration.LeaseDurationSeconds}\n{configuration.CancelAckTimeoutSeconds}";
+        => $"{configuration.ParticipantReadyTimeoutSeconds}\n{configuration.AssemblyTimeoutSeconds}\n{configuration.HeartbeatIntervalSeconds}\n{configuration.HeartbeatStaleSeconds}\n{configuration.PeerCatalogRefreshIntervalSeconds}\n{configuration.LeaseDurationSeconds}\n{configuration.CancelAckTimeoutSeconds}";
 
     private static string BuildCharacterLoadSignature(DadCharacterLoadInstruction instruction)
         => $"{instruction.CommandTemplate}\n{instruction.TimeoutSeconds}";

@@ -274,6 +274,12 @@ public sealed class DadPeerTransportSnapshot
     public long HubRosterPublishGeneration { get; set; }
     public int PublishedParticipantCount { get; set; }
     public int KnownParticipantCount { get; set; }
+    public int PendingTransportEventCount { get; set; }
+    public int PendingOutboundOperationCount { get; set; }
+    public string LastRosterPublishReason { get; set; } = string.Empty;
+    public DateTime? LastRosterPublishUtc { get; set; }
+    public long CoalescedRosterPublishCount { get; set; }
+    public string LastTransportTimeoutSummary { get; set; } = string.Empty;
     public string LocalClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId LocalWorkerSessionId { get; set; } = new(string.Empty);
     public DadWorkerSessionId AuthorityWorkerSessionId { get; set; } = new(string.Empty);

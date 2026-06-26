@@ -47,7 +47,9 @@ public sealed class Configuration : IPluginConfiguration
     public string TransportSharedSecret { get; set; } = string.Empty;
     public int ParticipantReadyTimeoutSeconds { get; set; } = 300;
     public int AssemblyTimeoutSeconds { get; set; } = 120;
-    public int HeartbeatStaleSeconds { get; set; } = 12;
+    public int HeartbeatIntervalSeconds { get; set; } = 5;
+    public int HeartbeatStaleSeconds { get; set; } = 15;
+    public int PeerCatalogRefreshIntervalSeconds { get; set; } = 60;
     public int LeaseDurationSeconds { get; set; } = 20;
     public int CancelAckTimeoutSeconds { get; set; } = 6;
     public DadCombatRotationMode CombatRotationMode { get; set; } = DadCombatRotationMode.UseFrenRider;
@@ -109,6 +111,18 @@ public sealed class Configuration : IPluginConfiguration
         ServerDadHost = serverDad.Host;
         ServerDadPort = serverDad.Port;
         changed |= serverDad.Changed;
+
+        var heartbeatInterval = NormalizeMinimum(HeartbeatIntervalSeconds, 5, 2);
+        changed |= heartbeatInterval != HeartbeatIntervalSeconds;
+        HeartbeatIntervalSeconds = heartbeatInterval;
+
+        var heartbeatStale = NormalizeMinimum(HeartbeatStaleSeconds, 15, Math.Max(3, HeartbeatIntervalSeconds * 3));
+        changed |= heartbeatStale != HeartbeatStaleSeconds;
+        HeartbeatStaleSeconds = heartbeatStale;
+
+        var peerCatalogRefresh = NormalizeMinimum(PeerCatalogRefreshIntervalSeconds, 60, 10);
+        changed |= peerCatalogRefresh != PeerCatalogRefreshIntervalSeconds;
+        PeerCatalogRefreshIntervalSeconds = peerCatalogRefresh;
         return changed;
     }
 
@@ -118,6 +132,11 @@ public sealed class Configuration : IPluginConfiguration
         var normalizedPort = port is > 0 and <= 65535 ? port : 4647;
         var changed = !string.Equals(host, normalizedHost, StringComparison.Ordinal) || port != normalizedPort;
         return (normalizedHost, normalizedPort, changed);
+    }
+
+    private static int NormalizeMinimum(int value, int defaultValue, int minimum)
+    {
+        return Math.Max(minimum, value <= 0 ? defaultValue : value);
     }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
