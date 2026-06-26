@@ -63,6 +63,9 @@ public sealed class Configuration : IPluginConfiguration
     public DadRosterCatalogConfiguration RosterCatalog { get; set; } = new();
     public List<DadScheduledCrewJob> SchedulerQueue { get; set; } = [];
     public List<DadScheduledCrewJobResult> SchedulerHistory { get; set; } = [];
+    public List<DadScheduleDefinition> Schedules { get; set; } = [];
+    public DadScheduleRunState ActiveScheduleRun { get; set; } = new();
+    public List<DadScheduleRunResult> ScheduleHistory { get; set; } = [];
 
     // Review L3: was a machine-specific hardcoded const in DadSchedulerService; now operator-configurable.
     public string ClientBootDirectory { get; set; } = @"Z:\!ff14clientboot";

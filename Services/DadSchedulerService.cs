@@ -8,6 +8,8 @@ public sealed class DadSchedulerService
     private string ClientBootDirectory => configuration.ClientBootDirectory;
     private const int DefaultScheduleCadenceHours = 18;
     private const int MaxSchedulerHistory = 50;
+    private const int MaxScheduleHistory = 50;
+    private const int ScheduleJobPriority = 1000;
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(2);
 
     private readonly Configuration configuration;
@@ -78,7 +80,33 @@ public sealed class DadSchedulerService
             schedulerHash.Add(job.Priority);
             schedulerHash.Add(job.StatusSummary, StringComparer.Ordinal);
             schedulerHash.Add(job.BlockedReason, StringComparer.Ordinal);
+            schedulerHash.Add(job.ScheduleRunId, StringComparer.Ordinal);
+            schedulerHash.Add(job.ScheduleEntryId, StringComparer.Ordinal);
+            schedulerHash.Add(job.ScheduleRepeatIteration);
         }
+
+        schedulerHash.Add(configuration.Schedules?.Count ?? 0);
+        foreach (var schedule in configuration.Schedules ?? [])
+        {
+            schedulerHash.Add(schedule.ScheduleId, StringComparer.Ordinal);
+            schedulerHash.Add(schedule.DisplayName, StringComparer.Ordinal);
+            schedulerHash.Add(schedule.Cadence);
+            schedulerHash.Add(schedule.Revision);
+            schedulerHash.Add(schedule.LastDailyResetUtc?.Ticks ?? 0);
+            schedulerHash.Add(schedule.Entries?.Count ?? 0);
+            foreach (var entry in schedule.Entries ?? [])
+            {
+                schedulerHash.Add(entry.EntryId, StringComparer.Ordinal);
+                schedulerHash.Add(entry.GroupId, StringComparer.Ordinal);
+                schedulerHash.Add(entry.RepeatCount);
+            }
+        }
+
+        schedulerHash.Add(configuration.ActiveScheduleRun?.RunId ?? string.Empty, StringComparer.Ordinal);
+        schedulerHash.Add(configuration.ActiveScheduleRun?.Status ?? DadScheduleRunStatus.Idle);
+        schedulerHash.Add(configuration.ActiveScheduleRun?.Phase ?? DadScheduleRunPhase.Idle);
+        schedulerHash.Add(configuration.ActiveScheduleRun?.UpdatedAtUtc.Ticks ?? 0);
+        schedulerHash.Add(configuration.ScheduleHistory?.Count ?? 0);
 
         var launchProfilesHash = new HashCode();
         launchProfilesHash.Add(configuration.LaunchProfiles?.Count ?? 0);
@@ -128,6 +156,176 @@ public sealed class DadSchedulerService
                     ? "Scheduler queue idle."
                     : $"{configuration.SchedulerQueue.Count} queued scheduler job(s).",
         };
+    }
+
+    public DadScheduleSnapshot GetScheduleSnapshot()
+    {
+        NormalizeSchedules();
+        NormalizeScheduleHistory();
+        var activeRun = configuration.ActiveScheduleRun ?? new DadScheduleRunState();
+        return new DadScheduleSnapshot
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            ActiveRun = activeRun.Clone(),
+            Schedules = configuration.Schedules.Select(static schedule => schedule.Clone()).ToList(),
+            RecentResults = configuration.ScheduleHistory
+                .OrderByDescending(static result => result.CompletedAtUtc)
+                .ThenByDescending(static result => result.StartedAtUtc)
+                .Take(MaxScheduleHistory)
+                .Select(static result => result.Clone())
+                .ToList(),
+            Summary = activeRun.IsActive
+                ? activeRun.Summary
+                : configuration.Schedules.Count == 0
+                    ? "No schedules configured."
+                    : $"{configuration.Schedules.Count} schedule(s) configured.",
+        };
+    }
+
+    public DadScheduleDefinition CreateSchedule(string displayName)
+    {
+        NormalizeSchedules();
+        var now = DateTime.UtcNow;
+        var schedule = new DadScheduleDefinition
+        {
+            ScheduleId = Guid.NewGuid().ToString("N"),
+            DisplayName = string.IsNullOrWhiteSpace(displayName) ? "Dad Schedule" : displayName.Trim(),
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+        }.Normalize();
+        configuration.Schedules.Add(schedule);
+        configuration.Save();
+        return schedule.Clone();
+    }
+
+    public DadScheduleDefinition? DuplicateSchedule(string scheduleId, string displayName)
+    {
+        NormalizeSchedules();
+        var source = FindSchedule(scheduleId);
+        if (source == null)
+            return null;
+
+        var now = DateTime.UtcNow;
+        var duplicate = source.Clone();
+        duplicate.ScheduleId = Guid.NewGuid().ToString("N");
+        duplicate.Revision = 1;
+        duplicate.DisplayName = string.IsNullOrWhiteSpace(displayName)
+            ? $"{source.DisplayName} Copy"
+            : displayName.Trim();
+        duplicate.CreatedAtUtc = now;
+        duplicate.UpdatedAtUtc = now;
+        duplicate.LastDailyResetUtc = null;
+        duplicate.LastRunStartedAtUtc = null;
+        duplicate.LastRunCompletedAtUtc = null;
+        duplicate.LastRunStatus = DadScheduleRunStatus.Idle;
+        duplicate.LastSummary = string.Empty;
+        foreach (var entry in duplicate.Entries)
+        {
+            entry.EntryId = Guid.NewGuid().ToString("N");
+            entry.CreatedAtUtc = now;
+            entry.UpdatedAtUtc = now;
+        }
+
+        duplicate.Normalize();
+        configuration.Schedules.Add(duplicate);
+        configuration.Save();
+        return duplicate.Clone();
+    }
+
+    public bool DeleteSchedule(string scheduleId)
+    {
+        NormalizeSchedules();
+        var schedule = FindSchedule(scheduleId);
+        if (schedule == null)
+            return false;
+
+        var active = configuration.ActiveScheduleRun ?? new DadScheduleRunState();
+        if (active.IsActive && string.Equals(active.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        configuration.Schedules.Remove(schedule);
+        configuration.Save();
+        return true;
+    }
+
+    public DadScheduleDefinition? UpdateSchedule(DadScheduleDefinition incoming)
+    {
+        NormalizeSchedules();
+        var normalized = incoming.Clone().Normalize();
+        var existing = FindSchedule(normalized.ScheduleId);
+        if (existing == null)
+            return null;
+
+        normalized.Revision = existing.Revision + 1;
+        normalized.CreatedAtUtc = existing.CreatedAtUtc;
+        normalized.UpdatedAtUtc = DateTime.UtcNow;
+        normalized.LastDailyResetUtc = existing.LastDailyResetUtc;
+        normalized.LastRunStartedAtUtc = existing.LastRunStartedAtUtc;
+        normalized.LastRunCompletedAtUtc = existing.LastRunCompletedAtUtc;
+        normalized.LastRunStatus = existing.LastRunStatus;
+        normalized.LastSummary = existing.LastSummary;
+        var index = configuration.Schedules.IndexOf(existing);
+        configuration.Schedules[index] = normalized;
+        configuration.Save();
+        return normalized.Clone();
+    }
+
+    public DadScheduleRunState StartScheduleRun(string scheduleId, bool dryRun, string requestedBy)
+    {
+        NormalizeSchedules();
+        NormalizeScheduleHistory();
+        NormalizeQueue();
+        NormalizeHistory();
+        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        if (!dryRun && !configuration.RunAsServerDad)
+        {
+            return DadScheduleRules.BlockRun(new DadScheduleRunState
+            {
+                RunId = Guid.NewGuid().ToString("N"),
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                ScheduleName = "Schedule",
+                RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
+            }, "Only Dad Coordinator may run schedules.", DateTime.UtcNow);
+        }
+
+        if (configuration.ActiveScheduleRun.IsActive)
+            return configuration.ActiveScheduleRun.Clone();
+
+        var schedule = FindSchedule(scheduleId);
+        if (schedule == null)
+        {
+            return DadScheduleRules.BlockRun(new DadScheduleRunState
+            {
+                RunId = Guid.NewGuid().ToString("N"),
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                ScheduleName = "Missing schedule",
+                RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
+            }, $"Schedule '{scheduleId}' could not be resolved.", DateTime.UtcNow);
+        }
+
+        var state = BeginScheduleRun(schedule, dryRun, manualRun: true, requestedBy, DateTime.UtcNow);
+        configuration.Save();
+        return state.Clone();
+    }
+
+    public bool CancelScheduleRun(string reason)
+    {
+        NormalizeSchedules();
+        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        if (!configuration.ActiveScheduleRun.IsActive)
+            return false;
+
+        var jobId = configuration.ActiveScheduleRun.ActiveSchedulerJobId;
+        if (!string.IsNullOrWhiteSpace(jobId))
+            CancelScheduledJob(jobId, string.IsNullOrWhiteSpace(reason) ? "Schedule cancelled." : reason);
+
+        configuration.ActiveScheduleRun = DadScheduleRules.CancelRun(
+            configuration.ActiveScheduleRun,
+            string.IsNullOrWhiteSpace(reason) ? "Schedule cancelled." : reason,
+            DateTime.UtcNow);
+        FinalizeScheduleRun(configuration.ActiveScheduleRun);
+        configuration.Save();
+        return true;
     }
 
     public DadScheduledCrewJob EnqueueScheduledPreset(DadPlannerGroup group, DadScheduledPresetRequest request)
@@ -234,6 +432,10 @@ public sealed class DadSchedulerService
         currentState = new DadSchedulerPresetState
         {
             Phase = DadSchedulerPresetPhase.Idle,
+            Summary = "Scheduler account data cleared.",
+        };
+        configuration.ActiveScheduleRun = new DadScheduleRunState
+        {
             Summary = "Scheduler account data cleared.",
         };
         nextRefreshUtc = DateTime.MinValue;
@@ -465,6 +667,11 @@ public sealed class DadSchedulerService
             DryRun = dryRun,
             PlannerRequestId = plannerRequestPreview.Request?.RequestId ?? string.Empty,
             Slots = preview.Slots.Select(static slot => slot.Clone()).ToList(),
+            ScheduleId = activeJob.ScheduleId,
+            ScheduleRunId = activeJob.ScheduleRunId,
+            ScheduleEntryId = activeJob.ScheduleEntryId,
+            ScheduleEntryIndex = activeJob.ScheduleEntryIndex,
+            ScheduleRepeatIteration = activeJob.ScheduleRepeatIteration,
         };
 
         if (!preview.CanStart)
@@ -497,9 +704,12 @@ public sealed class DadSchedulerService
     public void Update(
         Func<string, DadPlannerGroup?> groupResolver,
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
-        Func<DadRunRequest, DadRunResult> startPlannerRequest)
+        Func<DadRunRequest, DadRunResult> startPlannerRequest,
+        Func<DadRunResult>? visibleRunProvider = null)
     {
         TickScheduleEnqueue();
+
+        UpdateActiveScheduleRun(visibleRunProvider?.Invoke() ?? DadRunResult.Idle());
 
         if (!currentState.IsActive)
         {
@@ -653,8 +863,32 @@ public sealed class DadSchedulerService
             changed = true;
         }
 
+        changed |= TryStartDueDailySchedule(now);
+
         if (changed)
             configuration.Save();
+    }
+
+    private bool TryStartDueDailySchedule(DateTime now)
+    {
+        if (!configuration.RunAsServerDad)
+            return false;
+
+        NormalizeSchedules();
+        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        if (configuration.ActiveScheduleRun.IsActive)
+            return false;
+
+        var schedule = configuration.Schedules
+            .Where(schedule => DadScheduleRules.IsDailyResetDue(schedule, now))
+            .OrderBy(static schedule => schedule.LastDailyResetUtc ?? DateTime.MinValue)
+            .ThenBy(static schedule => schedule.CreatedAtUtc)
+            .FirstOrDefault();
+        if (schedule == null)
+            return false;
+
+        BeginScheduleRun(schedule, dryRun: false, manualRun: false, requestedBy: "daily-schedule", now);
+        return true;
     }
 
     public void Cancel(string reason)
@@ -1083,6 +1317,11 @@ public sealed class DadSchedulerService
             DryRun = job.DryRun,
             Summary = reason,
             BlockedReason = reason,
+            ScheduleId = job.ScheduleId,
+            ScheduleRunId = job.ScheduleRunId,
+            ScheduleEntryId = job.ScheduleEntryId,
+            ScheduleEntryIndex = job.ScheduleEntryIndex,
+            ScheduleRepeatIteration = job.ScheduleRepeatIteration,
         };
 
     private static IReadOnlyList<DadRosterCharacter> ResolveRosterUpdateTargets(
@@ -1792,6 +2031,9 @@ public sealed class DadSchedulerService
             _ => string.Empty,
         };
 
+    private static string FormatScheduleText(string value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
     private static int ResolveScheduleCadenceHours(int cadenceHours)
         => Math.Clamp(cadenceHours <= 0 ? DefaultScheduleCadenceHours : cadenceHours, 1, 24 * 30);
 
@@ -1826,6 +2068,338 @@ public sealed class DadSchedulerService
     private static bool IsSuccessfulTerminalPhase(DadSchedulerPresetPhase phase)
         => phase is DadSchedulerPresetPhase.StartedPlanner or DadSchedulerPresetPhase.Completed;
 
+    private void UpdateActiveScheduleRun(DadRunResult visibleRun)
+    {
+        NormalizeSchedules();
+        NormalizeScheduleHistory();
+        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        if (!configuration.ActiveScheduleRun.IsActive)
+            return;
+
+        var now = DateTime.UtcNow;
+        var state = configuration.ActiveScheduleRun.Clone();
+        var schedule = FindSchedule(state.ScheduleId);
+        if (schedule == null)
+        {
+            BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' could not be resolved.");
+            return;
+        }
+
+        if (TryProcessWaitingDadRun(schedule, visibleRun, now))
+            return;
+
+        state = configuration.ActiveScheduleRun.Clone();
+        if (!string.IsNullOrWhiteSpace(state.ActiveSchedulerJobId))
+        {
+            ProcessScheduleSchedulerJob(schedule, state, visibleRun, now);
+            return;
+        }
+
+        MaterializeScheduleEntryJob(schedule, state, now);
+    }
+
+    private bool TryProcessWaitingDadRun(DadScheduleDefinition schedule, DadRunResult visibleRun, DateTime now)
+    {
+        var state = configuration.ActiveScheduleRun ?? new DadScheduleRunState();
+        if (state.Phase != DadScheduleRunPhase.WaitingForDadRun)
+            return false;
+
+        var run = ResolveScheduleDadRunResult(state.ActivePlannerRequestId, visibleRun);
+        if (run == null || !run.IsTerminal)
+        {
+            state.Summary = string.IsNullOrWhiteSpace(state.ActivePlannerRequestId)
+                ? $"Schedule '{state.ScheduleName}' is waiting for Dad run completion."
+                : $"Schedule '{state.ScheduleName}' is waiting for Dad run {state.ActivePlannerRequestId}.";
+            state.UpdatedAtUtc = now;
+            configuration.ActiveScheduleRun = state;
+            return true;
+        }
+
+        if (run.Status != DadRunStatus.Completed)
+        {
+            var detail = string.IsNullOrWhiteSpace(run.FailureReason)
+                ? FormatScheduleText(run.Summary, run.Status.ToString())
+                : run.FailureReason;
+            BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped after '{state.CurrentPresetName}' ended with {run.Status}: {detail}");
+            return true;
+        }
+
+        var advanced = DadScheduleRules.AdvanceAfterEntry(
+            state,
+            schedule.Entries,
+            entrySucceeded: true,
+            terminalSummary: $"Schedule entry '{state.CurrentPresetName}' completed.",
+            now);
+        configuration.ActiveScheduleRun = advanced;
+        if (advanced.Status == DadScheduleRunStatus.Completed)
+            FinalizeScheduleRun(advanced);
+        else
+            configuration.Save();
+        return true;
+    }
+
+    private void ProcessScheduleSchedulerJob(
+        DadScheduleDefinition schedule,
+        DadScheduleRunState state,
+        DadRunResult visibleRun,
+        DateTime now)
+    {
+        var result = FindSchedulerResult(state.ActiveSchedulerJobId);
+        if (result != null)
+        {
+            if (!result.Success)
+            {
+                BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(result.BlockedReason, result.Summary)}");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(state.ActivePlannerRequestId) &&
+                string.Equals(currentState.JobId, state.ActiveSchedulerJobId, StringComparison.OrdinalIgnoreCase))
+            {
+                state.ActivePlannerRequestId = currentState.PlannerRequestId;
+            }
+
+            if (string.IsNullOrWhiteSpace(state.ActivePlannerRequestId))
+            {
+                BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: scheduler job did not produce a Dad run id.");
+                return;
+            }
+
+            state.Phase = DadScheduleRunPhase.WaitingForDadRun;
+            state.Summary = $"Schedule '{state.ScheduleName}' waiting for Dad run {state.ActivePlannerRequestId} from '{state.CurrentPresetName}'.";
+            state.UpdatedAtUtc = now;
+            configuration.ActiveScheduleRun = state;
+            configuration.Save();
+            TryProcessWaitingDadRun(schedule, visibleRun, now);
+            return;
+        }
+
+        if (string.Equals(currentState.JobId, state.ActiveSchedulerJobId, StringComparison.OrdinalIgnoreCase))
+        {
+            if (currentState.Phase == DadSchedulerPresetPhase.StartedPlanner)
+            {
+                state.ActivePlannerRequestId = currentState.PlannerRequestId;
+                state.Phase = DadScheduleRunPhase.WaitingForDadRun;
+                state.Summary = $"Schedule '{state.ScheduleName}' waiting for Dad run {state.ActivePlannerRequestId} from '{state.CurrentPresetName}'.";
+                state.UpdatedAtUtc = now;
+                configuration.ActiveScheduleRun = state;
+                configuration.Save();
+                TryProcessWaitingDadRun(schedule, visibleRun, now);
+                return;
+            }
+
+            if (currentState.Phase is DadSchedulerPresetPhase.Blocked
+                or DadSchedulerPresetPhase.TimedOut
+                or DadSchedulerPresetPhase.Cancelled)
+            {
+                BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(currentState.BlockedReason, currentState.Summary)}");
+                return;
+            }
+
+            state.Phase = DadScheduleRunPhase.WaitingForScheduler;
+            state.Summary = $"Schedule '{state.ScheduleName}' waiting for scheduler job: {currentState.Summary}";
+            state.UpdatedAtUtc = now;
+            configuration.ActiveScheduleRun = state;
+            return;
+        }
+
+        if (configuration.SchedulerQueue.Any(job =>
+                string.Equals(job.JobId, state.ActiveSchedulerJobId, StringComparison.OrdinalIgnoreCase)))
+        {
+            state.Phase = DadScheduleRunPhase.WaitingForScheduler;
+            state.Summary = $"Schedule '{state.ScheduleName}' queued '{state.CurrentPresetName}' with scheduler job {state.ActiveSchedulerJobId}.";
+            state.UpdatedAtUtc = now;
+            configuration.ActiveScheduleRun = state;
+            return;
+        }
+
+        BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: scheduler job {state.ActiveSchedulerJobId} disappeared before producing a result.");
+    }
+
+    private void MaterializeScheduleEntryJob(DadScheduleDefinition schedule, DadScheduleRunState state, DateTime now)
+    {
+        var groupIds = BuildPlannerGroupIdSet();
+        var blocker = DadScheduleRules.ValidateCurrentEntry(state, schedule.Entries, groupIds);
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            BlockActiveScheduleRun(blocker);
+            return;
+        }
+
+        var entry = DadScheduleRules.GetCurrentEntry(state, schedule.Entries);
+        if (entry == null)
+        {
+            BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' has no entry at index {state.CurrentEntryIndex + 1}.");
+            return;
+        }
+
+        var group = FindPlannerGroup(entry.GroupId);
+        if (group == null)
+        {
+            BlockActiveScheduleRun($"Schedule entry {state.CurrentEntryIndex + 1} references missing preset '{entry.GroupId}'.");
+            return;
+        }
+
+        var job = new DadScheduledCrewJob
+        {
+            JobType = DadSchedulerJobType.ScheduledPreset,
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            Enabled = true,
+            DryRun = false,
+            CreatedAtUtc = now,
+            NextEligibleTimeUtc = now,
+            RequestedBy = string.IsNullOrWhiteSpace(state.RequestedBy) ? "schedule" : state.RequestedBy,
+            Priority = ScheduleJobPriority,
+            ScheduleId = schedule.ScheduleId,
+            ScheduleRunId = state.RunId,
+            ScheduleEntryId = entry.EntryId,
+            ScheduleEntryIndex = state.CurrentEntryIndex,
+            ScheduleRepeatIteration = state.RepeatIteration,
+        };
+        job.StatusSummary = $"Queued schedule '{schedule.DisplayName}' entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}/{entry.RepeatCount}: '{group.DisplayName}'.";
+        configuration.SchedulerQueue.Add(job);
+
+        state.ActiveSchedulerJobId = job.JobId;
+        state.ActivePlannerRequestId = string.Empty;
+        state.CurrentGroupId = group.GroupId;
+        state.CurrentPresetName = group.DisplayName;
+        state.Phase = DadScheduleRunPhase.WaitingForScheduler;
+        state.Summary = job.StatusSummary;
+        state.UpdatedAtUtc = now;
+        configuration.ActiveScheduleRun = state;
+        configuration.Save();
+    }
+
+    private DadScheduleRunState BeginScheduleRun(
+        DadScheduleDefinition schedule,
+        bool dryRun,
+        bool manualRun,
+        string requestedBy,
+        DateTime now)
+    {
+        var state = DadScheduleRules.StartRun(schedule, dryRun, manualRun, requestedBy, now);
+        schedule.LastRunStartedAtUtc = now;
+        schedule.LastRunStatus = state.Status;
+        schedule.LastSummary = state.Summary;
+        if (!manualRun)
+            schedule.LastDailyResetUtc = DadScheduleRules.GetDailyResetBoundaryUtc(now);
+
+        if (state.Status == DadScheduleRunStatus.Blocked)
+        {
+            configuration.ActiveScheduleRun = state;
+            FinalizeScheduleRun(state);
+            return state;
+        }
+
+        if (dryRun)
+        {
+            var blocker = ValidateWholeSchedule(schedule);
+            state = string.IsNullOrWhiteSpace(blocker)
+                ? DadScheduleRules.CompleteRun(
+                    state,
+                    $"Schedule dry run ready: {state.TotalEntryExecutions} preset run(s) across {schedule.Entries.Count} entry/entries.",
+                    now)
+                : DadScheduleRules.BlockRun(state, blocker, now);
+            state.CompletedEntryExecutions = string.IsNullOrWhiteSpace(blocker) ? state.TotalEntryExecutions : 0;
+            configuration.ActiveScheduleRun = state;
+            FinalizeScheduleRun(state);
+            return state;
+        }
+
+        configuration.ActiveScheduleRun = state;
+        return state;
+    }
+
+    private void BlockActiveScheduleRun(string reason)
+    {
+        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(configuration.ActiveScheduleRun, reason, DateTime.UtcNow);
+        FinalizeScheduleRun(configuration.ActiveScheduleRun);
+    }
+
+    private void FinalizeScheduleRun(DadScheduleRunState state)
+    {
+        var schedule = FindSchedule(state.ScheduleId);
+        if (schedule != null)
+        {
+            schedule.LastRunCompletedAtUtc = state.CompletedAtUtc ?? DateTime.UtcNow;
+            schedule.LastRunStatus = state.Status;
+            schedule.LastSummary = state.Summary;
+            schedule.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        RecordScheduleRunResult(state.ToResult(state.Status == DadScheduleRunStatus.Completed));
+    }
+
+    private void RecordScheduleRunResult(DadScheduleRunResult result)
+    {
+        NormalizeScheduleHistory();
+        if (string.IsNullOrWhiteSpace(result.RunId))
+            result.RunId = Guid.NewGuid().ToString("N");
+
+        configuration.ScheduleHistory.RemoveAll(existing =>
+            string.Equals(existing.RunId, result.RunId, StringComparison.OrdinalIgnoreCase));
+        configuration.ScheduleHistory.Insert(0, result.Clone());
+        TrimScheduleHistory();
+        configuration.Save();
+    }
+
+    private DadRunResult? ResolveScheduleDadRunResult(string requestId, DadRunResult visibleRun)
+    {
+        if (string.IsNullOrWhiteSpace(requestId))
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(visibleRun.RequestId) &&
+            string.Equals(visibleRun.RequestId, requestId, StringComparison.OrdinalIgnoreCase) &&
+            visibleRun.Status != DadRunStatus.Idle)
+        {
+            return visibleRun.Clone();
+        }
+
+        return configuration.RunHistory?
+            .FirstOrDefault(result => string.Equals(result.RequestId, requestId, StringComparison.OrdinalIgnoreCase))
+            ?.Clone();
+    }
+
+    private DadScheduledCrewJobResult? FindSchedulerResult(string jobId)
+        => configuration.SchedulerHistory.FirstOrDefault(result =>
+            string.Equals(result.JobId, jobId, StringComparison.OrdinalIgnoreCase));
+
+    private string ValidateWholeSchedule(DadScheduleDefinition schedule)
+    {
+        var groupIds = BuildPlannerGroupIdSet();
+        for (var index = 0; index < schedule.Entries.Count; index++)
+        {
+            var entry = schedule.Entries[index].Normalize();
+            if (string.IsNullOrWhiteSpace(entry.GroupId))
+                return $"Schedule entry {index + 1} has no saved preset.";
+            if (!groupIds.Contains(entry.GroupId))
+                return $"Schedule entry {index + 1} references missing preset '{entry.GroupId}'.";
+        }
+
+        return string.Empty;
+    }
+
+    private HashSet<string> BuildPlannerGroupIdSet()
+    {
+        configuration.PlannerGroups ??= [];
+        return configuration.PlannerGroups
+            .Where(static group => !string.IsNullOrWhiteSpace(group.GroupId))
+            .Select(static group => group.GroupId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private DadPlannerGroup? FindPlannerGroup(string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId))
+            return null;
+
+        configuration.PlannerGroups ??= [];
+        return configuration.PlannerGroups.FirstOrDefault(group =>
+            string.Equals(group.GroupId, groupId, StringComparison.OrdinalIgnoreCase));
+    }
+
     private void RecordTerminalResult(DadScheduledCrewJob job, DadSchedulerPresetPhase phase, string summary)
     {
         if (!IsTerminalPhase(phase))
@@ -1844,6 +2418,11 @@ public sealed class DadSchedulerService
             Success = IsSuccessfulTerminalPhase(phase),
             Summary = string.IsNullOrWhiteSpace(summary) ? phase.ToString() : summary,
             BlockedReason = phase == DadSchedulerPresetPhase.Cancelled ? summary : job.BlockedReason,
+            ScheduleId = job.ScheduleId,
+            ScheduleRunId = job.ScheduleRunId,
+            ScheduleEntryId = job.ScheduleEntryId,
+            ScheduleEntryIndex = job.ScheduleEntryIndex,
+            ScheduleRepeatIteration = job.ScheduleRepeatIteration,
         });
     }
 
@@ -1865,6 +2444,11 @@ public sealed class DadSchedulerService
             Success = IsSuccessfulTerminalPhase(state.Phase),
             Summary = state.Summary,
             BlockedReason = state.BlockedReason,
+            ScheduleId = state.ScheduleId,
+            ScheduleRunId = state.ScheduleRunId,
+            ScheduleEntryId = state.ScheduleEntryId,
+            ScheduleEntryIndex = state.ScheduleEntryIndex,
+            ScheduleRepeatIteration = state.ScheduleRepeatIteration,
         });
     }
 
@@ -1881,6 +2465,68 @@ public sealed class DadSchedulerService
         configuration.Save();
     }
 
+    private DadScheduleDefinition? FindSchedule(string scheduleId)
+    {
+        if (string.IsNullOrWhiteSpace(scheduleId))
+            return null;
+
+        configuration.Schedules ??= [];
+        return configuration.Schedules.FirstOrDefault(schedule =>
+            string.Equals(schedule.ScheduleId, scheduleId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void NormalizeSchedules()
+    {
+        configuration.Schedules = DadScheduleRules.NormalizeSchedules(configuration.Schedules);
+        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        configuration.ActiveScheduleRun.RunId = configuration.ActiveScheduleRun.RunId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.ScheduleId = configuration.ActiveScheduleRun.ScheduleId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.ScheduleName = configuration.ActiveScheduleRun.ScheduleName?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.RequestedBy = string.IsNullOrWhiteSpace(configuration.ActiveScheduleRun.RequestedBy)
+            ? string.Empty
+            : configuration.ActiveScheduleRun.RequestedBy.Trim();
+        configuration.ActiveScheduleRun.CurrentEntryId = configuration.ActiveScheduleRun.CurrentEntryId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.CurrentGroupId = configuration.ActiveScheduleRun.CurrentGroupId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.CurrentPresetName = configuration.ActiveScheduleRun.CurrentPresetName?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.ActiveSchedulerJobId = configuration.ActiveScheduleRun.ActiveSchedulerJobId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.ActivePlannerRequestId = configuration.ActiveScheduleRun.ActivePlannerRequestId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.Summary = configuration.ActiveScheduleRun.Summary?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.BlockedReason = configuration.ActiveScheduleRun.BlockedReason?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.RepeatIteration = Math.Max(1, configuration.ActiveScheduleRun.RepeatIteration);
+        configuration.ActiveScheduleRun.TotalEntryExecutions = Math.Max(0, configuration.ActiveScheduleRun.TotalEntryExecutions);
+        configuration.ActiveScheduleRun.CompletedEntryExecutions = Math.Clamp(
+            configuration.ActiveScheduleRun.CompletedEntryExecutions,
+            0,
+            Math.Max(configuration.ActiveScheduleRun.TotalEntryExecutions, configuration.ActiveScheduleRun.CompletedEntryExecutions));
+    }
+
+    private void NormalizeScheduleHistory()
+    {
+        configuration.ScheduleHistory ??= [];
+        foreach (var result in configuration.ScheduleHistory)
+        {
+            result.RunId = result.RunId?.Trim() ?? string.Empty;
+            result.ScheduleId = result.ScheduleId?.Trim() ?? string.Empty;
+            result.ScheduleName = result.ScheduleName?.Trim() ?? string.Empty;
+            result.Summary = result.Summary?.Trim() ?? string.Empty;
+            result.BlockedReason = result.BlockedReason?.Trim() ?? string.Empty;
+        }
+
+        TrimScheduleHistory();
+    }
+
+    private void TrimScheduleHistory()
+    {
+        if (configuration.ScheduleHistory.Count <= MaxScheduleHistory)
+            return;
+
+        configuration.ScheduleHistory = configuration.ScheduleHistory
+            .OrderByDescending(static result => result.CompletedAtUtc)
+            .ThenByDescending(static result => result.StartedAtUtc)
+            .Take(MaxScheduleHistory)
+            .ToList();
+    }
+
     private void NormalizeHistory()
     {
         configuration.SchedulerHistory ??= [];
@@ -1892,6 +2538,9 @@ public sealed class DadSchedulerService
             result.RequestedBy = string.IsNullOrWhiteSpace(result.RequestedBy) ? "scheduler" : result.RequestedBy.Trim();
             result.Summary = result.Summary?.Trim() ?? string.Empty;
             result.BlockedReason = result.BlockedReason?.Trim() ?? string.Empty;
+            result.ScheduleId = result.ScheduleId?.Trim() ?? string.Empty;
+            result.ScheduleRunId = result.ScheduleRunId?.Trim() ?? string.Empty;
+            result.ScheduleEntryId = result.ScheduleEntryId?.Trim() ?? string.Empty;
         }
 
         TrimSchedulerHistory();
@@ -1927,6 +2576,9 @@ public sealed class DadSchedulerService
             job.GroupId = job.GroupId?.Trim() ?? string.Empty;
             job.RequestedBy = string.IsNullOrWhiteSpace(job.RequestedBy) ? "scheduler" : job.RequestedBy.Trim();
             job.MapRunTemplate = job.MapRunTemplate?.Trim() ?? string.Empty;
+            job.ScheduleId = job.ScheduleId?.Trim() ?? string.Empty;
+            job.ScheduleRunId = job.ScheduleRunId?.Trim() ?? string.Empty;
+            job.ScheduleEntryId = job.ScheduleEntryId?.Trim() ?? string.Empty;
             job.TargetCharacters ??= [];
             job.TargetCharacterKeys ??= [];
             job.TargetAccountKeys ??= [];

@@ -555,6 +555,11 @@ public sealed class DadScheduledCrewJob
     public List<DadCharacterKey> TargetCharacterKeys { get; set; } = [];
     public string StatusSummary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
+    public string ScheduleId { get; set; } = string.Empty;
+    public string ScheduleRunId { get; set; } = string.Empty;
+    public string ScheduleEntryId { get; set; } = string.Empty;
+    public int ScheduleEntryIndex { get; set; } = -1;
+    public int ScheduleRepeatIteration { get; set; }
 
     public DadScheduledCrewJob Clone()
         => new()
@@ -577,6 +582,11 @@ public sealed class DadScheduledCrewJob
             TargetCharacterKeys = TargetCharacterKeys == null ? [] : [..TargetCharacterKeys],
             StatusSummary = StatusSummary,
             BlockedReason = BlockedReason,
+            ScheduleId = ScheduleId,
+            ScheduleRunId = ScheduleRunId,
+            ScheduleEntryId = ScheduleEntryId,
+            ScheduleEntryIndex = ScheduleEntryIndex,
+            ScheduleRepeatIteration = ScheduleRepeatIteration,
         };
 }
 
@@ -593,6 +603,11 @@ public sealed class DadScheduledCrewJobResult
     public bool Success { get; set; }
     public string Summary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
+    public string ScheduleId { get; set; } = string.Empty;
+    public string ScheduleRunId { get; set; } = string.Empty;
+    public string ScheduleEntryId { get; set; } = string.Empty;
+    public int ScheduleEntryIndex { get; set; } = -1;
+    public int ScheduleRepeatIteration { get; set; }
 
     public DadScheduledCrewJobResult Clone()
         => new()
@@ -608,6 +623,11 @@ public sealed class DadScheduledCrewJobResult
             Success = Success,
             Summary = Summary,
             BlockedReason = BlockedReason,
+            ScheduleId = ScheduleId,
+            ScheduleRunId = ScheduleRunId,
+            ScheduleEntryId = ScheduleEntryId,
+            ScheduleEntryIndex = ScheduleEntryIndex,
+            ScheduleRepeatIteration = ScheduleRepeatIteration,
         };
 }
 

@@ -218,6 +218,11 @@ public sealed class DadSchedulerPresetState
     public string Summary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
     public List<DadSchedulerSlotState> Slots { get; set; } = [];
+    public string ScheduleId { get; set; } = string.Empty;
+    public string ScheduleRunId { get; set; } = string.Empty;
+    public string ScheduleEntryId { get; set; } = string.Empty;
+    public int ScheduleEntryIndex { get; set; } = -1;
+    public int ScheduleRepeatIteration { get; set; }
 
     public bool IsActive => Phase is DadSchedulerPresetPhase.Resolving
         or DadSchedulerPresetPhase.LaunchingClients
@@ -245,6 +250,11 @@ public sealed class DadSchedulerPresetState
             Summary = Summary,
             BlockedReason = BlockedReason,
             Slots = Slots.Select(static slot => slot.Clone()).ToList(),
+            ScheduleId = ScheduleId,
+            ScheduleRunId = ScheduleRunId,
+            ScheduleEntryId = ScheduleEntryId,
+            ScheduleEntryIndex = ScheduleEntryIndex,
+            ScheduleRepeatIteration = ScheduleRepeatIteration,
         };
 
     public DadRunResult ToRunResult(DadRunRequest? request = null)

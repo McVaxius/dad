@@ -20,6 +20,7 @@ public enum DadMainWindowTab
 public enum DadPresetsWindowTab
 {
     Planner,
+    Scheduler,
     Queue,
     ActiveJob,
 }
@@ -39,6 +40,10 @@ public sealed class MainWindow : Window, IDisposable
     private IReadOnlyList<DadPlannerDutyOption> cachedPlannerDutySearchResults = [];
     private string plannerGroupNameBuffer = string.Empty;
     private string pendingDeletePlannerGroupId = string.Empty;
+    private string selectedScheduleId = string.Empty;
+    private string schedulerScheduleNameBuffer = "Dad Schedule";
+    private string schedulerAddPresetGroupId = string.Empty;
+    private string pendingDeleteScheduleId = string.Empty;
     private string pendingDeleteAccountId = string.Empty;
     private string pendingForgetAccountId = string.Empty;
     private string pendingMergeAccountId = string.Empty;
@@ -725,6 +730,12 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Scheduler", BuildPresetsTabFlags(DadPresetsWindowTab.Scheduler)))
+            {
+                DrawScheduleBuilderTab(runState);
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("Queue", BuildPresetsTabFlags(DadPresetsWindowTab.Queue)))
             {
                 DrawCrewQueueSection();
@@ -1188,6 +1199,427 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndTable();
     }
 
+    private void DrawScheduleBuilderTab(DadVisibleRunState runState)
+    {
+        var snapshot = plugin.SchedulerService.GetScheduleSnapshot();
+        var groups = plugin.Configuration.PlannerGroups
+            .OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static group => group.GroupId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        EnsureScheduleSelection(snapshot);
+        var schedule = snapshot.Schedules.FirstOrDefault(candidate =>
+            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
+        var activeRun = snapshot.ActiveRun;
+        var activeScheduleLocked = activeRun.IsActive;
+
+        DrawSectionHeader("Scheduler", "Build ordered super presets from saved Planner presets.");
+        DrawStatusRow("Runner", activeRun.IsActive
+            ? $"{activeRun.Status} / {activeRun.Phase} | {activeRun.Summary}"
+            : FormatText(activeRun.Summary, "Schedule runner idle."));
+        if (activeRun.IsActive)
+        {
+            DrawStatusRow("Active schedule", FormatText(activeRun.ScheduleName, activeRun.ScheduleId));
+            DrawStatusRow("Progress", $"{activeRun.CompletedEntryExecutions}/{activeRun.TotalEntryExecutions} preset run(s)");
+            DrawStatusRow("Entry", $"{activeRun.CurrentEntryIndex + 1} / repeat {activeRun.RepeatIteration} / {FormatText(activeRun.CurrentPresetName, activeRun.CurrentGroupId)}");
+            if (!string.IsNullOrWhiteSpace(activeRun.ActivePlannerRequestId))
+                DrawStatusRow("Dad run", activeRun.ActivePlannerRequestId);
+            if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
+                DrawStatusRow("Blocker", activeRun.BlockedReason);
+        }
+
+        ImGui.Separator();
+        ImGui.SetNextItemWidth(MathF.Min(320f, ImGui.GetContentRegionAvail().X));
+        if (ImGui.BeginCombo("Schedule", schedule == null ? "(none)" : schedule.DisplayName))
+        {
+            foreach (var candidate in snapshot.Schedules)
+            {
+                var selected = string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(candidate.DisplayName, selected))
+                {
+                    selectedScheduleId = candidate.ScheduleId;
+                    schedulerScheduleNameBuffer = candidate.DisplayName;
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.SetNextItemWidth(MathF.Min(320f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText("Name", ref schedulerScheduleNameBuffer, 128);
+
+        if (ImGui.SmallButton("Create"))
+        {
+            var created = plugin.SchedulerService.CreateSchedule(schedulerScheduleNameBuffer);
+            selectedScheduleId = created.ScheduleId;
+            schedulerScheduleNameBuffer = created.DisplayName;
+            plugin.PrintStatus($"Created schedule '{created.DisplayName}'.");
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(schedule == null);
+        if (ImGui.SmallButton("Rename") && schedule != null)
+        {
+            schedule.DisplayName = schedulerScheduleNameBuffer;
+            var updated = plugin.SchedulerService.UpdateSchedule(schedule);
+            if (updated != null)
+            {
+                schedulerScheduleNameBuffer = updated.DisplayName;
+                plugin.PrintStatus($"Renamed schedule to '{updated.DisplayName}'.");
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Duplicate") && schedule != null)
+        {
+            var duplicate = plugin.SchedulerService.DuplicateSchedule(schedule.ScheduleId, $"{schedule.DisplayName} Copy");
+            if (duplicate != null)
+            {
+                selectedScheduleId = duplicate.ScheduleId;
+                schedulerScheduleNameBuffer = duplicate.DisplayName;
+                plugin.PrintStatus($"Duplicated schedule '{duplicate.DisplayName}'.");
+            }
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(activeScheduleLocked && schedule != null &&
+                            string.Equals(activeRun.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
+        if (ImGui.SmallButton("Delete") && schedule != null)
+        {
+            pendingDeleteScheduleId = schedule.ScheduleId;
+            ImGui.OpenPopup("Confirm delete schedule##dad-delete-schedule");
+        }
+        ImGui.EndDisabled();
+        ImGui.EndDisabled();
+
+        DrawDeleteSchedulePopup(snapshot);
+
+        if (schedule == null)
+        {
+            DrawMutedNotice("Create a schedule, then add saved presets to it.");
+            return;
+        }
+
+        var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;
+        if (ImGui.Checkbox("Daily mode", ref dailyMode))
+        {
+            schedule.Cadence = dailyMode ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
+            plugin.SchedulerService.UpdateSchedule(schedule);
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Daily mode runs once per FFXIV daily reset window at 15:00 UTC.");
+
+        DrawStatusRow("Cadence", schedule.Cadence == DadScheduleCadence.DailyReset
+            ? $"Daily reset at 15:00 UTC; next reset {FormatTime(DadScheduleRules.GetNextDailyResetUtc(DateTime.UtcNow))}"
+            : "Manual only.");
+        DrawStatusRow("Last run", schedule.LastRunCompletedAtUtc.HasValue
+            ? $"{schedule.LastRunStatus} at {FormatTime(schedule.LastRunCompletedAtUtc)} | {FormatText(schedule.LastSummary, "(no summary)")}"
+            : "(never)");
+
+        var canRunSchedule = plugin.Configuration.RunAsServerDad &&
+                              schedule.Entries.Count > 0 &&
+                              !activeScheduleLocked &&
+                              !Plugin.IsBusy(runState.VisibleRun);
+        ImGui.BeginDisabled(!canRunSchedule);
+        if (ImGui.SmallButton("Run now"))
+            plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !canRunSchedule)
+            ImGui.SetTooltip(!plugin.Configuration.RunAsServerDad
+                ? "Only Dad Coordinator may run schedules."
+                : activeScheduleLocked
+                ? "A schedule is already running."
+                : schedule.Entries.Count == 0
+                    ? "Add at least one saved preset entry."
+                    : "A Dad run is active.");
+
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(schedule.Entries.Count == 0 || activeScheduleLocked);
+        if (ImGui.SmallButton("Dry-run"))
+            plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: true, requestedBy: "schedule-ui-dry-run");
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!activeScheduleLocked ||
+                            !string.Equals(activeRun.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
+        if (ImGui.SmallButton("Cancel"))
+            plugin.CancelScheduleRunFromShell("Schedule cancelled from Scheduler tab.");
+        ImGui.EndDisabled();
+
+        DrawScheduleEntryEditor(schedule, groups, activeScheduleLocked);
+        DrawScheduleRecentResults(snapshot, schedule.ScheduleId);
+    }
+
+    private void EnsureScheduleSelection(DadScheduleSnapshot snapshot)
+    {
+        var selected = snapshot.Schedules.FirstOrDefault(schedule =>
+            string.Equals(schedule.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
+        if (selected != null)
+        {
+            if (string.IsNullOrWhiteSpace(schedulerScheduleNameBuffer))
+                schedulerScheduleNameBuffer = selected.DisplayName;
+            return;
+        }
+
+        selected = snapshot.Schedules.FirstOrDefault();
+        selectedScheduleId = selected?.ScheduleId ?? string.Empty;
+        schedulerScheduleNameBuffer = selected?.DisplayName ?? schedulerScheduleNameBuffer;
+    }
+
+    private void DrawDeleteSchedulePopup(DadScheduleSnapshot snapshot)
+    {
+        if (!ImGui.BeginPopupModal("Confirm delete schedule##dad-delete-schedule", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        var pending = snapshot.Schedules.FirstOrDefault(schedule =>
+            string.Equals(schedule.ScheduleId, pendingDeleteScheduleId, StringComparison.OrdinalIgnoreCase));
+        ImGui.TextWrapped(pending == null
+            ? "Delete this schedule?"
+            : $"Delete schedule '{pending.DisplayName}'?");
+
+        if (ImGui.SmallButton("Delete##dad-confirm-delete-schedule"))
+        {
+            if (plugin.SchedulerService.DeleteSchedule(pendingDeleteScheduleId))
+            {
+                selectedScheduleId = string.Empty;
+                plugin.PrintStatus("Deleted schedule.");
+            }
+
+            pendingDeleteScheduleId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Cancel"))
+        {
+            pendingDeleteScheduleId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private void DrawScheduleEntryEditor(
+        DadScheduleDefinition schedule,
+        IReadOnlyList<DadPlannerGroup> groups,
+        bool activeScheduleLocked)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted("Entries");
+        if (groups.Count == 0)
+        {
+            DrawMutedNotice("No saved Planner presets are available.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(schedulerAddPresetGroupId) ||
+            groups.All(group => !string.Equals(group.GroupId, schedulerAddPresetGroupId, StringComparison.OrdinalIgnoreCase)))
+        {
+            schedulerAddPresetGroupId = groups[0].GroupId;
+        }
+
+        ImGui.BeginDisabled(activeScheduleLocked);
+        DrawSchedulePresetCombo("Add preset", ref schedulerAddPresetGroupId, groups, "add");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Add"))
+        {
+            var group = groups.FirstOrDefault(candidate =>
+                string.Equals(candidate.GroupId, schedulerAddPresetGroupId, StringComparison.OrdinalIgnoreCase));
+            if (group != null)
+            {
+                schedule.Entries.Add(new DadScheduleEntry
+                {
+                    GroupId = group.GroupId,
+                    PresetName = group.DisplayName,
+                    RepeatCount = 1,
+                });
+                plugin.SchedulerService.UpdateSchedule(schedule);
+            }
+        }
+        ImGui.EndDisabled();
+
+        if (schedule.Entries.Count == 0)
+        {
+            DrawMutedNotice("No presets in this schedule.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-schedule-entries", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("#");
+        ImGui.TableSetupColumn("Preset");
+        ImGui.TableSetupColumn("Repeat");
+        ImGui.TableSetupColumn("Move");
+        ImGui.TableSetupColumn("Entry");
+        ImGui.TableSetupColumn("Status");
+        ImGui.TableHeadersRow();
+
+        var duplicateNames = groups
+            .GroupBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        for (var index = 0; index < schedule.Entries.Count; index++)
+        {
+            var entry = schedule.Entries[index];
+            var group = groups.FirstOrDefault(candidate =>
+                string.Equals(candidate.GroupId, entry.GroupId, StringComparison.OrdinalIgnoreCase));
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted((index + 1).ToString(CultureInfo.InvariantCulture));
+
+            ImGui.TableNextColumn();
+            var entryGroupId = entry.GroupId;
+            ImGui.BeginDisabled(activeScheduleLocked);
+            if (DrawSchedulePresetCombo($"##schedule-entry-preset-{entry.EntryId}", ref entryGroupId, groups, entry.EntryId))
+            {
+                var selected = groups.FirstOrDefault(candidate =>
+                    string.Equals(candidate.GroupId, entryGroupId, StringComparison.OrdinalIgnoreCase));
+                if (selected != null)
+                {
+                    entry.GroupId = selected.GroupId;
+                    entry.PresetName = selected.DisplayName;
+                    entry.UpdatedAtUtc = DateTime.UtcNow;
+                    plugin.SchedulerService.UpdateSchedule(schedule);
+                }
+            }
+            ImGui.EndDisabled();
+
+            ImGui.TableNextColumn();
+            var repeat = entry.RepeatCount;
+            ImGui.BeginDisabled(activeScheduleLocked);
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.InputInt($"##schedule-entry-repeat-{entry.EntryId}", ref repeat))
+            {
+                entry.RepeatCount = Math.Clamp(repeat, DadScheduleRules.MinRepeatCount, DadScheduleRules.MaxRepeatCount);
+                entry.UpdatedAtUtc = DateTime.UtcNow;
+                plugin.SchedulerService.UpdateSchedule(schedule);
+            }
+            ImGui.EndDisabled();
+
+            ImGui.TableNextColumn();
+            ImGui.BeginDisabled(activeScheduleLocked);
+            if (ImGui.SmallButton($"Up##schedule-entry-up-{entry.EntryId}") && index > 0)
+            {
+                (schedule.Entries[index - 1], schedule.Entries[index]) = (schedule.Entries[index], schedule.Entries[index - 1]);
+                plugin.SchedulerService.UpdateSchedule(schedule);
+                ImGui.EndDisabled();
+                break;
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Down##schedule-entry-down-{entry.EntryId}") && index < schedule.Entries.Count - 1)
+            {
+                (schedule.Entries[index + 1], schedule.Entries[index]) = (schedule.Entries[index], schedule.Entries[index + 1]);
+                plugin.SchedulerService.UpdateSchedule(schedule);
+                ImGui.EndDisabled();
+                break;
+            }
+            ImGui.EndDisabled();
+
+            ImGui.TableNextColumn();
+            ImGui.BeginDisabled(activeScheduleLocked);
+            if (ImGui.SmallButton($"Remove##schedule-entry-remove-{entry.EntryId}"))
+            {
+                schedule.Entries.RemoveAt(index);
+                plugin.SchedulerService.UpdateSchedule(schedule);
+                ImGui.EndDisabled();
+                break;
+            }
+            ImGui.EndDisabled();
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(group == null
+                ? "Missing preset"
+                : FormatPlannerGroupChoice(group.DisplayName, group.GroupId, duplicateNames));
+        }
+
+        ImGui.EndTable();
+    }
+
+    private bool DrawSchedulePresetCombo(
+        string label,
+        ref string groupId,
+        IReadOnlyList<DadPlannerGroup> groups,
+        string idSuffix)
+    {
+        var currentGroupId = groupId;
+        var duplicateNames = groups
+            .GroupBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selectedGroup = groups.FirstOrDefault(group =>
+            string.Equals(group.GroupId, currentGroupId, StringComparison.OrdinalIgnoreCase));
+        var preview = selectedGroup == null
+            ? "(missing)"
+            : FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames);
+        var changed = false;
+        ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
+        if (!ImGui.BeginCombo($"{label}##dad-schedule-preset-{idSuffix}", preview))
+            return false;
+
+        foreach (var group in groups)
+        {
+            var selected = string.Equals(group.GroupId, currentGroupId, StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable(FormatPlannerGroupChoice(group.DisplayName, group.GroupId, duplicateNames), selected))
+            {
+                groupId = group.GroupId;
+                currentGroupId = group.GroupId;
+                changed = true;
+            }
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+        return changed;
+    }
+
+    private void DrawScheduleRecentResults(DadScheduleSnapshot snapshot, string scheduleId)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted("Recent schedule runs");
+        var results = snapshot.RecentResults
+            .Where(result => string.Equals(result.ScheduleId, scheduleId, StringComparison.OrdinalIgnoreCase))
+            .Take(8)
+            .ToList();
+        if (results.Count == 0)
+        {
+            DrawMutedNotice("No terminal schedule runs recorded yet.");
+            return;
+        }
+
+        if (!ImGui.BeginTable("dad-schedule-history", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn("Done");
+        ImGui.TableSetupColumn("Status");
+        ImGui.TableSetupColumn("Mode");
+        ImGui.TableSetupColumn("Progress");
+        ImGui.TableSetupColumn("Summary");
+        ImGui.TableHeadersRow();
+
+        foreach (var result in results)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatTime(result.CompletedAtUtc));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(result.Status.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(result.DryRun ? "dry-run" : result.ManualRun ? "manual" : "daily");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted($"{result.CompletedEntryExecutions}/{result.TotalEntryExecutions}");
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(FormatText(result.BlockedReason, result.Summary));
+        }
+
+        ImGui.EndTable();
+    }
+
     private void DrawCrewQueueSection()
     {
         var queue = plugin.SchedulerService.GetQueueSnapshot();
@@ -1312,6 +1744,8 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Job", FormatText(state.JobId, "(none)"));
         DrawStatusRow("Owner", FormatText(state.RequestedBy, "(scheduler)"));
         DrawStatusRow("Preset", FormatText(state.PresetName, "(none)"));
+        if (!string.IsNullOrWhiteSpace(state.ScheduleRunId))
+            DrawStatusRow("Schedule", $"entry {state.ScheduleEntryIndex + 1}, repeat {state.ScheduleRepeatIteration} | {state.ScheduleRunId}");
         if (queue.ActiveJob?.JobType == DadSchedulerJobType.MapCrew)
             DrawStatusRow("Map crew", $"{queue.ActiveJob.MapMode}{(string.IsNullOrWhiteSpace(queue.ActiveJob.MapRunTemplate) ? string.Empty : $" | {queue.ActiveJob.MapRunTemplate}")}");
         DrawStatusRow("Queue", queue.Summary);

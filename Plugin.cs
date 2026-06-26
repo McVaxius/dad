@@ -1649,6 +1649,30 @@ public sealed class Plugin : IDalamudPlugin
     public string GetSchedulerQueueJson()
         => DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
 
+    public DadScheduleRunState StartScheduleRunFromShell(string scheduleId, bool dryRun, string requestedBy)
+    {
+        var state = SchedulerService.StartScheduleRun(scheduleId, dryRun, requestedBy);
+        if (CanAdvanceSchedulerQueue())
+        {
+            SchedulerService.Update(
+                ResolvePlannerGroup,
+                BuildSchedulerPlannerPreview,
+                StartScheduledPlannerRequest,
+                () => GetVisibleRunState().VisibleRun);
+            state = SchedulerService.GetScheduleSnapshot().ActiveRun;
+        }
+
+        PrintStatus(state.Summary);
+        return state;
+    }
+
+    public bool CancelScheduleRunFromShell(string reason)
+    {
+        var cancelled = SchedulerService.CancelScheduleRun(reason);
+        PrintStatus(cancelled ? "Schedule cancelled." : "No active schedule run to cancel.");
+        return cancelled;
+    }
+
     public string EnqueueScheduledPresetFromJson(string json)
     {
         var request = DadIpcJson.Deserialize<DadScheduledPresetRequest>(json);
@@ -3562,7 +3586,8 @@ public sealed class Plugin : IDalamudPlugin
                 SchedulerService.Update(
                     ResolvePlannerGroup,
                     BuildSchedulerPlannerPreview,
-                    StartScheduledPlannerRequest);
+                    StartScheduledPlannerRequest,
+                    () => GetVisibleRunState().VisibleRun);
             }
         });
         RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
