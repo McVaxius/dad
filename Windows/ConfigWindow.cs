@@ -1,6 +1,5 @@
 using System.Numerics;
 using System.Reflection;
-using System.Security.Cryptography;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using dad.Models;
@@ -294,10 +293,8 @@ public sealed class ConfigWindow : Window, IDisposable
         var runAsServerDad = configuration.RunAsServerDad;
         if (ImGui.Checkbox("Run as Dad Coordinator", ref runAsServerDad))
         {
-            configuration.RunAsServerDad = runAsServerDad;
-            configuration.Save();
+            plugin.SetRunAsServerDad(runAsServerDad);
             ResetEndpointDraft(configuration);
-            plugin.ApplyTransportRoleConfiguration();
         }
 
         var localOnly = configuration.LocalOnlyModeEnabled;
@@ -460,9 +457,10 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Separator();
         ImGui.TextUnformatted("Window commands");
-        ImGui.BulletText("/dad ws -> reset both windows to 1,1");
-        ImGui.BulletText("/dad j -> jump both windows somewhere visible");
+        ImGui.BulletText("/dad ws -> reset Dad windows to 1,1");
+        ImGui.BulletText("/dad j -> jump Dad windows somewhere visible");
         ImGui.BulletText("/dad status -> print the live shell summary to chat");
+        ImGui.BulletText("/dad wizard or /dad setup -> open the Dad Setup Wizard");
         ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
         ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
         ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
@@ -947,23 +945,11 @@ public sealed class ConfigWindow : Window, IDisposable
         if (!HasPendingEndpointDraftChanges(configuration))
             return;
 
-        if (configuration.RunAsServerDad)
-        {
-            configuration.ServerListenHost = host;
-            configuration.ServerListenPort = port;
-        }
-        else
-        {
-            configuration.ServerDadHost = host;
-            configuration.ServerDadPort = port;
-        }
-        configuration.Save();
+        plugin.ApplyTransportEndpoint(host, port);
 
         draftServerHost = host;
         draftServerPort = port;
         endpointDraftInitialized = true;
-
-        plugin.ApplyEndpointConfiguration(endpointChanged: true);
     }
 
     private void DrawLanSharedSecretSetup(Configuration configuration)
@@ -997,7 +983,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (configuration.RunAsServerDad)
         {
             if (ImGui.Button("Generate LAN shared secret"))
-                SetSharedSecret(configuration, GenerateLanSharedSecret());
+                SetSharedSecret(configuration, plugin.GenerateAndApplyTransportSharedSecret());
 
             ImGui.SameLine();
             if (string.IsNullOrWhiteSpace(configuration.TransportSharedSecret))
@@ -1050,20 +1036,9 @@ public sealed class ConfigWindow : Window, IDisposable
     private void SetSharedSecret(Configuration configuration, string sharedSecret)
     {
         sharedSecret = sharedSecret.Trim();
-        if (string.Equals(configuration.TransportSharedSecret, sharedSecret, StringComparison.Ordinal))
-        {
-            ResetSharedSecretDraft(configuration);
-            return;
-        }
-
-        configuration.TransportSharedSecret = sharedSecret;
-        configuration.Save();
+        plugin.SetTransportSharedSecret(sharedSecret);
         ResetSharedSecretDraft(configuration);
-        plugin.ApplyTransportRoleConfiguration();
     }
-
-    private static string GenerateLanSharedSecret()
-        => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
     private void DrawEndpointHostDropdown()
     {

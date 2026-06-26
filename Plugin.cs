@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using Dalamud.Game.Command;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Gui.Dtr;
@@ -74,6 +75,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
+    private readonly SetupWizardWindow setupWizardWindow;
     private readonly DadIpcService dadIpcService;
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly CancellationTokenSource backgroundCancellation = new();
@@ -198,8 +200,11 @@ public sealed class Plugin : IDalamudPlugin
 
         mainWindow = new MainWindow(this);
         configWindow = new ConfigWindow(this);
+        setupWizardWindow = new SetupWizardWindow(this);
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
+        WindowSystem.AddWindow(setupWizardWindow);
+        OpenSetupWizardOnce();
 
         var plannerLaneCount = PresetProviderService.GetPlannerLaneDefinitions().Count();
         var buildVersion = GetType().Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
@@ -207,7 +212,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test launch-profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test launch-profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -269,6 +274,11 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleMainUi() => mainWindow.Toggle();
 
     public void ToggleConfigUi() => configWindow.Toggle();
+
+    public void OpenSetupWizard() => setupWizardWindow.OpenLanding();
+
+    public void OpenMainTab(DadMainWindowTab tab, DadPresetsWindowTab? presetsTab = null)
+        => mainWindow.OpenTab(tab, presetsTab);
 
     public void PrintStatus(string message) => ChatGui.Print($"[{PluginInfo.DisplayName}] {message}");
 
@@ -740,6 +750,73 @@ public sealed class Plugin : IDalamudPlugin
         lock (authorityCacheGate)
             suppressRemoteAuthorityRefreshUntilUtc = DateTime.UtcNow + EndpointApplyAuthorityRefreshSuppression;
     }
+
+    public bool SetRunAsServerDad(bool runAsServerDad)
+    {
+        if (Configuration.RunAsServerDad == runAsServerDad)
+            return false;
+
+        Configuration.RunAsServerDad = runAsServerDad;
+        Configuration.Save();
+        ApplyTransportRoleConfiguration();
+        return true;
+    }
+
+    public bool ApplyTransportEndpoint(string host, int port)
+    {
+        host = NormalizeTransportHost(host);
+        port = NormalizeTransportPort(port);
+        var endpointChanged = Configuration.RunAsServerDad
+            ? !string.Equals(Configuration.ServerListenHost, host, StringComparison.Ordinal) ||
+              Configuration.ServerListenPort != port
+            : !string.Equals(Configuration.ServerDadHost, host, StringComparison.Ordinal) ||
+              Configuration.ServerDadPort != port;
+        if (!endpointChanged)
+            return false;
+
+        if (Configuration.RunAsServerDad)
+        {
+            Configuration.ServerListenHost = host;
+            Configuration.ServerListenPort = port;
+        }
+        else
+        {
+            Configuration.ServerDadHost = host;
+            Configuration.ServerDadPort = port;
+        }
+
+        Configuration.Save();
+        ApplyEndpointConfiguration(endpointChanged: true);
+        return true;
+    }
+
+    public bool SetTransportSharedSecret(string sharedSecret)
+    {
+        sharedSecret = (sharedSecret ?? string.Empty).Trim();
+        if (string.Equals(Configuration.TransportSharedSecret, sharedSecret, StringComparison.Ordinal))
+            return false;
+
+        Configuration.TransportSharedSecret = sharedSecret;
+        Configuration.Save();
+        ApplyTransportRoleConfiguration();
+        return true;
+    }
+
+    public string GenerateAndApplyTransportSharedSecret()
+    {
+        var sharedSecret = GenerateTransportSharedSecret();
+        SetTransportSharedSecret(sharedSecret);
+        return sharedSecret;
+    }
+
+    private static string GenerateTransportSharedSecret()
+        => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+    private static string NormalizeTransportHost(string host)
+        => string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host.Trim();
+
+    private static int NormalizeTransportPort(int port)
+        => Math.Clamp(port, 1, 65535);
 
     public void ApplyTransportRoleConfiguration()
     {
@@ -2622,8 +2699,10 @@ public sealed class Plugin : IDalamudPlugin
     {
         mainWindow.ResetToOrigin();
         configWindow.ResetToOrigin();
+        setupWizardWindow.ResetToOrigin();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
+        setupWizardWindow.IsOpen = true;
         PrintStatus("Reset dad window positions to 1,1.");
     }
 
@@ -2631,8 +2710,10 @@ public sealed class Plugin : IDalamudPlugin
     {
         mainWindow.QueueRandomVisibleJump();
         configWindow.QueueRandomVisibleJump();
+        setupWizardWindow.QueueRandomVisibleJump();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
+        setupWizardWindow.IsOpen = true;
         PrintStatus("Queued random visible positions for the dad windows.");
     }
 
@@ -2828,6 +2909,13 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("config", StringComparison.OrdinalIgnoreCase))
         {
             ToggleConfigUi();
+            return;
+        }
+
+        if (trimmed.Equals("wizard", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("setup", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenSetupWizard();
             return;
         }
 
@@ -3258,6 +3346,16 @@ public sealed class Plugin : IDalamudPlugin
     {
         dtrEntry = DtrBar.Get(PluginInfo.DisplayName);
         dtrEntry.OnClick = _ => SetPluginEnabled(!Configuration.PluginEnabled, printStatus: false);
+    }
+
+    private void OpenSetupWizardOnce()
+    {
+        if (Configuration.SetupWizardLoaded)
+            return;
+
+        setupWizardWindow.OpenLanding();
+        Configuration.SetupWizardLoaded = true;
+        Configuration.Save();
     }
 
     public void UpdateDtrBar()

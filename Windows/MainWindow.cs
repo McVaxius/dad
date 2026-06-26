@@ -9,6 +9,21 @@ using Lumina.Excel.Sheets;
 
 namespace dad.Windows;
 
+public enum DadMainWindowTab
+{
+    Overview,
+    Presets,
+    Crew,
+    Multiplayer,
+}
+
+public enum DadPresetsWindowTab
+{
+    Planner,
+    Queue,
+    ActiveJob,
+}
+
 public sealed class MainWindow : Window, IDisposable
 {
     private static readonly Vector2 MinimumWindowSize = new(760f, 600f);
@@ -47,6 +62,8 @@ public sealed class MainWindow : Window, IDisposable
     private string profileSaveStatus = string.Empty;
     private string draftPlannerCompletionCommands = string.Empty;
     private string plannerCompletionDraftOwner = string.Empty;
+    private DadMainWindowTab? pendingMainTab;
+    private DadPresetsWindowTab? pendingPresetsTab;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -76,6 +93,13 @@ public sealed class MainWindow : Window, IDisposable
     public void Dispose() { }
 
     public void ResetToOrigin() => QueuePosition(new Vector2(1f, 1f));
+
+    public void OpenTab(DadMainWindowTab tab, DadPresetsWindowTab? presetsTab = null)
+    {
+        pendingMainTab = tab;
+        pendingPresetsTab = presetsTab;
+        IsOpen = true;
+    }
 
     public void QueueRandomVisibleJump()
     {
@@ -187,6 +211,10 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.SmallButton("Settings"))
             plugin.ToggleConfigUi();
 
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Wizard"))
+            plugin.OpenSetupWizard();
+
         if (debugUi)
         {
             ImGui.SameLine();
@@ -243,32 +271,35 @@ public sealed class MainWindow : Window, IDisposable
 
         if (ImGui.BeginTabBar("dad-main-tabs"))
         {
-            if (ImGui.BeginTabItem("Overview"))
+            if (ImGui.BeginTabItem("Overview", BuildMainTabFlags(DadMainWindowTab.Overview)))
             {
                 DrawOverviewTab(runState, profile);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Multiplayer"))
+            if (ImGui.BeginTabItem("Presets", BuildMainTabFlags(DadMainWindowTab.Presets)))
+            {
+                DrawPresetsTab(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Crew", BuildMainTabFlags(DadMainWindowTab.Crew)))
+            {
+                DrawCrewTab(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Multiplayer", BuildMainTabFlags(DadMainWindowTab.Multiplayer)))
             {
                 DrawMultiplayerTab(characterPool, runState);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Crew / Scheduler"))
-            {
-                DrawCrewSchedulerTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Preset Planner"))
-            {
-                DrawPresetPlannerTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
             ImGui.EndTabBar();
         }
+
+        pendingMainTab = null;
+        pendingPresetsTab = null;
     }
 
     private void DrawActiveRunBanner(DadVisibleRunState runState)
@@ -678,31 +709,23 @@ public sealed class MainWindow : Window, IDisposable
         DrawDutySupportRuntimeSection(activeRun);
     }
 
-    private void DrawCrewSchedulerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
+    private void DrawPresetsTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
-        var catalog = plugin.RosterCatalogService.CurrentCatalog;
-
-        if (ImGui.BeginTabBar("dad-crew-scheduler-tabs"))
+        if (ImGui.BeginTabBar("dad-presets-tabs"))
         {
-            if (ImGui.BeginTabItem("Accounts & Profiles"))
+            if (ImGui.BeginTabItem("Planner", BuildPresetsTabFlags(DadPresetsWindowTab.Planner)))
             {
-                DrawAccountsProfilesSection(characterPool, catalog, runState);
+                DrawPresetPlannerTab(characterPool, runState);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Presets"))
-            {
-                DrawCrewPresetSection(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Queue"))
+            if (ImGui.BeginTabItem("Queue", BuildPresetsTabFlags(DadPresetsWindowTab.Queue)))
             {
                 DrawCrewQueueSection();
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Active Job"))
+            if (ImGui.BeginTabItem("Active Job", BuildPresetsTabFlags(DadPresetsWindowTab.ActiveJob)))
             {
                 DrawCrewActiveJobSection();
                 ImGui.EndTabItem();
@@ -711,6 +734,18 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndTabBar();
         }
     }
+
+    private void DrawCrewTab(DadCharacterPool characterPool, DadVisibleRunState runState)
+    {
+        var catalog = plugin.RosterCatalogService.CurrentCatalog;
+        DrawAccountsProfilesSection(characterPool, catalog, runState);
+    }
+
+    private ImGuiTabItemFlags BuildMainTabFlags(DadMainWindowTab tab)
+        => pendingMainTab == tab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+
+    private ImGuiTabItemFlags BuildPresetsTabFlags(DadPresetsWindowTab tab)
+        => pendingPresetsTab == tab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
 
     private void DrawAccountsProfilesSection(
         DadCharacterPool characterPool,
@@ -1145,45 +1180,6 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.EndTable();
-    }
-
-    private void DrawCrewPresetSection(DadCharacterPool characterPool, DadVisibleRunState runState)
-    {
-        var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
-        var plannerPreview = plannerSnapshot.PlannerPreview;
-        var requestPreview = plannerSnapshot.RequestPreview;
-        var plannerLocked = IsPlannerLocked(runState);
-
-        DrawSectionHeader("Crew Presets", "Saved presets use Active roster rows by default.");
-        DrawMutedNotice("Preset and scheduler pickers use assigned Active roster rows only.");
-
-        ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerGroupControls(plannerSnapshot, plugin.PlannerOptions, plannerPreview, plannerLocked, debugUi: true);
-        ImGui.EndDisabled();
-
-        var selectedGroup = plugin.GetSelectedPlannerGroup();
-        ImGui.BeginDisabled(selectedGroup == null || plannerLocked);
-        if (ImGui.SmallButton("Enqueue preset"))
-        {
-            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Enqueue map crew"))
-        {
-            EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, selectedGroup?.MapMode ?? DadMapCrewJobMode.ManualMapReady);
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Dry-run preset"))
-        {
-            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady, dryRun: true);
-        }
-        ImGui.EndDisabled();
-
-        DrawStatusRow("Request", requestPreview.StatusSummary);
-        if (selectedGroup != null)
-            DrawStatusRow("Selected", $"{selectedGroup.DisplayName} | {selectedGroup.Slots.Count} slot(s)");
     }
 
     private void DrawCrewQueueSection()
@@ -2988,6 +2984,26 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetTooltip(requestPreview.PlannerPreview.UsingPlannerGroup
                 ? schedulerPreview.BlockedReason
                 : "Select a saved preset before using the scheduler.");
+
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(selectedGroup == null || plannerLocked);
+        if (ImGui.SmallButton("Enqueue preset"))
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
+        var enqueuePresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Enqueue map crew"))
+            EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, selectedGroup?.MapMode ?? DadMapCrewJobMode.ManualMapReady);
+        var enqueueMapCrewHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Dry-run preset"))
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady, dryRun: true);
+        var dryRunPresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.EndDisabled();
+        if ((enqueuePresetHovered || enqueueMapCrewHovered || dryRunPresetHovered) && selectedGroup == null)
+            ImGui.SetTooltip("Select a saved preset before queueing scheduler work.");
 
         if (plannerLocked)
         {
