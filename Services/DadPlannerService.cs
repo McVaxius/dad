@@ -205,8 +205,12 @@ public sealed class DadPlannerService
                 ModuleId = DadModuleId.Mogtome,
                 DisplayName = "MOGTOME",
                 OwnerLabel = capability.OwnerLabel,
-                ExpectedPartySize = Math.Max(4, capability.RequiredPartySize),
-                RequiresPeers = true,
+                // B3 (Option A, reversible): MOGTOME runs as a solo DAD-owned helper-IPC lane; the helper
+                // coordinates its own party, so Dad must not gate it as a 4-peer premade or reject it under
+                // local-only. The executor keeps its ipc.IsReady() check. Revert to Math.Max(4, ...) +
+                // RequiresPeers = true to restore the legacy 4-person premade topology.
+                ExpectedPartySize = Math.Max(1, capability.RequiredPartySize),
+                RequiresPeers = false,
                 Summary = $"MOGTOME preset '{request.Mogtome.Preset}'",
             });
         }
@@ -333,10 +337,12 @@ public sealed class DadPlannerService
         {
             rejectionReason = request.Orchestration.ModuleTarget switch
             {
-                DadModuleId.Msq => "dad local-only is enabled, but MSQ requires Dad Coordinator party workers.",
+                // B4: MSQ arm removed — MSQ modules are always built RequiresPeers = false, so this guard is
+                // never entered for an MSQ-only run; the arm was unreachable copy-paste drift.
                 DadModuleId.PremadeDuty => "dad local-only is enabled, but Premade Duty requires Dad Coordinator party workers.",
                 DadModuleId.DailyMsq => "dad local-only is enabled, but Daily MSQ requires Dad Coordinator party workers.",
-                DadModuleId.Mogtome => "dad local-only is enabled, but MOGTOME requires Dad Coordinator party workers.",
+                // B3 (Option A): MOGTOME arm removed — MOGTOME now plans RequiresPeers = false (solo helper-IPC
+                // lane), so it is no longer rejected under local-only.
                 DadModuleId.Commendation => "dad local-only is enabled, but commendation requires Dad Coordinator party workers.",
                 DadModuleId.Astrope => "dad local-only is enabled, but Astrope requires Dad Coordinator party workers.",
                 DadModuleId.VariantVvd => "dad local-only is enabled, but Variant/VVD party mode requires Dad Coordinator party workers.",

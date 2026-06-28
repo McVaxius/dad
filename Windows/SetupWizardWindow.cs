@@ -15,7 +15,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         "Dad enabled",
         "Active profile armed",
         "Client account id present",
-        "Role is Server Dad",
+        "Role is Coordinator Dad",
         "Listener endpoint configured",
         "LAN secret required/configured",
         "Hub ready",
@@ -27,7 +27,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         "Active profile armed",
         "Client account id present",
         "Role is Client Dad",
-        "Server Dad endpoint configured",
+        "Coordinator Dad endpoint configured",
         "Secret present when required",
         "Authority discovered",
         "Workers visible",
@@ -51,7 +51,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private static readonly string[] SchedulerBuilderCheckLabels =
     [
         "Dad enabled",
-        "Server Dad for daily schedules",
+        "Coordinator Dad for daily schedules",
         "Saved Planner presets exist",
         "At least one schedule exists",
         "Selected schedule has entries",
@@ -266,16 +266,16 @@ public sealed class SetupWizardWindow : Window, IDisposable
             new("Basics", "Client account id present", !string.IsNullOrWhiteSpace(configuration.ClientAccountId), FormatText(configuration.ClientAccountId, "(missing)"), "Open Settings and select or create a Dad account."),
             new("Basics", "Local runtime/XADB snapshot available", hasLocalSnapshot, $"{pool.Characters.Count.ToString(CultureInfo.InvariantCulture)} live row(s); XADB {pool.XadbStatus.Availability}; snapshot {FormatTime(pool.XadbStatus.SnapshotUtc)}", "Refresh local roster or save the current character to XADB."),
 
-            new("Coordinator Dad", "Role is Server Dad", configuration.RunAsServerDad, configuration.RunAsServerDad ? "This instance is the Dad Coordinator." : "This instance is a Client Dad.", "Switch this instance to Dad Coordinator.", roleCountsCoordinator),
+            new("Coordinator Dad", "Role is Coordinator Dad", configuration.RunAsServerDad, configuration.RunAsServerDad ? "This instance is the Dad Coordinator." : "This instance is a Client Dad.", "Switch this instance to Dad Coordinator.", roleCountsCoordinator),
             new("Coordinator Dad", "Listener endpoint configured", HasValidEndpoint(configuration.ServerListenHost, configuration.ServerListenPort), $"{configuration.ServerListenHost}:{configuration.ServerListenPort.ToString(CultureInfo.InvariantCulture)}", "Configure and apply the Dad Coordinator listener endpoint.", roleCountsCoordinator),
             new("Coordinator Dad", "LAN secret required/configured", !transport.SharedSecretRequired || transport.SharedSecretConfigured, transport.SharedSecretRequired ? (transport.SharedSecretConfigured ? "Required and configured." : "Required but missing.") : "Not required for loopback endpoint.", "Generate or apply a LAN shared secret.", roleCountsCoordinator),
             new("Coordinator Dad", "Hub ready", plugin.TransportService.IsReady && !string.IsNullOrWhiteSpace(transport.ListenerEndpoint), $"{transport.Availability}; {transport.ConnectionStatus}", "Enable Dad and verify the listener endpoint.", roleCountsCoordinator),
             new("Coordinator Dad", "Participant count", participantCount > 0, $"{participantCount.ToString(CultureInfo.InvariantCulture)} participant(s) visible; {transport.ConnectedPeerCount.ToString(CultureInfo.InvariantCulture)} peer connection(s)", "Populate connected roster or connect Client Dads.", roleCountsCoordinator),
 
             new("Client Dads", "Role is Client Dad", !configuration.RunAsServerDad, configuration.RunAsServerDad ? "This instance is the Dad Coordinator." : "This instance is a Client Dad.", "Switch this instance to Client Dad.", roleCountsClient),
-            new("Client Dads", "Server Dad endpoint configured", HasValidEndpoint(configuration.ServerDadHost, configuration.ServerDadPort), $"{configuration.ServerDadHost}:{configuration.ServerDadPort.ToString(CultureInfo.InvariantCulture)}", "Configure and apply the Server Dad endpoint.", roleCountsClient),
-            new("Client Dads", "Secret present when required", !transport.SharedSecretRequired || transport.SharedSecretConfigured, transport.SharedSecretRequired ? (transport.SharedSecretConfigured ? "Required and configured." : "Required but missing.") : "Not required for loopback endpoint.", "Paste and apply W's LAN shared secret.", roleCountsClient),
-            new("Client Dads", "Authority discovered", authorityDiscovered, $"{transport.AuthorityStatus}; endpoint {FormatText(transport.AuthorityEndpoint, "(none)")}", "Verify the Server Dad endpoint and shared secret.", roleCountsClient),
+            new("Client Dads", "Coordinator Dad endpoint configured", HasValidEndpoint(configuration.ServerDadHost, configuration.ServerDadPort), $"{configuration.ServerDadHost}:{configuration.ServerDadPort.ToString(CultureInfo.InvariantCulture)}", "Configure and apply the Coordinator Dad endpoint.", roleCountsClient),
+            new("Client Dads", "Secret present when required", !transport.SharedSecretRequired || transport.SharedSecretConfigured, transport.SharedSecretRequired ? (transport.SharedSecretConfigured ? "Required and configured." : "Required but missing.") : "Not required for loopback endpoint.", "Paste and apply the Coordinator Dad's LAN shared secret.", roleCountsClient),
+            new("Client Dads", "Authority discovered", authorityDiscovered, $"{transport.AuthorityStatus}; endpoint {FormatText(transport.AuthorityEndpoint, "(none)")}", "Verify the Coordinator Dad endpoint and shared secret.", roleCountsClient),
             new("Client Dads", "Workers visible", workersVisible, $"{transport.KnownParticipantCount.ToString(CultureInfo.InvariantCulture)} known participant(s); {transport.LastRequestStatus}", "Populate connected roster or wait for Dad Coordinator discovery.", roleCountsClient),
 
             new("Roster", "Local roster refresh status", hasLocalRoster, FormatText(catalog.Summary, "Roster catalog not refreshed."), "Refresh local roster."),
@@ -290,7 +290,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             new("Presets", "Launch profiles imported/enabled", configuration.LaunchProfiles.Count > 0 && enabledLaunchProfiles > 0, $"{configuration.LaunchProfiles.Count.ToString(CultureInfo.InvariantCulture)} imported; {enabledLaunchProfiles.ToString(CultureInfo.InvariantCulture)} enabled.", "Import launch profiles and enable the needed profiles."),
             new("Presets", "Scheduler preview startability", schedulerPreview.CanStart || schedulerPreview.ReadyToStart, schedulerPreview.ReadyToStart ? "Ready to start." : FormatText(schedulerPreview.BlockedReason, schedulerPreview.StatusSummary), "Open Planner and fix the first scheduler/planner blocker."),
 
-            new("Scheduler Builder", "Server Dad for daily schedules", configuration.RunAsServerDad, configuration.RunAsServerDad ? "This instance is Server Dad." : "This instance is Client Dad; live daily schedule execution requires Server Dad.", "Switch this instance to Server Dad before relying on live daily schedules."),
+            new("Scheduler Builder", "Coordinator Dad for daily schedules", configuration.RunAsServerDad, configuration.RunAsServerDad ? "This instance is Coordinator Dad." : "This instance is Client Dad; live daily schedule execution requires Coordinator Dad.", "Switch this instance to Coordinator Dad before relying on live daily schedules."),
             new("Scheduler Builder", "Saved Planner presets exist", savedPresetCount > 0, $"{savedPresetCount.ToString(CultureInfo.InvariantCulture)} saved preset(s).", "Open Planner and save at least one preset."),
             new("Scheduler Builder", "At least one schedule exists", scheduleSnapshot.Schedules.Count > 0, $"{scheduleSnapshot.Schedules.Count.ToString(CultureInfo.InvariantCulture)} schedule(s) configured.", "Create a daily schedule from this wizard."),
             new("Scheduler Builder", "Selected schedule has entries", selectedScheduleEntries.Count > 0, selectedSchedule == null ? "No schedule selected." : $"{selectedScheduleEntries.Count.ToString(CultureInfo.InvariantCulture)} entry/entries in '{selectedSchedule.DisplayName}'.", "Add at least one saved preset to the selected schedule."),
@@ -336,11 +336,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
         var availableWidth = ImGui.GetContentRegionAvail().X;
         var spacing = ImGui.GetStyle().ItemSpacing;
-        var useTwoColumns = availableWidth >= 620f;
+        var useTwoColumns = availableWidth >= ImGui.GetFontSize() * 38f;
         var cardWidth = useTwoColumns
             ? MathF.Max(280f, (availableWidth - spacing.X) * 0.5f)
             : availableWidth;
-        var cardSize = new Vector2(cardWidth, 122f);
+        var cardSize = new Vector2(cardWidth, ImGui.GetTextLineHeightWithSpacing() * 6f);
 
         for (var i = 0; i < cards.Length; i++)
         {
@@ -416,7 +416,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var activeScheduleLocked = activeRun.IsActive;
 
         if (!plugin.Configuration.RunAsServerDad)
-            DrawMutedNotice("Client Dad can inspect and build schedules here; live daily schedule execution requires Server Dad.");
+            DrawMutedNotice("Client Dad can inspect and build schedules here; live daily schedule execution requires Coordinator Dad.");
 
         DrawStatusRow("Runner", activeRun.IsActive
             ? $"{activeRun.Status} / {activeRun.Phase} | {activeRun.Summary}"
@@ -489,8 +489,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.TextWrapped(card.NextAction);
 
         var buttonWidth = MathF.Max(120f, ImGui.GetContentRegionAvail().X);
-        ImGui.SetCursorPosY(MathF.Max(ImGui.GetCursorPosY(), size.Y - 34f));
-        if (ImGui.Button($"Open##dad-wizard-open-{card.Route}", new Vector2(buttonWidth, 26f)))
+        ImGui.SetCursorPosY(MathF.Max(ImGui.GetCursorPosY(), size.Y - (ImGui.GetTextLineHeightWithSpacing() * 1.6f)));
+        if (ImGui.Button($"Open##dad-wizard-open-{card.Route}", new Vector2(buttonWidth, ImGui.GetFrameHeight())))
             route = card.Route;
         ImGui.EndChild();
     }
@@ -509,7 +509,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var completeCount = readyChecks.Count(static check => check.Complete);
         var totalCount = readyChecks.Count;
         var ready = firstBlocker == null;
-        var badge = ready ? "READY" : completeCount == 0 ? "START" : "NEXT";
+        var badge = ready ? "Ready" : "Action needed";
         var detail = $"{completeCount.ToString(CultureInfo.InvariantCulture)}/{totalCount.ToString(CultureInfo.InvariantCulture)}";
         var color = ready
             ? new Vector4(0.35f, 0.9f, 0.45f, 1f)
@@ -614,6 +614,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.SmallButton("Populate connected roster"))
             plugin.RequestPeerSnapshotsFromShell();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Pulls roster rows from connected Dads over the transport.");
         ImGui.SameLine();
         if (ImGui.SmallButton("Import launch profiles"))
             plugin.ImportLaunchProfilesFromBootDirectory();
@@ -633,8 +635,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DadScheduleDefinition? schedule,
         bool activeScheduleLocked)
     {
-        ImGui.Separator();
-        ImGui.TextUnformatted("Schedule");
+        DrawSectionHeader("Schedule");
 
         if (snapshot.Schedules.Count == 0)
         {
@@ -697,8 +698,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         IReadOnlyList<DadPlannerGroup> groups,
         bool activeScheduleLocked)
     {
-        ImGui.Separator();
-        ImGui.TextUnformatted("Add preset");
+        DrawSectionHeader("Add preset");
         if (groups.Count == 0)
         {
             DrawMutedNotice("No saved Planner presets are available.");
@@ -748,8 +748,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         IReadOnlyList<DadPlannerGroup> groups,
         bool activeScheduleLocked)
     {
-        ImGui.Separator();
-        ImGui.TextUnformatted("Entries");
+        DrawSectionHeader("Entries");
         if (schedule.Entries.Count == 0)
         {
             DrawMutedNotice("No presets in this schedule.");
@@ -887,9 +886,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private void DrawEndpointEditor(Configuration configuration)
     {
         EnsureEndpointDraft(configuration);
-        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Listener endpoint" : "Server Dad endpoint");
+        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Listener endpoint" : "Coordinator Dad endpoint");
 
-        var comboWidth = 220f;
+        var comboWidth = ImGui.GetFontSize() * 13f;
         var hostInputWidth = MathF.Max(180f, ImGui.GetContentRegionAvail().X - comboWidth - ImGui.GetStyle().ItemSpacing.X);
         ImGui.SetNextItemWidth(hostInputWidth);
         ImGui.InputText("##dad-wizard-endpoint-host", ref draftServerHost, 128);
@@ -897,9 +896,15 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.SetNextItemWidth(comboWidth);
         DrawEndpointHostDropdown();
 
-        ImGui.SetNextItemWidth(140f);
+        ImGui.SetNextItemWidth(ImGui.GetFontSize() * 8f);
         ImGui.InputInt("Port##dad-wizard-endpoint-port", ref draftServerPort);
         draftServerPort = Math.Clamp(draftServerPort, 1, 65535);
+
+        var endpointPending = configuration.RunAsServerDad
+            ? !string.Equals(draftServerHost.Trim(), configuration.ServerListenHost, StringComparison.Ordinal) || draftServerPort != configuration.ServerListenPort
+            : !string.Equals(draftServerHost.Trim(), configuration.ServerDadHost, StringComparison.Ordinal) || draftServerPort != configuration.ServerDadPort;
+        if (endpointPending)
+            ImGui.TextDisabled("Endpoint draft has unapplied changes.");
 
         if (ImGui.SmallButton("Apply endpoint"))
         {
@@ -907,8 +912,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
             ResetEndpointDraft(configuration);
         }
         ImGui.SameLine();
+        ImGui.BeginDisabled(!endpointPending);
         if (ImGui.SmallButton("Revert endpoint"))
             ResetEndpointDraft(configuration);
+        ImGui.EndDisabled();
     }
 
     private void DrawSharedSecretEditor(
@@ -921,14 +928,20 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.SetNextItemWidth(MathF.Min(440f, ImGui.GetContentRegionAvail().X));
         ImGui.InputText(serverMode ? "Shared secret##dad-wizard-secret" : "Paste shared secret##dad-wizard-secret", ref draftSharedSecret, 128);
 
+        var secretPending = !string.Equals(draftSharedSecret.Trim(), configuration.TransportSharedSecret, StringComparison.Ordinal);
+        if (secretPending)
+            ImGui.TextDisabled("Shared secret draft has unapplied changes.");
+
         if (ImGui.SmallButton("Apply shared secret"))
         {
             plugin.SetTransportSharedSecret(draftSharedSecret);
             ResetSharedSecretDraft(configuration);
         }
         ImGui.SameLine();
+        ImGui.BeginDisabled(!secretPending);
         if (ImGui.SmallButton("Revert secret"))
             ResetSharedSecretDraft(configuration);
+        ImGui.EndDisabled();
 
         if (serverMode)
         {
@@ -1122,7 +1135,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private static void DrawCheck(WizardCheck check)
     {
-        var status = !check.CountsForReady ? "INFO" : check.Complete ? "OK" : "TODO";
+        var status = !check.CountsForReady ? "Info" : check.Complete ? "Ready" : "Action needed";
         var color = !check.CountsForReady
             ? new Vector4(0.55f, 0.65f, 0.85f, 1f)
             : check.Complete
@@ -1135,13 +1148,42 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.TextWrapped(check.Detail);
         if (check.CountsForReady && !check.Complete && ImGui.IsItemHovered())
             ImGui.SetTooltip(check.NextAction);
+        if (check.CountsForReady && !check.Complete && !string.IsNullOrWhiteSpace(check.NextAction))
+        {
+            ImGui.Indent(240f);
+            ImGui.TextDisabled($"Next: {check.NextAction}");
+            ImGui.Unindent(240f);
+        }
     }
 
     private static void DrawStatusRow(string label, string value)
+        => DrawStatusRow(label, value, 180f);
+
+    private static void DrawStatusRow(string label, string value, float preferredLabelWidth)
     {
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var labelWidth = MathF.Min(
+            MathF.Max(84f, preferredLabelWidth),
+            MathF.Max(84f, availableWidth * 0.36f));
+
         ImGui.TextDisabled(label);
-        ImGui.SameLine(180f);
-        ImGui.TextWrapped(value);
+        if (availableWidth > labelWidth + 120f)
+        {
+            ImGui.SameLine(labelWidth);
+            ImGui.TextWrapped(value);
+        }
+        else
+        {
+            ImGui.Indent();
+            ImGui.TextWrapped(value);
+            ImGui.Unindent();
+        }
+    }
+
+    private static void DrawSectionHeader(string title)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted(title);
     }
 
     private static bool HasValidEndpoint(string host, int port)

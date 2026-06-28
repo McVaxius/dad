@@ -502,6 +502,106 @@ public sealed class DadHubProtocolTests
 #pragma warning restore CS0618
     }
 
+    // B5: replay-resistant envelope — a freshly signed frame (valid secret + fresh nonce/timestamp) is accepted.
+    [Fact]
+    public void ReplayResistantEnvelopeAcceptsFreshSignedFrame()
+    {
+        var frame = DadHubProtocol.CreateFrame(
+            DadHubFrameKind.Request,
+            new DadWorkerSessionId("server-w"),
+            new DadWorkerSessionId("client-x"),
+            "roster-catalog-request",
+            "corr-b5-accept",
+            "{}",
+            "b5-secret");
+
+        Assert.False(string.IsNullOrEmpty(frame.Nonce));
+        Assert.True(frame.SentAtUnixMs > 0);
+        DadHubProtocol.ValidateFrame(frame, "b5-secret"); // fresh frame validates without throwing
+    }
+
+    // B5: the same nonce presented twice is rejected as a replay.
+    [Fact]
+    public void ReplayedNonceIsRejected()
+    {
+        var frame = DadHubProtocol.CreateFrame(
+            DadHubFrameKind.Request,
+            new DadWorkerSessionId("server-w"),
+            new DadWorkerSessionId("client-x"),
+            "roster-catalog-request",
+            "corr-b5-replay",
+            "{}",
+            "b5-secret");
+
+        DadHubProtocol.ValidateFrame(frame, "b5-secret"); // first delivery accepted
+
+        var error = Assert.Throws<DadHubProtocolException>(
+            () => DadHubProtocol.ValidateFrame(frame, "b5-secret"));
+        Assert.Equal("replay-detected", error.Code);
+    }
+
+    // B5: mutating the signed payload after CreateFrame breaks the HMAC.
+    [Fact]
+    public void TamperedPayloadFailsAuthentication()
+    {
+        var frame = DadHubProtocol.CreateFrame(
+            DadHubFrameKind.Request,
+            new DadWorkerSessionId("server-w"),
+            new DadWorkerSessionId("client-x"),
+            "roster-catalog-request",
+            "corr-b5-tamper",
+            "{\"value\":1}",
+            "b5-secret");
+
+        frame.PayloadJson = "{\"value\":2}"; // tamper after signing
+
+        var error = Assert.Throws<DadHubProtocolException>(
+            () => DadHubProtocol.ValidateFrame(frame, "b5-secret"));
+        Assert.Equal("authentication-failed", error.Code);
+    }
+
+    // B5: a correctly-signed frame whose timestamp is outside the replay window is rejected as stale.
+    [Fact]
+    public void StaleTimestampIsRejectedEvenWhenCorrectlySigned()
+    {
+        var frame = new DadHubFrame
+        {
+            Kind = DadHubFrameKind.Request,
+            SourceWorkerSessionId = new DadWorkerSessionId("server-w"),
+            TargetWorkerSessionId = new DadWorkerSessionId("client-x"),
+            MessageType = "roster-catalog-request",
+            CorrelationId = "corr-b5-stale",
+            PayloadJson = "{}",
+            Nonce = Guid.NewGuid().ToString("N"),
+            SentAtUnixMs = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeMilliseconds(),
+        };
+        frame.Auth = DadHubProtocol.ComputeAuth(frame, "b5-secret"); // valid HMAC over the stale timestamp
+
+        var error = Assert.Throws<DadHubProtocolException>(
+            () => DadHubProtocol.ValidateFrame(frame, "b5-secret"));
+        Assert.Equal("stale-frame", error.Code);
+    }
+
+    // B5: loopback / no-secret behavior is preserved — empty secret = no auth, so replay/stale checks are skipped.
+    [Fact]
+    public void NoSecretFramesSkipReplayAndStaleChecks()
+    {
+        var frame = new DadHubFrame
+        {
+            Kind = DadHubFrameKind.Request,
+            SourceWorkerSessionId = new DadWorkerSessionId("server-w"),
+            TargetWorkerSessionId = new DadWorkerSessionId("client-x"),
+            MessageType = "roster-catalog-request",
+            CorrelationId = "corr-b5-loopback",
+            PayloadJson = "{}",
+            Nonce = string.Empty,
+            SentAtUnixMs = 0, // ancient timestamp ignored on the no-secret path
+        };
+
+        DadHubProtocol.ValidateFrame(frame, string.Empty);
+        DadHubProtocol.ValidateFrame(frame, string.Empty); // replay also accepted without a shared secret
+    }
+
     private static async Task<DadHubFrame> RoundTripAsync(DadHubFrame frame)
     {
         await using var stream = new MemoryStream();

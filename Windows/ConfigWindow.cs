@@ -10,7 +10,7 @@ namespace dad.Windows;
 public sealed class ConfigWindow : Window, IDisposable
 {
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
-    private static readonly string[] CompletionKillModes = { "None", "Close game client (disabled)", "Shut down PC (disabled)" };
+    private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
     private readonly Plugin plugin;
     private string draftCompletionCommands = string.Empty;
@@ -136,8 +136,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ? "On - advanced options visible."
             : "Off. Also toggle with /dad advanced.");
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Party validation");
+        DrawSectionHeader("Party validation");
 
         var partyOverride = configuration.PartyValidationOverrideEnabled;
         if (ImGui.Checkbox("Party validation override", ref partyOverride))
@@ -148,8 +147,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.TextWrapped("When on, Dad skips runtime connectivity/readiness checks before starting a run. Duplicate-slot checks stay enforced. Default off.");
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Integrations");
+        DrawSectionHeader("Integrations");
 
         var questionableBridge = configuration.QuestionableBridgeEnabled;
         if (ImGui.Checkbox("Questionable reflection bridge (AutoDuty/ADS handoff)", ref questionableBridge))
@@ -160,8 +158,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.TextWrapped("Disabling restores any patched Questionable values and stops the bridge. Leave on unless it causes issues.");
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Global completion defaults");
+        DrawSectionHeader("Global completion defaults");
         ImGui.TextWrapped("Used by presets that do not define their own completion actions.");
 
         var actions = configuration.CompletionActions;
@@ -215,8 +212,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TextDisabled("Runs after the run completes. Example: /vmx resume (or any slash command).");
         }
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Post-run utilities");
+        DrawSectionHeader("Post-run utilities");
         var utilities = actions.Utilities ??= new DadPostRunUtilities();
 
         var openGearCoffers = utilities.OpenGearCoffers;
@@ -262,7 +258,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             ImGui.TextUnformatted("Legacy completion kill actions");
             var killMode = (int)actions.KillMode;
-            if (ImGui.Combo("On completion (disabled)", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            if (ImGui.Combo("On completion", ref killMode, CompletionKillModes, CompletionKillModes.Length))
             {
                 actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
                 configuration.Save();
@@ -309,10 +305,13 @@ public sealed class ConfigWindow : Window, IDisposable
         var bridgeStatus = plugin.QuestionableBridge.GetStatus();
         DrawStatusRow("Dad duty IPC", FormatDutyIpcRegistrationStatus(dutyIpcStatus));
         DrawStatusRow("Questionable runtime bridge", FormatQuestionableBridgeStatus(bridgeStatus));
-        DrawStatusRow("Questionable cosmetic", FormatQuestionableCosmeticStatus(bridgeStatus));
-        DrawStatusRow("Dad duty IPC probe", FormatDutyIpcProbeStatus(dutyIpcStatus));
-        DrawStatusRow("Dad duty IPC run", FormatDutyIpcFailureStatus(dutyIpcStatus));
-        DrawStatusRow("Dad duty IPC cleanup", FormatDutyIpcCleanupStatus(dutyIpcStatus));
+        if (configuration.DebugUiEnabled)
+        {
+            DrawStatusRow("Questionable cosmetic", FormatQuestionableCosmeticStatus(bridgeStatus));
+            DrawStatusRow("Dad duty IPC probe", FormatDutyIpcProbeStatus(dutyIpcStatus));
+            DrawStatusRow("Dad duty IPC run", FormatDutyIpcFailureStatus(dutyIpcStatus));
+            DrawStatusRow("Dad duty IPC cleanup", FormatDutyIpcCleanupStatus(dutyIpcStatus));
+        }
 
         var dtr = configuration.DtrBarEnabled;
         if (ImGui.Checkbox("Show DTR bar entry", ref dtr))
@@ -368,7 +367,7 @@ public sealed class ConfigWindow : Window, IDisposable
             : "Enter the Dad Coordinator LAN IP/DNS or 127.0.0.1 for same-host use.");
 
         ImGui.TextUnformatted(configuration.RunAsServerDad ? "Listen host" : "Dad Coordinator host");
-        var comboWidth = 220f;
+        var comboWidth = ImGui.GetFontSize() * 13f;
         var hostInputWidth = MathF.Max(180f, ImGui.GetContentRegionAvail().X - comboWidth - ImGui.GetStyle().ItemSpacing.X);
         ImGui.SetNextItemWidth(hostInputWidth);
         ImGui.InputText("##dad-endpoint-host-input", ref draftServerHost, 128);
@@ -478,24 +477,32 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Separator();
-        ImGui.TextUnformatted("Window commands");
-        ImGui.BulletText("/dad ws -> reset Dad windows to 1,1");
-        ImGui.BulletText("/dad j -> jump Dad windows somewhere visible");
-        ImGui.BulletText("/dad status -> print the live shell summary to chat");
-        ImGui.BulletText("/dad wizard or /dad setup -> open the Dad Setup Wizard");
-        ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
-        ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
-        ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
-        ImGui.BulletText("/dad run coordinator -> start a Dad Coordinator Sastasha premade demo");
-        ImGui.BulletText("/dad run msq -> start a Dad Coordinator Daily MSQ demo");
-        ImGui.BulletText("/dad run commend -> start a Dad Coordinator commendation demo");
-        ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
-        ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
-        ImGui.BulletText("/dad test profiles -> profile owner/cache/revision diagnostics");
-        ImGui.BulletText("/dad test launch-profiles -> launch path/mapping diagnostics");
-        ImGui.BulletText("/dad test workers -> distributed worker diagnostics");
-        ImGui.BulletText("/dad test duty-ipc current|territory <id>|cfc <id> -> diagnose Dad duty IPC availability");
-        ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
+        if (ImGui.CollapsingHeader("Command reference"))
+        {
+            ImGui.BulletText("/dad ws -> reset Dad windows to 1,1");
+            ImGui.BulletText("/dad j -> jump Dad windows somewhere visible");
+            ImGui.BulletText("/dad status -> print the live shell summary to chat");
+            ImGui.BulletText("/dad wizard or /dad setup -> open the Dad Setup Wizard");
+            ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
+            ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
+            ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
+            ImGui.BulletText("/dad run coordinator -> start a Dad Coordinator Sastasha premade demo");
+            ImGui.BulletText("/dad run msq -> start a Dad Coordinator Daily MSQ demo");
+            ImGui.BulletText("/dad run commend -> start a Dad Coordinator commendation demo");
+            ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
+            ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
+
+            if (configuration.DebugUiEnabled)
+            {
+                ImGui.Separator();
+                ImGui.TextDisabled("Diagnostics");
+                ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
+                ImGui.BulletText("/dad test profiles -> profile owner/cache/revision diagnostics");
+                ImGui.BulletText("/dad test launch-profiles -> launch path/mapping diagnostics");
+                ImGui.BulletText("/dad test workers -> distributed worker diagnostics");
+                ImGui.BulletText("/dad test duty-ipc current|territory <id>|cfc <id> -> diagnose Dad duty IPC availability");
+            }
+        }
     }
 
     private void DrawSchedulerTab(Configuration configuration)
@@ -579,6 +586,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawAccountAliasEditor(Configuration configuration)
     {
         ImGui.TextUnformatted("Dad account aliases");
+        ImGui.TextDisabled("Full account tools (merge / delete / forget copies) live in the main window under Crew -> Roster state -> Account tools.");
         if (DrawClearAllAccountDataButton("dad-config-clear-all-account-data"))
         {
             DrawMergeAccountPopup();
@@ -769,13 +777,15 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawCombatRotationTab(Configuration configuration)
     {
-        ImGui.TextWrapped("Select what Dad does when it starts a duty operation. Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
+        ImGui.TextWrapped("Select what Dad does for combat when it starts a duty operation.");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
         ImGui.Separator();
 
         DrawCombatRotationModeRadio(
             configuration,
             DadCombatRotationMode.ForceCommands,
-            "Force \"BMRAI ON\" and \"ROTATION AUTO\"");
+            "Force BossMod + auto-rotation");
         DrawCombatRotationModeRadio(
             configuration,
             DadCombatRotationMode.UseFrenRider,
@@ -849,21 +859,44 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextWrapped(PluginInfo.Summary);
 
         ImGui.Separator();
-        ImGui.TextUnformatted("Planned phases");
+        ImGui.TextUnformatted("Roadmap");
         foreach (var item in PluginInfo.Phases)
             ImGui.BulletText(item);
 
         ImGui.Separator();
-        ImGui.TextUnformatted("Operator checks");
+        ImGui.TextUnformatted("What Dad verifies");
         foreach (var item in PluginInfo.Tests)
             ImGui.BulletText(item);
     }
 
     private static void DrawStatusRow(string label, string value)
+        => DrawStatusRow(label, value, 180f);
+
+    private static void DrawStatusRow(string label, string value, float preferredLabelWidth)
     {
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var labelWidth = MathF.Min(
+            MathF.Max(84f, preferredLabelWidth),
+            MathF.Max(84f, availableWidth * 0.36f));
+
         ImGui.TextDisabled(label);
-        ImGui.SameLine(220f);
-        ImGui.TextWrapped(value);
+        if (availableWidth > labelWidth + 120f)
+        {
+            ImGui.SameLine(labelWidth);
+            ImGui.TextWrapped(value);
+        }
+        else
+        {
+            ImGui.Indent();
+            ImGui.TextWrapped(value);
+            ImGui.Unindent();
+        }
+    }
+
+    private static void DrawSectionHeader(string title)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted(title);
     }
 
     private static string FormatDutyIpcRegistrationStatus(DadDutyIpcStatus status)
@@ -981,8 +1014,8 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.TextUnformatted("LAN shared secret");
         ImGui.TextWrapped(configuration.RunAsServerDad
-            ? "Use this W instance as the shared-secret source. Paste the same secret into every Client Dad. Dad never sends the secret over the transport."
-            : "Paste W's shared secret here. Dad never fetches or sends the secret over the transport.");
+            ? "Use this Coordinator Dad as the shared-secret source. Paste the same secret into every Client Dad. Dad never sends the secret over the transport."
+            : "Paste the Coordinator Dad's shared secret here. Dad never fetches or sends the secret over the transport.");
 
         ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
         var label = configuration.RunAsServerDad ? "Shared secret" : "Paste shared secret";

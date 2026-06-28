@@ -1725,8 +1725,8 @@ public sealed class Plugin : IDalamudPlugin
         if (imported > 0)
             InvalidatePlannerPreviewCache("launch profiles imported");
         PrintStatus(imported == 0
-            ? "No new launch profiles found in Z:\\!ff14clientboot."
-            : $"Imported {imported} launch profile candidate(s) from Z:\\!ff14clientboot.");
+            ? $"No new launch profiles found in {Configuration.ClientBootDirectory}."
+            : $"Imported {imported} launch profile candidate(s) from {Configuration.ClientBootDirectory}.");
         return imported;
     }
 
@@ -3143,7 +3143,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 allowed = Path.GetExtension(profile.BatchPath).Equals(".bat", StringComparison.OrdinalIgnoreCase) &&
                           Path.GetFullPath(profile.BatchPath).StartsWith(
-                              Path.GetFullPath(@"Z:\!ff14clientboot") + Path.DirectorySeparatorChar,
+                              Path.GetFullPath(Configuration.ClientBootDirectory) + Path.DirectorySeparatorChar,
                               StringComparison.OrdinalIgnoreCase);
             }
             catch

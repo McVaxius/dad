@@ -34,5 +34,9 @@
     <Compile Include="..\Services\DadPartyAssemblyService.cs" Link="DadPartyAssemblyService.cs" />
     <Compile Include="..\Services\DadPostRunUtilityPredicates.cs" Link="DadPostRunUtilityPredicates.cs" />
     <Compile Include="..\Services\DadModuleRegistry.cs" Link="DadModuleRegistry.cs" />
+    <Compile Include="..\Services\DadEffectivePlanFactory.cs" Link="DadEffectivePlanFactory.cs" />
+    <Compile Include="..\Services\DadHubRosterCatalogProjection.cs" Link="DadHubRosterCatalogProjection.cs" />
+    <Compile Include="..\Services\DadLocalLevelChangeDetector.cs" Link="DadLocalLevelChangeDetector.cs" />
+    <Compile Include="..\Services\DadRosterRefreshDedupe.cs" Link="DadRosterRefreshDedupe.cs" />
   </ItemGroup>
 </Project>

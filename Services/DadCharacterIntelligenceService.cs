@@ -19,6 +19,8 @@ public sealed class DadCharacterIntelligenceService
     private readonly DadXadbClient xadbClient;
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
+    // B5: fires once per distinct (active job, level) change of the local character, never on first capture.
+    private readonly DadLocalLevelChangeDetector levelChangeDetector = new();
     private DateTime nextAutoRefreshUtc = DateTime.MinValue;
 
     public DadCharacterIntelligenceService(
@@ -211,6 +213,15 @@ public sealed class DadCharacterIntelligenceService
 
             if (string.IsNullOrWhiteSpace(character.DataCenterName))
                 AddBlocker(character, "Datacenter unresolved from world.");
+
+            // B5: on a real level / active-job-level change (not the initial login capture), nudge the
+            // transport to republish/refresh so peers see the new level without waiting a full reconcile.
+            // The detector coalesces multi-level gains to a single (job, level) transition per capture.
+            if (levelChangeDetector.Register(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0))
+            {
+                transportService.NotifyLocalRosterChanged(
+                    $"Local character {character.CurrentJobAbbrev} reached level {character.CurrentLevel ?? 0}.");
+            }
 
             return character;
         }

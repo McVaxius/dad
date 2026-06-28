@@ -30,6 +30,10 @@ internal sealed class DadHubFrame
     public string ErrorCode { get; set; } = string.Empty;
     public string ErrorMessage { get; set; } = string.Empty;
     public string Auth { get; set; } = string.Empty;
+
+    // B5: replay-resistance fields bound by the HMAC (see DadHubProtocol.BuildAuthPayload).
+    public string Nonce { get; set; } = string.Empty;
+    public long SentAtUnixMs { get; set; }
 }
 
 internal sealed class DadHubHello
@@ -46,6 +50,44 @@ internal sealed class DadHubHeartbeat
     public DadParticipantSnapshot Participant { get; set; } = new();
 }
 
+// B2: compact per-character roster projection that rides along the hub publish so clients can render
+// peers (and the coordinator) without issuing a manual catalog pull. Fields are kept intentionally small
+// to stay well under DadHubProtocol.MaxFrameBytes (256 KiB) even with a large roster.
+internal sealed class DadHubRosterCatalogRow
+{
+    public DadWorkerSessionId OwnerWorkerSessionId { get; set; } = new(string.Empty);
+    public string OwnerClientInstanceId { get; set; } = string.Empty;
+    public DadAccountKey AccountKey { get; set; } = new(string.Empty);
+    public string AccountAlias { get; set; } = string.Empty;
+    public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
+    public ulong ContentId { get; set; }
+    public string CharacterName { get; set; } = string.Empty;
+    public string WorldName { get; set; } = string.Empty;
+    public Dictionary<uint, int> JobLevels { get; set; } = [];
+    public uint? CurrentJobId { get; set; }
+    public string CurrentJobAbbrev { get; set; } = string.Empty;
+    public int? CurrentLevel { get; set; }
+    public DadCharacterSource Source { get; set; } = DadCharacterSource.PeerRuntime;
+
+    public DadHubRosterCatalogRow Clone()
+        => new()
+        {
+            OwnerWorkerSessionId = OwnerWorkerSessionId,
+            OwnerClientInstanceId = OwnerClientInstanceId,
+            AccountKey = AccountKey,
+            AccountAlias = AccountAlias,
+            CharacterKey = CharacterKey,
+            ContentId = ContentId,
+            CharacterName = CharacterName,
+            WorldName = WorldName,
+            JobLevels = new Dictionary<uint, int>(JobLevels),
+            CurrentJobId = CurrentJobId,
+            CurrentJobAbbrev = CurrentJobAbbrev,
+            CurrentLevel = CurrentLevel,
+            Source = Source,
+        };
+}
+
 internal sealed class DadHubRosterPublish
 {
     public long Generation { get; set; }
@@ -57,6 +99,9 @@ internal sealed class DadHubRosterPublish
     public List<DadParticipantSnapshot> ClientParticipants { get; set; } = [];
     public List<DadParticipantSnapshot> DisconnectedParticipants { get; set; } = [];
     public List<DadParticipantSnapshot> Participants { get; set; } = [];
+
+    // B2: compact roster projection (account/character/content-id/job→level) for passive client rendering.
+    public List<DadHubRosterCatalogRow> CatalogRows { get; set; } = [];
 
     public DadHubRosterPublish Clone()
         => new()
@@ -70,6 +115,7 @@ internal sealed class DadHubRosterPublish
             ClientParticipants = ClientParticipants.Select(static participant => participant.Clone()).ToList(),
             DisconnectedParticipants = DisconnectedParticipants.Select(static participant => participant.Clone()).ToList(),
             Participants = Participants.Select(static participant => participant.Clone()).ToList(),
+            CatalogRows = CatalogRows.Select(static row => row.Clone()).ToList(),
         };
 }
 
@@ -123,9 +169,15 @@ internal sealed class DadHubProtocolException : IOException
 
 internal static class DadHubProtocol
 {
-    public const int CurrentVersion = 1;
+    // B5: bumped 1 -> 2 for the replay-resistant envelope (signed nonce + timestamp). Mixed-version peers
+    // are rejected cleanly by the ValidateFrame version check instead of failing the HMAC ambiguously.
+    public const int CurrentVersion = 2;
     public const int MaxFrameBytes = 256 * 1024;
     private const int HeaderBytes = sizeof(int);
+
+    // B5: replay window + bounded seen-nonce cache for authenticated (shared-secret) frames.
+    private static readonly TimeSpan ReplayWindow = TimeSpan.FromSeconds(30);
+    private static readonly DadHubReplayGuard ReplayGuard = new(ReplayWindow);
 
     public static bool RequiresSharedSecret(IPAddress address)
         => !IPAddress.IsLoopback(address);
@@ -157,6 +209,9 @@ internal static class DadHubProtocol
             MessageType = messageType ?? string.Empty,
             CorrelationId = correlationId ?? string.Empty,
             PayloadJson = payloadJson ?? string.Empty,
+            // B5: fresh per-frame nonce + send timestamp, both signed by ComputeAuth below.
+            Nonce = Guid.NewGuid().ToString("N"),
+            SentAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
         frame.Auth = ComputeAuth(frame, sharedSecret);
         return frame;
@@ -255,6 +310,30 @@ internal static class DadHubProtocol
 
         if (!VerifyAuth(frame, sharedSecret))
             throw new DadHubProtocolException("authentication-failed", "Shared secret mismatch");
+
+        // B5: replay/forgery resistance only applies on authenticated (shared-secret) links. Loopback /
+        // no-secret frames keep today's behavior (empty secret = no auth, no replay window).
+        if (string.IsNullOrEmpty(sharedSecret))
+            return;
+
+        if (string.IsNullOrEmpty(frame.Nonce))
+            throw new DadHubProtocolException("replay-detected", "Dad hub frame is missing its replay nonce.");
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        var sentAt = DateTimeOffset.FromUnixTimeMilliseconds(frame.SentAtUnixMs);
+        if (Math.Abs((nowUtc - sentAt).TotalMilliseconds) > ReplayWindow.TotalMilliseconds)
+        {
+            throw new DadHubProtocolException(
+                "stale-frame",
+                $"Dad hub frame timestamp is outside the {ReplayWindow.TotalSeconds:0}s replay window.");
+        }
+
+        if (!ReplayGuard.TryAccept(frame.SourceWorkerSessionId.Value ?? string.Empty, frame.Nonce, sentAt, nowUtc))
+        {
+            throw new DadHubProtocolException(
+                "replay-detected",
+                "Dad hub frame nonce was already seen; rejecting replayed envelope.");
+        }
     }
 
     private static string BuildAuthPayload(DadHubFrame frame)
@@ -268,7 +347,9 @@ internal static class DadHubProtocol
             frame.TargetWorkerSessionId.Value ?? string.Empty,
             frame.PayloadJson ?? string.Empty,
             frame.ErrorCode ?? string.Empty,
-            frame.ErrorMessage ?? string.Empty);
+            frame.ErrorMessage ?? string.Empty,
+            frame.Nonce ?? string.Empty,
+            frame.SentAtUnixMs);
 
     private static async Task<bool> ReadExactlyOrEofAsync(
         Stream stream,
@@ -306,6 +387,62 @@ internal static class DadHubProtocol
                 throw new EndOfStreamException("Dad hub frame payload ended early.");
 
             totalRead += read;
+        }
+    }
+
+    // B5: bounded, thread-safe TTL set of accepted (sourceWorker, nonce) pairs. Entries expire after the
+    // replay window so memory stays bounded; a duplicate nonce inside the window is rejected as a replay.
+    private sealed class DadHubReplayGuard(TimeSpan window)
+    {
+        private const int MaxEntries = 16384;
+        private readonly object gate = new();
+        private readonly Dictionary<string, DateTime> seenExpiryUtc = new(StringComparer.Ordinal);
+
+        public bool TryAccept(string sourceWorker, string nonce, DateTimeOffset sentAt, DateTimeOffset nowUtc)
+        {
+            if (string.IsNullOrEmpty(nonce))
+                return false;
+
+            var key = $"{sourceWorker}\u0000{nonce}";
+            var expiryUtc = (sentAt + window).UtcDateTime;
+            lock (gate)
+            {
+                PruneExpired(nowUtc.UtcDateTime);
+                if (seenExpiryUtc.ContainsKey(key))
+                    return false;
+
+                if (seenExpiryUtc.Count >= MaxEntries)
+                    EvictOldest(MaxEntries / 4);
+
+                seenExpiryUtc[key] = expiryUtc;
+                return true;
+            }
+        }
+
+        private void PruneExpired(DateTime nowUtc)
+        {
+            if (seenExpiryUtc.Count == 0)
+                return;
+
+            foreach (var key in seenExpiryUtc
+                         .Where(entry => entry.Value <= nowUtc)
+                         .Select(entry => entry.Key)
+                         .ToList())
+            {
+                seenExpiryUtc.Remove(key);
+            }
+        }
+
+        private void EvictOldest(int count)
+        {
+            foreach (var key in seenExpiryUtc
+                         .OrderBy(entry => entry.Value)
+                         .Take(Math.Max(1, count))
+                         .Select(entry => entry.Key)
+                         .ToList())
+            {
+                seenExpiryUtc.Remove(key);
+            }
         }
     }
 }

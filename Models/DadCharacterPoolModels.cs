@@ -289,6 +289,14 @@ public sealed class DadPeerTransportSnapshot
     public string LastRequestStatus { get; set; } = "Peer transport unavailable.";
     public List<DadParticipantSnapshot> KnownParticipants { get; set; } = [];
     public List<DadPeerSnapshotResponse> LastResponses { get; set; } = [];
+
+    // B1: monotonic counter bumped whenever a fresh peer roster catalog (pull response or pushed projection)
+    // lands. Plain fields so Interlocked.Increment(ref ...) is legal; the UI polls these to re-render itself.
+    public long RosterCatalogCacheRevision;
+
+    // B6: count of roster completion callbacks dropped because the framework queue was full (surfaced in
+    // diagnostics; a drop also marks the publish dirty so the result is re-issued instead of silently lost).
+    public long RosterCatalogDroppedCount;
 }
 
 public sealed class DadCharacterPool

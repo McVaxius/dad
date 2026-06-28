@@ -177,3 +177,80 @@ All 36 review findings addressed. CRITICALs C1/C3/C5/H5/H6 resolved by Phase 4 f
 C2 (transport auth) by C2a command gate + C2b HMAC; C4 by lock. Build green, 28 tests pass throughout.
 NOTE: large amounts of threading/transport/run-flow change remain UNVERIFIED IN-GAME — load bin\Debug\dad and
 sanity-check before shipping. H10 full decomposition is the only deliberately-incomplete item (started + planned).
+
+## 2026-06-27 — Review-guide implementation (DAD_FIX_IMPLEMENTATION_GUIDE_2026-06-26)
+Implemented the full before/after fix guide produced from the 3-deliverable review. Build green (Debug x64,
+0 warnings / 0 errors); test suite 124 → 149 passing (+25 new). Each edited file was backed up to a same-dir
+backups\*.2026-06-27.bak first. Items split into Part A (bugs), Part B (roster), Part C (UI).
+
+Part A — correctness & security bugs:
+- B1: launch-profile `.bat` safety gate + import messages now use `Configuration.ClientBootDirectory` instead of
+  the hardcoded `Z:\!ff14clientboot` literal (Plugin.cs, two sites). The L3 refactor that the 2026-06-21 changelog
+  claimed was complete is now actually finished in code; the literal remains only as the config default
+  (Configuration.cs:71) and the UI label (fixed separately in Part C/H5).
+- B2: `Attempts > 1` on Commendation / Custom Duty no longer hard-blocks the run. Task `Attempts` now maps to the
+  coordinator stop-policy `AfterRuns` (looped by the existing stop-policy engine) while the executor run-count field
+  is pinned to 1. Logic extracted to a new Dalamud-free `Services\DadEffectivePlanFactory.cs` so it is unit-testable;
+  `DadQueueExecutionService.ResolveEffective` delegates to it. New `Tests\DadAttemptStopPolicyTests.cs` (6).
+- B3 (DECISION — Option A, reversible): MOGTOME is now modeled as a solo helper-IPC lane (party size 1,
+  RequiresPeers=false in registry/planner/DetermineExpectedPartySize) to match the actual executor, which only
+  checks `ipc.IsReady()`. Removes the spurious 4-peer gating + its local-only rejection. Marked `// B3 (Option A,
+  reversible)` at each site. ↺ If a true 4-person Dad-assembled MOGTOME party was intended, revert these.
+- B4: removed the unreachable MSQ arm from the local-only rejection switch (MSQ is always RequiresPeers=false)
+  (DadPlannerService.cs).
+- B5: replay-resistant hub transport. Envelopes now carry a signed `Nonce` + `SentAtUnixMs`; inbound rejects
+  replayed (bounded `DadHubReplayGuard` nonce cache), stale (>30s skew), and tampered frames. Protocol
+  `CurrentVersion` bumped 1 → 2 (DadHubProtocol.cs). Empty-secret loopback path unchanged. Tests extended
+  (DadHubProtocolTests: fresh-accept / replay-reject / tamper-reject / stale-reject / no-secret-passthrough).
+
+Part B — roster passive-sync rework (eliminates the "have to tickle all the dads" symptom):
+- B1 complete-then-render: roster-catalog completion callbacks now bump a cache revision
+  (`DadPeerTransportSnapshot.RosterCatalogCacheRevision`); the Crew roster UI re-merges from cache when it changes,
+  so async pull results render without a second click. New `RefreshCatalogFromCache`/`CollectCachedPeerResponses`
+  re-merge from cache only (no re-pull → no loop).
+- B2 push catalog projection: `DadHubRosterPublish` now carries a compact `CatalogRows` projection (account,
+  character, content-id, job→level) via new pure `Services\DadHubRosterCatalogProjection.cs` +
+  `DadHubRosterCatalogRow`. The coordinator populates it from its own + peer caches (224 KiB trim guard); clients
+  store and render it (`GetPushedPeerCatalogResponses`) WITHOUT a manual pull. Coordinator self-included.
+- B3 on-connect force-pull: `RegisterServerSession` force-pulls the new peer's roster/profile and marks the publish
+  dirty so every client gets the updated projection within a publish interval.
+- B4 periodic reconcile: peer-catalog refresh interval clamped to [10,120]s (default 60) — fast event-driven deltas
+  + slower full reconcile.
+- B5 level-up trigger: new pure `Services\DadLocalLevelChangeDetector.cs` wired into the per-frame character read;
+  a level / active-job-level change triggers a coalesced republish (server) / publish-request + cache invalidation
+  (client).
+- B6 stop silent loss + dedupe-attach: dropped completion callbacks now increment a counter + mark dirty; a forced
+  refresh coalesces onto an in-flight op (new pure `Services\DadRosterRefreshDedupe.cs`) instead of being dropped by
+  the op-key dedupe. Surfaced in a "Passive sync" diagnostics row.
+- B7 off-thread catalog cache: local catalog is cached and rebuilt on a 12s framework-thread cadence; inbound
+  roster-catalog requests are served from the cache off-thread, removing the per-pull synchronous XADB rebuild on the
+  game thread. New tests: DadHubRosterProjectionTests (4), DadLocalLevelChangeDetectorTests (5),
+  DadRosterRefreshDedupeTests (5).
+
+Part C — UI/UX (all non-functional: layout, debug-gating, wording, adaptive sizing; no behavior/IPC/config change):
+- Shared helpers (adaptive DrawStatusRow, DrawSectionHeader, status vocabulary) added and reused.
+- H1 planner action strip split into primary / queue / badge rows (no more 1-row overflow). H2 Crew XADB/peer
+  diagnostics — INCLUDING the new "Passive sync" rows — gated behind DebugUiEnabled (per-frame revision poll kept).
+  H3 Config General Duty-IPC probe rows gated behind debug. H4 role term unified to "Coordinator Dad". H5
+  launch-import button relabeled "Import launch batches" + tooltip (no more `Z:\!ff14clientboot` in the UI).
+- M1 header row break. M2 "Populate connected roster" relabel + tooltip only (not hidden/passivated). M3 kill-action
+  wording unified to "On completion" after verifying `DadCompletionActionRunner.RunKillAction` is a logging no-op
+  (kill genuinely disabled); "(DANGER)"/"(disabled)" removed. M4 status vocab. M5 section headers via helper. M6
+  adaptive status rows. M7 General-tab command reference moved to a collapsing header (+ `/dad test` debug-gated).
+  M8 per-roster-row actions moved into a "More…" popup. M9 wizard endpoint/secret pending-changes notice + disabled
+  Revert. M10 account-tools cross-reference caption.
+- L2 DPI-safe Ko-fi align + relabel. L3 combat-rotation intro condensed + plain radio label. L4/L5 font-scaled card
+  height + input widths. L6 About headings renamed. L7 wizard inline `Next:` hint. L1 (Krangle) intentionally left
+  unchanged — confirmed intentional jargon, WON'T FIX.
+
+UNVERIFIED IN-GAME — load bin\x64\Debug\dad and validate before shipping (needs ≥2 dads on loopback 127.0.0.1:4647
++ shared secret, plus one LAN pairing for HMAC):
+- B5 is a wire-format bump (v1→v2): Server Dad and ALL Client Dads must run this same build or they hit
+  protocol-mismatch; assumes ≤30s clock skew between peers.
+- B3 changes who can run MOGTOME (now solo/local-only capable) — confirm that is intended.
+- B2 (Part A): confirm a Commendation/CustomDuty with Attempts=N actually loops N times via the stop-policy.
+- Roster B2/B3/B5: a never-clicking client should render all peers (incl. coordinator) within one publish interval;
+  2nd dad appears with no click in ~1s; a level-up reflects on peers within one publish interval; confirm the
+  serialized publish stays < 256 KiB at max roster size.
+- Roster B6/B7: under hammered concurrent refreshes the dropped-completions count stays 0 with no lost rows; the
+  per-pull frame-time hitch is gone.

@@ -5,7 +5,7 @@
   "Punchline": "scheduling everything wheeeeeeeeeeeeeeeeeeee",
   "Description": "Private Dad duty operations shell with multiplayer status, preset planning, queue routing, and Duty Support automation.",
   "InternalName": "dad",
-  "AssemblyVersion": "0.1.0.0",
+  "AssemblyVersion": "0.1.0.1",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
   "Tags": [

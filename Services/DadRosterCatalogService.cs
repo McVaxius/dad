@@ -14,6 +14,11 @@ public sealed class DadRosterCatalogService
     private DadAccountRosterCatalog currentCatalog = new() { Summary = "Roster catalog not refreshed yet." };
     private IReadOnlyList<DadPeerRosterCatalogResponse> lastPeerResponses = [];
     private long catalogVersion;
+    // B1/B7: short-lived reuse of the locally-built catalog so the cache-driven auto-refresh re-merges peers
+    // WITHOUT re-running the XADB IPC fetch on the framework thread on every coordinator publish (~5 s).
+    private static readonly TimeSpan LocalCatalogReuseWindow = TimeSpan.FromSeconds(10);
+    private DadAccountRosterCatalog? cachedLocalCatalog;
+    private DateTime cachedLocalCatalogUtc = DateTime.MinValue;
 
     public DadRosterCatalogService(
         Configuration configuration,
@@ -126,6 +131,7 @@ public sealed class DadRosterCatalogService
             ? WithCurrentTransport(pool, transportService.RequestSnapshots(new DadPeerSnapshotRequest()))
             : pool;
         var localCatalog = BuildLocalCatalog(effectivePool, plan);
+        WarmLocalCatalogCache(localCatalog);
         var allCatalogs = new List<DadAccountRosterCatalog> { localCatalog };
 
         if (plan.ForcePeerRefresh)
@@ -173,6 +179,97 @@ public sealed class DadRosterCatalogService
             LogRosterDiagnostics(currentCatalog, plan);
 
         return CurrentCatalog;
+    }
+
+    // B1/B2: re-merge the catalog from already-cached peer responses plus the coordinator's pushed projection
+    // WITHOUT issuing a network pull. The roster UI calls this when the transport cache revision advances, so
+    // freshly-landed peer data renders itself (no second click), and a client renders peers passively (B2).
+    public DadAccountRosterCatalog RefreshCatalogFromCache(DadCharacterPool pool, string reason = "")
+    {
+        var plan = new DadRosterRefreshPlan
+        {
+            IncludeHidden = true,
+            IncludeIgnored = true,
+            StaleAfterHours = configuration.RosterCatalog.StaleAfterHours,
+            DiagnosticsReason = reason,
+        };
+
+        var localCatalog = GetReusableLocalCatalog(pool, plan);
+        var allCatalogs = new List<DadAccountRosterCatalog> { localCatalog };
+
+        var peerResponses = CollectCachedPeerResponses();
+        lastPeerResponses = peerResponses;
+        foreach (var response in peerResponses)
+        {
+            foreach (var warning in response.Warnings)
+                AddWarning(response.Catalog.Warnings, warning);
+        }
+
+        allCatalogs.AddRange(peerResponses.Select(static response => response.Catalog));
+
+        var fallbackSuppressionResponses = new List<DadPeerRosterCatalogResponse>
+        {
+            new()
+            {
+                RequestId = plan.PlanId,
+                RespondedAtUtc = localCatalog.GeneratedAtUtc,
+                ClientInstanceId = localCatalog.SourceClientInstanceId,
+                WorkerSessionId = localCatalog.SourceWorkerSessionId,
+                Catalog = localCatalog,
+            },
+        };
+        fallbackSuppressionResponses.AddRange(peerResponses);
+        var peerRuntimeFallback = BuildPeerRuntimeFallbackCatalog(
+            transportService.CurrentTransport,
+            fallbackSuppressionResponses);
+        if (peerRuntimeFallback.Characters.Count > 0)
+            allCatalogs.Add(peerRuntimeFallback);
+
+        currentCatalog = ApplyOwnerConnectivity(MergeCatalogs(allCatalogs, plan));
+        catalogVersion++;
+        return CurrentCatalog;
+    }
+
+    // B1/B7: reuse the recently-built local catalog (avoiding a fresh XADB IPC fetch on the framework thread)
+    // when within the reuse window; otherwise rebuild and warm the cache. The manual "Refresh local roster"
+    // path always rebuilds, so a forced refresh still picks up local changes immediately.
+    private DadAccountRosterCatalog GetReusableLocalCatalog(DadCharacterPool pool, DadRosterRefreshPlan plan)
+    {
+        if (cachedLocalCatalog != null && DateTime.UtcNow - cachedLocalCatalogUtc < LocalCatalogReuseWindow)
+            return cachedLocalCatalog.Clone();
+
+        var built = BuildLocalCatalog(pool, plan);
+        WarmLocalCatalogCache(built);
+        return built;
+    }
+
+    private void WarmLocalCatalogCache(DadAccountRosterCatalog localCatalog)
+    {
+        cachedLocalCatalog = localCatalog.Clone();
+        cachedLocalCatalogUtc = DateTime.UtcNow;
+    }
+
+    private IReadOnlyList<DadPeerRosterCatalogResponse> CollectCachedPeerResponses()
+    {
+        var localWorkerId = presenceService.WorkerSessionId.Value;
+        var byOwner = new Dictionary<string, DadPeerRosterCatalogResponse>(StringComparer.OrdinalIgnoreCase);
+        var fallbackIndex = 0;
+
+        // Cached pull responses first (richer/full rosters), then the pushed projection. TryAdd keeps the
+        // first per owner, so a real pull is preferred over the compact projection when both exist.
+        foreach (var response in transportService.GetCachedRosterCatalogResponses()
+                     .Concat(transportService.GetPushedPeerCatalogResponses()))
+        {
+            if (string.Equals(response.WorkerSessionId.Value, localWorkerId, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var key = string.IsNullOrWhiteSpace(response.WorkerSessionId.Value)
+                ? $"client:{response.ClientInstanceId?.Trim()}:{fallbackIndex++}"
+                : $"worker:{response.WorkerSessionId.Value}";
+            byOwner.TryAdd(key, response);
+        }
+
+        return byOwner.Values.ToList();
     }
 
     private DadAccountRosterCatalog RefreshLiveConnectedCatalog(DadRosterRefreshPlan plan)
@@ -594,6 +691,7 @@ public sealed class DadRosterCatalogService
             Summary = "Dad account data cleared; roster catalog not refreshed yet.",
         };
         lastPeerResponses = [];
+        cachedLocalCatalog = null;
         log.Information(
             "[dad][Roster] Cleared Dad roster account data: {KnownCount} known, {VisibilityCount} visibility, {RefreshCount} refresh record(s).",
             result.RosterKnownCharactersCleared,

@@ -110,10 +110,10 @@ public sealed class DadQueueExecutionService
         }
 
         if (module.ModuleId == DadModuleId.Commendation && plan.Request.Commendation != null)
-            return BuildCommendationPlan(plan, module);
+            return DadEffectivePlanFactory.BuildCommendationPlan(plan, module);
 
         if (module.ModuleId == DadModuleId.CustomDuty && plan.Request.CustomDuty != null)
-            return BuildCustomDutyPlan(plan, module);
+            return DadEffectivePlanFactory.BuildCustomDutyPlan(plan, module);
 
         return (plan, module);
     }
@@ -197,68 +197,6 @@ public sealed class DadQueueExecutionService
             _ => localDutyExecutor,
         };
 
-    private static (DadRunPlan Plan, DadPlannedModuleExecution Module) BuildCustomDutyPlan(
-        DadRunPlan plan,
-        DadPlannedModuleExecution module)
-    {
-        var task = plan.Request.CustomDuty!;
-        var premade = Math.Max(1, task.ExpectedPartySize) > 1;
-        var effectiveModule = new DadPlannedModuleExecution
-        {
-            ModuleId = premade ? DadModuleId.PremadeDuty : DadModuleId.Duty,
-            DisplayName = task.DutyName,
-            OwnerLabel = module.OwnerLabel,
-            ExpectedPartySize = Math.Max(1, task.ExpectedPartySize),
-            RequiresPeers = premade,
-            Summary = module.Summary,
-        };
-        var request = new DadRunRequest
-        {
-            RequestId = plan.Request.RequestId,
-            RequestedAtUtc = plan.Request.RequestedAtUtc,
-            RequestedBy = plan.Request.RequestedBy,
-            StopPolicy = plan.Request.StopPolicy,
-            CompletionActions = plan.Request.CompletionActions?.Clone(),
-            Orchestration = plan.Request.Orchestration,
-        };
-        if (premade)
-        {
-            request.PremadeDuty = new DadPremadeDutyTask
-            {
-                ContentFinderConditionId = task.ContentFinderConditionId,
-                DutyName = task.DutyName,
-                ExpectedPartySize = task.ExpectedPartySize,
-                Unsynced = task.Unsynced,
-                Attempts = task.Attempts,
-            };
-        }
-        else
-        {
-            request.Dungeon = new DadDungeonTask
-            {
-                ContentFinderConditionId = task.ContentFinderConditionId,
-                SelectedDungeon = task.DutyName,
-                Count = task.Attempts,
-                Unsynced = task.Unsynced,
-                QueueViaLanParty = false,
-            };
-        }
-
-        return (new DadRunPlan
-        {
-            Request = request,
-            CompositeModuleId = effectiveModule.ModuleId,
-            Orchestration = plan.Orchestration,
-            Summary = plan.Summary,
-            RequiredParticipantCount = plan.RequiredParticipantCount,
-            RequiresRemoteParticipants = plan.RequiresRemoteParticipants,
-            LeaderCharacterKey = plan.LeaderCharacterKey,
-            InviterCharacterKey = plan.InviterCharacterKey,
-            Modules = [effectiveModule],
-            PlannerWarnings = [..plan.PlannerWarnings],
-        }, effectiveModule);
-    }
-
     private static (DadRunPlan Plan, DadPlannedModuleExecution Module) BuildMsqPlan(
         DadRunPlan plan,
         DadPlannedModuleExecution module,
@@ -310,51 +248,6 @@ public sealed class DadQueueExecutionService
             Summary = plan.Summary,
             RequiredParticipantCount = 1,
             RequiresRemoteParticipants = false,
-            LeaderCharacterKey = plan.LeaderCharacterKey,
-            InviterCharacterKey = plan.InviterCharacterKey,
-            Modules = [effectiveModule],
-            PlannerWarnings = [..plan.PlannerWarnings],
-        }, effectiveModule);
-    }
-
-    private static (DadRunPlan Plan, DadPlannedModuleExecution Module) BuildCommendationPlan(
-        DadRunPlan plan,
-        DadPlannedModuleExecution module)
-    {
-        var task = plan.Request.Commendation!;
-        var effectiveModule = new DadPlannedModuleExecution
-        {
-            ModuleId = DadModuleId.PremadeDuty,
-            DisplayName = task.DutyName,
-            OwnerLabel = module.OwnerLabel,
-            ExpectedPartySize = 4,
-            RequiresPeers = true,
-            Summary = module.Summary,
-        };
-        var request = new DadRunRequest
-        {
-            RequestId = plan.Request.RequestId,
-            RequestedAtUtc = plan.Request.RequestedAtUtc,
-            RequestedBy = plan.Request.RequestedBy,
-            StopPolicy = plan.Request.StopPolicy,
-            CompletionActions = plan.Request.CompletionActions?.Clone(),
-            Orchestration = plan.Request.Orchestration,
-            PremadeDuty = new DadPremadeDutyTask
-            {
-                ContentFinderConditionId = task.ContentFinderConditionId,
-                DutyName = string.IsNullOrWhiteSpace(task.DutyName) ? "Under the Armour" : task.DutyName,
-                ExpectedPartySize = 4,
-                Attempts = task.Attempts,
-            },
-        };
-        return (new DadRunPlan
-        {
-            Request = request,
-            CompositeModuleId = DadModuleId.PremadeDuty,
-            Orchestration = plan.Orchestration,
-            Summary = plan.Summary,
-            RequiredParticipantCount = plan.RequiredParticipantCount,
-            RequiresRemoteParticipants = true,
             LeaderCharacterKey = plan.LeaderCharacterKey,
             InviterCharacterKey = plan.InviterCharacterKey,
             Modules = [effectiveModule],

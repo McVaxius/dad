@@ -33,6 +33,10 @@ public sealed class DadTransportService : IDisposable
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan OutboundWriteTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxReconnectBackoff = TimeSpan.FromSeconds(10);
+    // B7: cadence to rebuild the local roster-catalog cache on the framework thread, and the max age an
+    // inbound peer pull will accept from that cache before falling back to a live (framework-thread) build.
+    private static readonly TimeSpan LocalRosterCatalogRebuildInterval = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan LocalRosterCatalogServeTtl = TimeSpan.FromSeconds(30);
     private const int MaxConcurrentConnections = 32;
     private const int MaxConcurrentOutboundOperations = 8;
     private const int MaxTransportEventsPerFrame = 64;
@@ -70,6 +74,12 @@ public sealed class DadTransportService : IDisposable
     private DadParticipantSnapshot? serverParticipant;
     private DadHubRosterPublish? lastHubRosterPublish;
     private long hubRosterGeneration;
+    // B2: most-recent roster projection pushed by the coordinator; clients render peers from this with no pull.
+    private IReadOnlyList<DadHubRosterCatalogRow> lastPushedCatalogRows = [];
+    // B7: cached local roster-catalog response (built on the framework thread on a cadence) so inbound peer
+    // pulls are served off-thread instead of triggering a synchronous XADB fetch + rebuild on the game thread.
+    private CachedLocalRosterCatalog? cachedLocalRosterCatalog;
+    private DateTime nextLocalRosterCatalogRebuildUtc = DateTime.MinValue;
     private DadHubRosterPublishCursor lastAppliedHubRosterPublish = DadHubRosterPublishCursor.Empty;
     private string hubRosterAuthorityEpochId = Guid.NewGuid().ToString("N");
     private string lastAuthOrProtocolError = string.Empty;
@@ -177,6 +187,9 @@ public sealed class DadTransportService : IDisposable
             completedOperations.Clear();
             workerCommandAcks.Clear();
             lastHubRosterPublish = null;
+            lastPushedCatalogRows = [];
+            cachedLocalRosterCatalog = null;
+            nextLocalRosterCatalogRebuildUtc = DateTime.MinValue;
             lastAppliedHubRosterPublish = DadHubRosterPublishCursor.Empty;
             rosterPublishCoalescer.Reset();
             frameworkCallbacks.Clear();
@@ -303,6 +316,7 @@ public sealed class DadTransportService : IDisposable
         if (configuration.RunAsServerDad)
             RefreshRemoteCatalogCaches();
 
+        RebuildLocalRosterCatalogCacheIfDue(now);
         FlushHubRosterPublishIfDue(now);
         RefreshTransportSnapshot();
     }
@@ -441,6 +455,39 @@ public sealed class DadTransportService : IDisposable
         CurrentTransport.LastRequestUtc = DateTime.UtcNow;
         CurrentTransport.LastRequestStatus = aggregate.Summary;
         return aggregate;
+    }
+
+    // B1: monotonic revision the roster UI polls; advances whenever a fresh peer catalog (pull response or
+    // pushed projection) lands so the merged catalog can re-render itself without a manual click.
+    public long RosterCatalogCacheRevision => Interlocked.Read(ref CurrentTransport.RosterCatalogCacheRevision);
+
+    // B1: already-cached peer catalog responses (no network pull), used by the UI to re-merge when the
+    // revision advances. Excludes the local worker's own response.
+    public IReadOnlyList<DadPeerRosterCatalogResponse> GetCachedRosterCatalogResponses()
+        => rosterCatalogs.Values
+            .Where(response => !string.Equals(
+                response.WorkerSessionId.Value,
+                presenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+    // B2: peer catalog responses reconstructed from the coordinator's pushed projection so a client renders
+    // peers (and the coordinator) with no pull at all. Empty on the coordinator (it builds the projection).
+    public IReadOnlyList<DadPeerRosterCatalogResponse> GetPushedPeerCatalogResponses()
+        => DadHubRosterCatalogProjection.BuildPeerCatalogResponses(lastPushedCatalogRows, presenceService.WorkerSessionId);
+
+    // B5: a local level/active-job-level change happened; promptly republish (server) or request a publish
+    // (client) and invalidate the cached local catalog so the projection picks up the new job levels. The
+    // existing coalescer throttles bursts from multi-level gains.
+    public void NotifyLocalRosterChanged(string reason)
+    {
+        RefreshLocalMutationState();
+        if (configuration.RunAsServerDad)
+            MarkHubRosterDirty(reason, fast: true);
+        else if (!localOnlyModeEnabled)
+            RequestHubRosterPublish(BuildLocalTransportSnapshot());
+
+        InvalidateLocalRosterCatalogCache();
     }
 
     public DadAggregateProfileCatalogResponse RequestAggregateProfileCatalogs(string requestId)
@@ -1048,6 +1095,19 @@ public sealed class DadTransportService : IDisposable
             {
                 response = await ForwardRequestAsync(request, origin.Cancellation.Token).ConfigureAwait(false);
             }
+            else if (TryServeCachedRosterCatalog(request, out var cachedRosterJson))
+            {
+                // B7: serve the peer's catalog pull from the off-thread cache instead of marshaling a
+                // synchronous XADB fetch + rebuild onto the Dalamud framework thread (the residual hitch).
+                response = DadHubProtocol.CreateFrame(
+                    DadHubFrameKind.Response,
+                    presenceService.WorkerSessionId,
+                    request.SourceWorkerSessionId,
+                    request.MessageType,
+                    request.CorrelationId,
+                    cachedRosterJson,
+                    configuration.TransportSharedSecret);
+            }
             else
             {
                 var responseJson = await Plugin.Framework
@@ -1362,6 +1422,78 @@ public sealed class DadTransportService : IDisposable
             Catalog = catalog,
             Warnings = remoteMutationsAllowed ? [] : [BuildLocalUnavailableReason()],
         };
+    }
+
+    // B2/B7: return the cached local roster-catalog response WITHOUT building (the build is heavy XADB work
+    // and the publish projection can run on the inbound socket thread via HandleHubRosterPublishRequest).
+    // The cache is rebuilt only on the framework-thread cadence (RebuildLocalRosterCatalogCacheIfDue), which
+    // runs immediately before each publish flush, so this is fresh on the normal publish path.
+    private DadPeerRosterCatalogResponse? GetCachedLocalRosterCatalogResponse()
+        => cachedLocalRosterCatalog?.Response;
+
+    // B7: rebuild the local roster-catalog cache on a cadence (framework thread) when a peer could actually
+    // pull this node, so the XADB fetch happens off the inbound request path. No-op when idle.
+    private void RebuildLocalRosterCatalogCacheIfDue(DateTime nowUtc)
+    {
+        if (nowUtc < nextLocalRosterCatalogRebuildUtc || rosterCatalogProvider == null)
+            return;
+
+        var hasPeers = configuration.RunAsServerDad
+            ? serverSessions.Snapshot().Any(static connection => connection.IsOpen)
+            : clientConnection is { IsOpen: true };
+        if (!hasPeers)
+            return;
+
+        nextLocalRosterCatalogRebuildUtc = nowUtc + LocalRosterCatalogRebuildInterval;
+        try
+        {
+            var response = BuildLocalRosterCatalogResponse(new DadRosterRefreshPlan
+            {
+                IncludeHidden = true,
+                IncludeIgnored = true,
+            });
+            cachedLocalRosterCatalog = new CachedLocalRosterCatalog { Response = response, BuiltAtUtc = nowUtc };
+        }
+        catch (Exception ex)
+        {
+            log.Debug(ex, "[dad] Failed to rebuild local roster catalog cache.");
+        }
+    }
+
+    // B5/B7: force the next framework tick to rebuild the cache so a level-up is reflected promptly.
+    private void InvalidateLocalRosterCatalogCache()
+    {
+        cachedLocalRosterCatalog = null;
+        nextLocalRosterCatalogRebuildUtc = DateTime.MinValue;
+    }
+
+    // B7: serve a standard roster-catalog pull from the off-thread cache (no synchronous XADB fetch + rebuild
+    // on the game thread). Returns false (so the caller falls back to the live framework-thread build) when
+    // no fresh cache exists or the request needs live-connected data.
+    private bool TryServeCachedRosterCatalog(DadHubFrame request, out string responseJson)
+    {
+        responseJson = string.Empty;
+        if (!string.Equals(request.MessageType, MessageRosterCatalogRequest, StringComparison.Ordinal))
+            return false;
+
+        var cached = cachedLocalRosterCatalog;
+        if (cached == null || DateTime.UtcNow - cached.BuiltAtUtc > LocalRosterCatalogServeTtl)
+            return false;
+
+        var plan = DadIpcJson.Deserialize<DadRosterRefreshPlan>(request.PayloadJson) ?? new DadRosterRefreshPlan();
+        if (plan.LiveConnectedOnly)
+            return false;
+
+        responseJson = DadIpcJson.Serialize(new DadPeerRosterCatalogResponse
+        {
+            RequestId = string.IsNullOrWhiteSpace(plan.PlanId) ? cached.Response.RequestId : plan.PlanId,
+            RespondedAtUtc = cached.Response.RespondedAtUtc,
+            ClientInstanceId = cached.Response.ClientInstanceId,
+            WorkerSessionId = cached.Response.WorkerSessionId,
+            Catalog = cached.Response.Catalog,
+            Warnings = cached.Response.Warnings,
+        });
+        return true;
     }
 
     private DadAccountRosterCatalog BuildLocalLiveConnectedRosterCatalog()
@@ -1717,6 +1849,8 @@ public sealed class DadTransportService : IDisposable
             response =>
             {
                 CacheRosterAggregateResponse(response, excludeLocal: true);
+                // B1: signal "fresh peer catalog landed" so the client roster UI re-merges from cache (no second click).
+                Interlocked.Increment(ref CurrentTransport.RosterCatalogCacheRevision);
                 CurrentTransport.LastRequestStatus = response.Summary;
             });
     }
@@ -2038,6 +2172,10 @@ public sealed class DadTransportService : IDisposable
                     !frameworkCallbacks.Enqueue(() => completed(typed)))
                 {
                     CurrentTransport.LastTransportTimeoutSummary = $"{messageType} completion callback dropped because the framework queue is full.";
+                    // B6: surface the drop and mark the publish dirty so the populate path re-issues the
+                    // refresh instead of silently losing the result.
+                    Interlocked.Increment(ref CurrentTransport.RosterCatalogDroppedCount);
+                    MarkHubRosterDirty(CurrentTransport.LastTransportTimeoutSummary, fast: true);
                 }
             }
         }
@@ -2197,6 +2335,17 @@ public sealed class DadTransportService : IDisposable
             "[dad] Client Dad connected: {WorkerSessionId} ({ClientInstanceId}).",
             connection.WorkerSessionId,
             connection.ClientInstanceId);
+
+        // B3: immediately pull the freshly connected peer's catalog/profile so the next publish/populate
+        // includes it instead of waiting for the slow periodic reconcile. The completion bumps the cache
+        // revision (B1) and marks the publish dirty (B2), so all clients get the updated projection.
+        QueueRosterCatalogRefresh(connection, force: true, new DadRosterRefreshPlan
+        {
+            IncludeHidden = true,
+            IncludeIgnored = true,
+        });
+        QueueProfileCatalogRefresh(connection, force: true, Guid.NewGuid().ToString("N"));
+        MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} connected; pulling roster catalog.", fast: true);
     }
 
     private void MarkServerSessionDisconnected(DadHubConnection connection)
@@ -2353,7 +2502,7 @@ public sealed class DadTransportService : IDisposable
         participants.AddRange(disconnected);
         participants = SortParticipants(participants);
 
-        return new DadHubRosterPublish
+        var publish = new DadHubRosterPublish
         {
             Generation = Interlocked.Increment(ref hubRosterGeneration),
             AuthorityEpochId = hubRosterAuthorityEpochId,
@@ -2364,7 +2513,40 @@ public sealed class DadTransportService : IDisposable
             ClientParticipants = SortParticipants(clients),
             DisconnectedParticipants = SortParticipants(disconnected),
             Participants = participants,
+            CatalogRows = BuildHubRosterCatalogRows(),
         };
+        TrimHubRosterCatalogRowsIfOversize(publish);
+        return publish;
+    }
+
+    // B2: project the coordinator's own catalog (so it appears in clients' listings) plus every cached peer
+    // catalog into the compact row form. The coordinator's own rows come from the B7 cache to avoid re-running
+    // the heavy XADB fetch on every publish.
+    private List<DadHubRosterCatalogRow> BuildHubRosterCatalogRows()
+    {
+        var responses = new List<DadPeerRosterCatalogResponse>();
+        var local = GetCachedLocalRosterCatalogResponse();
+        if (local != null)
+            responses.Add(local);
+        responses.AddRange(rosterCatalogs.Values);
+        return DadHubRosterCatalogProjection.BuildCatalogRows(responses);
+    }
+
+    // B2: keep the publish comfortably under the 256 KiB frame cap; if the projection pushes it past the
+    // budget, fall back to participants-only (the manual pull stays available as a debug fallback).
+    private void TrimHubRosterCatalogRowsIfOversize(DadHubRosterPublish publish)
+    {
+        if (publish.CatalogRows.Count == 0)
+            return;
+
+        const int budget = DadHubProtocol.MaxFrameBytes * 7 / 8;
+        if (System.Text.Encoding.UTF8.GetByteCount(DadIpcJson.Serialize(publish)) <= budget)
+            return;
+
+        log.Warning(
+            "[dad] Hub roster projection ({Rows} row(s)) exceeds the frame budget; publishing participants only.",
+            publish.CatalogRows.Count);
+        publish.CatalogRows = [];
     }
 
     private async Task BroadcastHubRosterPublishAsync(
@@ -2453,6 +2635,10 @@ public sealed class DadTransportService : IDisposable
         lastAppliedHubRosterPublish = DadHubRosterPublishCursor.FromPublish(publish);
         lastHubRosterPublish = publish.Clone();
         serverParticipant = publish.CoordinatorParticipant.Clone();
+        // B2: cache the pushed catalog projection so the client renders peers (and the coordinator) without a
+        // pull, and bump the cache revision (B1) so the roster UI re-merges from it.
+        lastPushedCatalogRows = publish.CatalogRows.Select(static row => row.Clone()).ToList();
+        Interlocked.Increment(ref CurrentTransport.RosterCatalogCacheRevision);
         RefreshTransportSnapshot();
         CurrentTransport.LastRequestStatus = $"Dad Coordinator published roster generation {publish.Generation} with {DadHubRosterPublishRuntime.CountPublishedParticipants(publish)} participant(s).";
     }
@@ -2518,7 +2704,10 @@ public sealed class DadTransportService : IDisposable
     }
 
     private TimeSpan GetPeerCatalogRefreshInterval()
-        => TimeSpan.FromSeconds(Math.Max(10, configuration.PeerCatalogRefreshIntervalSeconds));
+        // B4: slow full-reconcile cadence. Keep the 10 s floor (so a misconfig can't spam pulls) and add a
+        // 120 s ceiling (so the safety-net reconcile can't drift arbitrarily slow). Fast deltas come from
+        // on-connect (B3) and level-up (B5) forced pulls; this is just the periodic backstop (default 60 s).
+        => TimeSpan.FromSeconds(Math.Clamp(configuration.PeerCatalogRefreshIntervalSeconds, 10, 120));
 
     private TimeSpan GetHubRosterPublishStaleAfter()
         => TimeSpan.FromSeconds(Math.Max(6, GetHeartbeatStaleThreshold().TotalSeconds));
@@ -2554,6 +2743,9 @@ public sealed class DadTransportService : IDisposable
 
     private void RefreshRemoteCatalogCaches()
     {
+        // B4: periodic full reconcile, throttled per-worker by GetPeerCatalogRefreshInterval (the slow safety
+        // net). Connect (B3) and level-up (B5) drive fast forced deltas; this keeps the coordinator's
+        // rosterCatalogs cache fresh so the B2 push projection stays accurate without manual tickling.
         foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
         {
             QueueRosterCatalogRefresh(connection, force: false, new DadRosterRefreshPlan
@@ -2571,17 +2763,23 @@ public sealed class DadTransportService : IDisposable
         DadRosterRefreshPlan request)
     {
         var workerId = connection.WorkerSessionId.Value;
-        if (!force &&
-            nextRosterRefreshUtc.TryGetValue(workerId, out var nextRefresh) &&
-            DateTime.UtcNow < nextRefresh)
-        {
+        var throttled = nextRosterRefreshUtc.TryGetValue(workerId, out var nextRefresh) &&
+                        DateTime.UtcNow < nextRefresh;
+        if (!force && throttled)
             return;
-        }
 
         nextRosterRefreshUtc[workerId] = DateTime.UtcNow + GetPeerCatalogRefreshInterval();
         var key = $"catalog-roster:{workerId}";
-        if (operations.ContainsKey(key))
+        var operationInFlight = operations.ContainsKey(key);
+        if (DadRosterRefreshDedupe.DecideRosterRefresh(force, throttled, operationInFlight) != DadRosterRefreshDispatch.Queue)
+        {
+            // B6: a forced (user-driven) request must not no-op while a periodic op is in flight. The in-flight
+            // op already writes rosterCatalogs + bumps RosterCatalogCacheRevision (B1), so the UI re-renders
+            // when it lands; record that we coalesced onto it instead of dropping the request.
+            if (force && operationInFlight)
+                CurrentTransport.LastRequestStatus = $"Roster refresh for {workerId} is already in flight; reusing it.";
             return;
+        }
 
         request.PlanId = string.IsNullOrWhiteSpace(request.PlanId)
             ? Guid.NewGuid().ToString("N")
@@ -2594,6 +2792,8 @@ public sealed class DadTransportService : IDisposable
             response =>
             {
                 rosterCatalogs[workerId] = response;
+                // B1: signal "fresh peer catalog landed" so any open roster UI re-merges from cache (no second click).
+                Interlocked.Increment(ref CurrentTransport.RosterCatalogCacheRevision);
                 MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} roster catalog response.", fast: false);
             });
     }
@@ -3177,5 +3377,13 @@ public sealed class DadTransportService : IDisposable
     {
         public string PayloadJson { get; set; } = string.Empty;
         public DateTime CompletedAtUtc { get; set; }
+    }
+
+    // B7: immutable snapshot of the local roster catalog response plus the time it was built, so inbound
+    // peer pulls can be served from it without re-running the heavy XADB fetch on the framework thread.
+    private sealed class CachedLocalRosterCatalog
+    {
+        public DadPeerRosterCatalogResponse Response { get; init; } = new();
+        public DateTime BuiltAtUtc { get; init; }
     }
 }

@@ -57,6 +57,9 @@ public sealed class MainWindow : Window, IDisposable
     private bool rosterStaleOnly;
     private bool rosterAccountInitialized;
     private readonly HashSet<string> rosterSelectedRows = new(StringComparer.OrdinalIgnoreCase);
+    // B1: last roster-catalog cache revision rendered; when the transport bumps it (a peer pull landed or the
+    // coordinator pushed a fresh projection), the roster section re-merges from cache without a second click.
+    private long lastRosterCatalogCacheRevision = -1;
     private readonly Dictionary<uint, string> classJobAbbrevCache = new();
     private string selectedProfileOwner = string.Empty;
     private string selectedProfileAccount = string.Empty;
@@ -157,14 +160,16 @@ public sealed class MainWindow : Window, IDisposable
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
 
         ImGui.Text($"{PluginInfo.DisplayName} v{version}");
-        ImGui.SameLine(MathF.Max(0f, ImGui.GetWindowWidth() - 150f));
-        if (ImGui.SmallButton("\u2661 Ko-fi \u2661"))
+        const string koFiLabel = "Support (Ko-fi)";
+        var koFiWidth = ImGui.CalcTextSize(koFiLabel).X + (ImGui.GetStyle().FramePadding.X * 2f);
+        ImGui.SameLine(MathF.Max(0f, ImGui.GetWindowWidth() - koFiWidth - ImGui.GetStyle().WindowPadding.X));
+        if (ImGui.SmallButton(koFiLabel))
         {
             ImGui.SetClipboardText(PluginInfo.SupportUrl);
             plugin.PrintStatus($"Copied Ko-fi URL: {PluginInfo.SupportUrl}");
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Copy Ko-fi URL");
+            ImGui.SetTooltip("Click to copy the Ko-fi support URL.");
 
         ImGui.Separator();
 
@@ -193,6 +198,11 @@ public sealed class MainWindow : Window, IDisposable
             plugin.UpdateDtrBar();
         }
 
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Arms the active profile so Dad may act for it.");
+
         if (debugUi)
         {
             ImGui.SameLine();
@@ -212,7 +222,7 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
 
-        ImGui.SameLine();
+        // New row: action buttons separated from the arming checkboxes above.
         if (ImGui.SmallButton("Settings"))
             plugin.ToggleConfigUi();
 
@@ -782,8 +792,10 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawLaunchProfileEditor(IReadOnlyList<DadLaunchProfile> profiles)
     {
-        if (ImGui.SmallButton("Import Z:\\!ff14clientboot batches"))
+        if (ImGui.SmallButton("Import launch batches"))
             plugin.ImportLaunchProfilesFromBootDirectory();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Imports FFXIV client boot batch files from the configured boot directory.");
         ImGui.SameLine();
         ImGui.TextDisabled("Batch files remain read-only; imported profiles default disabled, auto-start off, dry-run on.");
 
@@ -1062,6 +1074,20 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawCrewRosterSection(DadCharacterPool characterPool, DadAccountRosterCatalog catalog)
     {
+        // B1: complete-then-render. When the transport's roster-catalog cache revision advances (an async peer
+        // pull landed, or the coordinator pushed a fresh projection (B2)), re-merge from cache once so the new
+        // rows render themselves. Reads cache only (no network pull), so it cannot loop on the revision bump.
+        var rosterCacheRevision = plugin.TransportService.RosterCatalogCacheRevision;
+        if (lastRosterCatalogCacheRevision < 0)
+        {
+            lastRosterCatalogCacheRevision = rosterCacheRevision;
+        }
+        else if (rosterCacheRevision != lastRosterCatalogCacheRevision)
+        {
+            lastRosterCatalogCacheRevision = rosterCacheRevision;
+            catalog = plugin.RosterCatalogService.RefreshCatalogFromCache(characterPool, "roster cache revision advanced");
+        }
+
         DrawSectionHeader("Roster Accounts", "Pick an account first. Assigned Active rows feed normal crew slots.");
         if (ImGui.SmallButton("Refresh local roster"))
         {
@@ -1076,13 +1102,15 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        if (ImGui.SmallButton("Populate roster from connected Dads"))
+        if (ImGui.SmallButton("Populate connected roster"))
         {
             catalog = plugin.RosterCatalogService.RefreshCatalog(
                 characterPool,
                 DadRosterRefreshPlan.ConnectedDads("manual connected roster refresh"));
             ResetRosterBrowseFilters(catalog, RosterBrowseResetMode.AllRows);
         }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Pulls roster rows from connected Dads over the transport.");
 
         EnsureRosterAccountSelection(catalog);
         ImGui.SetNextItemWidth(MathF.Min(260f, ImGui.GetContentRegionAvail().X));
@@ -1107,18 +1135,23 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Catalog", $"{catalog.Summary} Showing {filtered.Count}/{catalog.Characters.Count} row(s).");
         if (!string.IsNullOrWhiteSpace(activeFilters) && filtered.Count < catalog.Characters.Count)
             DrawStatusRow("Filtered rows", $"{catalog.Characters.Count - filtered.Count} row(s) hidden by filters: {activeFilters}");
-        DrawStatusRow("Roster preflight", BuildRosterPreflightStatus(catalog));
-        var diagnostics = catalog.SourceDiagnostics;
-        DrawStatusRow("XADB rows", $"snapshots {diagnostics.XadbSnapshotRows}, legacy {diagnostics.XadbLegacyRows}, merged {diagnostics.XadbMergedRows}");
-        if (diagnostics.XadbMergedRows > diagnostics.LocalXadbAttributedRows)
-            DrawStatusRow("XADB attribution", $"Merged rows {diagnostics.XadbMergedRows} exceed local attributed rows {diagnostics.LocalXadbAttributedRows}.");
-        DrawStatusRow("XADB DCs", FormatRosterCountBreakdown(diagnostics.XadbDataCenterCounts));
-        DrawStatusRow("XADB worlds", FormatRosterCountBreakdown(diagnostics.XadbWorldCounts, 12));
-        DrawStatusRow("Local roster", $"XADB attributed {diagnostics.LocalXadbAttributedRows}, known {diagnostics.KnownRosterRows}, runtime {diagnostics.LocalRuntimeRows}, final {diagnostics.FinalLocalRows}");
-        if (diagnostics.FinalLocalRows > catalog.Characters.Count)
-            DrawStatusRow("Visibility filter", $"{diagnostics.FinalLocalRows - catalog.Characters.Count} local row(s) hidden by catalog visibility filters.");
-        DrawStatusRow("Peer catalogs", $"{catalog.SourceDiagnostics.PeerCatalogCount} response(s), {catalog.SourceDiagnostics.PeerFullRosterCount} full roster, {catalog.SourceDiagnostics.PeerFullRosterRows} full-roster row(s)");
-        DrawStatusRow("Roster counts", BuildRosterStatusCounts(catalog));
+        if (plugin.Configuration.DebugUiEnabled)
+        {
+            DrawStatusRow("Roster preflight", BuildRosterPreflightStatus(catalog));
+            var diagnostics = catalog.SourceDiagnostics;
+            DrawStatusRow("XADB rows", $"snapshots {diagnostics.XadbSnapshotRows}, legacy {diagnostics.XadbLegacyRows}, merged {diagnostics.XadbMergedRows}");
+            if (diagnostics.XadbMergedRows > diagnostics.LocalXadbAttributedRows)
+                DrawStatusRow("XADB attribution", $"Merged rows {diagnostics.XadbMergedRows} exceed local attributed rows {diagnostics.LocalXadbAttributedRows}.");
+            DrawStatusRow("XADB DCs", FormatRosterCountBreakdown(diagnostics.XadbDataCenterCounts));
+            DrawStatusRow("XADB worlds", FormatRosterCountBreakdown(diagnostics.XadbWorldCounts, 12));
+            DrawStatusRow("Local roster", $"XADB attributed {diagnostics.LocalXadbAttributedRows}, known {diagnostics.KnownRosterRows}, runtime {diagnostics.LocalRuntimeRows}, final {diagnostics.FinalLocalRows}");
+            if (diagnostics.FinalLocalRows > catalog.Characters.Count)
+                DrawStatusRow("Visibility filter", $"{diagnostics.FinalLocalRows - catalog.Characters.Count} local row(s) hidden by catalog visibility filters.");
+            DrawStatusRow("Peer catalogs", $"{catalog.SourceDiagnostics.PeerCatalogCount} response(s), {catalog.SourceDiagnostics.PeerFullRosterCount} full roster, {catalog.SourceDiagnostics.PeerFullRosterRows} full-roster row(s)");
+            DrawStatusRow("Passive sync", $"cache rev {plugin.TransportService.RosterCatalogCacheRevision}, dropped completions {plugin.TransportService.CurrentTransport.RosterCatalogDroppedCount}");
+            DrawStatusRow("Roster counts", BuildRosterStatusCounts(catalog));
+        }
+
         if (!catalog.IsFullRosterAvailable)
             DrawStatusRow("XADB roster", DadXadbClient.RosterIpcMissingWarning);
         if (catalog.Warnings.Count > 0)
@@ -2910,45 +2943,52 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.SmallButton($"Activate##dad-roster-active-{selectionKey}"))
             SetRosterVisibility([character], DadRosterVisibility.Active);
         ImGui.SameLine();
-        if (ImGui.SmallButton($"Hide##dad-roster-hide-{selectionKey}"))
-            SetRosterVisibility([character], DadRosterVisibility.Hidden);
-        ImGui.SameLine();
-        if (ImGui.SmallButton($"Ignore##dad-roster-ignore-{selectionKey}"))
-            SetRosterVisibility([character], DadRosterVisibility.Ignored);
-        ImGui.SameLine();
-        if (ImGui.SmallButton($"Mark update##dad-roster-update-{selectionKey}"))
-            SetRosterVisibility([character], DadRosterVisibility.NeedsUpdate);
-
-        if (ImGui.SmallButton($"Queue update##dad-roster-queue-{selectionKey}"))
-            QueueRosterUpdate([character], dryRun: false);
-        ImGui.SameLine();
-        if (ImGui.SmallButton($"Dry-run update##dad-roster-dry-update-{selectionKey}"))
-            QueueRosterUpdate([character], dryRun: true);
-        ImGui.SameLine();
         DrawRosterAssignCombo(character, selectionKey, catalog);
         ImGui.SameLine();
-        var canClear = !character.AccountKey.IsEmpty && !IsRemoteRosterRow(character);
-        ImGui.BeginDisabled(!canClear);
-        if (ImGui.SmallButton($"Clear assignment##dad-roster-clear-{selectionKey}"))
-            ChangeRosterAssignment(new DadRosterAssignmentChangeRequest
-            {
-                CharacterRef = DadRosterIdentity.From(character),
-                ClearAssignment = true,
-                Reason = "Cleared from Crew / Scheduler browser.",
-            });
-        ImGui.EndDisabled();
+        if (ImGui.SmallButton($"More...##dad-roster-more-{selectionKey}"))
+            ImGui.OpenPopup($"dad-roster-more-popup-{selectionKey}");
 
-        if (plugin.RosterCatalogService.HasLocalRosterCopy(character))
+        if (ImGui.BeginPopup($"dad-roster-more-popup-{selectionKey}"))
         {
+            if (ImGui.SmallButton($"Hide##dad-roster-hide-{selectionKey}"))
+                SetRosterVisibility([character], DadRosterVisibility.Hidden);
             ImGui.SameLine();
-            if (DrawCtrlShiftSmallButton(
-                    "Forget copy",
-                    $"dad-roster-forget-copy-{selectionKey}",
-                    "Click to forget this local Dad roster copy. XADB snapshots and remote Dad data stay untouched.",
-                    "Hold Ctrl+Shift to forget this local Dad roster copy. XADB snapshots and remote Dad data stay untouched."))
+            if (ImGui.SmallButton($"Ignore##dad-roster-ignore-{selectionKey}"))
+                SetRosterVisibility([character], DadRosterVisibility.Ignored);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Mark update##dad-roster-update-{selectionKey}"))
+                SetRosterVisibility([character], DadRosterVisibility.NeedsUpdate);
+
+            if (ImGui.SmallButton($"Queue update##dad-roster-queue-{selectionKey}"))
+                QueueRosterUpdate([character], dryRun: false);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Dry-run update##dad-roster-dry-update-{selectionKey}"))
+                QueueRosterUpdate([character], dryRun: true);
+
+            var canClear = !character.AccountKey.IsEmpty && !IsRemoteRosterRow(character);
+            ImGui.BeginDisabled(!canClear);
+            if (ImGui.SmallButton($"Clear assignment##dad-roster-clear-{selectionKey}"))
+                ChangeRosterAssignment(new DadRosterAssignmentChangeRequest
+                {
+                    CharacterRef = DadRosterIdentity.From(character),
+                    ClearAssignment = true,
+                    Reason = "Cleared from Crew / Scheduler browser.",
+                });
+            ImGui.EndDisabled();
+
+            if (plugin.RosterCatalogService.HasLocalRosterCopy(character))
             {
-                ForgetRosterCopy(character);
+                if (DrawCtrlShiftSmallButton(
+                        "Forget copy",
+                        $"dad-roster-forget-copy-{selectionKey}",
+                        "Click to forget this local Dad roster copy. XADB snapshots and remote Dad data stay untouched.",
+                        "Hold Ctrl+Shift to forget this local Dad roster copy. XADB snapshots and remote Dad data stay untouched."))
+                {
+                    ForgetRosterCopy(character);
+                }
             }
+
+            ImGui.EndPopup();
         }
     }
 
@@ -3399,6 +3439,7 @@ public sealed class MainWindow : Window, IDisposable
                     ? FormatText(requestPreview.StatusSummary, "Planner request is not startable.")
                     : firstBlocker;
 
+        // --- Row 1: primary action -------------------------------------------------
         ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
         if (ImGui.SmallButton("Start planner run"))
             plugin.StartPlannerRunFromShell();
@@ -3407,7 +3448,16 @@ public sealed class MainWindow : Window, IDisposable
         if (startHovered && !string.IsNullOrWhiteSpace(disabledReason))
             ImGui.SetTooltip(disabledReason);
 
-        ImGui.SameLine();
+        if (plannerLocked)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Cancel active run##planner-action-strip"))
+                plugin.CancelActiveRunFromShell();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Cancels the active Dad run visible to this client.");
+        }
+
+        // --- Row 2: scheduler / queue actions --------------------------------------
         ImGui.BeginDisabled(plannerLocked || !schedulerPreview.CanStart || !requestPreview.PlannerPreview.UsingPlannerGroup);
         if (ImGui.SmallButton("Start scheduler preset"))
         {
@@ -3445,16 +3495,7 @@ public sealed class MainWindow : Window, IDisposable
         if ((enqueuePresetHovered || enqueueMapCrewHovered || dryRunPresetHovered) && selectedGroup == null)
             ImGui.SetTooltip("Select a saved preset before queueing scheduler work.");
 
-        if (plannerLocked)
-        {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Cancel active run##planner-action-strip"))
-                plugin.CancelActiveRunFromShell();
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Cancels the active Dad run visible to this client.");
-        }
-
-        ImGui.SameLine();
+        // --- Row 3: state badges (own line, wrap naturally) ------------------------
         DrawStateBadge("Startability", FormatText(requestPreview.ContractPreview.Startability, requestPreview.CanStart ? "Startable" : "Blocked"));
         ImGui.SameLine();
         DrawStateBadge("Blockers", blockers.Count.ToString(CultureInfo.InvariantCulture));
@@ -4502,7 +4543,7 @@ public sealed class MainWindow : Window, IDisposable
         if (plugin.Configuration.AdvancedModeEnabled)
         {
             var killMode = (int)actions.KillMode;
-            if (ImGui.Combo("Preset completion action (DANGER)", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            if (ImGui.Combo("On completion", ref killMode, CompletionKillModes, CompletionKillModes.Length))
             {
                 actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
                 plugin.SavePlannerOptions();

@@ -265,7 +265,10 @@ public sealed class DadRunRequest
 
     private int DetermineExpectedPartySize()
     {
-        if (DailyMsq != null || Commendation != null || Astrope != null || Mogtome != null)
+        // B3 (Option A, reversible): MOGTOME is a solo helper-IPC lane, so it is no longer part of the
+        // 4-person group and falls through to the default party size of 1. Re-add `|| Mogtome != null`
+        // to restore the legacy 4-person premade topology.
+        if (DailyMsq != null || Commendation != null || Astrope != null)
             return 4;
 
         if (Msq != null)
