@@ -9,7 +9,7 @@ namespace dad.Services;
 
 public sealed class DadXadbClient
 {
-    public const string RosterIpcMissingWarning = "XADB roster IPC missing; XADatabase loaded 20-channel/old provider. Channel XA.Database.GetAccountCharacterListJson was not registered yet.";
+    public const string RosterIpcMissingWarning = "XADB 0.0.0.39+ roster IPC required: XA.Database.GetAccountCharacterListJson must be registered and return contract v6 full-roster JSON.";
 
     private const string ReadyChannel = "XA.Database.IsReady";
     private const string RefreshChannel = "XA.Database.Refresh";
@@ -119,7 +119,7 @@ public sealed class DadXadbClient
         {
             catalog.Warnings.Add(RosterIpcMissingWarning);
             catalog.Summary = RosterIpcMissingWarning;
-            log.Warning(ex, "[dad] XADB roster IPC failed on {Channel}; old/missing provider.", AccountCharacterListChannel);
+            log.Warning(ex, "[dad] XADB roster IPC failed on {Channel}; XADB 0.0.0.39+ contract v6 roster IPC required.", AccountCharacterListChannel);
             return catalog;
         }
     }
