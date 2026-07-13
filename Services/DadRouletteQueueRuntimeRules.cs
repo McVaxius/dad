@@ -18,6 +18,7 @@ public enum DadRouletteQueueMutation
     Wait,
     ClearSelection,
     OpenRoulette,
+    SelectMappedEntry,
     Join,
     Fail,
 }
@@ -33,6 +34,7 @@ public sealed class DadRouletteQueueAttemptGate
 
     private bool clearPending = true;
     private bool openPending;
+    private bool awaitingStableMapping;
     private bool awaitingSelectionProof;
     private DateTime selectionProofAtUtc = DateTime.MinValue;
     private DateTime registrationGraceUntilUtc = DateTime.MinValue;
@@ -46,7 +48,8 @@ public sealed class DadRouletteQueueAttemptGate
     public DadRouletteQueueDecision Decide(
         DateTime nowUtc,
         bool exactRouletteSelected,
-        bool registrationEvidenceObserved)
+        bool registrationEvidenceObserved,
+        bool stableMappingAvailable)
     {
         if (registrationEvidenceObserved)
             return new DadRouletteQueueDecision(DadRouletteQueueMutation.Wait, "Queue/commence/transition evidence observed.");
@@ -61,6 +64,9 @@ public sealed class DadRouletteQueueAttemptGate
             // clear/select/prove/join cycle, even if the UI still displays the
             // requested roulette.
             clearPending = true;
+            openPending = false;
+            awaitingStableMapping = false;
+            awaitingSelectionProof = false;
         }
 
         if (awaitingSelectionProof)
@@ -73,12 +79,26 @@ public sealed class DadRouletteQueueAttemptGate
                 clearPending = true;
         }
 
+        if (awaitingStableMapping)
+        {
+            if (!stableMappingAvailable)
+            {
+                return new DadRouletteQueueDecision(
+                    DadRouletteQueueMutation.Wait,
+                    "Waiting for two stable exact live Duty Finder mapping snapshots.");
+            }
+
+            awaitingStableMapping = false;
+            awaitingSelectionProof = true;
+            selectionProofAtUtc = nowUtc + SelectionSettle;
+            SelectionAttempts++;
+            return new DadRouletteQueueDecision(DadRouletteQueueMutation.SelectMappedEntry);
+        }
+
         if (openPending)
         {
             openPending = false;
-            SelectionAttempts++;
-            awaitingSelectionProof = true;
-            selectionProofAtUtc = nowUtc + SelectionSettle;
+            awaitingStableMapping = true;
             return new DadRouletteQueueDecision(DadRouletteQueueMutation.OpenRoulette);
         }
 
@@ -103,6 +123,7 @@ public sealed class DadRouletteQueueAttemptGate
     {
         clearPending = true;
         openPending = false;
+        awaitingStableMapping = false;
         awaitingSelectionProof = false;
         selectionProofAtUtc = DateTime.MinValue;
         registrationGraceUntilUtc = DateTime.MinValue;
@@ -112,6 +133,7 @@ public sealed class DadRouletteQueueAttemptGate
     {
         clearPending = true;
         openPending = false;
+        awaitingStableMapping = false;
         awaitingSelectionProof = false;
         selectionProofAtUtc = DateTime.MinValue;
         registrationGraceUntilUtc = DateTime.MinValue;

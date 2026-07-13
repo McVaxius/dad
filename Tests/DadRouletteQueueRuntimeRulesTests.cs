@@ -38,24 +38,30 @@ public sealed class DadRouletteQueueRuntimeRulesTests
     }
 
     [Fact]
-    public void ExactPreexistingSelectionStillRequiresClearOpenAndSixSecondProof()
+    public void ExactPreexistingSelectionStillRequiresClearOpenMappedCallbackAndSixSecondProof()
     {
         var gate = new DadRouletteQueueAttemptGate();
 
         AssertDecision(
-            gate.Decide(Start, exactRouletteSelected: true, registrationEvidenceObserved: false),
+            gate.Decide(Start, exactRouletteSelected: true, registrationEvidenceObserved: false, stableMappingAvailable: false),
             DadRouletteQueueMutation.ClearSelection);
         Assert.Equal(0, gate.SelectionAttempts);
 
         AssertDecision(
-            gate.Decide(Start, exactRouletteSelected: true, registrationEvidenceObserved: false),
+            gate.Decide(Start, exactRouletteSelected: true, registrationEvidenceObserved: false, stableMappingAvailable: false),
             DadRouletteQueueMutation.OpenRoulette);
+        Assert.Equal(0, gate.SelectionAttempts);
+
+        AssertDecision(
+            gate.Decide(Start, exactRouletteSelected: true, registrationEvidenceObserved: false, stableMappingAvailable: true),
+            DadRouletteQueueMutation.SelectMappedEntry);
         Assert.Equal(1, gate.SelectionAttempts);
 
         var beforeSettle = gate.Decide(
             Start + TimeSpan.FromSeconds(5.999),
             exactRouletteSelected: true,
-            registrationEvidenceObserved: false);
+            registrationEvidenceObserved: false,
+            stableMappingAvailable: true);
         AssertDecision(beforeSettle, DadRouletteQueueMutation.Wait);
         Assert.Contains("six seconds", beforeSettle.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, gate.JoinAttempts);
@@ -64,7 +70,8 @@ public sealed class DadRouletteQueueRuntimeRulesTests
             gate.Decide(
                 Start + DadRouletteQueueAttemptGate.SelectionSettle,
                 exactRouletteSelected: true,
-                registrationEvidenceObserved: false),
+                registrationEvidenceObserved: false,
+                stableMappingAvailable: true),
             DadRouletteQueueMutation.Join);
         Assert.Equal(1, gate.SelectionAttempts);
         Assert.Equal(1, gate.JoinAttempts);
@@ -75,30 +82,63 @@ public sealed class DadRouletteQueueRuntimeRulesTests
     {
         var gate = new DadRouletteQueueAttemptGate();
 
-        AssertDecision(gate.Decide(Start, false, false), DadRouletteQueueMutation.ClearSelection);
-        AssertDecision(gate.Decide(Start, false, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(Start, false, false, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(Start, false, false, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(Start, false, false, true), DadRouletteQueueMutation.SelectMappedEntry);
 
-        var secondClear = gate.Decide(Start + TimeSpan.FromSeconds(6), false, false);
+        var secondClear = gate.Decide(Start + TimeSpan.FromSeconds(6), false, false, true);
         AssertDecision(secondClear, DadRouletteQueueMutation.ClearSelection);
         AssertDecision(
-            gate.Decide(Start + TimeSpan.FromSeconds(6), false, false),
+            gate.Decide(Start + TimeSpan.FromSeconds(6), false, false, false),
             DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(
+            gate.Decide(Start + TimeSpan.FromSeconds(6), false, false, true),
+            DadRouletteQueueMutation.SelectMappedEntry);
 
-        var thirdClear = gate.Decide(Start + TimeSpan.FromSeconds(12), false, false);
+        var thirdClear = gate.Decide(Start + TimeSpan.FromSeconds(12), false, false, true);
         AssertDecision(thirdClear, DadRouletteQueueMutation.ClearSelection);
         AssertDecision(
-            gate.Decide(Start + TimeSpan.FromSeconds(12), false, false),
+            gate.Decide(Start + TimeSpan.FromSeconds(12), false, false, false),
             DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(
+            gate.Decide(Start + TimeSpan.FromSeconds(12), false, false, true),
+            DadRouletteQueueMutation.SelectMappedEntry);
 
-        var fourthClear = gate.Decide(Start + TimeSpan.FromSeconds(18), false, false);
+        var fourthClear = gate.Decide(Start + TimeSpan.FromSeconds(18), false, false, true);
         AssertDecision(fourthClear, DadRouletteQueueMutation.ClearSelection);
         Assert.Equal(3, gate.SelectionAttempts);
         Assert.Equal(0, gate.JoinAttempts);
 
         AssertDecision(
-            gate.Decide(Start + TimeSpan.FromSeconds(18), false, false),
+            gate.Decide(Start + TimeSpan.FromSeconds(18), false, false, false),
             DadRouletteQueueMutation.OpenRoulette);
+        Assert.Equal(3, gate.SelectionAttempts);
+        AssertDecision(
+            gate.Decide(Start + TimeSpan.FromSeconds(18), false, false, true),
+            DadRouletteQueueMutation.SelectMappedEntry);
         Assert.Equal(4, gate.SelectionAttempts);
+    }
+
+    [Fact]
+    public void MissingOrUnstableLiveMappingCausesNoSelectionOrJoinMutation()
+    {
+        var gate = new DadRouletteQueueAttemptGate();
+
+        AssertDecision(gate.Decide(Start, false, false, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(Start, false, false, false), DadRouletteQueueMutation.OpenRoulette);
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var waiting = gate.Decide(Start.AddSeconds(attempt), true, false, false);
+            AssertDecision(waiting, DadRouletteQueueMutation.Wait);
+            Assert.Contains("stable", waiting.Reason, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.Equal(0, gate.SelectionAttempts);
+        Assert.Equal(0, gate.JoinAttempts);
+        AssertDecision(gate.Decide(Start.AddSeconds(5), true, false, true), DadRouletteQueueMutation.SelectMappedEntry);
+        Assert.Equal(1, gate.SelectionAttempts);
+        Assert.Equal(0, gate.JoinAttempts);
     }
 
     [Fact]
@@ -109,26 +149,28 @@ public sealed class DadRouletteQueueRuntimeRulesTests
 
         Assert.True(gate.IsRegistrationGraceActive(firstJoinAt + TimeSpan.FromSeconds(7.999)));
         AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(7.999), true, false),
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(7.999), true, false, true),
             DadRouletteQueueMutation.Wait);
         Assert.False(gate.IsRegistrationGraceActive(firstJoinAt + TimeSpan.FromSeconds(8)));
 
-        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false), DadRouletteQueueMutation.ClearSelection);
-        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false, true), DadRouletteQueueMutation.SelectMappedEntry);
         AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(13.999), true, false),
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(13.999), true, false, true),
             DadRouletteQueueMutation.Wait);
 
         AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(14), true, false),
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(14), true, false, true),
             DadRouletteQueueMutation.Join);
         Assert.Equal(2, gate.JoinAttempts);
         AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(21.999), true, false),
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(21.999), true, false, true),
             DadRouletteQueueMutation.Wait);
 
-        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false), DadRouletteQueueMutation.ClearSelection);
-        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false, true), DadRouletteQueueMutation.SelectMappedEntry);
         Assert.Equal(2, gate.JoinAttempts);
         Assert.Equal(3, gate.SelectionAttempts);
     }
@@ -141,7 +183,8 @@ public sealed class DadRouletteQueueRuntimeRulesTests
         var observed = gate.Decide(
             Start + TimeSpan.FromMinutes(1),
             exactRouletteSelected: false,
-            registrationEvidenceObserved: true);
+            registrationEvidenceObserved: true,
+            stableMappingAvailable: false);
 
         AssertDecision(observed, DadRouletteQueueMutation.Wait);
         Assert.Contains("evidence observed", observed.Reason, StringComparison.OrdinalIgnoreCase);
@@ -149,7 +192,7 @@ public sealed class DadRouletteQueueRuntimeRulesTests
         Assert.Equal(1, gate.SelectionAttempts);
 
         AssertDecision(
-            gate.Decide(Start + TimeSpan.FromMinutes(2), false, true),
+            gate.Decide(Start + TimeSpan.FromMinutes(2), false, true, false),
             DadRouletteQueueMutation.Wait);
         Assert.Equal(1, gate.JoinAttempts);
     }
@@ -161,18 +204,21 @@ public sealed class DadRouletteQueueRuntimeRulesTests
         var graceExpiredAt = Start + TimeSpan.FromSeconds(14);
 
         AssertDecision(
-            gate.Decide(graceExpiredAt, exactRouletteSelected: false, registrationEvidenceObserved: false),
+            gate.Decide(graceExpiredAt, exactRouletteSelected: false, registrationEvidenceObserved: false, stableMappingAvailable: false),
             DadRouletteQueueMutation.ClearSelection);
         AssertDecision(
-            gate.Decide(graceExpiredAt, exactRouletteSelected: false, registrationEvidenceObserved: false),
+            gate.Decide(graceExpiredAt, exactRouletteSelected: false, registrationEvidenceObserved: false, stableMappingAvailable: false),
             DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(
+            gate.Decide(graceExpiredAt, exactRouletteSelected: false, registrationEvidenceObserved: false, stableMappingAvailable: true),
+            DadRouletteQueueMutation.SelectMappedEntry);
         Assert.Equal(2, gate.SelectionAttempts);
         Assert.Equal(1, gate.JoinAttempts);
         AssertDecision(
-            gate.Decide(graceExpiredAt + TimeSpan.FromSeconds(5.999), true, false),
+            gate.Decide(graceExpiredAt + TimeSpan.FromSeconds(5.999), true, false, true),
             DadRouletteQueueMutation.Wait);
         AssertDecision(
-            gate.Decide(graceExpiredAt + TimeSpan.FromSeconds(6), true, false),
+            gate.Decide(graceExpiredAt + TimeSpan.FromSeconds(6), true, false, true),
             DadRouletteQueueMutation.Join);
         Assert.Equal(2, gate.JoinAttempts);
     }
@@ -189,7 +235,7 @@ public sealed class DadRouletteQueueRuntimeRulesTests
         Assert.Equal(0, gate.JoinAttempts);
         Assert.False(gate.IsRegistrationGraceActive(Start + TimeSpan.FromSeconds(7)));
         AssertDecision(
-            gate.Decide(Start + TimeSpan.FromMinutes(5), true, false),
+            gate.Decide(Start + TimeSpan.FromMinutes(5), true, false, true),
             DadRouletteQueueMutation.ClearSelection);
     }
 
@@ -375,10 +421,11 @@ public sealed class DadRouletteQueueRuntimeRulesTests
     private static DadRouletteQueueAttemptGate AdvanceToFirstJoin()
     {
         var gate = new DadRouletteQueueAttemptGate();
-        AssertDecision(gate.Decide(Start, false, false), DadRouletteQueueMutation.ClearSelection);
-        AssertDecision(gate.Decide(Start, false, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(Start, false, false, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(Start, false, false, false), DadRouletteQueueMutation.OpenRoulette);
+        AssertDecision(gate.Decide(Start, false, false, true), DadRouletteQueueMutation.SelectMappedEntry);
         AssertDecision(
-            gate.Decide(Start + DadRouletteQueueAttemptGate.SelectionSettle, true, false),
+            gate.Decide(Start + DadRouletteQueueAttemptGate.SelectionSettle, true, false, true),
             DadRouletteQueueMutation.Join);
         return gate;
     }

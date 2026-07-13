@@ -89,8 +89,12 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private readonly DadRouletteQueueAttemptGate rouletteAttemptGate = new();
     private readonly DadRouletteTerritoryEvidenceGate rouletteTerritoryGate = new();
     private readonly DadRouletteTerritoryEvidenceGate participantRouletteTerritoryGate = new();
+    private readonly DadDutyFinderStableMappingGate liveEntryMappingGate = new();
     private bool dutySelectionCleared;
-    private bool dutySelectionCallbackSent;
+    private bool dutyListHydrated;
+    private ulong hydratedDutyFinderCharacterContentId;
+    private DadDutyFinderSelectionToken? lastSelectionToken;
+    private string lastMappingTransition = string.Empty;
     private string participantObserverRunId = string.Empty;
     private bool participantDutyEntryEvidenceObserved;
 
@@ -623,7 +627,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             if (unrestrictedChanged)
             {
                 dutySelectionCleared = false;
-                dutySelectionCallbackSent = false;
+                dutyListHydrated = false;
+                hydratedDutyFinderCharacterContentId = 0;
+                ResetLiveEntryMapping();
                 var syncMode = content.Unsynced ? "enabled unrestricted/unsynced" : "disabled unrestricted/unsynced";
                 return Active(content, DadLocalDutyQueuePulseKind.SetUnrestrictedParty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Set Duty Finder to {syncMode} for {content.DutyName}.");
             }
@@ -645,8 +651,34 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 log.Debug("[dad] Opening regular Duty Finder for {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
                 agent->OpenRegularDuty(content.ContentFinderConditionId);
                 nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
-                dutySelectionCallbackSent = false;
+                dutyListHydrated = true;
+                dutySelectionCleared = false;
+                ResetLiveEntryMapping();
+                hydratedDutyFinderCharacterContentId = Plugin.PlayerState.ContentId;
                 return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening regular Duty Finder for {content.LaneDisplayName} {content.DutyName}.");
+            }
+
+            if (dutyListHydrated &&
+                (Plugin.PlayerState.ContentId == 0 ||
+                 hydratedDutyFinderCharacterContentId != Plugin.PlayerState.ContentId))
+            {
+                return RestartRegularSelectionAttempt(
+                    content,
+                    "The logged-in character changed after Duty Finder hydration; restarting with that character's live list.");
+            }
+
+            if (!dutyListHydrated)
+            {
+                if (DateTime.UtcNow < nextOpenAttemptUtc)
+                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting to hydrate the live Duty Finder list for {content.DutyName}.");
+
+                log.Debug("[dad] Hydrating regular Duty Finder list for {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
+                agent->OpenRegularDuty(content.ContentFinderConditionId);
+                dutyListHydrated = true;
+                nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
+                ResetLiveEntryMapping();
+                hydratedDutyFinderCharacterContentId = Plugin.PlayerState.ContentId;
+                return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Hydrating the live regular Duty Finder list for {content.DutyName}.");
             }
 
             if (!dutySelectionCleared)
@@ -654,35 +686,72 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 log.Information("[dad] Clearing regular Duty Finder selection before selecting {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
                 FireAddonIntCallback(addonBase, 12, 1);
                 dutySelectionCleared = true;
-                dutySelectionCallbackSent = false;
+                ResetLiveEntryMapping();
                 nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
                 return Active(content, DadLocalDutyQueuePulseKind.ClearedDutySelection, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Cleared stale Duty Finder selection before choosing {content.DutyName} for {content.LaneDisplayName}.");
             }
 
-            if (agent->InterfaceSub.SelectedDutyId != content.ContentFinderConditionId)
-            {
-                if (DateTime.UtcNow < nextSelectAttemptUtc)
-                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder selection to settle for {content.DutyName}.");
+            if (DateTime.UtcNow < nextSelectAttemptUtc)
+                return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder list state to settle for {content.DutyName}.");
 
-                log.Debug("[dad] Selecting regular Duty Finder duty {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
-                agent->OpenRegularDuty(content.ContentFinderConditionId);
-                nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
-                dutySelectionCallbackSent = false;
-                return Active(content, DadLocalDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting regular Duty Finder duty {content.DutyName} for {content.LaneDisplayName}.");
+            var target = new DadDutyFinderLiveTarget(
+                DadDutyFinderLiveContentType.Regular,
+                content.ContentFinderConditionId);
+            var mapping = ObserveLiveEntryMapping(agent, addonBase, content, target);
+            if (!mapping.IsReady)
+            {
+                if (lastSelectionToken != null)
+                {
+                    return RestartRegularSelectionAttempt(
+                        content,
+                        $"The live Duty Finder list changed before exact regular-duty proof ({mapping.Reason}); restarting with a fresh tab hydration.");
+                }
+
+                return MappingWait(content, mapping.Reason);
             }
 
-            var addon = (AddonContentsFinder*)addonBase;
-            if (!dutySelectionCallbackSent)
+            if (lastSelectionToken == null)
             {
-                if (DateTime.UtcNow < nextSelectAttemptUtc)
-                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder selection to settle for {content.DutyName}.");
+                if (!DadDutyFinderMappedMutationRules.ShouldSelect(mapping, null))
+                    return MappingWait(content, "The stable live Duty Finder mapping did not authorize an exact row callback.");
 
-                if (!TryCheckHighlightedDuty(addonBase, addon))
-                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder duty list for {content.DutyName}.");
+                var resolved = mapping.Entry!;
+                if (resolved.SelectionToken.CharacterContentId != hydratedDutyFinderCharacterContentId ||
+                    Plugin.PlayerState.ContentId != hydratedDutyFinderCharacterContentId)
+                {
+                    return RestartRegularSelectionAttempt(
+                        content,
+                        "The logged-in character changed after the stable regular-duty scan; restarting with a fresh hydration.");
+                }
 
-                dutySelectionCallbackSent = true;
+                FireAddonIntCallback(addonBase, 3, resolved.UiRow.CallbackOrdinal);
+                lastSelectionToken = resolved.SelectionToken;
                 nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
-                return Active(content, DadLocalDutyQueuePulseKind.CheckedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Checked regular Duty Finder duty {content.DutyName} for {content.LaneDisplayName}.");
+                log.Information(
+                    "[dad] Selecting mapped regular Duty Finder target {ContentFinderConditionId} for character {CharacterContentId} at live position {ObservedPosition}, tree index {TreeIndex}, callback ordinal {CallbackOrdinal}.",
+                    content.ContentFinderConditionId,
+                    resolved.SelectionToken.CharacterContentId,
+                    resolved.ObservedListPosition,
+                    resolved.UiRow.TreeIndex,
+                    resolved.UiRow.CallbackOrdinal);
+                return Active(content, DadLocalDutyQueuePulseKind.CheckedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selected exact live Duty Finder entry for {content.DutyName}; waiting for exact agent proof.");
+            }
+
+            var selectedType = ConvertContentType(agent->SelectedDuty.ContentType);
+            var selectedId = agent->SelectedDuty.Id;
+            var exactInterfaceId = agent->InterfaceSub.SelectedDutyId >= 0 &&
+                                   (uint)agent->InterfaceSub.SelectedDutyId == content.ContentFinderConditionId;
+            if (!exactInterfaceId ||
+                !DadDutyFinderMappedMutationRules.CanJoin(
+                    mapping,
+                    lastSelectionToken,
+                    selectedType,
+                    selectedId,
+                    target))
+            {
+                return RestartRegularSelectionAttempt(
+                    content,
+                    $"Exact regular-duty proof failed for {target.ContentType}:{target.RowId}; selected={selectedType}:{selectedId}, interfaceId={agent->InterfaceSub.SelectedDutyId}. Restarting with a fresh tab hydration.");
             }
 
             if (DateTime.UtcNow < nextRegisterAttemptUtc)
@@ -771,18 +840,35 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                     return RetryableQueueWait(content, safetyWait);
                 agent->Show();
                 nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
+                ResetLiveEntryMapping();
+                hydratedDutyFinderCharacterContentId = 0;
                 return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Duty Finder before selecting Daily Roulette {content.DutyName}.");
             }
 
-            var exactSelection = DadRouletteSelectionProof.IsExact(
+            var target = new DadDutyFinderLiveTarget(
+                DadDutyFinderLiveContentType.Roulette,
+                content.RouletteId);
+            var mapping = ObserveLiveEntryMapping(agent, addonBase, content, target);
+            var selectedType = ConvertContentType(agent->SelectedDuty.ContentType);
+            var selectedId = agent->SelectedDuty.Id;
+            var exactAgentSelection = DadRouletteSelectionProof.IsExact(
                 agent->HasRouletteSelected,
                 agent->SelectedDuty.ContentType == ContentsType.Roulette,
-                agent->SelectedDuty.Id,
+                selectedId,
                 content.RouletteId);
+            var exactMappedSelection = exactAgentSelection &&
+                                       DadDutyFinderMappedMutationRules.CanJoin(
+                                           mapping,
+                                           lastSelectionToken,
+                                           selectedType,
+                                           selectedId,
+                                           target);
+
             var decision = rouletteAttemptGate.Decide(
                 now,
-                exactSelection,
-                dutyEntryEvidenceObserved || rouletteTerritoryGate.EntryEvidenceObserved);
+                exactMappedSelection,
+                dutyEntryEvidenceObserved || rouletteTerritoryGate.EntryEvidenceObserved,
+                mapping.IsReady);
 
             switch (decision.Mutation)
             {
@@ -791,24 +877,58 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                         return RetryableQueueWait(content, safetyWait);
                     log.Information("[dad] Clearing stale Duty Finder selection before Daily Roulette {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
                     FireAddonIntCallback(addonBase, 12, 1);
+                    ResetLiveEntryMapping();
+                    hydratedDutyFinderCharacterContentId = 0;
                     return Active(content, DadLocalDutyQueuePulseKind.ClearedDutySelection, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Cleared stale Duty Finder selection before Daily Roulette {content.DutyName}.");
 
                 case DadRouletteQueueMutation.OpenRoulette:
                     if (!TryGetMutationSafety(out safetyWait))
                         return RetryableQueueWait(content, safetyWait);
-                    log.Information("[dad] Selecting Daily Roulette {RouletteName} ({RouletteId}); unbounded attempt {Attempt}.", content.DutyName, content.RouletteId, rouletteAttemptGate.SelectionAttempts);
+                    log.Information("[dad] Hydrating Daily Roulette list for {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
                     agent->OpenRouletteDuty(checked((byte)content.RouletteId));
-                    return Active(content, DadLocalDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting Daily Roulette {content.DutyName}; waiting six seconds before exact selection proof.");
+                    ResetLiveEntryMapping();
+                    hydratedDutyFinderCharacterContentId = Plugin.PlayerState.ContentId;
+                    return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Hydrating the live Daily Roulette list for {content.DutyName}; no row has been selected yet.");
+
+                case DadRouletteQueueMutation.SelectMappedEntry:
+                    if (!DadDutyFinderMappedMutationRules.ShouldSelect(mapping, lastSelectionToken) ||
+                        mapping.Entry!.SelectionToken.CharacterContentId != hydratedDutyFinderCharacterContentId ||
+                        Plugin.PlayerState.ContentId != hydratedDutyFinderCharacterContentId)
+                    {
+                        rouletteAttemptGate.RetryFullCycle();
+                        return RetryableQueueWait(content, $"Mapped Daily Roulette selection token was stale or belonged to a different hydration character before callback; restarting roulette #{content.RouletteId}.");
+                    }
+
+                    if (!TryGetMutationSafety(out safetyWait))
+                        return RetryableQueueWait(content, safetyWait);
+                    var resolved = mapping.Entry!;
+                    FireAddonIntCallback(addonBase, 3, resolved.UiRow.CallbackOrdinal);
+                    lastSelectionToken = resolved.SelectionToken;
+                    log.Information(
+                        "[dad] Selecting mapped Daily Roulette target {RouletteId} for character {CharacterContentId} at live position {ObservedPosition}, tree index {TreeIndex}, callback ordinal {CallbackOrdinal}; unbounded attempt {Attempt}.",
+                        content.RouletteId,
+                        resolved.SelectionToken.CharacterContentId,
+                        resolved.ObservedListPosition,
+                        resolved.UiRow.TreeIndex,
+                        resolved.UiRow.CallbackOrdinal,
+                        rouletteAttemptGate.SelectionAttempts);
+                    return Active(content, DadLocalDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selected exact live Daily Roulette entry for {content.DutyName}; waiting six seconds before exact agent proof.");
 
                 case DadRouletteQueueMutation.Join:
                     if (!DadRouletteSelectionProof.IsExact(
                             agent->HasRouletteSelected,
                             agent->SelectedDuty.ContentType == ContentsType.Roulette,
                             agent->SelectedDuty.Id,
-                            content.RouletteId))
+                            content.RouletteId) ||
+                        !DadDutyFinderMappedMutationRules.CanJoin(
+                            mapping,
+                            lastSelectionToken,
+                            ConvertContentType(agent->SelectedDuty.ContentType),
+                            agent->SelectedDuty.Id,
+                            target))
                     {
                         rouletteAttemptGate.RetryFullCycle();
-                        return RetryableQueueWait(content, $"Daily Roulette selection changed before Join; restarting exact selection for roulette #{content.RouletteId}.");
+                        return RetryableQueueWait(content, $"Daily Roulette mapping or exact agent selection changed before Join; restarting roulette #{content.RouletteId}.");
                     }
 
                     if (!TryGetMutationSafety(out safetyWait))
@@ -825,7 +945,12 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                     var phase = rouletteAttemptGate.JoinAttempts > 0
                         ? DadRunPhase.QueueStarting
                         : DadRunPhase.QueuePreparing;
-                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, phase, DadParticipantState.QueuePending, decision.Reason);
+                    var waitReason = mapping.IsReady ||
+                                     decision.Reason.Contains("registration evidence", StringComparison.OrdinalIgnoreCase) ||
+                                     decision.Reason.Contains("six seconds", StringComparison.OrdinalIgnoreCase)
+                        ? decision.Reason
+                        : mapping.Reason;
+                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, phase, DadParticipantState.QueuePending, waitReason, waitReason);
             }
         }
         catch (Exception ex)
@@ -893,7 +1018,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         dutyEntryTransitionLogged = false;
         transientMissingPlayerLogged = false;
         dutySelectionCleared = false;
-        dutySelectionCallbackSent = false;
+        dutyListHydrated = false;
+        hydratedDutyFinderCharacterContentId = 0;
+        ResetLiveEntryMapping();
         rouletteAttemptGate.Reset();
         rouletteTerritoryGate.Reset();
     }
@@ -1029,7 +1156,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         dutyEntryTransitionLogged = false;
         transientMissingPlayerLogged = false;
         dutySelectionCleared = false;
-        dutySelectionCallbackSent = false;
+        dutyListHydrated = false;
+        hydratedDutyFinderCharacterContentId = 0;
+        ResetLiveEntryMapping();
         rouletteAttemptGate.Reset();
         rouletteTerritoryGate.Reset();
     }
@@ -1208,42 +1337,125 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             $"Duty entry transition for {content.DutyName}; waiting for local player/duty truth to settle.");
     }
 
-    private static bool TryCheckHighlightedDuty(AtkUnitBase* addonBase, AddonContentsFinder* addon)
+    private DadDutyFinderMappingResult ObserveLiveEntryMapping(
+        AgentContentsFinder* agent,
+        AtkUnitBase* addonBase,
+        DadLocalDutyResolvedContent content,
+        DadDutyFinderLiveTarget target)
     {
-        if (addon == null || addon->DutyList == null)
-            return false;
-
-        var dutyList = addon->DutyList;
-        if (dutyList->Items.Count == 0)
-            return false;
-
-        var selectedIndex = dutyList->SelectedItemIndex;
-        if (selectedIndex < 0 || selectedIndex >= dutyList->Items.Count)
-            selectedIndex = (int)Math.Clamp(addon->SelectedRow, 0, Math.Max(0, dutyList->Items.Count - 1));
-
-        if (selectedIndex < 0 || selectedIndex >= dutyList->Items.Count)
-            return false;
-
-        var dutyOrdinal = CountSelectableDutyRowsBefore(dutyList, selectedIndex) + 1;
-        FireAddonIntCallback(addonBase, 3, (int)dutyOrdinal);
-        return true;
-    }
-
-    private static uint CountSelectableDutyRowsBefore(AtkComponentTreeList* dutyList, int selectedIndex)
-    {
-        var count = 0u;
-        for (var index = 0; index < selectedIndex; index++)
+        DadDutyFinderMappingResult mapping;
+        if (!DadDutyFinderLiveEntryScanner.TryCapture(agent, addonBase, out var snapshot, out var scanFailure))
         {
-            var item = dutyList->GetItem(index);
-            if (item == null || item->UIntValues.Count == 0)
-                continue;
-
-            var type = item->UIntValues[0];
-            if (type is (uint)AtkComponentTreeListItemType.Leaf or (uint)AtkComponentTreeListItemType.LastLeafInGroup)
-                count++;
+            liveEntryMappingGate.Reset();
+            mapping = new DadDutyFinderMappingResult(
+                DadDutyFinderMappingStatus.Unstable,
+                scanFailure);
+        }
+        else
+        {
+            mapping = liveEntryMappingGate.Observe(snapshot, target);
         }
 
-        return count;
+        LogLiveEntryMappingTransition(content, target, mapping, agent);
+        return mapping;
+    }
+
+    private void LogLiveEntryMappingTransition(
+        DadLocalDutyResolvedContent content,
+        DadDutyFinderLiveTarget target,
+        DadDutyFinderMappingResult mapping,
+        AgentContentsFinder* agent)
+    {
+        var selectedType = agent == null
+            ? DadDutyFinderLiveContentType.None
+            : ConvertContentType(agent->SelectedDuty.ContentType);
+        var selectedId = agent == null ? 0u : agent->SelectedDuty.Id;
+        var entry = mapping.Entry;
+        var observedPosition = entry?.ObservedListPosition ?? 0;
+        var treeIndex = entry?.UiRow.TreeIndex ?? -1;
+        var callbackOrdinal = entry?.UiRow.CallbackOrdinal ?? 0;
+        var enabled = entry?.UiRow.Enabled ?? false;
+        var fingerprint = entry?.SelectionToken.ListFingerprint ?? string.Empty;
+        var characterContentId = entry?.SelectionToken.CharacterContentId ?? Plugin.PlayerState.ContentId;
+        var reason = string.IsNullOrWhiteSpace(mapping.Reason) ? "(none)" : mapping.Reason;
+        var transition = string.Join(
+            "|",
+            target.ContentType,
+            target.RowId,
+            characterContentId,
+            mapping.Status,
+            observedPosition,
+            treeIndex,
+            callbackOrdinal,
+            enabled,
+            selectedType,
+            selectedId,
+            fingerprint,
+            reason);
+        if (string.Equals(lastMappingTransition, transition, StringComparison.Ordinal))
+            return;
+
+        lastMappingTransition = transition;
+        log.Information(
+            "[dad][DutyFinderMap] characterContentId={CharacterContentId} target={TargetType}:{TargetId} duty={DutyName} status={Status} observedPosition={ObservedPosition} treeIndex={TreeIndex} callbackOrdinal={CallbackOrdinal} enabled={Enabled} selectedAgent={SelectedType}:{SelectedId} mismatch={MismatchReason} listFingerprint={ListFingerprint} itemLabel={ItemLabel} rendererNodeTextDiagnostic={RendererNodeTextDiagnostic}.",
+            characterContentId,
+            target.ContentType,
+            target.RowId,
+            content.DutyName,
+            mapping.Status,
+            observedPosition,
+            treeIndex,
+            callbackOrdinal,
+            enabled,
+            selectedType,
+            selectedId,
+            reason,
+            fingerprint,
+            entry?.UiRow.ItemLabel ?? string.Empty,
+            entry?.UiRow.RendererNodeText ?? string.Empty);
+    }
+
+    private void ResetLiveEntryMapping()
+    {
+        liveEntryMappingGate.Reset();
+        lastSelectionToken = null;
+        lastMappingTransition = string.Empty;
+    }
+
+    private static DadDutyFinderLiveContentType ConvertContentType(ContentsType contentType)
+        => contentType switch
+        {
+            ContentsType.Roulette => DadDutyFinderLiveContentType.Roulette,
+            ContentsType.Regular => DadDutyFinderLiveContentType.Regular,
+            _ => DadDutyFinderLiveContentType.None,
+        };
+
+    private static DadLocalDutyQueuePulse MappingWait(
+        DadLocalDutyResolvedContent content,
+        string reason,
+        DadRunPhase phase = DadRunPhase.QueuePreparing)
+    {
+        reason = string.IsNullOrWhiteSpace(reason)
+            ? "Waiting for an exact stable live Duty Finder entry mapping."
+            : reason;
+        return Active(
+            content,
+            DadLocalDutyQueuePulseKind.Waiting,
+            phase,
+            DadParticipantState.QueuePending,
+            reason,
+            reason);
+    }
+
+    private DadLocalDutyQueuePulse RestartRegularSelectionAttempt(
+        DadLocalDutyResolvedContent content,
+        string reason)
+    {
+        dutyListHydrated = false;
+        dutySelectionCleared = false;
+        hydratedDutyFinderCharacterContentId = 0;
+        ResetLiveEntryMapping();
+        return MappingWait(content, reason);
     }
 
     private static bool IsContentsFinderQueueStateActive()
