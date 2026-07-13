@@ -72,52 +72,76 @@ public sealed class DadSchedulerRoutingRulesTests
     }
 
     [Fact]
-    public void MissingSecondClientKeepsPreArmDispatchAtZero()
+    public void WCanScheduleResetAndRelogWhileXIsMissing()
     {
         var slots = Slots();
-        var participants = new[] { Participant("worker-w", AccountW, true, "Venat Azem@Excalibur") };
-        var actions = new List<string>();
+        var now = new DateTime(2026, 7, 12, 12, 0, 0, DateTimeKind.Utc);
+        slots[0].ClientConnected = true;
+        slots[0].TakeoverPhase = DadWakeTakeoverPhase.Prepared;
+        slots[1].ClientConnected = false;
 
-        var allResolved = DadSchedulerRoutingRules.TryResolveAllTakeoverClients(
-            slots,
-            participants,
-            static _ => true,
-            out var routes);
-        if (allResolved)
-        {
-            actions.AddRange(routes.Select(static route => $"Prepare:{route.SlotId}"));
-            actions.Add("AcquireSuppression");
-            actions.Add("Reset");
-            actions.Add("Relog");
-        }
+        var wReset = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[0], now);
+        var xMissing = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[1], now);
 
-        Assert.False(allResolved);
-        Assert.Empty(routes);
-        Assert.Empty(actions);
+        Assert.True(wReset.CanDispatch);
+        Assert.Equal(DadWakeCommitKind.Reset, wReset.CommitKind);
+        Assert.Equal(now.AddSeconds(5), wReset.ExecutionTimeUtc);
+        Assert.False(xMissing.CanDispatch);
+
+        slots[0].ResetExecutionUtc = wReset.ExecutionTimeUtc;
+        slots[0].TakeoverPhase = DadWakeTakeoverPhase.ResetVerified;
+        var wRelog = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[0], now.AddSeconds(10));
+
+        Assert.True(wRelog.CanDispatch);
+        Assert.Equal(DadWakeCommitKind.Relog, wRelog.CommitKind);
+        Assert.Equal(now.AddSeconds(15), wRelog.ExecutionTimeUtc);
     }
 
     [Fact]
-    public void BothConnectedClientsReceiveOnePreArmDispatchEach()
+    public void XCanCatchUpWithItsOwnExecutionBoundariesAfterConnecting()
     {
         var slots = Slots();
-        var participants = new[]
-        {
-            Participant("worker-w", AccountW, true, "Venat Azem@Excalibur"),
-            Participant("worker-x", AccountX, false, string.Empty),
-        };
+        var now = new DateTime(2026, 7, 12, 12, 0, 30, DateTimeKind.Utc);
+        slots[0].ClientConnected = true;
+        slots[0].TakeoverPhase = DadWakeTakeoverPhase.WaitingForCharacter;
+        slots[0].ResetExecutionUtc = now.AddSeconds(-20);
+        slots[0].RelogExecutionUtc = now.AddSeconds(-10);
 
-        var allResolved = DadSchedulerRoutingRules.TryResolveAllTakeoverClients(
-            slots,
-            participants,
-            static _ => true,
-            out var routes);
+        slots[1].ClientConnected = true;
+        slots[1].TakeoverPhase = DadWakeTakeoverPhase.AwaitingArHook;
+        var xPrepare = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[1], now);
+        Assert.Equal(DadWakeTakeoverMessageKind.Prepare, xPrepare.MessageKind);
+        Assert.Equal(DadWakeCommitKind.None, xPrepare.CommitKind);
 
-        Assert.True(allResolved);
-        Assert.Equal(["Slot1", "Slot2"], routes.Select(static route => route.SlotId).ToArray());
-        Assert.Equal(2, routes.Select(static route => route.Participant.WorkerSessionId.Value).Distinct().Count());
-        var prepareDispatches = routes.Select(static route => $"Prepare:{route.SlotId}").ToList();
-        Assert.Equal(1, prepareDispatches.Count(static action => action == "Prepare:Slot1"));
-        Assert.Equal(1, prepareDispatches.Count(static action => action == "Prepare:Slot2"));
+        slots[1].TakeoverPhase = DadWakeTakeoverPhase.Prepared;
+        var xReset = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[1], now);
+        slots[1].ResetExecutionUtc = xReset.ExecutionTimeUtc;
+
+        Assert.Equal(now.AddSeconds(5), slots[1].ResetExecutionUtc);
+        Assert.NotEqual(slots[0].ResetExecutionUtc, slots[1].ResetExecutionUtc);
+        Assert.NotEqual(slots[0].RelogExecutionUtc, slots[1].ResetExecutionUtc);
+    }
+
+    [Fact]
+    public void FrozenWorkerSessionCannotBeSubstitutedByAnotherSessionOnTheSameAccount()
+    {
+        var frozen = Participant("worker-x", AccountX, false, string.Empty);
+        var substitute = Participant("worker-x-new", AccountX, true, "Hard'carry Gray'parse@Excalibur");
+
+        Assert.Null(DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+            new DadAccountKey(AccountX),
+            new DadWorkerSessionId("worker-x"),
+            [substitute],
+            static _ => true));
+
+        var reconnected = DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+            new DadAccountKey(AccountX),
+            new DadWorkerSessionId("worker-x"),
+            [frozen, substitute],
+            worker => worker.Value == "worker-x");
+
+        Assert.Same(frozen, reconnected);
+        Assert.False(reconnected!.IsAvailable);
     }
 
     [Fact]
@@ -143,6 +167,8 @@ public sealed class DadSchedulerRoutingRulesTests
             ClientConnected = true,
             IsOnline = false,
             MatchedWorkerSessionId = new DadWorkerSessionId("worker-x"),
+            ResetExecutionUtc = new DateTime(2026, 7, 12, 12, 0, 5, DateTimeKind.Utc),
+            RelogExecutionUtc = new DateTime(2026, 7, 12, 12, 0, 15, DateTimeKind.Utc),
         };
 
         var clone = slot.Clone();
@@ -150,6 +176,8 @@ public sealed class DadSchedulerRoutingRulesTests
         Assert.True(clone.ClientConnected);
         Assert.False(clone.IsOnline);
         Assert.Equal("worker-x", clone.MatchedWorkerSessionId.Value);
+        Assert.Equal(slot.ResetExecutionUtc, clone.ResetExecutionUtc);
+        Assert.Equal(slot.RelogExecutionUtc, clone.RelogExecutionUtc);
     }
 
     private static List<DadSchedulerSlotState> Slots()

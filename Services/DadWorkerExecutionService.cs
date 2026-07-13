@@ -10,6 +10,7 @@ public sealed class DadWorkerExecutionService
     private readonly DadQueueExecutionService queueExecutionService;
     private readonly DadPresenceService presenceService;
     private readonly ICondition condition;
+    private readonly IPluginLog log;
     private readonly ConcurrentQueue<DadWorkerExecutionCommand> pendingCommands = new();
     private readonly object stateLock = new();
 
@@ -17,15 +18,19 @@ public sealed class DadWorkerExecutionService
     private DadWorkerExecutionStatus status = new();
     private DateTime startedAtUtc = DateTime.MinValue;
     private bool enteredDuty;
+    private DadLocalDutyResolvedContent? participantQueueContent;
+    private string lastParticipantQueueTransition = string.Empty;
 
     public DadWorkerExecutionService(
         DadQueueExecutionService queueExecutionService,
         DadPresenceService presenceService,
-        ICondition condition)
+        ICondition condition,
+        IPluginLog log)
     {
         this.queueExecutionService = queueExecutionService;
         this.presenceService = presenceService;
         this.condition = condition;
+        this.log = log;
         status.WorkerSessionId = presenceService.WorkerSessionId;
     }
 
@@ -84,6 +89,8 @@ public sealed class DadWorkerExecutionService
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
                     status.ModuleId == DadModuleId.Mogtome)
                     queueExecutionService.CancelActiveExecutor(cancel.Reason);
+                else if (participantQueueContent != null)
+                    queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
 
                 Finish(DadWorkerExecutionState.Cancelled, false, cancel.Reason, cancel.Reason);
                 return new DadWorkerExecutionAck
@@ -141,8 +148,12 @@ public sealed class DadWorkerExecutionService
 
             var runId = activeCommand?.RunId ?? status.RunId;
             var commandId = activeCommand?.CommandId ?? status.CommandId;
+            if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
+                queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
             queueExecutionService.CancelAll(reason);
             activeCommand = null;
+            participantQueueContent = null;
+            lastParticipantQueueTransition = string.Empty;
             status = new DadWorkerExecutionStatus
             {
                 CommandId = commandId,
@@ -225,6 +236,8 @@ public sealed class DadWorkerExecutionService
         activeCommand = command;
         startedAtUtc = DateTime.UtcNow;
         enteredDuty = condition[ConditionFlag.BoundByDuty];
+        participantQueueContent = null;
+        lastParticipantQueueTransition = string.Empty;
         var module = ResolveModule(command);
         if (module == null)
         {
@@ -266,6 +279,27 @@ public sealed class DadWorkerExecutionService
                 queueExecutionService.SetWorkerRole(command.Role);
                 ApplyLeaderResult(queueExecutionService.ExecuteModule(command.Plan, module, command.Participants));
                 return;
+            }
+
+            if (DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(command.Plan, module))
+            {
+                if (!queueExecutionService.TryResolveParticipantQueueContent(
+                        command.Plan,
+                        module,
+                        out participantQueueContent,
+                        out var participantQueueBlocker))
+                {
+                    Finish(
+                        DadWorkerExecutionState.Failed,
+                        false,
+                        $"Participant queue follow-through could not resolve {module.DisplayName}: {participantQueueBlocker}",
+                        participantQueueBlocker);
+                    return;
+                }
+
+                // A participant may already be bound by an unrelated duty when the command arrives.
+                // Running is granted only after the observe-only pulse proves the requested duty.
+                enteredDuty = false;
             }
 
             status.State = enteredDuty ? DadWorkerExecutionState.Running : DadWorkerExecutionState.WaitingForQueue;
@@ -320,6 +354,45 @@ public sealed class DadWorkerExecutionService
 
     private void UpdateParticipant()
     {
+        if (activeCommand != null && participantQueueContent != null)
+        {
+            if (enteredDuty && !condition[ConditionFlag.BoundByDuty])
+            {
+                CompleteParticipant();
+                return;
+            }
+
+            var pulse = queueExecutionService.ObserveParticipantQueue(activeCommand.RunId, participantQueueContent);
+            LogParticipantQueueTransition(pulse);
+            if (!pulse.Success)
+            {
+                Finish(
+                    pulse.Status == DadRunStatus.TimedOut
+                        ? DadWorkerExecutionState.TimedOut
+                        : DadWorkerExecutionState.Failed,
+                    false,
+                    pulse.Summary,
+                    string.IsNullOrWhiteSpace(pulse.FailureReason) ? pulse.BlockedReason : pulse.FailureReason);
+                return;
+            }
+
+            if (pulse.Kind == DadLocalDutyQueuePulseKind.EnteredDuty &&
+                pulse.Phase == DadRunPhase.InDutyOrTask)
+            {
+                enteredDuty = true;
+                status.EnteredDuty = true;
+                status.State = DadWorkerExecutionState.Running;
+            }
+            else
+            {
+                status.State = DadWorkerExecutionState.WaitingForQueue;
+            }
+
+            status.Summary = pulse.Summary;
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
         var inDuty = condition[ConditionFlag.BoundByDuty];
         if (inDuty)
         {
@@ -333,29 +406,7 @@ public sealed class DadWorkerExecutionService
 
         if (enteredDuty)
         {
-            var step = new DadRunStepResultDto
-            {
-                RunId = status.RunId,
-                ModuleId = status.ModuleId,
-                StepName = status.ModuleId.ToString(),
-                ParticipantState = DadParticipantState.Completed,
-                Success = true,
-                Summary = $"Participant completed {status.ModuleId} and exited duty.",
-                ExecutorStatus = new DadModuleExecutionStatusDto
-                {
-                    RunId = status.RunId,
-                    ModuleId = status.ModuleId,
-                    DisplayName = status.ModuleId.ToString(),
-                    Phase = DadRunPhase.Finalizing,
-                    Status = DadRunStatus.Completed,
-                    CanStart = true,
-                    CompletedAtUtc = DateTime.UtcNow,
-                    UpdatedAtUtc = DateTime.UtcNow,
-                    Summary = $"Participant completed {status.ModuleId} and exited duty.",
-                },
-            };
-            status.StepResult = step;
-            Finish(DadWorkerExecutionState.Completed, true, step.Summary, string.Empty);
+            CompleteParticipant();
             return;
         }
 
@@ -363,8 +414,67 @@ public sealed class DadWorkerExecutionService
         status.UpdatedAtUtc = DateTime.UtcNow;
     }
 
+    private void CompleteParticipant()
+    {
+        var step = new DadRunStepResultDto
+        {
+            RunId = status.RunId,
+            ModuleId = status.ModuleId,
+            StepName = status.ModuleId.ToString(),
+            ParticipantState = DadParticipantState.Completed,
+            Success = true,
+            Summary = $"Participant completed {status.ModuleId} and exited duty.",
+            ExecutorStatus = new DadModuleExecutionStatusDto
+            {
+                RunId = status.RunId,
+                ModuleId = status.ModuleId,
+                DisplayName = status.ModuleId.ToString(),
+                Phase = DadRunPhase.Finalizing,
+                Status = DadRunStatus.Completed,
+                CanStart = true,
+                CompletedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = $"Participant completed {status.ModuleId} and exited duty.",
+            },
+        };
+        status.StepResult = step;
+        Finish(DadWorkerExecutionState.Completed, true, step.Summary, string.Empty);
+    }
+
+    private void LogParticipantQueueTransition(DadLocalDutyQueuePulse pulse)
+    {
+        if (activeCommand == null)
+            return;
+
+        var local = activeCommand.Participants.SingleOrDefault(static participant => participant.IsLocalClient);
+        if (local == null)
+            return;
+
+        var transition = $"{pulse.Kind}|{pulse.Phase}|{pulse.Summary}";
+        if (string.Equals(lastParticipantQueueTransition, transition, StringComparison.Ordinal))
+            return;
+
+        lastParticipantQueueTransition = transition;
+        log.Information(
+            "[dad] Participant queue transition request={RequestId} module={ModuleId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} worker={WorkerSessionId} pulse={PulseKind} phase={Phase} summary={Summary}.",
+            activeCommand.RunId,
+            status.ModuleId,
+            local.AssignedSlotId,
+            local.ManagedAccountKey,
+            local.ActiveCharacterKey,
+            local.Character.ContentId,
+            local.WorkerSessionId,
+            pulse.Kind,
+            pulse.Phase,
+            pulse.Summary);
+    }
+
     private void Finish(DadWorkerExecutionState state, bool success, string summary, string failureReason)
     {
+        if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
+            queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
+        participantQueueContent = null;
+        lastParticipantQueueTransition = string.Empty;
         status.State = state;
         status.IsTerminal = true;
         status.Success = success;

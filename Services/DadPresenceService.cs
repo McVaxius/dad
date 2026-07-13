@@ -6,34 +6,33 @@ namespace dad.Services;
 
 public sealed class DadPresenceService
 {
-    private static readonly TimeSpan PartyJoinCommandCooldown = TimeSpan.FromSeconds(5);
-
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
     private readonly DadVermaxionIpcService vermaxion;
     private readonly DadAutoRetainerIpcService autoRetainer;
+    private readonly InfoProxyPartyInviteGateway partyInviteGateway;
     private readonly IPluginLog log;
+    private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
     private string currentRunId = string.Empty;
     private DadWorkerSessionId currentAuthorityWorkerSessionId = new(string.Empty);
     private DadAuthorityMode currentAuthorityMode = DadAuthorityMode.ServerDad;
     private DadAccountKey requiredAccountKey = new(string.Empty);
     private DadCharacterKey requiredCharacterKey = new(string.Empty);
     private string assignedSlotId = string.Empty;
-    private DateTime lastPartyJoinCommandUtc = DateTime.MinValue;
-    private string lastPartyJoinRunId = string.Empty;
-    private string lastPartyJoinFailure = string.Empty;
 
-    public DadPresenceService(
+    internal DadPresenceService(
         Configuration configuration,
         ConfigManager configManager,
         DadVermaxionIpcService vermaxion,
         DadAutoRetainerIpcService autoRetainer,
+        InfoProxyPartyInviteGateway partyInviteGateway,
         IPluginLog log)
     {
         this.configuration = configuration;
         this.configManager = configManager;
         this.vermaxion = vermaxion;
         this.autoRetainer = autoRetainer;
+        this.partyInviteGateway = partyInviteGateway;
         this.log = log;
         ClientInstanceId = $"dad-{Environment.ProcessId:X}-{Guid.NewGuid():N}"[..16];
         WorkerSessionId = ClientInstanceId;
@@ -55,6 +54,9 @@ public sealed class DadPresenceService
     public DadWorkerSessionId WorkerSessionId { get; }
 
     public DadParticipantSnapshot CurrentParticipant { get; private set; }
+
+    public void ConfigureParticipantResolver(Func<DadWorkerSessionId, DadParticipantSnapshot?> resolver)
+        => participantResolver = resolver ?? (static _ => null);
 
     public void Update(DadCharacterPool pool, string endpoint = "")
     {
@@ -156,6 +158,7 @@ public sealed class DadPresenceService
 
     public DadParticipantReadyDto HandleWakeRequest(DadWakeRequestDto request)
     {
+        partyInviteGateway.BeginParticipantRun(request.RunId);
         currentRunId = request.RunId;
         currentAuthorityWorkerSessionId = request.AuthorityWorkerSessionId;
         currentAuthorityMode = request.AuthorityMode;
@@ -255,7 +258,7 @@ public sealed class DadPresenceService
         var summary = instruction.Summary;
         if (instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty)
         {
-            var joinResult = TrySendPartyJoinCommand(instruction.RunId);
+            var joinResult = TryArmNativePartyInvitationAcceptance(instruction.RunId);
             if (!joinResult.Success)
             {
                 CurrentParticipant.State = DadParticipantState.AssemblyPending;
@@ -538,49 +541,49 @@ public sealed class DadPresenceService
         log.Warning("[dad] Presence warning for {WorkerSessionId}: {Warning}", WorkerSessionId, warning);
     }
 
-    private (bool Success, string Summary) TrySendPartyJoinCommand(string runId)
+    private (bool Success, string Summary) TryArmNativePartyInvitationAcceptance(string runId)
     {
-        if (string.Equals(lastPartyJoinRunId, runId, StringComparison.Ordinal) &&
-            DateTime.UtcNow - lastPartyJoinCommandUtc < PartyJoinCommandCooldown)
+        var inviter = participantResolver(currentAuthorityWorkerSessionId);
+        if (inviter == null)
         {
-            if (!string.IsNullOrWhiteSpace(lastPartyJoinFailure))
-                return (false, lastPartyJoinFailure);
-
-            return (true, "Party join already requested; waiting for PartyList confirmation.");
+            return (false,
+                $"Waiting for frozen inviter worker '{currentAuthorityWorkerSessionId}' before accepting a native party invitation.");
         }
 
-        const string command = "/pcmd join";
-        try
+        if (inviter.Character.ContentId == 0 ||
+            string.IsNullOrEmpty(inviter.Character.CharacterName) ||
+            inviter.Character.WorldId == 0 ||
+            inviter.Character.WorldId > ushort.MaxValue)
         {
-            lastPartyJoinRunId = runId;
-            lastPartyJoinCommandUtc = DateTime.UtcNow;
-            if (!Plugin.CommandManager.ProcessCommand(command))
-            {
-                lastPartyJoinFailure = "Command manager rejected /pcmd join.";
-                return (false, "Command manager rejected /pcmd join.");
-            }
+            return (false,
+                $"Frozen inviter '{inviter.ActiveCharacterKey}' is missing its exact name, Content ID, or World ID.");
+        }
 
-            lastPartyJoinFailure = string.Empty;
-            return (true, "Sent /pcmd join; waiting for PartyList confirmation.");
-        }
-        catch (Exception ex)
+        var expected = new DadExpectedPartyInviter
         {
-            log.Warning(ex, "[dad] Party join command threw.");
-            lastPartyJoinFailure = $"Party join command threw: {ex.Message}";
-            return (false, lastPartyJoinFailure);
-        }
+            RunId = runId,
+            WorkerSessionId = currentAuthorityWorkerSessionId,
+            AccountKey = inviter.ManagedAccountKey,
+            CharacterKey = inviter.ActiveCharacterKey,
+            ContentId = inviter.Character.ContentId,
+            CharacterName = inviter.Character.CharacterName,
+            WorldId = (ushort)inviter.Character.WorldId,
+        };
+        if (!partyInviteGateway.TryArmAcceptance(expected, out var blocker))
+            return (false, blocker);
+
+        return (true,
+            $"Native party invitation acceptance armed for exact inviter {expected.CharacterKey}; waiting for fresh invitation and PartyList confirmation.");
     }
 
     private void ResetRunContext()
     {
+        partyInviteGateway.Reset();
         currentRunId = string.Empty;
         currentAuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
         currentAuthorityMode = configuration.LocalOnlyModeEnabled ? DadAuthorityMode.LocalOnly : DadAuthorityMode.ServerDad;
         requiredAccountKey = new DadAccountKey(string.Empty);
         requiredCharacterKey = new DadCharacterKey(string.Empty);
         assignedSlotId = string.Empty;
-        lastPartyJoinRunId = string.Empty;
-        lastPartyJoinCommandUtc = DateTime.MinValue;
-        lastPartyJoinFailure = string.Empty;
     }
 }

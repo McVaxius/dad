@@ -158,8 +158,10 @@ public sealed class DadSchedulerSlotState
     public DadWakeAcknowledgementState AcknowledgementState { get; set; }
     public DateTime? TakeoverRequestedUtc { get; set; }
     public DateTime? ResetIssuedUtc { get; set; }
+    public DateTime? ResetExecutionUtc { get; set; }
     public DateTime? TakeoverVerifiedUtc { get; set; }
     public DateTime? RelogIssuedUtc { get; set; }
+    public DateTime? RelogExecutionUtc { get; set; }
     public DateTime? ReadyUtc { get; set; }
     public bool PostArReady { get; set; }
     [JsonIgnore]
@@ -220,8 +222,10 @@ public sealed class DadSchedulerSlotState
             AcknowledgementState = AcknowledgementState,
             TakeoverRequestedUtc = TakeoverRequestedUtc,
             ResetIssuedUtc = ResetIssuedUtc,
+            ResetExecutionUtc = ResetExecutionUtc,
             TakeoverVerifiedUtc = TakeoverVerifiedUtc,
             RelogIssuedUtc = RelogIssuedUtc,
+            RelogExecutionUtc = RelogExecutionUtc,
             ReadyUtc = ReadyUtc,
             PostArReady = PostArReady,
             BasePostArReady = BasePostArReady,

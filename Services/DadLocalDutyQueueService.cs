@@ -82,6 +82,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private bool unrestrictedPartyPreviousValue;
     private bool dutySelectionCleared;
     private bool dutySelectionCallbackSent;
+    private string participantObserverRunId = string.Empty;
+    private bool participantDutyEntryEvidenceObserved;
 
     public DadLocalDutyQueueService(IPluginLog log)
     {
@@ -264,6 +266,82 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             return commonPulse;
 
         return PulseRegularDuty(content);
+    }
+
+    public DadLocalDutyQueuePulse ObserveParticipant(string runId, DadLocalDutyResolvedContent content)
+    {
+        if (!string.Equals(participantObserverRunId, runId, StringComparison.OrdinalIgnoreCase))
+        {
+            participantObserverRunId = runId;
+            participantDutyEntryEvidenceObserved = false;
+            nextConfirmAttemptUtc = DateTime.MinValue;
+        }
+
+        // This is intentionally separate from BuildCommonQueuePulse/ResetForNewRun. Participant
+        // follow-through may observe truth and accept commence, but cannot restore/alter sync state,
+        // open Duty Finder, select a duty, or register a queue.
+        var isLoggedIn = Plugin.ClientState.IsLoggedIn;
+        var hasLocalPlayer = Plugin.ObjectTable.LocalPlayer != null;
+        var territoryType = Plugin.ClientState.TerritoryType;
+        var isQueued = IsQueued();
+        var isBoundByDuty = Plugin.Condition[ConditionFlag.BoundByDuty];
+        var isBetweenAreas = Plugin.Condition[ConditionFlag.BetweenAreas];
+        var isBetweenAreas51 = Plugin.Condition[ConditionFlag.BetweenAreas51];
+        var isRequestedTerritory = territoryType == content.TerritoryType;
+
+        if (isBoundByDuty && isRequestedTerritory)
+        {
+            participantDutyEntryEvidenceObserved = true;
+            return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Participant entered {content.LaneDisplayName} {content.DutyName}.");
+        }
+
+        if (IsDutyEntryTransition(
+                isBetweenAreas,
+                isBetweenAreas51,
+                isRequestedTerritory,
+                isQueued || participantDutyEntryEvidenceObserved))
+        {
+            participantDutyEntryEvidenceObserved = true;
+            return Active(content, DadLocalDutyQueuePulseKind.DutyEntryTransition, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Participant observed duty-entry transition for {content.DutyName}.");
+        }
+
+        if (isBoundByDuty)
+            return Failed(content, $"Participant is bound by another duty in territory {territoryType}; expected {content.DutyName}.");
+
+        if (TryAcceptContentsFinderConfirm(content))
+        {
+            participantDutyEntryEvidenceObserved = true;
+            return Active(content, DadLocalDutyQueuePulseKind.AcceptedQueueConfirm, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Participant accepted Duty Finder commence popup for {content.DutyName}.");
+        }
+
+        if (isQueued)
+        {
+            participantDutyEntryEvidenceObserved = true;
+            return Active(content, DadLocalDutyQueuePulseKind.WaitingForQueue, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Participant observes active queue for {content.DutyName}; waiting for commence or duty entry.");
+        }
+
+        if ((!isLoggedIn || !hasLocalPlayer) && participantDutyEntryEvidenceObserved)
+            return Active(content, DadLocalDutyQueuePulseKind.DutyEntryTransition, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Participant entry transition for {content.DutyName}; waiting for local player truth.");
+
+        if (!isLoggedIn || !hasLocalPlayer)
+            return Failed(content, $"Participant queue observer requires a logged-in local player for {content.DutyName}.");
+
+        return Active(
+            content,
+            DadLocalDutyQueuePulseKind.Waiting,
+            DadRunPhase.WaitingForQueuePop,
+            DadParticipantState.QueuePending,
+            $"Participant observe-only wait for {content.DutyName}; queue leader owns Duty Finder registration.");
+    }
+
+    public void ResetParticipantObserver(string runId)
+    {
+        if (!string.Equals(participantObserverRunId, runId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        participantObserverRunId = string.Empty;
+        participantDutyEntryEvidenceObserved = false;
+        nextConfirmAttemptUtc = DateTime.MinValue;
     }
 
     public DadLocalDutyQueuePulse Cancel(string runId, string reason)

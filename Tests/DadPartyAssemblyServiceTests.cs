@@ -104,8 +104,24 @@ public sealed class DadPartyAssemblyServiceTests
 
         Assert.True(complete);
         Assert.Equal(string.Empty, completeBlocker);
+        Assert.False(DadPartyAssemblyService.ShouldDispatchJoinInstruction(
+            participants[1],
+            [PartyMember("Leader@Alpha", 100), PartyMember("Member@Alpha", 200)]));
         Assert.False(missing);
         Assert.Contains("1/2", missingBlocker, StringComparison.OrdinalIgnoreCase);
+        Assert.True(DadPartyAssemblyService.ShouldDispatchJoinInstruction(
+            participants[1],
+            [PartyMember("Leader@Alpha", 100)]));
+    }
+
+    [Fact]
+    public void FrozenContentIdDoesNotFallBackToMatchingName()
+    {
+        var participant = Participant("Hard'carry Gray'parse@Excalibur", 200, isLocal: false, isAuthority: false, slot: "Slot2");
+        var wrongIdentity = PartyMember("Hard'carry Gray'parse@Excalibur", 999);
+
+        Assert.False(DadPartyAssemblyService.IsParticipantInParty(participant, [wrongIdentity]));
+        Assert.True(DadPartyAssemblyService.ShouldDispatchJoinInstruction(participant, [wrongIdentity]));
     }
 
     private static DadRunPlan Plan(DadQueueAuthority queueAuthority)

@@ -109,9 +109,16 @@ public sealed class DadPartyAssemblyService
     {
         var characterKey = participant.ActiveCharacterKey.Value;
         var contentId = participant.Character.ContentId;
+        if (contentId != 0)
+            return partyMembers.Any(member => member.ContentId == contentId);
+
         return partyMembers.Any(member =>
-            (contentId != 0 && member.ContentId == contentId) ||
-            (!member.CharacterKey.IsEmpty &&
-             string.Equals(member.CharacterKey.Value, characterKey, StringComparison.OrdinalIgnoreCase)));
+            !member.CharacterKey.IsEmpty &&
+            string.Equals(member.CharacterKey.Value, characterKey, StringComparison.OrdinalIgnoreCase));
     }
+
+    public static bool ShouldDispatchJoinInstruction(
+        DadParticipantSnapshot participant,
+        IReadOnlyList<DadPartyMemberSnapshot> leaderPartyMembers)
+        => !IsParticipantInParty(participant, leaderPartyMembers);
 }

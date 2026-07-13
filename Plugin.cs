@@ -43,6 +43,7 @@ public sealed class Plugin : IDalamudPlugin
     public ConfigManager ConfigManager { get; }
     public DadExternalPluginCapabilityService ExternalPluginCapabilityService { get; }
     public DadXadbClient XadbClient { get; }
+    internal InfoProxyPartyInviteGateway PartyInviteGateway { get; }
     public DadPresenceService PresenceService { get; }
     public DadVermaxionIpcService VermaxionIpcService { get; }
     public DadAutoRetainerIpcService AutoRetainerIpcService { get; }
@@ -143,7 +144,14 @@ public sealed class Plugin : IDalamudPlugin
         VermaxionIpcService = new DadVermaxionIpcService(PluginInterface, Log);
         AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
         LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
-        PresenceService = new DadPresenceService(Configuration, ConfigManager, VermaxionIpcService, AutoRetainerIpcService, Log);
+        PartyInviteGateway = new InfoProxyPartyInviteGateway(Framework, PlayerState, PartyList, Log);
+        PresenceService = new DadPresenceService(
+            Configuration,
+            ConfigManager,
+            VermaxionIpcService,
+            AutoRetainerIpcService,
+            PartyInviteGateway,
+            Log);
         WakeTakeoverService = new DadWakeTakeoverService(
             new DadWakeTakeoverTarget(
                 Configuration,
@@ -159,6 +167,13 @@ public sealed class Plugin : IDalamudPlugin
         AutoRetainerIpcService.CharacterPostprocessReady += WakeTakeoverService.OnCharacterPostprocessReady;
         ClaimService = new DadClaimService();
         TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, WakeTakeoverService, Log);
+        PresenceService.ConfigureParticipantResolver(workerSessionId =>
+            TransportService.CurrentTransport.KnownParticipants
+                .SingleOrDefault(participant => string.Equals(
+                    participant.WorkerSessionId.Value,
+                    workerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase))
+                ?.Clone());
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
@@ -181,7 +196,7 @@ public sealed class Plugin : IDalamudPlugin
             NpcDutyQueueService,
             DutySupportAdsService,
             CombatRotationService);
-        WorkerExecutionService = new DadWorkerExecutionService(QueueExecutionService, PresenceService, Condition);
+        WorkerExecutionService = new DadWorkerExecutionService(QueueExecutionService, PresenceService, Condition, Log);
         SchedulerService = new DadSchedulerService(
             Configuration,
             ConfigManager,
@@ -201,6 +216,7 @@ public sealed class Plugin : IDalamudPlugin
             TransportService,
             ClaimService,
             PartyAssemblyService,
+            PartyInviteGateway,
             QueueExecutionService,
             WorkerExecutionService,
             PlannerService,
@@ -286,6 +302,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         backgroundCancellation.Cancel();
         backgroundTasks.Dispose();
+        PartyInviteGateway.Reset();
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
@@ -3878,6 +3895,7 @@ public sealed class Plugin : IDalamudPlugin
         RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
         RunFrameworkStep("VermaxionReservation", VermaxionIpcService.Update);
         RunFrameworkStep("Presence", () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint));
+        RunFrameworkStep("PartyInviteAcceptance", PartyInviteGateway.UpdateAcceptance);
         RunFrameworkStep("WakeTakeover", () =>
         {
             if (!Configuration.RunAsServerDad && !TransportService.CurrentTransport.AuthorityRoutable)

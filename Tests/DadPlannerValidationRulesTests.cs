@@ -196,6 +196,9 @@ public sealed class DadPlannerValidationRulesTests
         Assert.Equal(
             DadStrictPlannerRevalidationDisposition.ReadyToStart,
             DadPlannerValidationRules.EvaluateStrictScheduledRun(true, ready).Disposition);
+        Assert.Equal(
+            DadStrictPlannerRevalidationDisposition.WaitForRuntimeReadiness,
+            DadPlannerValidationRules.EvaluateStrictScheduledRun(false, ready).Disposition);
         Assert.True(tracker.TryClaimStart());
         Assert.False(tracker.TryClaimStart());
     }

@@ -4,6 +4,7 @@ namespace dad.Services;
 
 public sealed class DadQueueExecutionService
 {
+    private readonly DadLocalDutyQueueService localDutyQueueService;
     private readonly DadLocalDutyExecutor localDutyExecutor;
     private readonly DadPremadeDutyExecutor premadeDutyExecutor;
     private readonly DadMsqExecutor msqExecutor;
@@ -29,6 +30,7 @@ public sealed class DadQueueExecutionService
         DadDutySupportAdsService dutySupportAdsService,
         DadCombatRotationService combatRotationService)
     {
+        this.localDutyQueueService = localDutyQueueService;
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
         premadeDutyExecutor = new DadPremadeDutyExecutor(localDutyQueueService, combatRotationService);
         msqExecutor = new DadMsqExecutor(
@@ -142,6 +144,46 @@ public sealed class DadQueueExecutionService
 
     public DadModuleExecutionStatusDto GetActiveExecutorStatus()
         => activeExecutor?.GetStatus() ?? new DadModuleExecutionStatusDto();
+
+    public bool TryResolveParticipantQueueContent(
+        DadRunPlan plan,
+        DadPlannedModuleExecution module,
+        out DadLocalDutyResolvedContent? content,
+        out string blocker)
+    {
+        content = null;
+        blocker = string.Empty;
+        if (!DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(plan, module))
+        {
+            blocker = $"{module.ModuleId} is not a multiplayer regular Duty Finder participant lane.";
+            return false;
+        }
+
+        content = module.ModuleId switch
+        {
+            DadModuleId.PremadeDuty => localDutyQueueService.Resolve(plan.Request.PremadeDuty, out blocker),
+            DadModuleId.Duty when plan.Request.Dungeon?.QueueViaLanParty == true
+                => localDutyQueueService.ResolvePremade(plan.Request.Dungeon, out blocker),
+            DadModuleId.CustomDuty when plan.Request.CustomDuty != null
+                => localDutyQueueService.Resolve(
+                    DadEffectivePlanFactory.BuildCustomDutyPlan(plan, module).Plan.Request.PremadeDuty,
+                    out blocker),
+            DadModuleId.Commendation when plan.Request.Commendation != null
+                => localDutyQueueService.Resolve(
+                    DadEffectivePlanFactory.BuildCommendationPlan(plan, module).Plan.Request.PremadeDuty,
+                    out blocker),
+            _ => null,
+        };
+        return content != null && string.IsNullOrWhiteSpace(blocker);
+    }
+
+    public DadLocalDutyQueuePulse ObserveParticipantQueue(
+        string runId,
+        DadLocalDutyResolvedContent content)
+        => localDutyQueueService.ObserveParticipant(runId, content);
+
+    public void ResetParticipantQueueObserver(string runId)
+        => localDutyQueueService.ResetParticipantObserver(runId);
 
     public DadModuleExecutionStatusDto PreviewModuleStart(DadRunPlan plan)
     {
