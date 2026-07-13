@@ -9,7 +9,7 @@ internal sealed class DadBackgroundTaskObserver : IDisposable
     private readonly ConcurrentDictionary<Task, string> activeTasks = new();
     private readonly IPluginLog log;
     private readonly string componentName;
-    private bool disposed;
+    private int disposed;
 
     public DadBackgroundTaskObserver(IPluginLog log, string componentName)
     {
@@ -48,7 +48,7 @@ internal sealed class DadBackgroundTaskObserver : IDisposable
 
     public void Dispose()
     {
-        disposed = true;
+        Volatile.Write(ref disposed, 1);
     }
 
     private void ObserveCompletedTask(Task task, string operationName)
@@ -67,16 +67,19 @@ internal sealed class DadBackgroundTaskObserver : IDisposable
                 .ToList();
             if (unexpected.Count == 0)
             {
-                if (!disposed)
+                if (Volatile.Read(ref disposed) == 0)
                     log.Debug("[dad] {Component} task '{Operation}' ended during cancellation.", componentName, operationName);
                 return;
             }
 
-            log.Debug(
-                new AggregateException(unexpected),
-                "[dad] {Component} task '{Operation}' ended with an error.",
-                componentName,
-                operationName);
+            if (Volatile.Read(ref disposed) == 0)
+            {
+                log.Debug(
+                    new AggregateException(unexpected),
+                    "[dad] {Component} task '{Operation}' ended with an error.",
+                    componentName,
+                    operationName);
+            }
         }
         finally
         {

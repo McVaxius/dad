@@ -448,11 +448,15 @@ public sealed class DadRosterCatalogService
         else
             catalogs.Add(BuildKnownRosterCatalog());
 
-        var runtimeCatalog = BuildRuntimeOverlayCatalog(pool);
+        // Rebuild the runtime overlay directly from the current structured heartbeat projection.
+        // The cached catalog supplies the existing XADB snapshot; this performs no peer/XADB pull.
+        var runtimeCatalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(pool.PeerTransport);
         if (runtimeCatalog.Characters.Count > 0 || runtimeCatalog.Accounts.Count > 0)
             catalogs.Add(runtimeCatalog);
 
-        return MergeCatalogs(catalogs, plan);
+        var merged = MergeCatalogs(catalogs, plan);
+        DadRosterTransportCatalogRuntime.ApplyCurrentRuntimeCoverage(merged, runtimeCatalog);
+        return merged;
     }
 
     public IReadOnlyList<DadRosterAccountOption> BuildPlannerAccountOptions(DadCharacterPool pool)
@@ -907,8 +911,7 @@ public sealed class DadRosterCatalogService
             var record = FindVisibilityRecord(character.CharacterKey, character.AccountKey, character.ContentId);
             var visibility = NormalizeVisibility(record?.Visibility ?? DadRosterVisibility.Active);
             var needsRosterUpdate = record is { NeedsRosterUpdate: true } || record?.Visibility == DadRosterVisibility.NeedsUpdate;
-            character.Visibility = visibility;
-            character.NeedsRosterUpdate = needsRosterUpdate;
+            DadRosterTransportCatalogRuntime.ApplyOperatorPlanningPolicy(character, visibility, needsRosterUpdate);
             character.IsStale = character.LastSnapshotUtc.HasValue && DateTime.UtcNow - character.LastSnapshotUtc.Value > staleAfter;
 
             var lastRefresh = configuration.RosterCatalog.RefreshHistory
@@ -917,12 +920,6 @@ public sealed class DadRosterCatalogService
                 .FirstOrDefault();
             character.LastRosterRefreshUtc = lastRefresh?.RefreshedAtUtc;
 
-            if (visibility == DadRosterVisibility.Hidden)
-                AddBlocker(character, "Hidden from normal roster planning.");
-            else if (visibility == DadRosterVisibility.Ignored)
-                AddBlocker(character, "Ignored by operator.");
-            if (needsRosterUpdate)
-                AddBlocker(character, "Needs roster refresh before normal planning.");
         }
 
         catalog.Visibility = configuration.RosterCatalog.Visibility.Select(static record => record.Clone()).ToList();
@@ -945,6 +942,7 @@ public sealed class DadRosterCatalogService
         }
 
         var merged = characters[existing];
+        DadRosterTransportCatalogRuntime.ReplaceSourceBlockersFromSupersedingRuntime(merged, incoming);
         if (incoming.Source < merged.Source || merged.Source == DadCharacterSource.XadbOnly)
             merged.Source = incoming.Source;
         if (!string.IsNullOrWhiteSpace(incoming.SourceClientInstanceId))

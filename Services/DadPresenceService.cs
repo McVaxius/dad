@@ -10,6 +10,8 @@ public sealed class DadPresenceService
 
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
+    private readonly DadVermaxionIpcService vermaxion;
+    private readonly DadAutoRetainerIpcService autoRetainer;
     private readonly IPluginLog log;
     private string currentRunId = string.Empty;
     private DadWorkerSessionId currentAuthorityWorkerSessionId = new(string.Empty);
@@ -21,10 +23,17 @@ public sealed class DadPresenceService
     private string lastPartyJoinRunId = string.Empty;
     private string lastPartyJoinFailure = string.Empty;
 
-    public DadPresenceService(Configuration configuration, ConfigManager configManager, IPluginLog log)
+    public DadPresenceService(
+        Configuration configuration,
+        ConfigManager configManager,
+        DadVermaxionIpcService vermaxion,
+        DadAutoRetainerIpcService autoRetainer,
+        IPluginLog log)
     {
         this.configuration = configuration;
         this.configManager = configManager;
+        this.vermaxion = vermaxion;
+        this.autoRetainer = autoRetainer;
         this.log = log;
         ClientInstanceId = $"dad-{Environment.ProcessId:X}-{Guid.NewGuid():N}"[..16];
         WorkerSessionId = ClientInstanceId;
@@ -36,6 +45,7 @@ public sealed class DadPresenceService
             ProcessId = Environment.ProcessId,
             WorkerRole = GetConfiguredWorkerRole(),
             State = DadParticipantState.Idle,
+            ManagedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId),
             StatusText = "Waiting for first local snapshot.",
         };
     }
@@ -48,12 +58,19 @@ public sealed class DadPresenceService
 
     public void Update(DadCharacterPool pool, string endpoint = "")
     {
-        var localCharacter = pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime)
-                             ?? pool.Characters.FirstOrDefault();
+        // Stored/XADB rows describe the roster, not the character currently loaded in this client.
+        // Falling back to one of them would keep a relogging client falsely available under the old identity.
+        var localCharacter = pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime);
         var availableCharacterKeys = BuildAvailableCharacterKeys(localCharacter);
-        var managedAccountKey = new DadAccountKey(configManager.GetCurrentAccountKey());
+        var managedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
         var managedAccountAlias = configManager.GetCurrentAccountAlias();
-        var postArReady = EvaluatePostArReady(localCharacter);
+        var vermaxionStatus = vermaxion.Inspect();
+        var autoRetainerStatus = autoRetainer.Inspect();
+        var worldReadyStable = EvaluateBasePostArReady(localCharacter);
+        var postArReady = DadExternalAutomationRules.ApplyPostArReadiness(
+                              worldReadyStable,
+                              vermaxionStatus) &&
+                          !autoRetainerStatus.IsSuppressed;
         var workerRole = GetConfiguredWorkerRole();
         var nextState = ResolveParticipantState(localCharacter, postArReady);
 
@@ -77,17 +94,25 @@ public sealed class DadPresenceService
             IsAvailable = localCharacter != null,
             IsEligibleForRun = CurrentParticipant.State is not DadParticipantState.Stale,
             PostArReady = postArReady,
+            WorldReadyStable = worldReadyStable,
+            AutoRetainerAvailable = autoRetainerStatus.Available,
+            AutoRetainerBusy = autoRetainerStatus.IsBusy,
+            AutoRetainerMultiModeEnabled = autoRetainerStatus.MultiModeEnabled,
+            ExternalAutomationHeld = vermaxionStatus.IsHeld,
+            ExternalAutomationActivity = vermaxionStatus.Activity,
+            ExternalAutomationState = vermaxionStatus.State,
+            ExternalAutomationSummary = vermaxionStatus.Summary,
             LastHeartbeatUtc = DateTime.UtcNow,
             ManagedAccountKey = managedAccountKey,
             ManagedAccountAlias = managedAccountAlias,
-            ActiveCharacterKey = new DadCharacterKey(localCharacter?.CharacterKey ?? "Unknown"),
+            ActiveCharacterKey = new DadCharacterKey(localCharacter?.CharacterKey ?? string.Empty),
             AvailableCharacterKeys = availableCharacterKeys,
             Character = localCharacter?.Clone() ?? new DadAcquiredCharacter
             {
                 Source = DadCharacterSource.LocalRuntime,
                 Freshness = DadSnapshotFreshness.Unknown,
                 Readiness = DadReadinessState.Unknown,
-                CharacterKey = "Unknown",
+                CharacterKey = string.Empty,
                 Blockers = ["No local character snapshot."],
             },
             AssignedSlotId = assignedSlotId,
@@ -96,7 +121,7 @@ public sealed class DadPresenceService
             LeaseRenewedUtc = CurrentParticipant.LeaseRenewedUtc,
             LeaseExpiresUtc = CurrentParticipant.LeaseExpiresUtc,
             Warnings = [..CurrentParticipant.Warnings],
-            StatusText = BuildStatusText(localCharacter, postArReady, nextState),
+            StatusText = BuildStatusText(localCharacter, postArReady, nextState, vermaxionStatus),
         };
     }
 
@@ -439,7 +464,7 @@ public sealed class DadPresenceService
     private DadWorkerRole GetConfiguredWorkerRole()
         => configuration.RunAsServerDad ? DadWorkerRole.ServerDad : DadWorkerRole.ClientDad;
 
-    private static bool EvaluatePostArReady(DadAcquiredCharacter? character)
+    private static bool EvaluateBasePostArReady(DadAcquiredCharacter? character)
     {
         if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null || character == null)
             return false;
@@ -455,10 +480,14 @@ public sealed class DadPresenceService
         return character.Readiness == DadReadinessState.Ready;
     }
 
-    private string BuildStatusText(DadAcquiredCharacter? character, bool postArReady, DadParticipantState state)
+    private string BuildStatusText(
+        DadAcquiredCharacter? character,
+        bool postArReady,
+        DadParticipantState state,
+        DadVermaxionReadinessStatus vermaxionStatus)
     {
         if (character == null)
-            return "No local character snapshot.";
+            return "Dad client connected; character offline or relogging.";
 
         if (!requiredAccountKey.IsEmpty &&
             !string.Equals(requiredAccountKey, configManager.GetCurrentAccountKey(), StringComparison.OrdinalIgnoreCase))
@@ -470,6 +499,17 @@ public sealed class DadPresenceService
             !string.Equals(requiredCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase))
         {
             return $"Waiting for required character {requiredCharacterKey}.";
+        }
+
+        if (vermaxionStatus.IsHeld)
+        {
+            var detail = string.Join(
+                "/",
+                new[] { vermaxionStatus.Activity, vermaxionStatus.State }
+                    .Where(static value => !string.IsNullOrWhiteSpace(value)));
+            return string.IsNullOrWhiteSpace(detail)
+                ? "Waiting for VERMAXION status."
+                : $"Waiting for VERMAXION — {detail}.";
         }
 
         if (!postArReady && !string.IsNullOrWhiteSpace(currentRunId))

@@ -22,6 +22,7 @@ public sealed class DadCoordinatorService
     private readonly IPluginLog log;
 
     private DadRunPlan? activePlan;
+    private DadRunSlotManifest? activeSlotManifest;
     private readonly List<DadParticipantSnapshot> activeParticipants = [];
     private readonly List<DadRunStepResultDto> stepResults = [];
     private DadRunStopProgress stopProgress = DadRunStopProgress.FromPolicy(null);
@@ -32,10 +33,10 @@ public sealed class DadCoordinatorService
     private bool loggedSingleWorkerSeed;
     private bool loggedSingleWorkerAssemblyConfirmed;
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
-    private string lastParticipantDiscoveryFilterSummary = string.Empty;
     private readonly Dictionary<string, DadWorkerExecutionStatus> workerStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> partyCommandsSentUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> partyCommandBlockers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> slotResolutionTransitions = new(StringComparer.OrdinalIgnoreCase);
     private DateTime nextWorkerStatusPollUtc = DateTime.MinValue;
 
     public DadCoordinatorService(
@@ -191,7 +192,25 @@ public sealed class DadCoordinatorService
         if (plan == null)
             return DadRunResult.Rejected(request, rejectionReason);
 
+        DadRunSlotManifest? acceptedManifest = null;
+        if (DadRunSlotManifestRules.RequiresFrozenRoster(plan))
+        {
+            if (!DadRunSlotManifestRules.TryCreate(plan, out var unboundManifest, out rejectionReason))
+                return DadRunResult.Rejected(request, rejectionReason);
+
+            var onlineParticipants = BuildOnlineParticipantSet(pool);
+            if (!DadRunSlotManifestRules.TryBindWorkerSessions(
+                    unboundManifest,
+                    onlineParticipants,
+                    out acceptedManifest,
+                    out rejectionReason))
+            {
+                return DadRunResult.Rejected(request, rejectionReason);
+            }
+        }
+
         activePlan = plan;
+        activeSlotManifest = acceptedManifest;
         activeParticipants.Clear();
         stepResults.Clear();
         stopProgress = DadRunStopProgress.FromPolicy(plan.Request.StopPolicy);
@@ -200,15 +219,16 @@ public sealed class DadCoordinatorService
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
         lastSingleWorkerAssemblyBlocker = string.Empty;
-        lastParticipantDiscoveryFilterSummary = string.Empty;
         nextParticipantPollUtc = DateTime.MinValue;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
         partyCommandsSentUtc.Clear();
         partyCommandBlockers.Clear();
+        slotResolutionTransitions.Clear();
         claimService.ReleaseClaims(plan.Request.RequestId);
         presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Dad Coordinator planned {plan.Modules.Count} Dad module(s).");
         SeedLocalParticipantIfNeeded(plan);
+        LogAcceptedSlotManifest(plan, acceptedManifest);
 
         CurrentResult = DadRunResult.FromPlan(plan, DadRunStatus.Queued, $"Queued Dad orchestration: {plan.Summary}");
         CurrentResult.Role = DadOrchestrationRole.Leader;
@@ -330,96 +350,109 @@ public sealed class DadCoordinatorService
         return FinalizeRun(DadRunStatus.Cancelled, "Dad run cancelled.", "Cancelled by operator.");
     }
 
+    public DadRunResult CancelAllLocal(string reason)
+    {
+        reason = string.IsNullOrWhiteSpace(reason) ? "Stopped by DAD Stop-all." : reason;
+        var runId = activePlan?.Request.RequestId ?? CurrentResult.RequestId;
+        workerExecutionService.CancelAll(reason);
+        queueExecutionService.CancelAll(reason);
+        claimService.ReleaseAllClaims();
+
+        if (activePlan == null || !IsBusy)
+        {
+            presenceService.ResetToIdle();
+            return CurrentResult.Clone();
+        }
+
+        var localAck = presenceService.HandleCancelRun(new DadCancelCommandDto
+        {
+            RunId = runId,
+            AuthorityWorkerSessionId = presenceService.WorkerSessionId,
+            CancellationState = DadRunCancellationState.Cancelling,
+            Reason = reason,
+        });
+        foreach (var participant in activeParticipants)
+        {
+            participant.CancellationState = DadRunCancellationState.Acknowledged;
+            participant.State = DadParticipantState.Cancelled;
+            participant.LeaseState = DadParticipantLeaseState.Released;
+            participant.ClaimState = DadClaimState.Released;
+        }
+
+        if (localAck.Snapshot != null)
+        {
+            var local = activeParticipants.FirstOrDefault(static participant => participant.IsLocalClient);
+            if (local != null)
+                CopyParticipant(local, localAck.Snapshot);
+        }
+
+        CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
+        return FinalizeRun(DadRunStatus.Cancelled, "Dad run stopped by Stop-all.", reason);
+    }
+
     private void UpdateParticipantDiscovery()
     {
-        if (activePlan == null)
+        if (activePlan == null || activeSlotManifest == null)
             return;
 
         var pool = GetPlanningPool(forcePeerRefresh: DateTime.UtcNow >= nextParticipantPollUtc);
-        var plannedCharacters = plannerService.ResolveParticipants(activePlan, pool, out var plannerBlocker);
         nextParticipantPollUtc = DateTime.UtcNow + ParticipantPollInterval;
 
         activeParticipants.Clear();
-        var orderedPlannedCharacters = plannedCharacters
-            .Take(activePlan.RequiredParticipantCount)
-            .ToList();
-        if (orderedPlannedCharacters.Count == 0 && activePlan.RequiredParticipantCount <= 1)
+        var runtimeParticipants = BuildCurrentManifestParticipantSet(pool);
+        var resolutionBlockers = new List<string>();
+        foreach (var slot in activeSlotManifest.Slots)
         {
-            activeParticipants.Add(BuildLocalAssignment(activePlan.LeaderCharacterKey, activePlan.Orchestration.AuthorityMode, slotId: DadPlannerSlotRules.LeaderSlotId));
+            var participant = DadRunSlotManifestRules.ResolveSlot(
+                slot,
+                runtimeParticipants,
+                activePlan.Orchestration.RequirePostArReady,
+                out var blocker);
+            participant.IsAuthority = participant.IsLocalClient && slot.IsLeader &&
+                                      (IsServerDad || activePlan.Orchestration.AuthorityMode == DadAuthorityMode.LocalOnly);
+            activeParticipants.Add(participant);
+            LogSlotResolutionTransition(activePlan, slot, participant, blocker);
+            if (!string.IsNullOrWhiteSpace(blocker))
+                resolutionBlockers.Add(blocker);
         }
 
-        for (var index = 0; index < orderedPlannedCharacters.Count; index++)
+        var blockers = new List<string>(resolutionBlockers);
+        foreach (var participant in activeParticipants.Where(participant =>
+                     !participant.IsLocalClient &&
+                     runtimeParticipants.Count(runtime => string.Equals(
+                         runtime.WorkerSessionId.Value,
+                         participant.WorkerSessionId.Value,
+                         StringComparison.OrdinalIgnoreCase)) == 1))
         {
-            var character = orderedPlannedCharacters[index];
-            var slotId = DadPlannerSlotRules.FormatSlotId(index + 1);
-            if (character.Source == DadCharacterSource.LocalRuntime)
-            {
-                activeParticipants.Add(BuildLocalAssignment(character.CharacterKey, activePlan.Orchestration.AuthorityMode, slotId));
-                continue;
-            }
-
-            var participant = ResolvePeerParticipant(character, pool.PeerTransport.KnownParticipants);
-            if (participant != null)
-            {
-                participant.AssignedSlotId = string.IsNullOrWhiteSpace(participant.AssignedSlotId)
-                    ? slotId
-                    : participant.AssignedSlotId;
-                activeParticipants.Add(participant);
-            }
-        }
-
-        CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
-
-        if (!string.IsNullOrWhiteSpace(plannerBlocker) || activeParticipants.Count < activePlan.RequiredParticipantCount)
-        {
-            var skipSummary = BuildRemoteParticipantSkipSummary(pool.PeerTransport.KnownParticipants);
-            LogParticipantDiscoveryFilter(skipSummary);
-
-            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
-            {
-                FinalizeRun(
-                    DadRunStatus.TimedOut,
-                    "Dad run timed out waiting for participant discovery.",
-                    string.IsNullOrWhiteSpace(plannerBlocker)
-                        ? $"Needed {activePlan.RequiredParticipantCount} participant(s), found {activeParticipants.Count}."
-                        : plannerBlocker);
-                return;
-            }
-
-            var waitSummary = string.IsNullOrWhiteSpace(plannerBlocker)
-                ? $"Waiting for {activePlan.RequiredParticipantCount} participant(s); found {activeParticipants.Count}."
-                : plannerBlocker;
-            CurrentResult.ActiveTaskStatus = string.IsNullOrWhiteSpace(skipSummary)
-                ? waitSummary
-                : $"{waitSummary} {skipSummary}";
-            CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
-            Publish();
-            return;
-        }
-
-        var blockers = new List<string>();
-        foreach (var participant in activeParticipants.Where(static participant => !participant.IsLocalClient))
-        {
+            var frozenSlot = activeSlotManifest.Slots.Single(slot =>
+                string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
             var ready = transportService.SendWakeRequest(participant, new DadWakeRequestDto
             {
                 RunId = activePlan.Request.RequestId,
                 AuthorityWorkerSessionId = presenceService.WorkerSessionId,
                 AuthorityMode = activePlan.Orchestration.AuthorityMode,
                 ModuleId = activePlan.CompositeModuleId,
-                RequiredAccountKey = participant.ManagedAccountKey,
-                RequiredCharacterKey = participant.ActiveCharacterKey,
+                RequiredAccountKey = frozenSlot.AccountKey,
+                RequiredCharacterKey = frozenSlot.CharacterKey,
                 AssignedSlotId = participant.AssignedSlotId,
                 RequirePostArReady = activePlan.Orchestration.RequirePostArReady,
             });
 
             if (ready == null)
             {
-                blockers.Add($"No assignment acknowledgement from {participant.ActiveCharacterKey}.");
+                blockers.Add($"{participant.AssignedSlotId} received no assignment acknowledgement from exact worker '{participant.WorkerSessionId}'.");
                 continue;
             }
 
-            CopyParticipant(participant, ready.Snapshot);
-            participant.AssignedSlotId = string.IsNullOrWhiteSpace(participant.AssignedSlotId) ? ready.Snapshot.AssignedSlotId : participant.AssignedSlotId;
+            var validatedSnapshot = DadRunSlotManifestRules.ResolveSlot(
+                frozenSlot,
+                [ready.Snapshot],
+                activePlan.Orchestration.RequirePostArReady,
+                out var identityBlocker);
+            CopyParticipant(participant, validatedSnapshot);
+            participant.AssignedSlotId = frozenSlot.SlotId;
+            if (!string.IsNullOrWhiteSpace(identityBlocker))
+                blockers.Add(identityBlocker);
             if (!ready.AcceptedAssignment || !string.IsNullOrWhiteSpace(ready.BlockerSummary))
                 blockers.Add(string.IsNullOrWhiteSpace(ready.BlockerSummary) ? ready.StatusText : ready.BlockerSummary);
         }
@@ -428,13 +461,14 @@ public sealed class DadCoordinatorService
             .Where(static participant => participant.State is DadParticipantState.WaitingForRequiredCharacter or DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale)
             .Select(static participant => string.IsNullOrWhiteSpace(participant.StatusText) ? participant.State.ToString() : participant.StatusText));
 
+        CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         if (blockers.Count > 0)
         {
             if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
             {
                 FinalizeRun(
                     DadRunStatus.TimedOut,
-                    "Dad run timed out waiting for worker readiness.",
+                    "Dad run timed out waiting for frozen slot readiness.",
                     string.Join(" | ", blockers.Distinct(StringComparer.OrdinalIgnoreCase)));
                 return;
             }
@@ -452,8 +486,29 @@ public sealed class DadCoordinatorService
 
     private void UpdateClaims()
     {
-        if (activePlan == null)
+        if (activePlan == null || activeSlotManifest == null)
             return;
+
+        var livenessBlockers = activeParticipants
+            .Where(static participant => participant.State is
+                DadParticipantState.WaitingForRequiredCharacter or
+                DadParticipantState.WaitingForPostArReady or
+                DadParticipantState.Stale)
+            .Select(static participant => string.IsNullOrWhiteSpace(participant.StatusText)
+                ? $"{participant.AssignedSlotId} exact frozen assignment is not ready."
+                : participant.StatusText)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (livenessBlockers.Count > 0)
+        {
+            CurrentResult.Phase = DadRunPhase.WaitingForReadiness;
+            CurrentResult.Status = DadRunStatus.WaitingForParticipants;
+            CurrentResult.ActiveTaskStatus = string.Join(" | ", livenessBlockers);
+            CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+            CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
+            Publish();
+            return;
+        }
 
         var blockers = new List<string>();
         foreach (var participant in activeParticipants)
@@ -464,14 +519,16 @@ public sealed class DadCoordinatorService
                 continue;
             }
 
+            var frozenSlot = activeSlotManifest.Slots.Single(slot =>
+                string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
             var request = new DadClaimRequestDto
             {
                 RunId = activePlan.Request.RequestId,
                 AuthorityWorkerSessionId = presenceService.WorkerSessionId,
                 ModuleId = activePlan.CompositeModuleId,
                 SlotId = participant.AssignedSlotId,
-                RequiredAccountKey = participant.ManagedAccountKey,
-                RequiredCharacterKey = participant.ActiveCharacterKey,
+                RequiredAccountKey = frozenSlot.AccountKey,
+                RequiredCharacterKey = frozenSlot.CharacterKey,
             };
             request.Lease = claimService.IssueLease(request, participant, activePlan.Orchestration.WaitPolicy.GetLeaseDuration());
 
@@ -518,6 +575,12 @@ public sealed class DadCoordinatorService
                 return;
             }
 
+            CurrentResult.Phase = activeParticipants.Any(static participant => participant.State is
+                DadParticipantState.WaitingForRequiredCharacter or
+                DadParticipantState.WaitingForPostArReady or
+                DadParticipantState.Stale)
+                ? DadRunPhase.WaitingForReadiness
+                : DadRunPhase.ClaimingSlots;
             CurrentResult.Status = DadRunStatus.WaitingForParticipants;
             CurrentResult.ActiveTaskStatus = string.Join(" | ", blockers.Distinct(StringComparer.OrdinalIgnoreCase));
             CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
@@ -899,13 +962,14 @@ public sealed class DadCoordinatorService
             var role = IsQueueLeaderParticipant(activePlan, participant)
                 ? DadWorkerExecutionRole.QueueLeader
                 : DadWorkerExecutionRole.Participant;
+            var participantView = BuildWorkerParticipantView(participant, role);
             var command = new DadWorkerExecutionCommand
             {
                 RunId = activePlan.Request.RequestId,
                 ModuleIndex = activeModuleIndex,
                 Role = role,
                 Plan = activePlan,
-                Participants = BuildWorkerParticipantView(participant, role),
+                Participants = participantView,
                 TimeoutSeconds = Math.Max(
                     60,
                     activePlan.Orchestration.WaitPolicy.ParticipantReadyTimeoutSeconds +
@@ -914,6 +978,14 @@ public sealed class DadCoordinatorService
             };
 
             participant.RunId = activePlan.Request.RequestId;
+            var targetRuntime = participant.Clone();
+            targetRuntime.IsLocalClient = true;
+            if (!DadWorkerCommandValidationRules.TryValidate(command, targetRuntime, out _, out var validationBlocker))
+            {
+                failures.Add($"{participant.AssignedSlotId} worker command rejected before dispatch: {validationBlocker}");
+                continue;
+            }
+
             DadWorkerExecutionAck? ack = participant.IsLocalClient
                 ? workerExecutionService.Accept(command)
                 : transportService.SendWorkerExecutionCommand(participant, command);
@@ -1199,16 +1271,10 @@ public sealed class DadCoordinatorService
             return true;
         }
 
-        var pool = RefreshStopPolicyPool(activePlan);
-        var nextPlan = plannerService.BuildPlan(activePlan.Request, pool, out var rejectionReason);
-        if (nextPlan == null)
-        {
-            FinalizeRun(
-                DadRunStatus.PartialFailure,
-                "Dad stop-policy repeat blocked before next run.",
-                rejectionReason);
-            return true;
-        }
+        // The accepted plan and slot manifest are the execution contract. A repeat
+        // refreshes liveness below, but never asks the generic planner to select a
+        // second party.
+        var nextPlan = activePlan;
 
         activePlan = nextPlan;
         activeParticipants.Clear();
@@ -1217,7 +1283,6 @@ public sealed class DadCoordinatorService
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
         lastSingleWorkerAssemblyBlocker = string.Empty;
-        lastParticipantDiscoveryFilterSummary = string.Empty;
         nextParticipantPollUtc = DateTime.MinValue;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
@@ -1397,6 +1462,105 @@ public sealed class DadCoordinatorService
         return characterIntelligenceService.CurrentPool;
     }
 
+    private IReadOnlyList<DadParticipantSnapshot> BuildOnlineParticipantSet(DadCharacterPool pool)
+    {
+        var participants = new List<DadParticipantSnapshot>
+        {
+            presenceService.BuildSnapshotCopy(),
+        };
+        participants.AddRange(pool.PeerTransport.KnownParticipants
+            .Where(participant =>
+                !participant.WorkerSessionId.IsEmpty &&
+                transportService.IsWorkerOnline(participant.WorkerSessionId))
+            .Select(static participant => participant.Clone()));
+        return participants;
+    }
+
+    private IReadOnlyList<DadParticipantSnapshot> BuildCurrentManifestParticipantSet(DadCharacterPool pool)
+    {
+        if (activeSlotManifest == null)
+            return [];
+
+        var frozenSessions = activeSlotManifest.Slots
+            .Select(static slot => slot.WorkerSessionId.Value)
+            .Where(static session => !string.IsNullOrWhiteSpace(session))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var participants = new List<DadParticipantSnapshot>();
+        var local = presenceService.BuildSnapshotCopy();
+        if (frozenSessions.Contains(local.WorkerSessionId.Value))
+            participants.Add(local);
+
+        participants.AddRange(pool.PeerTransport.KnownParticipants
+            .Where(participant =>
+                frozenSessions.Contains(participant.WorkerSessionId.Value) &&
+                transportService.IsWorkerOnline(participant.WorkerSessionId))
+            .Select(static participant => participant.Clone()));
+        return participants;
+    }
+
+    private void LogAcceptedSlotManifest(DadRunPlan plan, DadRunSlotManifest? manifest)
+    {
+        if (manifest == null)
+            return;
+
+        foreach (var module in manifest.Modules)
+        {
+            foreach (var slot in manifest.Slots)
+            {
+                log.Information(
+                    "[dad] Frozen run assignment accepted request={RequestId} module={ModuleId} duty={DutyName} cfc={ContentFinderConditionId} unsynced={Unsynced} party={PartySize} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} worker={WorkerSessionId} leader={IsLeader} inviter={IsInviter}.",
+                    plan.Request.RequestId,
+                    module.ModuleId,
+                    module.DutyName,
+                    module.ContentFinderConditionId,
+                    module.Unsynced,
+                    module.ExpectedPartySize,
+                    slot.SlotId,
+                    slot.AccountKey,
+                    slot.CharacterKey,
+                    slot.ContentId,
+                    slot.WorkerSessionId,
+                    slot.IsLeader,
+                    slot.IsInviter);
+            }
+        }
+    }
+
+    private void LogSlotResolutionTransition(
+        DadRunPlan plan,
+        DadFrozenRunSlot slot,
+        DadParticipantSnapshot participant,
+        string blocker)
+    {
+        var transition = string.Join(
+            "|",
+            participant.State,
+            participant.IsAvailable,
+            participant.ManagedAccountKey.Value,
+            participant.ActiveCharacterKey.Value,
+            participant.Character.ContentId,
+            participant.WorkerSessionId.Value,
+            blocker);
+        if (slotResolutionTransitions.TryGetValue(slot.SlotId, out var previous) &&
+            string.Equals(previous, transition, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        slotResolutionTransitions[slot.SlotId] = transition;
+        log.Information(
+            "[dad] Frozen slot transition request={RequestId} module={ModuleId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} worker={WorkerSessionId} state={State} blocker={Blocker}.",
+            plan.Request.RequestId,
+            plan.CompositeModuleId,
+            slot.SlotId,
+            slot.AccountKey,
+            slot.CharacterKey,
+            slot.ContentId,
+            slot.WorkerSessionId,
+            participant.State,
+            string.IsNullOrWhiteSpace(blocker) ? "none" : blocker);
+    }
+
     private DadParticipantSnapshot BuildLocalAssignment(string requiredCharacterKey, DadAuthorityMode authorityMode, string slotId)
     {
         var participant = presenceService.BuildSnapshotCopy();
@@ -1515,127 +1679,6 @@ public sealed class DadCoordinatorService
         lastSingleWorkerAssemblyBlocker = blocker;
     }
 
-    private DadParticipantSnapshot? ResolvePeerParticipant(DadAcquiredCharacter character, IReadOnlyList<DadParticipantSnapshot> knownParticipants)
-    {
-        var participant = knownParticipants.FirstOrDefault(peer =>
-            IsRemoteParticipantEligibleForWork(peer) &&
-            (string.Equals(peer.ActiveCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase) ||
-             peer.AvailableCharacterKeys.Any(key => string.Equals(key, character.CharacterKey, StringComparison.OrdinalIgnoreCase)) ||
-             (!string.IsNullOrWhiteSpace(character.AccountId) &&
-              string.Equals(peer.ManagedAccountKey, character.AccountId, StringComparison.OrdinalIgnoreCase)) ||
-             (!string.IsNullOrWhiteSpace(character.AccountAlias) &&
-              string.Equals(peer.ManagedAccountAlias, character.AccountAlias, StringComparison.OrdinalIgnoreCase))));
-
-        if (participant == null)
-            return null;
-
-        var clone = participant.Clone();
-        clone.AssignedSlotId = string.IsNullOrWhiteSpace(clone.AssignedSlotId)
-            ? DadPlannerSlotRules.FormatSlotId(activeParticipants.Count + 1)
-            : clone.AssignedSlotId;
-
-        if (!string.Equals(clone.ActiveCharacterKey, character.CharacterKey, StringComparison.OrdinalIgnoreCase))
-        {
-            clone.State = DadParticipantState.WaitingForRequiredCharacter;
-            clone.StatusText = $"Waiting for required character {character.CharacterKey}; active {clone.ActiveCharacterKey}.";
-        }
-        else if (!clone.PostArReady)
-        {
-            clone.State = DadParticipantState.WaitingForPostArReady;
-            clone.StatusText = "Waiting for post-AR readiness.";
-        }
-        else
-        {
-            clone.State = DadParticipantState.Discovered;
-            clone.StatusText = "Discovered by Dad Coordinator.";
-        }
-
-        clone.IsEligibleForRun = IsRemoteParticipantEligibleForWork(clone);
-        return clone;
-    }
-
-    private bool IsRemoteParticipantEligibleForWork(DadParticipantSnapshot peer)
-        => peer.IsAvailable
-           && peer.IsEligibleForRun
-           && !peer.WorkerSessionId.IsEmpty
-           && transportService.IsWorkerOnline(peer.WorkerSessionId)
-           && peer.AuthorityMode != DadAuthorityMode.LocalOnly
-           && peer.State != DadParticipantState.Stale
-           && peer.ClaimState != DadClaimState.Stale
-           && peer.LeaseState != DadParticipantLeaseState.Stale
-           && !HasLocalIsolationReason(peer);
-
-    private string BuildRemoteParticipantSkipSummary(IReadOnlyList<DadParticipantSnapshot> knownParticipants)
-    {
-        if (activePlan?.RequiresRemoteParticipants != true)
-            return string.Empty;
-
-        if (knownParticipants.Count == 0)
-            return "No remote Dad participants discovered for this run.";
-
-        var skipped = knownParticipants
-            .Select(GetRemoteParticipantSkipReason)
-            .Where(static reason => !string.IsNullOrWhiteSpace(reason))
-            .GroupBy(static reason => reason, StringComparer.OrdinalIgnoreCase)
-            .Select(static group => $"{group.Count()} {group.Key}")
-            .ToList();
-
-        return skipped.Count == 0
-            ? string.Empty
-            : $"Remote participant filter skipped {string.Join(", ", skipped)}.";
-    }
-
-    private string GetRemoteParticipantSkipReason(DadParticipantSnapshot peer)
-    {
-        if (HasLocalIsolationReason(peer))
-            return "disabled/local-only peer(s)";
-
-        if (peer.AuthorityMode == DadAuthorityMode.LocalOnly)
-            return "local-only peer(s)";
-
-        if (peer.State == DadParticipantState.Stale ||
-            peer.ClaimState == DadClaimState.Stale ||
-            peer.LeaseState == DadParticipantLeaseState.Stale)
-        {
-            return "stale peer(s)";
-        }
-
-        if (!peer.IsAvailable)
-            return "unavailable peer(s)";
-
-        if (!peer.IsEligibleForRun)
-            return "ineligible peer(s)";
-
-        if (peer.WorkerSessionId.IsEmpty)
-            return "peer(s) missing worker session";
-
-        if (!transportService.IsWorkerOnline(peer.WorkerSessionId))
-            return "disconnected peer(s)";
-
-        return string.Empty;
-    }
-
-    private void LogParticipantDiscoveryFilter(string summary)
-    {
-        if (string.IsNullOrWhiteSpace(summary) ||
-            string.Equals(lastParticipantDiscoveryFilterSummary, summary, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        log.Information("[dad] {Summary}", summary);
-        lastParticipantDiscoveryFilterSummary = summary;
-    }
-
-    private static bool HasLocalIsolationReason(DadParticipantSnapshot peer)
-        => IsLocalIsolationReason(peer.StatusText)
-           || peer.Warnings.Any(IsLocalIsolationReason)
-           || peer.Character.Blockers.Any(IsLocalIsolationReason);
-
-    private static bool IsLocalIsolationReason(string value)
-        => value.Contains("dad is disabled", StringComparison.OrdinalIgnoreCase)
-           || value.Contains("dad is in local-only mode", StringComparison.OrdinalIgnoreCase);
-
     private void ApplyConfigurationDefaults(DadRunRequest request)
     {
         request.StopPolicy ??= new DadRunStopPolicy();
@@ -1747,6 +1790,7 @@ public sealed class DadCoordinatorService
             DadCompletionActionRunner.Enqueue(configuration, log, activePlan?.Request);
 
         activePlan = null;
+        activeSlotManifest = null;
         activeParticipants.Clear();
         activeModuleIndex = -1;
         activeStepResultIndex = -1;
@@ -1755,6 +1799,7 @@ public sealed class DadCoordinatorService
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
         lastSingleWorkerAssemblyBlocker = string.Empty;
+        slotResolutionTransitions.Clear();
         presenceService.ResetToIdle();
 
         log.Information("[dad] Finalized run {RequestId}: {Status} {Summary}", CurrentResult.RequestId, status, summary);

@@ -42,7 +42,9 @@ public sealed class DadHubProtocolTests
                 await DadHubProtocol.ReadFrameAsync(stream, timeout.Token));
             DadHubProtocol.ValidateFrame(hello, secret);
             Assert.Equal(DadHubFrameKind.Hello, hello.Kind);
-            registry.Register(hello.SourceWorkerSessionId, new TestSession());
+            var handshake = new DadHubHandshakeState(DadHubHandshakeRole.Server);
+            Assert.Equal(0, registry.Count);
+            Assert.False(DadHubTransportRouting.IsRoutable(socketOpen: true, handshake));
 
             await DadHubProtocol.WriteFrameAsync(
                 stream,
@@ -58,6 +60,8 @@ public sealed class DadHubProtocolTests
                     }),
                     secret),
                 timeout.Token);
+            handshake.MarkReadyAfterHelloAck();
+            registry.Register(hello.SourceWorkerSessionId, new TestSession());
 
             var heartbeat = Assert.IsType<DadHubFrame>(
                 await DadHubProtocol.ReadFrameAsync(stream, timeout.Token));
@@ -109,6 +113,10 @@ public sealed class DadHubProtocolTests
         var helloAck = Assert.IsType<DadHubFrame>(
             await DadHubProtocol.ReadFrameAsync(clientStream, timeout.Token));
         DadHubProtocol.ValidateFrame(helloAck, secret);
+        Assert.Equal(DadHubFrameKind.HelloAck, helloAck.Kind);
+        Assert.Equal("hello-correlation", helloAck.CorrelationId);
+        Assert.Equal("server-w", helloAck.SourceWorkerSessionId.Value);
+        Assert.Equal("client-x", helloAck.TargetWorkerSessionId.Value);
 
         await DadHubProtocol.WriteFrameAsync(
             clientStream,
@@ -321,6 +329,7 @@ public sealed class DadHubProtocolTests
     [InlineData("worker-execution-status")]
     [InlineData("worker-execution-cancel")]
     [InlineData("cancel-run")]
+    [InlineData("stop-all")]
     public async Task RoutedRequestTypesPreserveCorrelation(string messageType)
     {
         var frame = DadHubProtocol.CreateFrame(
@@ -432,6 +441,22 @@ public sealed class DadHubProtocolTests
     }
 
     [Fact]
+    public void SerializedFrameByteCountIncludesEscapedInnerPayload()
+    {
+        var payloadJson = DadIpcJson.Serialize(new { rows = Enumerable.Repeat("quoted \"value\"", 100).ToArray() });
+        var frame = DadHubProtocol.CreateFrame(
+            DadHubFrameKind.Notification,
+            new DadWorkerSessionId("server-w"),
+            new DadWorkerSessionId("client-x"),
+            "hub-roster-publish",
+            string.Empty,
+            payloadJson,
+            "shared-secret");
+
+        Assert.True(DadHubProtocol.GetSerializedFrameByteCount(frame) > System.Text.Encoding.UTF8.GetByteCount(payloadJson));
+    }
+
+    [Fact]
     public async Task OversizedInboundFrameFailsBeforePayloadAllocation()
     {
         var header = new byte[sizeof(int)];
@@ -492,6 +517,25 @@ public sealed class DadHubProtocolTests
         Assert.False(stale.IsEligibleForRun);
         Assert.Equal(DadReadinessState.Stale, stale.Character.Readiness);
         Assert.Contains("Client Dad disconnected.", stale.Warnings);
+    }
+
+    [Fact]
+    public void PhysicalDisconnectIsImmediatelyIneligibleForRoutingProjection()
+    {
+        var participant = new DadParticipantSnapshot
+        {
+            WorkerSessionId = new DadWorkerSessionId("worker-x"),
+            IsAvailable = true,
+            IsEligibleForRun = true,
+            State = DadParticipantState.Idle,
+        };
+
+        DadHubParticipants.MarkDisconnected(participant, "Client Dad disconnected.");
+
+        Assert.Equal(DadParticipantState.Stale, participant.State);
+        Assert.False(participant.IsAvailable);
+        Assert.False(participant.IsEligibleForRun);
+        Assert.Contains("Client Dad disconnected.", participant.Warnings);
     }
 
     [Fact]
@@ -600,6 +644,31 @@ public sealed class DadHubProtocolTests
 
         DadHubProtocol.ValidateFrame(frame, string.Empty);
         DadHubProtocol.ValidateFrame(frame, string.Empty); // replay also accepted without a shared secret
+    }
+
+    [Fact]
+    public void WakeTakeoverCommitDtoRoundTripsBarrierMetadata()
+    {
+        var execution = new DateTime(2026, 7, 10, 12, 0, 5, DateTimeKind.Utc);
+        var request = new DadWakeTakeoverRequestDto
+        {
+            SchedulerRunId = "run",
+            OperationToken = "shared-token",
+            SlotId = "W",
+            AccountKey = new DadAccountKey("account"),
+            CharacterKey = new DadCharacterKey("Target Character@World"),
+            MessageKind = DadWakeTakeoverMessageKind.Go,
+            CommitKind = DadWakeCommitKind.Reset,
+            ExecutionTimeUtc = execution,
+        };
+
+        var roundTrip = DadIpcJson.Deserialize<DadWakeTakeoverRequestDto>(DadIpcJson.Serialize(request));
+
+        Assert.NotNull(roundTrip);
+        Assert.Equal("shared-token", roundTrip.OperationToken);
+        Assert.Equal(DadWakeTakeoverMessageKind.Go, roundTrip.MessageKind);
+        Assert.Equal(DadWakeCommitKind.Reset, roundTrip.CommitKind);
+        Assert.Equal(execution, roundTrip.ExecutionTimeUtc);
     }
 
     private static async Task<DadHubFrame> RoundTripAsync(DadHubFrame frame)

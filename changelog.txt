@@ -1,5 +1,30 @@
 # dad — changelog
 
+## 2026-07-12 — Safe idle fallback for unavailable VERMAXION reservations
+- DAD can prepare an unavailable v2 handoff from explicit VERMAXION v1 idle plus readable AutoRetainer idle,
+  Multi Mode off, and clear or DAD-owned suppression evidence, without waiting for an AR character callback.
+- Compatibility preparation is revalidated before reset, yields its suppression lease without commands when
+  evidence changes, promotes seamlessly to a fresh v2 grant, and remains separate from exact-character final readiness.
+
+## 2026-07-11 — DAD mini status and global Stop-all
+- Added `/dad mini`, a resizable cached status window with authority freshness, active run/task progress,
+  scheduler/schedule/slot timeout state, ordered pending jobs, worker heartbeat/readiness, recent failures,
+  guarded item cancellation, issue-report access, and the latest Stop-all acknowledgement matrix.
+- Added an idempotent typed Stop-all hub operation. The Coordinator snapshots routable clients before local
+  cleanup, fans one operation ID to each client, and records acknowledged/rejected/disconnected/timed-out
+  outcomes using the existing cancellation acknowledgement timeout.
+- Stop-all drains only DAD-owned scheduler, coordinator, claim, worker, executor, and pre-commit wake-takeover
+  state. Existing committed reset/relog boundaries and externally owned AutoRetainer/VERMAXION state remain
+  untouched and are reported as partial completion.
+- Client Dad reconnect now survives connection cancellation/reset/protocol failures and retries forever with
+  capped backoff while DAD remains enabled. An automatic `DAD Client` window shows live retry state and offers
+  a guarded Disable DAD action as the explicit way to stop retries.
+- Authority status now requires a routable authenticated session and uses a real awaited status request, so an
+  offline configured endpoint no longer appears authoritative or remains indefinitely at `refresh pending`.
+- Hub readers dispatch bounded inbound requests without blocking later heartbeat frames, outbound write-gate
+  contention no longer consumes the socket write timeout, and signed wire-frame sizing prevents large roster
+  projections from disconnecting healthy clients.
+
 ## 2026-06-20
 - Build fix (drive migration): `CopyPluginArtifacts` in dad.csproj hardcoded the now-removed
   `D:\temp\dad` dev-output path, which broke every Debug/Release build with MSB3191

@@ -263,7 +263,7 @@ internal static class DadHubProtocol
 
     public static async Task WriteFrameAsync(Stream stream, DadHubFrame frame, CancellationToken cancellationToken)
     {
-        var payload = Encoding.UTF8.GetBytes(DadIpcJson.Serialize(frame));
+        var payload = SerializeFrame(frame);
         if (payload.Length > MaxFrameBytes)
         {
             throw new DadHubProtocolException(
@@ -277,6 +277,12 @@ internal static class DadHubProtocol
         await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    public static int GetSerializedFrameByteCount(DadHubFrame frame)
+        => SerializeFrame(frame).Length;
+
+    private static byte[] SerializeFrame(DadHubFrame frame)
+        => Encoding.UTF8.GetBytes(DadIpcJson.Serialize(frame));
 
     public static async Task<DadHubFrame?> ReadFrameAsync(Stream stream, CancellationToken cancellationToken)
     {
@@ -530,6 +536,9 @@ internal static class DadHubParticipants
 
     public static bool IsStale(DateTime nowUtc, DateTime heartbeatUtc, TimeSpan staleAfter)
         => nowUtc - heartbeatUtc >= staleAfter;
+
+    public static void MarkDisconnected(DadParticipantSnapshot participant, string reason)
+        => MarkStale(participant, reason);
 
     private static void MarkStale(DadParticipantSnapshot participant, string reason)
     {

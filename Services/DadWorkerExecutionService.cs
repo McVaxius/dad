@@ -33,6 +33,15 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            if (!DadWorkerCommandValidationRules.TryValidate(
+                    command,
+                    presenceService.BuildSnapshotCopy(),
+                    out _,
+                    out var validationBlocker))
+            {
+                return BuildAck(false, command, $"Worker assignment rejected: {validationBlocker}");
+            }
+
             if (activeCommand != null && status.IsTerminal)
                 activeCommand = null;
 
@@ -121,6 +130,42 @@ public sealed class DadWorkerExecutionService
         }
     }
 
+    public DadWorkerExecutionAck CancelAll(string reason)
+    {
+        lock (stateLock)
+        {
+            var hadWork = activeCommand != null || !pendingCommands.IsEmpty || !status.IsTerminal && status.State != DadWorkerExecutionState.Idle;
+            while (pendingCommands.TryDequeue(out _))
+            {
+            }
+
+            var runId = activeCommand?.RunId ?? status.RunId;
+            var commandId = activeCommand?.CommandId ?? status.CommandId;
+            queueExecutionService.CancelAll(reason);
+            activeCommand = null;
+            status = new DadWorkerExecutionStatus
+            {
+                CommandId = commandId,
+                RunId = runId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                State = hadWork ? DadWorkerExecutionState.Cancelled : DadWorkerExecutionState.Idle,
+                IsTerminal = hadWork,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = hadWork ? reason : "No local DAD worker execution was active.",
+                FailureReason = hadWork ? reason : string.Empty,
+            };
+            return new DadWorkerExecutionAck
+            {
+                CommandId = commandId,
+                RunId = runId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                Accepted = true,
+                Summary = status.Summary,
+                Status = status.Clone(),
+            };
+        }
+    }
+
     // Review H3: remove all pending (accepted-but-not-started) commands for a run id.
     // Caller must hold stateLock. ConcurrentQueue has no arbitrary removal, so re-enqueue the keepers.
     private bool DrainPendingForRun(string runId)
@@ -199,6 +244,20 @@ public sealed class DadWorkerExecutionService
             UpdatedAtUtc = DateTime.UtcNow,
             Summary = $"Starting {command.Role} work for {module.DisplayName}.",
         };
+
+        if (!DadWorkerCommandValidationRules.TryValidate(
+                command,
+                presenceService.BuildSnapshotCopy(),
+                out _,
+                out var validationBlocker))
+        {
+            Finish(
+                DadWorkerExecutionState.Failed,
+                false,
+                $"Worker assignment became invalid before execution: {validationBlocker}",
+                validationBlocker);
+            return;
+        }
 
         if (command.Role == DadWorkerExecutionRole.Participant)
         {

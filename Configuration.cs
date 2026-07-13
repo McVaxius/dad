@@ -46,6 +46,8 @@ public sealed class Configuration : IPluginConfiguration
     // envelopes are rejected unless the HMAC matches — authenticates peers. Empty = no auth (loopback default).
     public string TransportSharedSecret { get; set; } = string.Empty;
     public int ParticipantReadyTimeoutSeconds { get; set; } = 300;
+    public int VermaxionHoldTimeoutSeconds { get; set; } = 5400;
+    public int AutoRetainerBusyTimeoutSeconds { get; set; } = 1200;
     public int AssemblyTimeoutSeconds { get; set; } = 120;
     public int HeartbeatIntervalSeconds { get; set; } = 5;
     public int HeartbeatStaleSeconds { get; set; } = 15;
@@ -126,6 +128,14 @@ public sealed class Configuration : IPluginConfiguration
         var peerCatalogRefresh = NormalizeMinimum(PeerCatalogRefreshIntervalSeconds, 60, 10);
         changed |= peerCatalogRefresh != PeerCatalogRefreshIntervalSeconds;
         PeerCatalogRefreshIntervalSeconds = peerCatalogRefresh;
+
+        var vermaxionHold = NormalizeMinimum(VermaxionHoldTimeoutSeconds, 5400, 3600);
+        changed |= vermaxionHold != VermaxionHoldTimeoutSeconds;
+        VermaxionHoldTimeoutSeconds = vermaxionHold;
+
+        var autoRetainerBusy = NormalizeMinimum(AutoRetainerBusyTimeoutSeconds, 1200, 60);
+        changed |= autoRetainerBusy != AutoRetainerBusyTimeoutSeconds;
+        AutoRetainerBusyTimeoutSeconds = autoRetainerBusy;
         return changed;
     }
 

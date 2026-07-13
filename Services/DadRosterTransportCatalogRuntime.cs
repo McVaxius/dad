@@ -451,7 +451,71 @@ public static class DadRosterTransportCatalogRuntime
             Blockers = [..character.Blockers],
             Warnings = [..participant.Warnings],
         };
+
+        var projection = DadPeerRuntimeProjectionRules.Evaluate(participant, character);
+        row.Blockers = projection.Blockers;
         return true;
+    }
+
+    public static bool ReplaceSourceBlockersFromSupersedingRuntime(
+        DadRosterCharacter target,
+        DadRosterCharacter incoming)
+    {
+        if (!incoming.IsCurrent ||
+            incoming.Source is not (DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime))
+        {
+            return false;
+        }
+
+        target.Blockers = incoming.Blockers
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
+            .Select(static blocker => blocker.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        target.IsCurrent = true;
+        target.IsStale = false;
+        return true;
+    }
+
+    public static void ApplyOperatorPlanningPolicy(
+        DadRosterCharacter character,
+        DadRosterVisibility visibility,
+        bool needsRosterUpdate)
+    {
+        character.Blockers.RemoveAll(static blocker =>
+            string.Equals(blocker, "Hidden from normal roster planning.", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(blocker, "Ignored by operator.", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(blocker, "Needs roster refresh before normal planning.", StringComparison.OrdinalIgnoreCase));
+        character.Visibility = visibility;
+        character.NeedsRosterUpdate = needsRosterUpdate;
+        if (visibility == DadRosterVisibility.Hidden)
+            AddBlocker(character.Blockers, "Hidden from normal roster planning.");
+        else if (visibility == DadRosterVisibility.Ignored)
+            AddBlocker(character.Blockers, "Ignored by operator.");
+        if (needsRosterUpdate)
+            AddBlocker(character.Blockers, "Needs roster refresh before normal planning.");
+    }
+
+    public static void ApplyCurrentRuntimeCoverage(
+        DadAccountRosterCatalog mergedCatalog,
+        DadAccountRosterCatalog currentRuntimeCatalog)
+    {
+        foreach (var character in mergedCatalog.Characters.Where(static row =>
+                     row.Source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime))
+        {
+            if (currentRuntimeCatalog.Characters.Any(runtime => DadRosterIdentity.SameRow(runtime, character)))
+                continue;
+
+            character.IsCurrent = false;
+            character.IsStale = true;
+            AddBlocker(character.Blockers, "No current live Dad heartbeat for roster character.");
+        }
+    }
+
+    private static void AddBlocker(List<string> blockers, string blocker)
+    {
+        if (blockers.All(existing => !string.Equals(existing, blocker, StringComparison.OrdinalIgnoreCase)))
+            blockers.Add(blocker);
     }
 
     private static void UpsertLiveConnectedRosterCharacter(

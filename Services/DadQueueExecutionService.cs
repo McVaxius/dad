@@ -132,6 +132,14 @@ public sealed class DadQueueExecutionService
     public DadRunStepResultDto CancelActiveExecutor(string reason)
         => NormalizeReportedModule(activeExecutor?.Cancel(reason) ?? new DadRunStepResultDto());
 
+    public DadRunStepResultDto CancelAll(string reason)
+    {
+        var result = CancelActiveExecutor(reason);
+        activeExecutor = null;
+        activeReportedModuleId = DadModuleId.None;
+        return result;
+    }
+
     public DadModuleExecutionStatusDto GetActiveExecutorStatus()
         => activeExecutor?.GetStatus() ?? new DadModuleExecutionStatusDto();
 

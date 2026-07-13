@@ -22,6 +22,8 @@ public sealed class DadCharacterIntelligenceService
     // B5: fires once per distinct (active job, level) change of the local character, never on first capture.
     private readonly DadLocalLevelChangeDetector levelChangeDetector = new();
     private DateTime nextAutoRefreshUtc = DateTime.MinValue;
+    private string lastRuntimeIdentitySignature = string.Empty;
+    private bool runtimeIdentityInitialized;
 
     public DadCharacterIntelligenceService(
         ConfigManager configManager,
@@ -44,7 +46,16 @@ public sealed class DadCharacterIntelligenceService
 
     public void Update()
     {
-        if (DateTime.UtcNow < nextAutoRefreshUtc)
+        var runtimeIdentitySignature = CaptureRuntimeIdentitySignature();
+        var identityChanged = runtimeIdentityInitialized &&
+                              !string.Equals(
+                                  lastRuntimeIdentitySignature,
+                                  runtimeIdentitySignature,
+                                  StringComparison.Ordinal);
+        lastRuntimeIdentitySignature = runtimeIdentitySignature;
+        runtimeIdentityInitialized = true;
+
+        if (!identityChanged && DateTime.UtcNow < nextAutoRefreshUtc)
             return;
 
         RefreshLocalCharacterPool("framework", logRefresh: false);
@@ -52,6 +63,8 @@ public sealed class DadCharacterIntelligenceService
 
     public DadCharacterPool RefreshLocalCharacterPool(string trigger = "manual", bool logRefresh = true)
     {
+        lastRuntimeIdentitySignature = CaptureRuntimeIdentitySignature();
+        runtimeIdentityInitialized = true;
         var xadbStatus = xadbClient.Inspect();
         CurrentPool = BuildPool(xadbStatus, transportService.CurrentTransport);
         nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
@@ -67,6 +80,26 @@ public sealed class DadCharacterIntelligenceService
         }
 
         return CurrentPool;
+    }
+
+    private static string CaptureRuntimeIdentitySignature()
+    {
+        try
+        {
+            if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null)
+                return "OFFLINE";
+
+            var player = Plugin.ObjectTable.LocalPlayer;
+            return string.Join(
+                '|',
+                Plugin.PlayerState.ContentId,
+                player.Name.ToString().Trim().ToUpperInvariant(),
+                player.HomeWorld.RowId);
+        }
+        catch
+        {
+            return "UNAVAILABLE";
+        }
     }
 
     public DadCharacterPool SaveLocalToXadb()
@@ -130,19 +163,12 @@ public sealed class DadCharacterIntelligenceService
             var character = response.Participant.Character.Clone();
             character.Source = DadCharacterSource.PeerRuntime;
             character.Freshness = ResolvePeerFreshness(response);
-            character.Readiness = ResolvePeerReadiness(response.Participant, character.Readiness);
+            var runtimeProjection = DadPeerRuntimeProjectionRules.Evaluate(response.Participant, character);
+            character.Readiness = runtimeProjection.Readiness;
+            character.Blockers = runtimeProjection.Blockers;
 
-            if (character.Blockers.Count == 0)
-                character.Blockers.AddRange(response.Warnings);
-            else
-                character.Blockers.AddRange(response.Warnings.Where(warning =>
-                    character.Blockers.All(existing => !string.Equals(existing, warning, StringComparison.OrdinalIgnoreCase))));
-
-            if (!string.IsNullOrWhiteSpace(response.Participant.StatusText) &&
-                character.Blockers.All(existing => !string.Equals(existing, response.Participant.StatusText, StringComparison.OrdinalIgnoreCase)))
-            {
-                character.Blockers.Add(response.Participant.StatusText);
-            }
+            // StatusText and response warnings describe what the peer said over time. They stay on
+            // the transport response for diagnostics and never become planner readiness blockers.
 
             UpsertCharacter(characters, character);
         }
@@ -386,21 +412,6 @@ public sealed class DadCharacterIntelligenceService
         return age <= TimeSpan.FromMinutes(15)
             ? DadSnapshotFreshness.Recent
             : DadSnapshotFreshness.Stale;
-    }
-
-    private static DadReadinessState ResolvePeerReadiness(DadParticipantSnapshot participant, DadReadinessState fallback)
-    {
-        if (participant.State == DadParticipantState.Stale)
-            return DadReadinessState.Stale;
-
-        if (!participant.IsAvailable ||
-            !participant.IsEligibleForRun ||
-            participant.AuthorityMode == DadAuthorityMode.LocalOnly)
-        {
-            return DadReadinessState.Unavailable;
-        }
-
-        return fallback;
     }
 
     private static bool HasXadbIdentity(DadXadbStatus xadbStatus)

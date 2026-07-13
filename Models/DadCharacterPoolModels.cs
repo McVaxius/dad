@@ -259,6 +259,12 @@ public sealed class DadPeerTransportSnapshot
     public int ProtocolVersion { get; set; }
     public int ConnectedPeerCount { get; set; }
     public int ReconnectAttempt { get; set; }
+    public bool AuthorityRoutable { get; set; }
+    public DateTime? LastInboundFrameUtc { get; set; }
+    public DateTime? LastConnectedUtc { get; set; }
+    public DateTime? LastDisconnectedUtc { get; set; }
+    public DateTime? NextReconnectUtc { get; set; }
+    public string LastDisconnectReason { get; set; } = string.Empty;
     public DateTime? LastRequestUtc { get; set; }
     public DadTransportMode TransportMode { get; set; } = DadTransportMode.LocalOnly;
     public string ConnectionStatus { get; set; } = "Disconnected";
@@ -397,7 +403,7 @@ public sealed class DadPlannerGroupSlot
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
-    public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.AlreadyOnlineOnly;
+    public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public string LaunchProfileId { get; set; } = string.Empty;
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
     // Legacy config field only. Runtime fallback is driven by explicit IsSubstitute rows.
@@ -478,6 +484,11 @@ public sealed class DadActivityPreset
     public DadPlannerFilterStats FilterStats { get; set; } = new();
     public List<string> Notes { get; set; } = [];
     public List<string> Blockers { get; set; } = [];
+    public bool CanSchedule { get; set; }
+    public string ReadinessSummary { get; set; } = string.Empty;
+    public List<string> StaticBlockers { get; set; } = [];
+    public List<string> ReadinessBlockers { get; set; } = [];
+    public List<string> ScheduleBlockers { get; set; } = [];
 }
 
 public sealed class DadPlannerRunRequestPreview
@@ -487,6 +498,11 @@ public sealed class DadPlannerRunRequestPreview
     public DadPlannerRequestContractPreview ContractPreview { get; set; } = new();
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public bool CanStart { get; set; }
+    public bool CanSchedule { get; set; }
+    public string ReadinessSummary { get; set; } = string.Empty;
+    public List<string> StaticBlockers { get; set; } = [];
+    public List<string> ReadinessBlockers { get; set; } = [];
+    public List<string> ScheduleBlockers { get; set; } = [];
     public string StatusSummary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
     public string RequestJson { get; set; } = string.Empty;

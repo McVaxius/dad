@@ -38,5 +38,10 @@
     <Compile Include="..\Services\DadHubRosterCatalogProjection.cs" Link="DadHubRosterCatalogProjection.cs" />
     <Compile Include="..\Services\DadLocalLevelChangeDetector.cs" Link="DadLocalLevelChangeDetector.cs" />
     <Compile Include="..\Services\DadRosterRefreshDedupe.cs" Link="DadRosterRefreshDedupe.cs" />
+    <Compile Include="..\Services\DadPlannerGroupUpdateRules.cs" Link="DadPlannerGroupUpdateRules.cs" />
+    <Compile Include="..\Services\DadWakeTakeoverService.cs" Link="DadWakeTakeoverService.cs" />
+    <Compile Include="..\Services\DadRunSlotManifestRules.cs" Link="DadRunSlotManifestRules.cs" />
+    <Compile Include="..\Services\DadWorkerCommandValidationRules.cs" Link="DadWorkerCommandValidationRules.cs" />
+    <Compile Include="..\Services\DadPlannerWarningRules.cs" Link="DadPlannerWarningRules.cs" />
   </ItemGroup>
 </Project>

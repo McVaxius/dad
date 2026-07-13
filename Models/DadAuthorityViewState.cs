@@ -130,7 +130,7 @@ public static class DadAuthorityViewBuilder
         var authorityRole = authorityRun.WorkerRole != DadWorkerRole.None
             ? authorityRun.WorkerRole
             : transport.AuthorityRole;
-        var hasRemoteAuthority = !authorityWorker.IsEmpty || !string.IsNullOrWhiteSpace(authorityEndpoint);
+        var hasRemoteAuthority = transport.AuthorityRoutable && !authorityWorker.IsEmpty;
         var payloadText = authorityRun.Request?.DescribeRequestedWork() ?? "No active dad task payload.";
         var clientPerspective = ResolveClientPerspective(localRun, authorityRun, localWorkerSessionId, localOnlyModeEnabled);
         var freshnessText = BuildFreshnessText(lastSuccessfulRefreshUtc, utcNow, staleThreshold, hasRemoteAuthority);

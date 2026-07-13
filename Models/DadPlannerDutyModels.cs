@@ -36,5 +36,10 @@ public sealed class DadPlannerRequestContractPreview
     public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.LocalOnly;
     public string Startability { get; set; } = string.Empty;
     public bool CanStart { get; set; }
+    public bool CanSchedule { get; set; }
+    public string ReadinessSummary { get; set; } = string.Empty;
+    public List<string> StaticBlockers { get; set; } = [];
+    public List<string> ReadinessBlockers { get; set; } = [];
+    public List<string> ScheduleBlockers { get; set; } = [];
     public List<string> Blockers { get; set; } = [];
 }

@@ -242,6 +242,14 @@ public sealed class DadParticipantSnapshot
     public bool IsAvailable { get; set; }
     public bool IsEligibleForRun { get; set; } = true;
     public bool PostArReady { get; set; }
+    public bool WorldReadyStable { get; set; }
+    public bool AutoRetainerAvailable { get; set; }
+    public bool AutoRetainerBusy { get; set; }
+    public bool AutoRetainerMultiModeEnabled { get; set; }
+    public bool ExternalAutomationHeld { get; set; }
+    public string ExternalAutomationActivity { get; set; } = string.Empty;
+    public string ExternalAutomationState { get; set; } = string.Empty;
+    public string ExternalAutomationSummary { get; set; } = string.Empty;
     public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
     public DadAccountKey ManagedAccountKey { get; set; } = new(string.Empty);
     public string ManagedAccountAlias { get; set; } = string.Empty;
@@ -276,6 +284,14 @@ public sealed class DadParticipantSnapshot
         IsAvailable = IsAvailable,
         IsEligibleForRun = IsEligibleForRun,
         PostArReady = PostArReady,
+        WorldReadyStable = WorldReadyStable,
+        AutoRetainerAvailable = AutoRetainerAvailable,
+        AutoRetainerBusy = AutoRetainerBusy,
+        AutoRetainerMultiModeEnabled = AutoRetainerMultiModeEnabled,
+        ExternalAutomationHeld = ExternalAutomationHeld,
+        ExternalAutomationActivity = ExternalAutomationActivity,
+        ExternalAutomationState = ExternalAutomationState,
+        ExternalAutomationSummary = ExternalAutomationSummary,
         LastHeartbeatUtc = LastHeartbeatUtc,
         ManagedAccountKey = ManagedAccountKey,
         ManagedAccountAlias = ManagedAccountAlias,

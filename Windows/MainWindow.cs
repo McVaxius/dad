@@ -577,7 +577,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableSetupColumn("Character");
             ImGui.TableSetupColumn("Assignment");
             ImGui.TableSetupColumn("Claim / lease");
-            ImGui.TableSetupColumn("Ready");
+            ImGui.TableSetupColumn("Eligibility");
             ImGui.TableSetupColumn("Fresh");
             ImGui.TableSetupColumn("Party");
             ImGui.TableSetupColumn("Worker");
@@ -599,7 +599,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{participant.ClaimState} / {participant.LeaseState}");
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(participant.PostArReady ? "post-AR ready" : participant.IsEligibleForRun ? "ready" : "waiting");
+                ImGui.TextUnformatted(participant.PostArReady ? "post-AR eligible" : participant.IsEligibleForRun ? "eligible / connected" : "waiting");
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(FormatParticipantFreshness(participant, participantCharacter));
                 ImGui.TableNextColumn();
@@ -1765,7 +1765,7 @@ public sealed class MainWindow : Window, IDisposable
         var queue = plugin.SchedulerService.GetQueueSnapshot();
         var run = plugin.RunCoordinatorService.GetLocalResult();
         var worker = plugin.WorkerExecutionService.GetStatus();
-        DrawSectionHeader("Active Job", "Current orchestration, worker execution, launch/load readiness, and durable results.");
+        DrawSectionHeader("Active Job", "Current orchestration, worker execution, typed wake takeover readiness, and durable results.");
         DrawStatusRow("Run", $"{run.Status} / {run.Phase} / {run.ModuleId}");
         DrawStatusRow("Run summary", run.Summary);
         DrawStatusRow("Worker", $"{worker.Role} / {worker.State} / {worker.Summary}");
@@ -1800,7 +1800,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TableSetupColumn("Target");
         ImGui.TableSetupColumn("Active");
         ImGui.TableSetupColumn("Wake");
-        ImGui.TableSetupColumn("Launch/load");
+        ImGui.TableSetupColumn("Takeover");
         ImGui.TableSetupColumn("Ready");
         ImGui.TableSetupColumn("Status");
         ImGui.TableHeadersRow();
@@ -1819,13 +1819,23 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted($"{slot.WakePolicy} / {slot.RosterVisibility}{(slot.NeedsRosterUpdate ? " / needs update" : string.Empty)}");
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(slot.LaunchStarted
-                ? $"launch {FormatTime(slot.LaunchStartedUtc)}"
-                : slot.LoadCommandSentUtc.HasValue
-                    ? $"load {FormatTime(slot.LoadCommandSentUtc)}"
-                    : FormatText(slot.LaunchProfileName, "-"));
+            ImGui.TextUnformatted(slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline
+                ? slot.TakeoverStage == DadWakeTakeoverStage.Ready && !slot.Ready
+                    ? "heartbeat revalidation failed"
+                    : $"{slot.TakeoverStatus} / {slot.TakeoverStage}{(slot.RelogIssued ? " / relog sent" : string.Empty)}"
+                : slot.WakePolicy == DadSchedulerWakePolicy.LoadCharacterIfOnline
+                    ? "stub / no commands"
+                    : "none");
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(slot.Ready ? "ready" : slot.IsOnline ? "online" : "offline");
+            ImGui.TextUnformatted(slot.Ready
+                ? "ready"
+                : slot.IsOnline && !slot.CorrectCharacter
+                    ? $"mismatch: active {FormatOperatorCharacterKey(slot.ActiveCharacterKey.Value, "unknown")}"
+                : slot.IsOnline
+                    ? "target online / not ready"
+                    : slot.ClientConnected
+                        ? "client connected / character offline"
+                        : "client missing");
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatOperatorText(FormatText(slot.BlockedReason, slot.Summary), "(none)"));
         }
@@ -3427,26 +3437,29 @@ public sealed class MainWindow : Window, IDisposable
         DadVisibleRunState runState,
         bool plannerLocked)
     {
-        DrawSectionHeader("Planner Action", "Startability, blocker, and active-run controls for the selected lane.");
+        DrawSectionHeader("Run Preset", "One safe path wakes clients, performs typed relog takeover, groups the party, and starts the preset.");
         var activeRun = GetActiveRun(runState);
         var blockers = BuildPlannerBlockerList(requestPreview);
         var firstBlocker = blockers.FirstOrDefault() ?? "(none)";
-        var disabledReason = plannerLocked
-            ? "A Dad run is active. Cancel it or wait for the run to reach a final state before starting another planner request."
-            : requestPreview.CanStart
-                ? string.Empty
-                : firstBlocker == "(none)"
-                    ? FormatText(requestPreview.StatusSummary, "Planner request is not startable.")
-                    : firstBlocker;
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        var schedulerState = plugin.SchedulerService.CurrentState;
 
-        // --- Row 1: primary action -------------------------------------------------
-        ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
-        if (ImGui.SmallButton("Start planner run"))
-            plugin.StartPlannerRunFromShell();
-        var startHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.BeginDisabled(selectedGroup == null);
+        if (ImGui.Button("Run preset — wake, relog, group, start", new Vector2(-1f, 0f)))
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
+        var runPresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
-        if (startHovered && !string.IsNullOrWhiteSpace(disabledReason))
-            ImGui.SetTooltip(disabledReason);
+        if (runPresetHovered && selectedGroup == null)
+            ImGui.SetTooltip("Select a saved preset before running it.");
+
+        ImGui.BeginDisabled(selectedGroup == null);
+        if (ImGui.SmallButton("Validate preset"))
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady, dryRun: true);
+        var validateHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.EndDisabled();
+        if (validateHovered && selectedGroup == null)
+            ImGui.SetTooltip("Select a saved preset before validating it.");
 
         if (plannerLocked)
         {
@@ -3457,45 +3470,26 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.SetTooltip("Cancels the active Dad run visible to this client.");
         }
 
-        // --- Row 2: scheduler / queue actions --------------------------------------
-        ImGui.BeginDisabled(plannerLocked || !schedulerPreview.CanStart || !requestPreview.PlannerPreview.UsingPlannerGroup);
-        if (ImGui.SmallButton("Start scheduler preset"))
+        DrawStatusRow("Scheduler", FormatText(schedulerState.Summary, queue.Summary));
+        DrawStatusRow("Pending jobs", queue.PendingJobs.Count.ToString(CultureInfo.InvariantCulture));
+        foreach (var slot in schedulerState.Slots)
+            DrawStatusRow($"{slot.SlotId} stage", FormatSchedulerSlotStage(slot, schedulerState));
+
+        if (plugin.Configuration.AdvancedModeEnabled && ImGui.TreeNode("Advanced / specialized actions"))
         {
-            var resultJson = plugin.StartSchedulerPresetFromJson(DadIpcJson.Serialize(new DadSchedulerStartRequest
-            {
-                GroupId = requestPreview.PlannerPreview.SelectedPlannerGroupId,
-            }));
-            var result = DadIpcJson.Deserialize<DadRunResult>(resultJson);
-            plugin.PrintStatus(result?.Summary ?? "Scheduler preset start requested.");
+            ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
+            if (ImGui.SmallButton("Start planner run (online participants only)"))
+                plugin.StartPlannerRunFromShell();
+            ImGui.EndDisabled();
+
+            ImGui.SameLine();
+            ImGui.BeginDisabled(selectedGroup == null);
+            if (ImGui.SmallButton("Prepare map crew"))
+                EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, selectedGroup?.MapMode ?? DadMapCrewJobMode.ManualMapReady);
+            ImGui.EndDisabled();
+            ImGui.TreePop();
         }
-        var schedulerHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
-        ImGui.EndDisabled();
-        if (schedulerHovered && (!schedulerPreview.CanStart || !requestPreview.PlannerPreview.UsingPlannerGroup))
-            ImGui.SetTooltip(requestPreview.PlannerPreview.UsingPlannerGroup
-                ? schedulerPreview.BlockedReason
-                : "Select a saved preset before using the scheduler.");
 
-        var selectedGroup = plugin.GetSelectedPlannerGroup();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(selectedGroup == null || plannerLocked);
-        if (ImGui.SmallButton("Enqueue preset"))
-            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
-        var enqueuePresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Enqueue map crew"))
-            EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, selectedGroup?.MapMode ?? DadMapCrewJobMode.ManualMapReady);
-        var enqueueMapCrewHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Dry-run preset"))
-            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady, dryRun: true);
-        var dryRunPresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
-        ImGui.EndDisabled();
-        if ((enqueuePresetHovered || enqueueMapCrewHovered || dryRunPresetHovered) && selectedGroup == null)
-            ImGui.SetTooltip("Select a saved preset before queueing scheduler work.");
-
-        // --- Row 3: state badges (own line, wrap naturally) ------------------------
         DrawStateBadge("Startability", FormatText(requestPreview.ContractPreview.Startability, requestPreview.CanStart ? "Startable" : "Blocked"));
         ImGui.SameLine();
         DrawStateBadge("Blockers", blockers.Count.ToString(CultureInfo.InvariantCulture));
@@ -3506,13 +3500,68 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         DrawStateBadge("Scheduler", schedulerPreview.ReadyToStart ? "Ready" : schedulerPreview.CanStart ? "Can wake" : "Blocked");
 
+        if (!requestPreview.CanStart && requestPreview.CanSchedule)
+            DrawStatusRow("Scheduler readiness", FormatText(requestPreview.ReadinessSummary, "Wakeable live-readiness blockers only."));
+
         if (firstBlocker != "(none)")
             DrawStatusRow("First blocker", firstBlocker);
         if (plugin.Configuration.DebugUiEnabled)
         {
-            DrawStatusRow("Start reason", requestPreview.CanStart ? FormatText(requestPreview.StatusSummary, "Planner request ready.") : disabledReason);
+            DrawStatusRow("Start reason", FormatText(requestPreview.StatusSummary, requestPreview.CanStart ? "Planner request ready." : firstBlocker));
             DrawStatusRow("Stop policy", requestPreview.StopPolicy.Describe());
         }
+    }
+
+    private string FormatSchedulerSlotStage(DadSchedulerSlotState slot, DadSchedulerPresetState state)
+    {
+        var stage = slot.TakeoverStatus == DadWakeTakeoverStatus.Blocked || !string.IsNullOrWhiteSpace(slot.BlockedReason)
+            ? "Blocked"
+            : slot.Ready
+                ? "Ready"
+                : slot.TakeoverStage switch
+                {
+                    DadWakeTakeoverStage.WaitingForClient or DadWakeTakeoverStage.None => slot.ClientConnected
+                        ? "Client connected — character offline/relogging"
+                        : "Client missing",
+                    DadWakeTakeoverStage.WaitingForPostArReady or DadWakeTakeoverStage.WaitingForAutoRetainer or DadWakeTakeoverStage.AwaitingArHook => "Waiting for AutoRetainer character postprocess",
+                    DadWakeTakeoverStage.PostprocessOwned or DadWakeTakeoverStage.Prepared =>
+                        slot.VermaxionReservationState == DadVermaxionReservationState.Unavailable &&
+                        string.Equals(slot.ExternalAutomationActivity, "CompatibilityHandoff", StringComparison.OrdinalIgnoreCase)
+                            ? "Compatibility handoff: VERMAXION idle / AR idle"
+                            : "AR handoff acquired — waiting for crew",
+                    DadWakeTakeoverStage.ResetCommitted => "Coordinated reset scheduled",
+                    DadWakeTakeoverStage.ResetVerified => "Reset verified — waiting for crew",
+                    DadWakeTakeoverStage.RelogCommitted => "Coordinated relog scheduled",
+                    DadWakeTakeoverStage.WaitingForExternalAutomation => FormatVermaxionWaitLabel(slot),
+                    DadWakeTakeoverStage.DisablingMultiMode or DadWakeTakeoverStage.ResetIssued or DadWakeTakeoverStage.VerifyingTakeover => "Resetting",
+                    DadWakeTakeoverStage.RelogIssued or DadWakeTakeoverStage.WaitingForCharacter => "Relog issued",
+                    DadWakeTakeoverStage.Blocked => "Blocked",
+                    _ => slot.TakeoverStage.ToString(),
+                };
+        var remaining = DadWakeStageTimeoutPolicy.GetRemaining(
+            slot,
+            DateTime.UtcNow,
+            plugin.Configuration.VermaxionHoldTimeoutSeconds,
+            plugin.Configuration.AutoRetainerBusyTimeoutSeconds,
+            plugin.Configuration.ParticipantReadyTimeoutSeconds);
+        var timeout = stage is "Ready" or "Blocked"
+            ? string.Empty
+            : $" | timeout {Math.Max(0, (int)Math.Ceiling(remaining.TotalSeconds))}s";
+        var summary = FormatText(slot.BlockedReason, slot.Summary);
+        return string.IsNullOrWhiteSpace(summary)
+            ? $"{stage}{timeout}"
+            : $"{stage}{timeout} | {summary}";
+    }
+
+    private static string FormatVermaxionWaitLabel(DadSchedulerSlotState slot)
+    {
+        var detail = string.Join(
+            "/",
+            new[] { slot.ExternalAutomationActivity, slot.ExternalAutomationState }
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
+        return string.IsNullOrWhiteSpace(detail)
+            ? "Waiting for VERMAXION status"
+            : $"Waiting for VERMAXION — {detail}";
     }
 
     private void DrawPlannerRequestContractSection(
@@ -3531,6 +3580,8 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Request queue", plugin.PresetProviderService.GetQueueAuthorityLabel(requestPreview.ContractPreview.QueueAuthority));
         DrawStatusRow("Expected party size", requestPreview.ContractPreview.PartySize <= 0 ? "?" : requestPreview.ContractPreview.PartySize.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Startability", FormatText(requestPreview.ContractPreview.Startability, requestPreview.CanStart ? "Startable" : "Blocked"));
+        DrawStatusRow("Scheduler", requestPreview.ContractPreview.CanSchedule ? "Schedulable" : "Blocked");
+        DrawStatusRow("Readiness", FormatText(requestPreview.ContractPreview.ReadinessSummary, "(none)"));
 
         var contractPreviewJson = string.IsNullOrWhiteSpace(requestPreview.ContractPreviewJson)
             ? requestPreview.StatusSummary
@@ -3550,6 +3601,15 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPlannerValidationSection(DadActivityPreset plannerPreview, DadPlannerRunRequestPreview requestPreview)
     {
         DrawSectionHeader("Validation And Blockers", "Planner blockers first, module blockers second, filter exclusions after.");
+        DrawStatusRow("Static blockers", requestPreview.StaticBlockers.Count == 0
+            ? "(none)"
+            : FormatOperatorText(string.Join(" | ", requestPreview.StaticBlockers), "(none)"));
+        DrawStatusRow("Live readiness", requestPreview.ReadinessBlockers.Count == 0
+            ? "(none)"
+            : FormatOperatorText(string.Join(" | ", requestPreview.ReadinessBlockers), "(none)"));
+        DrawStatusRow("Scheduler blockers", requestPreview.ScheduleBlockers.Count == 0
+            ? "(none)"
+            : FormatOperatorText(string.Join(" | ", requestPreview.ScheduleBlockers), "(none)"));
         DrawStatusRow("Preview blockers", requestPreview.ContractPreview.Blockers.Count == 0
             ? "(none)"
             : FormatOperatorText(string.Join(" | ", requestPreview.ContractPreview.Blockers), "(none)"));
@@ -5309,7 +5369,7 @@ public sealed class MainWindow : Window, IDisposable
         => policy switch
         {
             DadSchedulerWakePolicy.LaunchIfOffline => "Launch if offline",
-            DadSchedulerWakePolicy.LoadCharacterIfOnline => "Load character",
+            DadSchedulerWakePolicy.LoadCharacterIfOnline => "Load character (stub)",
             _ => "Already online",
         };
 
@@ -6008,11 +6068,17 @@ public sealed class MainWindow : Window, IDisposable
         foreach (var policy in Enum.GetValues<DadSchedulerWakePolicy>())
         {
             var selected = policy == slot.WakePolicy;
+            var disabledStub = policy == DadSchedulerWakePolicy.LoadCharacterIfOnline && !selected;
+            ImGui.BeginDisabled(disabledStub);
             if (ImGui.Selectable(GetWakePolicyLabel(policy), selected))
             {
                 slot.WakePolicy = policy;
                 plugin.TouchPlannerGroup(group);
             }
+            var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+            ImGui.EndDisabled();
+            if (hovered && policy == DadSchedulerWakePolicy.LoadCharacterIfOnline)
+                ImGui.SetTooltip("Compatibility stub only. New selections are disabled and the scheduler sends no commands for this policy.");
             if (selected)
                 ImGui.SetItemDefaultFocus();
         }

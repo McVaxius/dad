@@ -7,6 +7,84 @@ namespace dad.Tests;
 public sealed class DadRosterTransportCatalogRuntimeTests
 {
     [Fact]
+    public void PositiveStatusTextAndHistoricalWarningsDoNotBlockHealthyPeer()
+    {
+        var participant = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        participant.State = DadParticipantState.Ready;
+        participant.IsEligibleForRun = true;
+        participant.AuthorityMode = DadAuthorityMode.ServerDad;
+        participant.StatusText = "Idle on X Character@Alpha.";
+        participant.Warnings = ["Waiting for required character Old Character@Alpha."];
+
+        var row = Assert.Single(DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", participant)).Characters);
+
+        Assert.Empty(row.Blockers);
+        Assert.Contains(participant.Warnings[0], row.Warnings);
+    }
+
+    [Fact]
+    public void StructuredStaleUnavailableLocalOnlyAndBlockedPeersFailClosed()
+    {
+        var stale = Snapshot("client-stale", "worker-stale", "acct-stale", "Stale@Alpha", 101);
+        stale.State = DadParticipantState.Stale;
+        var unavailable = Snapshot("client-off", "worker-off", "acct-off", "Off@Alpha", 102);
+        unavailable.State = DadParticipantState.Ready;
+        unavailable.IsAvailable = false;
+        var localOnly = Snapshot("client-local", "worker-local", "acct-local", "Local@Alpha", 103);
+        localOnly.State = DadParticipantState.Ready;
+        localOnly.AuthorityMode = DadAuthorityMode.LocalOnly;
+        var blocked = Snapshot("client-blocked", "worker-blocked", "acct-blocked", "Blocked@Alpha", 104);
+        blocked.State = DadParticipantState.Ready;
+        blocked.Character.Readiness = DadReadinessState.Blocked;
+        blocked.Character.Blockers = ["Content ID unavailable."];
+
+        var runtime = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", stale, unavailable, localOnly, blocked));
+
+        Assert.DoesNotContain(runtime.Characters, static row => row.AccountKey.Value == "acct-stale");
+        Assert.Contains(runtime.Characters, static row => row.AccountKey.Value == "acct-off" &&
+                                                          row.Blockers.Any(blocker => blocker.Contains("unavailable", StringComparison.OrdinalIgnoreCase)));
+        Assert.Contains(runtime.Characters, static row => row.AccountKey.Value == "acct-local" &&
+                                                          row.Blockers.Any(blocker => blocker.Contains("local-only", StringComparison.OrdinalIgnoreCase)));
+        Assert.Contains(runtime.Characters, static row => row.AccountKey.Value == "acct-blocked" &&
+                                                          row.Blockers.Contains("Content ID unavailable."));
+
+        var cached = new DadAccountRosterCatalog
+        {
+            Characters =
+            [
+                RosterCharacter("acct-stale", "Stale@Alpha", 101, "client-stale", "worker-stale"),
+            ],
+        };
+        DadRosterTransportCatalogRuntime.ApplyCurrentRuntimeCoverage(cached, runtime);
+        Assert.Contains("No current live Dad heartbeat for roster character.", cached.Characters[0].Blockers);
+    }
+
+    [Fact]
+    public void SupersedingRuntimeReplacesOfflineBlockersThenReappliesOperatorPolicy()
+    {
+        var cached = RosterCharacter("acct-x", "X Character@Alpha", 202, "client-x", "worker-x");
+        cached.Source = DadCharacterSource.XadbOnly;
+        cached.IsCurrent = false;
+        cached.Blockers = ["No live peer connection.", "Owning Client Dad is offline."];
+        var live = RosterCharacter("acct-x", "X Character@Alpha", 202, "client-x", "worker-x");
+        live.Source = DadCharacterSource.PeerRuntime;
+        live.IsCurrent = true;
+        live.Blockers = [];
+
+        Assert.True(DadRosterTransportCatalogRuntime.ReplaceSourceBlockersFromSupersedingRuntime(cached, live));
+        DadRosterTransportCatalogRuntime.ApplyOperatorPlanningPolicy(
+            cached,
+            DadRosterVisibility.Ignored,
+            needsRosterUpdate: true);
+
+        Assert.DoesNotContain(cached.Blockers, blocker => blocker.Contains("offline", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("Ignored by operator.", cached.Blockers);
+        Assert.Contains("Needs roster refresh before normal planning.", cached.Blockers);
+    }
+
+    [Fact]
     public void ConnectedDadsRefreshPlanRequestsFullPeerCatalogs()
     {
         var plan = DadRosterRefreshPlan.ConnectedDads("manual connected roster refresh");
@@ -612,6 +690,8 @@ public sealed class DadRosterTransportCatalogRuntimeTests
             ManagedAccountAlias = $"Dad {accountId}",
             ActiveCharacterKey = new DadCharacterKey(characterKey),
             IsAvailable = true,
+            IsEligibleForRun = true,
+            AuthorityMode = DadAuthorityMode.ServerDad,
             LastHeartbeatUtc = new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc),
             Character = Character(characterKey, accountId, DadCharacterSource.LocalRuntime, contentId),
         };

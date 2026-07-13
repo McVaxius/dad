@@ -410,6 +410,28 @@ public sealed class ConfigWindow : Window, IDisposable
                 () => BuildWaitPolicySignature(configuration));
         }
 
+        var vermaxionTimeout = configuration.VermaxionHoldTimeoutSeconds;
+        if (ImGui.InputInt("VERMAXION hold timeout (s)", ref vermaxionTimeout))
+        {
+            var committedSignature = BuildWaitPolicySignature(configuration);
+            configuration.VermaxionHoldTimeoutSeconds = Math.Max(3600, vermaxionTimeout);
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
+        }
+
+        var autoRetainerBusyTimeout = configuration.AutoRetainerBusyTimeoutSeconds;
+        if (ImGui.InputInt("AutoRetainer busy timeout (s)", ref autoRetainerBusyTimeout))
+        {
+            var committedSignature = BuildWaitPolicySignature(configuration);
+            configuration.AutoRetainerBusyTimeoutSeconds = Math.Max(60, autoRetainerBusyTimeout);
+            plugin.QueueDebouncedConfigurationSave(
+                "wait-policy",
+                committedSignature,
+                () => BuildWaitPolicySignature(configuration));
+        }
+
         var assemblyTimeout = configuration.AssemblyTimeoutSeconds;
         if (ImGui.InputInt("Assembly timeout (s)", ref assemblyTimeout))
         {
@@ -482,6 +504,8 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.BulletText("/dad ws -> reset Dad windows to 1,1");
             ImGui.BulletText("/dad j -> jump Dad windows somewhere visible");
             ImGui.BulletText("/dad status -> print the live shell summary to chat");
+            ImGui.BulletText("/dad mini -> toggle the compact cached status and Stop-all window");
+            ImGui.BulletText("Offline Client Dads automatically show reconnect progress and retry until DAD is disabled");
             ImGui.BulletText("/dad wizard or /dad setup -> open the Dad Setup Wizard");
             ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
             ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
@@ -491,6 +515,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.BulletText("/dad run commend -> start a Dad Coordinator commendation demo");
             ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
             ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
+            ImGui.BulletText("Stop all is available in /dad mini and requires a second click within five seconds");
 
             if (configuration.DebugUiEnabled)
             {
@@ -1145,7 +1170,7 @@ public sealed class ConfigWindow : Window, IDisposable
         => $"{configuration.DtrIconEnabled}\n{configuration.DtrIconDisabled}";
 
     private static string BuildWaitPolicySignature(Configuration configuration)
-        => $"{configuration.ParticipantReadyTimeoutSeconds}\n{configuration.AssemblyTimeoutSeconds}\n{configuration.HeartbeatIntervalSeconds}\n{configuration.HeartbeatStaleSeconds}\n{configuration.PeerCatalogRefreshIntervalSeconds}\n{configuration.LeaseDurationSeconds}\n{configuration.CancelAckTimeoutSeconds}";
+        => $"{configuration.ParticipantReadyTimeoutSeconds}\n{configuration.VermaxionHoldTimeoutSeconds}\n{configuration.AutoRetainerBusyTimeoutSeconds}\n{configuration.AssemblyTimeoutSeconds}\n{configuration.HeartbeatIntervalSeconds}\n{configuration.HeartbeatStaleSeconds}\n{configuration.PeerCatalogRefreshIntervalSeconds}\n{configuration.LeaseDurationSeconds}\n{configuration.CancelAckTimeoutSeconds}";
 
     private static string BuildCharacterLoadSignature(DadCharacterLoadInstruction instruction)
         => $"{instruction.CommandTemplate}\n{instruction.TimeoutSeconds}";

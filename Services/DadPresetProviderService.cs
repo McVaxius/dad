@@ -504,6 +504,9 @@ public sealed class DadPresetProviderService
         var leaderCandidate = leaderSlot == null || string.IsNullOrWhiteSpace(leaderSlot.CharacterKey)
             ? null
             : availableCharacters.FirstOrDefault(character => MatchesSelectedSlot(character, leaderSlot) && IsConnectedForPlanning(character));
+        var plannedLeaderCharacterKey = leaderCandidate?.CharacterKey
+                                        ?? leaderSlot?.CharacterKey
+                                        ?? string.Empty;
         var slot1Blockers = BuildSlot1LeaderBlockers(leaderSlot, availableCharacters, lane);
         var missingRoleSlots = selectedCharacters
             .Where(static slot => string.IsNullOrWhiteSpace(slot.CharacterKey))
@@ -511,14 +514,32 @@ public sealed class DadPresetProviderService
             .ToList();
         var missingDutySelector = !string.IsNullOrWhiteSpace(dutySelectorBlocker);
         var insufficientPlannerPartyShell = lane.RequiresRemoteParty && requestedPartySize > selectedCharacters.Count;
-        var blocked = string.IsNullOrWhiteSpace(leaderCandidate?.CharacterKey)
-                      || missingRoleSlots.Count > 0
-                      || missingDutySelector
-                      || insufficientPlannerPartyShell
-                      || stopPolicyBlockers.Count > 0
-                      || groupBlockers.Count > 0
-                      || slot1Blockers.Count > 0
-                      || localNpcEligibilityBlockers.Count > 0;
+        var wakeValidation = BuildWakePolicyValidation(
+            effectiveSelectedGroup,
+            selectedCharacters,
+            availableCharacters);
+        var staticBlockers = new List<string>();
+        var readinessBlockers = new List<string>();
+        if (leaderCandidate == null && slot1Blockers.Count == 0)
+            readinessBlockers.Add("Slot1 leader/inviter is not connected and ready.");
+        if (missingRoleSlots.Count > 0)
+            staticBlockers.Add($"Missing role slots: {string.Join(", ", missingRoleSlots)}.");
+        if (missingDutySelector)
+            staticBlockers.Add(dutySelectorBlocker);
+        if (insufficientPlannerPartyShell)
+            staticBlockers.Add($"Selected duty needs party size {requestedPartySize}, but planner shell currently exposes only {selectedCharacters.Count} typed slot(s).");
+        staticBlockers.AddRange(stopPolicyBlockers);
+        staticBlockers.AddRange(groupBlockers);
+        staticBlockers.AddRange(slot1Blockers.Where(static blocker => !IsLiveReadinessBlocker(blocker)));
+        staticBlockers.AddRange(localNpcEligibilityBlockers);
+        staticBlockers.AddRange(wakeValidation.StaticBlockers);
+        readinessBlockers.AddRange(slot1Blockers.Where(IsLiveReadinessBlocker));
+        readinessBlockers.AddRange(wakeValidation.ReadinessBlockers);
+        var validation = DadPlannerValidationRules.Evaluate(
+            staticBlockers,
+            readinessBlockers,
+            wakeValidation.ScheduleBlockers);
+        var blocked = !validation.CanStart;
         var localCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.LocalRuntime);
         var remoteCandidateCount = availableCharacters.Count(static character => character.Source == DadCharacterSource.PeerRuntime);
 
@@ -545,33 +566,27 @@ public sealed class DadPresetProviderService
                 : DadRosterSourceMode.ConnectedAndXadb,
             AvailableCharacters = availableCharacters,
             SelectedCharacters = selectedCharacters,
-            LeaderCharacterKey = leaderCandidate?.CharacterKey ?? string.Empty,
+            LeaderCharacterKey = plannedLeaderCharacterKey,
             LeaderStatusText = leaderCandidate == null
-                ? "Slot1 leader/inviter is unresolved."
+                ? string.IsNullOrWhiteSpace(plannedLeaderCharacterKey)
+                    ? "Slot1 leader/inviter is unresolved."
+                    : $"Slot1 {plannedLeaderCharacterKey} is selected but not live, ready, and post-AR ready."
                 : $"Slot1 {leaderCandidate.CharacterKey} | {FormatReadiness(leaderCandidate.Readiness)} | {FormatFreshness(leaderCandidate)} | {GetCharacterSourceLabel(leaderCandidate.Source)}",
             PreviewOnly = options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine,
             PreviewScope = BuildPreviewScope(options, localCandidateCount, remoteCandidateCount, blocked),
             AccountFilterSummary = accountFilterSummary,
             FilterStats = filterStats,
             FilterSummary = BuildFilterSummary(filterStats),
+            CanSchedule = validation.CanSchedule,
+            ReadinessSummary = validation.ReadinessSummary,
+            StaticBlockers = [..validation.StaticBlockers],
+            ReadinessBlockers = [..validation.ReadinessBlockers],
+            ScheduleBlockers = [..validation.ScheduleBlockers],
         };
 
-        if (leaderCandidate == null && slot1Blockers.Count == 0)
-            preset.Blockers.Add("Slot1 leader/inviter is not connected and ready.");
-
-        if (missingRoleSlots.Count > 0)
-            preset.Blockers.Add($"Missing role slots: {string.Join(", ", missingRoleSlots)}.");
-
-        if (missingDutySelector)
-            preset.Blockers.Add(dutySelectorBlocker);
-
-        if (insufficientPlannerPartyShell)
-            preset.Blockers.Add($"Selected duty needs party size {requestedPartySize}, but planner shell currently exposes only {selectedCharacters.Count} typed slot(s).");
-
-        preset.Blockers.AddRange(stopPolicyBlockers);
-        preset.Blockers.AddRange(groupBlockers);
-        preset.Blockers.AddRange(slot1Blockers);
-        preset.Blockers.AddRange(localNpcEligibilityBlockers);
+        preset.Blockers.AddRange(validation.StaticBlockers);
+        preset.Blockers.AddRange(validation.ReadinessBlockers);
+        preset.Blockers.AddRange(validation.ScheduleBlockers);
 
         if (selectedGroup != null)
         {
@@ -668,6 +683,8 @@ public sealed class DadPresetProviderService
             requestedPartySize,
             lane);
         var capability = moduleRegistry.GetCapability(requestModuleId);
+        var startCapabilityBlocker = capability.Blockers.FirstOrDefault(static blocker =>
+            string.Equals(blocker.Capability, "CanStartQueue", StringComparison.OrdinalIgnoreCase));
 
         var plannerPreview = plannerPreviewOverride ?? BuildPlannerPreview(pool, options, selectedGroup);
         var selectedCharacters = ResolveSelectedCharacters(plannerPreview);
@@ -702,10 +719,17 @@ public sealed class DadPresetProviderService
                     ? 1
                     : requestedPartySize,
             ModuleBlockers = capability.Blockers.Select(static blocker => blocker.Clone()).ToList(),
+            CanSchedule = plannerPreview.CanSchedule && startCapabilityBlocker == null && !previewOnly,
+            ReadinessSummary = plannerPreview.ReadinessSummary,
+            StaticBlockers = [..plannerPreview.StaticBlockers],
+            ReadinessBlockers = [..plannerPreview.ReadinessBlockers],
+            ScheduleBlockers = [..plannerPreview.ScheduleBlockers],
         };
 
         if (!string.IsNullOrWhiteSpace(dutySelectorBlocker))
         {
+            result.CanSchedule = false;
+            AddValidationBlocker(result.StaticBlockers, dutySelectorBlocker);
             result.ModuleBlockers.Add(new DadModuleBlockerDto
             {
                 ModuleId = requestModuleId,
@@ -721,12 +745,16 @@ public sealed class DadPresetProviderService
         if (plannerPreview.ValidationState == DadReadinessState.Blocked)
         {
             BlockRequest(result, BuildPlannerBlockerSummary(plannerPreview));
+            if (result.CanSchedule)
+                result.StatusSummary = $"Planner direct start is waiting on live readiness; scheduler takeover is allowed. {result.ReadinessSummary}";
             PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
             return result;
         }
 
         if (selectedCharacters.Count == 0)
         {
+            result.CanSchedule = false;
+            AddValidationBlocker(result.StaticBlockers, "Planner request needs at least one selected typed character.");
             BlockRequest(result, "Planner request needs at least one selected typed character.");
             PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
             return result;
@@ -734,6 +762,7 @@ public sealed class DadPresetProviderService
 
         if (previewOnly)
         {
+            result.CanSchedule = false;
             result.CanStart = false;
             result.StatusSummary = "Preview-only request built. Local validation only; remote start remains disabled.";
             result.BlockedReason = plannerPreview.Blockers.Count == 0
@@ -743,10 +772,10 @@ public sealed class DadPresetProviderService
             return result;
         }
 
-        var startCapabilityBlocker = capability.Blockers.FirstOrDefault(static blocker =>
-            string.Equals(blocker.Capability, "CanStartQueue", StringComparison.OrdinalIgnoreCase));
         if (startCapabilityBlocker != null)
         {
+            result.CanSchedule = false;
+            AddValidationBlocker(result.StaticBlockers, startCapabilityBlocker.Summary);
             result.CanStart = false;
             result.StatusSummary = $"Planner request built, but start is blocked by module capability: {startCapabilityBlocker.Summary}";
             result.BlockedReason = startCapabilityBlocker.Summary;
@@ -768,6 +797,7 @@ public sealed class DadPresetProviderService
         }
 
         result.CanStart = true;
+        result.CanSchedule = true;
         result.StatusSummary = "Planner request ready to start.";
         PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
         return result;
@@ -1712,6 +1742,17 @@ public sealed class DadPresetProviderService
         return result;
     }
 
+    private static void AddValidationBlocker(List<string> blockers, string blocker)
+    {
+        if (string.IsNullOrWhiteSpace(blocker) ||
+            blockers.Any(existing => string.Equals(existing, blocker, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        blockers.Add(blocker.Trim());
+    }
+
     private void PopulateRequestPreviewDetails(
         DadPlannerRunRequestPreview result,
         DadRunRequest request,
@@ -1750,6 +1791,11 @@ public sealed class DadPresetProviderService
             QueueAuthority = request.Orchestration.QueueAuthority,
             Startability = BuildStartabilityLabel(result, request),
             CanStart = result.CanStart,
+            CanSchedule = result.CanSchedule,
+            ReadinessSummary = result.ReadinessSummary,
+            StaticBlockers = [..result.StaticBlockers],
+            ReadinessBlockers = [..result.ReadinessBlockers],
+            ScheduleBlockers = [..result.ScheduleBlockers],
             Blockers = BuildContractBlockers(result),
         };
 
@@ -1942,6 +1988,8 @@ public sealed class DadPresetProviderService
     private static string BuildStartabilityLabel(DadPlannerRunRequestPreview result, DadRunRequest request)
         => result.CanStart
             ? "Startable"
+            : result.CanSchedule
+                ? "Schedulable"
             : request.Orchestration.LocalOnlyOverride
                 ? "PreviewOnly"
                 : "Blocked";
@@ -2430,6 +2478,93 @@ public sealed class DadPresetProviderService
             blockers.Add($"Slot1 leader/inviter '{leader.CharacterKey}' is not valid for the party: {string.Join(" | ", partyBlockers)}");
 
         return blockers;
+    }
+
+    private static WakePolicyValidation BuildWakePolicyValidation(
+        DadPlannerGroup? selectedGroup,
+        IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+    {
+        var result = new WakePolicyValidation();
+        foreach (var selectedSlot in selectedSlots)
+        {
+            var wakePolicy = selectedGroup == null
+                ? DadSchedulerWakePolicy.LaunchIfOffline
+                : ResolveSelectedWakePolicy(selectedGroup, selectedSlot);
+            if (wakePolicy == DadSchedulerWakePolicy.LoadCharacterIfOnline)
+            {
+                result.StaticBlockers.Add(
+                    $"Slot {selectedSlot.SlotId}: {DadWakePolicyRules.LoadCharacterStubReason}");
+            }
+
+            if (string.IsNullOrWhiteSpace(selectedSlot.CharacterKey))
+                continue;
+
+            var character = availableCharacters.FirstOrDefault(candidate => MatchesSelectedSlot(candidate, selectedSlot));
+            var connected = character != null && IsConnectedForPlanning(character);
+            if (!connected)
+            {
+                result.ReadinessBlockers.Add(
+                    $"Slot {selectedSlot.SlotId} character '{selectedSlot.CharacterKey}' is not live, ready, and post-AR ready.");
+            }
+
+            if (selectedGroup == null)
+            {
+                if (!connected)
+                {
+                    result.ScheduleBlockers.Add(
+                        $"Slot {selectedSlot.SlotId} has no persisted wake policy, so the scheduler cannot resolve '{selectedSlot.CharacterKey}'.");
+                }
+                continue;
+            }
+
+            if (wakePolicy == DadSchedulerWakePolicy.AlreadyOnlineOnly && !connected)
+            {
+                result.ScheduleBlockers.Add(
+                    $"Slot {selectedSlot.SlotId} uses Already online and cannot wake or relog '{selectedSlot.CharacterKey}'.");
+            }
+        }
+
+        result.StaticBlockers = NormalizeValidationBlockers(result.StaticBlockers);
+        result.ReadinessBlockers = NormalizeValidationBlockers(result.ReadinessBlockers);
+        result.ScheduleBlockers = NormalizeValidationBlockers(result.ScheduleBlockers);
+        return result;
+    }
+
+    private static DadSchedulerWakePolicy ResolveSelectedWakePolicy(
+        DadPlannerGroup group,
+        DadPresetCharacterSlot selectedSlot)
+    {
+        var rows = DadPlannerSlotRules.GetRowsForSlot(group.Slots, selectedSlot.SlotId);
+        var matching = rows.FirstOrDefault(row =>
+            row.IsSubstitute == selectedSlot.IsSubstitution &&
+            (row.RequiredAccountKey.IsEmpty ||
+             string.Equals(row.RequiredAccountKey.Value, selectedSlot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase)) &&
+            (row.RequiredCharacterKey.IsEmpty ||
+             string.Equals(row.RequiredCharacterKey.Value, selectedSlot.CharacterKey, StringComparison.OrdinalIgnoreCase)));
+        return matching?.WakePolicy
+               ?? rows.FirstOrDefault(static row => !row.IsSubstitute)?.WakePolicy
+               ?? DadSchedulerWakePolicy.LaunchIfOffline;
+    }
+
+    private static bool IsLiveReadinessBlocker(string blocker)
+        => blocker.Contains("not live, ready, and post-AR ready", StringComparison.OrdinalIgnoreCase)
+           || blocker.Contains("account is live as", StringComparison.OrdinalIgnoreCase)
+           || blocker.Contains("XADB-only/offline", StringComparison.OrdinalIgnoreCase)
+           || blocker.Contains("queue ownership currently requires the local Dad Coordinator client", StringComparison.OrdinalIgnoreCase);
+
+    private static List<string> NormalizeValidationBlockers(IEnumerable<string> blockers)
+        => blockers
+            .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
+            .Select(static blocker => blocker.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private sealed class WakePolicyValidation
+    {
+        public List<string> StaticBlockers { get; set; } = [];
+        public List<string> ReadinessBlockers { get; set; } = [];
+        public List<string> ScheduleBlockers { get; set; } = [];
     }
 
     private static List<string> BuildPlannerGroupBlockers(DadPlannerGroup? selectedGroup, IReadOnlyList<DadPresetCharacterSlot> selectedSlots)

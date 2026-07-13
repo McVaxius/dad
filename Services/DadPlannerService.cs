@@ -15,7 +15,11 @@ public sealed class DadPlannerService
         this.configuration = configuration;
     }
 
-    public DadRunPlan? BuildPlan(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
+    public DadRunPlan? BuildPlan(
+        DadRunRequest request,
+        DadCharacterPool pool,
+        out string rejectionReason,
+        bool requireLiveReadiness = true)
     {
         rejectionReason = "No dad tasks were configured.";
         request.ApplyOrchestrationDefaults();
@@ -327,7 +331,7 @@ public sealed class DadPlannerService
         if (modules.Count == 0)
             return null;
 
-        if (!ValidateLocalNpcDutyRunner(request, pool, out rejectionReason))
+        if (requireLiveReadiness && !ValidateLocalNpcDutyRunner(request, pool, out rejectionReason))
             return null;
 
         if (!ValidateStopPolicyAtStart(request, pool, out rejectionReason))
@@ -351,7 +355,8 @@ public sealed class DadPlannerService
             return null;
         }
 
-        if (!ValidateRequiredRuntimeParticipants(request, pool, configuration.PartyValidationOverrideEnabled, out rejectionReason))
+        if (requireLiveReadiness &&
+            !ValidateRequiredRuntimeParticipants(request, pool, configuration.PartyValidationOverrideEnabled, out rejectionReason))
             return null;
 
         var localCharacterKey = pool.Characters
@@ -365,7 +370,14 @@ public sealed class DadPlannerService
             modules.Max(static module => module.ExpectedPartySize));
         var inviterCharacterKey = ResolveInviterCharacterKey(request, pool, leaderCharacterKey, localCharacterKey);
 
-        if (!ValidatePartyAuthority(request, pool, requiredParticipantCount, leaderCharacterKey, inviterCharacterKey, out rejectionReason))
+        if (!ValidatePartyAuthority(
+                request,
+                pool,
+                requiredParticipantCount,
+                leaderCharacterKey,
+                inviterCharacterKey,
+                requireLiveReadiness,
+                out rejectionReason))
             return null;
 
         return new DadRunPlan
@@ -379,7 +391,7 @@ public sealed class DadPlannerService
             LeaderCharacterKey = leaderCharacterKey,
             InviterCharacterKey = inviterCharacterKey,
             Modules = modules,
-            PlannerWarnings = BuildPlannerWarnings(request, pool),
+            PlannerWarnings = DadPlannerWarningRules.Build(request, pool),
         };
     }
 
@@ -406,6 +418,7 @@ public sealed class DadPlannerService
         int requiredParticipantCount,
         string leaderCharacterKey,
         string inviterCharacterKey,
+        bool requireLiveReadiness,
         out string rejectionReason)
     {
         rejectionReason = string.Empty;
@@ -432,13 +445,13 @@ public sealed class DadPlannerService
             return false;
         }
 
-        if (!IsConnectedForRuntime(leader))
+        if (requireLiveReadiness && !IsConnectedForRuntime(leader))
         {
             rejectionReason = $"Party leader '{leaderCharacterKey}' is not live/ready at runtime.";
             return false;
         }
 
-        if (leader.Blockers.Any(IsLocalIsolationReason))
+        if (requireLiveReadiness && leader.Blockers.Any(IsLocalIsolationReason))
         {
             rejectionReason = $"Party leader '{leaderCharacterKey}' is local-only/isolated and cannot queue the Dad party.";
             return false;
@@ -470,7 +483,7 @@ public sealed class DadPlannerService
             return false;
         }
 
-        if (!IsConnectedForRuntime(inviter))
+        if (requireLiveReadiness && !IsConnectedForRuntime(inviter))
         {
             rejectionReason = $"Party inviter '{inviterCharacterKey}' is not live/ready at runtime.";
             return false;
@@ -478,7 +491,7 @@ public sealed class DadPlannerService
 
         if (request.Orchestration.InviteAuthority == DadInviteAuthority.ServerDad)
         {
-            if (inviter.Source != DadCharacterSource.LocalRuntime)
+            if (requireLiveReadiness && inviter.Source != DadCharacterSource.LocalRuntime)
             {
                 rejectionReason = $"Dad Coordinator inviter '{inviterCharacterKey}' is not loaded on this Dad client.";
                 return false;
@@ -790,128 +803,6 @@ public sealed class DadPlannerService
                !reference.CharacterKey.IsEmpty &&
                string.Equals(reference.CharacterKey.Value, characterKey, StringComparison.OrdinalIgnoreCase));
 
-    public IReadOnlyList<DadAcquiredCharacter> ResolveParticipants(DadRunPlan plan, DadCharacterPool pool, out string blocker)
-    {
-        blocker = string.Empty;
-
-        if (plan.RequiredParticipantCount <= 1 || plan.Orchestration.LocalOnlyOverride)
-        {
-            var local = pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime);
-            if (local == null)
-            {
-                blocker = "No local Dad character is available.";
-                return [];
-            }
-
-            return [local.Clone()];
-        }
-
-        var filteredPool = BuildFilteredPool(plan, pool);
-        var plannerOptions = new DadPresetPlannerOptions
-        {
-            ActivityMode = plan.CompositeModuleId switch
-            {
-                DadModuleId.Msq => DadPlannerActivityMode.Msq,
-                DadModuleId.DutySupport => DadPlannerActivityMode.DutySupport,
-                DadModuleId.Trust => DadPlannerActivityMode.Trust,
-                DadModuleId.PremadeDuty => DadPlannerActivityMode.PremadeDuty,
-                DadModuleId.DailyMsq => DadPlannerActivityMode.DailyMsqPremade,
-                DadModuleId.Blunderville => DadPlannerActivityMode.Blunderville,
-                DadModuleId.Mogtome => DadPlannerActivityMode.Mogtome,
-                DadModuleId.Commendation => DadPlannerActivityMode.Commendation,
-                DadModuleId.Astrope => DadPlannerActivityMode.Astrope,
-                DadModuleId.CustomDuty => DadPlannerActivityMode.CustomDuty,
-                DadModuleId.Squadron => DadPlannerActivityMode.Squadron,
-                DadModuleId.VariantVvd => DadPlannerActivityMode.VariantVvd,
-                DadModuleId.Duty => DadPlannerActivityMode.LocalDuty,
-                _ => DadPlannerActivityMode.DutyPremade,
-            },
-            PresetName = "Dad Live Roster",
-            OperatorMode = DadPlannerOperatorMode.RemotePartyPlan,
-            ConnectedOnly = true,
-            SameDatacenterOnly = true,
-            AllowStaleForPlanning = false,
-            TransportOwner = ResolveTransportOwner(plan.CompositeModuleId),
-            QueueAuthority = ResolveQueueAuthority(plan.CompositeModuleId),
-        };
-
-        var preview = presetProviderService.BuildPlannerPreview(filteredPool, plannerOptions);
-        var resolved = preview.SelectedCharacters
-            .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
-            .Select(slot => preview.AvailableCharacters.FirstOrDefault(character =>
-                string.Equals(character.CharacterKey, slot.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
-                (slot.RequiredAccountKey.IsEmpty || MatchesAccountKey(character, slot.RequiredAccountKey.Value))))
-            .Where(static character => character != null)
-            .Select(static character => character!.Clone())
-            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (resolved.Count < plan.RequiredParticipantCount)
-        {
-            blocker = preview.Blockers.Count > 0
-                ? string.Join(" | ", preview.Blockers)
-                : $"Only {resolved.Count} typed participant(s) resolved for required size {plan.RequiredParticipantCount}.";
-        }
-
-        return resolved;
-    }
-
-    private static DadCharacterPool BuildFilteredPool(DadRunPlan plan, DadCharacterPool pool)
-    {
-        var requiredAccounts = plan.Orchestration.RequiredAccountKeys
-            .Select(static key => key.Value)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var preferredAccounts = plan.Orchestration.PreferredAccountKeys
-            .Select(static key => key.Value)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var requiredCharacters = plan.Orchestration.RequiredCharacterKeys
-            .Select(static key => key.Value)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var preferredCharacters = plan.Orchestration.PreferredCharacterKeys
-            .Select(static key => key.Value)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var filteredCharacters = pool.Characters
-            .Where(character =>
-            {
-                if (requiredAccounts.Count > 0 &&
-                    !requiredAccounts.Contains(character.AccountId) &&
-                    !requiredAccounts.Contains(character.AccountAlias))
-                {
-                    return false;
-                }
-
-                if (requiredCharacters.Count > 0 &&
-                    !requiredCharacters.Contains(character.CharacterKey))
-                {
-                    return false;
-                }
-
-                return true;
-            })
-            .OrderByDescending(character =>
-                preferredAccounts.Contains(character.AccountId) ||
-                preferredAccounts.Contains(character.AccountAlias))
-            .ThenByDescending(character => preferredCharacters.Contains(character.CharacterKey))
-            .ThenByDescending(static character => character.Source == DadCharacterSource.LocalRuntime)
-            .ThenBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
-            .Select(static character => character.Clone())
-            .ToList();
-
-        return new DadCharacterPool
-        {
-            LastUpdatedUtc = pool.LastUpdatedUtc,
-            Characters = filteredCharacters,
-            PeerTransport = pool.PeerTransport,
-            XadbStatus = pool.XadbStatus,
-            LastSummary = pool.LastSummary,
-        };
-    }
-
     private static bool IsConnectedForRuntime(DadAcquiredCharacter character)
         => character.Source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime
            && character.Freshness is DadSnapshotFreshness.Live or DadSnapshotFreshness.Recent
@@ -945,63 +836,4 @@ public sealed class DadPlannerService
            || blocker.Contains("local only", StringComparison.OrdinalIgnoreCase)
            || blocker.Contains("isolated", StringComparison.OrdinalIgnoreCase);
 
-    private static DadTransportOwner ResolveTransportOwner(DadModuleId moduleId)
-        => moduleId switch
-        {
-            DadModuleId.PremadeDuty or DadModuleId.DailyMsq or DadModuleId.VariantVvd => DadTransportOwner.LanParty,
-            _ => DadTransportOwner.DadDirect,
-        };
-
-    private static DadQueueAuthority ResolveQueueAuthority(DadModuleId moduleId)
-        => moduleId switch
-        {
-            DadModuleId.Mogtome or DadModuleId.Commendation or DadModuleId.Astrope
-                or DadModuleId.PremadeDuty or DadModuleId.DailyMsq or DadModuleId.VariantVvd => DadQueueAuthority.Leader,
-            _ => DadQueueAuthority.LocalOnly,
-        };
-
-    private static List<string> BuildPlannerWarnings(DadRunRequest request, DadCharacterPool pool)
-    {
-        var warnings = new List<string>();
-        if (pool.Characters.Count == 0)
-            warnings.Add("Dad character pool is empty at plan time.");
-
-        if (request.Orchestration.LocalOnlyOverride)
-            warnings.Add("Local-only mode ignores connected Dad workers until changed.");
-
-        if (request.Dungeon?.QueueViaLanParty == true)
-            warnings.Add("Premade dungeon routing stays inside Dad's internal premade lane.");
-
-        if (request.Dungeon is { QueueViaLanParty: false })
-            warnings.Add("Local Duty routes through Dad-owned guarded regular Duty Finder queue execution.");
-
-        if (request.DailyMsq != null)
-            warnings.Add("Daily MSQ routes through Dad's internal premade lane.");
-
-        if (request.PremadeDuty != null || request.Mogtome != null)
-            warnings.Add("Premade Duty and MOGTOME require Dad Coordinator authority and exact typed party workers.");
-
-        if (request.Msq != null)
-            warnings.Add("MSQ solo progression uses selected duty with Trust then Duty Support fallback.");
-
-        if (request.DutySupport != null || request.Trust != null)
-            warnings.Add("Duty Support and Trust route through Dad-owned guarded native local NPC duty lanes.");
-
-        if (request.CustomDuty != null)
-            warnings.Add("Custom Duty uses typed CFC selection and routes by configured party size.");
-
-        if (request.Squadron != null)
-            warnings.Add("Squadron is Dad-owned planning with guarded live callbacks deferred until in-game validation.");
-
-        if (request.VariantVvd != null)
-            warnings.Add("Variant/VVD is Dad-owned planning; live queue start is guarded/deferred until callback validation and ADS solving coverage are ready.");
-
-        if (request.Blunderville != null)
-            warnings.Add("Blunderville remains Dad-owned but blocks until guarded Gold Saucer callbacks are available.");
-
-        if (request.Commendation != null || request.Astrope != null)
-            warnings.Add("Commendation and Astrope remain Dad-owned; AuraFarmer is not required.");
-
-        return warnings;
-    }
 }

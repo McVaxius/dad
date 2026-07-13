@@ -10,6 +10,7 @@ public sealed class DadTransportService : IDisposable
 {
     private const string MessageSnapshotRequest = "snapshot-request";
     private const string MessageWakeRequest = "wake-request";
+    private const string MessageWakeTakeoverRequest = "wake-takeover-request";
     private const string MessageClaimRequest = "claim-request";
     private const string MessageAssemblyInstruction = "assembly-instruction";
     private const string MessageCharacterLoadCommand = "character-load-command";
@@ -28,6 +29,7 @@ public sealed class DadTransportService : IDisposable
     private const string MessageWorkerExecutionCommand = "worker-execution-command";
     private const string MessageWorkerExecutionStatus = "worker-execution-status";
     private const string MessageWorkerExecutionCancel = "worker-execution-cancel";
+    private const string MessageStopAll = "stop-all";
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
@@ -39,12 +41,14 @@ public sealed class DadTransportService : IDisposable
     private static readonly TimeSpan LocalRosterCatalogServeTtl = TimeSpan.FromSeconds(30);
     private const int MaxConcurrentConnections = 32;
     private const int MaxConcurrentOutboundOperations = 8;
+    private const int MaxConcurrentInboundRequestsPerConnection = 16;
     private const int MaxTransportEventsPerFrame = 64;
     private const int MaxTransportEventBacklog = 2048;
 
     private readonly Configuration configuration;
     private readonly DadPresenceService presenceService;
     private readonly DadClaimService claimService;
+    private readonly DadWakeTakeoverService wakeTakeoverService;
     private readonly IPluginLog log;
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly object roleGate = new();
@@ -57,15 +61,22 @@ public sealed class DadTransportService : IDisposable
     private readonly ConcurrentDictionary<string, DadPeerRosterCatalogResponse> rosterCatalogs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DadProfileCatalogResponse> profileCatalogs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DadWorkerExecutionAck> workerCommandAcks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DadStopAllStatus> stopAllOperations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object stopAllGate = new();
     private readonly ConcurrentDictionary<string, DateTime> nextRosterRefreshUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> nextProfileRefreshUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadBoundedFrameworkEventQueue frameworkCallbacks = new(MaxTransportEventBacklog);
     private readonly DadBoundedFrameworkEventQueue transportEvents = new(MaxTransportEventBacklog);
-    private readonly SemaphoreSlim connectionSlots = new(MaxConcurrentConnections, MaxConcurrentConnections);
-    private readonly SemaphoreSlim outboundSlots = new(MaxConcurrentOutboundOperations, MaxConcurrentOutboundOperations);
+    private readonly DadDeferredDisposalSemaphore connectionSlots = new(MaxConcurrentConnections, MaxConcurrentConnections);
+    private readonly DadDeferredDisposalSemaphore outboundSlots = new(MaxConcurrentOutboundOperations, MaxConcurrentOutboundOperations);
     private readonly DadRosterPublishCoalescer rosterPublishCoalescer = new();
+    private readonly DadReadinessHeartbeatCoalescer readinessHeartbeatCoalescer = new();
+    private readonly Dictionary<string, long> pendingRuntimeReadinessChanges = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private long pendingOutboundOperations;
+    private DateTime lastReconnectLogUtc = DateTime.MinValue;
+    private int lastReconnectLogDelaySeconds = -1;
+    private bool hubRosterProjectionOversize;
 
     private CancellationTokenSource roleCancellation = new();
     private TcpListener? listener;
@@ -99,16 +110,21 @@ public sealed class DadTransportService : IDisposable
     private Func<DadWorkerExecutionCommand, DadWorkerExecutionAck>? workerExecutionHandler;
     private Func<DadWorkerExecutionStatus>? workerStatusProvider;
     private Func<DadWorkerExecutionCancel, DadWorkerExecutionAck>? workerCancelHandler;
+    private Func<DadStopAllRequest, DadStopAllWorkerResult>? stopAllHandler;
+    private Action<DadWorkerSessionId, long>? runtimeReadinessHandler;
+    private DadStopAllStatus? latestStopAllStatus;
 
     public DadTransportService(
         Configuration configuration,
         DadPresenceService presenceService,
         DadClaimService claimService,
+        DadWakeTakeoverService wakeTakeoverService,
         IPluginLog log)
     {
         this.configuration = configuration;
         this.presenceService = presenceService;
         this.claimService = claimService;
+        this.wakeTakeoverService = wakeTakeoverService;
         this.log = log;
         backgroundTasks = new DadBackgroundTaskObserver(log, "transport");
         localParticipant = presenceService.BuildSnapshotCopy();
@@ -131,6 +147,15 @@ public sealed class DadTransportService : IDisposable
 
     public DadPeerTransportSnapshot CurrentTransport { get; }
 
+    public DadStopAllStatus? LatestStopAllStatus
+    {
+        get
+        {
+            lock (stopAllGate)
+                return latestStopAllStatus?.Clone();
+        }
+    }
+
     public string GetConfiguredAuthorityEndpoint()
         => configuration.RunAsServerDad
             ? FormatEndpoint(configuration.ServerListenHost, configuration.ServerListenPort)
@@ -150,10 +175,12 @@ public sealed class DadTransportService : IDisposable
             return true;
 
         if (configuration.RunAsServerDad)
-            return serverSessions.TryGet(workerSessionId, out var connection) && connection is { IsOpen: true };
+            return serverSessions.TryGet(workerSessionId, out var connection) && connection is { IsRoutable: true };
 
-        if (clientConnection is { IsOpen: true } &&
-            string.Equals(serverParticipant?.WorkerSessionId.Value, workerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+        if (clientConnection is not { IsRoutable: true })
+            return false;
+
+        if (string.Equals(serverParticipant?.WorkerSessionId.Value, workerSessionId.Value, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -167,6 +194,12 @@ public sealed class DadTransportService : IDisposable
     }
 
     public void RestartListener() => RestartTransport();
+
+    public void SetPluginEnabled(bool enabled)
+    {
+        localPluginEnabled = enabled;
+        RestartTransport();
+    }
 
     public void RestartTransport()
     {
@@ -212,6 +245,16 @@ public sealed class DadTransportService : IDisposable
 
         previous.Cancel();
         previous.Dispose();
+        if (!configuration.PluginEnabled)
+        {
+            CurrentTransport.Availability = "Disabled";
+            CurrentTransport.ConnectionStatus = "DAD disabled; coordinator reconnect is stopped.";
+            CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
+            CurrentTransport.AuthorityRoutable = false;
+            CurrentTransport.AuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
+            CurrentTransport.NextReconnectUtc = null;
+            return;
+        }
         Track(
             configuration.RunAsServerDad
                 ? RunServerAsync(roleCancellation.Token)
@@ -255,12 +298,24 @@ public sealed class DadTransportService : IDisposable
         this.workerCancelHandler = workerCancelHandler;
     }
 
+    public void ConfigureStopAllHandler(Func<DadStopAllRequest, DadStopAllWorkerResult> stopAllHandler)
+        => this.stopAllHandler = stopAllHandler;
+
+    public void ConfigureRuntimeReadinessHandler(Action<DadWorkerSessionId, long> handler)
+        => runtimeReadinessHandler = handler;
+
+    public void NotifyLocalRuntimeReadinessChanged(long revision)
+        => readinessHeartbeatCoalescer.MarkPending(revision);
+
     public void Dispose()
     {
         if (disposed)
             return;
 
         disposed = true;
+        // Suppress all late completion logging before cancellation starts. The observer still
+        // consumes task exceptions, but cannot call Dalamud logging after plugin teardown.
+        backgroundTasks.Dispose();
         lifetimeCancellation.Cancel();
         roleCancellation.Cancel();
         listener?.Stop();
@@ -268,11 +323,10 @@ public sealed class DadTransportService : IDisposable
         foreach (var pending in pendingRequests.Values)
             pending.TrySetCanceled();
 
-        lifetimeCancellation.Dispose();
-        roleCancellation.Dispose();
+        // These semaphores reject new work immediately and dispose their physical handles only
+        // after pre-existing waiters/sessions/sends release their lifetime leases.
         connectionSlots.Dispose();
         outboundSlots.Dispose();
-        backgroundTasks.Dispose();
     }
 
     public void UpdateHeartbeat(
@@ -298,19 +352,50 @@ public sealed class DadTransportService : IDisposable
         SweepCompletedOperations();
 
         var now = DateTime.UtcNow;
-        if (now >= nextHeartbeatUtc)
+        if (!pluginEnabled)
+        {
+            RefreshTransportSnapshot();
+            return;
+        }
+
+        if (!configuration.RunAsServerDad &&
+            clientConnection is { IsRoutable: true } liveConnection &&
+            DadReconnectPolicy.IsInboundStale(
+                liveConnection.LastFrameReceivedUtc,
+                now,
+                GetHeartbeatStaleThreshold()))
+        {
+            var reason = $"Dad Coordinator sent no frames for {GetHeartbeatStaleThreshold().TotalSeconds:F0}s; reconnecting.";
+            CurrentTransport.LastTransportTimeoutSummary = reason;
+            CurrentTransport.LastDisconnectReason = reason;
+            CurrentTransport.LastDisconnectedUtc = now;
+            liveConnection.Close();
+        }
+
+        if (readinessHeartbeatCoalescer.TryCapture(now, nextHeartbeatUtc, out var readinessTicket))
         {
             nextHeartbeatUtc = now + GetHeartbeatInterval();
+            var delivered = localOnlyModeEnabled;
             if (configuration.RunAsServerDad)
             {
-                foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
+                var connections = serverSessions.Snapshot().Where(static connection => connection.IsRoutable).ToList();
+                foreach (var connection in connections)
                     Track(SendHeartbeatAsync(connection, snapshot, roleCancellation.Token), "server heartbeat");
-                MarkHubRosterDirty("Dad Coordinator heartbeat.", fast: false);
+                delivered = true; // With no clients, the next hello already carries the latest snapshot.
+                MarkHubRosterDirty(
+                    readinessTicket.HasReadinessEdge
+                        ? "Dad Coordinator runtime readiness changed."
+                        : "Dad Coordinator heartbeat.",
+                    fast: readinessTicket.HasReadinessEdge);
             }
-            else if (clientConnection is { IsOpen: true } connection)
+            else if (clientConnection is { IsRoutable: true } connection)
             {
                 Track(SendHeartbeatAsync(connection, snapshot, roleCancellation.Token), "client heartbeat");
+                delivered = true;
             }
+
+            if (delivered)
+                readinessHeartbeatCoalescer.Acknowledge(readinessTicket);
         }
 
         if (configuration.RunAsServerDad)
@@ -319,6 +404,7 @@ public sealed class DadTransportService : IDisposable
         RebuildLocalRosterCatalogCacheIfDue(now);
         FlushHubRosterPublishIfDue(now);
         RefreshTransportSnapshot();
+        FlushRuntimeReadinessChanges();
     }
 
     public DadPeerTransportSnapshot RequestSnapshots(DadPeerSnapshotRequest request)
@@ -351,6 +437,15 @@ public sealed class DadTransportService : IDisposable
             MessageWakeRequest,
             request,
             $"wake:{request.RunId}:{participant.WorkerSessionId.Value}:{request.AssignedSlotId}");
+
+    public DadWakeTakeoverResultDto? SendWakeTakeoverRequest(
+        DadParticipantSnapshot participant,
+        DadWakeTakeoverRequestDto request)
+        => TryRequest<DadWakeTakeoverRequestDto, DadWakeTakeoverResultDto>(
+            participant.WorkerSessionId,
+            MessageWakeTakeoverRequest,
+            request,
+            $"wake-takeover:{participant.WorkerSessionId.Value}:{DadWakePolicyRules.BuildOperationKey(request)}");
 
     public DadClaimDecisionDto? RequestClaim(DadParticipantSnapshot participant, DadClaimRequestDto request)
         => TryRequest<DadClaimRequestDto, DadClaimDecisionDto>(
@@ -387,6 +482,23 @@ public sealed class DadTransportService : IDisposable
                 MessageStatusQuery,
                 string.Empty,
                 $"authority-status:{target.Value}");
+    }
+
+    public async Task<DadRunResult?> QueryAuthorityStatusAsync(CancellationToken cancellationToken)
+    {
+        var target = ResolveAuthorityWorkerSessionId();
+        if (target.IsEmpty || clientConnection is not { IsRoutable: true })
+            return null;
+
+        var response = await SendRequestAsync(
+                target,
+                MessageStatusQuery,
+                DadIpcJson.Serialize(string.Empty),
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (response.Kind == DadHubFrameKind.Error)
+            throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+        return DadIpcJson.Deserialize<DadRunResult>(response.PayloadJson);
     }
 
     public DadRunResult? SendStartRunCommand(string endpoint, DadRunRequest request)
@@ -426,6 +538,58 @@ public sealed class DadTransportService : IDisposable
             AuthorityEndpoint = GetPreferredAuthorityEndpoint(),
             Summary = "Forwarded cancellation to Dad Coordinator; awaiting authority status.",
         };
+    }
+
+    public DadStopAllStatus RequestStopAll(DadStopAllRequest request)
+    {
+        RefreshLocalMutationState();
+        NormalizeStopAllRequest(request);
+        lock (stopAllGate)
+        {
+            if (stopAllOperations.TryGetValue(request.OperationId, out var recorded))
+                return recorded.Clone();
+        }
+
+        log.Information("[dad] Stop-all submitted: operation {OperationId} by {WorkerSessionId}.",
+            request.OperationId,
+            request.RequestedByWorkerSessionId);
+
+        if (configuration.RunAsServerDad)
+            return BeginCoordinatorStopAll(request);
+
+        var target = ResolveAuthorityWorkerSessionId();
+        if (!localOnlyModeEnabled && !target.IsEmpty && CanQueueOperation(target))
+        {
+            var pending = new DadStopAllStatus
+            {
+                OperationId = request.OperationId,
+                RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
+                SubmittedAtUtc = request.RequestedAtUtc,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = "Stop-all forwarded to Dad Coordinator; awaiting authority acknowledgement.",
+            };
+            RecordStopAllStatus(pending);
+            QueueForwardStopAll(request, target);
+            return pending.Clone();
+        }
+
+        var local = InvokeLocalStopAll(request);
+        var fallback = new DadStopAllStatus
+        {
+            OperationId = request.OperationId,
+            RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
+            SubmittedAtUtc = request.RequestedAtUtc,
+            UpdatedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow,
+            RemotePropagationAvailable = false,
+            IsFinal = true,
+            Partial = true,
+            Summary = "Local DAD work stopped; Dad Coordinator propagation was unavailable.",
+            LocalResult = local,
+        };
+        RecordStopAllStatus(fallback);
+        LogStopAllFinal(fallback);
+        return fallback.Clone();
     }
 
     public IReadOnlyList<DadPeerRosterCatalogResponse> RequestRosterCatalogs(DadRosterRefreshPlan request)
@@ -678,21 +842,24 @@ public sealed class DadTransportService : IDisposable
             CurrentTransport.Availability = "Ready";
             CurrentTransport.ConnectionStatus = $"Dad Coordinator listening on {CurrentTransport.ListenerEndpoint}.";
             CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
+            CurrentTransport.AuthorityRoutable = true;
             ClearTransportAuthOrProtocolError();
             UpdateLanDiagnostics();
             IsReady = true;
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                await connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                var connectionLease = await connectionSlots.TryAcquireAsync(cancellationToken).ConfigureAwait(false);
+                if (connectionLease == null)
+                    break;
                 try
                 {
                     var client = await activeListener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
-                    Track(HandleServerClientWithReleaseAsync(client, cancellationToken), "server client session");
+                    Track(HandleServerClientWithReleaseAsync(client, connectionLease, cancellationToken), "server client session");
                 }
                 catch
                 {
-                    connectionSlots.Release();
+                    connectionLease.Dispose();
                     throw;
                 }
             }
@@ -720,6 +887,7 @@ public sealed class DadTransportService : IDisposable
 
     private async Task HandleServerClientWithReleaseAsync(
         TcpClient client,
+        DadDeferredDisposalSemaphoreLease connectionLease,
         CancellationToken serverCancellation)
     {
         try
@@ -728,7 +896,7 @@ public sealed class DadTransportService : IDisposable
         }
         finally
         {
-            connectionSlots.Release();
+            connectionLease.Dispose();
         }
     }
 
@@ -738,7 +906,7 @@ public sealed class DadTransportService : IDisposable
         try
         {
             client.NoDelay = true;
-            connection = new DadHubConnection(client, serverCancellation);
+            connection = new DadHubConnection(client, serverCancellation, DadHubHandshakeRole.Server);
             var helloFrame = await ReadWithTimeoutAsync(connection.Stream, ConnectTimeout, connection.Cancellation.Token)
                 .ConfigureAwait(false);
             if (helloFrame == null)
@@ -801,8 +969,8 @@ public sealed class DadTransportService : IDisposable
             connection.RemoteWorkerSessionId = hello.WorkerSessionId;
             connection.ClientInstanceId = hello.ClientInstanceId;
             connection.Participant = DadHubParticipants.PrepareRemote(hello.Participant, DateTime.UtcNow);
+            connection.ObserveRuntimeReadiness(connection.Participant, out _);
             connection.LastHeartbeatUtc = DateTime.UtcNow;
-            RegisterServerSession(connection);
 
             var ack = new DadHubHello
             {
@@ -824,6 +992,8 @@ public sealed class DadTransportService : IDisposable
                 "hello-ack",
                 connection.Cancellation.Token).ConfigureAwait(false);
 
+            connection.MarkHandshakeReady();
+            RegisterServerSession(connection);
             MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} connected.", fast: true);
             await RunConnectionReaderAsync(connection, isServerSide: true).ConfigureAwait(false);
         }
@@ -861,6 +1031,10 @@ public sealed class DadTransportService : IDisposable
             {
                 var host = NormalizeHost(configuration.ServerDadHost);
                 var port = NormalizePort(configuration.ServerDadPort);
+                var displayAttempt = attempt + 1;
+                CurrentTransport.ReconnectAttempt = displayAttempt;
+                CurrentTransport.NextReconnectUtc = null;
+                CurrentTransport.ConnectionStatus = $"Connecting to Dad Coordinator at {FormatEndpoint(host, port)} (attempt {displayAttempt}).";
                 var address = await ResolveAddressAsync(host, cancellationToken).ConfigureAwait(false);
                 try
                 {
@@ -870,7 +1044,7 @@ public sealed class DadTransportService : IDisposable
                 {
                     SetTransportAuthOrProtocolError("LAN connection requires W's shared secret");
                     log.Warning("[dad] {Code}: {Message}", ex.Code, ex.Message);
-                    return;
+                    throw;
                 }
 
                 using var client = new TcpClient(address.AddressFamily) { NoDelay = true };
@@ -879,13 +1053,12 @@ public sealed class DadTransportService : IDisposable
                     .WaitAsync(ConnectTimeout, cancellationToken)
                     .ConfigureAwait(false);
 
-                var connection = new DadHubConnection(client, cancellationToken)
+                var connection = new DadHubConnection(client, cancellationToken, DadHubHandshakeRole.Client)
                 {
                     WorkerSessionId = presenceService.WorkerSessionId,
                     ClientInstanceId = presenceService.ClientInstanceId,
                 };
                 activeConnection = connection;
-                clientConnection = connection;
 
                 var hello = new DadHubHello
                 {
@@ -924,20 +1097,40 @@ public sealed class DadTransportService : IDisposable
 
                 var serverHello = DadIpcJson.Deserialize<DadHubHello>(response.PayloadJson)
                                   ?? throw new DadHubProtocolException("hello-invalid", "Dad Coordinator hello payload is invalid.");
+                if (serverHello.WorkerSessionId.IsEmpty ||
+                    !string.Equals(serverHello.WorkerSessionId.Value, response.SourceWorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(response.TargetWorkerSessionId.Value, presenceService.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(response.CorrelationId, correlationId, StringComparison.Ordinal))
+                {
+                    throw new DadHubProtocolException("hello-invalid", "Dad Coordinator hello acknowledgement identity or correlation is invalid.");
+                }
+
                 serverParticipant = DadHubParticipants.PrepareRemote(serverHello.Participant, DateTime.UtcNow);
                 connection.RemoteWorkerSessionId = serverHello.WorkerSessionId;
                 connection.Participant = serverParticipant.Clone();
+                connection.ObserveRuntimeReadiness(connection.Participant, out _);
                 connection.LastHeartbeatUtc = DateTime.UtcNow;
+                connection.MarkHandshakeReady();
+                clientConnection = connection;
                 attempt = 0;
                 nextHeartbeatUtc = DateTime.MinValue;
                 IsReady = true;
                 CurrentTransport.Availability = "Ready";
                 CurrentTransport.ConnectionStatus = $"Connected to Dad Coordinator at {FormatEndpoint(host, port)}.";
                 CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
+                CurrentTransport.AuthorityRoutable = true;
+                CurrentTransport.LastConnectedUtc = DateTime.UtcNow;
+                CurrentTransport.LastInboundFrameUtc = connection.LastFrameReceivedUtc;
+                CurrentTransport.NextReconnectUtc = null;
+                lastReconnectLogDelaySeconds = -1;
                 ClearTransportAuthOrProtocolError();
                 RefreshTransportSnapshot();
+                log.Information("[dad] Connected to Dad Coordinator {WorkerSessionId} at {Endpoint}.",
+                    serverHello.WorkerSessionId,
+                    FormatEndpoint(host, port));
 
                 await RunConnectionReaderAsync(connection, isServerSide: false).ConfigureAwait(false);
+                CurrentTransport.LastDisconnectReason = "Dad Coordinator closed the connection.";
             }
             catch (DadHubProtocolException ex)
             {
@@ -945,23 +1138,34 @@ public sealed class DadTransportService : IDisposable
                     SetTransportAuthOrProtocolError(ex.Message);
                 else
                     SetTransportError($"{ex.Code}: {ex.Message}");
+                CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
                 log.Warning("[dad] Dad Coordinator connection rejected: {Code}: {Message}", ex.Code, ex.Message);
             }
             catch (TimeoutException)
             {
                 SetTransportError("Timed out connecting to Dad Coordinator.");
+                CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
+            catch (OperationCanceledException)
+            {
+                SetTransportError("Dad Coordinator connection was closed; reconnecting.");
+                CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
+            }
             catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
             {
-                return;
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+                SetTransportError($"Dad Coordinator connection ended: {ex.Message}");
+                CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
             }
             catch (Exception ex)
             {
                 SetTransportError($"Dad Coordinator connection failed: {ex.Message}");
+                CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
                 log.Debug(ex, "[dad] Dad Coordinator connection failed.");
             }
             finally
@@ -973,22 +1177,45 @@ public sealed class DadTransportService : IDisposable
                     clientConnection.Close();
                     clientConnection = null;
                 }
+                CurrentTransport.AuthorityRoutable = false;
+                CurrentTransport.AuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
+                CurrentTransport.LastDisconnectedUtc = DateTime.UtcNow;
                 RefreshTransportSnapshot();
             }
 
             attempt++;
-            var backoffSeconds = Math.Min(MaxReconnectBackoff.TotalSeconds, Math.Pow(2, Math.Min(attempt - 1, 4)));
+            if (!DadReconnectPolicy.ShouldContinue(configuration.PluginEnabled, cancellationToken.IsCancellationRequested))
+                return;
+            var backoff = DadReconnectPolicy.GetBackoff(attempt, MaxReconnectBackoff);
+            var backoffSeconds = backoff.TotalSeconds;
             CurrentTransport.ReconnectAttempt = attempt;
+            CurrentTransport.NextReconnectUtc = DateTime.UtcNow.AddSeconds(backoffSeconds);
             CurrentTransport.ConnectionStatus = $"Disconnected; reconnecting in {backoffSeconds:F0}s.";
+            LogReconnectTransition(attempt, (int)backoffSeconds, CurrentTransport.LastDisconnectReason);
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(backoff, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 return;
             }
         }
+    }
+
+    private void LogReconnectTransition(int attempt, int delaySeconds, string reason)
+    {
+        var now = DateTime.UtcNow;
+        if (delaySeconds == lastReconnectLogDelaySeconds && now - lastReconnectLogUtc < TimeSpan.FromMinutes(1))
+            return;
+
+        lastReconnectLogDelaySeconds = delaySeconds;
+        lastReconnectLogUtc = now;
+        log.Information(
+            "[dad] Dad Coordinator reconnect attempt {Attempt} scheduled in {DelaySeconds}s. Last reason: {Reason}",
+            attempt,
+            delaySeconds,
+            string.IsNullOrWhiteSpace(reason) ? "connection unavailable" : reason);
     }
 
     private async Task RunConnectionReaderAsync(DadHubConnection connection, bool isServerSide)
@@ -1001,6 +1228,9 @@ public sealed class DadTransportService : IDisposable
                 return;
 
             DadHubProtocol.ValidateFrame(frame, configuration.TransportSharedSecret);
+            connection.MarkFrameReceived(DateTime.UtcNow);
+            if (!isServerSide)
+                CurrentTransport.LastInboundFrameUtc = connection.LastFrameReceivedUtc;
             var expectedSource = isServerSide
                 ? connection.WorkerSessionId
                 : connection.RemoteWorkerSessionId;
@@ -1024,7 +1254,18 @@ public sealed class DadTransportService : IDisposable
                     HandleNotification(frame, isServerSide);
                     break;
                 case DadHubFrameKind.Request:
-                    await HandleInboundRequestAsync(connection, frame, isServerSide).ConfigureAwait(false);
+                    if (connection.TryBeginInboundRequest())
+                    {
+                        Track(
+                            HandleInboundRequestObservedAsync(connection, frame, isServerSide),
+                            $"inbound:{frame.MessageType}:{frame.CorrelationId}");
+                    }
+                    else
+                    {
+                        Track(
+                            SendInboundBusyErrorAsync(connection, frame),
+                            $"inbound-busy:{frame.MessageType}:{frame.CorrelationId}");
+                    }
                     break;
                 case DadHubFrameKind.Response:
                 case DadHubFrameKind.Error:
@@ -1035,6 +1276,33 @@ public sealed class DadTransportService : IDisposable
                     throw new DadHubProtocolException("unexpected-frame", $"Unexpected Dad hub frame kind {frame.Kind}.");
             }
         }
+    }
+
+    private async Task HandleInboundRequestObservedAsync(
+        DadHubConnection connection,
+        DadHubFrame frame,
+        bool isServerSide)
+    {
+        try
+        {
+            await HandleInboundRequestAsync(connection, frame, isServerSide).ConfigureAwait(false);
+        }
+        finally
+        {
+            connection.EndInboundRequest();
+        }
+    }
+
+    private async Task SendInboundBusyErrorAsync(DadHubConnection connection, DadHubFrame request)
+    {
+        var response = DadHubProtocol.CreateError(
+            presenceService.WorkerSessionId,
+            request.SourceWorkerSessionId,
+            request.CorrelationId,
+            "inbound-busy",
+            "Dad hub inbound request limit reached; retry this operation.",
+            configuration.TransportSharedSecret);
+        await SendFrameAsync(connection, response, request.MessageType, connection.Cancellation.Token).ConfigureAwait(false);
     }
 
     private void HandleHeartbeat(DadHubConnection connection, DadHubFrame frame, bool isServerSide)
@@ -1049,10 +1317,22 @@ public sealed class DadTransportService : IDisposable
                 var now = DateTime.UtcNow;
                 connection.LastHeartbeatUtc = now;
                 connection.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
+                var readinessChanged = connection.ObserveRuntimeReadiness(connection.Participant, out var readinessRevision);
+                if (readinessChanged)
+                {
+                    var workerSessionId = connection.RemoteWorkerSessionId.IsEmpty
+                        ? connection.Participant.WorkerSessionId
+                        : connection.RemoteWorkerSessionId;
+                    RecordRuntimeReadinessChange(workerSessionId, readinessRevision);
+                }
                 if (isServerSide)
                 {
                     disconnectedParticipants.TryRemove(connection.WorkerSessionId.Value, out _);
-                    MarkHubRosterDirty($"Client Dad {connection.WorkerSessionId} heartbeat.", fast: false);
+                    MarkHubRosterDirty(
+                        readinessChanged
+                            ? $"Client Dad {connection.WorkerSessionId} runtime readiness changed."
+                            : $"Client Dad {connection.WorkerSessionId} heartbeat.",
+                        fast: readinessChanged);
                 }
                 else
                 {
@@ -1064,7 +1344,18 @@ public sealed class DadTransportService : IDisposable
 
     private void HandleNotification(DadHubFrame frame, bool isServerSide)
     {
-        if (isServerSide || !string.Equals(frame.MessageType, MessageHubRosterPublish, StringComparison.Ordinal))
+        if (isServerSide)
+            return;
+
+        if (string.Equals(frame.MessageType, MessageStopAll, StringComparison.Ordinal))
+        {
+            var status = DadIpcJson.Deserialize<DadStopAllStatus>(frame.PayloadJson);
+            if (status != null)
+                QueueTransportEvent(() => RecordStopAllStatus(status), "stop-all-status");
+            return;
+        }
+
+        if (!string.Equals(frame.MessageType, MessageHubRosterPublish, StringComparison.Ordinal))
             return;
 
         var publish = DadIpcJson.Deserialize<DadHubRosterPublish>(frame.PayloadJson);
@@ -1169,7 +1460,7 @@ public sealed class DadTransportService : IDisposable
         DadHubFrame request,
         CancellationToken cancellationToken)
     {
-        if (!serverSessions.TryGet(request.TargetWorkerSessionId, out var target) || target is not { IsOpen: true })
+        if (!serverSessions.TryGet(request.TargetWorkerSessionId, out var target) || target is not { IsRoutable: true })
         {
             return DadHubProtocol.CreateError(
                 presenceService.WorkerSessionId,
@@ -1202,6 +1493,7 @@ public sealed class DadTransportService : IDisposable
         {
             MessageSnapshotRequest => DadIpcJson.Serialize(HandleSnapshotRequest(payloadJson)),
             MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(payloadJson)),
+            MessageWakeTakeoverRequest => DadIpcJson.Serialize(HandleWakeTakeoverRequest(payloadJson)),
             MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(payloadJson)),
             MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(payloadJson)),
             MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(payloadJson)),
@@ -1218,8 +1510,33 @@ public sealed class DadTransportService : IDisposable
             MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(payloadJson)),
             MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
             MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(payloadJson)),
+            MessageStopAll => DadIpcJson.Serialize(HandleStopAllRequest(payloadJson)),
             _ => throw new InvalidOperationException($"Unsupported Dad hub message type '{messageType}'."),
         };
+    }
+
+    private DadStopAllStatus HandleStopAllRequest(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadStopAllRequest>(payloadJson) ?? new DadStopAllRequest();
+        NormalizeStopAllRequest(request);
+        if (configuration.RunAsServerDad)
+            return BeginCoordinatorStopAll(request);
+
+        var local = InvokeLocalStopAll(request);
+        var response = new DadStopAllStatus
+        {
+            OperationId = request.OperationId,
+            RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
+            SubmittedAtUtc = request.RequestedAtUtc,
+            UpdatedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow,
+            IsFinal = true,
+            Partial = local.Partial,
+            Summary = local.Summary,
+            LocalResult = local,
+        };
+        RecordStopAllStatus(response, preserveCoordinatorMatrix: true);
+        return response;
     }
 
     private void RefreshLocalMutationState()
@@ -1252,6 +1569,13 @@ public sealed class DadTransportService : IDisposable
         return remoteMutationsAllowed
             ? presenceService.HandleWakeRequest(request)
             : BuildRejectedWakeResponse(request, BuildRemoteMutationRejectedReason("remote wake request"));
+    }
+
+    private DadWakeTakeoverResultDto HandleWakeTakeoverRequest(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadWakeTakeoverRequestDto>(payloadJson)
+                      ?? new DadWakeTakeoverRequestDto();
+        return wakeTakeoverService.Handle(request);
     }
 
     private DadClaimDecisionDto HandleClaimRequest(string payloadJson)
@@ -1439,8 +1763,8 @@ public sealed class DadTransportService : IDisposable
             return;
 
         var hasPeers = configuration.RunAsServerDad
-            ? serverSessions.Snapshot().Any(static connection => connection.IsOpen)
-            : clientConnection is { IsOpen: true };
+            ? serverSessions.Snapshot().Any(static connection => connection.IsRoutable)
+            : clientConnection is { IsRoutable: true };
         if (!hasPeers)
             return;
 
@@ -1662,7 +1986,7 @@ public sealed class DadTransportService : IDisposable
         if (completed != null)
             return completed;
 
-        if (targetWorkerSessionId.IsEmpty || operations.ContainsKey(operationKey))
+        if (operations.ContainsKey(operationKey) || !CanQueueOperation(targetWorkerSessionId))
             return default;
 
         QueueOperation<TRequest, TResponse>(
@@ -1731,7 +2055,7 @@ public sealed class DadTransportService : IDisposable
             aggregate.Responses.Add(BuildLocalRosterCatalogResponse(plan));
 
         var targets = serverSessions.Snapshot()
-            .Where(static connection => connection.IsOpen)
+            .Where(static connection => connection.IsRoutable)
             .Where(connection => string.IsNullOrWhiteSpace(skipRequester) ||
                                  !string.Equals(connection.WorkerSessionId.Value, skipRequester, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -1800,7 +2124,7 @@ public sealed class DadTransportService : IDisposable
             aggregate.Responses.Add(BuildLocalProfileCatalogResponse(requestId));
 
         var targets = serverSessions.Snapshot()
-            .Where(static connection => connection.IsOpen)
+            .Where(static connection => connection.IsRoutable)
             .Where(connection => string.IsNullOrWhiteSpace(skipRequester) ||
                                  !string.Equals(connection.WorkerSessionId.Value, skipRequester, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -2115,6 +2439,331 @@ public sealed class DadTransportService : IDisposable
             warnings.Add(warning);
     }
 
+    private DadStopAllStatus BeginCoordinatorStopAll(DadStopAllRequest request)
+    {
+        lock (stopAllGate)
+        {
+            if (stopAllOperations.TryGetValue(request.OperationId, out var recorded))
+                return recorded.Clone();
+        }
+
+        var targets = serverSessions.Snapshot()
+            .Where(static connection => connection.IsRoutable && !connection.WorkerSessionId.IsEmpty)
+            .Select(static connection => connection.WorkerSessionId)
+            .DistinctBy(static worker => worker.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var local = InvokeLocalStopAll(request);
+        var status = new DadStopAllStatus
+        {
+            OperationId = request.OperationId,
+            RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
+            SubmittedAtUtc = request.RequestedAtUtc,
+            UpdatedAtUtc = DateTime.UtcNow,
+            LocalResult = local,
+            Partial = local.Partial,
+            Workers = targets.Select(worker => new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = worker,
+                State = DadStopAllWorkerState.Expected,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = "Awaiting Stop-all acknowledgement.",
+            }).ToList(),
+        };
+        status.Summary = targets.Count == 0
+            ? "Stop-all completed locally; no connected Client Dad workers were routable."
+            : $"Stop-all completed locally; awaiting {targets.Count} connected Client Dad acknowledgement(s).";
+        if (targets.Count == 0)
+        {
+            status.IsFinal = true;
+            status.CompletedAtUtc = DateTime.UtcNow;
+        }
+        RecordStopAllStatus(status);
+
+        foreach (var target in targets)
+            QueueStopAllWorker(request, target);
+
+        if (targets.Count == 0)
+            LogStopAllFinal(status);
+        return status.Clone();
+    }
+
+    private void QueueStopAllWorker(DadStopAllRequest request, DadWorkerSessionId target)
+    {
+        var operationKey = $"stop-all-fanout:{request.OperationId}:{target.Value}";
+        if (!operations.TryAdd(operationKey, Task.CompletedTask))
+            return;
+
+        var task = RunStopAllWorkerAsync(operationKey, request, target, roleCancellation.Token);
+        operations[operationKey] = task;
+        Track(task, operationKey);
+    }
+
+    private void QueueForwardStopAll(DadStopAllRequest request, DadWorkerSessionId target)
+    {
+        var operationKey = $"stop-all-forward:{request.OperationId}";
+        if (!operations.TryAdd(operationKey, Task.CompletedTask))
+            return;
+        var task = RunForwardStopAllAsync(operationKey, request, target, roleCancellation.Token);
+        operations[operationKey] = task;
+        Track(task, operationKey);
+    }
+
+    private async Task RunForwardStopAllAsync(
+        string operationKey,
+        DadStopAllRequest request,
+        DadWorkerSessionId target,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
+            var response = await SendRequestAsync(
+                    target,
+                    MessageStopAll,
+                    DadIpcJson.Serialize(request),
+                    cancellationToken,
+                    timeout)
+                .ConfigureAwait(false);
+            if (response.Kind == DadHubFrameKind.Error)
+                throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+            var status = DadIpcJson.Deserialize<DadStopAllStatus>(response.PayloadJson)
+                         ?? throw new DadHubProtocolException("invalid-response", "Dad Coordinator returned an invalid Stop-all result.");
+            await Plugin.Framework.RunOnFrameworkThread(() => ApplyForwardedStopAllStatus(status)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await Plugin.Framework.RunOnFrameworkThread(() => ApplyForwardedStopAllFailure(request, ex.Message)).ConfigureAwait(false);
+            }
+            catch (Exception callbackException) when (DadBackgroundTaskObserver.IsExpectedShutdownException(callbackException))
+            {
+            }
+        }
+        finally
+        {
+            operations.TryRemove(operationKey, out _);
+        }
+    }
+
+    private async Task RunStopAllWorkerAsync(
+        string operationKey,
+        DadStopAllRequest request,
+        DadWorkerSessionId target,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
+            var response = await SendRequestAsync(
+                    target,
+                    MessageStopAll,
+                    DadIpcJson.Serialize(request),
+                    cancellationToken,
+                    timeout)
+                .ConfigureAwait(false);
+            if (response.Kind == DadHubFrameKind.Error)
+                throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+
+            var aggregate = DadIpcJson.Deserialize<DadStopAllStatus>(response.PayloadJson);
+            var worker = aggregate?.LocalResult ?? new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = target,
+                State = DadStopAllWorkerState.Rejected,
+                Summary = "Client Dad returned an invalid Stop-all acknowledgement.",
+            };
+            worker.WorkerSessionId = target;
+            worker.State = worker.LocalCleanupCompleted
+                ? DadStopAllWorkerState.Acknowledged
+                : DadStopAllWorkerState.Rejected;
+            UpdateStopAllWorker(request.OperationId, worker);
+        }
+        catch (DadHubProtocolException ex) when (string.Equals(ex.Code, "request-timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateStopAllWorker(request.OperationId, new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = target,
+                State = DadStopAllWorkerState.TimedOut,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = ex.Message,
+            });
+        }
+        catch (Exception ex) when (!IsWorkerOnline(target))
+        {
+            UpdateStopAllWorker(request.OperationId, new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = target,
+                State = DadStopAllWorkerState.Disconnected,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = $"Client Dad disconnected before acknowledging Stop-all: {ex.Message}",
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            UpdateStopAllWorker(request.OperationId, new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = target,
+                State = DadStopAllWorkerState.Rejected,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = ex.Message,
+            });
+        }
+        finally
+        {
+            operations.TryRemove(operationKey, out _);
+        }
+    }
+
+    private void UpdateStopAllWorker(string operationId, DadStopAllWorkerResult worker)
+    {
+        DadStopAllStatus? final = null;
+        DadStopAllStatus? updated = null;
+        lock (stopAllGate)
+        {
+            if (!stopAllOperations.TryGetValue(operationId, out var status))
+                return;
+            var index = status.Workers.FindIndex(candidate => string.Equals(
+                candidate.WorkerSessionId.Value,
+                worker.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase));
+            if (index < 0 || status.Workers[index].State != DadStopAllWorkerState.Expected)
+                return;
+
+            status.Workers[index] = worker.Clone();
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            log.Information("[dad] Stop-all {OperationId} worker {WorkerSessionId}: {State}.",
+                operationId,
+                worker.WorkerSessionId,
+                worker.State);
+            DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+            stopAllOperations[operationId] = status;
+            latestStopAllStatus = status.Clone();
+            updated = status.Clone();
+            if (status.IsFinal)
+                final = status.Clone();
+        }
+
+        if (updated != null)
+            BroadcastStopAllStatus(updated);
+        if (final != null)
+            LogStopAllFinal(final);
+    }
+
+    private void BroadcastStopAllStatus(DadStopAllStatus status)
+    {
+        if (!configuration.RunAsServerDad)
+            return;
+        var payload = DadIpcJson.Serialize(status);
+        foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsRoutable))
+        {
+            Track(
+                SendFrameAsync(
+                    connection,
+                    DadHubProtocol.CreateFrame(
+                        DadHubFrameKind.Notification,
+                        presenceService.WorkerSessionId,
+                        connection.WorkerSessionId,
+                        MessageStopAll,
+                        status.OperationId,
+                        payload,
+                        configuration.TransportSharedSecret),
+                    MessageStopAll,
+                    roleCancellation.Token),
+                $"stop-all-status:{status.OperationId}:{connection.WorkerSessionId.Value}");
+        }
+    }
+
+    private void LogStopAllFinal(DadStopAllStatus status)
+        => log.Information("[dad] Stop-all {OperationId} final: {Summary}", status.OperationId, status.Summary);
+
+    private DadStopAllWorkerResult InvokeLocalStopAll(DadStopAllRequest request)
+    {
+        var result = stopAllHandler?.Invoke(request) ?? new DadStopAllWorkerResult
+        {
+            OperationId = request.OperationId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            State = DadStopAllWorkerState.Rejected,
+            Summary = "Local Stop-all handler is unavailable.",
+        };
+        result.OperationId = request.OperationId;
+        result.WorkerSessionId = presenceService.WorkerSessionId;
+        result.UpdatedAtUtc = DateTime.UtcNow;
+        if (result.LocalCleanupCompleted)
+            result.State = DadStopAllWorkerState.Acknowledged;
+        log.Information("[dad] Stop-all {OperationId} local completion: {State}; {Summary}",
+            request.OperationId,
+            result.State,
+            result.Summary);
+        return result;
+    }
+
+    private void ApplyForwardedStopAllStatus(DadStopAllStatus status)
+        => RecordStopAllStatus(status);
+
+    private void ApplyForwardedStopAllFailure(DadStopAllRequest request, string failure)
+    {
+        var local = InvokeLocalStopAll(request);
+        var fallback = new DadStopAllStatus
+        {
+            OperationId = request.OperationId,
+            RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
+            SubmittedAtUtc = request.RequestedAtUtc,
+            UpdatedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow,
+            RemotePropagationAvailable = false,
+            IsFinal = true,
+            Partial = true,
+            Summary = $"Local DAD work stopped; Dad Coordinator propagation failed: {failure}",
+            LocalResult = local,
+        };
+        RecordStopAllStatus(fallback);
+        LogStopAllFinal(fallback);
+    }
+
+    private void RecordStopAllStatus(DadStopAllStatus status, bool preserveCoordinatorMatrix = false)
+    {
+        lock (stopAllGate)
+        {
+            if (preserveCoordinatorMatrix &&
+                stopAllOperations.TryGetValue(status.OperationId, out var existing) &&
+                !existing.IsFinal)
+            {
+                existing.LocalResult = status.LocalResult.Clone();
+                existing.UpdatedAtUtc = DateTime.UtcNow;
+                stopAllOperations[status.OperationId] = existing;
+                latestStopAllStatus = existing.Clone();
+                return;
+            }
+
+            var clone = status.Clone();
+            stopAllOperations[clone.OperationId] = clone;
+            latestStopAllStatus = clone.Clone();
+        }
+    }
+
+    private void NormalizeStopAllRequest(DadStopAllRequest request)
+    {
+        request.OperationId = string.IsNullOrWhiteSpace(request.OperationId)
+            ? Guid.NewGuid().ToString("N")
+            : request.OperationId.Trim();
+        request.RequestedByWorkerSessionId = request.RequestedByWorkerSessionId.IsEmpty
+            ? presenceService.WorkerSessionId
+            : request.RequestedByWorkerSessionId;
+        request.RequestedAtUtc = request.RequestedAtUtc == default ? DateTime.UtcNow : request.RequestedAtUtc;
+        request.Reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by operator." : request.Reason.Trim();
+    }
+
     private void QueueOperation<TRequest, TResponse>(
         string operationKey,
         DadWorkerSessionId targetWorkerSessionId,
@@ -2122,6 +2771,9 @@ public sealed class DadTransportService : IDisposable
         TRequest request,
         Action<TResponse>? completed)
     {
+        if (!CanQueueOperation(targetWorkerSessionId))
+            return;
+
         if (!operations.TryAdd(operationKey, Task.CompletedTask))
             return;
 
@@ -2185,6 +2837,11 @@ public sealed class DadTransportService : IDisposable
         catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
         {
         }
+        catch (Exception) when (!CanQueueOperation(targetWorkerSessionId))
+        {
+            // Reconnect polling is intentionally quiet. Once the handshake is no longer routable,
+            // status/catalog/wake callers will coalesce on their next normal framework update.
+        }
         catch (Exception ex)
         {
             CurrentTransport.LastRequestStatus = $"{messageType} failed: {ex.Message}";
@@ -2200,7 +2857,8 @@ public sealed class DadTransportService : IDisposable
         DadWorkerSessionId targetWorkerSessionId,
         string messageType,
         string payloadJson,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? requestTimeout = null)
     {
         var connection = ResolveConnection(targetWorkerSessionId)
                          ?? throw new DadHubProtocolException(
@@ -2211,7 +2869,8 @@ public sealed class DadTransportService : IDisposable
                 targetWorkerSessionId,
                 messageType,
                 payloadJson,
-                cancellationToken)
+                cancellationToken,
+                requestTimeout)
             .ConfigureAwait(false);
     }
 
@@ -2220,7 +2879,8 @@ public sealed class DadTransportService : IDisposable
         DadWorkerSessionId targetWorkerSessionId,
         string messageType,
         string payloadJson,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? requestTimeout = null)
     {
         var correlationId = Guid.NewGuid().ToString("N");
         var completion = new TaskCompletionSource<DadHubFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2242,7 +2902,7 @@ public sealed class DadTransportService : IDisposable
                 messageType,
                 cancellationToken).ConfigureAwait(false);
 
-            return await completion.Task.WaitAsync(RequestTimeout, cancellationToken).ConfigureAwait(false);
+            return await completion.Task.WaitAsync(requestTimeout ?? RequestTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
@@ -2262,13 +2922,13 @@ public sealed class DadTransportService : IDisposable
         string operationName,
         CancellationToken cancellationToken)
     {
-        var slotAcquired = false;
         Interlocked.Increment(ref pendingOutboundOperations);
         UpdateTransportQueueDiagnostics();
         try
         {
-            await outboundSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
-            slotAcquired = true;
+            using var outboundLease = await outboundSlots.TryAcquireAsync(cancellationToken).ConfigureAwait(false);
+            if (outboundLease == null)
+                throw new OperationCanceledException("Dad transport is shutting down.", cancellationToken);
             await connection.SendAsync(frame, OutboundWriteTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch (DadHubProtocolException ex) when (string.Equals(ex.Code, "write-timeout", StringComparison.OrdinalIgnoreCase))
@@ -2278,8 +2938,6 @@ public sealed class DadTransportService : IDisposable
         }
         finally
         {
-            if (slotAcquired)
-                outboundSlots.Release();
             Interlocked.Decrement(ref pendingOutboundOperations);
             UpdateTransportQueueDiagnostics();
         }
@@ -2301,17 +2959,25 @@ public sealed class DadTransportService : IDisposable
     private DadHubConnection? ResolveConnection(DadWorkerSessionId targetWorkerSessionId)
     {
         if (configuration.RunAsServerDad)
-            return serverSessions.TryGet(targetWorkerSessionId, out var session) && session is { IsOpen: true }
+            return serverSessions.TryGet(targetWorkerSessionId, out var session) && session is { IsRoutable: true }
                 ? session
                 : null;
 
-        return clientConnection is { IsOpen: true } connection ? connection : null;
+        return clientConnection is { IsRoutable: true } connection ? connection : null;
     }
+
+    private bool CanQueueOperation(DadWorkerSessionId targetWorkerSessionId)
+        => DadHubTransportRouting.CanQueue(
+            targetWorkerSessionId,
+            ResolveConnection(targetWorkerSessionId) is { IsRoutable: true });
 
     private DadWorkerSessionId ResolveAuthorityWorkerSessionId()
     {
         if (configuration.RunAsServerDad)
             return presenceService.WorkerSessionId;
+
+        if (clientConnection is not { IsRoutable: true })
+            return new DadWorkerSessionId(string.Empty);
 
         if (serverParticipant != null && !serverParticipant.WorkerSessionId.IsEmpty)
             return serverParticipant.WorkerSessionId;
@@ -2419,6 +3085,35 @@ public sealed class DadTransportService : IDisposable
         UpdateTransportQueueDiagnostics();
     }
 
+    private void RecordRuntimeReadinessChange(DadWorkerSessionId workerSessionId, long revision)
+    {
+        if (workerSessionId.IsEmpty)
+            return;
+
+        if (!pendingRuntimeReadinessChanges.TryGetValue(workerSessionId.Value, out var current) || revision > current)
+            pendingRuntimeReadinessChanges[workerSessionId.Value] = revision;
+    }
+
+    private void FlushRuntimeReadinessChanges()
+    {
+        if (pendingRuntimeReadinessChanges.Count == 0)
+            return;
+
+        var changes = pendingRuntimeReadinessChanges.ToList();
+        pendingRuntimeReadinessChanges.Clear();
+        foreach (var (workerSessionId, revision) in changes)
+        {
+            try
+            {
+                runtimeReadinessHandler?.Invoke(new DadWorkerSessionId(workerSessionId), revision);
+            }
+            catch (Exception ex)
+            {
+                log.Warning(ex, "[dad] Runtime readiness edge {Revision} for {WorkerSessionId} failed during framework dispatch.", revision, workerSessionId);
+            }
+        }
+    }
+
     private void FlushHubRosterPublishIfDue(DateTime nowUtc)
     {
         if (!rosterPublishCoalescer.TryFlush(nowUtc, out var reason))
@@ -2463,6 +3158,7 @@ public sealed class DadTransportService : IDisposable
             MarkSnapshotUnavailable(coordinator, BuildLocalUnavailableReason());
 
         var clients = serverSessions.Snapshot()
+            .Where(static connection => connection.IsRoutable)
             .Select(connection =>
             {
                 var participant = DadHubParticipants.PrepareRemoteWithStaleState(
@@ -2488,11 +3184,10 @@ public sealed class DadTransportService : IDisposable
                     now,
                     staleAfter,
                     "Client Dad disconnected.");
+                DadHubParticipants.MarkDisconnected(participant, "Client Dad disconnected.");
                 participant.IsAuthority = false;
                 if (participant.WorkerRole == DadWorkerRole.None)
                     participant.WorkerRole = DadWorkerRole.ClientDad;
-                if (participant.State != DadParticipantState.Stale)
-                    participant.StatusText = "Client Dad connection lost; waiting for reconnect.";
                 return participant;
             })
             .ToList();
@@ -2532,20 +3227,45 @@ public sealed class DadTransportService : IDisposable
         return DadHubRosterCatalogProjection.BuildCatalogRows(responses);
     }
 
-    // B2: keep the publish comfortably under the 256 KiB frame cap; if the projection pushes it past the
-    // budget, fall back to participants-only (the manual pull stays available as a debug fallback).
+    // B2: measure the signed outer frame, not only the inner publish JSON. The outer JSON escapes the inner
+    // payload and can be materially larger. If the projection does not fit, fall back to participants-only
+    // (the manual pull stays available as a debug fallback).
     private void TrimHubRosterCatalogRowsIfOversize(DadHubRosterPublish publish)
     {
         if (publish.CatalogRows.Count == 0)
             return;
 
-        const int budget = DadHubProtocol.MaxFrameBytes * 7 / 8;
-        if (System.Text.Encoding.UTF8.GetByteCount(DadIpcJson.Serialize(publish)) <= budget)
-            return;
+        var payloadJson = DadIpcJson.Serialize(publish);
+        var targets = serverSessions.Snapshot()
+            .Where(static connection => connection.IsRoutable)
+            .Select(static connection => connection.WorkerSessionId)
+            .ToList();
+        if (targets.Count == 0)
+            targets.Add(presenceService.WorkerSessionId);
 
-        log.Warning(
-            "[dad] Hub roster projection ({Rows} row(s)) exceeds the frame budget; publishing participants only.",
-            publish.CatalogRows.Count);
+        if (targets.All(target => DadHubProtocol.GetSerializedFrameByteCount(
+                DadHubProtocol.CreateFrame(
+                    DadHubFrameKind.Notification,
+                    presenceService.WorkerSessionId,
+                    target,
+                    MessageHubRosterPublish,
+                    string.Empty,
+                    payloadJson,
+                    configuration.TransportSharedSecret)) <= DadHubProtocol.MaxFrameBytes))
+        {
+            if (hubRosterProjectionOversize)
+                log.Information("[dad] Hub roster projection fits the frame budget again.");
+            hubRosterProjectionOversize = false;
+            return;
+        }
+
+        if (!hubRosterProjectionOversize)
+        {
+            log.Warning(
+                "[dad] Hub roster projection ({Rows} row(s)) exceeds the frame budget; publishing participants only.",
+                publish.CatalogRows.Count);
+        }
+        hubRosterProjectionOversize = true;
         publish.CatalogRows = [];
     }
 
@@ -2555,7 +3275,7 @@ public sealed class DadTransportService : IDisposable
     {
         var payloadJson = DadIpcJson.Serialize(publish);
         var sends = serverSessions.Snapshot()
-            .Where(static connection => connection.IsOpen)
+            .Where(static connection => connection.IsRoutable)
             .Select(connection => SendHubRosterPublishAsync(connection, payloadJson, cancellationToken))
             .ToList();
         if (sends.Count == 0)
@@ -2587,6 +3307,12 @@ public sealed class DadTransportService : IDisposable
         catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
         {
         }
+        catch (DadHubProtocolException ex) when (string.Equals(ex.Code, "frame-too-large", StringComparison.OrdinalIgnoreCase))
+        {
+            CurrentTransport.LastRequestStatus =
+                $"Dad Coordinator roster publish was too large for {connection.WorkerSessionId}; connection preserved.";
+            log.Warning(ex, "[dad] Hub roster publish was too large for {WorkerSessionId}; preserving the connection.", connection.WorkerSessionId);
+        }
         catch (Exception ex)
         {
             log.Debug(ex, "[dad] Hub roster publish failed for {WorkerSessionId}.", connection.WorkerSessionId);
@@ -2596,7 +3322,7 @@ public sealed class DadTransportService : IDisposable
 
     private void RequestHubRosterPublish(DadParticipantSnapshot participant)
     {
-        if (clientConnection is not { IsOpen: true })
+        if (clientConnection is not { IsRoutable: true })
             return;
 
         var target = ResolveAuthorityWorkerSessionId();
@@ -2661,7 +3387,7 @@ public sealed class DadTransportService : IDisposable
         CurrentTransport.AuthorityEndpoint = publish.AuthorityEndpoint;
         CurrentTransport.AuthorityWorkerSessionId = publish.AuthorityWorkerSessionId;
         CurrentTransport.AuthorityRole = DadWorkerRole.ServerDad;
-        CurrentTransport.ConnectedPeerCount = serverSessions.Snapshot().Count(static connection => connection.IsOpen);
+        CurrentTransport.ConnectedPeerCount = serverSessions.Snapshot().Count(static connection => connection.IsRoutable);
         UpdateLanDiagnostics();
     }
 
@@ -2674,7 +3400,7 @@ public sealed class DadTransportService : IDisposable
         warning = string.Empty;
         if (lastHubRosterPublish == null)
         {
-            if (clientConnection is { IsOpen: true })
+            if (clientConnection is { IsRoutable: true })
                 warning = "Dad Coordinator roster publish is not available yet; using local self plus coordinator only.";
             return false;
         }
@@ -2746,7 +3472,7 @@ public sealed class DadTransportService : IDisposable
         // B4: periodic full reconcile, throttled per-worker by GetPeerCatalogRefreshInterval (the slow safety
         // net). Connect (B3) and level-up (B5) drive fast forced deltas; this keeps the coordinator's
         // rosterCatalogs cache fresh so the B2 push projection stays accurate without manual tickling.
-        foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsOpen))
+        foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsRoutable))
         {
             QueueRosterCatalogRefresh(connection, force: false, new DadRosterRefreshPlan
             {
@@ -2854,7 +3580,7 @@ public sealed class DadTransportService : IDisposable
                 MarkSnapshotUnavailable(local, BuildLocalUnavailableReason());
             participants.Add(local);
 
-            foreach (var connection in serverSessions.Snapshot())
+            foreach (var connection in serverSessions.Snapshot().Where(static connection => connection.IsRoutable))
             {
                 var participant = DadHubParticipants.PrepareRemoteWithStaleState(
                     connection.Participant,
@@ -2874,14 +3600,15 @@ public sealed class DadTransportService : IDisposable
                     now,
                     staleAfter,
                     "Client Dad disconnected.");
-                if (participant.State != DadParticipantState.Stale)
-                    participant.StatusText = "Client Dad connection lost; waiting for reconnect.";
+                DadHubParticipants.MarkDisconnected(participant, "Client Dad disconnected.");
                 participants.Add(participant);
             }
 
             CurrentTransport.AuthorityEndpoint = CurrentTransport.ListenerEndpoint;
             CurrentTransport.AuthorityWorkerSessionId = presenceService.WorkerSessionId;
             CurrentTransport.AuthorityRole = DadWorkerRole.ServerDad;
+            CurrentTransport.AuthorityRoutable = IsReady;
+            CurrentTransport.LastInboundFrameUtc = null;
         }
         else
         {
@@ -2891,8 +3618,11 @@ public sealed class DadTransportService : IDisposable
                 configuration.ServerDadPort);
             CurrentTransport.AuthorityRole = DadWorkerRole.ServerDad;
             CurrentTransport.AuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
+            CurrentTransport.AuthorityRoutable = clientConnection is { IsRoutable: true };
+            CurrentTransport.LastInboundFrameUtc = clientConnection?.LastFrameReceivedUtc;
 
-            if (!localOnlyModeEnabled &&
+            if (CurrentTransport.AuthorityRoutable &&
+                !localOnlyModeEnabled &&
                 TryBuildPublishedClientRoster(now, out var publishedParticipants, out rosterFallbackWarning))
             {
                 participants.AddRange(publishedParticipants);
@@ -2934,24 +3664,25 @@ public sealed class DadTransportService : IDisposable
                         serverParticipant,
                         clientConnection?.LastHeartbeatUtc ?? serverParticipant.LastHeartbeatUtc,
                         now,
-                        clientConnection is { IsOpen: true } ? TimeSpan.MaxValue : staleAfter,
+                        clientConnection is { IsRoutable: true } ? TimeSpan.MaxValue : staleAfter,
                         "Dad Coordinator connection lost.");
 
                     participants.Add(participant);
-                    CurrentTransport.AuthorityWorkerSessionId = participant.WorkerSessionId;
+                    if (CurrentTransport.AuthorityRoutable)
+                        CurrentTransport.AuthorityWorkerSessionId = participant.WorkerSessionId;
                 }
             }
         }
 
         SetTransportRoster(participants);
         CurrentTransport.ConnectedPeerCount = configuration.RunAsServerDad
-            ? serverSessions.Snapshot().Count(static connection => connection.IsOpen)
+            ? serverSessions.Snapshot().Count(static connection => connection.IsRoutable)
             : CurrentTransport.KnownParticipants.Count(static participant =>
                 !participant.IsLocalClient && participant.State != DadParticipantState.Stale);
         CurrentTransport.TransportMode = localOnlyModeEnabled
             ? DadTransportMode.LocalOnly
             : DadTransportMode.ServerHub;
-        CurrentTransport.AuthorityStatus = CurrentTransport.AuthorityWorkerSessionId.IsEmpty
+        CurrentTransport.AuthorityStatus = !CurrentTransport.AuthorityRoutable || CurrentTransport.AuthorityWorkerSessionId.IsEmpty
             ? "Authority not connected."
             : DadStatusText.FormatAuthorityStatus(
                 CurrentTransport.AuthorityRole,
@@ -2985,7 +3716,7 @@ public sealed class DadTransportService : IDisposable
 
     private HashSet<string> CurrentOnlineWorkerIds()
         => serverSessions.Snapshot()
-            .Where(static connection => connection.IsOpen)
+            .Where(static connection => connection.IsRoutable)
             .Select(static connection => connection.WorkerSessionId.Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -3303,10 +4034,17 @@ public sealed class DadTransportService : IDisposable
     {
         private readonly TcpClient client;
         private readonly SemaphoreSlim writeGate = new(1, 1);
+        private readonly DadHubHandshakeState handshake;
+        private readonly DadInboundRequestGate inboundRequestGate = new(MaxConcurrentInboundRequestsPerConnection);
+        private readonly DadRuntimeReadinessTracker runtimeReadinessTracker = new();
 
-        public DadHubConnection(TcpClient client, CancellationToken parentCancellation)
+        public DadHubConnection(
+            TcpClient client,
+            CancellationToken parentCancellation,
+            DadHubHandshakeRole handshakeRole)
         {
             this.client = client;
+            handshake = new DadHubHandshakeState(handshakeRole);
             Stream = client.GetStream();
             Cancellation = CancellationTokenSource.CreateLinkedTokenSource(parentCancellation);
         }
@@ -3318,26 +4056,52 @@ public sealed class DadTransportService : IDisposable
         public string ClientInstanceId { get; set; } = string.Empty;
         public DadParticipantSnapshot Participant { get; set; } = new();
         public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
+        public DateTime LastFrameReceivedUtc { get; private set; } = DateTime.UtcNow;
         public bool Replaced { get; set; }
         public bool IsOpen => !Cancellation.IsCancellationRequested && client.Connected;
+        public bool IsRoutable => DadHubTransportRouting.IsRoutable(IsOpen, handshake);
+
+        public void MarkHandshakeReady()
+            => handshake.MarkReadyAfterHelloAck();
+
+        public void MarkFrameReceived(DateTime receivedAtUtc)
+            => LastFrameReceivedUtc = receivedAtUtc;
+
+        public bool ObserveRuntimeReadiness(DadParticipantSnapshot participant, out long revision)
+            => runtimeReadinessTracker.Observe(DadRuntimeReadinessSignature.Create(participant), out revision);
+
+        public bool TryBeginInboundRequest()
+            => inboundRequestGate.TryEnter();
+
+        public void EndInboundRequest()
+            => inboundRequestGate.Exit();
 
         public async Task SendAsync(
             DadHubFrame frame,
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
-            var acquired = false;
-            using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                Cancellation.Token);
-            if (timeout > TimeSpan.Zero)
-                timeoutCancellation.CancelAfter(timeout);
+            if (!handshake.CanSend(frame.Kind))
+            {
+                throw new DadHubProtocolException(
+                    "handshake-not-ready",
+                    $"Dad hub frame {frame.Kind} cannot be sent before HelloAck completes.");
+            }
 
+            var acquired = false;
             try
             {
-                await writeGate.WaitAsync(timeoutCancellation.Token).ConfigureAwait(false);
+                using var queueCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    Cancellation.Token);
+                await writeGate.WaitAsync(queueCancellation.Token).ConfigureAwait(false);
                 acquired = true;
-                await DadHubProtocol.WriteFrameAsync(Stream, frame, timeoutCancellation.Token).ConfigureAwait(false);
+                using var writeCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    Cancellation.Token);
+                if (timeout > TimeSpan.Zero)
+                    writeCancellation.CancelAfter(timeout);
+                await DadHubProtocol.WriteFrameAsync(Stream, frame, writeCancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
                                                     !Cancellation.IsCancellationRequested)

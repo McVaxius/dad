@@ -179,6 +179,17 @@ public sealed class DadClaimService
         }
     }
 
+    public int ReleaseAllClaims()
+    {
+        lock (gate)
+        {
+            var released = activeLeasesBySlot.Count + localAcceptedLeasesByCharacter.Count;
+            activeLeasesBySlot.Clear();
+            localAcceptedLeasesByCharacter.Clear();
+            return released;
+        }
+    }
+
     private static DadClaimDecisionDto BuildDecision(
         DadClaimRequestDto request,
         DadParticipantSnapshot participant,

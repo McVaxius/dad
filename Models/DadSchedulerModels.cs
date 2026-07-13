@@ -1,10 +1,12 @@
+using System.Text.Json.Serialization;
+
 namespace dad.Models;
 
 public enum DadSchedulerWakePolicy
 {
-    AlreadyOnlineOnly,
-    LaunchIfOffline,
-    LoadCharacterIfOnline,
+    AlreadyOnlineOnly = 0,
+    LaunchIfOffline = 1,
+    LoadCharacterIfOnline = 2,
 }
 
 public enum DadSchedulerPresetPhase
@@ -137,7 +139,7 @@ public sealed class DadCharacterLoadResultDto
 public sealed class DadSchedulerSlotState
 {
     public string SlotId { get; set; } = string.Empty;
-    public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.AlreadyOnlineOnly;
+    public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public string LaunchProfileId { get; set; } = string.Empty;
@@ -147,6 +149,43 @@ public sealed class DadSchedulerSlotState
     public bool LaunchStarted { get; set; }
     public DateTime? LaunchStartedUtc { get; set; }
     public DateTime? LoadCommandSentUtc { get; set; }
+    public DadWakeTakeoverStatus TakeoverStatus { get; set; } = DadWakeTakeoverStatus.Pending;
+    public DadWakeTakeoverStage TakeoverStage { get; set; } = DadWakeTakeoverStage.None;
+    public DadWakeTakeoverPhase TakeoverPhase { get; set; } = DadWakeTakeoverPhase.AwaitingArHook;
+    public string OperationToken { get; set; } = string.Empty;
+    public DadWakeCommitKind CommitKind { get; set; }
+    public DateTime? CommitExecutionUtc { get; set; }
+    public DadWakeAcknowledgementState AcknowledgementState { get; set; }
+    public DateTime? TakeoverRequestedUtc { get; set; }
+    public DateTime? ResetIssuedUtc { get; set; }
+    public DateTime? TakeoverVerifiedUtc { get; set; }
+    public DateTime? RelogIssuedUtc { get; set; }
+    public DateTime? ReadyUtc { get; set; }
+    public bool PostArReady { get; set; }
+    [JsonIgnore]
+    public bool BasePostArReady { get; set; }
+    public bool AutoRetainerAvailable { get; set; }
+    public bool AutoRetainerBusy { get; set; }
+    public bool MultiModeEnabled { get; set; }
+    public bool RelogIssued { get; set; }
+    public bool ExternalAutomationHeld { get; set; }
+    public string ExternalAutomationActivity { get; set; } = string.Empty;
+    public string ExternalAutomationState { get; set; } = string.Empty;
+    public string ExternalAutomationSummary { get; set; } = string.Empty;
+    public DadVermaxionReservationState VermaxionReservationState { get; set; } = DadVermaxionReservationState.NotLoaded;
+    public string VermaxionReservationSummary { get; set; } = string.Empty;
+    public DateTime? VermaxionReservationCreatedAtUtc { get; set; }
+    public DateTime? VermaxionReservationUpdatedAtUtc { get; set; }
+    public DateTime? NextTakeoverStatusCheckUtc { get; set; }
+    public DateTime? VermaxionHoldStartedUtc { get; set; }
+    public DateTime? AutoRetainerWaitStartedUtc { get; set; }
+    public DateTime? ParticipantWaitStartedUtc { get; set; }
+    public DadWakeTimeoutStage TimeoutStage { get; set; }
+    public DateTime? TimeoutStageObservedUtc { get; set; }
+    public double VermaxionHoldElapsedSeconds { get; set; }
+    public double AutoRetainerWaitElapsedSeconds { get; set; }
+    public double ParticipantWaitElapsedSeconds { get; set; }
+    public bool ClientConnected { get; set; }
     public bool IsOnline { get; set; }
     public bool CorrectCharacter { get; set; }
     public bool Ready { get; set; }
@@ -172,6 +211,42 @@ public sealed class DadSchedulerSlotState
             LaunchStarted = LaunchStarted,
             LaunchStartedUtc = LaunchStartedUtc,
             LoadCommandSentUtc = LoadCommandSentUtc,
+            TakeoverStatus = TakeoverStatus,
+            TakeoverStage = TakeoverStage,
+            TakeoverPhase = TakeoverPhase,
+            OperationToken = OperationToken,
+            CommitKind = CommitKind,
+            CommitExecutionUtc = CommitExecutionUtc,
+            AcknowledgementState = AcknowledgementState,
+            TakeoverRequestedUtc = TakeoverRequestedUtc,
+            ResetIssuedUtc = ResetIssuedUtc,
+            TakeoverVerifiedUtc = TakeoverVerifiedUtc,
+            RelogIssuedUtc = RelogIssuedUtc,
+            ReadyUtc = ReadyUtc,
+            PostArReady = PostArReady,
+            BasePostArReady = BasePostArReady,
+            AutoRetainerAvailable = AutoRetainerAvailable,
+            AutoRetainerBusy = AutoRetainerBusy,
+            MultiModeEnabled = MultiModeEnabled,
+            RelogIssued = RelogIssued,
+            ExternalAutomationHeld = ExternalAutomationHeld,
+            ExternalAutomationActivity = ExternalAutomationActivity,
+            ExternalAutomationState = ExternalAutomationState,
+            ExternalAutomationSummary = ExternalAutomationSummary,
+            VermaxionReservationState = VermaxionReservationState,
+            VermaxionReservationSummary = VermaxionReservationSummary,
+            VermaxionReservationCreatedAtUtc = VermaxionReservationCreatedAtUtc,
+            VermaxionReservationUpdatedAtUtc = VermaxionReservationUpdatedAtUtc,
+            NextTakeoverStatusCheckUtc = NextTakeoverStatusCheckUtc,
+            VermaxionHoldStartedUtc = VermaxionHoldStartedUtc,
+            AutoRetainerWaitStartedUtc = AutoRetainerWaitStartedUtc,
+            ParticipantWaitStartedUtc = ParticipantWaitStartedUtc,
+            TimeoutStage = TimeoutStage,
+            TimeoutStageObservedUtc = TimeoutStageObservedUtc,
+            VermaxionHoldElapsedSeconds = VermaxionHoldElapsedSeconds,
+            AutoRetainerWaitElapsedSeconds = AutoRetainerWaitElapsedSeconds,
+            ParticipantWaitElapsedSeconds = ParticipantWaitElapsedSeconds,
+            ClientConnected = ClientConnected,
             IsOnline = IsOnline,
             CorrectCharacter = CorrectCharacter,
             Ready = Ready,
@@ -212,6 +287,8 @@ public sealed class DadSchedulerPresetState
     public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAtUtc { get; set; }
+    public DateTime? ResetExecutionUtc { get; set; }
+    public DateTime? RelogExecutionUtc { get; set; }
     public bool DryRun { get; set; }
     public bool PlannerStarted { get; set; }
     public string PlannerRequestId { get; set; } = string.Empty;
@@ -244,6 +321,8 @@ public sealed class DadSchedulerPresetState
             StartedAtUtc = StartedAtUtc,
             UpdatedAtUtc = UpdatedAtUtc,
             CompletedAtUtc = CompletedAtUtc,
+            ResetExecutionUtc = ResetExecutionUtc,
+            RelogExecutionUtc = RelogExecutionUtc,
             DryRun = DryRun,
             PlannerStarted = PlannerStarted,
             PlannerRequestId = PlannerRequestId,

@@ -44,6 +44,10 @@ public sealed class Plugin : IDalamudPlugin
     public DadExternalPluginCapabilityService ExternalPluginCapabilityService { get; }
     public DadXadbClient XadbClient { get; }
     public DadPresenceService PresenceService { get; }
+    public DadVermaxionIpcService VermaxionIpcService { get; }
+    public DadAutoRetainerIpcService AutoRetainerIpcService { get; }
+    public DadLifestreamIpcService LifestreamIpcService { get; }
+    public DadWakeTakeoverService WakeTakeoverService { get; }
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
@@ -76,6 +80,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private readonly SetupWizardWindow setupWizardWindow;
+    private readonly DadMiniStatusWindow miniStatusWindow;
+    private readonly DadClientReconnectWindow clientReconnectWindow;
     private readonly DadIpcService dadIpcService;
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly CancellationTokenSource backgroundCancellation = new();
@@ -86,6 +92,9 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime nextAuthorityStatusRefreshUtc = DateTime.MinValue;
     private DateTime suppressRemoteAuthorityRefreshUntilUtc = DateTime.MinValue;
     private DateTime? lastAuthorityRefreshSucceededUtc;
+    private DateTime? lastAuthorityRefreshAttemptUtc;
+    private bool authorityRefreshInFlight;
+    private string lastAuthorityRefreshFailure = string.Empty;
     private string lastLoggedAuthorityEndpointKey = string.Empty;
     private string lastLoggedAuthorityRefreshKey = string.Empty;
     private string lastLoggedAuthorityViewKey = string.Empty;
@@ -109,6 +118,8 @@ public sealed class Plugin : IDalamudPlugin
     private string plannerUiCacheLastRebuildReason = "cold";
     private readonly Dictionary<string, DebouncedUiWrite> debouncedUiWrites = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DadRuntimeReadinessTracker localRuntimeReadinessTracker = new();
 
     private sealed class DebouncedUiWrite
     {
@@ -129,9 +140,25 @@ public sealed class Plugin : IDalamudPlugin
         ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
         ExternalPluginCapabilityService = new DadExternalPluginCapabilityService();
         XadbClient = new DadXadbClient(PluginInterface, Log);
-        PresenceService = new DadPresenceService(Configuration, ConfigManager, Log);
+        VermaxionIpcService = new DadVermaxionIpcService(PluginInterface, Log);
+        AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
+        LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
+        PresenceService = new DadPresenceService(Configuration, ConfigManager, VermaxionIpcService, AutoRetainerIpcService, Log);
+        WakeTakeoverService = new DadWakeTakeoverService(
+            new DadWakeTakeoverTarget(
+                Configuration,
+                ConfigManager,
+                PresenceService,
+                AutoRetainerIpcService,
+                LifestreamIpcService,
+                VermaxionIpcService,
+                CommandManager,
+                Log),
+            preCommitBudget: TimeSpan.FromSeconds(Configuration.AutoRetainerBusyTimeoutSeconds));
+        VermaxionIpcService.ReservationGranted += WakeTakeoverService.OnVermaxionReservationGranted;
+        AutoRetainerIpcService.CharacterPostprocessReady += WakeTakeoverService.OnCharacterPostprocessReady;
         ClaimService = new DadClaimService();
-        TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, Log);
+        TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, WakeTakeoverService, Log);
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
@@ -162,8 +189,10 @@ public sealed class Plugin : IDalamudPlugin
             CharacterIntelligenceService,
             PresenceService,
             TransportService,
+            WakeTakeoverService,
             RosterCatalogService,
             Log);
+        TransportService.ConfigureRuntimeReadinessHandler(OnRemoteRuntimeReadinessChanged);
         RunCoordinatorService = new DadCoordinatorService(
             Configuration,
             ConfigManager,
@@ -192,6 +221,7 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService.Accept,
             WorkerExecutionService.GetStatus,
             WorkerExecutionService.Cancel);
+        TransportService.ConfigureStopAllHandler(StopAllLocal);
 
         if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
             ConfigManager.CurrentAccountId = Configuration.ClientAccountId;
@@ -201,9 +231,13 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow = new MainWindow(this);
         configWindow = new ConfigWindow(this);
         setupWizardWindow = new SetupWizardWindow(this);
+        miniStatusWindow = new DadMiniStatusWindow(this);
+        clientReconnectWindow = new DadClientReconnectWindow(this);
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(setupWizardWindow);
+        WindowSystem.AddWindow(miniStatusWindow);
+        WindowSystem.AddWindow(clientReconnectWindow);
         OpenSetupWizardOnce();
 
         var plannerLaneCount = PresetProviderService.GetPlannerLaneDefinitions().Count();
@@ -212,7 +246,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} config, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test launch-profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test launch-profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -251,12 +285,16 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         backgroundCancellation.Cancel();
+        backgroundTasks.Dispose();
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         CommandManager.RemoveHandler(PluginInfo.Command);
+        // Close/cancel transport work first, without synchronously waiting on the framework thread.
+        // Its observer continues consuming late completions with Dalamud logging suppressed.
+        TransportService.Dispose();
         FlushDebouncedUiWrites(force: true);
         WindowSystem.RemoveAllWindows();
         QuestionableBridge.Dispose();
@@ -265,13 +303,28 @@ public sealed class Plugin : IDalamudPlugin
         ProfileDirectoryService.Dispose();
         LocalDutyQueueService.Dispose();
         NpcDutyQueueService.Dispose();
-        TransportService.Dispose();
+        AutoRetainerIpcService.CharacterPostprocessReady -= WakeTakeoverService.OnCharacterPostprocessReady;
+        VermaxionIpcService.ReservationGranted -= WakeTakeoverService.OnVermaxionReservationGranted;
+        WakeTakeoverService.Dispose();
+        AutoRetainerIpcService.Dispose();
+        VermaxionIpcService.Dispose();
         backgroundCancellation.Dispose();
-        backgroundTasks.Dispose();
         dtrEntry?.Remove();
     }
 
     public void ToggleMainUi() => mainWindow.Toggle();
+
+    public void OpenMainUi() => mainWindow.IsOpen = true;
+
+    public void ToggleMiniStatusUi() => miniStatusWindow.Toggle();
+
+    public void OpenMiniStatusUi() => miniStatusWindow.IsOpen = true;
+
+    public void DisableDadFromReconnectWindow()
+    {
+        SetPluginEnabled(false);
+        clientReconnectWindow.IsOpen = false;
+    }
 
     public void ToggleConfigUi() => configWindow.Toggle();
 
@@ -1287,8 +1340,10 @@ public sealed class Plugin : IDalamudPlugin
         created = false;
         rejectionReason = string.Empty;
 
+        var selected = GetSelectedPlannerGroup();
         DadAcquiredCharacter? localNpcRunner = null;
-        if (PlannerOptions.ActivityMode is DadPlannerActivityMode.DutySupport
+        if (selected == null &&
+            PlannerOptions.ActivityMode is DadPlannerActivityMode.DutySupport
             or DadPlannerActivityMode.Trust
             or DadPlannerActivityMode.DutySupportLeveling
             or DadPlannerActivityMode.TrustLeveling)
@@ -1306,9 +1361,11 @@ public sealed class Plugin : IDalamudPlugin
             RosterCatalogService.RefreshCatalog(refreshedPool);
         }
 
-        var candidate = BuildPlannerGroupFromCurrentPlanner(displayName, localNpcRunner);
+        var candidate = BuildPlannerGroupFromCurrentPlanner(
+            displayName,
+            localNpcRunner,
+            includeSlots: selected == null);
         NormalizePlannerGroupForStorage(candidate);
-        var selected = GetSelectedPlannerGroup();
         DadPlannerGroup savedGroup;
         if (selected == null)
         {
@@ -1318,7 +1375,7 @@ public sealed class Plugin : IDalamudPlugin
         }
         else
         {
-            ApplyPlannerGroupPlan(selected, candidate);
+            DadPlannerGroupUpdateRules.ApplyPlannerFields(selected, candidate, DateTime.UtcNow);
             savedGroup = selected;
         }
 
@@ -1431,7 +1488,9 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var preview = BuildPlannerPreview();
-        selected.Slots = BuildPlannerGroupSlotsFromPreview(preview);
+        selected.Slots = DadPlannerGroupUpdateRules.RefreshSlotsPreservingOperationalSettings(
+            selected.Slots,
+            BuildPlannerGroupSlotsFromPreview(preview));
         NormalizePlannerGroupForStorage(selected);
         selected.UpdatedAtUtc = DateTime.UtcNow;
         Configuration.Save();
@@ -1760,14 +1819,18 @@ public sealed class Plugin : IDalamudPlugin
         {
             Startability = "Blocked",
             CanStart = false,
+            CanSchedule = false,
+            StaticBlockers = [reason],
             Blockers = [reason],
         };
 
         return new DadPlannerRunRequestPreview
         {
             CanStart = false,
+            CanSchedule = false,
             StatusSummary = reason,
             BlockedReason = reason,
+            StaticBlockers = [reason],
             ContractPreview = contractPreview,
             ContractPreviewJson = DadIpcJson.Serialize(contractPreview),
             ModuleBlockers =
@@ -1785,10 +1848,11 @@ public sealed class Plugin : IDalamudPlugin
 
     private DadPlannerGroup BuildPlannerGroupFromCurrentPlanner(
         string displayName,
-        DadAcquiredCharacter? localNpcRunner)
+        DadAcquiredCharacter? localNpcRunner,
+        bool includeSlots)
     {
-        var preview = localNpcRunner == null ? BuildPlannerPreview() : null;
-        var stopPolicy = localNpcRunner == null
+        var preview = includeSlots && localNpcRunner == null ? BuildPlannerPreview() : null;
+        var stopPolicy = includeSlots && localNpcRunner == null
             ? preview!.StopPolicy.Clone().Normalize()
             : PlannerOptions.StopPolicy.Clone().Normalize();
         if (localNpcRunner != null && stopPolicy.Mode == DadPlannerStopMode.TargetLevel)
@@ -1825,9 +1889,11 @@ public sealed class Plugin : IDalamudPlugin
             RefreshTrustNpcLevels = PlannerOptions.RefreshTrustNpcLevels,
             StopPolicy = stopPolicy,
             CompletionActions = DadCompletionActionSnapshots.Resolve(PlannerOptions.CompletionActions, Configuration.CompletionActions),
-            Slots = localNpcRunner == null
-                ? BuildPlannerGroupSlotsFromPreview(preview!)
-                :
+            Slots = !includeSlots
+                ? []
+                : localNpcRunner == null
+                    ? BuildPlannerGroupSlotsFromPreview(preview!)
+                    :
                 [
                     new DadPlannerGroupSlot
                     {
@@ -1842,31 +1908,6 @@ public sealed class Plugin : IDalamudPlugin
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
         };
-    }
-
-    private static void ApplyPlannerGroupPlan(DadPlannerGroup target, DadPlannerGroup source)
-    {
-        target.DisplayName = source.DisplayName;
-        target.RunFamily = source.RunFamily;
-        target.ActivityMode = source.ActivityMode;
-        target.OperatorMode = source.OperatorMode;
-        target.ConnectedOnly = source.ConnectedOnly;
-        target.SameDatacenterOnly = source.SameDatacenterOnly;
-        target.AllowStaleForPlanning = source.AllowStaleForPlanning;
-        target.TransportOwner = source.TransportOwner;
-        target.QueueAuthority = source.QueueAuthority;
-        target.InviteAuthority = DadInviteAuthority.PresetLeader;
-        target.DutyContentFinderConditionId = source.DutyContentFinderConditionId;
-        target.DutyDisplayName = source.DutyDisplayName;
-        target.DutyUnsynced = source.DutyUnsynced;
-        target.DutyExpectedPartySize = source.DutyExpectedPartySize;
-        target.MogtomePreset = source.MogtomePreset;
-        target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
-        target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
-        target.StopPolicy = source.StopPolicy.Clone();
-        target.CompletionActions = source.CompletionActions?.Clone();
-        target.Slots = DadPlannerSlotRules.NormalizeGroupSlots(source.Slots.Select(ClonePlannerGroupSlot));
-        target.UpdatedAtUtc = DateTime.UtcNow;
     }
 
     private static DadPlannerGroupSlot ClonePlannerGroupSlot(DadPlannerGroupSlot source)
@@ -1904,6 +1945,7 @@ public sealed class Plugin : IDalamudPlugin
                 RequiredCharacterKey = string.IsNullOrWhiteSpace(slot.CharacterKey)
                     ? new DadCharacterKey(string.Empty)
                     : new DadCharacterKey(slot.CharacterKey),
+                WakePolicy = DadSchedulerWakePolicy.LaunchIfOffline,
                 AllowSubstitution = false,
             };
         }));
@@ -2165,10 +2207,31 @@ public sealed class Plugin : IDalamudPlugin
         var previewOnly = string.Equals(requestPreview.Request.RequestedBy, "planner-preview", StringComparison.OrdinalIgnoreCase);
         if (!previewOnly)
         {
-            var plan = PlannerService.BuildPlan(requestPreview.Request, pool, out var rejectionReason);
+            var requireLiveReadiness = requestPreview.CanStart || !requestPreview.CanSchedule;
+            var plan = PlannerService.BuildPlan(
+                requestPreview.Request,
+                pool,
+                out var rejectionReason,
+                requireLiveReadiness);
             if (plan == null)
             {
-                MergePlannerPreviewBlocker(requestPreview, rejectionReason);
+                var relaxedPlanBuilt = requireLiveReadiness &&
+                                       PlannerService.BuildPlan(
+                                           requestPreview.Request,
+                                           pool,
+                                           out _,
+                                           requireLiveReadiness: false) != null;
+                if (DadPlannerValidationRules.IsStrictRuntimeOnlyFailure(
+                        requireLiveReadiness,
+                        strictPlanBuilt: false,
+                        relaxedPlanBuilt))
+                {
+                    MergePlannerReadinessBlocker(requestPreview, rejectionReason);
+                }
+                else
+                {
+                    MergePlannerPreviewBlocker(requestPreview, rejectionReason);
+                }
             }
             else
             {
@@ -2187,13 +2250,20 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!runtimeStatus.CanStart)
         {
+            var decision = DadPlannerValidationRules.EvaluateModuleRuntimeStatus(
+                requestPreview.CanSchedule,
+                runtimeStatus);
+            var reason = decision.Reason;
+            if (decision.IsTransientRuntimeReadiness)
+            {
+                MergePlannerReadinessBlocker(requestPreview, reason);
+                return;
+            }
+
+            requestPreview.CanSchedule = decision.CanSchedule;
+            AddPlannerValidationBlocker(requestPreview.StaticBlockers, reason);
             if (requestPreview.CanStart || string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
             {
-                var reason = string.IsNullOrWhiteSpace(runtimeStatus.BlockedReason)
-                    ? string.IsNullOrWhiteSpace(runtimeStatus.FailureReason)
-                        ? runtimeStatus.Summary
-                        : runtimeStatus.FailureReason
-                    : runtimeStatus.BlockedReason;
                 requestPreview.CanStart = false;
                 requestPreview.BlockedReason = reason;
                 requestPreview.StatusSummary = $"Planner request blocked by runtime readiness: {reason}";
@@ -2211,6 +2281,8 @@ public sealed class Plugin : IDalamudPlugin
         if (string.IsNullOrWhiteSpace(blocker))
             return;
 
+        requestPreview.CanSchedule = false;
+        AddPlannerValidationBlocker(requestPreview.StaticBlockers, blocker);
         if (requestPreview.CanStart || string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
         {
             requestPreview.CanStart = false;
@@ -2224,6 +2296,28 @@ public sealed class Plugin : IDalamudPlugin
             {
                 ModuleId = requestPreview.ModuleId,
                 Capability = "PlannerRuntime",
+                Severity = DadModuleBlockerSeverity.Blocked,
+                Summary = blocker,
+            });
+        }
+    }
+
+    private static void MergePlannerReadinessBlocker(DadPlannerRunRequestPreview requestPreview, string blocker)
+    {
+        if (string.IsNullOrWhiteSpace(blocker))
+            return;
+
+        requestPreview.CanStart = false;
+        AddPlannerValidationBlocker(requestPreview.ReadinessBlockers, blocker);
+        requestPreview.BlockedReason = blocker;
+        requestPreview.ReadinessSummary = $"Waiting for refreshed strict-runtime readiness: {blocker}";
+        requestPreview.StatusSummary = $"Planner request remains schedulable while runtime truth refreshes: {blocker}";
+        if (requestPreview.ModuleBlockers.All(existing => !string.Equals(existing.Summary, blocker, StringComparison.OrdinalIgnoreCase)))
+        {
+            requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
+            {
+                ModuleId = requestPreview.ModuleId,
+                Capability = "PlannerRuntimeReadiness",
                 Severity = DadModuleBlockerSeverity.Blocked,
                 Summary = blocker,
             });
@@ -2246,12 +2340,28 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private static void AddPlannerValidationBlocker(List<string> blockers, string blocker)
+    {
+        if (string.IsNullOrWhiteSpace(blocker) ||
+            blockers.Any(existing => string.Equals(existing, blocker, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        blockers.Add(blocker.Trim());
+    }
+
     private static void RefreshPlannerContractPreview(DadPlannerRunRequestPreview requestPreview)
     {
         requestPreview.StopPolicy = requestPreview.Request?.StopPolicy.Clone()
                                     ?? requestPreview.PlannerPreview.StopPolicy.Clone();
         requestPreview.ContractPreview.StopPolicy = requestPreview.StopPolicy.Clone();
         requestPreview.ContractPreview.CanStart = requestPreview.CanStart;
+        requestPreview.ContractPreview.CanSchedule = requestPreview.CanSchedule;
+        requestPreview.ContractPreview.ReadinessSummary = requestPreview.ReadinessSummary;
+        requestPreview.ContractPreview.StaticBlockers = [..requestPreview.StaticBlockers];
+        requestPreview.ContractPreview.ReadinessBlockers = [..requestPreview.ReadinessBlockers];
+        requestPreview.ContractPreview.ScheduleBlockers = [..requestPreview.ScheduleBlockers];
         requestPreview.ContractPreview.Startability = BuildPlannerStartabilityLabel(requestPreview);
         requestPreview.ContractPreview.Blockers = BuildPlannerContractBlockers(requestPreview);
         requestPreview.ContractPreviewJson = DadIpcJson.Serialize(requestPreview.ContractPreview);
@@ -2260,6 +2370,8 @@ public sealed class Plugin : IDalamudPlugin
     private static string BuildPlannerStartabilityLabel(DadPlannerRunRequestPreview requestPreview)
         => requestPreview.CanStart
             ? "Startable"
+            : requestPreview.CanSchedule
+                ? "Schedulable"
             : string.Equals(requestPreview.Request?.RequestedBy, "planner-preview", StringComparison.OrdinalIgnoreCase)
                 ? "PreviewOnly"
                 : "Blocked";
@@ -2362,6 +2474,93 @@ public sealed class Plugin : IDalamudPlugin
         return runState;
     }
 
+    public DadMiniStatusSnapshot BuildMiniStatusSnapshot()
+    {
+        var runState = GetVisibleRunState(forceAuthorityRefresh: false);
+        return DadMiniStatusSnapshotBuilder.Build(
+            RunCoordinatorService.IsServerDad,
+            runState.AuthorityView,
+            TransportService.CurrentTransport,
+            runState.VisibleRun,
+            SchedulerService.GetQueueSnapshot(),
+            SchedulerService.GetScheduleSnapshot(),
+            WorkerExecutionService.GetStatus(),
+            PresenceService.BuildSnapshotCopy(),
+            TransportService.LatestStopAllStatus,
+            Configuration.RunHistory,
+            WakeTakeoverService.GetActiveStatus());
+    }
+
+    public DadStopAllStatus RequestStopAll()
+        => TransportService.RequestStopAll(new DadStopAllRequest
+        {
+            OperationId = Guid.NewGuid().ToString("N"),
+            RequestedByWorkerSessionId = PresenceService.WorkerSessionId,
+            RequestedAtUtc = DateTime.UtcNow,
+            Reason = "Stopped from DAD mini window.",
+        });
+
+    public void CancelActiveRunFromMini()
+        => RunCoordinatorService.CancelActiveRun();
+
+    public bool CancelActiveScheduleFromMini()
+        => SchedulerService.CancelScheduleRun("Cancelled from DAD mini window.");
+
+    public bool CancelSchedulerJobFromMini(string jobId)
+        => SchedulerService.CancelScheduledJob(jobId, "Cancelled from DAD mini window.");
+
+    private DadStopAllWorkerResult StopAllLocal(DadStopAllRequest request)
+    {
+        if (localStopAllResults.TryGetValue(request.OperationId, out var recorded))
+            return recorded.Clone();
+
+        try
+        {
+            var reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by DAD Stop-all." : request.Reason;
+            var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
+            var scheduler = SchedulerService.StopAll(reason, suppression);
+            RunCoordinatorService.CancelAllLocal(reason);
+            var wake = WakeTakeoverService.StopAll(reason);
+            ClaimService.ReleaseAllClaims();
+            WorkerExecutionService.CancelAll(reason);
+            QueueExecutionService.CancelAll(reason);
+            PresenceService.ResetToIdle();
+
+            var result = new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = PresenceService.WorkerSessionId,
+                State = DadStopAllWorkerState.Acknowledged,
+                UpdatedAtUtc = DateTime.UtcNow,
+                LocalCleanupCompleted = true,
+                Partial = wake.PreservedCommittedCount > 0 || wake.CleanupPending,
+                CancelledSchedulerJobs = scheduler.PendingJobsCancelled + (scheduler.ActiveJobCancelled ? 1 : 0),
+                CancelledWakeTakeovers = wake.CancelledCount,
+                PreservedCommittedTakeovers = wake.PreservedCommittedCount,
+                Summary = $"{scheduler.Summary} {wake.Summary}",
+            };
+            localStopAllResults[request.OperationId] = result.Clone();
+            while (localStopAllResults.Count > 32)
+                localStopAllResults.Remove(localStopAllResults.Keys.First());
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[dad] Stop-all {OperationId} local cleanup failed.", request.OperationId);
+            var result = new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = PresenceService.WorkerSessionId,
+                State = DadStopAllWorkerState.Rejected,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Partial = true,
+                Summary = $"Local Stop-all cleanup failed: {ex.Message}",
+            };
+            localStopAllResults[request.OperationId] = result.Clone();
+            return result;
+        }
+    }
+
     public static bool IsBusy(DadRunResult result)
         => result.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running;
 
@@ -2392,7 +2591,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             try
             {
-                RefreshAuthorityStatusCacheFromBackground(cancellationToken);
+                await RefreshAuthorityStatusCacheFromBackgroundAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
             {
@@ -2406,16 +2605,24 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void RefreshAuthorityStatusCacheFromBackground(CancellationToken cancellationToken)
+    private async Task RefreshAuthorityStatusCacheFromBackgroundAsync(CancellationToken cancellationToken)
     {
         if (RunCoordinatorService.IsServerDad || !Configuration.PluginEnabled || Configuration.LocalOnlyModeEnabled)
             return;
 
         var transport = TransportService.CurrentTransport;
         var authorityEndpoint = TransportService.GetPreferredAuthorityEndpoint();
-        var hasRemoteAuthority = !string.IsNullOrWhiteSpace(authorityEndpoint) || !transport.AuthorityWorkerSessionId.IsEmpty;
-        if (!hasRemoteAuthority || string.IsNullOrWhiteSpace(authorityEndpoint))
+        if (!transport.AuthorityRoutable || transport.AuthorityWorkerSessionId.IsEmpty)
+        {
+            lock (authorityCacheGate)
+            {
+                authorityRefreshInFlight = false;
+                lastAuthorityRefreshFailure = string.IsNullOrWhiteSpace(transport.ConnectionStatus)
+                    ? "Dad Coordinator is offline; reconnecting."
+                    : transport.ConnectionStatus;
+            }
             return;
+        }
 
         var now = DateTime.UtcNow;
         lock (authorityCacheGate)
@@ -2431,22 +2638,48 @@ public sealed class Plugin : IDalamudPlugin
                 return;
 
             nextAuthorityStatusRefreshUtc = now + RemoteAuthorityStatusRefreshInterval;
+            authorityRefreshInFlight = true;
+            lastAuthorityRefreshAttemptUtc = now;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        var remote = TransportService.QueryAuthorityStatus(authorityEndpoint);
-        if (remote == null)
-            return;
-
-        ApplyKnownAuthorityMetadata(remote);
-        lock (authorityCacheGate)
+        DadRunResult? remote = null;
+        try
         {
-            cachedAuthorityRun = remote.Clone();
-            cachedAuthorityEndpoint = authorityEndpoint;
-            lastAuthorityRefreshSucceededUtc = DateTime.UtcNow;
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+            remote = await TransportService.QueryAuthorityStatusAsync(cancellationToken).ConfigureAwait(false);
+            if (remote == null)
+            {
+                lock (authorityCacheGate)
+                    lastAuthorityRefreshFailure = "Dad Coordinator route became unavailable during status refresh.";
+                LogAuthorityRefreshFailure(authorityEndpoint, transport.AuthorityWorkerSessionId);
+                return;
+            }
 
-        LogAuthorityRefreshSuccess(remote);
+            ApplyKnownAuthorityMetadata(remote);
+            lock (authorityCacheGate)
+            {
+                cachedAuthorityRun = remote.Clone();
+                cachedAuthorityEndpoint = authorityEndpoint;
+                lastAuthorityRefreshSucceededUtc = DateTime.UtcNow;
+                lastAuthorityRefreshFailure = string.Empty;
+            }
+
+            LogAuthorityRefreshSuccess(remote);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            lock (authorityCacheGate)
+                lastAuthorityRefreshFailure = ex.Message;
+            LogAuthorityRefreshFailure(authorityEndpoint, transport.AuthorityWorkerSessionId);
+        }
+        finally
+        {
+            lock (authorityCacheGate)
+                authorityRefreshInFlight = false;
+        }
     }
 
     private DadRunResult GetAuthorityRunForUi(bool forceRefresh)
@@ -2460,13 +2693,15 @@ public sealed class Plugin : IDalamudPlugin
 
         var transport = TransportService.CurrentTransport;
         var authorityEndpoint = TransportService.GetPreferredAuthorityEndpoint();
-        var hasRemoteAuthority = !string.IsNullOrWhiteSpace(authorityEndpoint) || !transport.AuthorityWorkerSessionId.IsEmpty;
+        var hasRemoteAuthority = transport.AuthorityRoutable && !transport.AuthorityWorkerSessionId.IsEmpty;
         if (!hasRemoteAuthority)
         {
             ResetAuthorityCache(clearFreshness: true);
             return BuildUnavailableAuthorityResult(
-                "No Dad Coordinator authority discovered.",
-                "No Dad Coordinator hub session is connected.",
+                "Dad Coordinator offline; reconnecting.",
+                string.IsNullOrWhiteSpace(transport.ConnectionStatus)
+                    ? "No routable Dad Coordinator hub session is connected."
+                    : transport.ConnectionStatus,
                 authorityEndpoint,
                 transport.AuthorityWorkerSessionId,
                 transport.AuthorityRole);
@@ -2474,6 +2709,8 @@ public sealed class Plugin : IDalamudPlugin
 
         DadRunResult? cached;
         DateTime suppressUntilUtc;
+        bool refreshInFlight;
+        string refreshFailure;
         lock (authorityCacheGate)
         {
             if (!string.Equals(cachedAuthorityEndpoint, authorityEndpoint, StringComparison.OrdinalIgnoreCase))
@@ -2488,6 +2725,8 @@ public sealed class Plugin : IDalamudPlugin
 
             cached = cachedAuthorityRun?.Clone();
             suppressUntilUtc = suppressRemoteAuthorityRefreshUntilUtc;
+            refreshInFlight = authorityRefreshInFlight;
+            refreshFailure = lastAuthorityRefreshFailure;
         }
 
         if (!forceRefresh && DateTime.UtcNow < suppressUntilUtc)
@@ -2504,8 +2743,12 @@ public sealed class Plugin : IDalamudPlugin
             return CloneAuthorityRun(cached);
 
         return BuildUnavailableAuthorityResult(
-            "Dad Coordinator status refresh pending.",
-            "Dad Coordinator status refresh has not completed yet.",
+            refreshInFlight ? "Dad Coordinator status refresh pending." : "Dad Coordinator status refresh unavailable.",
+            refreshInFlight
+                ? "Dad Coordinator status refresh is in progress."
+                : string.IsNullOrWhiteSpace(refreshFailure)
+                    ? "Dad Coordinator status refresh has not completed yet."
+                    : refreshFailure,
             authorityEndpoint,
             transport.AuthorityWorkerSessionId,
             transport.AuthorityRole);
@@ -2696,8 +2939,11 @@ public sealed class Plugin : IDalamudPlugin
 
     public void SetPluginEnabled(bool enabled, bool printStatus = true)
     {
+        if (!enabled && Configuration.PluginEnabled)
+            WakeTakeoverService.StopAll("DAD disabled by operator.");
         Configuration.PluginEnabled = enabled;
         Configuration.Save();
+        TransportService.SetPluginEnabled(enabled);
         InvalidatePlannerPreviewCache("plugin enabled state changed");
         UpdateDtrBar();
 
@@ -2723,9 +2969,14 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow.ResetToOrigin();
         configWindow.ResetToOrigin();
         setupWizardWindow.ResetToOrigin();
+        miniStatusWindow.ResetToOrigin();
+        clientReconnectWindow.ResetToOrigin();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
+        miniStatusWindow.IsOpen = true;
+        if (!Configuration.RunAsServerDad)
+            clientReconnectWindow.IsOpen = true;
         PrintStatus("Reset dad window positions to 1,1.");
     }
 
@@ -2734,9 +2985,14 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow.QueueRandomVisibleJump();
         configWindow.QueueRandomVisibleJump();
         setupWizardWindow.QueueRandomVisibleJump();
+        miniStatusWindow.QueueRandomVisibleJump();
+        clientReconnectWindow.QueueRandomVisibleJump();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
+        miniStatusWindow.IsOpen = true;
+        if (!Configuration.RunAsServerDad)
+            clientReconnectWindow.IsOpen = true;
         PrintStatus("Queued random visible positions for the dad windows.");
     }
 
@@ -2932,6 +3188,12 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("config", StringComparison.OrdinalIgnoreCase))
         {
             ToggleConfigUi();
+            return;
+        }
+
+        if (trimmed.Equals("mini", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleMiniStatusUi();
             return;
         }
 
@@ -3547,6 +3809,49 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private void ObserveLocalRuntimeReadiness()
+    {
+        var signature = CaptureLocalRuntimeReadinessSignature();
+        if (localRuntimeReadinessTracker.WouldChange(signature))
+        {
+            // A takeover callback can acquire/release suppression after the normal presence pass.
+            // Refresh once on a semantic edge so the immediate heartbeat carries final post-AR truth.
+            PresenceService.Update(
+                CharacterIntelligenceService.CurrentPool,
+                TransportService.CurrentTransport.ListenerEndpoint);
+            signature = CaptureLocalRuntimeReadinessSignature();
+        }
+
+        if (!localRuntimeReadinessTracker.Observe(signature, out var revision))
+            return;
+
+        InvalidatePlannerPreviewCache($"local runtime readiness revision {revision}");
+        SchedulerService.WakeForRuntimeReadiness(PresenceService.WorkerSessionId);
+        TransportService.NotifyLocalRuntimeReadinessChanged(revision);
+    }
+
+    private DadRuntimeReadinessSignature CaptureLocalRuntimeReadinessSignature()
+    {
+        var participant = PresenceService.BuildSnapshotCopy();
+        var autoRetainer = AutoRetainerIpcService.Inspect();
+        return DadRuntimeReadinessSignature.Create(
+            participant,
+            autoRetainer.SuppressionReadable,
+            autoRetainer.IsSuppressed,
+            autoRetainer.SuppressionOwnedByDad,
+            autoRetainer.CharacterPostprocessOwnedByDad,
+            WakeTakeoverService.GetActiveStatus());
+    }
+
+    private void OnRemoteRuntimeReadinessChanged(DadWorkerSessionId workerSessionId, long revision)
+    {
+        // Transport applies the heartbeat and refreshes its participant projection before invoking
+        // this callback on the framework thread, so the scheduler can consume the edge this tick.
+        InvalidatePlannerPreviewCache($"remote runtime readiness revision {revision} ({workerSessionId.Value})");
+        SchedulerService.WakeForRuntimeReadiness(workerSessionId);
+        CharacterIntelligenceService.RefreshLocalCharacterPool("remote-runtime-readiness", logRefresh: false);
+    }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         RunFrameworkStep("FlushDebouncedUiWrites", () => FlushDebouncedUiWrites(force: false));
@@ -3571,11 +3876,27 @@ public sealed class Plugin : IDalamudPlugin
         });
 
         RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
+        RunFrameworkStep("VermaxionReservation", VermaxionIpcService.Update);
         RunFrameworkStep("Presence", () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint));
+        RunFrameworkStep("WakeTakeover", () =>
+        {
+            if (!Configuration.RunAsServerDad && !TransportService.CurrentTransport.AuthorityRoutable)
+                WakeTakeoverService.OnCoordinatorDisconnected();
+            WakeTakeoverService.Update();
+        });
+        RunFrameworkStep("RuntimeReadinessEdges", ObserveLocalRuntimeReadiness);
         RunFrameworkStep("TransportHeartbeat", () => TransportService.UpdateHeartbeat(
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
+        RunFrameworkStep("ClientReconnectWindow", () =>
+        {
+            var showReconnect = Configuration.PluginEnabled &&
+                                !Configuration.RunAsServerDad &&
+                                !Configuration.LocalOnlyModeEnabled &&
+                                !TransportService.CurrentTransport.AuthorityRoutable;
+            clientReconnectWindow.IsOpen = showReconnect;
+        });
         RunFrameworkStep("ProfileDirectory", () => ProfileDirectoryService.Update());
         RunFrameworkStep("WorkerExecution", () => WorkerExecutionService.Update());
         RunFrameworkStep("SchedulerEnqueue", () => SchedulerService.TickScheduleEnqueue());
