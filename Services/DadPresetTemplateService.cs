@@ -23,6 +23,7 @@ internal static class DadPresetTemplateService
         {
             slot.RequiredAccountKey = new DadAccountKey(string.Empty);
             slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+            slot.RequiredJobId = null;
         }
 
         return template;

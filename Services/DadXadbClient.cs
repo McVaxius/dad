@@ -224,7 +224,13 @@ public sealed class DadXadbClient
             status.SnapshotVersion = ReadNullableInt32(root, "snapshotVersion", "characterSummaryJsonVersion", "summaryVersion");
             status.SnapshotQuality = ReadString(root, "snapshotQuality");
             status.SnapshotUtc = ReadNullableDateTime(root, "updatedUtc", "snapshotUtc", "capturedAtUtc", "lastSaveUtc");
-            status.JobLevels = ReadJobLevels(root);
+            var incomingJobLevels = ReadJobLevels(root);
+            status.JobLevels = [];
+            DadRosterCharacterMerge.MergeJobLedger(
+                status.JobLevels,
+                incomingJobLevels,
+                status.CurrentJobId,
+                status.CurrentLevel);
             status.CurrentJobId = DadRosterCharacterMerge.ResolveCurrentJobId(
                 status.JobLevels,
                 status.CurrentJobId);

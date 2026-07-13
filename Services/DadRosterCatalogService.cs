@@ -932,8 +932,7 @@ public sealed class DadRosterCatalogService
     {
         var existing = characters.FindIndex(existingCharacter => DadRosterIdentity.SameRow(existingCharacter, candidate));
         var incoming = candidate.Clone();
-        if (xadbAuthoritative)
-            DadRosterCharacterMerge.NormalizeXadbSnapshot(incoming);
+        DadRosterCharacterMerge.NormalizeSnapshotJobLedger(incoming);
 
         if (existing < 0)
         {
@@ -1710,7 +1709,9 @@ public sealed class DadRosterCatalogService
         if (character.AccountKey.IsEmpty || character.CharacterKey.IsEmpty && character.ContentId == 0)
             return false;
 
-        var incoming = ToKnownRecord(character);
+        var normalizedCharacter = character.Clone();
+        DadRosterCharacterMerge.NormalizeSnapshotJobLedger(normalizedCharacter);
+        var incoming = ToKnownRecord(normalizedCharacter);
         var existingIndex = configuration.RosterCatalog.KnownCharacters.FindIndex(record =>
             DadRosterIdentity.SameAccount(record.AccountKey, incoming.AccountKey) &&
             DadRosterIdentity.SameCharacter(
@@ -1727,7 +1728,7 @@ public sealed class DadRosterCatalogService
 
         var existing = configuration.RosterCatalog.KnownCharacters[existingIndex];
         var mergeList = new List<DadRosterCharacter> { ToRosterCharacter(existing) };
-        UpsertRosterCharacter(mergeList, character, xadbAuthoritative);
+        UpsertRosterCharacter(mergeList, normalizedCharacter, xadbAuthoritative);
         var merged = ToKnownRecord(mergeList[0]);
         if (KnownRecordPayloadEquals(existing, merged))
             return false;

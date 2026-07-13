@@ -167,6 +167,80 @@ public sealed class DadWorkerCommandValidationRulesTests
         AssertRejected(BuildCommand(), runtime, "not post-AR ready");
     }
 
+    [Theory]
+    [InlineData(DadRequestedJobPreparationStatus.AlreadyMatched)]
+    [InlineData(DadRequestedJobPreparationStatus.Switched)]
+    [InlineData(DadRequestedJobPreparationStatus.SoftFailed)]
+    public void ExactTerminalRequestedJobProofAuthorizesWorkerCommand(
+        DadRequestedJobPreparationStatus status)
+    {
+        var command = BuildCommandWithRequestedJob();
+        var runtime = RuntimeForX();
+        var currentJobId = status == DadRequestedJobPreparationStatus.SoftFailed ? 19u : 21u;
+        AddRequestedJobProof(command.Participants[1], status, currentJobId);
+        AddRequestedJobProof(runtime, status, currentJobId);
+
+        Assert.True(
+            DadWorkerCommandValidationRules.TryValidate(command, runtime, out _, out var blocker),
+            blocker);
+    }
+
+    [Theory]
+    [InlineData(DadRequestedJobPreparationStatus.Pending)]
+    [InlineData(DadRequestedJobPreparationStatus.AwaitingVerification)]
+    [InlineData(DadRequestedJobPreparationStatus.Cancelled)]
+    public void NonTerminalRequestedJobProofCannotAuthorizeWorkerCommand(
+        DadRequestedJobPreparationStatus status)
+    {
+        var command = BuildCommandWithRequestedJob();
+        var runtime = RuntimeForX();
+        AddRequestedJobProof(command.Participants[1], DadRequestedJobPreparationStatus.AlreadyMatched, 21);
+        AddRequestedJobProof(runtime, status, 21);
+
+        AssertRejected(command, runtime, "terminal requested-job preparation proof");
+    }
+
+    [Theory]
+    [InlineData("run")]
+    [InlineData("worker")]
+    [InlineData("slot")]
+    [InlineData("account")]
+    [InlineData("character")]
+    [InlineData("content")]
+    [InlineData("job")]
+    public void WrongRequestedJobProofIdentityCannotAuthorizeWorkerCommand(string drift)
+    {
+        var command = BuildCommandWithRequestedJob();
+        var runtime = RuntimeForX();
+        AddRequestedJobProof(command.Participants[1], DadRequestedJobPreparationStatus.AlreadyMatched, 21);
+        AddRequestedJobProof(runtime, DadRequestedJobPreparationStatus.AlreadyMatched, 21);
+        var key = runtime.RequestedJobPreparation!.Key;
+        runtime.RequestedJobPreparation.Key = drift switch
+        {
+            "run" => key with { RunId = "other-run" },
+            "worker" => key with { WorkerSessionId = new DadWorkerSessionId("other-worker") },
+            "slot" => key with { SlotId = "Slot1" },
+            "account" => key with { AccountKey = new DadAccountKey("other-account") },
+            "character" => key with { CharacterKey = new DadCharacterKey("Other Character@Alpha") },
+            "content" => key with { ContentId = 9999 },
+            "job" => key with { RequiredJobId = 24 },
+            _ => key,
+        };
+
+        AssertRejected(command, runtime, "terminal requested-job preparation proof");
+    }
+
+    [Fact]
+    public void SwitchedProofCannotHideLiveJobDrift()
+    {
+        var command = BuildCommandWithRequestedJob();
+        var runtime = RuntimeForX();
+        AddRequestedJobProof(command.Participants[1], DadRequestedJobPreparationStatus.Switched, 21);
+        AddRequestedJobProof(runtime, DadRequestedJobPreparationStatus.Switched, 19);
+
+        AssertRejected(command, runtime, "terminal requested-job preparation proof");
+    }
+
     private static void AssertRejected(
         DadWorkerExecutionCommand command,
         DadParticipantSnapshot runtime,
@@ -255,6 +329,35 @@ public sealed class DadWorkerCommandValidationRulesTests
                 Assignment(WWorker, WAccount, WCharacter, WContentId, "Slot1", isLocal: false, isAuthority: true),
                 Assignment(XWorker, XAccount, XCharacter, XContentId, "Slot2", isLocal: true, isAuthority: false),
             ],
+        };
+    }
+
+    private static DadWorkerExecutionCommand BuildCommandWithRequestedJob()
+    {
+        var command = BuildCommand();
+        command.Plan.Orchestration.RequiredRosterCharacters[1].RequiredJobId = 21;
+        return command;
+    }
+
+    private static void AddRequestedJobProof(
+        DadParticipantSnapshot participant,
+        DadRequestedJobPreparationStatus status,
+        uint currentJobId)
+    {
+        participant.Character.CurrentJobId = currentJobId;
+        participant.RequestedJobPreparation = new DadRequestedJobPreparationProof
+        {
+            Key = new DadRequestedJobPreparationKey(
+                RunId,
+                new DadWorkerSessionId(XWorker),
+                "Slot2",
+                new DadAccountKey(XAccount),
+                new DadCharacterKey(XCharacter),
+                XContentId,
+                21),
+            Status = status,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Summary = status.ToString(),
         };
     }
 

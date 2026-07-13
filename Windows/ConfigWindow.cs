@@ -511,7 +511,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
             ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
             ImGui.BulletText("/dad run coordinator -> start a Dad Coordinator Sastasha premade demo");
-            ImGui.BulletText("/dad run msq -> start a Dad Coordinator Daily MSQ demo");
+            ImGui.BulletText("/dad run roulette -> start a Dad Coordinator Daily Roulette demo (/dad run msq is a legacy alias)");
             ImGui.BulletText("/dad run commend -> start a Dad Coordinator commendation demo");
             ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
             ImGui.BulletText("/dad cancel -> cancel the active orchestration run");

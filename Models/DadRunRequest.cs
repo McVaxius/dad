@@ -16,6 +16,17 @@ public sealed class DadQueueTarget
     public uint RouletteId { get; set; }
     public string Key { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+
+    public DadQueueTarget Clone()
+        => new()
+        {
+            SchemaVersion = SchemaVersion,
+            Kind = Kind,
+            ContentFinderConditionId = ContentFinderConditionId,
+            RouletteId = RouletteId,
+            Key = Key,
+            DisplayName = DisplayName,
+        };
 }
 
 public sealed class DadRunRequest
@@ -77,7 +88,7 @@ public sealed class DadRunRequest
         }
 
         if (DailyMsq != null)
-            parts.Add($"Daily MSQ preset '{DailyMsq.LanPartyPreset}'");
+            parts.Add($"Daily Roulette '{DailyMsq.QueueTarget.DisplayName}' #{DailyMsq.QueueTarget.RouletteId}");
 
         if (Msq != null)
             parts.Add($"MSQ preset '{Msq.Preset}' ({Msq.Attempts} attempt(s) / legacy {Msq.LegacyQueuePreset})");
@@ -248,7 +259,7 @@ public sealed class DadRunRequest
                     DadModuleId.DutySupport => "DutySupport",
                     DadModuleId.Trust => "Trust",
                     DadModuleId.PremadeDuty => "PremadeDuty",
-                    DadModuleId.DailyMsq => "DailyMsqPremade",
+                    DadModuleId.DailyMsq => "DailyRoulette",
                     DadModuleId.Blunderville => "Blunderville",
                     DadModuleId.Mogtome => "Mogtome",
                     DadModuleId.Commendation => "CommendationAuraLane",

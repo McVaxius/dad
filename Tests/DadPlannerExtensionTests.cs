@@ -110,6 +110,22 @@ public sealed class DadPlannerExtensionTests
     }
 
     [Fact]
+    public void DailyRouletteCapabilityIsLiveAndRequeueable()
+    {
+        var capability = new DadModuleRegistry().GetCapability(DadModuleId.DailyMsq);
+
+        Assert.Equal("Daily Roulette", capability.DisplayName);
+        Assert.Equal(4, capability.RequiredPartySize);
+        Assert.True(capability.RequiresPeers);
+        Assert.True(capability.CanPlan);
+        Assert.True(capability.CanStartQueue);
+        Assert.True(capability.CanTrackCompletion);
+        Assert.True(capability.CanRequeue);
+        Assert.True(capability.CanExecuteLiveQueue);
+        Assert.DoesNotContain(capability.Blockers, static blocker => blocker.Capability == "CanStartQueue");
+    }
+
+    [Fact]
     public void RestedXpStopPolicyNormalizesAndDescribesSafetyCap()
     {
         var policy = new DadRunStopPolicy

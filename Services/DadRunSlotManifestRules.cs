@@ -5,7 +5,9 @@ namespace dad.Services;
 internal static class DadRunSlotManifestRules
 {
     public static bool RequiresFrozenRoster(DadRunPlan plan)
-        => plan.RequiredParticipantCount > 1 || plan.RequiresRemoteParticipants;
+        => plan.RequiredParticipantCount > 1 ||
+           plan.RequiresRemoteParticipants ||
+           (plan.Orchestration?.RequiredRosterCharacters?.Any(static reference => reference.RequiredJobId.HasValue) ?? false);
 
     public static bool TryCreate(
         DadRunPlan plan,
@@ -25,13 +27,14 @@ internal static class DadRunSlotManifestRules
             plan.Request.Orchestration.RosterIntent == null ||
             plan.Modules == null)
         {
-            return Fail("Multiplayer run is missing its typed plan, orchestration, roster intent, or module payload.", out blocker);
+            return Fail("Frozen-roster run is missing its typed plan, orchestration, roster intent, or module payload.", out blocker);
         }
 
         if (string.IsNullOrWhiteSpace(plan.Request.RequestId))
-            return Fail("Multiplayer run is missing a request id.", out blocker);
+            return Fail("Frozen-roster run is missing a request id.", out blocker);
 
-        if (plan.RequiredParticipantCount < 2 || !plan.RequiresRemoteParticipants)
+        var isMultiplayer = plan.RequiredParticipantCount > 1 || plan.RequiresRemoteParticipants;
+        if (isMultiplayer && (plan.RequiredParticipantCount < 2 || !plan.RequiresRemoteParticipants))
             return Fail("Multiplayer run has contradictory remote-participant requirements.", out blocker);
 
         var roster = plan.Orchestration.RequiredRosterCharacters ?? [];
@@ -45,14 +48,14 @@ internal static class DadRunSlotManifestRules
         if (roster.Count != plan.RequiredParticipantCount)
         {
             return Fail(
-                $"Multiplayer run requires a complete typed roster: expected {plan.RequiredParticipantCount} ordered character(s), received {roster.Count}.",
+                $"Frozen-roster run requires a complete typed roster: expected {plan.RequiredParticipantCount} ordered character(s), received {roster.Count}.",
                 out blocker);
         }
 
         if (plan.Orchestration.RosterIntent.ExpectedPartySize != plan.RequiredParticipantCount)
         {
             return Fail(
-                $"Multiplayer run party-size contradiction: roster intent is {plan.Orchestration.RosterIntent.ExpectedPartySize}, plan requires {plan.RequiredParticipantCount}.",
+                $"Frozen-roster run party-size contradiction: roster intent is {plan.Orchestration.RosterIntent.ExpectedPartySize}, plan requires {plan.RequiredParticipantCount}.",
                 out blocker);
         }
 
@@ -68,12 +71,21 @@ internal static class DadRunSlotManifestRules
                     out blocker);
             }
 
+            if (reference.RequiredJobId is 0 ||
+                (reference.RequiredJobId.HasValue && !DadRosterCharacterMerge.IsCombatJob(reference.RequiredJobId.Value)))
+            {
+                return Fail(
+                    $"{slotId} requested class/job {reference.RequiredJobId.GetValueOrDefault()} is not a positive combat job.",
+                    out blocker);
+            }
+
             slots.Add(new DadFrozenRunSlot
             {
                 SlotId = slotId,
                 AccountKey = reference.AccountKey,
                 CharacterKey = reference.CharacterKey,
                 ContentId = reference.ContentId,
+                RequiredJobId = reference.RequiredJobId,
                 IsLeader = string.Equals(reference.CharacterKey.Value, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase),
                 IsInviter = string.Equals(reference.CharacterKey.Value, plan.InviterCharacterKey, StringComparison.OrdinalIgnoreCase),
             });
@@ -122,7 +134,7 @@ internal static class DadRunSlotManifestRules
             payloads.Add(payload);
         }
 
-        if (payloads.All(static payload => payload.ExpectedPartySize <= 1))
+        if (isMultiplayer && payloads.All(static payload => payload.ExpectedPartySize <= 1))
             return Fail("Multiplayer run has no multiplayer module payload.", out blocker);
 
         manifest = new DadRunSlotManifest
@@ -356,6 +368,7 @@ internal static class DadRunSlotManifestRules
     private static void ApplyQueueTarget(DadFrozenModulePayload payload, DadQueueTarget target)
     {
         payload.DutyName = target.DisplayName;
+        payload.TargetKind = target.Kind;
         payload.ContentFinderConditionId = target.ContentFinderConditionId;
         payload.RouletteId = target.RouletteId;
     }
@@ -371,7 +384,8 @@ internal static class DadRunSlotManifestRules
         {
             if (!Same(left[index].AccountKey.Value, right[index].AccountKey.Value) ||
                 !Same(left[index].CharacterKey.Value, right[index].CharacterKey.Value) ||
-                left[index].ContentId != right[index].ContentId)
+                left[index].ContentId != right[index].ContentId ||
+                left[index].RequiredJobId != right[index].RequiredJobId)
             {
                 return false;
             }

@@ -199,6 +199,7 @@ public sealed class DadRosterCharacterRef
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
     public ulong ContentId { get; set; }
+    public uint? RequiredJobId { get; set; }
 
     public bool IsEmpty => AccountKey.IsEmpty && CharacterKey.IsEmpty && ContentId == 0;
 
@@ -208,6 +209,7 @@ public sealed class DadRosterCharacterRef
             AccountKey = AccountKey,
             CharacterKey = CharacterKey,
             ContentId = ContentId,
+            RequiredJobId = RequiredJobId,
         };
 }
 

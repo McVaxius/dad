@@ -9,10 +9,12 @@ public sealed class DadWorkerExecutionService
 {
     private readonly DadQueueExecutionService queueExecutionService;
     private readonly DadPresenceService presenceService;
+    private readonly DadCombatRotationService combatRotationService;
     private readonly ICondition condition;
     private readonly IPluginLog log;
     private readonly ConcurrentQueue<DadWorkerExecutionCommand> pendingCommands = new();
     private readonly object stateLock = new();
+    private readonly DadParticipantFrenRiderHandoffGate participantFrenRiderHandoffGate = new();
 
     private DadWorkerExecutionCommand? activeCommand;
     private DadWorkerExecutionStatus status = new();
@@ -20,15 +22,18 @@ public sealed class DadWorkerExecutionService
     private bool enteredDuty;
     private DadLocalDutyResolvedContent? participantQueueContent;
     private string lastParticipantQueueTransition = string.Empty;
+    private DadCombatRotationMode participantCombatRotationMode = DadCombatRotationMode.UseFrenRider;
 
     public DadWorkerExecutionService(
         DadQueueExecutionService queueExecutionService,
         DadPresenceService presenceService,
+        DadCombatRotationService combatRotationService,
         ICondition condition,
         IPluginLog log)
     {
         this.queueExecutionService = queueExecutionService;
         this.presenceService = presenceService;
+        this.combatRotationService = combatRotationService;
         this.condition = condition;
         this.log = log;
         status.WorkerSessionId = presenceService.WorkerSessionId;
@@ -108,6 +113,7 @@ public sealed class DadWorkerExecutionService
             // Drain any matching pending command so it never starts on the next frame.
             if (DrainPendingForRun(cancel.RunId))
             {
+                participantFrenRiderHandoffGate.Reset();
                 status = new DadWorkerExecutionStatus
                 {
                     RunId = cancel.RunId,
@@ -154,6 +160,7 @@ public sealed class DadWorkerExecutionService
             activeCommand = null;
             participantQueueContent = null;
             lastParticipantQueueTransition = string.Empty;
+            participantFrenRiderHandoffGate.Reset();
             status = new DadWorkerExecutionStatus
             {
                 CommandId = commandId,
@@ -238,6 +245,8 @@ public sealed class DadWorkerExecutionService
         enteredDuty = condition[ConditionFlag.BoundByDuty];
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
+        participantCombatRotationMode = combatRotationService.CombatRotationMode;
+        participantFrenRiderHandoffGate.Reset();
         var module = ResolveModule(command);
         if (module == null)
         {
@@ -300,6 +309,7 @@ public sealed class DadWorkerExecutionService
                 // A participant may already be bound by an unrelated duty when the command arrives.
                 // Running is granted only after the observe-only pulse proves the requested duty.
                 enteredDuty = false;
+                status.EnteredDuty = false;
             }
 
             status.State = enteredDuty ? DadWorkerExecutionState.Running : DadWorkerExecutionState.WaitingForQueue;
@@ -376,8 +386,10 @@ public sealed class DadWorkerExecutionService
                 return;
             }
 
-            if (pulse.Kind == DadLocalDutyQueuePulseKind.EnteredDuty &&
-                pulse.Phase == DadRunPhase.InDutyOrTask)
+            var exactRequestedDutyEntered =
+                pulse.Kind == DadLocalDutyQueuePulseKind.EnteredDuty &&
+                pulse.Phase == DadRunPhase.InDutyOrTask;
+            if (exactRequestedDutyEntered)
             {
                 enteredDuty = true;
                 status.EnteredDuty = true;
@@ -388,7 +400,25 @@ public sealed class DadWorkerExecutionService
                 status.State = DadWorkerExecutionState.WaitingForQueue;
             }
 
-            status.Summary = pulse.Summary;
+            var handoffStatus = participantFrenRiderHandoffGate.Apply(
+                activeCommand,
+                participantCombatRotationMode == DadCombatRotationMode.UseFrenRider,
+                exactRequestedDutyEntered,
+                DateTime.UtcNow,
+                combatRotationService.TryConfigureAndEnableParticipant,
+                out var handoffSummary);
+            if (handoffStatus == DadParticipantFrenRiderHandoffStatus.Failed)
+            {
+                Finish(DadWorkerExecutionState.Failed, false, handoffSummary, handoffSummary);
+                return;
+            }
+
+            status.Summary = handoffStatus is
+                DadParticipantFrenRiderHandoffStatus.Configured or
+                DadParticipantFrenRiderHandoffStatus.AlreadyConfigured or
+                DadParticipantFrenRiderHandoffStatus.PendingRetry
+                ? handoffSummary
+                : pulse.Summary;
             status.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
@@ -475,6 +505,7 @@ public sealed class DadWorkerExecutionService
             queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
+        participantFrenRiderHandoffGate.Reset();
         status.State = state;
         status.IsTerminal = true;
         status.Success = success;

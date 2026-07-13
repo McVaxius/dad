@@ -5,8 +5,17 @@ namespace dad.Services;
 internal static class DadRosterCharacterMerge
 {
     public static void NormalizeXadbSnapshot(DadRosterCharacter character)
+        => NormalizeSnapshotJobLedger(character);
+
+    public static void NormalizeSnapshotJobLedger(DadRosterCharacter character)
     {
-        character.JobLevels ??= [];
+        var normalizedJobLevels = new Dictionary<uint, int>();
+        MergeJobLedger(
+            normalizedJobLevels,
+            character.JobLevels,
+            character.CurrentJobId,
+            character.CurrentLevel);
+        character.JobLevels = normalizedJobLevels;
         character.CurrentJobId = ResolveCurrentJobId(
             character.JobLevels,
             character.CurrentJobId);
@@ -16,17 +25,33 @@ internal static class DadRosterCharacterMerge
             character.CurrentLevel);
     }
 
+    public static void MergeJobLedger(
+        Dictionary<uint, int> target,
+        IReadOnlyDictionary<uint, int>? incoming,
+        uint? currentJobId = null,
+        int? currentLevel = null)
+    {
+        if (incoming != null)
+        {
+            foreach (var pair in incoming)
+                LearnJobLevel(target, pair.Key, pair.Value);
+        }
+
+        if (currentJobId.HasValue && currentLevel.HasValue)
+            LearnJobLevel(target, currentJobId.Value, currentLevel.Value);
+    }
+
     public static uint? ResolveCurrentJobId(
         IReadOnlyDictionary<uint, int> jobLevels,
         uint? currentJobId)
     {
-        if (currentJobId.HasValue)
+        if (currentJobId is > 0)
             return currentJobId;
 
         uint? soleCombatJobId = null;
         foreach (var pair in jobLevels)
         {
-            if (!IsCombatJob(pair.Key))
+            if (pair.Value <= 0 || !IsCombatJob(pair.Key))
                 continue;
 
             if (soleCombatJobId.HasValue)
@@ -44,7 +69,9 @@ internal static class DadRosterCharacterMerge
         int? currentLevel)
     {
         var resolvedCurrentJobId = ResolveCurrentJobId(jobLevels, currentJobId);
-        return resolvedCurrentJobId.HasValue && jobLevels.TryGetValue(resolvedCurrentJobId.Value, out var jobLevel)
+        return resolvedCurrentJobId.HasValue &&
+               jobLevels.TryGetValue(resolvedCurrentJobId.Value, out var jobLevel) &&
+               jobLevel > 0
             ? jobLevel
             : currentLevel;
     }
@@ -57,11 +84,19 @@ internal static class DadRosterCharacterMerge
         DadRosterCharacter incoming)
     {
         NormalizeXadbSnapshot(incoming);
+        target.JobLevels ??= [];
+        MergeJobLedger(
+            target.JobLevels,
+            incoming.JobLevels,
+            incoming.CurrentJobId,
+            incoming.CurrentLevel);
         target.LastSnapshotUtc = incoming.LastSnapshotUtc;
-        target.JobLevels = new Dictionary<uint, int>(incoming.JobLevels);
         target.CurrentJobId = incoming.CurrentJobId;
         target.CurrentJobAbbrev = incoming.CurrentJobAbbrev;
-        target.CurrentLevel = incoming.CurrentLevel;
+        target.CurrentLevel = ResolveCurrentLevel(
+            target.JobLevels,
+            target.CurrentJobId,
+            incoming.CurrentLevel);
         target.SnapshotQuality = incoming.SnapshotQuality;
         target.SnapshotVersion = incoming.SnapshotVersion;
         target.XadbReady = incoming.XadbReady;
@@ -71,28 +106,41 @@ internal static class DadRosterCharacterMerge
         DadRosterCharacter target,
         DadRosterCharacter incoming)
     {
-        var preserveExistingXadbJobs =
-            IsRuntimeSource(incoming.Source) &&
+        target.JobLevels ??= [];
+        incoming.JobLevels ??= [];
+        var runtimeSource = IsRuntimeSource(incoming.Source);
+        var preserveExistingXadbObservations =
+            runtimeSource &&
             HasCompleteXadbJobData(target);
         target.XadbReady |= incoming.XadbReady;
         target.IsCurrent |= incoming.IsCurrent;
         target.LastRuntimeSeenUtc = MaxDate(target.LastRuntimeSeenUtc, incoming.LastRuntimeSeenUtc);
-        if (preserveExistingXadbJobs)
-        {
+        MergeJobLedger(
+            target.JobLevels,
+            incoming.JobLevels,
+            incoming.CurrentJobId,
+            incoming.CurrentLevel);
+
+        if (runtimeSource)
             ApplyRuntimeCurrentFields(target, incoming);
+
+        if (preserveExistingXadbObservations)
+        {
             return;
         }
 
         target.LastSnapshotUtc = MaxDate(target.LastSnapshotUtc, incoming.LastSnapshotUtc);
-        foreach (var pair in incoming.JobLevels)
-            target.JobLevels[pair.Key] = pair.Value;
-        target.CurrentJobId = ResolveCurrentJobId(target.JobLevels, target.CurrentJobId ?? incoming.CurrentJobId);
-        if (string.IsNullOrWhiteSpace(target.CurrentJobAbbrev))
-            target.CurrentJobAbbrev = incoming.CurrentJobAbbrev;
-        target.CurrentLevel = ResolveCurrentLevel(
-            target.JobLevels,
-            target.CurrentJobId,
-            target.CurrentLevel ?? incoming.CurrentLevel);
+        if (!runtimeSource)
+        {
+            target.CurrentJobId = ResolveCurrentJobId(target.JobLevels, target.CurrentJobId ?? incoming.CurrentJobId);
+            if (string.IsNullOrWhiteSpace(target.CurrentJobAbbrev))
+                target.CurrentJobAbbrev = incoming.CurrentJobAbbrev;
+            target.CurrentLevel = ResolveCurrentLevel(
+                target.JobLevels,
+                target.CurrentJobId,
+                target.CurrentLevel ?? incoming.CurrentLevel);
+        }
+
         if (string.IsNullOrWhiteSpace(target.SnapshotQuality))
             target.SnapshotQuality = incoming.SnapshotQuality;
         target.SnapshotVersion ??= incoming.SnapshotVersion;
@@ -100,7 +148,7 @@ internal static class DadRosterCharacterMerge
 
     private static void ApplyRuntimeCurrentFields(DadRosterCharacter target, DadRosterCharacter incoming)
     {
-        if (incoming.CurrentJobId.HasValue)
+        if (incoming.CurrentJobId is > 0)
             target.CurrentJobId = incoming.CurrentJobId;
         else
             target.CurrentJobId = ResolveCurrentJobId(target.JobLevels, target.CurrentJobId);
@@ -115,6 +163,15 @@ internal static class DadRosterCharacterMerge
             target.JobLevels,
             target.CurrentJobId,
             fallbackCurrentLevel);
+    }
+
+    private static void LearnJobLevel(Dictionary<uint, int> ledger, uint jobId, int level)
+    {
+        if (jobId == 0 || level <= 0)
+            return;
+
+        if (!ledger.TryGetValue(jobId, out var knownLevel) || level > knownLevel)
+            ledger[jobId] = level;
     }
 
     private static bool HasCompleteXadbJobData(DadRosterCharacter character)

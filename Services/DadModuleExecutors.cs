@@ -1322,11 +1322,6 @@ public sealed class DadTrustExecutor(
             : string.Join(" | ", blockers.Select(static blocker => $"{blocker.Capability}: {blocker.Summary}"));
 }
 
-public sealed class DadDailyMsqExecutor(
-    DadModuleRegistry moduleRegistry,
-    Func<DadRunPlan, string> queueBlockerFactory)
-    : DadDeferredModuleExecutor(moduleRegistry, "DadDailyMsqExecutor", DadModuleId.DailyMsq, "Daily MSQ", queueBlockerFactory);
-
 public sealed class DadBlundervilleExecutor(
     DadModuleRegistry moduleRegistry,
     Func<DadRunPlan, string> queueBlockerFactory)

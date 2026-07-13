@@ -335,8 +335,11 @@ public sealed class DadCharacterIntelligenceService
         if (character.CurrentLevel == null && xadbStatus.CurrentLevel.HasValue)
             character.CurrentLevel = xadbStatus.CurrentLevel.Value;
 
-        foreach (var pair in xadbStatus.JobLevels)
-            character.JobLevels[pair.Key] = pair.Value;
+        DadRosterCharacterMerge.MergeJobLedger(
+            character.JobLevels,
+            xadbStatus.JobLevels,
+            character.CurrentJobId,
+            character.CurrentLevel);
 
         character.CurrentJobId = DadRosterCharacterMerge.ResolveCurrentJobId(
             character.JobLevels,

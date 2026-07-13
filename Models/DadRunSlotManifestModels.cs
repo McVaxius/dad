@@ -1,6 +1,7 @@
 namespace dad.Models;
 
-// Internal execution contract built when a coordinator accepts a multiplayer run.
+// Internal execution contract built when a coordinator accepts a multiplayer run or a
+// single-worker run that needs an exact requested-job preparation assignment.
 // It is deliberately not part of the IPC schema; the existing ordered
 // RequiredRosterCharacters list remains the wire-compatible source of truth.
 internal sealed class DadRunSlotManifest
@@ -30,6 +31,7 @@ internal sealed class DadFrozenRunSlot
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
     public ulong ContentId { get; set; }
+    public uint? RequiredJobId { get; set; }
     public bool IsLeader { get; set; }
     public bool IsInviter { get; set; }
     public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
@@ -41,6 +43,7 @@ internal sealed class DadFrozenRunSlot
             AccountKey = AccountKey,
             CharacterKey = CharacterKey,
             ContentId = ContentId,
+            RequiredJobId = RequiredJobId,
             IsLeader = IsLeader,
             IsInviter = IsInviter,
             WorkerSessionId = WorkerSessionId,
@@ -51,6 +54,7 @@ internal sealed class DadFrozenModulePayload
 {
     public DadModuleId ModuleId { get; set; } = DadModuleId.None;
     public string DutyName { get; set; } = string.Empty;
+    public DadQueueTargetKind TargetKind { get; set; } = DadQueueTargetKind.DutyFinderDuty;
     public uint ContentFinderConditionId { get; set; }
     public uint RouletteId { get; set; }
     public bool Unsynced { get; set; }
@@ -61,6 +65,7 @@ internal sealed class DadFrozenModulePayload
         {
             ModuleId = ModuleId,
             DutyName = DutyName,
+            TargetKind = TargetKind,
             ContentFinderConditionId = ContentFinderConditionId,
             RouletteId = RouletteId,
             Unsynced = Unsynced,

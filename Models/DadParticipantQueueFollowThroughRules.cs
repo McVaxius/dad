@@ -16,6 +16,7 @@ public static class DadParticipantQueueFollowThroughRules
         => plan.RequiredParticipantCount > 1 &&
            module.ModuleId != DadModuleId.Mogtome &&
            (module.ModuleId == DadModuleId.PremadeDuty ||
+            module.ModuleId == DadModuleId.DailyMsq && plan.Request.DailyMsq != null ||
             module.ModuleId == DadModuleId.Duty && plan.Request.Dungeon?.QueueViaLanParty == true ||
             module.ModuleId == DadModuleId.CustomDuty && plan.Request.CustomDuty?.ExpectedPartySize > 1 ||
             module.ModuleId == DadModuleId.Commendation && plan.Request.Commendation != null);

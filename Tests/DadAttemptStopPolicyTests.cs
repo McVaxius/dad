@@ -138,6 +138,14 @@ public sealed class DadAttemptStopPolicyTests
         Assert.Equal(1, result.AfterRuns); // not bumped: AfterRuns only governs the AfterRuns stop mode
     }
 
+    [Fact]
+    public void DailyRouletteIsEligibleForCoordinatorStopPolicyRepeat()
+    {
+        Assert.True(DadStopPolicyLoopRules.IsEligibleModule(DadModuleId.DailyMsq));
+        Assert.False(DadStopPolicyLoopRules.IsEligibleModule(DadModuleId.Blunderville));
+        Assert.False(DadStopPolicyLoopRules.IsEligibleModule(DadModuleId.Astrope));
+    }
+
     // Mirrors the executors' intentional one-run guard: DadPremadeDutyExecutor (PremadeDuty.Attempts > 1 ||
     // Dungeon.Count > 1) and DadLocalDutyExecutor (Dungeon.Count > 1). Replicated locally because those
     // executors carry Dalamud dependencies and cannot be linked into the test assembly.

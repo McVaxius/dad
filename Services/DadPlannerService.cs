@@ -149,9 +149,25 @@ public sealed class DadPlannerService
 
         if (request.DailyMsq != null)
         {
-            if (string.IsNullOrWhiteSpace(request.DailyMsq.LanPartyPreset))
+            var target = request.DailyMsq.QueueTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
+            if (target.Kind != DadQueueTargetKind.Roulette)
             {
-                rejectionReason = "dad Daily MSQ requires a preset.";
+                rejectionReason = $"dad Daily Roulette requires a Roulette target kind, not {target.Kind}.";
+                return null;
+            }
+
+            if (target.RouletteId == 0 &&
+                string.Equals(target.Key, DadRouletteCatalogProjection.MainScenarioLegacyKey, StringComparison.OrdinalIgnoreCase))
+            {
+                target.RouletteId = DadRouletteCatalogProjection.MainScenarioRouletteId;
+                target.Key = DadRouletteCatalogProjection.BuildCanonicalKey(target.RouletteId);
+                if (string.IsNullOrWhiteSpace(target.DisplayName))
+                    target.DisplayName = "Main Scenario";
+            }
+
+            if (target.RouletteId is 0 or > byte.MaxValue)
+            {
+                rejectionReason = "dad Daily Roulette requires a ContentRoulette id in the range 1..255.";
                 return null;
             }
 
@@ -159,11 +175,11 @@ public sealed class DadPlannerService
             modules.Add(new DadPlannedModuleExecution
             {
                 ModuleId = DadModuleId.DailyMsq,
-                DisplayName = "Daily MSQ",
+                DisplayName = "Daily Roulette",
                 OwnerLabel = capability.OwnerLabel,
                 ExpectedPartySize = Math.Max(4, capability.RequiredPartySize),
                 RequiresPeers = true,
-                Summary = $"Daily MSQ preset '{request.DailyMsq.LanPartyPreset}'",
+                Summary = $"Daily Roulette {target.DisplayName} #{target.RouletteId}",
             });
         }
 
@@ -344,7 +360,7 @@ public sealed class DadPlannerService
                 // B4: MSQ arm removed — MSQ modules are always built RequiresPeers = false, so this guard is
                 // never entered for an MSQ-only run; the arm was unreachable copy-paste drift.
                 DadModuleId.PremadeDuty => "dad local-only is enabled, but Premade Duty requires Dad Coordinator party workers.",
-                DadModuleId.DailyMsq => "dad local-only is enabled, but Daily MSQ requires Dad Coordinator party workers.",
+                DadModuleId.DailyMsq => "dad local-only is enabled, but Daily Roulette requires Dad Coordinator party workers.",
                 // B3 (Option A): MOGTOME arm removed — MOGTOME now plans RequiresPeers = false (solo helper-IPC
                 // lane), so it is no longer rejected under local-only.
                 DadModuleId.Commendation => "dad local-only is enabled, but commendation requires Dad Coordinator party workers.",
@@ -444,6 +460,9 @@ public sealed class DadPlannerService
             rejectionReason = $"Party leader '{leaderCharacterKey}' is not known to Dad.";
             return false;
         }
+
+        if (!DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(request, leader, out rejectionReason))
+            return false;
 
         if (requireLiveReadiness && !IsConnectedForRuntime(leader))
         {

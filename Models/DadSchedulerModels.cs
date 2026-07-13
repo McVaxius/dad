@@ -142,6 +142,7 @@ public sealed class DadSchedulerSlotState
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
+    public uint? RequiredJobId { get; set; }
     public string LaunchProfileId { get; set; } = string.Empty;
     public string LaunchProfileName { get; set; } = string.Empty;
     public string BatchPath { get; set; } = string.Empty;
@@ -206,6 +207,7 @@ public sealed class DadSchedulerSlotState
             WakePolicy = WakePolicy,
             RequiredAccountKey = RequiredAccountKey,
             RequiredCharacterKey = RequiredCharacterKey,
+            RequiredJobId = RequiredJobId,
             LaunchProfileId = LaunchProfileId,
             LaunchProfileName = LaunchProfileName,
             BatchPath = BatchPath,

@@ -1255,6 +1255,7 @@ public sealed class DadSchedulerService
                 SlotId = slot.SlotId,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
+                RequiredJobId = slot.RequiredJobId,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
             }).ToList(),
@@ -1478,6 +1479,7 @@ public sealed class DadSchedulerService
                 SlotId = slot.SlotId,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
+                RequiredJobId = slot.RequiredJobId,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
             }).ToList(),
@@ -1544,53 +1546,10 @@ public sealed class DadSchedulerService
     private static DadPlannerGroup CloneSchedulerGroupWithSlots(
         DadPlannerGroup source,
         IEnumerable<DadPlannerGroupSlot> slots)
-        => new()
-        {
-            GroupId = source.GroupId,
-            DisplayName = source.DisplayName,
-            RunFamily = source.RunFamily,
-            ActivityMode = source.ActivityMode,
-            OperatorMode = source.OperatorMode,
-            ConnectedOnly = source.ConnectedOnly,
-            SameDatacenterOnly = source.SameDatacenterOnly,
-            AllowStaleForPlanning = source.AllowStaleForPlanning,
-            TransportOwner = source.TransportOwner,
-            QueueAuthority = source.QueueAuthority,
-            InviteAuthority = DadInviteAuthority.PresetLeader,
-            DutyContentFinderConditionId = source.DutyContentFinderConditionId,
-            DutyDisplayName = source.DutyDisplayName,
-            DutyUnsynced = source.DutyUnsynced,
-            DutyExpectedPartySize = source.DutyExpectedPartySize,
-            MogtomePreset = source.MogtomePreset,
-            MogtomeDutyPolicy = source.MogtomeDutyPolicy,
-            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
-            StopPolicy = source.StopPolicy.Clone(),
-            CompletionActions = source.CompletionActions?.Clone(),
-            Slots = slots.Select(CloneSchedulerGroupSlot).ToList(),
-            ScheduleEnabled = source.ScheduleEnabled,
-            ScheduleCadenceHours = source.ScheduleCadenceHours,
-            NextEligibleTimeUtc = source.NextEligibleTimeUtc,
-            ScheduleRequester = source.ScheduleRequester,
-            SchedulePriority = source.SchedulePriority,
-            MapRunTemplate = source.MapRunTemplate,
-            MapMode = source.MapMode,
-            CreatedAtUtc = source.CreatedAtUtc,
-            UpdatedAtUtc = source.UpdatedAtUtc,
-        };
+        => DadSchedulerGroupCloneRules.CloneWithSlots(source, slots);
 
     private static DadPlannerGroupSlot CloneSchedulerGroupSlot(DadPlannerGroupSlot source)
-        => new()
-        {
-            SlotId = source.SlotId,
-            IsSubstitute = source.IsSubstitute,
-            RequiredRole = source.RequiredRole,
-            RequiredAccountKey = source.RequiredAccountKey,
-            RequiredCharacterKey = source.RequiredCharacterKey,
-            WakePolicy = source.WakePolicy,
-            LaunchProfileId = source.LaunchProfileId,
-            CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
-            AllowSubstitution = source.AllowSubstitution,
-        };
+        => DadSchedulerGroupCloneRules.CloneSlot(source);
 
     private List<DadSchedulerSlotState> BuildSlotStates(
         DadPlannerGroup group,
@@ -1629,6 +1588,7 @@ public sealed class DadSchedulerService
             WakePolicy = slot.WakePolicy,
             RequiredAccountKey = slot.RequiredAccountKey,
             RequiredCharacterKey = slot.RequiredCharacterKey,
+            RequiredJobId = slot.RequiredJobId,
             LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty,
         };
         state.RosterVisibility = rosterCatalogService.ResolveVisibility(slot.RequiredCharacterKey, slot.RequiredAccountKey);

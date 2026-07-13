@@ -61,6 +61,123 @@ public sealed class DadRunSlotManifestRulesTests
         Assert.Equal("worker-x", resolvedX.WorkerSessionId.Value);
     }
 
+    [Fact]
+    public void RequestedJobsAreFrozenAndClonedWithoutChangingRosterIdentity()
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[0].RequiredJobId = 21;
+        plan.Orchestration.RequiredRosterCharacters[1].RequiredJobId = 24;
+
+        Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var blocker), blocker);
+        Assert.Equal((uint?)21, manifest.Slots[0].RequiredJobId);
+        Assert.Equal((uint?)24, manifest.Slots[1].RequiredJobId);
+
+        var clone = manifest.Clone();
+        Assert.Equal((uint?)21, clone.Slots[0].RequiredJobId);
+        Assert.Equal((uint?)24, clone.Slots[1].RequiredJobId);
+
+        var identity = plan.Orchestration.RequiredRosterCharacters[0].Clone();
+        identity.RequiredJobId = 37;
+        Assert.Equal(
+            DadRosterIdentity.BuildKey(plan.Orchestration.RequiredRosterCharacters[0]),
+            DadRosterIdentity.BuildKey(identity));
+    }
+
+    [Fact]
+    public void ContradictoryRequestedJobInOrderedRosterIsRejected()
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[1].RequiredJobId = 24;
+        plan.Request.Orchestration = DadIpcJson.Deserialize<DadOrchestrationIntent>(
+            DadIpcJson.Serialize(plan.Orchestration))!;
+        plan.Request.Orchestration.RequiredRosterCharacters[1].RequiredJobId = 28;
+
+        Assert.False(DadRunSlotManifestRules.TryCreate(plan, out _, out var blocker));
+        Assert.Contains("ordered typed roster", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SoloSelectedJobCreatesAndBindsOneSlotFrozenManifest()
+    {
+        var orchestration = new DadOrchestrationIntent
+        {
+            ModuleTarget = DadModuleId.Msq,
+            PreferredLeaderCharacterKey = new DadCharacterKey(WCharacter),
+            RequiredRosterCharacters =
+            [
+                new DadRosterCharacterRef
+                {
+                    AccountKey = new DadAccountKey(WAccount),
+                    CharacterKey = new DadCharacterKey(WCharacter),
+                    ContentId = WContentId,
+                    RequiredJobId = 21,
+                },
+            ],
+            RosterIntent = new DadRosterIntent
+            {
+                ExpectedPartySize = 1,
+                RequireRemoteParticipants = false,
+                RequireExactCharacters = true,
+                AllowStoredXadbFallback = false,
+            },
+        };
+        var request = new DadRunRequest
+        {
+            RequestId = "request-solo-job",
+            Orchestration = orchestration,
+            Msq = new DadMsqTask
+            {
+                DutyName = "The Praetorium",
+                ContentFinderConditionId = 1044,
+            },
+        };
+        var plan = new DadRunPlan
+        {
+            Request = request,
+            CompositeModuleId = DadModuleId.Msq,
+            Orchestration = orchestration,
+            RequiredParticipantCount = 1,
+            RequiresRemoteParticipants = false,
+            LeaderCharacterKey = WCharacter,
+            Modules =
+            [
+                new DadPlannedModuleExecution
+                {
+                    ModuleId = DadModuleId.Msq,
+                    DisplayName = "MSQ",
+                    ExpectedPartySize = 1,
+                    RequiresPeers = false,
+                },
+            ],
+        };
+
+        Assert.True(DadRunSlotManifestRules.RequiresFrozenRoster(plan));
+        Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var createBlocker), createBlocker);
+        var slot = Assert.Single(manifest.Slots);
+        Assert.Equal((uint?)21, slot.RequiredJobId);
+        Assert.True(
+            DadRunSlotManifestRules.TryBindWorkerSessions(
+                manifest,
+                [Participant(WAccount, WCharacter, WContentId, "worker-w")],
+                out var bound,
+                out var bindBlocker),
+            bindBlocker);
+        Assert.Equal("worker-w", Assert.Single(bound.Slots).WorkerSessionId.Value);
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(8u)]
+    [InlineData(43u)]
+    public void InvalidRequestedJobCannotEnterFrozenManifest(uint invalidJobId)
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[1].RequiredJobId = invalidJobId;
+
+        Assert.False(DadRunSlotManifestRules.TryCreate(plan, out _, out var blocker));
+        Assert.Contains("combat job", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [MemberData(nameof(MultiplayerPayloadCases))]
     public void MultiplayerLanePayloadIsFrozenExactly(
@@ -85,6 +202,47 @@ public sealed class DadRunSlotManifestRulesTests
         Assert.Equal(expectedPartySize, payload.ExpectedPartySize);
         Assert.Equal(expectedPartySize, manifest.ExpectedPartySize);
         Assert.Equal(expectedPartySize, manifest.Slots.Count);
+    }
+
+    [Fact]
+    public void DailyRouletteManifestFreezesExactTargetAndDeepClonesPayload()
+    {
+        var target = new DadQueueTarget
+        {
+            SchemaVersion = 5,
+            Kind = DadQueueTargetKind.Roulette,
+            RouletteId = 8,
+            Key = "ContentRoulette:8",
+            DisplayName = "Level Cap Dungeons",
+        };
+        var plan = BuildPlan(
+            DadModuleId.DailyMsq,
+            DadDailyRoulettePlannerRules.RequiredPartySize,
+            request => request.DailyMsq = DadDailyRoulettePlannerRules.BuildWireCompatibleTask(target));
+
+        Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var blocker), blocker);
+
+        var payload = Assert.Single(manifest.Modules);
+        Assert.Equal(DadModuleId.DailyMsq, payload.ModuleId);
+        Assert.Equal(DadQueueTargetKind.Roulette, payload.TargetKind);
+        Assert.Equal((uint)8, payload.RouletteId);
+        Assert.Equal((uint)0, payload.ContentFinderConditionId);
+        Assert.Equal("Level Cap Dungeons", payload.DutyName);
+        Assert.False(payload.Unsynced);
+        Assert.Equal(DadDailyRoulettePlannerRules.RequiredPartySize, payload.ExpectedPartySize);
+        Assert.Equal(DadDailyRoulettePlannerRules.RequiredPartySize, manifest.ExpectedPartySize);
+        Assert.Equal(DadDailyRoulettePlannerRules.RequiredPartySize, manifest.Slots.Count);
+
+        var clone = manifest.Clone();
+        payload.RouletteId = 3;
+        payload.DutyName = "mutated";
+        target.RouletteId = 5;
+
+        var clonedPayload = Assert.Single(clone.Modules);
+        Assert.NotSame(payload, clonedPayload);
+        Assert.Equal(DadQueueTargetKind.Roulette, clonedPayload.TargetKind);
+        Assert.Equal((uint)8, clonedPayload.RouletteId);
+        Assert.Equal("Level Cap Dungeons", clonedPayload.DutyName);
     }
 
     [Fact]

@@ -11,6 +11,8 @@ public sealed class DadPresenceService
     private readonly DadVermaxionIpcService vermaxion;
     private readonly DadAutoRetainerIpcService autoRetainer;
     private readonly InfoProxyPartyInviteGateway partyInviteGateway;
+    private readonly DadRequestedJobPreparationGate requestedJobPreparationGate;
+    private readonly IDadClassJobGearsetGateway classJobGearsetGateway;
     private readonly IPluginLog log;
     private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
     private string currentRunId = string.Empty;
@@ -19,6 +21,8 @@ public sealed class DadPresenceService
     private DadAccountKey requiredAccountKey = new(string.Empty);
     private DadCharacterKey requiredCharacterKey = new(string.Empty);
     private string assignedSlotId = string.Empty;
+    private DadRequestedJobPreparationKey? requestedJobPreparationKey;
+    private string lastRequestedJobPreparationTransition = string.Empty;
 
     internal DadPresenceService(
         Configuration configuration,
@@ -26,6 +30,8 @@ public sealed class DadPresenceService
         DadVermaxionIpcService vermaxion,
         DadAutoRetainerIpcService autoRetainer,
         InfoProxyPartyInviteGateway partyInviteGateway,
+        DadRequestedJobPreparationGate requestedJobPreparationGate,
+        IDadClassJobGearsetGateway classJobGearsetGateway,
         IPluginLog log)
     {
         this.configuration = configuration;
@@ -33,6 +39,8 @@ public sealed class DadPresenceService
         this.vermaxion = vermaxion;
         this.autoRetainer = autoRetainer;
         this.partyInviteGateway = partyInviteGateway;
+        this.requestedJobPreparationGate = requestedJobPreparationGate;
+        this.classJobGearsetGateway = classJobGearsetGateway;
         this.log = log;
         ClientInstanceId = $"dad-{Environment.ProcessId:X}-{Guid.NewGuid():N}"[..16];
         WorkerSessionId = ClientInstanceId;
@@ -62,7 +70,8 @@ public sealed class DadPresenceService
     {
         // Stored/XADB rows describe the roster, not the character currently loaded in this client.
         // Falling back to one of them would keep a relogging client falsely available under the old identity.
-        var localCharacter = pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime);
+        var localCharacter = RefreshLocalRuntimeJobTruth(
+            pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime));
         var availableCharacterKeys = BuildAvailableCharacterKeys(localCharacter);
         var managedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
         var managedAccountAlias = configManager.GetCurrentAccountAlias();
@@ -119,16 +128,22 @@ public sealed class DadPresenceService
             },
             AssignedSlotId = assignedSlotId,
             DesiredCharacterKey = requiredCharacterKey.ToString(),
+            RequestedJobPreparation = CurrentParticipant.RequestedJobPreparation?.Clone(),
             LeaseIssuedUtc = CurrentParticipant.LeaseIssuedUtc,
             LeaseRenewedUtc = CurrentParticipant.LeaseRenewedUtc,
             LeaseExpiresUtc = CurrentParticipant.LeaseExpiresUtc,
             Warnings = [..CurrentParticipant.Warnings],
             StatusText = BuildStatusText(localCharacter, postArReady, nextState, vermaxionStatus),
         };
+
+        AdvanceRequestedJobPreparation(localCharacter);
     }
 
     public void MarkLeader(string runId, DadAuthorityMode authorityMode, string summary)
     {
+        if (!string.Equals(currentRunId, runId, StringComparison.Ordinal))
+            ResetRequestedJobPreparation();
+
         currentRunId = runId;
         currentAuthorityWorkerSessionId = WorkerSessionId;
         currentAuthorityMode = authorityMode;
@@ -145,6 +160,40 @@ public sealed class DadPresenceService
         CurrentParticipant.StatusText = summary;
     }
 
+    internal bool BeginRequestedJobPreparation(
+        string runId,
+        DadFrozenRunSlot slot,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (!slot.RequiredJobId.HasValue)
+        {
+            ResetRequestedJobPreparation();
+            return true;
+        }
+
+        var key = new DadRequestedJobPreparationKey(
+            runId,
+            slot.WorkerSessionId,
+            slot.SlotId,
+            slot.AccountKey,
+            slot.CharacterKey,
+            slot.ContentId,
+            slot.RequiredJobId);
+        if (!key.IsValid ||
+            !string.Equals(key.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.Ordinal))
+        {
+            blocker = $"Requested-job preparation has an invalid or non-local frozen assignment for {slot.SlotId}.";
+            return false;
+        }
+
+        requiredAccountKey = slot.AccountKey;
+        requiredCharacterKey = slot.CharacterKey;
+        assignedSlotId = slot.SlotId;
+        SetRequestedJobPreparation(key);
+        return true;
+    }
+
     public void SetLeaderState(string runId, DadParticipantState state, string summary)
     {
         if (!string.Equals(currentRunId, runId, StringComparison.Ordinal))
@@ -158,6 +207,9 @@ public sealed class DadPresenceService
 
     public DadParticipantReadyDto HandleWakeRequest(DadWakeRequestDto request)
     {
+        if (!string.Equals(currentRunId, request.RunId, StringComparison.Ordinal))
+            ResetRequestedJobPreparation();
+
         partyInviteGateway.BeginParticipantRun(request.RunId);
         currentRunId = request.RunId;
         currentAuthorityWorkerSessionId = request.AuthorityWorkerSessionId;
@@ -172,10 +224,37 @@ public sealed class DadPresenceService
         CurrentParticipant.LeaseState = DadParticipantLeaseState.None;
         CurrentParticipant.CancellationState = DadRunCancellationState.None;
 
+        if (request.RequiredJobId.HasValue)
+        {
+            var key = new DadRequestedJobPreparationKey(
+                request.RunId,
+                WorkerSessionId,
+                request.AssignedSlotId,
+                request.RequiredAccountKey,
+                request.RequiredCharacterKey,
+                request.RequiredContentId,
+                request.RequiredJobId);
+            if (!key.IsValid)
+            {
+                const string invalid = "Requested-job assignment is missing its exact run/session/slot/account/character/Content ID/job identity.";
+                AddWarning(invalid);
+                CurrentParticipant.StatusText = invalid;
+                return BuildReadyResponse(blockerSummary: invalid, acceptedAssignment: false);
+            }
+
+            SetRequestedJobPreparation(key);
+        }
+        else
+        {
+            ResetRequestedJobPreparation();
+        }
+
         var acceptsAccount = requiredAccountKey.IsEmpty ||
                              string.Equals(CurrentParticipant.ManagedAccountKey, requiredAccountKey.ToString(), StringComparison.OrdinalIgnoreCase);
         var acceptsCharacter = requiredCharacterKey.IsEmpty ||
                                string.Equals(CurrentParticipant.ActiveCharacterKey, requiredCharacterKey.ToString(), StringComparison.OrdinalIgnoreCase);
+        var acceptsContentId = request.RequiredContentId == 0 ||
+                               CurrentParticipant.Character.ContentId == request.RequiredContentId;
 
         if (!acceptsAccount)
         {
@@ -186,9 +265,10 @@ public sealed class DadPresenceService
             return BuildReadyResponse(blockerSummary: mismatch, acceptedAssignment: true);
         }
 
-        if (!acceptsCharacter)
+        if (!acceptsCharacter || !acceptsContentId)
         {
-            var mismatch = $"Waiting for required character {requiredCharacterKey}; active {CurrentParticipant.ActiveCharacterKey}.";
+            var mismatch = $"Waiting for required character {requiredCharacterKey} Content ID {request.RequiredContentId}; " +
+                           $"active {CurrentParticipant.ActiveCharacterKey} Content ID {CurrentParticipant.Character.ContentId}.";
             AddWarning(mismatch);
             CurrentParticipant.State = DadParticipantState.WaitingForRequiredCharacter;
             CurrentParticipant.StatusText = mismatch;
@@ -464,6 +544,33 @@ public sealed class DadPresenceService
             .ToList();
     }
 
+    private static DadAcquiredCharacter? RefreshLocalRuntimeJobTruth(DadAcquiredCharacter? localCharacter)
+    {
+        if (localCharacter == null)
+            return null;
+
+        var refreshed = localCharacter.Clone();
+        try
+        {
+            var player = Plugin.ObjectTable.LocalPlayer;
+            if (player?.ClassJob.IsValid != true)
+                return refreshed;
+
+            var currentJobId = (uint)player.ClassJob.RowId;
+            refreshed.CurrentJobId = currentJobId;
+            refreshed.CurrentJobAbbrev = player.ClassJob.Value.Abbreviation.ToString();
+            refreshed.CurrentLevel = player.Level;
+            if (currentJobId != 0)
+                refreshed.JobLevels[currentJobId] = player.Level;
+        }
+        catch
+        {
+            // Keep the last character-pool snapshot if live object truth is between lifecycles.
+        }
+
+        return refreshed;
+    }
+
     private DadWorkerRole GetConfiguredWorkerRole()
         => configuration.RunAsServerDad ? DadWorkerRole.ServerDad : DadWorkerRole.ClientDad;
 
@@ -576,9 +683,181 @@ public sealed class DadPresenceService
             $"Native party invitation acceptance armed for exact inviter {expected.CharacterKey}; waiting for fresh invitation and PartyList confirmation.");
     }
 
+    private void SetRequestedJobPreparation(DadRequestedJobPreparationKey key)
+    {
+        if (requestedJobPreparationKey.HasValue &&
+            DadRequestedJobPreparationKeyRules.Matches(requestedJobPreparationKey.Value, key))
+        {
+            return;
+        }
+
+        requestedJobPreparationGate.Reset();
+        requestedJobPreparationKey = key;
+        CurrentParticipant.RequestedJobPreparation = null;
+        lastRequestedJobPreparationTransition = string.Empty;
+    }
+
+    private void AdvanceRequestedJobPreparation(DadAcquiredCharacter? localCharacter)
+    {
+        if (!requestedJobPreparationKey.HasValue)
+        {
+            CurrentParticipant.RequestedJobPreparation = null;
+            return;
+        }
+
+        var expected = requestedJobPreparationKey.Value;
+        if (localCharacter == null)
+        {
+            // A logout/relog tears down attempt timing and proof. The frozen assignment remains,
+            // so the exact character can begin a fresh preparation after it is loaded again.
+            requestedJobPreparationGate.Reset();
+            CurrentParticipant.RequestedJobPreparation = null;
+            lastRequestedJobPreparationTransition = string.Empty;
+            return;
+        }
+
+        var observedIdentity = new DadRequestedJobPreparationKey(
+            currentRunId,
+            WorkerSessionId,
+            assignedSlotId,
+            CurrentParticipant.ManagedAccountKey,
+            CurrentParticipant.ActiveCharacterKey,
+            CurrentParticipant.Character.ContentId,
+            expected.RequiredJobId);
+
+        // A worker may accept a wake while AutoRetainer is still loading the requested character.
+        // Do not create/cancel proof until that assignment has first resolved exactly. Once an
+        // attempt exists, any later identity drift is terminal and cannot authorize readiness.
+        if (!DadRequestedJobPreparationKeyRules.Matches(expected, observedIdentity) &&
+            !requestedJobPreparationGate.TryGet(expected, out _))
+        {
+            CurrentParticipant.RequestedJobPreparation = null;
+            return;
+        }
+
+        if (!CurrentParticipant.PostArReady &&
+            !requestedJobPreparationGate.TryGet(expected, out _))
+        {
+            CurrentParticipant.RequestedJobPreparation = null;
+            return;
+        }
+
+        var (safeToEquip, unsafeReason) = CurrentParticipant.PostArReady
+            ? EvaluateRequestedJobEquipSafety(localCharacter)
+            : (false, "The exact character is waiting for post-AR readiness.");
+        var nowUtc = DateTime.UtcNow;
+        var observation = new DadRequestedJobPreparationObservation(
+            observedIdentity,
+            CurrentParticipant.Character.CurrentJobId.GetValueOrDefault(),
+            safeToEquip,
+            GearsetCatalog: null,
+            unsafeReason);
+        if (requestedJobPreparationGate.NeedsGearsetCatalog(expected, observation, nowUtc))
+            observation = observation with { GearsetCatalog = classJobGearsetGateway.ReadCatalog() };
+
+        var proof = requestedJobPreparationGate.Advance(
+            expected,
+            observation,
+            nowUtc,
+            expected.RequiredJobId.HasValue
+                ? gearsetId => classJobGearsetGateway.TryEquip(gearsetId, expected.RequiredJobId.Value)
+                : null);
+        CurrentParticipant.RequestedJobPreparation = proof;
+
+        var transition = string.Join(
+            "|",
+            proof.Status,
+            proof.AttemptCount,
+            proof.SelectedGearsetId,
+            proof.FailureReason);
+        if (!string.Equals(transition, lastRequestedJobPreparationTransition, StringComparison.Ordinal))
+        {
+            lastRequestedJobPreparationTransition = transition;
+            if (proof.Status == DadRequestedJobPreparationStatus.SoftFailed)
+            {
+                var warning = $"{expected.SlotId} could not switch to requested job {expected.RequiredJobId}; continuing on current job {CurrentParticipant.Character.CurrentJobId.GetValueOrDefault()}: {proof.FailureReason}";
+                AddWarning(warning);
+            }
+            else if (proof.Status == DadRequestedJobPreparationStatus.Cancelled)
+            {
+                log.Warning(
+                    "[dad] Requested-job preparation cancelled for {RunId}/{SlotId}/{CharacterKey}: {Reason}",
+                    expected.RunId,
+                    expected.SlotId,
+                    expected.CharacterKey,
+                    proof.FailureReason);
+            }
+            else
+            {
+                log.Information(
+                    "[dad] Requested-job preparation {Status} for {RunId}/{SlotId}/{CharacterKey}: requestedJob={RequiredJobId} currentJob={CurrentJobId} gearset={GearsetId} attempt={AttemptCount}/{MaxAttemptCount}. {Summary}",
+                    proof.Status,
+                    expected.RunId,
+                    expected.SlotId,
+                    expected.CharacterKey,
+                    expected.RequiredJobId.GetValueOrDefault(),
+                    CurrentParticipant.Character.CurrentJobId.GetValueOrDefault(),
+                    proof.SelectedGearsetId?.ToString() ?? "(none)",
+                    proof.AttemptCount,
+                    DadRequestedJobPreparationGate.MaxAttemptCount,
+                    proof.Summary);
+            }
+        }
+
+        if (proof.Status is DadRequestedJobPreparationStatus.Pending or DadRequestedJobPreparationStatus.AwaitingVerification)
+            CurrentParticipant.StatusText = proof.Summary;
+    }
+
+    private static (bool Safe, string Reason) EvaluateRequestedJobEquipSafety(DadAcquiredCharacter? localCharacter)
+    {
+        if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null || localCharacter == null)
+            return (false, "The local character is not fully logged in.");
+
+        (ConditionFlag Flag, string Label)[] unsafeConditions =
+        [
+            (ConditionFlag.BoundByDuty, "bound by duty"),
+            (ConditionFlag.BoundByDuty56, "bound by duty"),
+            (ConditionFlag.InDutyQueue, "in the Duty Finder queue"),
+            (ConditionFlag.WaitingForDuty, "waiting for duty"),
+            (ConditionFlag.WaitingForDutyFinder, "waiting for Duty Finder"),
+            (ConditionFlag.BetweenAreas, "between areas"),
+            (ConditionFlag.BetweenAreas51, "between areas"),
+            (ConditionFlag.InCombat, "in combat"),
+            (ConditionFlag.Crafting, "crafting"),
+            (ConditionFlag.Gathering, "gathering"),
+            (ConditionFlag.Casting, "casting"),
+            (ConditionFlag.Occupied, "occupied"),
+            (ConditionFlag.Occupied30, "occupied"),
+            (ConditionFlag.OccupiedInEvent, "occupied in an event"),
+            (ConditionFlag.OccupiedInQuestEvent, "occupied in a quest event"),
+            (ConditionFlag.Occupied33, "occupied"),
+            (ConditionFlag.OccupiedInCutSceneEvent, "occupied in a cutscene"),
+            (ConditionFlag.WatchingCutscene, "watching a cutscene"),
+            (ConditionFlag.TradeOpen, "in a trade"),
+            (ConditionFlag.Occupied38, "occupied"),
+            (ConditionFlag.Occupied39, "occupied"),
+        ];
+        foreach (var condition in unsafeConditions)
+        {
+            if (Plugin.Condition[condition.Flag])
+                return (false, $"The client is {condition.Label}.");
+        }
+
+        return (true, string.Empty);
+    }
+
+    private void ResetRequestedJobPreparation()
+    {
+        requestedJobPreparationGate.Reset();
+        requestedJobPreparationKey = null;
+        CurrentParticipant.RequestedJobPreparation = null;
+        lastRequestedJobPreparationTransition = string.Empty;
+    }
+
     private void ResetRunContext()
     {
         partyInviteGateway.Reset();
+        ResetRequestedJobPreparation();
         currentRunId = string.Empty;
         currentAuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
         currentAuthorityMode = configuration.LocalOnlyModeEnabled ? DadAuthorityMode.LocalOnly : DadAuthorityMode.ServerDad;

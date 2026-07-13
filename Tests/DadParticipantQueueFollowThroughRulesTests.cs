@@ -11,9 +11,13 @@ public sealed class DadParticipantQueueFollowThroughRulesTests
         var premadePlan = Plan(DadModuleId.PremadeDuty);
         var lanPlan = Plan(DadModuleId.Duty);
         lanPlan.Request.Dungeon = new DadDungeonTask { QueueViaLanParty = true };
+        var roulettePlan = Plan(DadModuleId.DailyMsq);
+        roulettePlan.RequiredParticipantCount = 4;
+        roulettePlan.Request.DailyMsq = new DadDailyMsqTask();
 
         Assert.True(DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(premadePlan, premadePlan.Modules[0]));
         Assert.True(DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(lanPlan, lanPlan.Modules[0]));
+        Assert.True(DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(roulettePlan, roulettePlan.Modules[0]));
 
         var customPlan = Plan(DadModuleId.CustomDuty);
         customPlan.Request.CustomDuty = new DadCustomDutyTask { ExpectedPartySize = 2 };

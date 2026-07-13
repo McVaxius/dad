@@ -20,7 +20,7 @@ internal static class DadPlannerWarningRules
             warnings.Add("Local Duty routes through Dad-owned guarded regular Duty Finder queue execution.");
 
         if (request.DailyMsq != null)
-            warnings.Add("Daily MSQ routes through Dad's internal premade lane.");
+            warnings.Add("Daily Roulette uses Dad's guarded synced four-player queue lane; native Duty Finder eligibility checks still apply at queue time.");
 
         if (request.PremadeDuty != null)
             warnings.Add("Premade Duty requires Dad Coordinator authority and exact typed party workers.");

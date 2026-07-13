@@ -145,12 +145,16 @@ public sealed class Plugin : IDalamudPlugin
         AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
         LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
         PartyInviteGateway = new InfoProxyPartyInviteGateway(Framework, PlayerState, PartyList, Log);
+        var requestedJobPreparationGate = new DadRequestedJobPreparationGate();
+        var classJobGearsetGateway = new DadClassJobGearsetGateway(Framework);
         PresenceService = new DadPresenceService(
             Configuration,
             ConfigManager,
             VermaxionIpcService,
             AutoRetainerIpcService,
             PartyInviteGateway,
+            requestedJobPreparationGate,
+            classJobGearsetGateway,
             Log);
         WakeTakeoverService = new DadWakeTakeoverService(
             new DadWakeTakeoverTarget(
@@ -186,7 +190,7 @@ public sealed class Plugin : IDalamudPlugin
         DutySupportAdsService = new DadDutySupportAdsService(Log);
         LocalDutyQueueService = new DadLocalDutyQueueService(Log);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
-        CombatRotationService = new DadCombatRotationService(Configuration, Log);
+        CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
         MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
         QueueExecutionService = new DadQueueExecutionService(
             ModuleRegistry,
@@ -196,7 +200,12 @@ public sealed class Plugin : IDalamudPlugin
             NpcDutyQueueService,
             DutySupportAdsService,
             CombatRotationService);
-        WorkerExecutionService = new DadWorkerExecutionService(QueueExecutionService, PresenceService, Condition, Log);
+        WorkerExecutionService = new DadWorkerExecutionService(
+            QueueExecutionService,
+            PresenceService,
+            CombatRotationService,
+            Condition,
+            Log);
         SchedulerService = new DadSchedulerService(
             Configuration,
             ConfigManager,
@@ -988,6 +997,7 @@ public sealed class Plugin : IDalamudPlugin
             var pool = rosterSnapshot.CuratedPool;
             var selectedGroup = GetSelectedPlannerGroup();
             var selectedDuty = PresetProviderService.GetPlannerSelectedDuty(PlannerOptions);
+            var selectedRoulette = PresetProviderService.GetPlannerSelectedRoulette(PlannerOptions);
             var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions, selectedGroup);
             var requestPreview = BuildPlannerRunRequestPreview(pool, PlannerOptions, plannerPreview, selectedGroup, useStableIdentity: true);
             var launchProfiles = SchedulerService.GetLaunchProfiles()
@@ -1016,6 +1026,8 @@ public sealed class Plugin : IDalamudPlugin
                 LanePreviews = lanePreviews,
                 CharactersByAccountKey = BuildPlannerCharactersByAccountKey(pool),
                 SelectedDuty = selectedDuty,
+                RouletteOptions = PresetProviderService.GetPlannerRouletteOptions(),
+                SelectedRoulette = selectedRoulette.Option,
             };
             cachedPlannerUiCacheKey = cacheKey;
             plannerUiCacheInvalidationReason = string.Empty;
@@ -1255,6 +1267,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
             DutyExpectedPartySize = source.DutyExpectedPartySize,
+            RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
@@ -1269,7 +1282,6 @@ public sealed class Plugin : IDalamudPlugin
     private static DadPlannerActivityMode NormalizePlannerLane(DadPlannerActivityMode activityMode)
         => activityMode switch
         {
-            DadPlannerActivityMode.DailyMsqPremade => DadPlannerActivityMode.Msq,
             DadPlannerActivityMode.DutyPremade => DadPlannerActivityMode.PremadeDuty,
             _ => activityMode,
         };
@@ -1399,6 +1411,7 @@ public sealed class Plugin : IDalamudPlugin
         PlannerOptions.SelectedPlannerGroupId = savedGroup.GroupId;
         PlannerOptions.StopPolicy = savedGroup.StopPolicy.Clone();
         PlannerOptions.CompletionActions = savedGroup.CompletionActions?.Clone();
+        PlannerOptions.RouletteTarget = savedGroup.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         PlannerOptions.IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(savedGroup.Slots)
             .Select(static slot => slot.RequiredAccountKey)
             .Where(static key => !key.IsEmpty)
@@ -1901,6 +1914,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyDisplayName = PlannerOptions.DutyDisplayName,
             DutyUnsynced = PlannerOptions.DutyUnsynced,
             DutyExpectedPartySize = PlannerOptions.DutyExpectedPartySize,
+            RouletteTarget = PlannerOptions.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = PlannerOptions.MogtomePreset,
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = PlannerOptions.RefreshTrustNpcLevels,
@@ -1935,6 +1949,7 @@ public sealed class Plugin : IDalamudPlugin
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
+            RequiredJobId = source.RequiredJobId,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
@@ -1962,6 +1977,7 @@ public sealed class Plugin : IDalamudPlugin
                 RequiredCharacterKey = string.IsNullOrWhiteSpace(slot.CharacterKey)
                     ? new DadCharacterKey(string.Empty)
                     : new DadCharacterKey(slot.CharacterKey),
+                RequiredJobId = slot.RequiredJobId,
                 WakePolicy = DadSchedulerWakePolicy.LaunchIfOffline,
                 AllowSubstitution = false,
             };
@@ -2023,6 +2039,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyDisplayName = group.DutyDisplayName,
             DutyUnsynced = group.DutyUnsynced,
             DutyExpectedPartySize = group.DutyExpectedPartySize,
+            RouletteTarget = group.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = group.MogtomePreset,
             MogtomeDutyPolicy = group.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
@@ -2069,6 +2086,7 @@ public sealed class Plugin : IDalamudPlugin
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
             DutyExpectedPartySize = source.DutyExpectedPartySize,
+            RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
@@ -2081,6 +2099,7 @@ public sealed class Plugin : IDalamudPlugin
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
+                RequiredJobId = slot.RequiredJobId,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
                 CharacterLoadInstruction = slot.CharacterLoadInstruction.Clone(),
@@ -2114,6 +2133,7 @@ public sealed class Plugin : IDalamudPlugin
         options.DutyDisplayName = group.DutyDisplayName;
         options.DutyUnsynced = group.DutyUnsynced;
         options.DutyExpectedPartySize = group.DutyExpectedPartySize;
+        options.RouletteTarget = group.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         options.MogtomePreset = group.MogtomePreset;
         options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
         options.RefreshTrustNpcLevels = group.RefreshTrustNpcLevels;
@@ -2129,6 +2149,7 @@ public sealed class Plugin : IDalamudPlugin
     private static void NormalizePlannerGroupForStorage(DadPlannerGroup group)
     {
         group.InviteAuthority = DadInviteAuthority.PresetLeader;
+        group.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
     }
 
@@ -2156,7 +2177,7 @@ public sealed class Plugin : IDalamudPlugin
         => StartDemoRunFromShell("Server demo", BuildServerSastashaDemoRequest());
 
     public DadRunResult StartDailyMsqDemoRunFromShell()
-        => StartDemoRunFromShell("Daily MSQ demo", BuildDailyMsqDemoRequest());
+        => StartDemoRunFromShell("Daily Roulette demo", BuildDailyMsqDemoRequest());
 
     public DadRunResult StartCommendationDemoRunFromShell()
         => StartDemoRunFromShell("Commendation demo", BuildCommendationDemoRequest());
@@ -2437,6 +2458,7 @@ public sealed class Plugin : IDalamudPlugin
             $"stale={options.AllowStaleForPlanning}",
             $"accounts={accountKeys}",
             $"duty={options.DutyContentFinderConditionId}:{options.DutyDisplayName.Trim()}:{options.DutyUnsynced}:{options.DutyExpectedPartySize}",
+            $"roulette={options.RouletteTarget?.SchemaVersion ?? 0}:{options.RouletteTarget?.Kind}:{options.RouletteTarget?.RouletteId ?? 0}:{options.RouletteTarget?.Key?.Trim()}:{options.RouletteTarget?.DisplayName?.Trim()}",
             $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
             $"trustRefresh={options.RefreshTrustNpcLevels}",
             $"stop={plannerPreview.StopPolicy.Mode}:{plannerPreview.StopPolicy.AfterRuns}:{plannerPreview.StopPolicy.TargetLevel}:{plannerPreview.StopPolicy.TargetCharacterKey}:{plannerPreview.StopPolicy.SafetyCap}",
@@ -2884,7 +2906,14 @@ public sealed class Plugin : IDalamudPlugin
             Orchestration = BuildServerDadPartyIntent(),
             DailyMsq = new DadDailyMsqTask
             {
-                LanPartyPreset = "Daily MSQ",
+                LanPartyPreset = "Daily Roulette",
+                QueueTarget = new DadQueueTarget
+                {
+                    Kind = DadQueueTargetKind.Roulette,
+                    RouletteId = DadRouletteCatalogProjection.MainScenarioRouletteId,
+                    Key = DadRouletteCatalogProjection.BuildCanonicalKey(DadRouletteCatalogProjection.MainScenarioRouletteId),
+                    DisplayName = "Main Scenario",
+                },
             },
         };
 
@@ -3339,7 +3368,8 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (trimmed.Equals("run msq", StringComparison.OrdinalIgnoreCase))
+        if (trimmed.Equals("run roulette", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("run msq", StringComparison.OrdinalIgnoreCase))
         {
             StartDailyMsqDemoRunFromShell();
             return;
@@ -3958,6 +3988,8 @@ internal sealed class DadPlannerUiSnapshot
     public IReadOnlyList<DadPlannerGroup> PlannerGroups { get; init; } = [];
     public IReadOnlyList<DadPlannerLanePreviewSnapshot> LanePreviews { get; init; } = [];
     public DadPlannerDutyOption? SelectedDuty { get; init; }
+    public IReadOnlyList<DadPlannerRouletteOption> RouletteOptions { get; init; } = [];
+    public DadPlannerRouletteOption? SelectedRoulette { get; init; }
     public IReadOnlyDictionary<string, IReadOnlyList<DadAcquiredCharacter>> CharactersByAccountKey { get; init; } =
         new Dictionary<string, IReadOnlyList<DadAcquiredCharacter>>(StringComparer.OrdinalIgnoreCase);
 

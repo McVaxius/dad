@@ -21,9 +21,6 @@ public sealed class DadDutyQueueService
             : "Dad-owned synced regular Duty Finder execution is enabled for the Local Duty lane.";
     }
 
-    public string DescribeDailyMsqExecutionDeferral()
-        => capabilityService.DescribeLanPartyQueueTransport();
-
     public string DescribeCommendationExecutionDeferral()
         => capabilityService.DescribeAuraFarmerTransport();
 

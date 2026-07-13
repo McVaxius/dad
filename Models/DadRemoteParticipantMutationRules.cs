@@ -29,6 +29,10 @@ internal static class DadRemoteParticipantMutationRules
         target.ExternalAutomationState = source.ExternalAutomationState;
         target.ExternalAutomationSummary = source.ExternalAutomationSummary;
         target.LastHeartbeatUtc = source.LastHeartbeatUtc;
+        target.Character.CurrentJobId = source.Character.CurrentJobId;
+        target.Character.CurrentJobAbbrev = source.Character.CurrentJobAbbrev;
+        target.Character.CurrentLevel = source.Character.CurrentLevel;
+        target.RequestedJobPreparation = source.RequestedJobPreparation?.Clone();
         target.LeaseIssuedUtc = source.LeaseIssuedUtc;
         target.LeaseRenewedUtc = source.LeaseRenewedUtc;
         target.LeaseExpiresUtc = source.LeaseExpiresUtc;

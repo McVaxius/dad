@@ -1,4 +1,5 @@
 using dad.Models;
+using dad.Services;
 using Xunit;
 
 namespace dad.Tests;
@@ -87,6 +88,32 @@ public sealed class DadPlannerSlotRulesTests
     }
 
     [Fact]
+    public void NormalizePreservesIndependentPrimaryAndSubstituteJobSelections()
+    {
+        var slots = DadPlannerSlotRules.NormalizeGroupSlots(
+        [
+            new DadPlannerGroupSlot
+            {
+                SlotId = "Slot1",
+                RequiredCharacterKey = new DadCharacterKey("primary"),
+                RequiredJobId = 21,
+            },
+            new DadPlannerGroupSlot
+            {
+                SlotId = "Slot1",
+                IsSubstitute = true,
+                RequiredCharacterKey = new DadCharacterKey("substitute"),
+                RequiredJobId = 24,
+            },
+        ]);
+
+        Assert.Collection(
+            slots,
+            slot => Assert.Equal((uint?)21, slot.RequiredJobId),
+            slot => Assert.Equal((uint?)24, slot.RequiredJobId));
+    }
+
+    [Fact]
     public void NextPrimarySlotNumberHonorsSlot56HardCap()
     {
         var full = Enumerable.Range(1, DadPlannerSlotRules.MaxSlotNumber)
@@ -116,6 +143,43 @@ public sealed class DadPlannerSlotRulesTests
 
         Assert.Equal(["Slot1", "Slot1", "Slot2"], slots.Select(static slot => slot.SlotId).ToArray());
         Assert.Equal([false, true, false], slots.Select(static slot => slot.IsSubstitute).ToArray());
+    }
+
+    [Fact]
+    public void DailyRouletteEffectiveSlotCapIsExactlyFourPrimaries()
+    {
+        var savedSlots = Enumerable.Range(1, 6)
+            .Select(slot => new DadPlannerGroupSlot
+            {
+                SlotId = $"Slot{slot}",
+                RequiredCharacterKey = new DadCharacterKey($"Character {slot}@Alpha"),
+            })
+            .ToList();
+        savedSlots.Add(new DadPlannerGroupSlot
+        {
+            SlotId = "Slot4",
+            IsSubstitute = true,
+            RequiredCharacterKey = new DadCharacterKey("Slot Four Substitute@Alpha"),
+        });
+        savedSlots.Add(new DadPlannerGroupSlot
+        {
+            SlotId = "Slot5",
+            IsSubstitute = true,
+            RequiredCharacterKey = new DadCharacterKey("Slot Five Substitute@Alpha"),
+        });
+
+        var effective = DadPlannerSlotRules.TakePrimarySlotsWithSubstitutes(
+            savedSlots,
+            DadDailyRoulettePlannerRules.RequiredPartySize);
+
+        Assert.Equal(4, DadPlannerSlotRules.CountPrimarySlots(effective));
+        Assert.Equal(
+            ["Slot1", "Slot2", "Slot3", "Slot4", "Slot4"],
+            effective.Select(static slot => slot.SlotId).ToArray());
+        Assert.DoesNotContain(effective, static slot => slot.SlotId == "Slot5");
+        Assert.Equal(
+            "Slot Four Substitute@Alpha",
+            effective.Single(static slot => slot.IsSubstitute).RequiredCharacterKey.Value);
     }
 
     [Fact]

@@ -79,6 +79,60 @@ public sealed class DadPlannerGroupUpdateRulesTests
     }
 
     [Fact]
+    public void PlannerFieldUpdateDeepClonesDailyRouletteTarget()
+    {
+        var target = new DadPlannerGroup
+        {
+            RouletteTarget = new DadQueueTarget
+            {
+                Kind = DadQueueTargetKind.Roulette,
+                RouletteId = 3,
+                Key = "ContentRoulette:3",
+                DisplayName = "Main Scenario",
+            },
+        };
+        var sourceTarget = new DadQueueTarget
+        {
+            SchemaVersion = 4,
+            Kind = DadQueueTargetKind.Roulette,
+            RouletteId = 8,
+            Key = "ContentRoulette:8",
+            DisplayName = "Level Cap Dungeons",
+        };
+        var source = new DadPlannerGroup
+        {
+            RunFamily = DadPlannerRunFamily.DailyRoulette,
+            ActivityMode = DadPlannerActivityMode.DailyRoulette,
+            RouletteTarget = sourceTarget,
+        };
+
+        DadPlannerGroupUpdateRules.ApplyPlannerFields(target, source, DateTime.UtcNow);
+
+        Assert.Equal(DadPlannerRunFamily.DailyRoulette, target.RunFamily);
+        Assert.Equal(DadPlannerActivityMode.DailyRoulette, target.ActivityMode);
+        Assert.NotSame(sourceTarget, target.RouletteTarget);
+        Assert.Equal(4, target.RouletteTarget.SchemaVersion);
+        Assert.Equal(DadQueueTargetKind.Roulette, target.RouletteTarget.Kind);
+        Assert.Equal((uint)8, target.RouletteTarget.RouletteId);
+        Assert.Equal("ContentRoulette:8", target.RouletteTarget.Key);
+        Assert.Equal("Level Cap Dungeons", target.RouletteTarget.DisplayName);
+
+        var restored = DadIpcJson.Deserialize<DadPlannerGroup>(DadIpcJson.Serialize(target));
+        Assert.NotNull(restored);
+        Assert.NotSame(target.RouletteTarget, restored.RouletteTarget);
+        Assert.Equal((uint)8, restored.RouletteTarget.RouletteId);
+        Assert.Equal("ContentRoulette:8", restored.RouletteTarget.Key);
+        Assert.Equal("Level Cap Dungeons", restored.RouletteTarget.DisplayName);
+
+        sourceTarget.RouletteId = 5;
+        sourceTarget.Key = "ContentRoulette:5";
+        sourceTarget.DisplayName = "Expert";
+        Assert.Equal((uint)8, target.RouletteTarget.RouletteId);
+        Assert.Equal("ContentRoulette:8", target.RouletteTarget.Key);
+        Assert.Equal("Level Cap Dungeons", target.RouletteTarget.DisplayName);
+    }
+
+    [Fact]
     public void ExplicitRefreshPreservesMatchingOperationalSettingsAndDefaultsNewRows()
     {
         var existing = new[]
@@ -89,6 +143,7 @@ public sealed class DadPlannerGroupUpdateRulesTests
                 RequiredRole = DadPartyRole.Tank,
                 RequiredAccountKey = new DadAccountKey("account-a"),
                 RequiredCharacterKey = new DadCharacterKey("Saved Character@World"),
+                RequiredJobId = 21,
                 WakePolicy = DadSchedulerWakePolicy.AlreadyOnlineOnly,
                 LaunchProfileId = "saved-profile",
                 CharacterLoadInstruction = new DadCharacterLoadInstruction
@@ -125,10 +180,12 @@ public sealed class DadPlannerGroupUpdateRulesTests
         Assert.Equal(DadPartyRole.Healer, merged[0].RequiredRole);
         Assert.Equal("account-a", merged[0].RequiredAccountKey.Value);
         Assert.Equal("Saved Character@World", merged[0].RequiredCharacterKey.Value);
+        Assert.Equal((uint?)21, merged[0].RequiredJobId);
         Assert.Equal(DadSchedulerWakePolicy.AlreadyOnlineOnly, merged[0].WakePolicy);
         Assert.Equal("saved-profile", merged[0].LaunchProfileId);
         Assert.Equal("/saved", merged[0].CharacterLoadInstruction.CommandTemplate);
         Assert.Equal("New Character@World", merged[1].RequiredCharacterKey.Value);
+        Assert.Null(merged[1].RequiredJobId);
         Assert.Equal(DadSchedulerWakePolicy.LaunchIfOffline, merged[1].WakePolicy);
     }
 
@@ -144,6 +201,7 @@ public sealed class DadPlannerGroupUpdateRulesTests
                     SlotId = "Slot1",
                     WakePolicy = DadSchedulerWakePolicy.AlreadyOnlineOnly,
                     RequiredCharacterKey = new DadCharacterKey("Persisted Character@World"),
+                    RequiredJobId = 37,
                 },
             ],
         };
@@ -154,6 +212,18 @@ public sealed class DadPlannerGroupUpdateRulesTests
             group = DadIpcJson.Deserialize<DadPlannerGroup>(DadIpcJson.Serialize(group))!;
         }
 
-        Assert.Equal(DadSchedulerWakePolicy.AlreadyOnlineOnly, Assert.Single(group.Slots).WakePolicy);
+        var slot = Assert.Single(group.Slots);
+        Assert.Equal(DadSchedulerWakePolicy.AlreadyOnlineOnly, slot.WakePolicy);
+        Assert.Equal((uint?)37, slot.RequiredJobId);
+    }
+
+    [Fact]
+    public void LegacyJsonWithoutRequiredJobDefaultsToAny()
+    {
+        const string json = "{\"slots\":[{\"slotId\":\"Slot1\"}]}";
+
+        var group = DadIpcJson.Deserialize<DadPlannerGroup>(json)!;
+
+        Assert.Null(Assert.Single(group.Slots).RequiredJobId);
     }
 }

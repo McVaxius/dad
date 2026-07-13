@@ -23,6 +23,7 @@ public static class DadPlannerGroupUpdateRules
         target.DutyDisplayName = source.DutyDisplayName;
         target.DutyUnsynced = source.DutyUnsynced;
         target.DutyExpectedPartySize = source.DutyExpectedPartySize;
+        target.RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         target.MogtomePreset = source.MogtomePreset;
         target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
         target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
@@ -50,6 +51,7 @@ public static class DadPlannerGroupUpdateRules
                 consumed.Add(matchIndex);
                 result.RequiredAccountKey = prior.RequiredAccountKey;
                 result.RequiredCharacterKey = prior.RequiredCharacterKey;
+                result.RequiredJobId = prior.RequiredJobId;
                 result.WakePolicy = prior.WakePolicy;
                 result.LaunchProfileId = prior.LaunchProfileId;
                 result.CharacterLoadInstruction = prior.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction();
@@ -95,6 +97,7 @@ public static class DadPlannerGroupUpdateRules
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
+            RequiredJobId = source.RequiredJobId,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),

@@ -64,6 +64,79 @@ public sealed class DadPresetTemplateServiceTests
         Assert.Equal("acct-live", instance.Slots[0].RequiredAccountKey.Value);
     }
 
+    [Fact]
+    public void CreateTemplateClearsCharacterSpecificJobSelection()
+    {
+        var source = new DadPlannerGroup
+        {
+            DisplayName = "Saved roster",
+            Slots =
+            [
+                new DadPlannerGroupSlot
+                {
+                    SlotId = "Slot1",
+                    RequiredAccountKey = new DadAccountKey("account-a"),
+                    RequiredCharacterKey = new DadCharacterKey("Character@Alpha"),
+                    RequiredJobId = 21,
+                },
+            ],
+        };
+
+        var template = DadPresetTemplateService.CreateTemplateFrom(source, "Reusable", DateTime.UtcNow);
+        var slot = Assert.Single(template.Slots);
+
+        Assert.True(slot.RequiredAccountKey.IsEmpty);
+        Assert.True(slot.RequiredCharacterKey.IsEmpty);
+        Assert.Null(slot.RequiredJobId);
+    }
+
+    [Fact]
+    public void TemplateCreationAndInstantiationDeepCloneDailyRouletteTarget()
+    {
+        var sourceTarget = new DadQueueTarget
+        {
+            SchemaVersion = 3,
+            Kind = DadQueueTargetKind.Roulette,
+            RouletteId = 5,
+            Key = "ContentRoulette:5",
+            DisplayName = "Expert",
+        };
+        var source = new DadPlannerGroup
+        {
+            DisplayName = "Expert roulette",
+            RunFamily = DadPlannerRunFamily.DailyRoulette,
+            ActivityMode = DadPlannerActivityMode.DailyRoulette,
+            RouletteTarget = sourceTarget,
+            Slots = Enumerable.Range(1, DadDailyRoulettePlannerRules.RequiredPartySize)
+                .Select(slot => new DadPlannerGroupSlot
+                {
+                    SlotId = $"Slot{slot}",
+                    RequiredRole = slot == 1 ? DadPartyRole.Tank : DadPartyRole.Any,
+                })
+                .ToList(),
+        };
+
+        var template = DadPresetTemplateService.CreateTemplateFrom(source, "Expert template", DateTime.UtcNow);
+        var instance = DadPresetTemplateService.Instantiate(template, new DadCharacterPool(), DateTime.UtcNow);
+
+        Assert.Equal(DadPlannerRunFamily.DailyRoulette, template.RunFamily);
+        Assert.Equal(DadPlannerActivityMode.DailyRoulette, template.ActivityMode);
+        Assert.NotSame(sourceTarget, template.RouletteTarget);
+        Assert.NotSame(template.RouletteTarget, instance.RouletteTarget);
+        Assert.Equal((uint)5, template.RouletteTarget.RouletteId);
+        Assert.Equal("ContentRoulette:5", template.RouletteTarget.Key);
+        Assert.Equal("Expert", template.RouletteTarget.DisplayName);
+        Assert.Equal(3, template.RouletteTarget.SchemaVersion);
+        Assert.Equal((uint)5, instance.RouletteTarget.RouletteId);
+        Assert.Equal("ContentRoulette:5", instance.RouletteTarget.Key);
+        Assert.Equal("Expert", instance.RouletteTarget.DisplayName);
+        Assert.Equal(DadDailyRoulettePlannerRules.RequiredPartySize, instance.Slots.Count);
+
+        sourceTarget.RouletteId = 8;
+        template.RouletteTarget.RouletteId = 3;
+        Assert.Equal((uint)5, instance.RouletteTarget.RouletteId);
+    }
+
     private static DadAcquiredCharacter Character(
         string key,
         string accountId,

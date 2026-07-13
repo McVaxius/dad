@@ -2,9 +2,11 @@ using dad.Models;
 
 namespace dad.Services;
 
-public sealed class DadPremadeDutyExecutor(
-    DadLocalDutyQueueService queueService,
-    DadCombatRotationService combatRotationService) : IDadModuleExecutor
+public delegate DadLocalDutyResolvedContent? DadFullPartyContentResolver(
+    DadRunPlan plan,
+    out string blocker);
+
+public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
 {
     private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
 
@@ -16,9 +18,31 @@ public sealed class DadPremadeDutyExecutor(
     private bool dutyCompleted;
     private DadCombatRotationMode rotationMode = DadCombatRotationMode.UseFrenRider;
     private string entryAutomationSummary = string.Empty;
+    private readonly DadLocalDutyQueueService queueService;
+    private readonly DadCombatRotationService combatRotationService;
+    private readonly DadModuleId configuredModuleId;
+    private readonly string configuredDisplayName;
+    private readonly string configuredExecutorId;
+    private readonly DadFullPartyContentResolver contentResolver;
 
-    public string ExecutorId => "DadPremadeDutyExecutor";
-    public DadModuleId ModuleId => DadModuleId.PremadeDuty;
+    public DadPremadeDutyExecutor(
+        DadLocalDutyQueueService queueService,
+        DadCombatRotationService combatRotationService,
+        DadModuleId configuredModuleId,
+        string configuredDisplayName,
+        string configuredExecutorId,
+        DadFullPartyContentResolver contentResolver)
+    {
+        this.queueService = queueService;
+        this.combatRotationService = combatRotationService;
+        this.configuredModuleId = configuredModuleId;
+        this.configuredDisplayName = configuredDisplayName;
+        this.configuredExecutorId = configuredExecutorId;
+        this.contentResolver = contentResolver;
+    }
+
+    public string ExecutorId => configuredExecutorId;
+    public DadModuleId ModuleId => configuredModuleId;
 
     public DadModuleExecutionStatusDto CanStart(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
     {
@@ -43,7 +67,7 @@ public sealed class DadPremadeDutyExecutor(
             MaxRetryAttempts = 0,
             UpdatedAtUtc = DateTime.UtcNow,
             Summary = hardBlocked
-                ? $"Dad cannot start Premade Duty: {blockedReason}"
+                ? $"Dad cannot start {configuredDisplayName}: {blockedReason}"
                 : BuildCanStartSummary(content, mode),
             FailureReason = hardBlocked ? blockedReason : string.Empty,
             BlockedReason = blockedReason,
@@ -53,6 +77,9 @@ public sealed class DadPremadeDutyExecutor(
 
     public DadRunStepResultDto Start(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
     {
+        if (!status.IsActive)
+            queueService.ResetRun(plan.Request.RequestId);
+
         var module = ResolveModule(plan);
         rotationMode = combatRotationService.CombatRotationMode;
         var blockers = BuildBlockers(plan, module, participants, rotationMode, out resolvedContent);
@@ -79,7 +106,7 @@ public sealed class DadPremadeDutyExecutor(
             UpdatedAtUtc = now,
             CompletedAtUtc = hardBlocked ? now : null,
             Summary = hardBlocked
-                ? $"Dad cannot start Premade Duty: {blockedReason}"
+                ? $"Dad cannot start {configuredDisplayName}: {blockedReason}"
                 : BuildStartSummary(resolvedContent),
             FailureReason = hardBlocked ? blockedReason : string.Empty,
             BlockedReason = blockedReason,
@@ -96,7 +123,7 @@ public sealed class DadPremadeDutyExecutor(
 
         if (resolvedContent == null)
         {
-            Fail("Premade Duty content was not resolved.");
+            Fail($"{configuredDisplayName} content was not resolved.");
             return BuildStatusStep(status);
         }
 
@@ -104,11 +131,14 @@ public sealed class DadPremadeDutyExecutor(
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
+        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
+            dutyCompleted = true;
+
         if (enteredDuty && HasExitedRequestedDuty())
         {
             if (!dutyCompleted)
             {
-                Fail($"Premade Duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
+                Fail($"{configuredDisplayName} {resolvedContent.DutyName} exited before matching DutyCompleted; treating as abandoned.");
                 return BuildStatusStep(status, DadParticipantState.Failed);
             }
 
@@ -117,9 +147,6 @@ public sealed class DadPremadeDutyExecutor(
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
-
-        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
-            dutyCompleted = true;
 
         if (dutyCompleted)
             return UpdateDutyCompletionWaitForExit();
@@ -131,7 +158,11 @@ public sealed class DadPremadeDutyExecutor(
 
         ApplyPulse(pulse);
         if (pulse.Status == DadRunStatus.Failed)
+        {
+            queueService.ResetRun(status.RunId);
+            ClearRuntimeState();
             return BuildStatusStep(status, pulse.ParticipantState);
+        }
 
         if (enteredDutyThisPulse && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
@@ -153,7 +184,7 @@ public sealed class DadPremadeDutyExecutor(
         var pulse = queueService.Cancel(status.RunId, reason);
         ApplyPulse(pulse);
         status.Summary = string.IsNullOrWhiteSpace(reason)
-            ? "Premade Duty executor cancelled. Dad does not leave duties or send external stop commands; clear any remaining game-side queue or duty state manually if needed."
+            ? $"{configuredDisplayName} executor cancelled. Dad does not leave duties or send external stop commands; clear any remaining game-side queue or duty state manually if needed."
             : reason;
         status.FailureReason = pulse.FailureReason;
         status.CompletedAtUtc = DateTime.UtcNow;
@@ -181,6 +212,7 @@ public sealed class DadPremadeDutyExecutor(
 
     private void Fail(string reason)
     {
+        queueService.ResetRun(status.RunId);
         status.Phase = DadRunPhase.Finalizing;
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
@@ -192,8 +224,9 @@ public sealed class DadPremadeDutyExecutor(
         status.BlockedReason = reason;
         status.Blockers =
         [
-            BuildBlocker(status.ModuleId == DadModuleId.None ? DadModuleId.PremadeDuty : status.ModuleId, "RuntimeReadiness", reason, DadModuleBlockerSeverity.Failed),
+            BuildBlocker(status.ModuleId == DadModuleId.None ? configuredModuleId : status.ModuleId, "RuntimeReadiness", reason, DadModuleBlockerSeverity.Failed),
         ];
+        ClearRuntimeState();
     }
 
     private DadRunStepResultDto UpdateDutyCompletionWaitForExit()
@@ -225,7 +258,7 @@ public sealed class DadPremadeDutyExecutor(
             var remaining = Math.Max(0, (postDutyStabilizeUntilUtc - now).TotalSeconds);
             SetActiveStatus(
                 DadRunPhase.PostRunStabilizing,
-                $"Premade Duty post-duty stabilizing ({remaining:F0}s).");
+                $"{configuredDisplayName} post-duty stabilizing ({remaining:F0}s).");
             return BuildStatusStep(status, DadParticipantState.Completed);
         }
 
@@ -239,6 +272,7 @@ public sealed class DadPremadeDutyExecutor(
         status.FailureReason = string.Empty;
         status.BlockedReason = string.Empty;
         status.Blockers = [];
+        queueService.ResetRun(status.RunId);
         ClearRuntimeState();
         return BuildStatusStep(status, DadParticipantState.Completed);
     }
@@ -276,7 +310,7 @@ public sealed class DadPremadeDutyExecutor(
 
         var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
             status.RunId,
-            DadModuleId.PremadeDuty,
+            configuredModuleId,
             DateTime.UtcNow,
             out entryAutomationSummary);
         if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
@@ -304,13 +338,13 @@ public sealed class DadPremadeDutyExecutor(
         entryAutomationSummary = string.Empty;
     }
 
-    private static DadPlannedModuleExecution ResolveModule(DadRunPlan plan)
+    private DadPlannedModuleExecution ResolveModule(DadRunPlan plan)
     {
-        var module = plan.Modules.FirstOrDefault(module => module.ModuleId == DadModuleId.PremadeDuty);
+        var module = plan.Modules.FirstOrDefault(module => module.ModuleId == configuredModuleId);
         if (module != null)
             return module;
 
-        if (plan.Request.Dungeon?.QueueViaLanParty == true)
+        if (configuredModuleId == DadModuleId.PremadeDuty && plan.Request.Dungeon?.QueueViaLanParty == true)
         {
             module = plan.Modules.FirstOrDefault(module => module.ModuleId == DadModuleId.Duty);
             if (module != null)
@@ -319,8 +353,8 @@ public sealed class DadPremadeDutyExecutor(
 
         return new DadPlannedModuleExecution
         {
-            ModuleId = DadModuleId.PremadeDuty,
-            DisplayName = "Premade Duty",
+            ModuleId = configuredModuleId,
+            DisplayName = configuredDisplayName,
             ExpectedPartySize = Math.Max(2, plan.RequiredParticipantCount),
             RequiresPeers = true,
         };
@@ -331,7 +365,8 @@ public sealed class DadPremadeDutyExecutor(
         var dutyName = content?.DutyName ?? "selected duty";
         var syncMode = content?.Unsynced == true ? "unsynced" : "synced";
         var expectedPartySize = content?.ExpectedPartySize ?? 0;
-        var baseSummary = $"Dad can start {syncMode} regular Duty Finder queue for Premade Duty {dutyName} with {expectedPartySize} Dad-verified participant(s); in-game party roster validation remains manual follow-up.";
+        var targetDescription = content?.TargetKind == DadQueueTargetKind.Roulette ? "roulette" : "regular Duty Finder duty";
+        var baseSummary = $"Dad can start the {syncMode} {targetDescription} queue for {configuredDisplayName} {dutyName} with {expectedPartySize} Dad-verified participant(s); in-game party roster validation remains manual follow-up.";
         return mode switch
         {
             DadCombatRotationMode.UseFrenRider => $"{baseSummary} Dad will enable FrenRider after duty entry, then observe while FrenRider or the user owns duty behavior and exit.",
@@ -346,16 +381,16 @@ public sealed class DadPremadeDutyExecutor(
         var syncMode = content?.Unsynced == true ? "unsynced" : "synced";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: queueing {syncMode} Premade Duty {dutyName}; Dad will enable FrenRider after duty entry.",
-            DadCombatRotationMode.DoNothing => $"Do Nothing mode: queueing {syncMode} Premade Duty {dutyName}.",
-            _ => $"Queueing {syncMode} Premade Duty {dutyName}.",
+            DadCombatRotationMode.UseFrenRider => $"Use FrenRider mode: queueing {syncMode} {configuredDisplayName} {dutyName}; Dad will enable FrenRider after duty entry.",
+            DadCombatRotationMode.DoNothing => $"Do Nothing mode: queueing {syncMode} {configuredDisplayName} {dutyName}.",
+            _ => $"Queueing {syncMode} {configuredDisplayName} {dutyName}.",
         };
     }
 
     private string BuildPreDutySummary(string summary)
     {
         if (string.IsNullOrWhiteSpace(summary))
-            summary = $"Waiting to start regular Duty Finder queue for Premade Duty {resolvedContent?.DutyName ?? "requested duty"}.";
+            summary = $"Waiting to start the queue for {configuredDisplayName} {resolvedContent?.DutyName ?? "requested duty"}.";
 
         return rotationMode switch
         {
@@ -376,10 +411,10 @@ public sealed class DadPremadeDutyExecutor(
         return rotationMode switch
         {
             DadCombatRotationMode.UseFrenRider => string.IsNullOrWhiteSpace(entryAutomationSummary)
-                ? $"Use FrenRider mode: in {syncMode} Premade Duty {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior."
-                : $"{entryAutomationSummary} In {syncMode} Premade Duty {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior.",
-            DadCombatRotationMode.DoNothing => $"Do Nothing mode: Dad queued {syncMode} Premade Duty {dutyName} and is observing completion/exit; user owns combat and leave.",
-            _ => $"Dad is observing {syncMode} Premade Duty {dutyName}.",
+                ? $"Use FrenRider mode: in {syncMode} {configuredDisplayName} {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior."
+                : $"{entryAutomationSummary} In {syncMode} {configuredDisplayName} {dutyName}; Dad is observing completion and exit while FrenRider or the user owns in-duty behavior.",
+            DadCombatRotationMode.DoNothing => $"Do Nothing mode: Dad queued {syncMode} {configuredDisplayName} {dutyName} and is observing completion/exit; user owns combat and leave.",
+            _ => $"Dad is observing {syncMode} {configuredDisplayName} {dutyName}.",
         };
     }
 
@@ -388,9 +423,9 @@ public sealed class DadPremadeDutyExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Premade Duty {dutyName} completed; waiting for FrenRider or user to leave. Disable commands are reserved for successful final dad.Duty.Run IPC cleanup.",
-            DadCombatRotationMode.DoNothing => $"Premade Duty {dutyName} completed; waiting for user-owned duty exit.",
-            _ => $"Premade Duty {dutyName} completed; waiting for duty exit.",
+            DadCombatRotationMode.UseFrenRider => $"{configuredDisplayName} {dutyName} completed; waiting for FrenRider or user to leave. Disable commands are reserved for successful final dad.Duty.Run IPC cleanup.",
+            DadCombatRotationMode.DoNothing => $"{configuredDisplayName} {dutyName} completed; waiting for user-owned duty exit.",
+            _ => $"{configuredDisplayName} {dutyName} completed; waiting for duty exit.",
         };
     }
 
@@ -399,9 +434,9 @@ public sealed class DadPremadeDutyExecutor(
         var dutyName = resolvedContent?.DutyName ?? "requested duty";
         return rotationMode switch
         {
-            DadCombatRotationMode.UseFrenRider => $"Premade Duty {dutyName} completed and stabilized; normal Dad run done without disable commands. Successful final dad.Duty.Run IPC cleanup is separate.",
-            DadCombatRotationMode.DoNothing => $"Premade Duty {dutyName} completed; Dad queue-only run done.",
-            _ => $"Premade Duty {dutyName} completed; Dad run done.",
+            DadCombatRotationMode.UseFrenRider => $"{configuredDisplayName} {dutyName} completed and stabilized; normal Dad run done without disable commands. Successful final dad.Duty.Run IPC cleanup is separate.",
+            DadCombatRotationMode.DoNothing => $"{configuredDisplayName} {dutyName} completed; Dad queue-only run done.",
+            _ => $"{configuredDisplayName} {dutyName} completed; Dad run done.",
         };
     }
 
@@ -413,61 +448,23 @@ public sealed class DadPremadeDutyExecutor(
         out DadLocalDutyResolvedContent? content)
     {
         var blockers = new List<DadModuleBlockerDto>();
-        content = ResolveContent(plan, out var resolveBlocker);
+        content = contentResolver(plan, out var resolveBlocker);
         if (!string.IsNullOrWhiteSpace(resolveBlocker))
             blockers.Add(BuildBlocker(module.ModuleId, "DutySelector", resolveBlocker, DadModuleBlockerSeverity.Blocked));
 
         var expectedPartySize = Math.Max(2, content?.ExpectedPartySize ?? Math.Max(module.ExpectedPartySize, plan.RequiredParticipantCount));
-        if (plan.Request.PremadeDuty?.Attempts > 1 || plan.Request.Dungeon?.Count > 1)
-            blockers.Add(BuildBlocker(module.ModuleId, "Requeue", "Premade Duty live executor currently supports one run; requeue/retry loop remains deferred.", DadModuleBlockerSeverity.Blocked));
-
-        if (participants.Count != expectedPartySize)
-            blockers.Add(BuildBlocker(module.ModuleId, "Participants", $"Premade Duty requires exactly {expectedPartySize} Dad-verified participant(s), have {participants.Count}.", DadModuleBlockerSeverity.Failed));
-
-        var unverifiedParticipants = participants
-            .Where(static participant => !IsDadVerifiedParticipant(participant))
-            .Select(static participant => string.IsNullOrWhiteSpace(participant.ActiveCharacterKey) ? participant.AssignedSlotId : participant.ActiveCharacterKey.ToString())
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (unverifiedParticipants.Count > 0)
-            blockers.Add(BuildBlocker(module.ModuleId, "Participants", $"Full Dad participant readiness is not verified for: {string.Join(", ", unverifiedParticipants)}.", DadModuleBlockerSeverity.Blocked));
-
-        var duplicateCharacters = participants
-            .Select(static participant => participant.ActiveCharacterKey.ToString())
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .GroupBy(static value => value, StringComparer.OrdinalIgnoreCase)
-            .Where(static group => group.Count() > 1)
-            .Select(static group => group.Key)
-            .ToList();
-        if (duplicateCharacters.Count > 0)
-            blockers.Add(BuildBlocker(module.ModuleId, "Participants", $"Premade Duty participant list has duplicate character(s): {string.Join(", ", duplicateCharacters)}.", DadModuleBlockerSeverity.Blocked));
-
-        var localLeader = participants.FirstOrDefault(static participant => participant.IsLocalClient);
-        if (localLeader == null)
+        if (configuredModuleId == DadModuleId.PremadeDuty &&
+            (plan.Request.PremadeDuty?.Attempts > 1 || plan.Request.Dungeon?.Count > 1))
         {
-            blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Premade Duty requires the Dad Coordinator local client to be present as the queue leader.", DadModuleBlockerSeverity.Blocked));
-        }
-        else
-        {
-            if (!localLeader.IsAuthority)
-                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Local client is not marked as Dad Coordinator authority for this premade queue.", DadModuleBlockerSeverity.Blocked));
-
-            if (!string.Equals(localLeader.AssignedSlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase))
-                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", $"Local client is assigned to '{localLeader.AssignedSlotId}', not Slot1.", DadModuleBlockerSeverity.Blocked));
-
-            if (!string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) &&
-                !string.Equals(localLeader.ActiveCharacterKey.ToString(), plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))
-            {
-                blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", $"Local leader mismatch: need {plan.LeaderCharacterKey}, active {localLeader.ActiveCharacterKey}.", DadModuleBlockerSeverity.Blocked));
-            }
+            blockers.Add(BuildBlocker(module.ModuleId, "Requeue", $"{configuredDisplayName} live executor currently supports one run per coordinator attempt.", DadModuleBlockerSeverity.Blocked));
         }
 
-        if (plan.Orchestration.AuthorityMode != DadAuthorityMode.ServerDad)
-            blockers.Add(BuildBlocker(module.ModuleId, "LeaderAuthority", "Premade Duty requires Dad Coordinator authority, not local-only authority.", DadModuleBlockerSeverity.Blocked));
-
-        if (plan.Orchestration.QueueAuthority is not (DadQueueAuthority.Leader or DadQueueAuthority.LanParty))
-            blockers.Add(BuildBlocker(module.ModuleId, "QueueAuthority", $"Premade Duty requires leader/Dad premade queue authority; current authority is {plan.Orchestration.QueueAuthority}.", DadModuleBlockerSeverity.Blocked));
+        blockers.AddRange(DadFullPartyExecutionRules.Evaluate(
+            plan,
+            module.ModuleId,
+            participants,
+            expectedPartySize,
+            configuredDisplayName));
 
         if (!queueService.CanStart(content, out var runtimeBlocker))
             blockers.Add(BuildBlocker(module.ModuleId, "RuntimeReadiness", runtimeBlocker, DadModuleBlockerSeverity.Blocked));
@@ -476,43 +473,13 @@ public sealed class DadPremadeDutyExecutor(
             blockers.Add(BuildBlocker(module.ModuleId, "FrenRider", combatRotationService.MissingFrenRiderBlocker, DadModuleBlockerSeverity.Blocked));
 
         if (mode == DadCombatRotationMode.ForceCommands)
-            blockers.Add(BuildBlocker(module.ModuleId, "CombatRotation", "Force Commands mode is only guarded for Duty Support; select Use FrenRider or Do Nothing before starting Premade Duty.", DadModuleBlockerSeverity.Blocked));
+            blockers.Add(BuildBlocker(module.ModuleId, "CombatRotation", $"Force Commands mode is only guarded for Duty Support; select Use FrenRider or Do Nothing before starting {configuredDisplayName}.", DadModuleBlockerSeverity.Blocked));
 
         return blockers
             .Where(static blocker => !string.IsNullOrWhiteSpace(blocker.Summary))
             .GroupBy(static blocker => $"{blocker.Capability}|{blocker.Summary}", StringComparer.OrdinalIgnoreCase)
             .Select(static group => group.First())
             .ToList();
-    }
-
-    private DadLocalDutyResolvedContent? ResolveContent(DadRunPlan plan, out string blocker)
-    {
-        if (plan.Request.PremadeDuty != null)
-            return queueService.Resolve(plan.Request.PremadeDuty, out blocker);
-
-        if (plan.Request.Dungeon?.QueueViaLanParty == true)
-            return queueService.ResolvePremade(plan.Request.Dungeon, out blocker);
-
-        blocker = "Premade Duty request is missing a premade duty task.";
-        return null;
-    }
-
-    private static bool IsDadVerifiedParticipant(DadParticipantSnapshot participant)
-    {
-        if (!participant.IsAvailable ||
-            !participant.IsEligibleForRun ||
-            !participant.PostArReady ||
-            participant.ClaimState != DadClaimState.Granted ||
-            participant.LeaseState != DadParticipantLeaseState.Granted)
-        {
-            return false;
-        }
-
-        return participant.State is not (DadParticipantState.WaitingForRequiredCharacter
-            or DadParticipantState.WaitingForPostArReady
-            or DadParticipantState.Failed
-            or DadParticipantState.Cancelled
-            or DadParticipantState.Stale);
     }
 
     private static DadModuleBlockerDto BuildBlocker(
@@ -528,12 +495,12 @@ public sealed class DadPremadeDutyExecutor(
             Summary = summary,
         };
 
-    private static DadRunStepResultDto BuildStatusStep(DadModuleExecutionStatusDto status, DadParticipantState? participantState = null)
+    private DadRunStepResultDto BuildStatusStep(DadModuleExecutionStatusDto status, DadParticipantState? participantState = null)
         => new()
         {
             RunId = status.RunId,
             ModuleId = status.ModuleId,
-            StepName = "Premade Duty",
+            StepName = configuredDisplayName,
             ParticipantState = participantState
                                ?? (status.Status switch
                                {

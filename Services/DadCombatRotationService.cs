@@ -1,3 +1,5 @@
+using Dalamud.Plugin;
+using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
 using dad.Models;
 
@@ -10,12 +12,16 @@ public enum DadFrenRiderPluginState
     Loaded,
 }
 
-public sealed class DadCombatRotationService(Configuration configuration, IPluginLog log)
+public sealed class DadCombatRotationService(
+    Configuration configuration,
+    IDalamudPluginInterface pluginInterface,
+    IPluginLog log)
 {
     private const string FrenRiderInternalName = "FrenRider";
     private const string FrenRiderDisplayName = "Fren Rider";
 
     public const string FrenRiderEnableCommand = "/fr on";
+    public const string FrenRiderConfigureAndEnableChannel = "FrenRider.Dad.ConfigureAndEnable";
     public const string BossModRotationCommand = "/bmrai on";
     public const string AutoRotationCommand = "/rotation auto";
 
@@ -26,6 +32,8 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
     ];
 
     private readonly DadFrenRiderEntryEnableGate frenRiderEntryEnableGate = new();
+    private readonly ICallGateSubscriber<string, bool> frenRiderConfigureAndEnable =
+        pluginInterface.GetIpcSubscriber<string, bool>(FrenRiderConfigureAndEnableChannel);
 
     public DadCombatRotationMode CombatRotationMode => configuration.CombatRotationMode;
 
@@ -92,6 +100,25 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
         }
 
         return result;
+    }
+
+    internal DadFrenRiderCommandResult TryConfigureAndEnableParticipant(string nameAtWorld)
+    {
+        try
+        {
+            if (frenRiderConfigureAndEnable.InvokeFunc(nameAtWorld))
+                return DadFrenRiderCommandResult.Success();
+
+            var failure = $"FrenRider rejected {FrenRiderConfigureAndEnableChannel} for '{nameAtWorld}'";
+            log.Warning("[dad][CombatRotation] {Failure}.", failure);
+            return DadFrenRiderCommandResult.Failure(failure);
+        }
+        catch (Exception ex)
+        {
+            var failure = $"{FrenRiderConfigureAndEnableChannel} failed for '{nameAtWorld}' ({ex.GetType().Name}: {ex.Message})";
+            log.Warning(ex, "[dad][CombatRotation] {Failure}.", failure);
+            return DadFrenRiderCommandResult.Failure(failure);
+        }
     }
 
     public bool TryApplyDutySupportEntryMode(
@@ -178,7 +205,7 @@ public sealed class DadCombatRotationService(Configuration configuration, IPlugi
             DadModuleId.DutySupport => "a Duty Support operation",
             DadModuleId.Trust => "a Trust operation",
             DadModuleId.PremadeDuty => "a premade duty operation",
-            DadModuleId.DailyMsq => "a Daily MSQ duty operation",
+            DadModuleId.DailyMsq => "a Daily Roulette operation",
             DadModuleId.Blunderville => "a Blunderville operation",
             DadModuleId.Mogtome => "a MOGTOME duty operation",
             DadModuleId.Commendation => "a commendation duty operation",

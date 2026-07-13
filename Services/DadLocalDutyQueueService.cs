@@ -31,7 +31,9 @@ public sealed class DadLocalDutyResolvedContent
 {
     public DadModuleId ModuleId { get; set; } = DadModuleId.Duty;
     public string LaneDisplayName { get; set; } = "Local Duty";
+    public DadQueueTargetKind TargetKind { get; set; } = DadQueueTargetKind.DutyFinderDuty;
     public uint ContentFinderConditionId { get; set; }
+    public uint RouletteId { get; set; }
     public uint TerritoryType { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public string SheetDutyName { get; set; } = string.Empty;
@@ -62,6 +64,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private static readonly TimeSpan SelectThrottle = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan RegisterThrottle = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConfirmThrottle = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan RestoreRetryThrottle = TimeSpan.FromSeconds(1);
 
     private readonly IPluginLog log;
     private DateTime nextOpenAttemptUtc = DateTime.MinValue;
@@ -72,14 +75,19 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private uint lastDutyCompletedTerritoryId;
     private string activeRunId = string.Empty;
     private bool dutyStateSubscribed;
+    private bool frameworkUpdateSubscribed;
+    private bool unrestrictedRestorePending;
+    private DateTime nextUnrestrictedRestoreAttemptUtc = DateTime.MinValue;
     private bool dutyEntryEvidenceObserved;
     private bool dutyEntryTransitionLogged;
     private bool transientMissingPlayerLogged;
 
     // Review M7: remember and restore the Duty Finder's unrestricted/unsynced flag so an unsynced
     // Dad run doesn't leak that setting into the player's later manual or synced queues.
-    private bool unrestrictedPartyOverridden;
-    private bool unrestrictedPartyPreviousValue;
+    private readonly DadUnrestrictedPartyOverrideLease unrestrictedPartyLease = new();
+    private readonly DadRouletteQueueAttemptGate rouletteAttemptGate = new();
+    private readonly DadRouletteTerritoryEvidenceGate rouletteTerritoryGate = new();
+    private readonly DadRouletteTerritoryEvidenceGate participantRouletteTerritoryGate = new();
     private bool dutySelectionCleared;
     private bool dutySelectionCallbackSent;
     private string participantObserverRunId = string.Empty;
@@ -89,10 +97,26 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     {
         this.log = log;
         TrySubscribeDutyState();
+        TrySubscribeFrameworkUpdate();
     }
 
     public void Dispose()
     {
+        RestoreUnrestrictedParty();
+        if (frameworkUpdateSubscribed)
+        {
+            try
+            {
+                Plugin.Framework.Update -= OnFrameworkUpdate;
+            }
+            catch
+            {
+                // Best-effort plugin shutdown only.
+            }
+
+            frameworkUpdateSubscribed = false;
+        }
+
         if (!dutyStateSubscribed)
             return;
 
@@ -150,6 +174,40 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             out blocker);
     }
 
+    public DadLocalDutyResolvedContent? Resolve(DadDailyMsqTask? task, out string blocker)
+    {
+        if (task == null)
+        {
+            blocker = "No Daily Roulette task exists in this request.";
+            return null;
+        }
+
+        var options = new DadRouletteCatalogService(Plugin.DataManager).GetOptions();
+        var resolution = DadDailyRoulettePlannerRules.ResolveTarget(task.QueueTarget, options);
+        if (!resolution.IsAvailable || resolution.Option == null)
+        {
+            blocker = string.IsNullOrWhiteSpace(resolution.Blocker)
+                ? "Daily Roulette target is unavailable."
+                : resolution.Blocker;
+            return null;
+        }
+
+        task.QueueTarget = resolution.Target.Clone();
+        blocker = string.Empty;
+        return new DadLocalDutyResolvedContent
+        {
+            ModuleId = DadModuleId.DailyMsq,
+            LaneDisplayName = "Daily Roulette",
+            TargetKind = DadQueueTargetKind.Roulette,
+            RouletteId = resolution.Option.RouletteId,
+            DutyName = resolution.Option.DisplayName,
+            SheetDutyName = resolution.Option.DisplayName,
+            Unsynced = false,
+            QueueSize = DadDailyRoulettePlannerRules.RequiredPartySize,
+            ExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize,
+        };
+    }
+
     public DadLocalDutyResolvedContent? ResolvePremade(DadDungeonTask? task, out string blocker)
     {
         if (task == null)
@@ -181,6 +239,15 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         if (content == null)
         {
             blocker = "Regular Duty Finder queue requires a resolved content selection.";
+            return false;
+        }
+
+        if (content.TargetKind == DadQueueTargetKind.Roulette &&
+            (content.RouletteId is 0 or > byte.MaxValue ||
+             content.Unsynced ||
+             content.ExpectedPartySize != DadDailyRoulettePlannerRules.RequiredPartySize))
+        {
+            blocker = "Daily Roulette requires an exact roulette id in 1..255, synced queueing, and exactly four participants.";
             return false;
         }
 
@@ -222,6 +289,13 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 return false;
             }
 
+            var confirmAddon = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinderConfirm");
+            if (confirmAddon != null && confirmAddon->IsVisible)
+            {
+                blocker = $"A Duty Finder commence popup is already active; resolve it before starting {content.LaneDisplayName}.";
+                return false;
+            }
+
             var addon = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinder");
             var dutyFinderAlreadyOpen = addon != null && addon->IsVisible;
             var hud = AgentHUD.Instance();
@@ -246,17 +320,10 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         // internal orchestrator and the external dad.Duty.* IPC path can't drive the same queue at once.
         if (!string.IsNullOrEmpty(activeRunId) && !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
         {
-            return new DadLocalDutyQueuePulse
-            {
-                Kind = DadLocalDutyQueuePulseKind.Waiting,
-                Phase = DadRunPhase.QueuePreparing,
-                Status = DadRunStatus.Running,
-                ParticipantState = DadParticipantState.QueuePending,
-                Success = false,
-                IsActive = false,
-                Summary = $"Local Duty queue is busy with another run ({activeRunId}).",
-                FailureReason = $"Local Duty queue owned by run {activeRunId}.",
-            };
+            return Failed(
+                content,
+                $"Local Duty queue is owned by another run ({activeRunId}).",
+                cleanup: false);
         }
 
         ResetForNewRun(runId);
@@ -265,7 +332,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         if (commonPulse != null)
             return commonPulse;
 
-        return PulseRegularDuty(content);
+        return content.TargetKind == DadQueueTargetKind.Roulette
+            ? PulseRoulette(content)
+            : PulseRegularDuty(content);
     }
 
     public DadLocalDutyQueuePulse ObserveParticipant(string runId, DadLocalDutyResolvedContent content)
@@ -274,6 +343,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         {
             participantObserverRunId = runId;
             participantDutyEntryEvidenceObserved = false;
+            participantRouletteTerritoryGate.Reset();
             nextConfirmAttemptUtc = DateTime.MinValue;
         }
 
@@ -287,7 +357,42 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         var isBoundByDuty = Plugin.Condition[ConditionFlag.BoundByDuty];
         var isBetweenAreas = Plugin.Condition[ConditionFlag.BetweenAreas];
         var isBetweenAreas51 = Plugin.Condition[ConditionFlag.BetweenAreas51];
-        var isRequestedTerritory = territoryType == content.TerritoryType;
+        var isRoulette = content.TargetKind == DadQueueTargetKind.Roulette;
+        var isRequestedTerritory = !isRoulette && territoryType == content.TerritoryType;
+        var qualifyingRouletteTransition = isRoulette && (isBetweenAreas || isBetweenAreas51);
+
+        if (isRoulette && isQueued)
+        {
+            participantDutyEntryEvidenceObserved = true;
+            participantRouletteTerritoryGate.ObserveEntryEvidence();
+        }
+
+        if (qualifyingRouletteTransition)
+        {
+            participantDutyEntryEvidenceObserved = true;
+            participantRouletteTerritoryGate.ObserveEntryEvidence();
+            return Active(content, DadLocalDutyQueuePulseKind.DutyEntryTransition, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Participant observed duty-entry transition for {content.DutyName}; waiting for stable bound-duty territory truth.");
+        }
+
+        if (isRoulette && isBoundByDuty)
+        {
+            if (!isLoggedIn || !hasLocalPlayer)
+                return Active(content, DadLocalDutyQueuePulseKind.DutyEntryTransition, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Participant entry transition for {content.DutyName}; waiting for local player truth.");
+
+            if (!participantRouletteTerritoryGate.TryCapture(true, territoryType))
+            {
+                return Failed(
+                    content,
+                    participantRouletteTerritoryGate.EntryEvidenceObserved
+                        ? $"Participant entered roulette territory {territoryType}, but the captured roulette territory is {participantRouletteTerritoryGate.CapturedTerritoryId}."
+                        : $"Participant became bound by territory {territoryType} before this Daily Roulette observed queue/commence/transition evidence.",
+                    cleanup: false);
+            }
+
+            content.TerritoryType = participantRouletteTerritoryGate.CapturedTerritoryId;
+            participantDutyEntryEvidenceObserved = true;
+            return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Participant entered Daily Roulette {content.DutyName} territory {content.TerritoryType}.");
+        }
 
         if (isBoundByDuty && isRequestedTerritory)
         {
@@ -295,7 +400,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Participant entered {content.LaneDisplayName} {content.DutyName}.");
         }
 
-        if (IsDutyEntryTransition(
+        if (!isRoulette && IsDutyEntryTransition(
                 isBetweenAreas,
                 isBetweenAreas51,
                 isRequestedTerritory,
@@ -306,11 +411,13 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         }
 
         if (isBoundByDuty)
-            return Failed(content, $"Participant is bound by another duty in territory {territoryType}; expected {content.DutyName}.");
+            return Failed(content, $"Participant is bound by another duty in territory {territoryType}; expected {content.DutyName}.", cleanup: false);
 
         if (TryAcceptContentsFinderConfirm(content))
         {
             participantDutyEntryEvidenceObserved = true;
+            if (isRoulette)
+                participantRouletteTerritoryGate.ObserveEntryEvidence();
             return Active(content, DadLocalDutyQueuePulseKind.AcceptedQueueConfirm, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Participant accepted Duty Finder commence popup for {content.DutyName}.");
         }
 
@@ -324,7 +431,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             return Active(content, DadLocalDutyQueuePulseKind.DutyEntryTransition, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Participant entry transition for {content.DutyName}; waiting for local player truth.");
 
         if (!isLoggedIn || !hasLocalPlayer)
-            return Failed(content, $"Participant queue observer requires a logged-in local player for {content.DutyName}.");
+            return Failed(content, $"Participant queue observer requires a logged-in local player for {content.DutyName}.", cleanup: false);
 
         return Active(
             content,
@@ -341,6 +448,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
         participantObserverRunId = string.Empty;
         participantDutyEntryEvidenceObserved = false;
+        participantRouletteTerritoryGate.Reset();
         nextConfirmAttemptUtc = DateTime.MinValue;
     }
 
@@ -362,13 +470,33 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         };
     }
 
+    public void ResetRun(string runId)
+    {
+        if (!string.IsNullOrWhiteSpace(activeRunId) &&
+            !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        ClearRunState();
+    }
+
     public bool IsInRequestedDuty(DadLocalDutyResolvedContent content)
-        => Plugin.Condition[ConditionFlag.BoundByDuty] &&
-           Plugin.ClientState.TerritoryType == content.TerritoryType;
+        => content.TargetKind == DadQueueTargetKind.Roulette
+            ? rouletteTerritoryGate.IsInCapturedDuty(
+                Plugin.Condition[ConditionFlag.BoundByDuty],
+                Plugin.ClientState.TerritoryType)
+            : Plugin.Condition[ConditionFlag.BoundByDuty] &&
+              Plugin.ClientState.TerritoryType == content.TerritoryType;
 
     public bool HasDutyCompleted(DadLocalDutyResolvedContent content, DateTime runStartedAtUtc)
-        => lastDutyCompletedUtc >= runStartedAtUtc &&
-           lastDutyCompletedTerritoryId == content.TerritoryType;
+        => content.TargetKind == DadQueueTargetKind.Roulette
+            ? rouletteTerritoryGate.MatchesCompletion(
+                lastDutyCompletedTerritoryId,
+                lastDutyCompletedUtc,
+                runStartedAtUtc)
+            : lastDutyCompletedUtc >= runStartedAtUtc &&
+              lastDutyCompletedTerritoryId == content.TerritoryType;
 
     public bool IsQueued()
         => Plugin.Condition[ConditionFlag.InDutyQueue] ||
@@ -385,7 +513,50 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         var isBoundByDuty = Plugin.Condition[ConditionFlag.BoundByDuty];
         var isBetweenAreas = Plugin.Condition[ConditionFlag.BetweenAreas];
         var isBetweenAreas51 = Plugin.Condition[ConditionFlag.BetweenAreas51];
-        var isRequestedTerritory = territoryType == content.TerritoryType;
+        var isRoulette = content.TargetKind == DadQueueTargetKind.Roulette;
+        var isRequestedTerritory = !isRoulette && territoryType == content.TerritoryType;
+
+        if (isRoulette && isQueued)
+        {
+            dutyEntryEvidenceObserved = true;
+            rouletteTerritoryGate.ObserveEntryEvidence();
+        }
+
+        if (TryAcceptContentsFinderConfirm(content))
+        {
+            dutyEntryEvidenceObserved = true;
+            if (isRoulette)
+                rouletteTerritoryGate.ObserveEntryEvidence();
+            return Active(content, DadLocalDutyQueuePulseKind.AcceptedQueueConfirm, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Accepted Duty Finder commence popup for {content.DutyName}.");
+        }
+
+        var qualifyingRouletteTransition = isRoulette && (isBetweenAreas || isBetweenAreas51);
+        if (qualifyingRouletteTransition)
+        {
+            dutyEntryEvidenceObserved = true;
+            rouletteTerritoryGate.ObserveEntryEvidence();
+            return DutyEntryTransition(content, isLoggedIn, hasLocalPlayer, territoryType, isQueued, isBoundByDuty, isBetweenAreas, isBetweenAreas51);
+        }
+
+        if (isRoulette && isBoundByDuty)
+        {
+            if (!isLoggedIn || !hasLocalPlayer)
+                return DutyEntryTransition(content, isLoggedIn, hasLocalPlayer, territoryType, isQueued, true, isBetweenAreas, isBetweenAreas51);
+
+            if (!rouletteTerritoryGate.TryCapture(true, territoryType))
+            {
+                return Failed(
+                    content,
+                    rouletteTerritoryGate.EntryEvidenceObserved
+                        ? $"Daily Roulette entered territory {territoryType}, but captured territory is {rouletteTerritoryGate.CapturedTerritoryId}."
+                        : $"Became bound by territory {territoryType} before this Daily Roulette observed queue/commence/transition evidence.");
+            }
+
+            content.TerritoryType = rouletteTerritoryGate.CapturedTerritoryId;
+            dutyEntryEvidenceObserved = true;
+            RestoreUnrestrictedParty();
+            return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered Daily Roulette {content.DutyName} territory {content.TerritoryType}.");
+        }
 
         if (isBoundByDuty && isRequestedTerritory)
         {
@@ -395,7 +566,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered {content.LaneDisplayName} {content.DutyName}.");
         }
 
-        if (IsDutyEntryTransition(isBetweenAreas, isBetweenAreas51, isRequestedTerritory, isQueued || dutyEntryEvidenceObserved))
+        if (!isRoulette && IsDutyEntryTransition(isBetweenAreas, isBetweenAreas51, isRequestedTerritory, isQueued || dutyEntryEvidenceObserved))
             return DutyEntryTransition(content, isLoggedIn, hasLocalPlayer, territoryType, isQueued, isBoundByDuty, isBetweenAreas, isBetweenAreas51);
 
         if (isBoundByDuty)
@@ -406,19 +577,13 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             return Failed(content, $"Already bound by another duty in territory {territoryType}; cannot start {content.DutyName}.");
         }
 
-        if (TryAcceptContentsFinderConfirm(content))
-        {
-            dutyEntryEvidenceObserved = true;
-            return Active(content, DadLocalDutyQueuePulseKind.AcceptedQueueConfirm, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Accepted regular Duty Finder commence popup for {content.DutyName}.");
-        }
-
         if (isQueued && (!isLoggedIn || !hasLocalPlayer))
             return DutyEntryTransition(content, isLoggedIn, hasLocalPlayer, territoryType, true, isBoundByDuty, isBetweenAreas, isBetweenAreas51);
 
         if (isQueued)
         {
             dutyEntryEvidenceObserved = true;
-            return Active(content, DadLocalDutyQueuePulseKind.WaitingForQueue, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Regular Duty Finder queue active for {content.DutyName}; waiting for commence or duty entry.");
+            return Active(content, DadLocalDutyQueuePulseKind.WaitingForQueue, DadRunPhase.WaitingForQueuePop, DadParticipantState.QueuePending, $"Duty Finder queue active for {content.DutyName}; waiting for commence or duty entry.");
         }
 
         if ((!isLoggedIn || !hasLocalPlayer) && dutyEntryEvidenceObserved)
@@ -438,15 +603,21 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             if (contentsFinder == null)
                 return Failed(content, "ContentsFinder runtime state is unavailable.");
 
-            if (contentsFinder->IsUnrestrictedParty != content.Unsynced)
+            if (!unrestrictedPartyLease.Ensure(
+                    content.Unsynced,
+                    () => contentsFinder->IsUnrestrictedParty,
+                    value => contentsFinder->IsUnrestrictedParty = value,
+                    out var unrestrictedChanged,
+                    out var unrestrictedFailure))
             {
-                if (!unrestrictedPartyOverridden)
-                {
-                    unrestrictedPartyPreviousValue = contentsFinder->IsUnrestrictedParty;
-                    unrestrictedPartyOverridden = true;
-                }
+                return Failed(content, $"Could not set Duty Finder unrestricted-party mode: {unrestrictedFailure}");
+            }
 
-                contentsFinder->IsUnrestrictedParty = content.Unsynced;
+            unrestrictedRestorePending = false;
+            nextUnrestrictedRestoreAttemptUtc = DateTime.MinValue;
+
+            if (unrestrictedChanged)
+            {
                 dutySelectionCleared = false;
                 dutySelectionCallbackSent = false;
                 var syncMode = content.Unsynced ? "enabled unrestricted/unsynced" : "disabled unrestricted/unsynced";
@@ -525,6 +696,128 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         }
     }
 
+    private DadLocalDutyQueuePulse PulseRoulette(DadLocalDutyResolvedContent content)
+    {
+        try
+        {
+            var contentsFinder = ContentsFinder.Instance();
+            if (contentsFinder == null)
+                return Failed(content, "ContentsFinder runtime state is unavailable.");
+
+            if (!unrestrictedPartyLease.Ensure(
+                    requiredValue: false,
+                    () => contentsFinder->IsUnrestrictedParty,
+                    value => contentsFinder->IsUnrestrictedParty = value,
+                    out var unrestrictedChanged,
+                    out var unrestrictedFailure))
+            {
+                return Failed(content, $"Could not force unrestricted party off for Daily Roulette: {unrestrictedFailure}");
+            }
+
+            unrestrictedRestorePending = false;
+            nextUnrestrictedRestoreAttemptUtc = DateTime.MinValue;
+
+            if (unrestrictedChanged)
+            {
+                return Active(
+                    content,
+                    DadLocalDutyQueuePulseKind.SetUnrestrictedParty,
+                    DadRunPhase.QueuePreparing,
+                    DadParticipantState.QueuePending,
+                    $"Disabled unrestricted party for Daily Roulette {content.DutyName}; the previous value will be restored.");
+            }
+
+            var agent = AgentContentsFinder.Instance();
+            if (agent == null)
+                return Failed(content, "AgentContentsFinder is unavailable.");
+
+            var now = DateTime.UtcNow;
+            if (rouletteAttemptGate.IsRegistrationGraceActive(now))
+            {
+                return Active(
+                    content,
+                    DadLocalDutyQueuePulseKind.Waiting,
+                    DadRunPhase.QueueStarting,
+                    DadParticipantState.QueuePending,
+                    "Waiting for Duty Finder registration evidence before another Join attempt.");
+            }
+
+            var addonBase = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinder");
+            if (addonBase == null || !addonBase->IsVisible)
+            {
+                var hud = AgentHUD.Instance();
+                if (hud == null || !hud->IsMainCommandEnabled(33))
+                {
+                    return Active(
+                        content,
+                        DadLocalDutyQueuePulseKind.Waiting,
+                        DadRunPhase.QueuePreparing,
+                        DadParticipantState.QueuePending,
+                        "Waiting for Duty Finder main command to become available.",
+                        "Duty Finder main command is unavailable.");
+                }
+
+                if (DateTime.UtcNow < nextOpenAttemptUtc)
+                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder window for {content.DutyName}.");
+
+                agent->Show();
+                nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
+                return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Duty Finder before selecting Daily Roulette {content.DutyName}.");
+            }
+
+            var exactSelection = DadRouletteSelectionProof.IsExact(
+                agent->HasRouletteSelected,
+                agent->SelectedDuty.ContentType == ContentsType.Roulette,
+                agent->SelectedDuty.Id,
+                content.RouletteId);
+            var decision = rouletteAttemptGate.Decide(
+                now,
+                exactSelection,
+                dutyEntryEvidenceObserved || rouletteTerritoryGate.EntryEvidenceObserved);
+
+            switch (decision.Mutation)
+            {
+                case DadRouletteQueueMutation.ClearSelection:
+                    log.Information("[dad] Clearing stale Duty Finder selection before Daily Roulette {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
+                    FireAddonIntCallback(addonBase, 12, 1);
+                    return Active(content, DadLocalDutyQueuePulseKind.ClearedDutySelection, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Cleared stale Duty Finder selection before Daily Roulette {content.DutyName}.");
+
+                case DadRouletteQueueMutation.OpenRoulette:
+                    log.Information("[dad] Selecting Daily Roulette {RouletteName} ({RouletteId}); attempt {Attempt}/{MaxAttempts}.", content.DutyName, content.RouletteId, rouletteAttemptGate.SelectionAttempts, DadRouletteQueueAttemptGate.MaxSelectionAttempts);
+                    agent->OpenRouletteDuty(checked((byte)content.RouletteId));
+                    return Active(content, DadLocalDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting Daily Roulette {content.DutyName}; waiting six seconds before exact selection proof.");
+
+                case DadRouletteQueueMutation.Join:
+                    if (!DadRouletteSelectionProof.IsExact(
+                            agent->HasRouletteSelected,
+                            agent->SelectedDuty.ContentType == ContentsType.Roulette,
+                            agent->SelectedDuty.Id,
+                            content.RouletteId))
+                    {
+                        return Failed(content, $"Daily Roulette selection changed before Join; expected roulette #{content.RouletteId}.");
+                    }
+
+                    log.Information("[dad] Joining Daily Roulette {RouletteName} ({RouletteId}); attempt {Attempt}/{MaxAttempts}.", content.DutyName, content.RouletteId, rouletteAttemptGate.JoinAttempts, DadRouletteQueueAttemptGate.MaxJoinAttempts);
+                    FireAddonIntCallback(addonBase, 12, 0);
+                    return Active(content, DadLocalDutyQueuePulseKind.RegisteredForDuty, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Registered Daily Roulette {content.DutyName}; waiting up to eight seconds for queue, commence, or transition evidence.");
+
+                case DadRouletteQueueMutation.Fail:
+                    return Failed(content, decision.Reason);
+
+                default:
+                    var phase = rouletteAttemptGate.JoinAttempts > 0
+                        ? DadRunPhase.QueueStarting
+                        : DadRunPhase.QueuePreparing;
+                    return Active(content, DadLocalDutyQueuePulseKind.Waiting, phase, DadParticipantState.QueuePending, decision.Reason);
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "[dad] Daily Roulette queue pulse failed for {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
+            return Failed(content, $"Daily Roulette queue pulse failed: {ex.Message}");
+        }
+    }
+
     private void ResetForNewRun(string runId)
     {
         if (string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
@@ -542,6 +835,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         transientMissingPlayerLogged = false;
         dutySelectionCleared = false;
         dutySelectionCallbackSent = false;
+        rouletteAttemptGate.Reset();
+        rouletteTerritoryGate.Reset();
     }
 
     private static DadLocalDutyResolvedContent? ResolveRegularDutySelection(
@@ -650,6 +945,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         {
             ModuleId = moduleId,
             LaneDisplayName = laneDisplayName,
+            TargetKind = DadQueueTargetKind.DutyFinderDuty,
             ContentFinderConditionId = condition.RowId,
             TerritoryType = condition.TerritoryType.Value.RowId,
             DutyName = trimmedDutyName,
@@ -675,25 +971,72 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         transientMissingPlayerLogged = false;
         dutySelectionCleared = false;
         dutySelectionCallbackSent = false;
+        rouletteAttemptGate.Reset();
+        rouletteTerritoryGate.Reset();
     }
 
     // Review M7: restore the Duty Finder unrestricted/unsynced flag to its pre-run value.
     private void RestoreUnrestrictedParty()
     {
-        if (!unrestrictedPartyOverridden)
+        if (!unrestrictedPartyLease.IsActive)
+        {
+            unrestrictedRestorePending = false;
+            nextUnrestrictedRestoreAttemptUtc = DateTime.MinValue;
             return;
+        }
 
-        unrestrictedPartyOverridden = false;
+        unrestrictedRestorePending = true;
+        nextUnrestrictedRestoreAttemptUtc = DateTime.UtcNow + RestoreRetryThrottle;
+
+        ContentsFinder* contentsFinder;
         try
         {
-            var contentsFinder = ContentsFinder.Instance();
-            if (contentsFinder != null && contentsFinder->IsUnrestrictedParty != unrestrictedPartyPreviousValue)
-                contentsFinder->IsUnrestrictedParty = unrestrictedPartyPreviousValue;
+            contentsFinder = ContentsFinder.Instance();
         }
         catch (Exception ex)
         {
-            log.Error(ex, "[dad] Failed to restore Duty Finder unrestricted-party setting.");
+            log.Warning(ex, "[dad] Cannot restore Duty Finder unrestricted-party setting yet; ContentsFinder lookup failed.");
+            return;
         }
+
+        if (contentsFinder == null)
+        {
+            log.Warning("[dad] Cannot restore Duty Finder unrestricted-party setting yet; ContentsFinder is unavailable.");
+            return;
+        }
+
+        if (!unrestrictedPartyLease.Restore(
+                () => contentsFinder->IsUnrestrictedParty,
+                value => contentsFinder->IsUnrestrictedParty = value,
+                out var failure))
+        {
+            log.Error("[dad] Failed to restore Duty Finder unrestricted-party setting: {Failure}", failure);
+            return;
+        }
+
+        unrestrictedRestorePending = false;
+        nextUnrestrictedRestoreAttemptUtc = DateTime.MinValue;
+    }
+
+    private void TrySubscribeFrameworkUpdate()
+    {
+        try
+        {
+            Plugin.Framework.Update += OnFrameworkUpdate;
+            frameworkUpdateSubscribed = true;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad] Local Duty queue service could not subscribe to framework updates; pending Duty Finder setting restoration will retry on queue/reset pulses.");
+        }
+    }
+
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        if (!unrestrictedRestorePending || DateTime.UtcNow < nextUnrestrictedRestoreAttemptUtc)
+            return;
+
+        RestoreUnrestrictedParty();
     }
 
     private void TrySubscribeDutyState()
@@ -909,8 +1252,15 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 ],
         };
 
-    private static DadLocalDutyQueuePulse Failed(DadLocalDutyResolvedContent content, string reason)
-        => new()
+    private DadLocalDutyQueuePulse Failed(
+        DadLocalDutyResolvedContent content,
+        string reason,
+        bool cleanup = true)
+    {
+        if (cleanup)
+            ClearRunState();
+
+        return new DadLocalDutyQueuePulse
         {
             Kind = DadLocalDutyQueuePulseKind.Failed,
             Phase = DadRunPhase.Finalizing,
@@ -932,4 +1282,5 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 },
             ],
         };
+    }
 }

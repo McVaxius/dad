@@ -59,31 +59,34 @@ public enum DadQueueAuthority
 
 public enum DadPlannerActivityMode
 {
-    Msq,
-    DutySupport,
-    Trust,
-    PremadeDuty,
-    DutyPremade,
-    DailyMsqPremade,
-    Blunderville,
-    Mogtome,
-    Commendation,
-    Astrope,
-    LocalDuty,
-    CustomDuty,
-    DutySupportLeveling,
-    TrustLeveling,
-    Squadron,
-    VariantVvd,
+    Msq = 0,
+    DutySupport = 1,
+    Trust = 2,
+    PremadeDuty = 3,
+    DutyPremade = 4,
+    DailyRoulette = 5,
+    [Obsolete("Use DailyRoulette. This alias is retained for numeric/config compatibility only.")]
+    DailyMsqPremade = DailyRoulette,
+    Blunderville = 6,
+    Mogtome = 7,
+    Commendation = 8,
+    Astrope = 9,
+    LocalDuty = 10,
+    CustomDuty = 11,
+    DutySupportLeveling = 12,
+    TrustLeveling = 13,
+    Squadron = 14,
+    VariantVvd = 15,
 }
 
 public enum DadPlannerRunFamily
 {
-    Msq,
-    LevelingNpc,
-    DutyFinder,
-    FarmLoops,
-    Event,
+    Msq = 0,
+    LevelingNpc = 1,
+    DutyFinder = 2,
+    FarmLoops = 3,
+    Event = 4,
+    DailyRoulette = 5,
 }
 
 public enum DadPlannerStopMode
@@ -351,6 +354,12 @@ public sealed class DadPresetPlannerOptions
     public string DutyDisplayName { get; set; } = string.Empty;
     public bool DutyUnsynced { get; set; }
     public int DutyExpectedPartySize { get; set; } = 4;
+    public DadQueueTarget RouletteTarget { get; set; } = new()
+    {
+        Kind = DadQueueTargetKind.Roulette,
+        Key = "MainScenario",
+        DisplayName = "Main Scenario Roulette",
+    };
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public bool RefreshTrustNpcLevels { get; set; } = true;
@@ -376,6 +385,12 @@ public sealed class DadPlannerGroup
     public string DutyDisplayName { get; set; } = string.Empty;
     public bool DutyUnsynced { get; set; }
     public int DutyExpectedPartySize { get; set; } = 4;
+    public DadQueueTarget RouletteTarget { get; set; } = new()
+    {
+        Kind = DadQueueTargetKind.Roulette,
+        Key = "MainScenario",
+        DisplayName = "Main Scenario Roulette",
+    };
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public bool RefreshTrustNpcLevels { get; set; } = true;
@@ -403,6 +418,7 @@ public sealed class DadPlannerGroupSlot
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
+    public uint? RequiredJobId { get; set; }
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public string LaunchProfileId { get; set; } = string.Empty;
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
@@ -447,6 +463,7 @@ public sealed class DadPlannerLaneDefinition
     public int ExpectedPartySize { get; set; } = 1;
     public bool RequiresRemoteParty { get; set; }
     public bool RequiresDutySelector { get; set; }
+    public bool RequiresRouletteSelector { get; set; }
     public bool UsesExternalHelper { get; set; }
     public string NextAction { get; set; } = string.Empty;
 }
@@ -522,6 +539,7 @@ public sealed class DadPresetCharacterSlot
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
+    public uint? RequiredJobId { get; set; }
     public DadSlotAssignmentMode AssignmentMode { get; set; } = DadSlotAssignmentMode.Auto;
     public ulong? ContentId { get; set; }
     public string CharacterKey { get; set; } = string.Empty;

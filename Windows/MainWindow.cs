@@ -261,7 +261,7 @@ public sealed class MainWindow : Window, IDisposable
             DrawDemoButton("Run server demo", canStartRemoteDemo, plugin.StartServerDemoRunFromShell);
 
             ImGui.SameLine();
-            DrawDemoButton("Run Daily MSQ demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
+            DrawDemoButton("Run Daily Roulette demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
 
             ImGui.SameLine();
             DrawDemoButton("Run commend demo", canStartRemoteDemo, plugin.StartCommendationDemoRunFromShell);
@@ -3931,6 +3931,7 @@ public sealed class MainWindow : Window, IDisposable
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
             DutyExpectedPartySize = source.DutyExpectedPartySize,
+            RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
@@ -3960,7 +3961,8 @@ public sealed class MainWindow : Window, IDisposable
 
         return lane.ActivityMode switch
         {
-            DadPlannerActivityMode.Msq => run.ModuleId is DadModuleId.Msq or DadModuleId.DailyMsq,
+            DadPlannerActivityMode.Msq => run.ModuleId == DadModuleId.Msq,
+            DadPlannerActivityMode.DailyRoulette => run.ModuleId == DadModuleId.DailyMsq,
             DadPlannerActivityMode.DutySupport => run.ModuleId == DadModuleId.DutySupport,
             DadPlannerActivityMode.Trust => run.ModuleId == DadModuleId.Trust,
             DadPlannerActivityMode.PremadeDuty => run.ModuleId == DadModuleId.PremadeDuty,
@@ -4709,6 +4711,48 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
 
+        if (lane.RequiresRouletteSelector)
+        {
+            var resolution = plugin.PresetProviderService.GetPlannerSelectedRoulette(plannerOptions);
+            var selectedRoulette = resolution.Option;
+            var rouletteLabel = selectedRoulette == null
+                ? "Select roulette..."
+                : selectedRoulette.IsAvailable
+                    ? $"{selectedRoulette.DisplayName} #{selectedRoulette.RouletteId}"
+                    : $"Unavailable: {selectedRoulette.DisplayName} #{selectedRoulette.RouletteId}";
+
+            ImGui.TextUnformatted("Daily Roulette selector");
+            if (debugUi)
+                DrawStatusRow("Selector source", "Lumina ContentRoulette rows: Duty Finder, non-PvP, exactly one four-member party.");
+
+            ImGui.SetNextItemWidth(-1f);
+            if (ImGui.BeginCombo("Roulette", rouletteLabel))
+            {
+                foreach (var option in plugin.PresetProviderService.GetPlannerRouletteOptions())
+                {
+                    var isSelected = selectedRoulette?.IsAvailable == true &&
+                        selectedRoulette.RouletteId == option.RouletteId;
+                    if (ImGui.Selectable($"{option.DisplayName} #{option.RouletteId}##dad-roulette-{option.RouletteId}", isSelected))
+                        ApplyPlannerRouletteSelection(plannerOptions, lane, option);
+                    if (isSelected)
+                        ImGui.SetItemDefaultFocus();
+                }
+
+                ImGui.EndCombo();
+            }
+
+            if (selectedRoulette != null)
+            {
+                DrawStatusRow("Selected roulette", $"{selectedRoulette.DisplayName} #{selectedRoulette.RouletteId}");
+                DrawStatusRow("Roulette selector state", selectedRoulette.IsAvailable
+                    ? "Available | synced | fixed four-Dad party"
+                    : selectedRoulette.UnavailableReason);
+            }
+
+            DrawStatusRow("Expected party size", DadDailyRoulettePlannerRules.RequiredPartySize.ToString(CultureInfo.InvariantCulture));
+            DrawStatusRow("Queue mode", "Synced only; unrestricted party is forced off for registration and restored afterward.");
+        }
+
         if (lane.RequiresDutySelector)
         {
             var dutyCompatible = selectedDuty == null || IsPlannerDutyCompatible(selectedDuty, lane);
@@ -4913,11 +4957,11 @@ public sealed class MainWindow : Window, IDisposable
 
         if (lane.ActivityMode == DadPlannerActivityMode.Msq)
         {
-            DrawStatusRow("Preset", "MSQ");
+            DrawStatusRow("Preset", "MSQ Story");
             DrawStatusRow("Attempts", "1");
             DrawStatusRow("Expected party size", lane.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
             if (debugUi)
-                DrawStatusRow("MSQ mapping", "Planner surfaces MSQ lane while preserving DailyMsqPremade legacy queue mapping in preview.");
+                DrawStatusRow("MSQ Story mapping", "Solo selected-duty progression routes through Trust, then Duty Support. Roulettes are a separate run family.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Commendation)
@@ -5118,6 +5162,22 @@ public sealed class MainWindow : Window, IDisposable
         plugin.PrintStatus($"Selected Dad planner duty: {duty.DutyDisplayName} #{duty.ContentFinderConditionId} for {lane.DisplayName}.");
     }
 
+    private void ApplyPlannerRouletteSelection(
+        DadPresetPlannerOptions plannerOptions,
+        DadPlannerLaneDefinition lane,
+        DadPlannerRouletteOption roulette)
+    {
+        plannerOptions.RunFamily = lane.RunFamily;
+        plannerOptions.ActivityMode = lane.ActivityMode;
+        plannerOptions.TransportOwner = DadTransportOwner.LanParty;
+        plannerOptions.QueueAuthority = DadQueueAuthority.Leader;
+        plannerOptions.DutyUnsynced = false;
+        plannerOptions.DutyExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize;
+        plannerOptions.RouletteTarget = roulette.ToQueueTarget();
+        plugin.SavePlannerOptions();
+        plugin.PrintStatus($"Selected Daily Roulette: {roulette.DisplayName} #{roulette.RouletteId}.");
+    }
+
     private void ClearPlannerDutySelection(DadPresetPlannerOptions plannerOptions, DadPlannerLaneDefinition lane)
     {
         plannerOptions.DutyContentFinderConditionId = 0;
@@ -5288,7 +5348,6 @@ public sealed class MainWindow : Window, IDisposable
     private static DadPlannerActivityMode NormalizePlannerLane(DadPlannerActivityMode activityMode)
         => activityMode switch
         {
-            DadPlannerActivityMode.DailyMsqPremade => DadPlannerActivityMode.Msq,
             DadPlannerActivityMode.DutyPremade => DadPlannerActivityMode.PremadeDuty,
             _ => activityMode,
         };
@@ -5816,12 +5875,11 @@ public sealed class MainWindow : Window, IDisposable
             plugin.PrintStatus($"Updated preset '{selectedGroup.DisplayName}' slots from current preview.");
         }
 
-        if (debugUi)
-            ImGui.SameLine();
-        var slotCap = ResolvePlannerGroupSlotCap(selectedGroup, plannerSnapshot.SelectedDuty);
-        var nextSlotNumber = DadPlannerSlotRules.NextPrimarySlotNumber(selectedGroup.Slots, slotCap);
+        DrawPlannerGroupSlotCapacityNotice(selectedGroup, plannerPreview);
+
+        var nextSlotNumber = DadPlannerSlotRules.NextPrimarySlotNumber(selectedGroup.Slots);
         ImGui.BeginDisabled(nextSlotNumber == 0);
-        if (ImGui.SmallButton("Add empty slot"))
+        if (ImGui.SmallButton("Add slot"))
         {
             selectedGroup.Slots.Add(new DadPlannerGroupSlot
             {
@@ -5833,23 +5891,40 @@ public sealed class MainWindow : Window, IDisposable
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(nextSlotNumber == 0
-                ? $"All Slot1-Slot{slotCap.ToString(CultureInfo.InvariantCulture)} rows already exist."
+                ? $"All Slot1-Slot{DadPlannerSlotRules.MaxSlotNumber.ToString(CultureInfo.InvariantCulture)} rows already exist."
                 : "Adds the next generated SlotN row.");
         ImGui.EndDisabled();
 
         DrawPlannerGroupSlotEditor(plannerSnapshot, selectedGroup);
     }
 
-    private int ResolvePlannerGroupSlotCap(DadPlannerGroup group, DadPlannerDutyOption? selectedDuty)
+    private static void DrawPlannerGroupSlotCapacityNotice(
+        DadPlannerGroup group,
+        DadActivityPreset plannerPreview)
     {
-        var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(group.ActivityMode);
-        if (!lane.RequiresDutySelector)
-            return DadPlannerSlotRules.MaxSlotNumber;
+        if (!string.Equals(
+                plannerPreview.SelectedPlannerGroupId,
+                group.GroupId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
 
-        var fallbackSize = group.DutyExpectedPartySize > 0
-            ? group.DutyExpectedPartySize
-            : selectedDuty?.QueueSize ?? lane.ExpectedPartySize;
-        return Math.Clamp(fallbackSize <= 0 ? 1 : fallbackSize, DadPlannerSlotRules.MinSlotNumber, DadPlannerSlotRules.MaxSlotNumber);
+        var savedSlotCount = DadPlannerSlotRules.CountPrimarySlots(group.Slots);
+        var effectiveSlotCount = plannerPreview.SelectedCharacters
+            .Select(static slot => DadPlannerSlotRules.NormalizeStrictSlotId(slot.SlotId))
+            .Where(static slotId => !string.IsNullOrWhiteSpace(slotId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (savedSlotCount == effectiveSlotCount)
+            return;
+
+        var notice = group.ActivityMode == DadPlannerActivityMode.Msq
+            ? $"MSQ Story is a solo lane and currently uses {effectiveSlotCount} of {savedSlotCount} saved slots. To use the saved four-slot roster for a roulette, select Daily Roulette → Main Scenario; Dad does not migrate presets by name."
+            : $"{plannerPreview.LaneDefinition.DisplayName} currently uses {effectiveSlotCount} of {savedSlotCount} saved slots. Saved rows remain available when this preset is used with a larger party lane.";
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.78f, 0.3f, 1f));
+        ImGui.TextWrapped(notice);
+        ImGui.PopStyleColor();
     }
 
     private static string FormatPlannerGroupChoice(
@@ -5967,7 +6042,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)
     {
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
-        if (!ImGui.BeginTable("dad-planner-group-slots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        if (!ImGui.BeginTable("dad-planner-group-slots", 9, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
         ImGui.TableSetupColumn("Slot");
@@ -5975,6 +6050,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TableSetupColumn("Role");
         ImGui.TableSetupColumn("Account");
         ImGui.TableSetupColumn("Character");
+        ImGui.TableSetupColumn("Job");
         ImGui.TableSetupColumn("Wake");
         ImGui.TableSetupColumn("Profile");
         ImGui.TableSetupColumn("Edit");
@@ -6004,6 +6080,9 @@ public sealed class MainWindow : Window, IDisposable
 
             ImGui.TableNextColumn();
             DrawPlannerGroupCharacterCombo(plannerSnapshot, group, slot, index);
+
+            ImGui.TableNextColumn();
+            DrawPlannerGroupJobCombo(plannerSnapshot, group, slot, index);
 
             ImGui.TableNextColumn();
             DrawPlannerGroupWakePolicyCombo(group, slot, index);
@@ -6166,6 +6245,11 @@ public sealed class MainWindow : Window, IDisposable
             var label = $"{FormatRosterAccountOption(option)} ({option.AssignedCharacterCount})";
             if (ImGui.Selectable(label, selected))
             {
+                var accountChanged = !string.Equals(
+                    slot.RequiredAccountKey.Value,
+                    option.AccountKey.Value,
+                    StringComparison.OrdinalIgnoreCase);
+                var characterCleared = false;
                 slot.RequiredAccountKey = option.AccountKey;
                 if (!slot.RequiredCharacterKey.IsEmpty &&
                     !characterPool.Characters.Any(character =>
@@ -6173,7 +6257,11 @@ public sealed class MainWindow : Window, IDisposable
                         MatchesPlannerGroupAccount(character, option.AccountKey)))
                 {
                     slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+                    characterCleared = true;
                 }
+
+                if (accountChanged || characterCleared)
+                    slot.RequiredJobId = null;
 
                 plugin.TouchPlannerGroup(group);
             }
@@ -6202,7 +6290,10 @@ public sealed class MainWindow : Window, IDisposable
         {
             if (ImGui.Selectable("Any character on account", slot.RequiredCharacterKey.IsEmpty))
             {
+                var characterChanged = !slot.RequiredCharacterKey.IsEmpty;
                 slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+                if (characterChanged)
+                    slot.RequiredJobId = null;
                 plugin.TouchPlannerGroup(group);
             }
 
@@ -6215,7 +6306,13 @@ public sealed class MainWindow : Window, IDisposable
                 var label = $"{FormatOperatorCharacterKey(character.CharacterKey, character.CharacterKey)}{world} | {source}";
                 if (ImGui.Selectable(label, selected))
                 {
+                    var characterChanged = !string.Equals(
+                        slot.RequiredCharacterKey.Value,
+                        character.CharacterKey,
+                        StringComparison.OrdinalIgnoreCase);
                     slot.RequiredCharacterKey = new DadCharacterKey(character.CharacterKey);
+                    if (characterChanged)
+                        slot.RequiredJobId = null;
                     plugin.TouchPlannerGroup(group);
                 }
                 if (selected)
@@ -6226,6 +6323,116 @@ public sealed class MainWindow : Window, IDisposable
         }
         ImGui.EndDisabled();
     }
+
+    private void DrawPlannerGroupJobCombo(
+        DadPlannerUiSnapshot plannerSnapshot,
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index)
+    {
+        var selectedCharacter = ResolvePlannerGroupCharacter(plannerSnapshot, slot);
+        var jobOptions = BuildPlannerGroupJobOptions(selectedCharacter);
+        var selectedJob = slot.RequiredJobId is > 0
+            ? jobOptions.FirstOrDefault(option => option.JobId == slot.RequiredJobId)
+            : null;
+        var hasRequestedJob = slot.RequiredJobId is > 0;
+        var invalidSavedJob = hasRequestedJob && selectedJob == null;
+        var preview = !hasRequestedJob
+            ? "Any (current job)"
+            : selectedJob != null
+                ? FormatPlannerGroupJobOption(selectedJob)
+                : $"Invalid: {ResolveClassJobAbbrev(slot.RequiredJobId!.Value)} (#{slot.RequiredJobId.Value.ToString(CultureInfo.InvariantCulture)})";
+        var disabled = selectedCharacter == null && !hasRequestedJob;
+
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.BeginDisabled(disabled);
+        if (invalidSavedJob)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.4f, 0.35f, 1f));
+        var opened = ImGui.BeginCombo($"##dad-group-job-{index}", preview);
+        var comboHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        if (invalidSavedJob)
+            ImGui.PopStyleColor();
+
+        if (opened)
+        {
+            var anySelected = !hasRequestedJob;
+            if (ImGui.Selectable("Any (current job)", anySelected))
+            {
+                slot.RequiredJobId = null;
+                plugin.TouchPlannerGroup(group);
+            }
+            if (anySelected)
+                ImGui.SetItemDefaultFocus();
+
+            foreach (var option in jobOptions)
+            {
+                var selected = option.JobId == slot.RequiredJobId;
+                if (ImGui.Selectable(FormatPlannerGroupJobOption(option), selected))
+                {
+                    slot.RequiredJobId = option.JobId;
+                    plugin.TouchPlannerGroup(group);
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.EndDisabled();
+
+        if (!comboHovered)
+            return;
+
+        if (invalidSavedJob)
+        {
+            ImGui.SetTooltip($"Saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)} is not a positive combat job in the exact selected character's current XADB snapshot. Reset it to Any or select a valid listed job.");
+        }
+        else if (selectedCharacter == null)
+        {
+            ImGui.SetTooltip("Select an exact character before choosing a job.");
+        }
+        else if (!selectedCharacter.XadbReady || jobOptions.Count == 0)
+        {
+            ImGui.SetTooltip("The exact selected character has no positive combat-job levels in its current XADB snapshot. Any uses the character's current job.");
+        }
+        else
+        {
+            ImGui.SetTooltip("Job choices come from the exact selected character's XADB snapshot. Any uses the character's current job.");
+        }
+    }
+
+    private DadAcquiredCharacter? ResolvePlannerGroupCharacter(
+        DadPlannerUiSnapshot plannerSnapshot,
+        DadPlannerGroupSlot slot)
+    {
+        if (slot.RequiredAccountKey.IsEmpty || slot.RequiredCharacterKey.IsEmpty)
+            return null;
+
+        return plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey)
+            .FirstOrDefault(character =>
+                string.Equals(
+                    character.CharacterKey,
+                    slot.RequiredCharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase) &&
+                MatchesPlannerGroupAccount(character, slot.RequiredAccountKey));
+    }
+
+    private List<JobLevelEntry> BuildPlannerGroupJobOptions(DadAcquiredCharacter? character)
+    {
+        if (character == null || !character.XadbReady)
+            return [];
+
+        return character.JobLevels
+            .Where(static pair => pair.Key != 0 && pair.Value > 0 && DadRosterCharacterMerge.IsCombatJob(pair.Key))
+            .Select(pair => new JobLevelEntry(pair.Key, ResolveClassJobAbbrev(pair.Key), pair.Value))
+            .OrderBy(static option => option.Abbreviation, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static option => option.JobId)
+            .ToList();
+    }
+
+    private static string FormatPlannerGroupJobOption(JobLevelEntry option)
+        => $"{option.Abbreviation} Lv {option.Level.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)}";
 
     private static bool MatchesPlannerGroupAccount(DadAcquiredCharacter character, DadAccountKey accountKey)
         => (!string.IsNullOrWhiteSpace(character.AccountId)

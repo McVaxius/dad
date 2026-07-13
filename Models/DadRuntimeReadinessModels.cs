@@ -31,6 +31,9 @@ public readonly record struct DadRuntimeReadinessSignature
     public DadWakeCommitKind TakeoverCommitKind { get; init; }
     public DadWakeAcknowledgementState TakeoverAcknowledgement { get; init; }
     public DadVermaxionReservationState VermaxionReservationState { get; init; }
+    public string RequestedJobPreparationKey { get; init; }
+    public DadRequestedJobPreparationStatus RequestedJobPreparationStatus { get; init; }
+    public uint RequestedJobCurrentJobId { get; init; }
 
     public static DadRuntimeReadinessSignature Create(
         DadParticipantSnapshot? participant,
@@ -68,7 +71,27 @@ public readonly record struct DadRuntimeReadinessSignature
             TakeoverCommitKind = takeover?.CommitKind ?? DadWakeCommitKind.None,
             TakeoverAcknowledgement = takeover?.AcknowledgementState ?? DadWakeAcknowledgementState.Pending,
             VermaxionReservationState = takeover?.VermaxionReservationState ?? DadVermaxionReservationState.NotLoaded,
+            RequestedJobPreparationKey = BuildRequestedJobPreparationKey(participant.RequestedJobPreparation),
+            RequestedJobPreparationStatus = participant.RequestedJobPreparation?.Status ?? DadRequestedJobPreparationStatus.NotRequested,
+            RequestedJobCurrentJobId = participant.Character.CurrentJobId.GetValueOrDefault(),
         };
+    }
+
+    private static string BuildRequestedJobPreparationKey(DadRequestedJobPreparationProof? proof)
+    {
+        if (proof == null)
+            return string.Empty;
+
+        var key = proof.Key;
+        return string.Join(
+            "|",
+            Normalize(key.RunId),
+            Normalize(key.WorkerSessionId.Value),
+            Normalize(key.SlotId),
+            Normalize(key.AccountKey.Value),
+            Normalize(key.CharacterKey.Value),
+            key.ContentId,
+            key.RequiredJobId.GetValueOrDefault());
     }
 
     private static string Normalize(string? value)

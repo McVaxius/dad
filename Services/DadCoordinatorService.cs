@@ -238,6 +238,14 @@ public sealed class DadCoordinatorService
         lastLoggedCoordinatorPhase = null;
         claimService.ReleaseClaims(plan.Request.RequestId);
         presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Dad Coordinator planned {plan.Modules.Count} Dad module(s).");
+        if (!TryBeginLocalRequestedJobPreparation(plan, acceptedManifest, out var preparationBlocker))
+        {
+            activePlan = null;
+            activeSlotManifest = null;
+            remoteAssignmentTracker.Clear();
+            presenceService.ResetToIdle();
+            return DadRunResult.Rejected(request, preparationBlocker);
+        }
         SeedLocalParticipantIfNeeded(plan);
         LogAcceptedSlotManifest(plan, acceptedManifest);
 
@@ -260,9 +268,10 @@ public sealed class DadCoordinatorService
         configuration.PersistedActiveRun = CurrentResult.Clone();
         configuration.Save();
 
-        Transition(plan.RequiresRemoteParticipants ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
-            plan.RequiresRemoteParticipants ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
-            plan.RequiresRemoteParticipants
+        var requiresDiscovery = RequiresParticipantDiscovery(plan, acceptedManifest);
+        Transition(requiresDiscovery ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
+            requiresDiscovery ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
+            requiresDiscovery
                 ? $"Dad Coordinator waiting for {plan.RequiredParticipantCount} participant(s)."
                 : plan.Orchestration.LocalOnlyOverride
                     ? "Local-only Dad orchestration is ready to claim local slot."
@@ -451,6 +460,8 @@ public sealed class DadCoordinatorService
                 ModuleId = activePlan.CompositeModuleId,
                 RequiredAccountKey = frozenSlot.AccountKey,
                 RequiredCharacterKey = frozenSlot.CharacterKey,
+                RequiredContentId = frozenSlot.ContentId,
+                RequiredJobId = frozenSlot.RequiredJobId,
                 AssignedSlotId = participant.AssignedSlotId,
                 RequirePostArReady = activePlan.Orchestration.RequirePostArReady,
             });
@@ -476,6 +487,27 @@ public sealed class DadCoordinatorService
             }
 
             LogAssignmentTransition(activePlan, frozenSlot, "accepted", assignment.Summary);
+        }
+
+        foreach (var slot in activeSlotManifest.Slots.Where(static slot => slot.RequiredJobId.HasValue))
+        {
+            var participant = activeParticipants.Single(candidate =>
+                string.Equals(candidate.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase));
+            if (participant.State != DadParticipantState.Discovered)
+                continue;
+
+            if (!participant.IsLocalClient &&
+                !remoteAssignmentTracker.IsAccepted(activePlan.Request.RequestId, slot))
+            {
+                continue;
+            }
+
+            var preparationBlocker = ResolveRequestedJobPreparationBlocker(
+                activePlan.Request.RequestId,
+                slot,
+                participant);
+            if (!string.IsNullOrWhiteSpace(preparationBlocker))
+                blockers.Add(preparationBlocker);
         }
 
         blockers.AddRange(activeParticipants
@@ -1090,6 +1122,7 @@ public sealed class DadCoordinatorService
         => activeParticipants.Select(candidate =>
         {
             var clone = candidate.Clone();
+            clone.RunId = activePlan?.Request.RequestId ?? string.Empty;
             var isTarget = string.Equals(
                 candidate.WorkerSessionId.Value,
                 targetParticipant.WorkerSessionId.Value,
@@ -1356,6 +1389,14 @@ public sealed class DadCoordinatorService
         partyInviteGateway.Reset();
         claimService.ReleaseClaims(nextPlan.Request.RequestId);
         presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Dad Coordinator repeating {module.DisplayName}; {stopProgress.Summary}");
+        if (!TryBeginLocalRequestedJobPreparation(nextPlan, activeSlotManifest, out var preparationBlocker))
+        {
+            FinalizeRun(
+                DadRunStatus.PartialFailure,
+                "Dad stop policy could not restore requested-job preparation.",
+                preparationBlocker);
+            return true;
+        }
         SeedLocalParticipantIfNeeded(nextPlan);
 
         CurrentResult.Request = nextPlan.Request;
@@ -1370,9 +1411,10 @@ public sealed class DadCoordinatorService
         CurrentResult.Leases = [];
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
 
-        Transition(nextPlan.RequiresRemoteParticipants ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
-            nextPlan.RequiresRemoteParticipants ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
-            nextPlan.RequiresRemoteParticipants
+        var requiresDiscovery = RequiresParticipantDiscovery(nextPlan, activeSlotManifest);
+        Transition(requiresDiscovery ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
+            requiresDiscovery ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
+            requiresDiscovery
                 ? $"Stop policy continuing; waiting for {nextPlan.RequiredParticipantCount} participant(s). {stopProgress.Summary}"
                 : $"Stop policy continuing; local runner ready for next run. {stopProgress.Summary}");
         return true;
@@ -1473,14 +1515,7 @@ public sealed class DadCoordinatorService
         var modules = new HashSet<DadModuleId>();
         foreach (var module in plan.Modules)
         {
-            if (module.ModuleId is DadModuleId.Duty
-                or DadModuleId.Msq
-                or DadModuleId.DutySupport
-                or DadModuleId.Trust
-                or DadModuleId.PremadeDuty
-                or DadModuleId.Mogtome
-                or DadModuleId.Commendation
-                or DadModuleId.CustomDuty)
+            if (DadStopPolicyLoopRules.IsEligibleModule(module.ModuleId))
                 modules.Add(module.ModuleId);
         }
 
@@ -1706,6 +1741,77 @@ public sealed class DadCoordinatorService
         if (!string.Equals(participant.ActiveCharacterKey, requiredCharacterKey, StringComparison.OrdinalIgnoreCase))
             participant.StatusText = $"Waiting for required character {requiredCharacterKey}.";
         return participant;
+    }
+
+    private static bool RequiresParticipantDiscovery(DadRunPlan plan, DadRunSlotManifest? manifest)
+        => plan.RequiresRemoteParticipants ||
+           (manifest?.Slots.Any(static slot => slot.RequiredJobId.HasValue) ?? false);
+
+    private bool TryBeginLocalRequestedJobPreparation(
+        DadRunPlan plan,
+        DadRunSlotManifest? manifest,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (manifest == null)
+            return true;
+
+        var localRequestedSlots = manifest.Slots
+            .Where(slot =>
+                slot.RequiredJobId.HasValue &&
+                string.Equals(
+                    slot.WorkerSessionId.Value,
+                    presenceService.WorkerSessionId.Value,
+                    StringComparison.Ordinal))
+            .ToList();
+        if (localRequestedSlots.Count == 0)
+            return true;
+
+        if (localRequestedSlots.Count != 1)
+        {
+            blocker = $"Run {plan.Request.RequestId} maps {localRequestedSlots.Count} requested-job slots to the local worker; expected exactly one.";
+            return false;
+        }
+
+        return presenceService.BeginRequestedJobPreparation(
+            plan.Request.RequestId,
+            localRequestedSlots[0],
+            out blocker);
+    }
+
+    private static string ResolveRequestedJobPreparationBlocker(
+        string runId,
+        DadFrozenRunSlot slot,
+        DadParticipantSnapshot participant)
+    {
+        if (!slot.RequiredJobId.HasValue)
+            return string.Empty;
+
+        var expected = new DadRequestedJobPreparationKey(
+            runId,
+            slot.WorkerSessionId,
+            slot.SlotId,
+            slot.AccountKey,
+            slot.CharacterKey,
+            slot.ContentId,
+            slot.RequiredJobId);
+        var proof = participant.RequestedJobPreparation;
+        if (DadRequestedJobPreparationProofRules.PermitsReadiness(
+                proof,
+                expected,
+                participant.Character.CurrentJobId.GetValueOrDefault()))
+        {
+            return string.Empty;
+        }
+
+        if (!DadRequestedJobPreparationProofRules.Matches(proof, expected))
+        {
+            return $"{slot.SlotId} is waiting for exact requested-job preparation proof for job {slot.RequiredJobId} " +
+                   $"from frozen worker '{slot.WorkerSessionId}'.";
+        }
+
+        return $"{slot.SlotId} requested-job preparation is {proof!.Status}: " +
+               (string.IsNullOrWhiteSpace(proof.Summary) ? "waiting for a terminal preparation result." : proof.Summary);
     }
 
     private void SeedLocalParticipantIfNeeded(DadRunPlan plan)
@@ -2078,6 +2184,7 @@ public sealed class DadCoordinatorService
         target.Character = source.Character.Clone();
         target.AssignedSlotId = string.IsNullOrWhiteSpace(target.AssignedSlotId) ? source.AssignedSlotId : target.AssignedSlotId;
         target.DesiredCharacterKey = source.DesiredCharacterKey;
+        target.RequestedJobPreparation = source.RequestedJobPreparation?.Clone();
         target.LeaseIssuedUtc = source.LeaseIssuedUtc;
         target.LeaseRenewedUtc = source.LeaseRenewedUtc;
         target.LeaseExpiresUtc = source.LeaseExpiresUtc;

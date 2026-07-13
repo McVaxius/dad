@@ -101,6 +101,37 @@ internal static class DadWorkerCommandValidationRules
 
         var localSlotId = localAssignment.AssignedSlotId;
         var frozenSlot = manifest.Slots.Single(slot => Same(slot.SlotId, localSlotId));
+        if (frozenSlot.RequiredJobId.HasValue)
+        {
+            var expectedPreparation = new DadRequestedJobPreparationKey(
+                command.RunId,
+                localAssignment.WorkerSessionId,
+                frozenSlot.SlotId,
+                frozenSlot.AccountKey,
+                frozenSlot.CharacterKey,
+                frozenSlot.ContentId,
+                frozenSlot.RequiredJobId);
+            if (!DadRequestedJobPreparationProofRules.PermitsReadiness(
+                    localAssignment.RequestedJobPreparation,
+                    expectedPreparation,
+                    localAssignment.Character.CurrentJobId.GetValueOrDefault()))
+            {
+                return Fail(
+                    $"{frozenSlot.SlotId} worker command does not carry exact terminal requested-job preparation proof for job {frozenSlot.RequiredJobId}.",
+                    out blocker);
+            }
+
+            if (!DadRequestedJobPreparationProofRules.PermitsReadiness(
+                    localRuntime.RequestedJobPreparation,
+                    expectedPreparation,
+                    localRuntime.Character.CurrentJobId.GetValueOrDefault()))
+            {
+                return Fail(
+                    $"{frozenSlot.SlotId} live worker runtime does not have exact terminal requested-job preparation proof for job {frozenSlot.RequiredJobId}.",
+                    out blocker);
+            }
+        }
+
         var expectedRole = frozenSlot.IsLeader
             ? DadWorkerExecutionRole.QueueLeader
             : DadWorkerExecutionRole.Participant;

@@ -10,7 +10,7 @@ public sealed class DadQueueExecutionService
     private readonly DadMsqExecutor msqExecutor;
     private readonly DadDutySupportExecutor dutySupportExecutor;
     private readonly DadTrustExecutor trustExecutor;
-    private readonly DadDailyMsqExecutor dailyMsqExecutor;
+    private readonly DadPremadeDutyExecutor dailyRouletteExecutor;
     private readonly DadBlundervilleExecutor blundervilleExecutor;
     private readonly DadMogtomeExecutor mogtomeExecutor;
     private readonly DadCommendationExecutor commendationExecutor;
@@ -32,7 +32,23 @@ public sealed class DadQueueExecutionService
     {
         this.localDutyQueueService = localDutyQueueService;
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
-        premadeDutyExecutor = new DadPremadeDutyExecutor(localDutyQueueService, combatRotationService);
+        premadeDutyExecutor = new DadPremadeDutyExecutor(
+            localDutyQueueService,
+            combatRotationService,
+            DadModuleId.PremadeDuty,
+            "Premade Duty",
+            "dad-premade-duty",
+            (DadRunPlan plan, out string blocker) =>
+            {
+                if (plan.Request.PremadeDuty != null)
+                    return localDutyQueueService.Resolve(plan.Request.PremadeDuty, out blocker);
+
+                if (plan.Request.Dungeon?.QueueViaLanParty == true)
+                    return localDutyQueueService.ResolvePremade(plan.Request.Dungeon, out blocker);
+
+                blocker = "Premade Duty request is missing a premade duty task.";
+                return null;
+            });
         msqExecutor = new DadMsqExecutor(
             moduleRegistry,
             _ => moduleRegistry.GetCapability(DadModuleId.Msq).Blockers
@@ -40,9 +56,13 @@ public sealed class DadQueueExecutionService
                  ?? moduleRegistry.GetCapability(DadModuleId.Msq).Notes);
         dutySupportExecutor = new DadDutySupportExecutor(npcDutyQueueService, dutySupportAdsService, combatRotationService);
         trustExecutor = new DadTrustExecutor(npcDutyQueueService, combatRotationService);
-        dailyMsqExecutor = new DadDailyMsqExecutor(
-            moduleRegistry,
-            _ => dutyQueueService.DescribeDailyMsqExecutionDeferral());
+        dailyRouletteExecutor = new DadPremadeDutyExecutor(
+            localDutyQueueService,
+            combatRotationService,
+            DadModuleId.DailyMsq,
+            "Daily Roulette",
+            "dad-daily-roulette",
+            (DadRunPlan plan, out string blocker) => localDutyQueueService.Resolve(plan.Request.DailyMsq, out blocker));
         blundervilleExecutor = new DadBlundervilleExecutor(
             moduleRegistry,
             _ => moduleRegistry.GetCapability(DadModuleId.Blunderville).Blockers
@@ -155,13 +175,14 @@ public sealed class DadQueueExecutionService
         blocker = string.Empty;
         if (!DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(plan, module))
         {
-            blocker = $"{module.ModuleId} is not a multiplayer regular Duty Finder participant lane.";
+            blocker = $"{module.ModuleId} is not a multiplayer Duty Finder participant lane.";
             return false;
         }
 
         content = module.ModuleId switch
         {
             DadModuleId.PremadeDuty => localDutyQueueService.Resolve(plan.Request.PremadeDuty, out blocker),
+            DadModuleId.DailyMsq => localDutyQueueService.Resolve(plan.Request.DailyMsq, out blocker),
             DadModuleId.Duty when plan.Request.Dungeon?.QueueViaLanParty == true
                 => localDutyQueueService.ResolvePremade(plan.Request.Dungeon, out blocker),
             DadModuleId.CustomDuty when plan.Request.CustomDuty != null
@@ -236,7 +257,7 @@ public sealed class DadQueueExecutionService
             DadModuleId.DutySupport => dutySupportExecutor,
             DadModuleId.Trust => trustExecutor,
             DadModuleId.PremadeDuty => premadeDutyExecutor,
-            DadModuleId.DailyMsq => dailyMsqExecutor,
+            DadModuleId.DailyMsq => dailyRouletteExecutor,
             DadModuleId.Blunderville => blundervilleExecutor,
             DadModuleId.Mogtome => mogtomeExecutor,
             DadModuleId.Commendation => commendationExecutor,

@@ -258,6 +258,7 @@ public sealed class DadParticipantSnapshot
     public DadAcquiredCharacter Character { get; set; } = new();
     public string AssignedSlotId { get; set; } = string.Empty;
     public string DesiredCharacterKey { get; set; } = string.Empty;
+    public DadRequestedJobPreparationProof? RequestedJobPreparation { get; set; }
     public DateTime? LeaseIssuedUtc { get; set; }
     public DateTime? LeaseRenewedUtc { get; set; }
     public DateTime? LeaseExpiresUtc { get; set; }
@@ -300,6 +301,7 @@ public sealed class DadParticipantSnapshot
         Character = Character.Clone(),
         AssignedSlotId = AssignedSlotId,
         DesiredCharacterKey = DesiredCharacterKey,
+        RequestedJobPreparation = RequestedJobPreparation?.Clone(),
         LeaseIssuedUtc = LeaseIssuedUtc,
         LeaseRenewedUtc = LeaseRenewedUtc,
         LeaseExpiresUtc = LeaseExpiresUtc,
@@ -323,6 +325,8 @@ public sealed class DadWakeRequestDto
     public DadModuleId ModuleId { get; set; } = DadModuleId.None;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
+    public ulong RequiredContentId { get; set; }
+    public uint? RequiredJobId { get; set; }
     public string AssignedSlotId { get; set; } = string.Empty;
     public bool RequirePostArReady { get; set; } = true;
 }

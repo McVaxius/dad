@@ -14,7 +14,7 @@ public sealed class DadPresetProviderService
         DadPlannerActivityMode.TrustLeveling,
         DadPlannerActivityMode.PremadeDuty,
         DadPlannerActivityMode.DutyPremade,
-        DadPlannerActivityMode.DailyMsqPremade,
+        DadPlannerActivityMode.DailyRoulette,
         DadPlannerActivityMode.Blunderville,
         DadPlannerActivityMode.Mogtome,
         DadPlannerActivityMode.Commendation,
@@ -32,8 +32,8 @@ public sealed class DadPresetProviderService
             ActivityMode = DadPlannerActivityMode.Msq,
             RunFamily = DadPlannerRunFamily.Msq,
             ModuleId = DadModuleId.Msq,
-            DisplayName = "MSQ",
-            Summary = "Solo MSQ selected-duty progression with Trust then Duty Support fallback.",
+            DisplayName = "MSQ Story Duty (NPC)",
+            Summary = "Solo MSQ Story selected-duty progression with Trust then Duty Support fallback.",
             Maturity = DadLaneMaturity.LiveReady,
             MaturityLabel = "Live fallback",
             AccentColorHex = "#3B82F6",
@@ -42,7 +42,25 @@ public sealed class DadPresetProviderService
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select an MSQ duty; Dad tries Trust then Duty Support.",
+            NextAction = "Select an MSQ Story duty; Dad tries Trust then Duty Support.",
+        },
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.DailyRoulette,
+            RunFamily = DadPlannerRunFamily.DailyRoulette,
+            ModuleId = DadModuleId.DailyMsq,
+            DisplayName = "Daily Roulette",
+            Summary = "Dad-owned synced full-party queue for an eligible four-player non-PvP roulette.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Guarded queue",
+            AccentColorHex = "#3B82F6",
+            DefaultAuthorityMode = DadAuthorityMode.ServerDad,
+            DefaultTransportOwner = DadTransportOwner.LanParty,
+            DefaultQueueAuthority = DadQueueAuthority.Leader,
+            ExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize,
+            RequiresRemoteParty = true,
+            RequiresRouletteSelector = true,
+            NextAction = "Select a Daily Roulette, then start the guarded synced four-Dad queue.",
         },
         new()
         {
@@ -286,6 +304,7 @@ public sealed class DadPresetProviderService
     private readonly Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider;
     private IReadOnlyList<DadPlannerDutyOption>? plannerDutyCatalog;
     private IReadOnlyDictionary<uint, DadPlannerDutyOption>? plannerDutyCatalogById;
+    private IReadOnlyList<DadPlannerRouletteOption>? plannerRouletteCatalog;
 
     public DadPresetProviderService(
         DadModuleRegistry moduleRegistry,
@@ -330,6 +349,7 @@ public sealed class DadPresetProviderService
             DadPlannerRunFamily.DutyFinder,
             DadPlannerRunFamily.FarmLoops,
             DadPlannerRunFamily.Event,
+            DadPlannerRunFamily.DailyRoulette,
         ];
 
     public IReadOnlyList<DadPlannerLaneDefinition> GetPlannerSubmodes(DadPlannerRunFamily runFamily)
@@ -347,6 +367,20 @@ public sealed class DadPresetProviderService
     public DadPlannerActivityMode GetDefaultPlannerSubmode(DadPlannerRunFamily runFamily)
         => PlannerLaneDefinitions.FirstOrDefault(lane => lane.RunFamily == runFamily)?.ActivityMode
            ?? DadPlannerActivityMode.Msq;
+
+    public IReadOnlyList<DadPlannerRouletteOption> GetPlannerRouletteOptions()
+        => GetPlannerRouletteCatalog().Select(static option => option.Clone()).ToList();
+
+    public DadPlannerRouletteResolution ResolvePlannerRouletteTarget(DadQueueTarget? target)
+        => DadDailyRoulettePlannerRules.ResolveTarget(target, GetPlannerRouletteCatalog());
+
+    public DadPlannerRouletteResolution GetPlannerSelectedRoulette(DadPresetPlannerOptions options)
+    {
+        options.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
+        var resolution = ResolvePlannerRouletteTarget(options.RouletteTarget);
+        options.RouletteTarget = resolution.Target.Clone();
+        return resolution;
+    }
 
     public IReadOnlyList<DadPlannerOperatorMode> GetPlannerOperatorModeOptions()
         => PlannerOperatorModes;
@@ -473,6 +507,9 @@ public sealed class DadPresetProviderService
         var lane = ResolveLaneDefinition(options.ActivityMode);
         var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
         var selectedDuty = ResolvePlannerSelectedDuty(options, pool, localCharacter, out var autoLevelBlocker);
+        var rouletteResolution = lane.RequiresRouletteSelector
+            ? GetPlannerSelectedRoulette(options)
+            : null;
         var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
         selectedGroup = NormalizeSelectedGroup(selectedGroup);
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(
@@ -484,6 +521,7 @@ public sealed class DadPresetProviderService
         var dutySelectorBlocker = string.IsNullOrWhiteSpace(autoLevelBlocker)
             ? BuildDutySelectorBlocker(lane, selectedDuty)
             : autoLevelBlocker;
+        var rouletteSelectorBlocker = rouletteResolution?.Blocker ?? string.Empty;
         var effectiveInviteAuthority = ResolveEffectiveInviteAuthority(options);
         var filterStats = BuildFilterStats(pool, localCharacter, options);
         var accountFilterSummary = BuildAccountFilterSummary(pool, options);
@@ -494,7 +532,10 @@ public sealed class DadPresetProviderService
             : BuildSlotAssignments(availableCharacters, lane, requestedPartySize);
         var stopPolicy = BuildResolvedStopPolicy(options.StopPolicy, selectedCharacters, availableCharacters);
         var stopPolicyBlockers = BuildStopPolicyBlockers(stopPolicy, selectedCharacters, availableCharacters);
-        var groupBlockers = BuildPlannerGroupBlockers(effectiveSelectedGroup, selectedCharacters);
+        var groupBlockers = BuildPlannerGroupBlockers(
+            effectiveSelectedGroup,
+            selectedCharacters,
+            availableCharacters);
         var localNpcEligibilityBlockers = BuildLocalNpcEligibilityBlockers(
             options.ActivityMode,
             selectedDuty,
@@ -513,6 +554,7 @@ public sealed class DadPresetProviderService
             .Select(static slot => slot.SlotId)
             .ToList();
         var missingDutySelector = !string.IsNullOrWhiteSpace(dutySelectorBlocker);
+        var missingRouletteSelector = !string.IsNullOrWhiteSpace(rouletteSelectorBlocker);
         var insufficientPlannerPartyShell = lane.RequiresRemoteParty && requestedPartySize > selectedCharacters.Count;
         var wakeValidation = BuildWakePolicyValidation(
             effectiveSelectedGroup,
@@ -526,6 +568,8 @@ public sealed class DadPresetProviderService
             staticBlockers.Add($"Missing role slots: {string.Join(", ", missingRoleSlots)}.");
         if (missingDutySelector)
             staticBlockers.Add(dutySelectorBlocker);
+        if (missingRouletteSelector)
+            staticBlockers.Add(rouletteSelectorBlocker);
         if (insufficientPlannerPartyShell)
             staticBlockers.Add($"Selected duty needs party size {requestedPartySize}, but planner shell currently exposes only {selectedCharacters.Count} typed slot(s).");
         staticBlockers.AddRange(stopPolicyBlockers);
@@ -636,6 +680,12 @@ public sealed class DadPresetProviderService
         if (selectedDuty != null && lane.RequiresDutySelector)
             preset.Notes.Add($"Typed duty: {selectedDuty.SelectionLabel} | {selectedDuty.MetadataSummary}");
 
+        if (rouletteResolution?.Option != null && lane.RequiresRouletteSelector)
+        {
+            var state = rouletteResolution.IsAvailable ? "Available" : "Unavailable";
+            preset.Notes.Add($"Daily Roulette: {rouletteResolution.Option.DisplayName} #{rouletteResolution.Option.RouletteId} | {state}");
+        }
+
         preset.Notes.Add($"Stop policy: {stopPolicy.Describe()}.");
 
         if (filterStats.ExcludedByConnectedFilter > 0)
@@ -675,6 +725,10 @@ public sealed class DadPresetProviderService
         var dutySelectorBlocker = BuildDutySelectorBlocker(lane, selectedDuty);
         if (!string.IsNullOrWhiteSpace(autoLevelBlocker))
             dutySelectorBlocker = autoLevelBlocker;
+        var rouletteResolution = lane.RequiresRouletteSelector
+            ? GetPlannerSelectedRoulette(options)
+            : null;
+        var rouletteSelectorBlocker = rouletteResolution?.Blocker ?? string.Empty;
         var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(
             options.ActivityMode,
@@ -699,7 +753,12 @@ public sealed class DadPresetProviderService
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty, effectiveSelectedGroup),
         };
 
-        PopulatePlannerRequestTask(request, options, selectedDuty, requestedPartySize);
+        PopulatePlannerRequestTask(
+            request,
+            options,
+            selectedDuty,
+            rouletteResolution?.Target,
+            requestedPartySize);
         request.ApplyOrchestrationDefaults();
 
         var result = new DadPlannerRunRequestPreview
@@ -738,6 +797,22 @@ public sealed class DadPresetProviderService
                 Summary = dutySelectorBlocker,
             });
             BlockRequest(result, dutySelectorBlocker);
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
+        if (!string.IsNullOrWhiteSpace(rouletteSelectorBlocker))
+        {
+            result.CanSchedule = false;
+            AddValidationBlocker(result.StaticBlockers, rouletteSelectorBlocker);
+            result.ModuleBlockers.Add(new DadModuleBlockerDto
+            {
+                ModuleId = requestModuleId,
+                Capability = "RouletteSelector",
+                Severity = DadModuleBlockerSeverity.Blocked,
+                Summary = rouletteSelectorBlocker,
+            });
+            BlockRequest(result, rouletteSelectorBlocker);
             PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
             return result;
         }
@@ -807,6 +882,7 @@ public sealed class DadPresetProviderService
         DadRunRequest request,
         DadPresetPlannerOptions options,
         DadPlannerDutyOption? selectedDuty,
+        DadQueueTarget? selectedRouletteTarget,
         int requestedPartySize)
     {
         switch (options.ActivityMode)
@@ -821,11 +897,9 @@ public sealed class DadPresetProviderService
                     Attempts = 1,
                 };
                 break;
-            case DadPlannerActivityMode.DailyMsqPremade:
-                request.DailyMsq = new DadDailyMsqTask
-                {
-                    LanPartyPreset = "Daily MSQ",
-                };
+            case DadPlannerActivityMode.DailyRoulette:
+                request.DailyMsq = DadDailyRoulettePlannerRules.BuildWireCompatibleTask(
+                    selectedRouletteTarget ?? options.RouletteTarget);
                 break;
             case DadPlannerActivityMode.DutySupport:
             case DadPlannerActivityMode.DutySupportLeveling:
@@ -957,7 +1031,8 @@ public sealed class DadPresetProviderService
     public string GetPlannerActivityModeLabel(DadPlannerActivityMode activityMode)
         => activityMode switch
         {
-            DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ",
+            DadPlannerActivityMode.Msq => "MSQ Story Duty (NPC)",
+            DadPlannerActivityMode.DailyRoulette => "Daily Roulette",
             DadPlannerActivityMode.DutySupport => "Duty Support",
             DadPlannerActivityMode.Trust => "Trust",
             DadPlannerActivityMode.DutySupportLeveling => "Duty Support Leveling",
@@ -977,11 +1052,12 @@ public sealed class DadPresetProviderService
     public string GetPlannerRunFamilyLabel(DadPlannerRunFamily runFamily)
         => runFamily switch
         {
-            DadPlannerRunFamily.Msq => "MSQ",
+            DadPlannerRunFamily.Msq => "MSQ Story",
             DadPlannerRunFamily.LevelingNpc => "Leveling / NPC",
             DadPlannerRunFamily.DutyFinder => "Duty Finder",
             DadPlannerRunFamily.FarmLoops => "Farm Loops",
             DadPlannerRunFamily.Event => "Event",
+            DadPlannerRunFamily.DailyRoulette => "Daily Roulette",
             _ => runFamily.ToString(),
         };
 
@@ -1080,7 +1156,8 @@ public sealed class DadPresetProviderService
         options.RunFamily = ResolveLaneDefinition(options.ActivityMode).RunFamily;
         options.ActivityName = options.ActivityMode switch
         {
-            DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ",
+            DadPlannerActivityMode.Msq => "MSQ Story Duty (NPC)",
+            DadPlannerActivityMode.DailyRoulette => "Daily Roulette",
             DadPlannerActivityMode.DutySupport => "Duty Support",
             DadPlannerActivityMode.Trust => "Trust",
             DadPlannerActivityMode.DutySupportLeveling => "Duty Support Leveling",
@@ -1098,7 +1175,8 @@ public sealed class DadPresetProviderService
         };
         options.PresetName = options.ActivityMode switch
         {
-            DadPlannerActivityMode.Msq or DadPlannerActivityMode.DailyMsqPremade => "MSQ Main Group",
+            DadPlannerActivityMode.Msq => "MSQ Story",
+            DadPlannerActivityMode.DailyRoulette => "Daily Roulette Group",
             DadPlannerActivityMode.DutySupport => "Duty Support",
             DadPlannerActivityMode.Trust => "Trust",
             DadPlannerActivityMode.DutySupportLeveling => "Duty Support Leveling",
@@ -1126,6 +1204,15 @@ public sealed class DadPresetProviderService
         }
         if (string.IsNullOrWhiteSpace(options.MogtomeDutyPolicy))
             options.MogtomeDutyPolicy = DadMogtomeDutyPolicies.PresetHandoff;
+        options.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
+        if (options.ActivityMode == DadPlannerActivityMode.DailyRoulette)
+        {
+            options.TransportOwner = DadTransportOwner.LanParty;
+            options.QueueAuthority = DadQueueAuthority.Leader;
+            options.DutyUnsynced = false;
+            options.DutyExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize;
+            options.RouletteTarget = ResolvePlannerRouletteTarget(options.RouletteTarget).Target;
+        }
         options.StopPolicy ??= new DadRunStopPolicy();
         options.StopPolicy.Normalize();
         options.IncludedAccountKeys = options.IncludedAccountKeys
@@ -1145,8 +1232,16 @@ public sealed class DadPresetProviderService
         selectedGroup.MogtomeDutyPolicy = string.IsNullOrWhiteSpace(selectedGroup.MogtomeDutyPolicy)
             ? DadMogtomeDutyPolicies.PresetHandoff
             : selectedGroup.MogtomeDutyPolicy.Trim();
+        selectedGroup.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         selectedGroup.RunFamily = ResolveLaneDefinition(selectedGroup.ActivityMode).RunFamily;
         selectedGroup.InviteAuthority = DadInviteAuthority.PresetLeader;
+        if (selectedGroup.ActivityMode == DadPlannerActivityMode.DailyRoulette)
+        {
+            selectedGroup.TransportOwner = DadTransportOwner.LanParty;
+            selectedGroup.QueueAuthority = DadQueueAuthority.Leader;
+            selectedGroup.DutyUnsynced = false;
+            selectedGroup.DutyExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize;
+        }
         selectedGroup.StopPolicy ??= new DadRunStopPolicy();
         selectedGroup.StopPolicy.Normalize();
         selectedGroup.Slots = DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots);
@@ -1182,7 +1277,7 @@ public sealed class DadPresetProviderService
         if (IsLocalNpcLane(activityMode))
             return true;
 
-        return lane.RequiresDutySelector;
+        return lane.RequiresDutySelector || lane.RequiresRouletteSelector;
     }
 
     private static DadPlannerGroupSlot SelectEffectiveLocalNpcSlot(
@@ -1223,6 +1318,7 @@ public sealed class DadPresetProviderService
             DutyDisplayName = source.DutyDisplayName,
             DutyUnsynced = source.DutyUnsynced,
             DutyExpectedPartySize = source.DutyExpectedPartySize,
+            RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
@@ -1248,6 +1344,7 @@ public sealed class DadPresetProviderService
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
+            RequiredJobId = source.RequiredJobId,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
@@ -1458,6 +1555,7 @@ public sealed class DadPresetProviderService
                 RequiredRole = groupSlot.RequiredRole,
                 RequiredAccountKey = groupSlot.RequiredAccountKey,
                 RequiredCharacterKey = groupSlot.RequiredCharacterKey,
+                RequiredJobId = groupSlot.RequiredJobId,
                 AssignmentMode = groupSlot.RequiredCharacterKey.IsEmpty
                     ? DadSlotAssignmentMode.SpecificRole
                     : DadSlotAssignmentMode.SpecificCharacter,
@@ -1491,6 +1589,7 @@ public sealed class DadPresetProviderService
             RequiredRole = groupSlot.RequiredRole,
             RequiredAccountKey = accountKey,
             RequiredCharacterKey = requiredCharacterKey,
+            RequiredJobId = groupSlot.RequiredJobId,
             AssignmentMode = DadSlotAssignmentMode.SpecificCharacter,
             AllowSubstitution = false,
             ContentId = character.ContentId == 0 ? null : character.ContentId,
@@ -1819,9 +1918,10 @@ public sealed class DadPresetProviderService
         {
             return new
             {
-                surfacedLane = "MSQ",
-                legacyTask = "DailyMsqPremade",
+                surfacedLane = "Daily Roulette",
+                legacyTask = nameof(DadDailyMsqTask),
                 request.DailyMsq.LanPartyPreset,
+                queueTarget = request.DailyMsq.QueueTarget.Clone(),
             };
         }
 
@@ -2026,6 +2126,15 @@ public sealed class DadPresetProviderService
         plannerDutyCatalogById = GetPlannerDutyCatalog()
             .ToDictionary(static option => option.ContentFinderConditionId);
         return plannerDutyCatalogById;
+    }
+
+    private IReadOnlyList<DadPlannerRouletteOption> GetPlannerRouletteCatalog()
+    {
+        if (plannerRouletteCatalog != null)
+            return plannerRouletteCatalog;
+
+        plannerRouletteCatalog = new DadRouletteCatalogService(Plugin.DataManager).GetOptions();
+        return plannerRouletteCatalog;
     }
 
     private static string BuildDutySelectorBlocker(DadPlannerLaneDefinition lane, DadPlannerDutyOption? selectedDuty)
@@ -2236,8 +2345,6 @@ public sealed class DadPresetProviderService
 
     private static DadPlannerLaneDefinition ResolveLaneDefinition(DadPlannerActivityMode activityMode)
     {
-        if (activityMode == DadPlannerActivityMode.DailyMsqPremade)
-            activityMode = DadPlannerActivityMode.Msq;
         if (activityMode == DadPlannerActivityMode.DutyPremade)
             activityMode = DadPlannerActivityMode.PremadeDuty;
 
@@ -2262,6 +2369,7 @@ public sealed class DadPresetProviderService
             ExpectedPartySize = lane.ExpectedPartySize,
             RequiresRemoteParty = lane.RequiresRemoteParty,
             RequiresDutySelector = lane.RequiresDutySelector,
+            RequiresRouletteSelector = lane.RequiresRouletteSelector,
             UsesExternalHelper = lane.UsesExternalHelper,
             NextAction = lane.NextAction,
         };
@@ -2313,6 +2421,7 @@ public sealed class DadPresetProviderService
                 AccountKey = slot.RequiredAccountKey,
                 CharacterKey = new DadCharacterKey(slot.CharacterKey),
                 ContentId = slot.ContentId ?? 0,
+                RequiredJobId = slot.RequiredJobId,
             })
             .Where(static reference => !reference.IsEmpty)
             .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
@@ -2385,7 +2494,7 @@ public sealed class DadPresetProviderService
     private static DadModuleId ResolvePlannerModuleIdForRequest(DadPlannerActivityMode activityMode, DadPlannerLaneDefinition lane)
         => activityMode switch
         {
-            DadPlannerActivityMode.DailyMsqPremade => DadModuleId.DailyMsq,
+            DadPlannerActivityMode.DailyRoulette => DadModuleId.DailyMsq,
             DadPlannerActivityMode.DutyPremade => DadModuleId.PremadeDuty,
             DadPlannerActivityMode.DutySupportLeveling => DadModuleId.DutySupport,
             DadPlannerActivityMode.TrustLeveling => DadModuleId.Trust,
@@ -2567,7 +2676,10 @@ public sealed class DadPresetProviderService
         public List<string> ScheduleBlockers { get; set; } = [];
     }
 
-    private static List<string> BuildPlannerGroupBlockers(DadPlannerGroup? selectedGroup, IReadOnlyList<DadPresetCharacterSlot> selectedSlots)
+    private static List<string> BuildPlannerGroupBlockers(
+        DadPlannerGroup? selectedGroup,
+        IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
     {
         if (selectedGroup == null)
             return [];
@@ -2587,6 +2699,32 @@ public sealed class DadPresetProviderService
 
         foreach (var slot in normalizedSlots.Where(static slot => slot.RequiredAccountKey.IsEmpty))
             blockers.Add($"Planner group slot '{slot.SlotId}' is missing a required account key.");
+
+        foreach (var slot in selectedSlots.Where(static slot => slot.RequiredJobId.HasValue))
+        {
+            var requiredJobId = slot.RequiredJobId!.Value;
+            var characterLabel = !string.IsNullOrWhiteSpace(slot.CharacterKey)
+                ? slot.CharacterKey
+                : !slot.RequiredCharacterKey.IsEmpty
+                    ? slot.RequiredCharacterKey.Value
+                    : "unresolved character";
+            var blocker = DadPlannerRequestedJobValidationRules.Validate(slot, availableCharacters) switch
+            {
+                DadPlannerRequestedJobValidationFailure.None => string.Empty,
+                DadPlannerRequestedJobValidationFailure.InvalidCombatJob =>
+                    $"Planner group slot '{slot.SlotId}' requests class/job {requiredJobId}, which is not a supported combat job.",
+                DadPlannerRequestedJobValidationFailure.ExactCharacterUnavailable =>
+                    $"Planner group slot '{slot.SlotId}' cannot validate requested class/job {requiredJobId} because its exact selected character is unavailable.",
+                DadPlannerRequestedJobValidationFailure.XadbUnavailable =>
+                    $"Planner group slot '{slot.SlotId}' cannot validate requested class/job {requiredJobId} for '{characterLabel}' because current XADB job data is unavailable.",
+                DadPlannerRequestedJobValidationFailure.JobUnavailable =>
+                    $"Planner group slot '{slot.SlotId}' requests class/job {requiredJobId}, but current XADB job data for '{characterLabel}' does not contain it at a positive level.",
+                _ => $"Planner group slot '{slot.SlotId}' has an invalid requested class/job selection.",
+            };
+
+            if (!string.IsNullOrWhiteSpace(blocker))
+                blockers.Add(blocker);
+        }
 
         foreach (var duplicateAssignedAccount in selectedSlots
                      .Select(static slot => slot.RequiredAccountKey.Value)
