@@ -109,6 +109,28 @@ public sealed class DadNativePartyInviteRulesTests
     }
 
     [Fact]
+    public void EveryMissingFrozenParticipantHasAnIndependentUnboundedInviteCadence()
+    {
+        var dispatcher = new FakeDispatcher(true);
+        var tracker = new DadNativePartyInviteAttemptTracker();
+        var targets = new[]
+        {
+            Target(21, 21, contentId: 200, slotId: "Slot2"),
+            Target(21, 21, contentId: 300, slotId: "Slot3"),
+            Target(21, 21, contentId: 400, slotId: "Slot4"),
+        };
+
+        foreach (var target in targets)
+            Assert.Equal(1, tracker.TryDispatch(target, false, Start, dispatcher, out _)?.AttemptNumber);
+        foreach (var target in targets)
+            Assert.Equal(2, tracker.TryDispatch(target, false, Start.AddSeconds(5), dispatcher, out _)?.AttemptNumber);
+        foreach (var target in targets)
+            Assert.Equal(3, tracker.TryDispatch(target, false, Start.AddSeconds(10), dispatcher, out _)?.AttemptNumber);
+
+        Assert.Equal(9, dispatcher.CallCount);
+    }
+
+    [Fact]
     public void ExactPartyListContentIdStopsAttemptsAndRunConfirmationIsConsumedOnce()
     {
         var dispatcher = new FakeDispatcher(true);
@@ -187,15 +209,17 @@ public sealed class DadNativePartyInviteRulesTests
     private static DadNativePartyInviteTarget Target(
         uint localCurrentWorldId,
         ushort targetWorldId,
-        bool sameApplicableInstanceExact = false)
+        bool sameApplicableInstanceExact = false,
+        ulong contentId = 200,
+        string slotId = "Slot2")
         => new()
         {
             RunId = "run",
             ModuleId = DadModuleId.PremadeDuty,
-            SlotId = "Slot2",
+            SlotId = slotId,
             AccountKey = new DadAccountKey("account-x"),
             CharacterKey = new DadCharacterKey("Hard'carry Gray'parse@Excalibur"),
-            ContentId = 200,
+            ContentId = contentId,
             CharacterName = "Hard'carry Gray'parse",
             WorldId = targetWorldId,
             WorkerSessionId = new DadWorkerSessionId("worker-x"),

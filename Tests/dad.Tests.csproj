@@ -26,6 +26,7 @@
     <Compile Include="..\Services\DadRosterKnowledgeLearningCursor.cs" Link="DadRosterKnowledgeLearningCursor.cs" />
     <Compile Include="..\Services\DadRosterKnowledgeSourceRules.cs" Link="DadRosterKnowledgeSourceRules.cs" />
     <Compile Include="..\Services\DadRosterTransportCatalogRuntime.cs" Link="DadRosterTransportCatalogRuntime.cs" />
+    <Compile Include="..\Services\DadRosterRuntimeSourceProjectionRules.cs" Link="DadRosterRuntimeSourceProjectionRules.cs" />
     <Compile Include="..\Services\DadEndpointHostOptions.cs" Link="DadEndpointHostOptions.cs" />
     <Compile Include="..\Services\DadFrenRiderEntryEnableGate.cs" Link="DadFrenRiderEntryEnableGate.cs" />
     <Compile Include="..\Services\DadParticipantFrenRiderHandoffGate.cs" Link="DadParticipantFrenRiderHandoffGate.cs" />

@@ -124,17 +124,105 @@ public sealed class DadPartyAssemblyServiceTests
         Assert.True(DadPartyAssemblyService.ShouldDispatchJoinInstruction(participant, [wrongIdentity]));
     }
 
-    private static DadRunPlan Plan(DadQueueAuthority queueAuthority)
+    [Fact]
+    public void UnexpectedPartyListContentIdRejectsFrozenMembership()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(queueAuthority: DadQueueAuthority.Leader);
+        var participants = new[]
+        {
+            Participant("Leader@Alpha", 100, isLocal: true, isAuthority: true, slot: "Slot1"),
+            Participant("Member@Alpha", 200, isLocal: false, isAuthority: false, slot: "Slot2"),
+        };
+
+        var decision = service.EvaluatePartyMembership(
+            plan,
+            participants,
+            [PartyMember("Leader@Alpha", 100), PartyMember("Unexpected@Alpha", 999)]);
+
+        Assert.Equal(DadPartyMembershipDisposition.Reject, decision.Disposition);
+        Assert.Contains("unexpected", decision.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("999", decision.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TerminalBestEffortJobReportsProduceAllMissingFourPlayerInstructions()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader, partySize: 4);
+        var jobs = new uint[] { 40, 32, 24, 38 };
+        var statuses = new[]
+        {
+            DadRequestedJobPreparationStatus.AlreadyMatched,
+            DadRequestedJobPreparationStatus.Switched,
+            DadRequestedJobPreparationStatus.AlreadyMatched,
+            DadRequestedJobPreparationStatus.SoftFailed,
+        };
+        var participants = Enumerable.Range(1, 4).Select(index =>
+        {
+            var participant = Participant(
+                index == 1 ? "Leader@Alpha" : index == 4 ? "Hildabrand@Alpha" : $"Member {index}@Alpha",
+                (ulong)(100 * index),
+                isLocal: index == 1,
+                isAuthority: index == 1,
+                slot: $"Slot{index}");
+            participant.ManagedAccountKey = new DadAccountKey($"account-{index}");
+            participant.Character.AccountId = participant.ManagedAccountKey.Value;
+            participant.Character.CurrentJobId = statuses[index - 1] == DadRequestedJobPreparationStatus.SoftFailed
+                ? 19u
+                : jobs[index - 1];
+            participant.RequestedJobPreparation = new DadRequestedJobPreparationProof
+            {
+                Key = new DadRequestedJobPreparationKey(
+                    "run",
+                    participant.WorkerSessionId,
+                    participant.AssignedSlotId,
+                    participant.ManagedAccountKey,
+                    participant.ActiveCharacterKey,
+                    participant.Character.ContentId,
+                    jobs[index - 1]),
+                Status = statuses[index - 1],
+            };
+            Assert.True(DadRequestedJobPreparationProofRules.PermitsReadiness(
+                participant.RequestedJobPreparation,
+                participant.RequestedJobPreparation.Key,
+                participant.Character.CurrentJobId.Value));
+            return participant;
+        }).ToList();
+
+        var instructions = service.BuildInstructions(plan, participants, out var blocker);
+
+        Assert.Empty(blocker);
+        Assert.Equal(4, instructions.Count);
+        Assert.Equal(DadAssemblyInstructionKind.FormParty, instructions[0].InstructionKind);
+        Assert.Equal(3, instructions.Count(static instruction =>
+            instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty));
+        var leaderOnly = new[] { PartyMember("Leader@Alpha", 100) };
+        Assert.All(participants.Skip(1), participant => Assert.True(
+            DadPartyAssemblyService.ShouldDispatchJoinInstruction(participant, leaderOnly)));
+        Assert.False(service.VerifyPartyMembership(plan, participants, leaderOnly, out var waiting));
+        Assert.Contains("1/4", waiting, StringComparison.OrdinalIgnoreCase);
+
+        var exactParty = participants
+            .Select(participant => PartyMember(
+                participant.ActiveCharacterKey.Value,
+                participant.Character.ContentId))
+            .ToList();
+        Assert.True(service.VerifyPartyMembership(plan, participants, exactParty, out var complete));
+        Assert.Empty(complete);
+    }
+
+    private static DadRunPlan Plan(DadQueueAuthority queueAuthority, int partySize = 2)
         => new()
         {
             Request = new DadRunRequest { RequestId = "run" },
             CompositeModuleId = DadModuleId.PremadeDuty,
-            RequiredParticipantCount = 2,
+            RequiredParticipantCount = partySize,
             LeaderCharacterKey = "Leader@Alpha",
             Orchestration = new DadOrchestrationIntent
             {
                 QueueAuthority = queueAuthority,
-                RosterIntent = new DadRosterIntent { ExpectedPartySize = 2, RequireRemoteParticipants = true },
+                RosterIntent = new DadRosterIntent { ExpectedPartySize = partySize, RequireRemoteParticipants = true },
             },
         };
 

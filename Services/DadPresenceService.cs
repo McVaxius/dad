@@ -23,6 +23,8 @@ public sealed class DadPresenceService
     private string assignedSlotId = string.Empty;
     private DadRequestedJobPreparationKey? requestedJobPreparationKey;
     private string lastRequestedJobPreparationTransition = string.Empty;
+    private readonly DadImmutableCommandRegistry assignmentCommandRegistry = new();
+    private readonly DadRunCancellationLedger cancelledAssignmentRuns = new(StringComparer.Ordinal);
 
     internal DadPresenceService(
         Configuration configuration,
@@ -207,6 +209,34 @@ public sealed class DadPresenceService
 
     public DadParticipantReadyDto HandleWakeRequest(DadWakeRequestDto request)
     {
+        var commandId = $"{request.RunId}:{request.AssignedSlotId}:{WorkerSessionId.Value}:job-assignment";
+        var payload = DadIpcJson.Serialize(request);
+        var registration = assignmentCommandRegistry.Register(
+            commandId,
+            payload,
+            payload,
+            $"{request.AuthorityWorkerSessionId.Value}/{request.AuthorityMode}->{WorkerSessionId.Value}");
+        if (registration.Disposition == DadImmutableCommandDisposition.Collision)
+        {
+            log.Error(
+                "[dad] Immutable requested-job assignment collision command={CommandId} originalProducerRoute={OriginalProducerRoute} incomingProducerRoute={IncomingProducerRoute} originalPayload={OriginalPayload} incomingPayload={IncomingPayload}.",
+                registration.CommandId,
+                registration.OriginalProducerRoute,
+                registration.IncomingProducerRoute,
+                registration.OriginalPayload,
+                registration.IncomingPayload);
+            return BuildReadyResponse(
+                blockerSummary: $"Immutable requested-job assignment collision for {commandId}.",
+                acceptedAssignment: false);
+        }
+
+        if (!cancelledAssignmentRuns.CanAccept(request.RunId))
+        {
+            return BuildReadyResponse(
+                blockerSummary: $"Requested-job assignment belongs to cancelled run {request.RunId}.",
+                acceptedAssignment: false);
+        }
+
         if (!string.Equals(currentRunId, request.RunId, StringComparison.Ordinal))
             ResetRequestedJobPreparation();
 
@@ -374,6 +404,7 @@ public sealed class DadPresenceService
 
     public DadCancelAckDto HandleCancelRun(DadCancelCommandDto command)
     {
+        cancelledAssignmentRuns.Record(command.RunId);
         if (!string.Equals(currentRunId, command.RunId, StringComparison.Ordinal))
         {
             return new DadCancelAckDto
@@ -454,6 +485,13 @@ public sealed class DadPresenceService
     public DadParticipantSnapshot BuildLiveSafetySnapshot()
     {
         var snapshot = CurrentParticipant.Clone();
+        var managedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
+        snapshot.ClientInstanceId = ClientInstanceId;
+        snapshot.WorkerSessionId = WorkerSessionId;
+        snapshot.IsLocalClient = true;
+        snapshot.IsAuthority = configuration.RunAsServerDad;
+        snapshot.ManagedAccountKey = managedAccountKey;
+        snapshot.ManagedAccountAlias = configManager.GetCurrentAccountAlias();
         try
         {
             var isLoggedIn = Plugin.ClientState.IsLoggedIn;
@@ -477,7 +515,7 @@ public sealed class DadPresenceService
                 CharacterName = characterName,
                 WorldId = (uint)player.HomeWorld.RowId,
                 WorldName = worldName,
-                AccountId = configManager.CurrentAccountId,
+                AccountId = managedAccountKey.Value,
                 AccountAlias = configManager.GetCurrentAccountAlias(),
                 Source = DadCharacterSource.LocalRuntime,
                 Freshness = DadSnapshotFreshness.Live,
@@ -850,11 +888,12 @@ public sealed class DadPresenceService
         var expected = requestedJobPreparationKey.Value;
         if (localCharacter == null)
         {
-            // A logout/relog tears down attempt timing and proof. The frozen assignment remains,
-            // so the exact character can begin a fresh preparation after it is loaded again.
-            requestedJobPreparationGate.Reset();
-            CurrentParticipant.RequestedJobPreparation = null;
-            lastRequestedJobPreparationTransition = string.Empty;
+            // Logout/loading is an ordinary wait. Retain the exact assignment,
+            // proof, and actual-call allowance so a reconnect cannot gain extra
+            // equip attempts or lose a previously terminal best-effort result.
+            CurrentParticipant.RequestedJobPreparation = requestedJobPreparationGate.TryGet(expected, out var retained)
+                ? retained
+                : null;
             return;
         }
 
@@ -868,12 +907,14 @@ public sealed class DadPresenceService
             expected.RequiredJobId);
 
         // A worker may accept a wake while AutoRetainer is still loading the requested character.
-        // Do not create/cancel proof until that assignment has first resolved exactly. Once an
-        // attempt exists, any later identity drift is terminal and cannot authorize readiness.
-        if (!DadRequestedJobPreparationKeyRules.Matches(expected, observedIdentity) &&
-            !requestedJobPreparationGate.TryGet(expected, out _))
+        // Wrong/loading characters are ordinary waits and consume no attempts.
+        // A retained proof is never projected as readiness for the wrong slot
+        // identity by the frozen manifest boundary.
+        if (!DadRequestedJobPreparationKeyRules.Matches(expected, observedIdentity))
         {
-            CurrentParticipant.RequestedJobPreparation = null;
+            CurrentParticipant.RequestedJobPreparation = requestedJobPreparationGate.TryGet(expected, out var retained)
+                ? retained
+                : null;
             return;
         }
 
@@ -915,6 +956,27 @@ public sealed class DadPresenceService
         if (!string.Equals(transition, lastRequestedJobPreparationTransition, StringComparison.Ordinal))
         {
             lastRequestedJobPreparationTransition = transition;
+            var permitsReadiness = DadRequestedJobPreparationProofRules.PermitsReadiness(
+                proof,
+                expected,
+                CurrentParticipant.Character.CurrentJobId.GetValueOrDefault());
+            log.Information(
+                "[dad] Requested-job preparation outcome request={RequestId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} worker={WorkerSessionId} requestedJob={RequestedJobId} currentJob={CurrentJobId} status={Status} terminal={Terminal} permitsParty={PermitsParty} gearset={GearsetId} attempt={AttemptCount}/{MaxAttemptCount} summary={Summary}.",
+                expected.RunId,
+                expected.SlotId,
+                expected.AccountKey,
+                expected.CharacterKey,
+                expected.ContentId,
+                expected.WorkerSessionId,
+                expected.RequiredJobId?.ToString() ?? "(current)",
+                CurrentParticipant.Character.CurrentJobId.GetValueOrDefault(),
+                proof.Status,
+                DadRequestedJobPreparationProofRules.IsTerminal(proof.Status),
+                permitsReadiness,
+                proof.SelectedGearsetId?.ToString() ?? "(none)",
+                proof.AttemptCount,
+                DadRequestedJobPreparationGate.MaxAttemptCount,
+                proof.Summary);
             if (proof.Status == DadRequestedJobPreparationStatus.SoftFailed)
             {
                 var warning = $"{expected.SlotId} could not switch to requested job {expected.RequiredJobId}; continuing on current job {CurrentParticipant.Character.CurrentJobId.GetValueOrDefault()}: {proof.FailureReason}";
@@ -928,21 +990,6 @@ public sealed class DadPresenceService
                     expected.SlotId,
                     expected.CharacterKey,
                     proof.FailureReason);
-            }
-            else
-            {
-                log.Information(
-                    "[dad] Requested-job preparation {Status} for {RunId}/{SlotId}/{CharacterKey}: requestedJob={RequiredJobId} currentJob={CurrentJobId} gearset={GearsetId} attempt={AttemptCount}/{MaxAttemptCount}. {Summary}",
-                    proof.Status,
-                    expected.RunId,
-                    expected.SlotId,
-                    expected.CharacterKey,
-                    expected.RequiredJobId.GetValueOrDefault(),
-                    CurrentParticipant.Character.CurrentJobId.GetValueOrDefault(),
-                    proof.SelectedGearsetId?.ToString() ?? "(none)",
-                    proof.AttemptCount,
-                    DadRequestedJobPreparationGate.MaxAttemptCount,
-                    proof.Summary);
             }
         }
 

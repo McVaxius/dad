@@ -19,6 +19,7 @@ public sealed class DadRosterCatalogService
     private static readonly TimeSpan LocalCatalogReuseWindow = TimeSpan.FromSeconds(10);
     private DadAccountRosterCatalog? cachedLocalCatalog;
     private DateTime cachedLocalCatalogUtc = DateTime.MinValue;
+    private string lastRuntimeSourceProjectionDiagnostic = string.Empty;
 
     public DadRosterCatalogService(
         Configuration configuration,
@@ -913,6 +914,10 @@ public sealed class DadRosterCatalogService
             .Where(static catalog => catalog.IsFullRosterAvailable)
             .Sum(static catalog => catalog.Characters.Count);
 
+        var localWorkerSessionId = presenceService.WorkerSessionId;
+        var localClientInstanceId = presenceService.ClientInstanceId;
+        var connectedParticipants = transportService.CurrentTransport.KnownParticipants;
+        var unresolvedRuntimeClaims = 0;
         foreach (var catalog in catalogs)
         {
             foreach (var warning in catalog.SourceDiagnostics.Warnings)
@@ -936,9 +941,28 @@ public sealed class DadRosterCatalogService
                     candidate.SourceClientInstanceId = catalog.SourceClientInstanceId;
                 if (candidate.SourceWorkerSessionId.IsEmpty)
                     candidate.SourceWorkerSessionId = catalog.SourceWorkerSessionId;
+                var projection = DadRosterRuntimeSourceProjectionRules.ProjectForConsumer(
+                    candidate,
+                    localWorkerSessionId,
+                    localClientInstanceId,
+                    connectedParticipants);
+                candidate = projection.Character;
+                if (projection.Ownership == DadRosterRuntimeSourceOwnership.UnresolvedRuntimeClaim)
+                    unresolvedRuntimeClaims++;
                 UpsertRosterCharacter(merged.Characters, candidate);
             }
         }
+
+        merged.Characters = merged.Characters
+            .Select(character => DadRosterRuntimeSourceProjectionRules.ProjectForConsumer(
+                character,
+                localWorkerSessionId,
+                localClientInstanceId,
+                connectedParticipants).Character)
+            .ToList();
+        merged.SourceDiagnostics.FinalLocalRows = merged.Characters.Count(static character =>
+            character.Source == DadCharacterSource.LocalRuntime);
+        LogRuntimeSourceProjection(merged.Characters, unresolvedRuntimeClaims);
 
         merged.Accounts = BuildMergedAccountDirectory(catalogs, merged.Characters).ToList();
         ApplyVisibility(merged, plan);
@@ -993,6 +1017,7 @@ public sealed class DadRosterCatalogService
         }
 
         var merged = characters[existing];
+        var sourceBeforeMerge = merged.Source;
         var replaceMutableObservation = DadRosterCharacterMerge.ShouldReplaceMutableObservation(
             merged,
             incoming,
@@ -1000,9 +1025,13 @@ public sealed class DadRosterCatalogService
         DadRosterTransportCatalogRuntime.ReplaceSourceBlockersFromSupersedingRuntime(merged, incoming);
         if (incoming.Source < merged.Source || merged.Source == DadCharacterSource.XadbOnly)
             merged.Source = incoming.Source;
-        if (!string.IsNullOrWhiteSpace(incoming.SourceClientInstanceId))
+        var replaceSourceOwner = incoming.Source < sourceBeforeMerge ||
+                                 incoming.Source == sourceBeforeMerge && replaceMutableObservation ||
+                                 string.IsNullOrWhiteSpace(merged.SourceClientInstanceId) &&
+                                 merged.SourceWorkerSessionId.IsEmpty;
+        if (!string.IsNullOrWhiteSpace(incoming.SourceClientInstanceId) && replaceSourceOwner)
             merged.SourceClientInstanceId = incoming.SourceClientInstanceId;
-        if (!incoming.SourceWorkerSessionId.IsEmpty)
+        if (!incoming.SourceWorkerSessionId.IsEmpty && replaceSourceOwner)
             merged.SourceWorkerSessionId = incoming.SourceWorkerSessionId;
         if (!incoming.AccountKey.IsEmpty && (merged.AccountKey.IsEmpty || replaceMutableObservation))
             merged.AccountKey = incoming.AccountKey;
@@ -2156,6 +2185,42 @@ public sealed class DadRosterCatalogService
 
         if (!catalog.IsFullRosterAvailable)
             log.Warning("[dad][Roster] {Warning}", DadXadbClient.RosterIpcMissingWarning);
+    }
+
+    private void LogRuntimeSourceProjection(
+        IReadOnlyList<DadRosterCharacter> characters,
+        int unresolvedRuntimeClaims)
+    {
+        var localRows = characters
+            .Where(static character => character.Source == DadCharacterSource.LocalRuntime)
+            .Select(static character => $"{character.AccountKey}/{character.CharacterKey}/{character.SourceWorkerSessionId}")
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var peerRows = characters
+            .Where(static character => character.Source == DadCharacterSource.PeerRuntime)
+            .Select(static character => $"{character.AccountKey}/{character.CharacterKey}/{character.SourceWorkerSessionId}")
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var diagnostic = string.Join(
+            "|",
+            presenceService.WorkerSessionId.Value,
+            presenceService.ClientInstanceId,
+            string.Join(",", localRows),
+            string.Join(",", peerRows),
+            unresolvedRuntimeClaims);
+        if (string.Equals(diagnostic, lastRuntimeSourceProjectionDiagnostic, StringComparison.Ordinal))
+            return;
+
+        lastRuntimeSourceProjectionDiagnostic = diagnostic;
+        log.Information(
+            "[dad][Roster] Consumer runtime provenance localWorker={LocalWorkerSessionId} localClient={LocalClientInstanceId} localRows={LocalRowCount} localCharacters={LocalCharacters} peerRows={PeerRowCount} peerCharacters={PeerCharacters} unresolvedRuntimeClaims={UnresolvedRuntimeClaims}.",
+            presenceService.WorkerSessionId,
+            presenceService.ClientInstanceId,
+            localRows.Count,
+            localRows.Count == 0 ? "(none)" : string.Join(", ", localRows),
+            peerRows.Count,
+            peerRows.Count == 0 ? "(none)" : string.Join(", ", peerRows),
+            unresolvedRuntimeClaims);
     }
 
     private static string FormatCountBreakdown(IReadOnlyDictionary<string, int> counts, int limit = 8)

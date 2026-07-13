@@ -7,6 +7,27 @@ namespace dad.Tests;
 public sealed class DadRosterTransportCatalogRuntimeTests
 {
     [Fact]
+    public void ProducerSideIsLocalFlagCannotMakePeerLocalOnCoordinator()
+    {
+        var venat = Snapshot("client-w", "worker-w", "acct-w", "Venat@Alpha", 101);
+        venat.IsLocalClient = true;
+        venat.State = DadParticipantState.Ready;
+        var xCharacter = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        xCharacter.IsLocalClient = true;
+        xCharacter.State = DadParticipantState.Ready;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-w", "worker-w", xCharacter, venat));
+
+        var local = Assert.Single(catalog.Characters, static row =>
+            row.Source == DadCharacterSource.LocalRuntime);
+        Assert.Equal("Venat@Alpha", local.CharacterKey.Value);
+        var peer = Assert.Single(catalog.Characters, static row =>
+            row.Source == DadCharacterSource.PeerRuntime);
+        Assert.Equal("X Character@Alpha", peer.CharacterKey.Value);
+    }
+
+    [Fact]
     public void PositiveStatusTextAndHistoricalWarningsDoNotBlockHealthyPeer()
     {
         var participant = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);

@@ -21,12 +21,14 @@ public sealed class DadPlannerService
         out string rejectionReason,
         bool requireLiveReadiness = true,
         bool allowWakeableCoordinatorLeader = false,
-        DadAcquiredCharacter? unfilteredLocalRuntimeCharacter = null)
+        DadParticipantSnapshot? liveLocalRuntimeTruth = null)
     {
         rejectionReason = "No dad tasks were configured.";
         request.ApplyOrchestrationDefaults();
+        var activeCoordinatorCharacter = DadFullPartyExecutionRules.ResolveActiveCoordinatorCharacter(
+            liveLocalRuntimeTruth);
 
-        if (!ResolveNpcAutoLevelSelections(request, pool, out rejectionReason))
+        if (!ResolveNpcAutoLevelSelections(request, activeCoordinatorCharacter, out rejectionReason))
             return null;
 
         var modules = new List<DadPlannedModuleExecution>();
@@ -349,7 +351,7 @@ public sealed class DadPlannerService
         if (modules.Count == 0)
             return null;
 
-        if (requireLiveReadiness && !ValidateLocalNpcDutyRunner(request, pool, out rejectionReason))
+        if (requireLiveReadiness && !ValidateLocalNpcDutyRunner(request, activeCoordinatorCharacter, out rejectionReason))
             return null;
 
         if (!ValidateStopPolicyAtStart(request, pool, out rejectionReason))
@@ -377,9 +379,6 @@ public sealed class DadPlannerService
             !ValidateRequiredRuntimeParticipants(request, pool, configuration.PartyValidationOverrideEnabled, out rejectionReason))
             return null;
 
-        var activeCoordinatorCharacter = DadFullPartyExecutionRules.ResolveActiveCoordinatorCharacter(
-            unfilteredLocalRuntimeCharacter,
-            pool.Characters);
         var localCharacterKey = activeCoordinatorCharacter?.CharacterKey ?? string.Empty;
         var leaderCharacterKey = string.IsNullOrWhiteSpace(request.Orchestration.PreferredLeaderCharacterKey)
             ? localCharacterKey
@@ -695,18 +694,18 @@ public sealed class DadPlannerService
         return true;
     }
 
-    private bool ResolveNpcAutoLevelSelections(DadRunRequest request, DadCharacterPool pool, out string rejectionReason)
+    private bool ResolveNpcAutoLevelSelections(
+        DadRunRequest request,
+        DadAcquiredCharacter? liveLocalCharacter,
+        out string rejectionReason)
     {
         rejectionReason = string.Empty;
-        var localCharacter = pool.Characters.FirstOrDefault(static character =>
-            character.Source == DadCharacterSource.LocalRuntime &&
-            character.IsLiveConnected);
 
         if (request.DutySupport is { AutoSelectHighestEligible: true } dutySupport &&
             (dutySupport.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(dutySupport.DutyName)))
         {
             var selected = presetProviderService.SelectHighestEligibleNpcDuty(
-                localCharacter,
+                liveLocalCharacter,
                 DadNpcAutoLevelLane.DutySupport,
                 out var blocker);
             if (selected == null)
@@ -723,7 +722,7 @@ public sealed class DadPlannerService
             (trust.ContentFinderConditionId == 0 || string.IsNullOrWhiteSpace(trust.DutyName)))
         {
             var selected = presetProviderService.SelectHighestEligibleNpcDuty(
-                localCharacter,
+                liveLocalCharacter,
                 DadNpcAutoLevelLane.Trust,
                 out var blocker);
             if (selected == null)
@@ -741,7 +740,7 @@ public sealed class DadPlannerService
 
     private bool ValidateLocalNpcDutyRunner(
         DadRunRequest request,
-        DadCharacterPool pool,
+        DadAcquiredCharacter? liveLocalCharacter,
         out string rejectionReason)
     {
         rejectionReason = string.Empty;
@@ -753,10 +752,7 @@ public sealed class DadPlannerService
         if (localNpcDuties.Count == 0)
             return true;
 
-        var localCharacter = pool.Characters.FirstOrDefault(static character =>
-            character.Source == DadCharacterSource.LocalRuntime &&
-            character.IsLiveConnected);
-        if (localCharacter == null)
+        if (liveLocalCharacter == null || !liveLocalCharacter.IsLiveConnected)
         {
             rejectionReason = "Duty Support/Trust requires a ready logged-in local character.";
             return false;
@@ -766,7 +762,7 @@ public sealed class DadPlannerService
         {
             var duty = presetProviderService.GetPlannerDuty(dutyRequest.ContentFinderConditionId);
             var blocker = DadNpcDutyEligibility.GetBlocker(
-                localCharacter,
+                liveLocalCharacter,
                 string.IsNullOrWhiteSpace(dutyRequest.DutyName)
                     ? duty?.DutyDisplayName ?? string.Empty
                     : dutyRequest.DutyName,

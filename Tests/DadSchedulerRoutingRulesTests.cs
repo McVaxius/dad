@@ -198,6 +198,52 @@ public sealed class DadSchedulerRoutingRulesTests
     }
 
     [Fact]
+    public void DuplicateLiveRoutesForOneStableAccountRemainUnresolved()
+    {
+        var first = Participant("worker-x-a", AccountX, true, "Hard'carry Gray'parse@Excalibur");
+        var second = Participant("worker-x-b", AccountX, true, "Other Character@Excalibur");
+
+        var resolved = DadSchedulerRoutingRules.ResolveExactConnectedClient(
+            new DadAccountKey(AccountX),
+            [second, first],
+            static _ => true);
+
+        Assert.Null(resolved);
+    }
+
+    [Fact]
+    public void DisconnectedSessionSafelyRebindsOnlyOneExactStableAccountReplacement()
+    {
+        var replacement = Participant(
+            "worker-x-new",
+            AccountX,
+            isAvailable: false,
+            activeCharacter: string.Empty);
+
+        var rebound = DadSchedulerRoutingRules.ResolveCurrentOrSoleReconnectedClient(
+            new DadAccountKey(AccountX),
+            new DadWorkerSessionId("worker-x-old"),
+            [replacement],
+            static _ => true);
+
+        Assert.Same(replacement, rebound);
+
+        var duplicate = Participant("worker-x-other", AccountX, true, "Other@Excalibur");
+        Assert.Null(DadSchedulerRoutingRules.ResolveCurrentOrSoleReconnectedClient(
+            new DadAccountKey(AccountX),
+            new DadWorkerSessionId("worker-x-old"),
+            [replacement, duplicate],
+            static _ => true));
+
+        var contradictoryOldSession = Participant("worker-x-old", "different-account", true, "Wrong@Excalibur");
+        Assert.Null(DadSchedulerRoutingRules.ResolveCurrentOrSoleReconnectedClient(
+            new DadAccountKey(AccountX),
+            new DadWorkerSessionId("worker-x-old"),
+            [replacement, contradictoryOldSession],
+            static _ => true));
+    }
+
+    [Fact]
     public void FrozenWorkerSessionSurvivesDisconnectedRebuildAndRejectsSubstituteUntilReconnect()
     {
         var frozenId = new DadWorkerSessionId("worker-x");

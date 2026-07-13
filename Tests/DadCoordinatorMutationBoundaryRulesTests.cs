@@ -14,7 +14,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     [Fact]
     public void ExactFrozenParticipantsAndRawLocalSlotOneAuthorityAreAcceptedWithoutMutatingInputs()
     {
-        var (plan, manifest, runtime, activeCoordinator) = BuildBoundary();
+        var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
         var originalStates = runtime.Select(static participant => participant.State).ToList();
 
         var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
@@ -22,7 +22,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             manifest,
             runtime,
             new DadAccountKey(CoordinatorAccount),
-            activeCoordinator,
+            liveCoordinator,
             out var resolved,
             out var blocker);
 
@@ -37,7 +37,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     [Fact]
     public void FrozenWorkerSessionDriftFailsBeforeMutation()
     {
-        var (plan, manifest, runtime, activeCoordinator) = BuildBoundary();
+        var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
         runtime[0].WorkerSessionId = new DadWorkerSessionId("replacement-session");
 
         var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
@@ -45,7 +45,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             manifest,
             runtime,
             new DadAccountKey(CoordinatorAccount),
-            activeCoordinator,
+            liveCoordinator,
             out _,
             out var blocker);
 
@@ -56,7 +56,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     [Fact]
     public void MissingExactLocalSlotOneProofFailsBeforeMutation()
     {
-        var (plan, manifest, runtime, activeCoordinator) = BuildBoundary();
+        var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
         runtime[0].IsLocalClient = false;
 
         var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
@@ -64,7 +64,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             manifest,
             runtime,
             new DadAccountKey(CoordinatorAccount),
-            activeCoordinator,
+            liveCoordinator,
             out _,
             out var blocker);
 
@@ -76,11 +76,13 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     public void RawDifferentAccountCannotBeHiddenByAStaleExactPresenceRow()
     {
         var (plan, manifest, runtime, _) = BuildBoundary();
-        var wrongAccountRuntime = Character(
-            "Other Account Character@World",
-            "different-account",
-            9009,
-            DadCharacterSource.LocalRuntime);
+        var wrongAccountRuntime = LiveCoordinator(
+            Character(
+                "Other Account Character@World",
+                "different-account",
+                9009,
+                DadCharacterSource.LocalRuntime),
+            "different-account");
 
         var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
             plan,
@@ -98,7 +100,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     [Fact]
     public void WorldSafetyLossFailsTheFreshMutationBoundary()
     {
-        var (plan, manifest, runtime, activeCoordinator) = BuildBoundary();
+        var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
         runtime[0].WorldReadyStable = false;
 
         var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
@@ -106,7 +108,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             manifest,
             runtime,
             new DadAccountKey(CoordinatorAccount),
-            activeCoordinator,
+            liveCoordinator,
             out _,
             out var blocker);
 
@@ -114,7 +116,54 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
         Assert.Contains("world-ready-stable", blocker, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static (DadRunPlan Plan, DadRunSlotManifest Manifest, List<DadParticipantSnapshot> Runtime, DadAcquiredCharacter ActiveCoordinator) BuildBoundary()
+    [Fact]
+    public void MissingExplicitLiveCoordinatorTruthCannotUseProjectedLocalRow()
+    {
+        var (plan, manifest, runtime, _) = BuildBoundary();
+
+        var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            runtime,
+            new DadAccountKey(CoordinatorAccount),
+            null,
+            out _,
+            out var blocker);
+
+        Assert.False(accepted);
+        Assert.Contains("Explicit live coordinator truth", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LiveContentIdOrSessionDriftFailsBeforeMutation()
+    {
+        var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
+        liveCoordinator.Character.ContentId = 9999;
+
+        Assert.False(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            runtime,
+            new DadAccountKey(CoordinatorAccount),
+            liveCoordinator,
+            out _,
+            out var contentBlocker));
+        Assert.Contains("Content ID mismatch", contentBlocker, StringComparison.OrdinalIgnoreCase);
+
+        (_, _, runtime, liveCoordinator) = BuildBoundary();
+        liveCoordinator.WorkerSessionId = new DadWorkerSessionId("replacement-session");
+        Assert.False(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            runtime,
+            new DadAccountKey(CoordinatorAccount),
+            liveCoordinator,
+            out _,
+            out var sessionBlocker));
+        Assert.Contains("worker/client/session", sessionBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (DadRunPlan Plan, DadRunSlotManifest Manifest, List<DadParticipantSnapshot> Runtime, DadParticipantSnapshot LiveCoordinator) BuildBoundary()
     {
         var references = Enumerable.Range(1, 4)
             .Select(index => new DadRosterCharacterRef
@@ -185,6 +234,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
         };
         var runtime = manifest.Slots.Select((slot, index) => new DadParticipantSnapshot
         {
+            ClientInstanceId = $"client-{index + 1}",
             WorkerSessionId = slot.WorkerSessionId,
             ManagedAccountKey = slot.AccountKey,
             ActiveCharacterKey = slot.CharacterKey,
@@ -200,13 +250,27 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             WorldReadyStable = true,
             State = DadParticipantState.AssemblyConfirmed,
         }).ToList();
-        var activeCoordinator = Character(
-            LeaderCharacter,
-            CoordinatorAccount,
-            LeaderContentId,
-            DadCharacterSource.LocalRuntime);
-        return (plan, manifest, runtime, activeCoordinator);
+        runtime[0].ClientInstanceId = "client-w";
+        var liveCoordinator = LiveCoordinator(runtime[0].Character.Clone(), CoordinatorAccount);
+        return (plan, manifest, runtime, liveCoordinator);
     }
+
+    private static DadParticipantSnapshot LiveCoordinator(
+        DadAcquiredCharacter character,
+        string accountId)
+        => new()
+        {
+            ClientInstanceId = "client-w",
+            WorkerSessionId = new DadWorkerSessionId("worker-1"),
+            ManagedAccountKey = new DadAccountKey(accountId),
+            ActiveCharacterKey = new DadCharacterKey(character.CharacterKey),
+            Character = character,
+            IsLocalClient = true,
+            IsAvailable = true,
+            IsEligibleForRun = true,
+            PostArReady = true,
+            WorldReadyStable = true,
+        };
 
     private static DadAcquiredCharacter Character(
         string characterKey,

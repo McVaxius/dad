@@ -119,11 +119,33 @@ public sealed class DadRequestedJobPreparationGateTests
         Assert.True(DadRequestedJobPreparationProofRules.PermitsReadiness(proof, key));
     }
 
+    [Fact]
+    public void OnlyAllowedTerminalPreparationOutcomesPermitPartyReadiness()
+    {
+        var key = Key();
+
+        Assert.False(DadRequestedJobPreparationProofRules.PermitsReadiness(null, key, currentJobId: 21));
+        Assert.False(Permits(DadRequestedJobPreparationStatus.Pending, currentJobId: 19));
+        Assert.False(Permits(DadRequestedJobPreparationStatus.AwaitingVerification, currentJobId: 19));
+        Assert.False(Permits(DadRequestedJobPreparationStatus.Cancelled, currentJobId: 21));
+        Assert.False(Permits(DadRequestedJobPreparationStatus.NotRequested, currentJobId: 21));
+        Assert.True(Permits(DadRequestedJobPreparationStatus.AlreadyMatched, currentJobId: 21));
+        Assert.True(Permits(DadRequestedJobPreparationStatus.Switched, currentJobId: 21));
+        Assert.True(Permits(DadRequestedJobPreparationStatus.SoftFailed, currentJobId: 19));
+        Assert.False(Permits(DadRequestedJobPreparationStatus.Switched, currentJobId: 19));
+
+        bool Permits(DadRequestedJobPreparationStatus status, uint currentJobId)
+            => DadRequestedJobPreparationProofRules.PermitsReadiness(
+                new DadRequestedJobPreparationProof { Key = key, Status = status },
+                key,
+                currentJobId);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void TransientFailuresRetryOncePerSecondThroughSecondFive(
+    public void OnlyActualMutationCallsConsumeTheThreeAttemptAllowance(
         bool catalogAvailable,
         bool safeToEquip)
     {
@@ -132,7 +154,7 @@ public sealed class DadRequestedJobPreparationGateTests
         var calls = 0;
         DadRequestedJobPreparationProof? proof = null;
 
-        for (var second = 0; second <= 5; second++)
+        for (var second = 0; second < 3; second++)
         {
             var catalog = catalogAvailable
                 ? Catalog()
@@ -149,14 +171,18 @@ public sealed class DadRequestedJobPreparationGateTests
                     return DadClassJobEquipAttemptResult.Rejected("native -1");
                 });
 
-            if (second < 5)
+            if (!catalogAvailable || !safeToEquip || second < 2)
                 Assert.Equal(DadRequestedJobPreparationStatus.Pending, proof.Status);
         }
 
         Assert.NotNull(proof);
-        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, proof!.Status);
-        Assert.Equal(6, proof.AttemptCount);
-        Assert.Equal(catalogAvailable && safeToEquip ? 6 : 0, calls);
+        Assert.Equal(
+            catalogAvailable && safeToEquip
+                ? DadRequestedJobPreparationStatus.SoftFailed
+                : DadRequestedJobPreparationStatus.Pending,
+            proof!.Status);
+        Assert.Equal(catalogAvailable && safeToEquip ? 3 : 0, proof.AttemptCount);
+        Assert.Equal(catalogAvailable && safeToEquip ? 3 : 0, calls);
     }
 
     [Fact]
@@ -224,14 +250,14 @@ public sealed class DadRequestedJobPreparationGateTests
     }
 
     [Fact]
-    public void NativeMinusOneStyleRejectionRetriesThroughSecondFive()
+    public void NativeMinusOneStyleRejectionSoftFailsOnThirdActualCall()
     {
         var gate = new DadRequestedJobPreparationGate();
         var key = Key();
         var calls = 0;
         DadRequestedJobPreparationProof? proof = null;
 
-        for (var second = 0; second <= 5; second++)
+        for (var second = 0; second < 3; second++)
         {
             proof = gate.Advance(key, Observation(key), Start.AddSeconds(second), _ =>
             {
@@ -242,13 +268,13 @@ public sealed class DadRequestedJobPreparationGateTests
 
         Assert.NotNull(proof);
         Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, proof!.Status);
-        Assert.Equal(6, proof.AttemptCount);
-        Assert.Equal(6, calls);
+        Assert.Equal(3, proof.AttemptCount);
+        Assert.Equal(3, calls);
         Assert.Contains("returned -1", proof.FailureReason);
     }
 
     [Fact]
-    public void AcceptedEquipSoftFailsWhenJobIsNotObservedWithinFiveSeconds()
+    public void AcceptedEquipReturnsToRetryAndSoftFailsAfterThirdUnverifiedCall()
     {
         var gate = new DadRequestedJobPreparationGate();
         var key = Key();
@@ -259,15 +285,25 @@ public sealed class DadRequestedJobPreparationGateTests
             Observation(key),
             Start.AddMilliseconds(4999),
             _ => throw new InvalidOperationException("must not equip twice"));
-        var timedOut = gate.Advance(
+        var firstTimedOut = gate.Advance(
             key,
             Observation(key),
             Start.AddSeconds(5),
-            _ => throw new InvalidOperationException("must not equip twice"));
+            _ => throw new InvalidOperationException("timeout transition must not equip"));
+
+        var secondAwaiting = gate.Advance(key, Observation(key), Start.AddSeconds(6), _ => DadClassJobEquipAttemptResult.Success());
+        var secondTimedOut = gate.Advance(key, Observation(key), Start.AddSeconds(11), _ => throw new InvalidOperationException("timeout transition must not equip"));
+        var thirdAwaiting = gate.Advance(key, Observation(key), Start.AddSeconds(12), _ => DadClassJobEquipAttemptResult.Success());
+        var final = gate.Advance(key, Observation(key), Start.AddSeconds(17), _ => throw new InvalidOperationException("timeout transition must not equip"));
 
         Assert.Equal(DadRequestedJobPreparationStatus.AwaitingVerification, early.Status);
-        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, timedOut.Status);
-        Assert.Contains("not observed within five seconds", timedOut.FailureReason);
+        Assert.Equal(DadRequestedJobPreparationStatus.Pending, firstTimedOut.Status);
+        Assert.Equal(DadRequestedJobPreparationStatus.AwaitingVerification, secondAwaiting.Status);
+        Assert.Equal(DadRequestedJobPreparationStatus.Pending, secondTimedOut.Status);
+        Assert.Equal(DadRequestedJobPreparationStatus.AwaitingVerification, thirdAwaiting.Status);
+        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, final.Status);
+        Assert.Equal(3, final.AttemptCount);
+        Assert.Contains("not observed within five seconds", final.FailureReason);
     }
 
     [Theory]
@@ -278,7 +314,7 @@ public sealed class DadRequestedJobPreparationGateTests
     [InlineData("run-1", "worker-1", "Slot1", "account-1", "Player Two@Excalibur", 1234ul, 21u)]
     [InlineData("run-1", "worker-1", "Slot1", "account-1", "Player One@Excalibur", 9999ul, 21u)]
     [InlineData("run-1", "worker-1", "Slot1", "account-1", "Player One@Excalibur", 1234ul, 19u)]
-    public void AnyExactIdentityDriftCancelsBeforeMutation(
+    public void AnyExactIdentityDriftWaitsWithoutMutationOrAttemptConsumption(
         string runId,
         string workerSessionId,
         string slotId,
@@ -305,13 +341,47 @@ public sealed class DadRequestedJobPreparationGateTests
             return DadClassJobEquipAttemptResult.Success();
         });
 
-        Assert.Equal(DadRequestedJobPreparationStatus.Cancelled, proof.Status);
+        Assert.Equal(DadRequestedJobPreparationStatus.Pending, proof.Status);
+        Assert.Equal(0, proof.AttemptCount);
         Assert.Equal(0, calls);
         Assert.False(DadRequestedJobPreparationProofRules.PermitsReadiness(proof, expected));
     }
 
     [Fact]
-    public void CompletedProofCancelsIfCurrentJobDrifts()
+    public void LoadingOrWrongCharacterDoesNotResetConsumedActualCalls()
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var expected = Key();
+        var wrongCharacter = expected with
+        {
+            CharacterKey = new DadCharacterKey("Other Character@Excalibur"),
+            ContentId = 4321,
+        };
+
+        var first = gate.Advance(
+            expected,
+            Observation(expected),
+            Start,
+            _ => DadClassJobEquipAttemptResult.Rejected("first actual call rejected"));
+        var transition = gate.Advance(
+            expected,
+            Observation(wrongCharacter),
+            Start.AddSeconds(10),
+            _ => throw new InvalidOperationException("wrong character must not equip"));
+        var second = gate.Advance(
+            expected,
+            Observation(expected),
+            Start.AddSeconds(11),
+            _ => DadClassJobEquipAttemptResult.Rejected("second actual call rejected"));
+
+        Assert.Equal(1, first.AttemptCount);
+        Assert.Equal(1, transition.AttemptCount);
+        Assert.Equal(DadRequestedJobPreparationStatus.Pending, transition.Status);
+        Assert.Equal(2, second.AttemptCount);
+    }
+
+    [Fact]
+    public void CompletedProofBecomesSoftFailedIfCurrentJobDrifts()
     {
         var gate = new DadRequestedJobPreparationGate();
         var key = Key();
@@ -319,8 +389,9 @@ public sealed class DadRequestedJobPreparationGateTests
         gate.Advance(key, Observation(key, currentJobId: 21), Start, null);
         var drifted = gate.Advance(key, Observation(key, currentJobId: 19), Start.AddSeconds(1), null);
 
-        Assert.Equal(DadRequestedJobPreparationStatus.Cancelled, drifted.Status);
-        Assert.False(DadRequestedJobPreparationProofRules.PermitsReadiness(drifted, key));
+        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, drifted.Status);
+        Assert.True(DadRequestedJobPreparationProofRules.PermitsReadiness(drifted, key));
+        Assert.True(DadRequestedJobPreparationProofRules.PermitsReadiness(drifted, key, currentJobId: 19));
     }
 
     [Fact]

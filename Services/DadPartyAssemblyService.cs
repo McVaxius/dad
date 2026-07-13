@@ -2,6 +2,17 @@ using dad.Models;
 
 namespace dad.Services;
 
+public enum DadPartyMembershipDisposition
+{
+    Ready,
+    Wait,
+    Reject,
+}
+
+public readonly record struct DadPartyMembershipDecision(
+    DadPartyMembershipDisposition Disposition,
+    string Summary);
+
 public sealed class DadPartyAssemblyService
 {
     public List<DadAssemblyInstructionDto> BuildInstructions(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants, out string blocker)
@@ -64,27 +75,66 @@ public sealed class DadPartyAssemblyService
         IReadOnlyList<DadPartyMemberSnapshot> partyMembers,
         out string blocker)
     {
-        blocker = string.Empty;
-        if (plan.RequiredParticipantCount <= 1)
-            return true;
+        var decision = EvaluatePartyMembership(plan, participants, partyMembers);
+        blocker = decision.Disposition == DadPartyMembershipDisposition.Ready
+            ? string.Empty
+            : decision.Summary;
+        return decision.Disposition == DadPartyMembershipDisposition.Ready;
+    }
 
-        if (partyMembers.Count < plan.RequiredParticipantCount)
+    public DadPartyMembershipDecision EvaluatePartyMembership(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        IReadOnlyList<DadPartyMemberSnapshot> partyMembers)
+    {
+        if (plan.RequiredParticipantCount <= 1)
+            return new DadPartyMembershipDecision(DadPartyMembershipDisposition.Ready, "Single-participant run needs no PartyList proof.");
+
+        var expectedContentIds = participants
+            .Select(static participant => participant.Character.ContentId)
+            .Where(static contentId => contentId != 0)
+            .ToHashSet();
+        if (expectedContentIds.Count != plan.RequiredParticipantCount)
         {
-            blocker = $"Waiting for party assembly: PartyList has {partyMembers.Count}/{plan.RequiredParticipantCount} member(s).";
-            return false;
+            return new DadPartyMembershipDecision(
+                DadPartyMembershipDisposition.Reject,
+                $"Frozen party manifest has {expectedContentIds.Count}/{plan.RequiredParticipantCount} exact nonzero Content IDs.");
         }
 
-        var missing = participants
-            .Where(participant => !IsParticipantInParty(participant, partyMembers))
-            .Select(static participant => participant.ActiveCharacterKey.ToString())
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (missing.Count == 0)
-            return true;
+        if (partyMembers.Count > plan.RequiredParticipantCount)
+        {
+            return new DadPartyMembershipDecision(
+                DadPartyMembershipDisposition.Reject,
+                $"PartyList contains {partyMembers.Count} members, exceeding frozen party size {plan.RequiredParticipantCount}.");
+        }
 
-        blocker = $"Waiting for party member(s): {string.Join(", ", missing)}.";
-        return false;
+        var unexpected = partyMembers
+            .Where(static member => member.ContentId != 0)
+            .Where(member => !expectedContentIds.Contains(member.ContentId))
+            .Select(static member => $"{member.CharacterKey}#{member.ContentId}")
+            .ToList();
+        if (unexpected.Count > 0)
+        {
+            return new DadPartyMembershipDecision(
+                DadPartyMembershipDisposition.Reject,
+                $"PartyList contains unexpected frozen-member contradiction(s): {string.Join(", ", unexpected)}.");
+        }
+
+        var observedContentIds = partyMembers
+            .Select(static member => member.ContentId)
+            .Where(static contentId => contentId != 0)
+            .ToHashSet();
+        var missingIds = expectedContentIds.Except(observedContentIds).ToList();
+        if (partyMembers.Count < plan.RequiredParticipantCount || missingIds.Count > 0)
+        {
+            return new DadPartyMembershipDecision(
+                DadPartyMembershipDisposition.Wait,
+                $"Waiting for exact PartyList Content IDs: {observedContentIds.Count}/{plan.RequiredParticipantCount} proven; missing {string.Join(",", missingIds)}.");
+        }
+
+        return new DadPartyMembershipDecision(
+            DadPartyMembershipDisposition.Ready,
+            $"PartyList proves exact frozen membership {observedContentIds.Count}/{plan.RequiredParticipantCount}.");
     }
 
     private static List<DadParticipantSnapshot> OrderParticipantsForParty(

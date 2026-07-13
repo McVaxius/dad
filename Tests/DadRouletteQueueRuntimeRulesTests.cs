@@ -31,10 +31,8 @@ public sealed class DadRouletteQueueRuntimeRulesTests
                 requestedId));
 
     [Fact]
-    public void AttemptLimitsAndSettleDurationsRemainExact()
+    public void SettleDurationsRemainExact()
     {
-        Assert.Equal(3, DadRouletteQueueAttemptGate.MaxSelectionAttempts);
-        Assert.Equal(3, DadRouletteQueueAttemptGate.MaxJoinAttempts);
         Assert.Equal(TimeSpan.FromSeconds(6), DadRouletteQueueAttemptGate.SelectionSettle);
         Assert.Equal(TimeSpan.FromSeconds(8), DadRouletteQueueAttemptGate.RegistrationGrace);
     }
@@ -73,7 +71,7 @@ public sealed class DadRouletteQueueRuntimeRulesTests
     }
 
     [Fact]
-    public void FailedSelectionProofStopsAfterExactlyThreeOpenAttempts()
+    public void FailedSelectionProofKeepsStartingNewAttempts()
     {
         var gate = new DadRouletteQueueAttemptGate();
 
@@ -92,20 +90,19 @@ public sealed class DadRouletteQueueRuntimeRulesTests
             gate.Decide(Start + TimeSpan.FromSeconds(12), false, false),
             DadRouletteQueueMutation.OpenRoulette);
 
-        var failed = gate.Decide(Start + TimeSpan.FromSeconds(18), false, false);
-        AssertDecision(failed, DadRouletteQueueMutation.Fail);
-        Assert.Contains("three attempts", failed.Reason, StringComparison.OrdinalIgnoreCase);
+        var fourthClear = gate.Decide(Start + TimeSpan.FromSeconds(18), false, false);
+        AssertDecision(fourthClear, DadRouletteQueueMutation.ClearSelection);
         Assert.Equal(3, gate.SelectionAttempts);
         Assert.Equal(0, gate.JoinAttempts);
 
         AssertDecision(
-            gate.Decide(Start + TimeSpan.FromSeconds(19), false, false),
-            DadRouletteQueueMutation.Fail);
-        Assert.Equal(3, gate.SelectionAttempts);
+            gate.Decide(Start + TimeSpan.FromSeconds(18), false, false),
+            DadRouletteQueueMutation.OpenRoulette);
+        Assert.Equal(4, gate.SelectionAttempts);
     }
 
     [Fact]
-    public void JoinRetriesUseFullEightSecondGraceAndStopAfterThreeAttempts()
+    public void JoinRetriesUseFullEightSecondGraceAndRestartTheFullCycleIndefinitely()
     {
         var gate = AdvanceToFirstJoin();
         var firstJoinAt = Start + TimeSpan.FromSeconds(6);
@@ -116,27 +113,24 @@ public sealed class DadRouletteQueueRuntimeRulesTests
             DadRouletteQueueMutation.Wait);
         Assert.False(gate.IsRegistrationGraceActive(firstJoinAt + TimeSpan.FromSeconds(8)));
 
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false), DadRouletteQueueMutation.OpenRoulette);
         AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(8), true, false),
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(13.999), true, false),
+            DadRouletteQueueMutation.Wait);
+
+        AssertDecision(
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(14), true, false),
             DadRouletteQueueMutation.Join);
         Assert.Equal(2, gate.JoinAttempts);
         AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(15.999), true, false),
+            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(21.999), true, false),
             DadRouletteQueueMutation.Wait);
 
-        AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(16), true, false),
-            DadRouletteQueueMutation.Join);
-        Assert.Equal(3, gate.JoinAttempts);
-        AssertDecision(
-            gate.Decide(firstJoinAt + TimeSpan.FromSeconds(23.999), true, false),
-            DadRouletteQueueMutation.Wait);
-
-        var failed = gate.Decide(firstJoinAt + TimeSpan.FromSeconds(24), true, false);
-        AssertDecision(failed, DadRouletteQueueMutation.Fail);
-        Assert.Contains("three Join attempts", failed.Reason, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(3, gate.JoinAttempts);
-        Assert.Equal(1, gate.SelectionAttempts);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false), DadRouletteQueueMutation.ClearSelection);
+        AssertDecision(gate.Decide(firstJoinAt + TimeSpan.FromSeconds(22), true, false), DadRouletteQueueMutation.OpenRoulette);
+        Assert.Equal(2, gate.JoinAttempts);
+        Assert.Equal(3, gate.SelectionAttempts);
     }
 
     [Fact]

@@ -24,6 +24,9 @@ public sealed class DadSchedulerService
     private readonly IPluginLog log;
     private readonly Dictionary<string, string> takeoverDiagnosticStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingTakeoverCancellation> pendingTakeoverCancellations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingEarlyAssignmentCancellation> pendingEarlyAssignmentCancellations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DadStableContradictionTracker> slotContradictionTrackers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DadImmutableCommandRegistry frozenRequestRegistry = new();
     private DadStrictPlannerRevalidationTracker strictRevalidationTracker = new();
     private DadSchedulerPresetPhase? lastLoggedSchedulerPhase;
     private DadModuleId activeSchedulerModuleId = DadModuleId.None;
@@ -31,6 +34,8 @@ public sealed class DadSchedulerService
     private DadScheduledCrewJob? activeJob;
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private DateTime suppressAutomaticEnqueueUntilUtc = DateTime.MinValue;
+    private DadRunRequest? frozenPlannerRequest;
+    private List<FrozenEarlyAssignment> frozenEarlyAssignments = [];
 
     private sealed class PendingTakeoverCancellation
     {
@@ -40,6 +45,28 @@ public sealed class DadSchedulerService
         public string Reason { get; init; } = string.Empty;
         public DateTime RequestedAtUtc { get; init; } = DateTime.UtcNow;
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
+        public bool BlocksFutureWork { get; init; } = true;
+    }
+
+    private sealed class FrozenEarlyAssignment
+    {
+        public string CommandId { get; init; } = string.Empty;
+        public DadWakeRequestDto Request { get; init; } = new();
+        public DadScheduledCrewJob Job { get; init; } = new();
+        public HashSet<string> AttemptedWorkerSessionIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> AcknowledgedWorkerSessionIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string LastDiagnosticState { get; set; } = string.Empty;
+    }
+
+    private sealed class PendingEarlyAssignmentCancellation
+    {
+        public string RunId { get; init; } = string.Empty;
+        public DadWorkerSessionId WorkerSessionId { get; init; } = new(string.Empty);
+        public DadScheduledCrewJob Job { get; init; } = new();
+        public string SlotId { get; init; } = string.Empty;
+        public string Reason { get; init; } = string.Empty;
+        public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
+        public bool BlocksFutureWork { get; init; } = true;
     }
 
     public DadSchedulerService(
@@ -156,6 +183,12 @@ public sealed class DadSchedulerService
             schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
             schedulerHash.Add(pending.Value.Job.GroupId, StringComparer.Ordinal);
         }
+        schedulerHash.Add(pendingEarlyAssignmentCancellations.Count);
+        foreach (var pending in pendingEarlyAssignmentCancellations.OrderBy(static pair => pair.Key))
+        {
+            schedulerHash.Add(pending.Key, StringComparer.Ordinal);
+            schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
+        }
 
         var launchProfilesHash = new HashCode();
         launchProfilesHash.Add(configuration.LaunchProfiles?.Count ?? 0);
@@ -201,8 +234,8 @@ public sealed class DadSchedulerService
                 .ToList(),
             Summary = currentState.IsActive
                 ? $"Active {currentState.JobType}: {currentState.Summary}"
-                : pendingTakeoverCancellations.Count > 0
-                    ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s)."
+                : HasPendingCleanup
+                    ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s) and {pendingEarlyAssignmentCancellations.Count} early assignment route(s)."
                 : configuration.SchedulerQueue.Count == 0
                     ? "Scheduler queue idle."
                     : $"{configuration.SchedulerQueue.Count} queued scheduler job(s).",
@@ -392,7 +425,7 @@ public sealed class DadSchedulerService
             activeJob,
             currentState.IsActive,
             configuration.SchedulerQueue,
-            pendingTakeoverCancellations.Values.Select(static pending => pending.Job));
+            PendingCleanupJobs());
         if (duplicate != null)
             return duplicate;
 
@@ -485,10 +518,11 @@ public sealed class DadSchedulerService
             return true;
         }
 
-        if (pendingTakeoverCancellations.Values.Any(pending =>
-                string.Equals(pending.Job.JobId, jobId, StringComparison.OrdinalIgnoreCase)))
+        if (PendingCleanupJobs().Any(job =>
+                string.Equals(job.JobId, jobId, StringComparison.OrdinalIgnoreCase)))
         {
             UpdatePendingTakeoverCancellations();
+            UpdatePendingEarlyAssignmentCancellations();
             return true;
         }
 
@@ -721,6 +755,20 @@ public sealed class DadSchedulerService
             DryRun = dryRun,
             RequestedBy = "scheduler",
         };
+        frozenPlannerRequest = CloneRunRequest(plannerRequestPreview.Request);
+        frozenEarlyAssignments = frozenPlannerRequest == null
+            ? []
+            : BuildFrozenEarlyAssignments(frozenPlannerRequest, preview.Slots, activeJob);
+        DadImmutableCommandRegistration? requestRegistration = null;
+        if (frozenPlannerRequest != null)
+        {
+            var payload = DadIpcJson.Serialize(frozenPlannerRequest);
+            requestRegistration = frozenRequestRegistry.Register(
+                frozenPlannerRequest.RequestId,
+                payload,
+                payload,
+                $"scheduler:{activeJob.RequestedBy}:{group.GroupId}");
+        }
         currentState = new DadSchedulerPresetState
         {
             SchedulerRunId = Guid.NewGuid().ToString("N"),
@@ -741,11 +789,41 @@ public sealed class DadSchedulerService
             ScheduleRepeatIteration = activeJob.ScheduleRepeatIteration,
         };
         takeoverDiagnosticStates.Clear();
+        slotContradictionTrackers.Clear();
         lastLoggedSchedulerPhase = null;
         activeSchedulerModuleId = plannerRequestPreview.Request?.Orchestration?.ModuleTarget ?? DadModuleId.None;
         strictRevalidationTracker = new DadStrictPlannerRevalidationTracker();
         InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
         nextRefreshUtc = DateTime.MinValue;
+
+        if (requestRegistration?.Disposition == DadImmutableCommandDisposition.Collision)
+        {
+            var collision = requestRegistration;
+            log.Error(
+                "[dad] Immutable scheduler request collision command={CommandId} originalProducerRoute={OriginalProducerRoute} incomingProducerRoute={IncomingProducerRoute} originalPayload={OriginalPayload} incomingPayload={IncomingPayload}.",
+                collision.CommandId,
+                collision.OriginalProducerRoute,
+                collision.IncomingProducerRoute,
+                collision.OriginalPayload,
+                collision.IncomingPayload);
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.BlockedReason = $"Immutable command ID collision for scheduler request {collision.CommandId}.";
+            currentState.Summary = currentState.BlockedReason;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
+            return CurrentState;
+        }
+
+        if (frozenPlannerRequest != null)
+        {
+            log.Information(
+                "[dad] Frozen scheduler request request={RequestId} module={ModuleId} jobs={FrozenJobs} queue={QueueTarget}.",
+                frozenPlannerRequest.RequestId,
+                frozenPlannerRequest.Orchestration.ModuleTarget,
+                string.Join(",", frozenEarlyAssignments.Select(static assignment =>
+                    $"{assignment.Request.AssignedSlotId}:{assignment.Request.RequiredJobId?.ToString() ?? "current"}")),
+                DescribeQueueTarget(frozenPlannerRequest));
+        }
 
         if (!preview.CanStart)
         {
@@ -753,6 +831,21 @@ public sealed class DadSchedulerService
             currentState.Summary = $"Scheduler blocked for preset '{group.DisplayName}': {preview.BlockedReason}";
             currentState.BlockedReason = preview.BlockedReason;
             currentState.CompletedAtUtc = DateTime.UtcNow;
+            RecordTerminalResult(currentState);
+            return CurrentState;
+        }
+
+        var frozenAssignmentBlocker = ValidateFrozenEarlyAssignments(
+            frozenPlannerRequest,
+            currentState.Slots,
+            frozenEarlyAssignments);
+        if (!string.IsNullOrWhiteSpace(frozenAssignmentBlocker))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.Summary = frozenAssignmentBlocker;
+            currentState.BlockedReason = frozenAssignmentBlocker;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             RecordTerminalResult(currentState);
             return CurrentState;
         }
@@ -791,10 +884,13 @@ public sealed class DadSchedulerService
         Func<DadRunResult>? visibleRunProvider = null)
     {
         UpdatePendingTakeoverCancellations();
+        UpdatePendingEarlyAssignmentCancellations();
         LogSchedulerPhaseTransition();
         TickScheduleEnqueue();
 
-        UpdateActiveScheduleRun(visibleRunProvider?.Invoke() ?? DadRunResult.Idle());
+        var visibleRun = visibleRunProvider?.Invoke() ?? DadRunResult.Idle();
+        UpdateCompletedPlannerAssignmentCleanup(visibleRun);
+        UpdateActiveScheduleRun(visibleRun);
 
         if (!currentState.IsActive)
         {
@@ -822,35 +918,45 @@ public sealed class DadSchedulerService
             return;
         }
 
-        var plannerPreview = plannerPreviewBuilder(currentState.GroupId);
-        if (plannerPreview == null)
+        if (frozenPlannerRequest == null)
         {
-            BlockActive("Scheduler could not rebuild the preset planner request.");
+            BlockActive("Scheduler has no frozen planner request.");
             return;
         }
+
+        var assignmentsAcknowledged = DeliverEarlyJobAssignments(out var assignmentBlocker);
+        if (!string.IsNullOrWhiteSpace(assignmentBlocker))
+        {
+            BlockActive(assignmentBlocker);
+            return;
+        }
+
         var groupPreviewSlots = currentState.Slots;
-        var previewSlots = RebuildActiveSlots(plannerPreview, groupPreviewSlots);
+        var previewSlots = RebuildActiveSlots(groupPreviewSlots);
         currentState.Slots = previewSlots;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
+
+        if (HasActiveRebindCleanup)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Resolving;
+            currentState.Summary = "A stable-account client reconnected on a new worker session; waiting for exact old-route cancellation acknowledgement before mutation.";
+            return;
+        }
 
         var preMutationSlotBlockers = currentState.Slots
             .Select(static slot => slot.BlockedReason)
             .Where(static reason => !string.IsNullOrWhiteSpace(reason))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (plannerPreview.Request == null || !plannerPreview.CanSchedule || preMutationSlotBlockers.Count > 0)
+        if (preMutationSlotBlockers.Count > 0)
         {
-            BlockActive(FirstNonEmpty(
-                DadPlannerValidationRules.BuildSchedulerTerminalReason(plannerPreview, preMutationSlotBlockers),
-                "Scheduler could not rebuild a startable preset planner request."));
+            BlockActive(string.Join(" | ", preMutationSlotBlockers));
             return;
         }
 
         if (!AdvanceWakeTakeoverPipelines(currentState.Slots, out var barrierBlocker))
         {
-            BlockActive(DadPlannerValidationRules.BuildSchedulerTerminalReason(
-                plannerPreview,
-                [barrierBlocker]));
+            BlockActive(barrierBlocker);
             return;
         }
 
@@ -863,18 +969,14 @@ public sealed class DadSchedulerService
         {
             if (!string.IsNullOrWhiteSpace(slot.BlockedReason))
             {
-                BlockActive(DadPlannerValidationRules.BuildSchedulerTerminalReason(
-                    plannerPreview,
-                    [slot.BlockedReason]));
+                BlockActive(slot.BlockedReason);
                 return;
             }
 
             if (IsParticipantReadyTimedOut(slot, out var timeoutReason))
             {
                 currentState.Phase = DadSchedulerPresetPhase.TimedOut;
-                currentState.BlockedReason = DadPlannerValidationRules.BuildSchedulerTerminalReason(
-                    plannerPreview,
-                    [timeoutReason]);
+                currentState.BlockedReason = timeoutReason;
                 currentState.Summary = currentState.BlockedReason;
                 currentState.CompletedAtUtc = DateTime.UtcNow;
                 currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
@@ -893,57 +995,22 @@ public sealed class DadSchedulerService
             return;
         }
 
+        if (!assignmentsAcknowledged)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Resolving;
+            currentState.Summary = "All characters are ready; waiting for every exact requested-job assignment acknowledgement.";
+            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
         currentState.Phase = DadSchedulerPresetPhase.StartingPlanner;
         currentState.Summary = $"Scheduler ready; starting preset '{currentState.PresetName}'.";
         currentState.UpdatedAtUtc = DateTime.UtcNow;
         LogSchedulerPhaseTransition();
-        var strictPreview = plannerPreviewBuilder(currentState.GroupId);
-        var strictDecision = DadPlannerValidationRules.EvaluateStrictScheduledRun(
-            currentState.Slots.All(static slot => slot.Ready),
-            strictPreview);
-        if (strictDecision.Disposition != DadStrictPlannerRevalidationDisposition.ReadyToStart)
-        {
-            if (strictDecision.Disposition == DadStrictPlannerRevalidationDisposition.WaitForRuntimeReadiness)
-            {
-                LogStrictRevalidationDiagnostic(strictDecision);
-                var readinessBudgetStartUtc = DadPlannerValidationRules.ResolveStrictReadinessBudgetStartUtc(
-                    currentState.Slots,
-                    DateTime.UtcNow);
-                var unboundedWakeWait = currentState.Slots.Any(static slot =>
-                    slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline);
-                if (!unboundedWakeWait && DadWakePolicyRules.IsParticipantReadyTimedOut(
-                        readinessBudgetStartUtc,
-                        DateTime.UtcNow,
-                        configuration.ParticipantReadyTimeoutSeconds))
-                {
-                    var timeout = $"Strict planner readiness timed out: {strictDecision.Reason}";
-                    currentState.Phase = DadSchedulerPresetPhase.TimedOut;
-                    currentState.BlockedReason = timeout;
-                    currentState.Summary = timeout;
-                    currentState.CompletedAtUtc = DateTime.UtcNow;
-                    currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
-                    RecordTerminalResult(currentState);
-                    return;
-                }
-
-                currentState.Phase = DadSchedulerPresetPhase.Resolving;
-                currentState.Summary = unboundedWakeWait
-                    ? $"Takeover is ready; waiting for transient strict-runtime revalidation ({FormatElapsed(DateTime.UtcNow - currentState.StartedAtUtc)} elapsed; no timeout; cancel to stop): {strictDecision.Reason}"
-                    : $"Takeover is ready; waiting for transient strict-runtime revalidation: {strictDecision.Reason}";
-                currentState.UpdatedAtUtc = DateTime.UtcNow;
-                return;
-            }
-
-            LogStrictRevalidationDiagnostic(strictDecision);
-            BlockActive($"Terminal strict planner rejection: {strictDecision.Reason}");
-            return;
-        }
-
         if (!strictRevalidationTracker.TryClaimStart())
             return;
 
-        var strictRequest = strictPreview!.Request!;
-        currentState.PlannerRequestId = strictRequest.RequestId;
+        var strictRequest = CloneRunRequest(frozenPlannerRequest)!;
         var result = startPlannerRequest(strictRequest);
         currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
         currentState.Phase = currentState.PlannerStarted
@@ -1017,6 +1084,139 @@ public sealed class DadSchedulerService
                 pending.Reason,
                 FirstNonEmpty(result.BlockedReason, result.Summary));
         }
+    }
+
+    public void UpdatePendingEarlyAssignmentCancellations()
+    {
+        if (pendingEarlyAssignmentCancellations.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        foreach (var pair in pendingEarlyAssignmentCancellations.ToList())
+        {
+            var pending = pair.Value;
+            if (now < pending.NextAttemptUtc)
+                continue;
+
+            pending.NextAttemptUtc = now + RefreshInterval;
+            var participant = participants.FirstOrDefault(candidate =>
+                string.Equals(
+                    candidate.WorkerSessionId.Value,
+                    pending.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase) &&
+                (candidate.IsLocalClient || transportService.IsWorkerOnline(candidate.WorkerSessionId)));
+            if (participant == null)
+                continue;
+
+            var command = new DadCancelCommandDto
+            {
+                RunId = pending.RunId,
+                AuthorityWorkerSessionId = presenceService.WorkerSessionId,
+                CancellationState = DadRunCancellationState.Requested,
+                Reason = pending.Reason,
+            };
+            var ack = participant.IsLocalClient
+                ? presenceService.HandleCancelRun(command)
+                : transportService.SendCancelRun(participant, command);
+            if (ack is not { Acknowledged: true })
+                continue;
+
+            pendingEarlyAssignmentCancellations.Remove(pair.Key);
+            log.Information(
+                "[dad] Early requested-job cancellation acknowledged request={RequestId} slot={SlotId} worker={WorkerSessionId} reason={Reason} summary={Summary}.",
+                pending.RunId,
+                pending.SlotId,
+                pending.WorkerSessionId,
+                pending.Reason,
+                ack.Summary);
+        }
+    }
+
+    private bool DeliverEarlyJobAssignments(out string blocker)
+    {
+        blocker = string.Empty;
+        if (frozenEarlyAssignments.Count == 0)
+            return true;
+
+        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        var allAcknowledged = true;
+        foreach (var assignment in frozenEarlyAssignments)
+        {
+            var slot = currentState.Slots.FirstOrDefault(candidate =>
+                string.Equals(candidate.SlotId, assignment.Request.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
+            var route = slot is { MatchedWorkerSessionId.IsEmpty: false }
+                ? DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+                    assignment.Request.RequiredAccountKey,
+                    slot.MatchedWorkerSessionId,
+                    participants,
+                    transportService.IsWorkerOnline)
+                : null;
+            if (slot == null ||
+                slot.MatchedWorkerSessionId.IsEmpty ||
+                !transportService.IsWorkerOnline(slot.MatchedWorkerSessionId))
+            {
+                route ??= DadSchedulerRoutingRules.ResolveExactConnectedClient(
+                    assignment.Request.RequiredAccountKey,
+                    participants,
+                    transportService.IsWorkerOnline);
+            }
+            if (route == null)
+            {
+                allAcknowledged = false;
+                LogEarlyAssignmentTransition(assignment, "waiting-route", "No sole exact stable-account route is currently available.");
+                continue;
+            }
+
+            var workerId = route.WorkerSessionId.Value;
+            if (assignment.AcknowledgedWorkerSessionIds.Contains(workerId))
+                continue;
+
+            assignment.AttemptedWorkerSessionIds.Add(workerId);
+            var response = route.IsLocalClient
+                ? presenceService.HandleWakeRequest(assignment.Request)
+                : transportService.SendWakeRequest(route, assignment.Request);
+            if (response == null)
+            {
+                allAcknowledged = false;
+                LogEarlyAssignmentTransition(assignment, $"waiting-ack:{workerId}", "Typed assignment acknowledgement is missing; retrying idempotently.");
+                continue;
+            }
+
+            if (!response.AcceptedAssignment)
+            {
+                blocker = $"Immutable requested-job assignment {assignment.CommandId} was rejected by worker {workerId}: {response.BlockerSummary}";
+                LogEarlyAssignmentTransition(assignment, $"rejected:{workerId}", blocker);
+                continue;
+            }
+
+            assignment.AcknowledgedWorkerSessionIds.Add(workerId);
+            LogEarlyAssignmentTransition(
+                assignment,
+                $"acknowledged:{workerId}",
+                $"Worker retained requested job {assignment.Request.RequiredJobId} before character readiness ({response.Snapshot.ActiveCharacterKey}).");
+        }
+
+        return string.IsNullOrWhiteSpace(blocker) && allAcknowledged;
+    }
+
+    private void LogEarlyAssignmentTransition(FrozenEarlyAssignment assignment, string state, string summary)
+    {
+        if (string.Equals(assignment.LastDiagnosticState, state, StringComparison.Ordinal))
+            return;
+
+        assignment.LastDiagnosticState = state;
+        log.Information(
+            "[dad] Early requested-job assignment transition command={CommandId} request={RequestId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} requestedJob={RequestedJobId} state={State} summary={Summary}.",
+            assignment.CommandId,
+            assignment.Request.RunId,
+            assignment.Request.AssignedSlotId,
+            assignment.Request.RequiredAccountKey,
+            assignment.Request.RequiredCharacterKey,
+            assignment.Request.RequiredContentId,
+            assignment.Request.RequiredJobId?.ToString() ?? "(current)",
+            state,
+            summary);
     }
 
     public void TickScheduleEnqueue()
@@ -1159,7 +1359,7 @@ public sealed class DadSchedulerService
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder)
     {
         NormalizeQueue();
-        if (!DadSchedulerSubmissionRules.CanStartNextQueuedJob(pendingTakeoverCancellations.Count > 0))
+        if (!DadSchedulerSubmissionRules.CanStartNextQueuedJob(HasPendingCleanup))
             return false;
 
         var now = DateTime.UtcNow;
@@ -1587,7 +1787,6 @@ public sealed class DadSchedulerService
     }
 
     private List<DadSchedulerSlotState> RebuildActiveSlots(
-        DadPlannerRunRequestPreview plannerPreview,
         IReadOnlyList<DadSchedulerSlotState> previousSlots)
     {
         // The heartbeat projection is updated in memory by transport. Revalidation must not add
@@ -1627,7 +1826,6 @@ public sealed class DadSchedulerService
                 slot.Summary = previous.Summary;
         }
 
-        currentState.PlannerRequestId = plannerPreview.Request?.RequestId ?? currentState.PlannerRequestId;
         return rebuilt;
     }
 
@@ -1664,7 +1862,29 @@ public sealed class DadSchedulerService
                 previous?.MatchedWorkerSessionId ?? new DadWorkerSessionId(string.Empty),
                 launchProfiles);
             if (previous != null)
-                CopyWakeRuntimeState(previous, state);
+            {
+                var rebound = !previous.MatchedWorkerSessionId.IsEmpty &&
+                              !state.MatchedWorkerSessionId.IsEmpty &&
+                              !string.Equals(
+                                  previous.MatchedWorkerSessionId.Value,
+                                  state.MatchedWorkerSessionId.Value,
+                                  StringComparison.OrdinalIgnoreCase);
+                if (rebound)
+                {
+                    QueueReboundWorkerCleanup(previous);
+                    log.Information(
+                        "[dad] Scheduler safely rebound sole stable-account route request={RequestId} slot={SlotId} account={AccountKey} oldWorker={OldWorkerSessionId} newWorker={NewWorkerSessionId}.",
+                        currentState.PlannerRequestId,
+                        state.SlotId,
+                        state.RequiredAccountKey,
+                        previous.MatchedWorkerSessionId,
+                        state.MatchedWorkerSessionId);
+                }
+                else
+                {
+                    CopyWakeRuntimeState(previous, state);
+                }
+            }
 
             ApplyWakePolicyState(state);
 
@@ -1701,12 +1921,17 @@ public sealed class DadSchedulerService
             state.BlockedReason = $"Slot {state.SlotId} targets {rosterState} roster character {slot.RequiredCharacterKey}.";
         }
 
+        var frozenObserved = frozenWorkerSessionId.IsEmpty
+            ? null
+            : participants.FirstOrDefault(participant =>
+                string.Equals(participant.WorkerSessionId.Value, frozenWorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+                (participant.IsLocalClient || transportService.IsWorkerOnline(participant.WorkerSessionId)));
         var matchingAccount = !frozenWorkerSessionId.IsEmpty
-            ? DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
-                slot.RequiredAccountKey,
-                frozenWorkerSessionId,
-                participants,
-                transportService.IsWorkerOnline)
+            ? DadSchedulerRoutingRules.ResolveCurrentOrSoleReconnectedClient(
+                  slot.RequiredAccountKey,
+                  frozenWorkerSessionId,
+                  participants,
+                  transportService.IsWorkerOnline)
             : slot.RequiredAccountKey.IsEmpty
             ? participants.FirstOrDefault(participant =>
                 participant.IsAvailable && MatchesSlotCharacter(participant, slot))
@@ -1719,6 +1944,50 @@ public sealed class DadSchedulerService
             ? matchingAccount
             : null;
         var selected = matchingAccount;
+        var contradictionEvidence = string.Empty;
+        var contradictionStable = false;
+        if (frozenObserved != null &&
+            !slot.RequiredAccountKey.IsEmpty &&
+            !frozenObserved.ManagedAccountKey.IsEmpty &&
+            !DadRosterIdentity.SameAccount(frozenObserved.ManagedAccountKey, slot.RequiredAccountKey))
+        {
+            contradictionStable = frozenObserved.WorldReadyStable;
+            contradictionEvidence = $"Frozen worker {frozenWorkerSessionId} reports account {frozenObserved.ManagedAccountKey}; expected {slot.RequiredAccountKey}.";
+        }
+        else if (selected != null &&
+                 MatchesSlotCharacter(selected, slot) &&
+                 selected.Character.ContentId != 0)
+        {
+            var expectedContentId = ResolveFrozenSlotContentId(state);
+            if (expectedContentId != 0 && selected.Character.ContentId != expectedContentId)
+            {
+                contradictionStable = selected.WorldReadyStable;
+                contradictionEvidence = $"Character {slot.RequiredCharacterKey} reports Content ID {selected.Character.ContentId}; expected frozen {expectedContentId}.";
+            }
+        }
+
+        var contradiction = GetSlotContradictionTracker(state.SlotId).Observe(
+            contradictionEvidence,
+            contradictionStable,
+            DateTime.UtcNow,
+            RefreshInterval,
+            (frozenObserved ?? selected)?.LastHeartbeatUtc);
+        if (!string.IsNullOrWhiteSpace(contradictionEvidence))
+        {
+            state.MatchedWorkerSessionId = frozenObserved?.WorkerSessionId ?? selected?.WorkerSessionId ?? frozenWorkerSessionId;
+            state.ClientConnected = frozenObserved != null || selected != null;
+            state.IsOnline = frozenObserved?.IsAvailable ?? selected?.IsAvailable ?? false;
+            state.ActiveCharacterKey = frozenObserved?.ActiveCharacterKey ?? selected?.ActiveCharacterKey ?? new DadCharacterKey(string.Empty);
+            state.ExternalAutomationHeld = true;
+            state.ExternalAutomationActivity = "IdentityConfirmation";
+            state.ExternalAutomationSummary = contradiction.Summary;
+            state.Summary = contradiction.Summary;
+            if (contradiction.Disposition == DadSafetyProofDisposition.Reject)
+                state.BlockedReason = contradiction.Summary;
+            selected = null;
+            matchingCharacter = null;
+        }
+
         if (selected != null)
         {
             state.ClientConnected = true;
@@ -1733,9 +2002,7 @@ public sealed class DadSchedulerService
             state.ExternalAutomationActivity = selected.ExternalAutomationActivity;
             state.ExternalAutomationState = selected.ExternalAutomationState;
             state.ExternalAutomationSummary = selected.ExternalAutomationSummary;
-            state.MatchedWorkerSessionId = DadSchedulerRoutingRules.PreserveFrozenWorkerSession(
-                frozenWorkerSessionId,
-                selected.WorkerSessionId);
+            state.MatchedWorkerSessionId = selected.WorkerSessionId;
             state.ActiveCharacterKey = selected.ActiveCharacterKey;
             state.Summary = !state.IsOnline
                 ? $"Same-account Dad client connected as worker {selected.WorkerSessionId}; character offline or relogging."
@@ -1873,9 +2140,64 @@ public sealed class DadSchedulerService
             target.Summary = source.Summary;
     }
 
+    private DadStableContradictionTracker GetSlotContradictionTracker(string slotId)
+    {
+        if (!slotContradictionTrackers.TryGetValue(slotId, out var tracker))
+        {
+            tracker = new DadStableContradictionTracker();
+            slotContradictionTrackers[slotId] = tracker;
+        }
+
+        return tracker;
+    }
+
+    private void QueueReboundWorkerCleanup(DadSchedulerSlotState previous)
+    {
+        if (string.IsNullOrWhiteSpace(currentState.SchedulerRunId) || previous.MatchedWorkerSessionId.IsEmpty)
+            return;
+
+        var cleanupJob = activeJob?.Clone() ?? new DadScheduledCrewJob
+        {
+            JobId = currentState.JobId,
+            GroupId = currentState.GroupId,
+            PresetName = currentState.PresetName,
+            RequestedBy = currentState.RequestedBy,
+        };
+        const string reason = "Stable-account route reconnected on a new worker session; retaining exact old-route cleanup while the sole replacement safely rebinds.";
+        if (DadSchedulerRoutingRules.RequiresTakeoverCancellation(previous))
+        {
+            var takeoverKey = $"{currentState.SchedulerRunId}|{previous.SlotId}|{previous.MatchedWorkerSessionId.Value}";
+            pendingTakeoverCancellations[takeoverKey] = new PendingTakeoverCancellation
+            {
+                SchedulerRunId = currentState.SchedulerRunId,
+                Job = cleanupJob.Clone(),
+                Slot = previous.Clone(),
+                Reason = reason,
+                RequestedAtUtc = previous.TakeoverRequestedUtc ?? currentState.StartedAtUtc,
+                BlocksFutureWork = false,
+            };
+        }
+
+        foreach (var assignment in frozenEarlyAssignments.Where(assignment =>
+                     string.Equals(assignment.Request.AssignedSlotId, previous.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                     assignment.AttemptedWorkerSessionIds.Contains(previous.MatchedWorkerSessionId.Value)))
+        {
+            var assignmentKey = $"{assignment.Request.RunId}|{assignment.Request.AssignedSlotId}|{previous.MatchedWorkerSessionId.Value}";
+            pendingEarlyAssignmentCancellations[assignmentKey] = new PendingEarlyAssignmentCancellation
+            {
+                RunId = assignment.Request.RunId,
+                WorkerSessionId = previous.MatchedWorkerSessionId,
+                Job = cleanupJob.Clone(),
+                SlotId = assignment.Request.AssignedSlotId,
+                Reason = reason,
+                BlocksFutureWork = false,
+            };
+        }
+    }
+
     private IReadOnlyList<DadParticipantSnapshot> BuildParticipantSet(DadCharacterPool pool)
     {
-        var participants = new List<DadParticipantSnapshot> { presenceService.BuildSnapshotCopy() };
+        var participants = new List<DadParticipantSnapshot> { presenceService.BuildLiveSafetySnapshot() };
         participants.AddRange(pool.PeerTransport.KnownParticipants.Select(static participant => participant.Clone()));
         return participants
             .Where(static participant =>
@@ -1893,6 +2215,30 @@ public sealed class DadSchedulerService
             CharacterKey = slot.RequiredCharacterKey,
         });
         return character?.ContentId ?? 0;
+    }
+
+    private ulong ResolveFrozenSlotContentId(DadSchedulerSlotState slot)
+    {
+        if (currentState.IsActive && frozenPlannerRequest != null)
+        {
+            var assignment = frozenEarlyAssignments.FirstOrDefault(candidate =>
+                string.Equals(candidate.Request.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                DadRosterIdentity.SameAccount(candidate.Request.RequiredAccountKey, slot.RequiredAccountKey) &&
+                string.Equals(
+                    candidate.Request.RequiredCharacterKey.Value,
+                    slot.RequiredCharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase));
+            if (assignment?.Request.RequiredContentId > 0)
+                return assignment.Request.RequiredContentId;
+
+            var frozenReference = frozenPlannerRequest.Orchestration?.RequiredRosterCharacters?.FirstOrDefault(candidate =>
+                DadRosterIdentity.SameAccount(candidate.AccountKey, slot.RequiredAccountKey) &&
+                string.Equals(candidate.CharacterKey.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase));
+            if (frozenReference?.ContentId > 0)
+                return frozenReference.ContentId;
+        }
+
+        return ResolveSlotContentId(slot);
     }
 
     private DadLaunchProfile? ResolveLaunchProfile(
@@ -2339,7 +2685,7 @@ public sealed class DadSchedulerService
             slot.SlotId,
             slot.RequiredAccountKey,
             slot.RequiredCharacterKey,
-            ResolveSlotContentId(slot),
+            ResolveFrozenSlotContentId(slot),
             slot.ActiveCharacterKey.IsEmpty ? "(none)" : slot.ActiveCharacterKey.Value,
             slot.CorrectCharacter,
             worker,
@@ -2405,7 +2751,7 @@ public sealed class DadSchedulerService
                 slot.SlotId,
                 slot.RequiredAccountKey,
                 slot.RequiredCharacterKey,
-                ResolveSlotContentId(slot),
+                ResolveFrozenSlotContentId(slot),
                 slot.MatchedWorkerSessionId.IsEmpty ? "(none)" : slot.MatchedWorkerSessionId.Value,
                 currentState.Phase,
                 currentState.Summary);
@@ -2563,6 +2909,8 @@ public sealed class DadSchedulerService
         cleanupJob.StatusSummary = $"Cancellation cleanup pending for scheduler Job ID {cleanupJob.JobId}.";
         cleanupJob.BlockedReason = string.Empty;
 
+        QueueEarlyAssignmentCancellations(cleanupJob, reason);
+
         foreach (var slot in currentState.Slots.Where(DadSchedulerRoutingRules.RequiresTakeoverCancellation))
         {
             var key = $"{currentState.SchedulerRunId}|{slot.SlotId}";
@@ -2578,6 +2926,58 @@ public sealed class DadSchedulerService
         }
 
         UpdatePendingTakeoverCancellations();
+        UpdatePendingEarlyAssignmentCancellations();
+    }
+
+    private void QueueEarlyAssignmentCancellations(DadScheduledCrewJob cleanupJob, string reason)
+    {
+        foreach (var assignment in frozenEarlyAssignments)
+        {
+            foreach (var workerId in assignment.AttemptedWorkerSessionIds)
+            {
+                var key = $"{assignment.Request.RunId}|{assignment.Request.AssignedSlotId}|{workerId}";
+                pendingEarlyAssignmentCancellations[key] = new PendingEarlyAssignmentCancellation
+                {
+                    RunId = assignment.Request.RunId,
+                    WorkerSessionId = new DadWorkerSessionId(workerId),
+                    Job = cleanupJob.Clone(),
+                    SlotId = assignment.Request.AssignedSlotId,
+                    Reason = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason.Trim(),
+                };
+            }
+        }
+    }
+
+    private void UpdateCompletedPlannerAssignmentCleanup(DadRunResult visibleRun)
+    {
+        if (currentState.Phase != DadSchedulerPresetPhase.StartedPlanner ||
+            frozenPlannerRequest == null ||
+            frozenEarlyAssignments.Count == 0 ||
+            !visibleRun.IsTerminal ||
+            !string.Equals(visibleRun.RequestId, frozenPlannerRequest.RequestId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var cleanupJob = activeJob?.Clone() ?? new DadScheduledCrewJob
+        {
+            JobId = currentState.JobId,
+            JobType = currentState.JobType,
+            GroupId = currentState.GroupId,
+            PresetName = currentState.PresetName,
+            RequestedBy = currentState.RequestedBy,
+            CreatedAtUtc = currentState.StartedAtUtc,
+        };
+        var reason = $"Dad run {visibleRun.RequestId} reached terminal status {visibleRun.Status}; clearing every early requested-job assignment route.";
+        QueueEarlyAssignmentCancellations(cleanupJob, reason);
+        log.Information(
+            "[dad] Queued terminal early-assignment cleanup request={RequestId} status={Status} attemptedRoutes={AttemptedRouteCount}.",
+            visibleRun.RequestId,
+            visibleRun.Status,
+            frozenEarlyAssignments.Sum(static assignment => assignment.AttemptedWorkerSessionIds.Count));
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
+        UpdatePendingEarlyAssignmentCancellations();
     }
 
     private DadScheduledCrewJob? FindEquivalentActiveOrPendingJob(string groupId)
@@ -2590,7 +2990,7 @@ public sealed class DadSchedulerService
             activeJob,
             currentState.IsActive,
             configuration.SchedulerQueue,
-            pendingTakeoverCancellations.Values.Select(static pending => pending.Job))
+            PendingCleanupJobs())
             ?.Job;
     }
 
@@ -2599,16 +2999,107 @@ public sealed class DadSchedulerService
         if (string.IsNullOrWhiteSpace(groupId))
             return null;
 
-        return pendingTakeoverCancellations.Values
-            .Select(static pending => pending.Job)
+        return PendingCleanupJobs()
             .FirstOrDefault(job => string.Equals(job.GroupId, groupId, StringComparison.OrdinalIgnoreCase))
             ?.Clone();
     }
 
     internal bool IsPendingTakeoverCleanupJob(string jobId)
         => !string.IsNullOrWhiteSpace(jobId) &&
-           pendingTakeoverCancellations.Values.Any(pending =>
-               string.Equals(pending.Job.JobId, jobId, StringComparison.OrdinalIgnoreCase));
+           PendingCleanupJobs().Any(job =>
+               string.Equals(job.JobId, jobId, StringComparison.OrdinalIgnoreCase));
+
+    private bool HasPendingCleanup
+        => pendingTakeoverCancellations.Values.Any(static pending => pending.BlocksFutureWork) ||
+           pendingEarlyAssignmentCancellations.Values.Any(static pending => pending.BlocksFutureWork);
+
+    private bool HasActiveRebindCleanup
+        => pendingTakeoverCancellations.Values.Any(pending =>
+               pending.BlocksFutureWork &&
+               string.Equals(pending.SchedulerRunId, currentState.SchedulerRunId, StringComparison.Ordinal)) ||
+           (frozenPlannerRequest != null && pendingEarlyAssignmentCancellations.Values.Any(pending =>
+               pending.BlocksFutureWork &&
+               string.Equals(pending.RunId, frozenPlannerRequest.RequestId, StringComparison.Ordinal)));
+
+    private IEnumerable<DadScheduledCrewJob> PendingCleanupJobs()
+        => pendingTakeoverCancellations.Values
+            .Where(static pending => pending.BlocksFutureWork)
+            .Select(static pending => pending.Job)
+            .Concat(pendingEarlyAssignmentCancellations.Values
+                .Where(static pending => pending.BlocksFutureWork)
+                .Select(static pending => pending.Job));
+
+    private static DadRunRequest? CloneRunRequest(DadRunRequest? request)
+        => request == null
+            ? null
+            : DadIpcJson.Deserialize<DadRunRequest>(DadIpcJson.Serialize(request));
+
+    private List<FrozenEarlyAssignment> BuildFrozenEarlyAssignments(
+        DadRunRequest request,
+        IReadOnlyList<DadSchedulerSlotState> slots,
+        DadScheduledCrewJob job)
+    {
+        return DadEarlyRequestedJobAssignmentRules.Build(
+                request,
+                slots,
+                presenceService.WorkerSessionId,
+                ResolveSlotContentId)
+            .Select(assignment => new FrozenEarlyAssignment
+            {
+                CommandId = $"job:{request.RequestId}:{assignment.AssignedSlotId}:{assignment.RequiredAccountKey.Value}:{assignment.RequiredCharacterKey.Value}",
+                Job = job.Clone(),
+                Request = assignment,
+            })
+            .ToList();
+    }
+
+    private static string ValidateFrozenEarlyAssignments(
+        DadRunRequest? request,
+        IReadOnlyList<DadSchedulerSlotState> slots,
+        IReadOnlyList<FrozenEarlyAssignment> assignments)
+    {
+        if (request == null || request.Orchestration == null)
+            return "Scheduler admission did not produce a frozen planner request and orchestration intent.";
+
+        var requestedSlots = slots.Where(static slot => slot.RequiredJobId.HasValue).ToList();
+        if (assignments.Count != requestedSlots.Count)
+            return $"Frozen requested-job manifest contains {assignments.Count}/{requestedSlots.Count} required slot assignments.";
+
+        foreach (var slot in requestedSlots)
+        {
+            var matches = assignments.Where(candidate =>
+                string.Equals(candidate.Request.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches.Count != 1)
+                return $"Frozen requested-job manifest requires exactly one assignment for {slot.SlotId}; found {matches.Count}.";
+
+            var assignment = matches[0].Request;
+            if (!string.Equals(assignment.RunId, request.RequestId, StringComparison.Ordinal) ||
+                assignment.AuthorityMode != request.Orchestration.AuthorityMode ||
+                assignment.ModuleId != request.Orchestration.ModuleTarget ||
+                !DadRosterIdentity.SameAccount(assignment.RequiredAccountKey, slot.RequiredAccountKey) ||
+                !string.Equals(assignment.RequiredCharacterKey.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
+                assignment.RequiredContentId == 0 ||
+                assignment.RequiredJobId != slot.RequiredJobId)
+            {
+                return $"Frozen requested-job assignment for {slot.SlotId} is missing or contradicts its immutable request/account/character/Content ID/job identity.";
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string DescribeQueueTarget(DadRunRequest request)
+    {
+        var target = request.DailyMsq?.QueueTarget ??
+                     request.Commendation?.QueueTarget ??
+                     request.Astrope?.QueueTarget ??
+                     request.CustomDuty?.QueueTarget;
+        if (target != null)
+            return $"{target.Kind}:{target.ContentFinderConditionId}:{target.RouletteId}:{target.Key}";
+        if (request.PremadeDuty != null)
+            return $"{DadQueueTargetKind.DutyFinderDuty}:{request.PremadeDuty.ContentFinderConditionId}:0";
+        return "none";
+    }
 
     private static string BuildQueuedJobSummary(DadScheduledCrewJob job)
         => job.JobType switch

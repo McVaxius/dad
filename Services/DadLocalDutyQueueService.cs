@@ -67,6 +67,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private static readonly TimeSpan RestoreRetryThrottle = TimeSpan.FromSeconds(1);
 
     private readonly IPluginLog log;
+    private readonly Func<DadParticipantSnapshot>? liveSafetySnapshotBuilder;
     private DateTime nextOpenAttemptUtc = DateTime.MinValue;
     private DateTime nextSelectAttemptUtc = DateTime.MinValue;
     private DateTime nextRegisterAttemptUtc = DateTime.MinValue;
@@ -93,9 +94,12 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private string participantObserverRunId = string.Empty;
     private bool participantDutyEntryEvidenceObserved;
 
-    public DadLocalDutyQueueService(IPluginLog log)
+    public DadLocalDutyQueueService(
+        IPluginLog log,
+        Func<DadParticipantSnapshot>? liveSafetySnapshotBuilder = null)
     {
         this.log = log;
+        this.liveSafetySnapshotBuilder = liveSafetySnapshotBuilder;
         TrySubscribeDutyState();
         TrySubscribeFrameworkUpdate();
     }
@@ -702,7 +706,10 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         {
             var contentsFinder = ContentsFinder.Instance();
             if (contentsFinder == null)
-                return Failed(content, "ContentsFinder runtime state is unavailable.");
+                return RetryableQueueWait(content, "ContentsFinder runtime state is unavailable; retrying.");
+
+            if (!TryGetMutationSafety(out var safetyWait))
+                return RetryableQueueWait(content, safetyWait);
 
             if (!unrestrictedPartyLease.Ensure(
                     requiredValue: false,
@@ -711,7 +718,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                     out var unrestrictedChanged,
                     out var unrestrictedFailure))
             {
-                return Failed(content, $"Could not force unrestricted party off for Daily Roulette: {unrestrictedFailure}");
+                return RetryableQueueWait(content, $"Could not force unrestricted party off for Daily Roulette: {unrestrictedFailure}");
             }
 
             unrestrictedRestorePending = false;
@@ -729,7 +736,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
             var agent = AgentContentsFinder.Instance();
             if (agent == null)
-                return Failed(content, "AgentContentsFinder is unavailable.");
+                return RetryableQueueWait(content, "AgentContentsFinder is unavailable; retrying.");
 
             var now = DateTime.UtcNow;
             if (rouletteAttemptGate.IsRegistrationGraceActive(now))
@@ -760,6 +767,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 if (DateTime.UtcNow < nextOpenAttemptUtc)
                     return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder window for {content.DutyName}.");
 
+                if (!TryGetMutationSafety(out safetyWait))
+                    return RetryableQueueWait(content, safetyWait);
                 agent->Show();
                 nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
                 return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Duty Finder before selecting Daily Roulette {content.DutyName}.");
@@ -778,12 +787,16 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             switch (decision.Mutation)
             {
                 case DadRouletteQueueMutation.ClearSelection:
+                    if (!TryGetMutationSafety(out safetyWait))
+                        return RetryableQueueWait(content, safetyWait);
                     log.Information("[dad] Clearing stale Duty Finder selection before Daily Roulette {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
                     FireAddonIntCallback(addonBase, 12, 1);
                     return Active(content, DadLocalDutyQueuePulseKind.ClearedDutySelection, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Cleared stale Duty Finder selection before Daily Roulette {content.DutyName}.");
 
                 case DadRouletteQueueMutation.OpenRoulette:
-                    log.Information("[dad] Selecting Daily Roulette {RouletteName} ({RouletteId}); attempt {Attempt}/{MaxAttempts}.", content.DutyName, content.RouletteId, rouletteAttemptGate.SelectionAttempts, DadRouletteQueueAttemptGate.MaxSelectionAttempts);
+                    if (!TryGetMutationSafety(out safetyWait))
+                        return RetryableQueueWait(content, safetyWait);
+                    log.Information("[dad] Selecting Daily Roulette {RouletteName} ({RouletteId}); unbounded attempt {Attempt}.", content.DutyName, content.RouletteId, rouletteAttemptGate.SelectionAttempts);
                     agent->OpenRouletteDuty(checked((byte)content.RouletteId));
                     return Active(content, DadLocalDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting Daily Roulette {content.DutyName}; waiting six seconds before exact selection proof.");
 
@@ -794,15 +807,19 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                             agent->SelectedDuty.Id,
                             content.RouletteId))
                     {
-                        return Failed(content, $"Daily Roulette selection changed before Join; expected roulette #{content.RouletteId}.");
+                        rouletteAttemptGate.RetryFullCycle();
+                        return RetryableQueueWait(content, $"Daily Roulette selection changed before Join; restarting exact selection for roulette #{content.RouletteId}.");
                     }
 
-                    log.Information("[dad] Joining Daily Roulette {RouletteName} ({RouletteId}); attempt {Attempt}/{MaxAttempts}.", content.DutyName, content.RouletteId, rouletteAttemptGate.JoinAttempts, DadRouletteQueueAttemptGate.MaxJoinAttempts);
+                    if (!TryGetMutationSafety(out safetyWait))
+                        return RetryableQueueWait(content, safetyWait);
+                    log.Information("[dad] Joining Daily Roulette {RouletteName} ({RouletteId}); unbounded attempt {Attempt}.", content.DutyName, content.RouletteId, rouletteAttemptGate.JoinAttempts);
                     FireAddonIntCallback(addonBase, 12, 0);
                     return Active(content, DadLocalDutyQueuePulseKind.RegisteredForDuty, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Registered Daily Roulette {content.DutyName}; waiting up to eight seconds for queue, commence, or transition evidence.");
 
                 case DadRouletteQueueMutation.Fail:
-                    return Failed(content, decision.Reason);
+                    rouletteAttemptGate.RetryFullCycle();
+                    return RetryableQueueWait(content, decision.Reason);
 
                 default:
                     var phase = rouletteAttemptGate.JoinAttempts > 0
@@ -814,8 +831,50 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         catch (Exception ex)
         {
             log.Error(ex, "[dad] Daily Roulette queue pulse failed for {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
-            return Failed(content, $"Daily Roulette queue pulse failed: {ex.Message}");
+            rouletteAttemptGate.RetryFullCycle();
+            return RetryableQueueWait(content, $"Daily Roulette runtime exception is retryable: {ex.Message}");
         }
+    }
+
+    private DadLocalDutyQueuePulse RetryableQueueWait(DadLocalDutyResolvedContent content, string reason)
+        => Active(
+            content,
+            DadLocalDutyQueuePulseKind.Waiting,
+            rouletteAttemptGate.JoinAttempts > 0 ? DadRunPhase.QueueStarting : DadRunPhase.QueuePreparing,
+            DadParticipantState.QueuePending,
+            reason,
+            reason);
+
+    private bool TryGetMutationSafety(out string reason)
+    {
+        reason = string.Empty;
+        if (liveSafetySnapshotBuilder == null)
+            return true;
+
+        DadParticipantSnapshot snapshot;
+        try
+        {
+            snapshot = liveSafetySnapshotBuilder();
+        }
+        catch (Exception ex)
+        {
+            reason = $"Waiting for a fresh local queue safety snapshot: {ex.Message}";
+            return false;
+        }
+
+        if (!snapshot.IsAvailable ||
+            !snapshot.WorldReadyStable ||
+            !snapshot.PostArReady ||
+            !snapshot.AutoRetainerAvailable ||
+            snapshot.AutoRetainerBusy ||
+            snapshot.AutoRetainerMultiModeEnabled ||
+            snapshot.ExternalAutomationHeld)
+        {
+            reason = $"Waiting for strict local queue safety: available={snapshot.IsAvailable}, worldStable={snapshot.WorldReadyStable}, postArReady={snapshot.PostArReady}, autoRetainerAvailable={snapshot.AutoRetainerAvailable}, autoRetainerBusy={snapshot.AutoRetainerBusy}, multiMode={snapshot.AutoRetainerMultiModeEnabled}, externalHeld={snapshot.ExternalAutomationHeld}.";
+            return false;
+        }
+
+        return true;
     }
 
     private void ResetForNewRun(string runId)
@@ -1073,6 +1132,16 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             var addon = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinderConfirm");
             if (addon == null || !addon->IsVisible)
                 return false;
+
+            if (!TryGetMutationSafety(out var safetyWait))
+            {
+                log.Information(
+                    "[dad] ContentsFinderConfirm acceptance is waiting for fresh strict local safety for {DutyName}: {Reason}",
+                    content.DutyName,
+                    safetyWait);
+                nextConfirmAttemptUtc = DateTime.UtcNow + ConfirmThrottle;
+                return false;
+            }
 
             FireAddonIntCallback(addon, 8);
             log.Information("[dad] Accepting regular Duty Finder commence popup for {DutyName}.", content.DutyName);

@@ -259,24 +259,28 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void AcceptedRelogIsIssuedAtMostOnceAcrossRepeatedUpdates()
+    public void AcceptedRelogIsNeverDuplicatedInFlightAndAProvenNoEffectStartsANewEpoch()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         var waiting = StartRelog(service, target, clock);
-        var firstIssuedUtc = waiting.RelogIssuedUtc;
+        Assert.NotNull(waiting.RelogIssuedUtc);
 
-        for (var update = 0; update < 4; update++)
+        for (var update = 0; update < 3; update++)
         {
             clock.Advance(TimeSpan.FromSeconds(5));
             service.Update();
         }
 
-        var stillWaiting = service.Handle(StatusRequest());
+        var nextEpoch = service.Handle(StatusRequest());
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
-        Assert.Equal(firstIssuedUtc, stillWaiting.RelogIssuedUtc);
-        Assert.Contains("issued once", stillWaiting.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, nextEpoch.Phase);
+        Assert.Contains("epoch 2", nextEpoch.Summary, StringComparison.OrdinalIgnoreCase);
+
+        clock.Advance(TimeSpan.FromSeconds(5));
+        StartRelog(service, target, clock, expectedRelogCount: 2);
+        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
     }
 
     [Theory]
@@ -945,7 +949,7 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void CompatibilityLossAfterGoDelaysCommittedResetWithoutReacquiringOrDuplicating()
+    public void CompatibilityLossAfterGoReleasesOwnedStateAndStartsAnotherSafeEpoch()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
@@ -959,13 +963,15 @@ public sealed class DadWakeTakeoverServiceTests
         service.Update();
 
         var waiting = service.Handle(StatusRequest());
-        Assert.Equal(DadWakeTakeoverPhase.ResetCommitted, waiting.Phase);
-        Assert.DoesNotContain("ReleaseSuppression", target.Actions);
-        Assert.DoesNotContain("ReleaseReservation", target.Actions);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, waiting.Phase);
+        Assert.Contains("ReleaseSuppression", target.Actions);
+        Assert.Contains("ReleaseReservation", target.Actions);
         Assert.DoesNotContain(target.Actions, IsMutation);
 
         target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Idle);
-        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(Request()).Phase);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
         var recovered = service.Handle(StatusRequest());
         Assert.Equal(DadWakeTakeoverPhase.ResetVerified, recovered.Phase);
         Assert.Equal("scheduler-run", recovered.OperationToken);
@@ -1094,14 +1100,15 @@ public sealed class DadWakeTakeoverServiceTests
     private static DadWakeTakeoverResultDto StartRelog(
         DadWakeTakeoverService service,
         FakeTarget target,
-        TestClock clock)
+        TestClock clock,
+        int expectedRelogCount = 1)
     {
         Prepare(service, target);
         ExecuteGo(service, clock, DadWakeCommitKind.Reset);
         ExecuteGo(service, clock, DadWakeCommitKind.Relog);
         var result = service.Handle(StatusRequest());
         Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, result.Phase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Equal(expectedRelogCount, target.Actions.Count(static action => action == "RelogCharacter"));
         return result;
     }
 

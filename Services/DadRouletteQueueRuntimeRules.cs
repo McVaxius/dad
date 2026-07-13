@@ -28,8 +28,6 @@ public readonly record struct DadRouletteQueueDecision(
 
 public sealed class DadRouletteQueueAttemptGate
 {
-    public const int MaxSelectionAttempts = 3;
-    public const int MaxJoinAttempts = 3;
     public static readonly TimeSpan SelectionSettle = TimeSpan.FromSeconds(6);
     public static readonly TimeSpan RegistrationGrace = TimeSpan.FromSeconds(8);
 
@@ -59,11 +57,10 @@ public sealed class DadRouletteQueueAttemptGate
                 return new DadRouletteQueueDecision(DadRouletteQueueMutation.Wait, "Waiting for Duty Finder registration evidence.");
 
             registrationGraceUntilUtc = DateTime.MinValue;
-            if (JoinAttempts >= MaxJoinAttempts)
-                return new DadRouletteQueueDecision(DadRouletteQueueMutation.Fail, "Daily Roulette registration did not appear after three Join attempts.");
-
-            if (!exactRouletteSelected)
-                clearPending = true;
+            // A missing registration proof always starts a complete new
+            // clear/select/prove/join cycle, even if the UI still displays the
+            // requested roulette.
+            clearPending = true;
         }
 
         if (awaitingSelectionProof)
@@ -73,11 +70,7 @@ public sealed class DadRouletteQueueAttemptGate
 
             awaitingSelectionProof = false;
             if (!exactRouletteSelected)
-            {
                 clearPending = true;
-                if (SelectionAttempts >= MaxSelectionAttempts)
-                    return new DadRouletteQueueDecision(DadRouletteQueueMutation.Fail, "Daily Roulette selection could not be proven after three attempts.");
-            }
         }
 
         if (openPending)
@@ -91,9 +84,6 @@ public sealed class DadRouletteQueueAttemptGate
 
         if (exactRouletteSelected && !clearPending)
         {
-            if (JoinAttempts >= MaxJoinAttempts)
-                return new DadRouletteQueueDecision(DadRouletteQueueMutation.Fail, "Daily Roulette registration did not appear after three Join attempts.");
-
             JoinAttempts++;
             registrationGraceUntilUtc = nowUtc + RegistrationGrace;
             return new DadRouletteQueueDecision(DadRouletteQueueMutation.Join);
@@ -101,15 +91,21 @@ public sealed class DadRouletteQueueAttemptGate
 
         if (clearPending)
         {
-            if (SelectionAttempts >= MaxSelectionAttempts)
-                return new DadRouletteQueueDecision(DadRouletteQueueMutation.Fail, "Daily Roulette selection could not be proven after three attempts.");
-
             clearPending = false;
             openPending = true;
             return new DadRouletteQueueDecision(DadRouletteQueueMutation.ClearSelection);
         }
 
         return new DadRouletteQueueDecision(DadRouletteQueueMutation.Wait, "Waiting for roulette selection state.");
+    }
+
+    public void RetryFullCycle()
+    {
+        clearPending = true;
+        openPending = false;
+        awaitingSelectionProof = false;
+        selectionProofAtUtc = DateTime.MinValue;
+        registrationGraceUntilUtc = DateTime.MinValue;
     }
 
     public void Reset()

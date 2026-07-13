@@ -99,6 +99,7 @@ public sealed class Plugin : IDalamudPlugin
     private string lastLoggedAuthorityEndpointKey = string.Empty;
     private string lastLoggedAuthorityRefreshKey = string.Empty;
     private string lastLoggedAuthorityViewKey = string.Empty;
+    private string lastCoordinatorProvenanceDiagnostic = string.Empty;
     private string cachedPlannerPreviewSignature = string.Empty;
     private string cachedPlannerPreviewRequestId = string.Empty;
     private DateTime cachedPlannerPreviewRequestedAtUtc = DateTime.MinValue;
@@ -167,7 +168,8 @@ public sealed class Plugin : IDalamudPlugin
                 VermaxionIpcService,
                 CommandManager,
                 Log),
-            preCommitBudget: TimeSpan.FromSeconds(Configuration.AutoRetainerBusyTimeoutSeconds));
+            preCommitBudget: TimeSpan.FromSeconds(Configuration.AutoRetainerBusyTimeoutSeconds),
+            diagnostic: message => Log.Information("[dad] Wake takeover epoch transition {Diagnostic}.", message));
         VermaxionIpcService.ReservationGranted += WakeTakeoverService.OnVermaxionReservationGranted;
         AutoRetainerIpcService.CharacterPostprocessReady += WakeTakeoverService.OnCharacterPostprocessReady;
         ClaimService = new DadClaimService();
@@ -189,7 +191,7 @@ public sealed class Plugin : IDalamudPlugin
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
         DutySupportAdsService = new DadDutySupportAdsService(Log);
-        LocalDutyQueueService = new DadLocalDutyQueueService(Log);
+        LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
         MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
@@ -2252,7 +2254,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private DadRunResult StartScheduledPlannerRequest(DadRunRequest request)
     {
-        var result = RunCoordinatorService.StartTasks(request);
+        var result = RunCoordinatorService.StartTasks(request, persistentStartup: true);
         PrimeAuthorityCacheFromRun(request, result);
         if (result.Status != DadRunStatus.Rejected)
             InvalidatePlannerPreviewCache("scheduled planner started");
@@ -2295,15 +2297,15 @@ public sealed class Plugin : IDalamudPlugin
         {
             var requireLiveReadiness = requestPreview.CanStart || !requestPreview.CanSchedule;
             var allowWakeableCoordinatorLeader = HasWakeableEffectiveCoordinatorSlot(selectedGroup, requestPreview);
-            var unfilteredLocalRuntimeCharacter = CharacterIntelligenceService.CurrentPool.Characters
-                .FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime);
+            var liveLocalRuntimeTruth = PresenceService.BuildLiveSafetySnapshot();
+            LogCoordinatorProvenance("planner-validation", requestPreview.Request, liveLocalRuntimeTruth);
             var plan = PlannerService.BuildPlan(
                 requestPreview.Request,
                 pool,
                 out var rejectionReason,
                 requireLiveReadiness,
                 allowWakeableCoordinatorLeader,
-                unfilteredLocalRuntimeCharacter);
+                liveLocalRuntimeTruth);
             if (plan == null)
             {
                 var relaxedPlanBuilt = requireLiveReadiness &&
@@ -2313,7 +2315,7 @@ public sealed class Plugin : IDalamudPlugin
                                            out _,
                                            requireLiveReadiness: false,
                                            allowWakeableCoordinatorLeader: allowWakeableCoordinatorLeader,
-                                           unfilteredLocalRuntimeCharacter: unfilteredLocalRuntimeCharacter) != null;
+                                           liveLocalRuntimeTruth: liveLocalRuntimeTruth) != null;
                 if (DadPlannerValidationRules.IsStrictRuntimeOnlyFailure(
                         requireLiveReadiness,
                         strictPlanBuilt: false,
@@ -2355,6 +2357,46 @@ public sealed class Plugin : IDalamudPlugin
             .FirstOrDefault(static slot =>
                 string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase));
         return slotOne?.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline;
+    }
+
+    private void LogCoordinatorProvenance(
+        string boundary,
+        DadRunRequest request,
+        DadParticipantSnapshot liveTruth)
+    {
+        var resolved = DadFullPartyExecutionRules.TryResolveActiveCoordinatorCharacter(
+            liveTruth,
+            out var character,
+            out var blocker);
+        var diagnostic = string.Join(
+            "|",
+            boundary,
+            liveTruth.WorkerSessionId.Value,
+            liveTruth.ClientInstanceId,
+            liveTruth.ManagedAccountKey.Value,
+            liveTruth.ActiveCharacterKey.Value,
+            liveTruth.Character.ContentId,
+            liveTruth.WorldReadyStable,
+            resolved,
+            blocker);
+        if (string.Equals(diagnostic, lastCoordinatorProvenanceDiagnostic, StringComparison.Ordinal))
+            return;
+
+        lastCoordinatorProvenanceDiagnostic = diagnostic;
+        Log.Information(
+            "[dad] Coordinator provenance boundary={Boundary} request={RequestId} localWorker={LocalWorkerSessionId} localClient={LocalClientInstanceId} managedAccount={ManagedAccountKey} character={CharacterKey} contentId={ContentId} source={Source} available={Available} worldReadyStable={WorldReadyStable} resolved={Resolved} blocker={Blocker}.",
+            boundary,
+            request.RequestId,
+            liveTruth.WorkerSessionId,
+            liveTruth.ClientInstanceId,
+            liveTruth.ManagedAccountKey,
+            liveTruth.ActiveCharacterKey.IsEmpty ? "(none)" : liveTruth.ActiveCharacterKey.Value,
+            liveTruth.Character.ContentId,
+            liveTruth.Character.Source,
+            liveTruth.IsAvailable,
+            liveTruth.WorldReadyStable,
+            resolved,
+            resolved ? "(none)" : blocker);
     }
 
     private static void MergePlannerRuntimeStatus(DadPlannerRunRequestPreview requestPreview, DadModuleExecutionStatusDto runtimeStatus)
@@ -2525,7 +2567,7 @@ public sealed class Plugin : IDalamudPlugin
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase));
         var selectedSlots = string.Join(",", plannerPreview.SelectedCharacters.Select(static slot =>
-            $"{slot.SlotId}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.RequiredAccountKey}:{slot.CharacterKey}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
+            $"{slot.SlotId}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.RequiredAccountKey}:{slot.CharacterKey}:{slot.ContentId}:{slot.RequiredJobId?.ToString() ?? "current"}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
         var selectedCharacters = string.Join(",", plannerPreview.SelectedCharacters
             .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
             .Select(static slot => $"{slot.RequiredAccountKey.Value.Trim()}:{slot.CharacterKey.Trim()}:{slot.ContentId}")
@@ -4066,6 +4108,7 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
+        RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);
         RunFrameworkStep("RetainedRosterKnowledge", LearnRetainedTransportRosterKnowledge);
         RunFrameworkStep("ClientReconnectWindow", () =>
         {

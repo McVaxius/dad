@@ -7,6 +7,7 @@ public sealed class DadCoordinatorService
 {
     private static readonly TimeSpan ParticipantPollInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan WorkerStatusPollInterval = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan CancellationRetryInterval = TimeSpan.FromSeconds(2);
 
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
@@ -34,13 +35,30 @@ public sealed class DadCoordinatorService
     private bool loggedSingleWorkerAssemblyConfirmed;
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
     private readonly Dictionary<string, DadWorkerExecutionStatus> workerStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DadWorkerExecutionCommand> workerCommands = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> slotResolutionTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> assignmentTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> partyTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> workerCommandTransitions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> coordinatorProvenanceTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRemoteAssignmentTracker remoteAssignmentTracker = new();
     private DateTime nextWorkerStatusPollUtc = DateTime.MinValue;
     private DadRunPhase? lastLoggedCoordinatorPhase;
+    private string firstPartyInviteBoundaryRunId = string.Empty;
+    private bool persistentStartup;
+    private readonly DadStableContradictionTracker coordinatorContradictionTracker = new();
+    private readonly Dictionary<string, PendingCoordinatorCancellation> pendingCoordinatorCancellations = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class PendingCoordinatorCancellation
+    {
+        public DadParticipantSnapshot Target { get; init; } = new();
+        public DadCancelCommandDto RunCommand { get; init; } = new();
+        public DadWorkerExecutionCancel WorkerCommand { get; init; } = new();
+        public bool RunAcknowledged { get; set; }
+        public bool WorkerAcknowledged { get; set; }
+        public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
+        public string LastDiagnosticState { get; set; } = string.Empty;
+    }
 
     internal DadCoordinatorService(
         Configuration configuration,
@@ -84,6 +102,7 @@ public sealed class DadCoordinatorService
     public void Update()
     {
         claimService.SweepExpiredLeases(DateTime.UtcNow);
+        UpdatePendingCoordinatorCancellations();
 
         if (!IsBusy || activePlan == null)
             return;
@@ -151,7 +170,7 @@ public sealed class DadCoordinatorService
         return authorityResult;
     }
 
-    public DadRunResult StartTasks(DadRunRequest request)
+    public DadRunResult StartTasks(DadRunRequest request, bool persistentStartup = false)
     {
         if (!configuration.PluginEnabled)
             return DadRunResult.Rejected(request, "dad is disabled.");
@@ -195,7 +214,13 @@ public sealed class DadCoordinatorService
         }
 
         var pool = characterIntelligenceService.RefreshLocalCharacterPool("run-start", logRefresh: false);
-        var plan = plannerService.BuildPlan(request, pool, out var rejectionReason);
+        var liveCoordinatorTruth = presenceService.BuildLiveSafetySnapshot();
+        LogCoordinatorProvenance("run-start", request.RequestId, liveCoordinatorTruth);
+        var plan = plannerService.BuildPlan(
+            request,
+            pool,
+            out var rejectionReason,
+            liveLocalRuntimeTruth: liveCoordinatorTruth);
         if (plan == null)
             return DadRunResult.Rejected(request, rejectionReason);
 
@@ -205,7 +230,7 @@ public sealed class DadCoordinatorService
             if (!DadRunSlotManifestRules.TryCreate(plan, out var unboundManifest, out rejectionReason))
                 return DadRunResult.Rejected(request, rejectionReason);
 
-            var onlineParticipants = BuildOnlineParticipantSet(pool);
+            var onlineParticipants = BuildOnlineParticipantSet(pool, liveCoordinatorTruth);
             if (!DadRunSlotManifestRules.TryBindWorkerSessions(
                     unboundManifest,
                     onlineParticipants,
@@ -217,6 +242,8 @@ public sealed class DadCoordinatorService
         }
 
         activePlan = plan;
+        this.persistentStartup = persistentStartup;
+        coordinatorContradictionTracker.Reset();
         activeSlotManifest = acceptedManifest;
         activeParticipants.Clear();
         stepResults.Clear();
@@ -229,11 +256,14 @@ public sealed class DadCoordinatorService
         nextParticipantPollUtc = DateTime.MinValue;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
+        workerCommands.Clear();
         partyInviteGateway.Reset();
         slotResolutionTransitions.Clear();
         assignmentTransitions.Clear();
         partyTransitions.Clear();
         workerCommandTransitions.Clear();
+        coordinatorProvenanceTransitions.Clear();
+        firstPartyInviteBoundaryRunId = string.Empty;
         remoteAssignmentTracker.BeginAttempt(plan.Request.RequestId);
         lastLoggedCoordinatorPhase = null;
         claimService.ReleaseClaims(plan.Request.RequestId);
@@ -325,6 +355,7 @@ public sealed class DadCoordinatorService
         };
 
         CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
+        QueueCoordinatorCancellations(command, "Cancelled by Dad Coordinator.");
         var remoteAcks = transportService.BroadcastCancel(command, activeParticipants);
         var localAck = presenceService.HandleCancelRun(command);
         var executorCancelAck = workerExecutionService.Cancel(new DadWorkerExecutionCancel
@@ -384,6 +415,22 @@ public sealed class DadCoordinatorService
             return CurrentResult.Clone();
         }
 
+        workerExecutionService.Cancel(new DadWorkerExecutionCancel
+        {
+            RunId = runId,
+            Reason = reason,
+        });
+
+        QueueCoordinatorCancellations(
+            new DadCancelCommandDto
+            {
+                RunId = runId,
+                AuthorityWorkerSessionId = presenceService.WorkerSessionId,
+                CancellationState = DadRunCancellationState.Cancelling,
+                Reason = reason,
+            },
+            reason);
+
         var localAck = presenceService.HandleCancelRun(new DadCancelCommandDto
         {
             RunId = runId,
@@ -419,7 +466,43 @@ public sealed class DadCoordinatorService
         nextParticipantPollUtc = DateTime.UtcNow + ParticipantPollInterval;
 
         activeParticipants.Clear();
-        var runtimeParticipants = BuildCurrentManifestParticipantSet(pool);
+        var liveCoordinatorTruth = presenceService.BuildLiveSafetySnapshot();
+        var runtimeParticipants = BuildCurrentManifestParticipantSet(pool, liveCoordinatorTruth);
+        var contradictionProof = BuildManifestContradictionEvidence(
+            activeSlotManifest,
+            runtimeParticipants,
+            liveCoordinatorTruth);
+        var contradiction = coordinatorContradictionTracker.Observe(
+            contradictionProof.Evidence,
+            contradictionProof.WorldStable,
+            DateTime.UtcNow,
+            ParticipantPollInterval,
+            contradictionProof.ObservedAtUtc);
+        if (contradiction.Disposition == DadSafetyProofDisposition.Reject)
+        {
+            log.Error(
+                "[dad] Confirmed participant-discovery contradiction request={RequestId} evidence={Evidence} firstObserved={FirstObservedAtUtc}.",
+                activePlan.Request.RequestId,
+                contradiction.Evidence,
+                contradiction.FirstObservedAtUtc?.ToString("O") ?? "(unknown)");
+            FinalizeRun(
+                DadRunStatus.Failed,
+                "Dad rejected participant discovery after two fresh world-stable identity contradictions.",
+                contradiction.Evidence);
+            return;
+        }
+
+        if (contradiction.Disposition == DadSafetyProofDisposition.Wait)
+        {
+            CurrentResult.Phase = DadRunPhase.WaitingForReadiness;
+            CurrentResult.Status = DadRunStatus.WaitingForParticipants;
+            CurrentResult.ActiveTaskStatus = contradiction.Summary;
+            CurrentResult.BlockedReason = contradiction.Summary;
+            CurrentResult.Participants = [];
+            Publish();
+            return;
+        }
+
         var resolutionBlockers = new List<string>();
         foreach (var slot in activeSlotManifest.Slots)
         {
@@ -517,7 +600,7 @@ public sealed class DadCoordinatorService
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         if (blockers.Count > 0)
         {
-            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
+            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
             {
                 var neverAcknowledged = activeSlotManifest.Slots
                     .Where(slot =>
@@ -554,6 +637,9 @@ public sealed class DadCoordinatorService
     private void UpdateClaims()
     {
         if (activePlan == null || activeSlotManifest == null)
+            return;
+
+        if (!TryRefreshStrictMutationBoundary("claim issuance"))
             return;
 
         var livenessBlockers = activeParticipants
@@ -602,7 +688,7 @@ public sealed class DadCoordinatorService
             DadClaimDecisionDto? decision;
             if (participant.IsLocalClient)
             {
-                decision = claimService.TryClaimLocal(request, presenceService.BuildSnapshotCopy());
+                decision = claimService.TryClaimLocal(request, presenceService.BuildLiveSafetySnapshot());
                 presenceService.ApplyClaimState(activePlan.Request.RequestId, decision.ClaimState, decision.LeaseState, decision.Lease, decision.Reason);
             }
             else
@@ -642,7 +728,7 @@ public sealed class DadCoordinatorService
 
         if (blockers.Count > 0)
         {
-            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
+            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
             {
                 FinalizeRun(
                     DadRunStatus.TimedOut,
@@ -681,7 +767,7 @@ public sealed class DadCoordinatorService
         var instructions = partyAssemblyService.BuildInstructions(activePlan, activeParticipants, out var blocker);
         if (!string.IsNullOrWhiteSpace(blocker))
         {
-            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
             {
                 FinalizeRun(DadRunStatus.TimedOut, "Dad run timed out during party assembly.", blocker);
                 return;
@@ -757,7 +843,7 @@ public sealed class DadCoordinatorService
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         if (blockers.Count > 0)
         {
-            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
             {
                 FinalizeRun(
                     DadRunStatus.TimedOut,
@@ -773,11 +859,20 @@ public sealed class DadCoordinatorService
         }
 
         partyMembers = BuildLocalPartySnapshot(out partySnapshotBlocker);
-        var verified = partyAssemblyService.VerifyPartyMembership(activePlan, activeParticipants, partyMembers, out var verificationBlocker);
-        if (!string.IsNullOrWhiteSpace(partySnapshotBlocker) || !verified)
+        var membership = partyAssemblyService.EvaluatePartyMembership(activePlan, activeParticipants, partyMembers);
+        if (membership.Disposition == DadPartyMembershipDisposition.Reject)
         {
-            var blockerSummary = string.IsNullOrWhiteSpace(partySnapshotBlocker) ? verificationBlocker : partySnapshotBlocker;
-            if (HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            FinalizeRun(
+                DadRunStatus.Failed,
+                "Dad rejected party assembly because PartyList contradicted the frozen manifest.",
+                membership.Summary);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(partySnapshotBlocker) || membership.Disposition != DadPartyMembershipDisposition.Ready)
+        {
+            var blockerSummary = string.IsNullOrWhiteSpace(partySnapshotBlocker) ? membership.Summary : partySnapshotBlocker;
+            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
             {
                 FinalizeRun(DadRunStatus.TimedOut, "Dad run timed out during party assembly.", blockerSummary);
                 return;
@@ -833,7 +928,7 @@ public sealed class DadCoordinatorService
             return [];
         }
 
-        var local = presenceService.BuildSnapshotCopy();
+        var local = presenceService.BuildLiveSafetySnapshot();
         if (!local.ActiveCharacterKey.IsEmpty &&
             members.All(member => !IsSamePartyMember(member, local)))
         {
@@ -879,6 +974,8 @@ public sealed class DadCoordinatorService
             blockers.Add(inviteBlocker);
             return;
         }
+
+        LogFirstPartyInviteBoundary(plan, instructions, partyMembers);
 
         foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty))
         {
@@ -1027,9 +1124,12 @@ public sealed class DadCoordinatorService
 
         if (activeModuleIndex >= 0 &&
             activeModuleIndex < activePlan.Modules.Count &&
-            workerStatuses.Count > 0)
+            workerCommands.Count > 0)
         {
-            UpdateWorkerExecution(activePlan.Modules[activeModuleIndex]);
+            if (workerStatuses.Count < workerCommands.Count)
+                DispatchWorkerExecution(activePlan.Modules[activeModuleIndex]);
+            else
+                UpdateWorkerExecution(activePlan.Modules[activeModuleIndex]);
             return;
         }
 
@@ -1050,6 +1150,10 @@ public sealed class DadCoordinatorService
             participant.State = DadParticipantState.QueuePending;
 
         var module = activePlan.Modules[activeModuleIndex];
+        workerCommands.Clear();
+        workerStatuses.Clear();
+        activeStepResultIndex = -1;
+        nextWorkerStatusPollUtc = DateTime.MinValue;
         MarkStopPolicyAttemptStarted(activePlan);
         DispatchWorkerExecution(module);
     }
@@ -1059,28 +1163,37 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
-        workerStatuses.Clear();
-        nextWorkerStatusPollUtc = DateTime.MinValue;
         var failures = new List<string>();
+        var pending = new List<string>();
         foreach (var participant in activeParticipants)
         {
             var role = IsQueueLeaderParticipant(activePlan, participant)
                 ? DadWorkerExecutionRole.QueueLeader
                 : DadWorkerExecutionRole.Participant;
             var participantView = BuildWorkerParticipantView(participant, role);
-            var command = new DadWorkerExecutionCommand
+            if (!workerCommands.TryGetValue(participant.WorkerSessionId.Value, out var command))
             {
-                RunId = activePlan.Request.RequestId,
-                ModuleIndex = activeModuleIndex,
-                Role = role,
-                Plan = activePlan,
-                Participants = participantView,
-                TimeoutSeconds = Math.Max(
-                    60,
-                    activePlan.Orchestration.WaitPolicy.ParticipantReadyTimeoutSeconds +
-                    activePlan.Orchestration.WaitPolicy.AssemblyTimeoutSeconds +
-                    900),
-            };
+                command = new DadWorkerExecutionCommand
+                {
+                    CommandId = $"{activePlan.Request.RequestId}:{activeModuleIndex}:{participant.AssignedSlotId}:worker-execution",
+                    RunId = activePlan.Request.RequestId,
+                    ModuleIndex = activeModuleIndex,
+                    Role = role,
+                    Plan = DadIpcJson.Deserialize<DadRunPlan>(DadIpcJson.Serialize(activePlan)) ?? activePlan,
+                    Participants = participantView.Select(static candidate => candidate.Clone()).ToList(),
+                    TimeoutSeconds = persistentStartup
+                        ? 0
+                        : Math.Max(
+                            60,
+                            activePlan.Orchestration.WaitPolicy.ParticipantReadyTimeoutSeconds +
+                            activePlan.Orchestration.WaitPolicy.AssemblyTimeoutSeconds +
+                            900),
+                };
+                workerCommands[participant.WorkerSessionId.Value] = command;
+            }
+
+            if (workerStatuses.ContainsKey(participant.WorkerSessionId.Value))
+                continue;
 
             participant.RunId = activePlan.Request.RequestId;
             var targetRuntime = participant.Clone();
@@ -1097,7 +1210,10 @@ public sealed class DadCoordinatorService
             if (ack == null || !ack.Accepted)
             {
                 var failure = ack?.Summary ?? $"Worker command acknowledgement pending from {participant.ActiveCharacterKey}.";
-                failures.Add(failure);
+                if (!persistentStartup || failure.Contains("immutable", StringComparison.OrdinalIgnoreCase) || failure.Contains("collision", StringComparison.OrdinalIgnoreCase))
+                    failures.Add(failure);
+                else
+                    pending.Add(failure);
                 LogWorkerCommandTransition(activePlan, module, participant, "rejected-or-missing", failure);
                 continue;
             }
@@ -1115,10 +1231,22 @@ public sealed class DadCoordinatorService
             return;
         }
 
+        if (pending.Count > 0 || workerStatuses.Count < workerCommands.Count)
+        {
+            var summary = string.Join(" | ", pending.Distinct(StringComparer.OrdinalIgnoreCase));
+            ApplyModuleRoutingResult(
+                module,
+                BuildWorkerProgressResult(
+                    module,
+                    $"Worker command acknowledgements {workerStatuses.Count}/{workerCommands.Count}; retrying without timeout. {summary}".Trim()),
+                replaceExisting: activeStepResultIndex >= 0);
+            return;
+        }
+
         ApplyModuleRoutingResult(
             module,
             BuildWorkerProgressResult(module, $"Assigned {workerStatuses.Count} worker(s); waiting for execution status."),
-            replaceExisting: false);
+            replaceExisting: activeStepResultIndex >= 0);
     }
 
     private static bool IsQueueLeaderParticipant(DadRunPlan plan, DadParticipantSnapshot participant)
@@ -1157,8 +1285,20 @@ public sealed class DadCoordinatorService
             if (workerStatus == null ||
                 !string.Equals(workerStatus.RunId, activePlan.Request.RequestId, StringComparison.OrdinalIgnoreCase))
             {
-                if (DateTime.UtcNow - participant.LastHeartbeatUtc >= activePlan.Orchestration.WaitPolicy.GetHeartbeatStaleThreshold())
+                if (!persistentStartup &&
+                    DateTime.UtcNow - participant.LastHeartbeatUtc >= activePlan.Orchestration.WaitPolicy.GetHeartbeatStaleThreshold())
+                {
                     failures.Add($"Worker {participant.ActiveCharacterKey} heartbeat/status is stale.");
+                }
+                else if (persistentStartup)
+                {
+                    LogWorkerCommandTransition(
+                        activePlan,
+                        module,
+                        participant,
+                        "status-pending",
+                        "Worker status or route is temporarily unavailable; retrying without timeout.");
+                }
                 continue;
             }
 
@@ -1214,6 +1354,7 @@ public sealed class DadCoordinatorService
             result.ExecutorStatus.UpdatedAtUtc = DateTime.UtcNow;
             ApplyModuleRoutingResult(module, result, replaceExisting: true);
             workerStatuses.Clear();
+            workerCommands.Clear();
             return;
         }
 
@@ -1395,6 +1536,7 @@ public sealed class DadCoordinatorService
         nextParticipantPollUtc = DateTime.MinValue;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
+        workerCommands.Clear();
         partyInviteGateway.Reset();
         claimService.ReleaseClaims(nextPlan.Request.RequestId);
         presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Dad Coordinator repeating {module.DisplayName}; {stopProgress.Summary}");
@@ -1584,39 +1726,139 @@ public sealed class DadCoordinatorService
         }
 
         var pool = GetPlanningPool(forcePeerRefresh: false);
-        var runtimeParticipants = BuildCurrentManifestParticipantSet(pool);
-        var activeCoordinatorCharacter = pool.Characters.FirstOrDefault(static character =>
-            character.Source == DadCharacterSource.LocalRuntime);
+        var liveCoordinatorTruth = presenceService.BuildLiveSafetySnapshot();
+        LogCoordinatorProvenance(boundary, activePlan.Request.RequestId, liveCoordinatorTruth);
+        var runtimeParticipants = BuildCurrentManifestParticipantSet(pool, liveCoordinatorTruth);
         var coordinatorAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
         if (!DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
                 activePlan,
                 activeSlotManifest,
                 runtimeParticipants,
                 coordinatorAccountKey,
-                activeCoordinatorCharacter,
+                liveCoordinatorTruth,
                 out var refreshedParticipants,
                 out var blocker))
         {
-            FinalizeRun(
-                DadRunStatus.Failed,
-                $"Dad stopped before {boundary} because strict frozen Slot1 authority changed.",
-                blocker);
+            if (HasImmutableBoundaryMismatch(activePlan, activeSlotManifest))
+            {
+                FinalizeRun(
+                    DadRunStatus.Failed,
+                    $"Dad rejected {boundary} because the immutable plan/manifest binding changed.",
+                    blocker);
+                return false;
+            }
+
+            var contradictionProof = BuildManifestContradictionEvidence(
+                activeSlotManifest,
+                runtimeParticipants,
+                liveCoordinatorTruth);
+            var contradiction = coordinatorContradictionTracker.Observe(
+                contradictionProof.Evidence,
+                contradictionProof.WorldStable,
+                DateTime.UtcNow,
+                ParticipantPollInterval,
+                contradictionProof.ObservedAtUtc);
+            if (contradiction.Disposition == DadSafetyProofDisposition.Reject)
+            {
+                log.Error(
+                    "[dad] Confirmed coordinator contradiction request={RequestId} boundary={Boundary} evidence={Evidence} firstObserved={FirstObservedAtUtc} live={LiveSnapshot}.",
+                    activePlan.Request.RequestId,
+                    boundary,
+                    contradiction.Evidence,
+                    contradiction.FirstObservedAtUtc?.ToString("O") ?? "(unknown)",
+                    DadIpcJson.Serialize(liveCoordinatorTruth));
+                FinalizeRun(
+                    DadRunStatus.Failed,
+                    $"Dad rejected {boundary} after two fresh world-stable identity contradictions.",
+                    contradiction.Evidence);
+                return false;
+            }
+
+            CurrentResult.Status = DadRunStatus.WaitingForParticipants;
+            CurrentResult.ActiveTaskStatus = contradiction.Disposition == DadSafetyProofDisposition.Wait
+                ? contradiction.Summary
+                : $"Waiting at strict {boundary} boundary: {blocker}";
+            CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+            Publish();
             return false;
         }
 
+        coordinatorContradictionTracker.Reset();
         activeParticipants.Clear();
         activeParticipants.AddRange(refreshedParticipants);
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         return true;
     }
 
-    private IReadOnlyList<DadParticipantSnapshot> BuildOnlineParticipantSet(DadCharacterPool pool)
+    private static bool HasImmutableBoundaryMismatch(DadRunPlan plan, DadRunSlotManifest manifest)
+        => plan.Request == null ||
+           plan.Orchestration == null ||
+           !string.Equals(plan.Request.RequestId, manifest.RequestId, StringComparison.Ordinal) ||
+           manifest.ExpectedPartySize != plan.RequiredParticipantCount ||
+           manifest.Slots.Count != plan.RequiredParticipantCount ||
+           !string.Equals(plan.LeaderCharacterKey, manifest.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase);
+
+    private static (string Evidence, bool WorldStable, DateTime ObservedAtUtc) BuildManifestContradictionEvidence(
+        DadRunSlotManifest manifest,
+        IReadOnlyList<DadParticipantSnapshot> runtimeParticipants,
+        DadParticipantSnapshot liveCoordinatorTruth)
+    {
+        foreach (var slot in manifest.Slots.OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.SlotId)))
+        {
+            var runtime = runtimeParticipants.FirstOrDefault(participant =>
+                string.Equals(
+                    participant.WorkerSessionId.Value,
+                    slot.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase));
+            if (runtime == null &&
+                string.Equals(
+                    liveCoordinatorTruth.WorkerSessionId.Value,
+                    slot.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                runtime = liveCoordinatorTruth;
+            }
+
+            if (runtime is not { WorldReadyStable: true })
+                continue;
+
+            if (!runtime.ManagedAccountKey.IsEmpty &&
+                !DadRosterIdentity.SameAccount(runtime.ManagedAccountKey, slot.AccountKey))
+            {
+                return (
+                    $"Frozen worker {slot.WorkerSessionId} reports stable account {runtime.ManagedAccountKey}; expected {slot.AccountKey} for {slot.SlotId}.",
+                    true,
+                    runtime.LastHeartbeatUtc);
+            }
+
+            if (string.Equals(
+                    runtime.ActiveCharacterKey.Value,
+                    slot.CharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase) &&
+                runtime.Character.ContentId != 0 &&
+                runtime.Character.ContentId != slot.ContentId)
+            {
+                return (
+                    $"Character {slot.CharacterKey} reports stable Content ID {runtime.Character.ContentId}; expected frozen {slot.ContentId} for {slot.SlotId}.",
+                    true,
+                    runtime.LastHeartbeatUtc);
+            }
+        }
+
+        return (string.Empty, liveCoordinatorTruth.WorldReadyStable, liveCoordinatorTruth.LastHeartbeatUtc);
+    }
+
+    private IReadOnlyList<DadParticipantSnapshot> BuildOnlineParticipantSet(
+        DadCharacterPool pool,
+        DadParticipantSnapshot? liveLocalTruth = null)
         => DadCoordinatorRuntimeProjectionRules.BuildOnlineParticipantSet(
-            presenceService.BuildSnapshotCopy(),
+            liveLocalTruth ?? presenceService.BuildLiveSafetySnapshot(),
             pool.PeerTransport.KnownParticipants,
             transportService.IsWorkerOnline);
 
-    private IReadOnlyList<DadParticipantSnapshot> BuildCurrentManifestParticipantSet(DadCharacterPool pool)
+    private IReadOnlyList<DadParticipantSnapshot> BuildCurrentManifestParticipantSet(
+        DadCharacterPool pool,
+        DadParticipantSnapshot? liveLocalTruth = null)
     {
         if (activeSlotManifest == null)
             return [];
@@ -1625,9 +1867,8 @@ public sealed class DadCoordinatorService
             .Select(static slot => slot.WorkerSessionId.Value)
             .Where(static session => !string.IsNullOrWhiteSpace(session))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var local = presenceService.BuildSnapshotCopy();
         return DadCoordinatorRuntimeProjectionRules.BuildFrozenParticipantSet(
-            local,
+            liveLocalTruth ?? presenceService.BuildLiveSafetySnapshot(),
             pool.PeerTransport.KnownParticipants,
             frozenSessions,
             transportService.IsWorkerOnline);
@@ -1643,7 +1884,7 @@ public sealed class DadCoordinatorService
             foreach (var slot in manifest.Slots)
             {
                 log.Information(
-                    "[dad] Frozen run assignment accepted request={RequestId} module={ModuleId} duty={DutyName} cfc={ContentFinderConditionId} unsynced={Unsynced} party={PartySize} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} worker={WorkerSessionId} leader={IsLeader} inviter={IsInviter}.",
+                    "[dad] Frozen run assignment accepted request={RequestId} module={ModuleId} duty={DutyName} cfc={ContentFinderConditionId} unsynced={Unsynced} party={PartySize} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} requestedJob={RequestedJobId} worker={WorkerSessionId} leader={IsLeader} inviter={IsInviter}.",
                     plan.Request.RequestId,
                     module.ModuleId,
                     module.DutyName,
@@ -1654,11 +1895,106 @@ public sealed class DadCoordinatorService
                     slot.AccountKey,
                     slot.CharacterKey,
                     slot.ContentId,
+                    slot.RequiredJobId?.ToString() ?? "(current)",
                     slot.WorkerSessionId,
                     slot.IsLeader,
                     slot.IsInviter);
             }
         }
+    }
+
+    private void LogCoordinatorProvenance(
+        string boundary,
+        string requestId,
+        DadParticipantSnapshot liveTruth)
+    {
+        var resolved = DadFullPartyExecutionRules.TryResolveActiveCoordinatorCharacter(
+            liveTruth,
+            out var character,
+            out var blocker);
+        var transition = string.Join(
+            "|",
+            liveTruth.WorkerSessionId.Value,
+            liveTruth.ClientInstanceId,
+            liveTruth.ManagedAccountKey.Value,
+            liveTruth.ActiveCharacterKey.Value,
+            liveTruth.Character.ContentId,
+            liveTruth.Character.Source,
+            liveTruth.IsAvailable,
+            liveTruth.WorldReadyStable,
+            resolved,
+            blocker);
+        if (coordinatorProvenanceTransitions.TryGetValue(boundary, out var previous) &&
+            string.Equals(previous, transition, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        coordinatorProvenanceTransitions[boundary] = transition;
+        log.Information(
+            "[dad] Coordinator provenance boundary={Boundary} request={RequestId} localWorker={LocalWorkerSessionId} localClient={LocalClientInstanceId} managedAccount={ManagedAccountKey} character={CharacterKey} contentId={ContentId} source={Source} available={Available} worldReadyStable={WorldReadyStable} resolved={Resolved} resolvedCharacter={ResolvedCharacterKey} blocker={Blocker}.",
+            boundary,
+            requestId,
+            liveTruth.WorkerSessionId,
+            liveTruth.ClientInstanceId,
+            liveTruth.ManagedAccountKey,
+            liveTruth.ActiveCharacterKey.IsEmpty ? "(none)" : liveTruth.ActiveCharacterKey.Value,
+            liveTruth.Character.ContentId,
+            liveTruth.Character.Source,
+            liveTruth.IsAvailable,
+            liveTruth.WorldReadyStable,
+            resolved,
+            resolved ? character.CharacterKey : "(none)",
+            resolved ? "(none)" : blocker);
+    }
+
+    private void LogFirstPartyInviteBoundary(
+        DadRunPlan plan,
+        IReadOnlyList<DadAssemblyInstructionDto> instructions,
+        IReadOnlyList<DadPartyMemberSnapshot> partyMembers)
+    {
+        if (string.Equals(firstPartyInviteBoundaryRunId, plan.Request.RequestId, StringComparison.Ordinal))
+            return;
+
+        var missingSlots = instructions
+            .Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty)
+            .Select(instruction => new
+            {
+                Instruction = instruction,
+                Participant = ResolveParticipantForInstruction(instruction),
+            })
+            .Where(candidate => candidate.Participant != null &&
+                                !DadPartyAssemblyService.IsParticipantInParty(candidate.Participant, partyMembers))
+            .Select(static candidate => candidate.Instruction.SlotId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (missingSlots.Count == 0)
+            return;
+
+        firstPartyInviteBoundaryRunId = plan.Request.RequestId;
+        var preparationOutcomes = (activeSlotManifest?.Slots ?? [])
+            .OrderBy(static slot => slot.SlotId, StringComparer.OrdinalIgnoreCase)
+            .Select(slot =>
+            {
+                var participant = activeParticipants.FirstOrDefault(candidate =>
+                    string.Equals(candidate.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase));
+                var outcome = slot.RequiredJobId.HasValue
+                    ? participant?.RequestedJobPreparation?.Status.ToString() ?? "Missing"
+                    : "NotRequested";
+                return $"{slot.SlotId}:job={slot.RequiredJobId?.ToString() ?? "current"},outcome={outcome}";
+            })
+            .ToList();
+        log.Information(
+            "[dad] First party-invite boundary request={RequestId} module={ModuleId} leader={LeaderCharacterKey} inviter={InviterCharacterKey} expectedParty={ExpectedPartySize} partyListCount={PartyListCount} missingSlots={MissingSlots} requestedJobOutcomes={RequestedJobOutcomes}.",
+            plan.Request.RequestId,
+            plan.CompositeModuleId,
+            plan.LeaderCharacterKey,
+            plan.InviterCharacterKey,
+            plan.RequiredParticipantCount,
+            partyMembers.Count,
+            string.Join(",", missingSlots),
+            preparationOutcomes.Count == 0 ? "(none)" : string.Join(";", preparationOutcomes));
     }
 
     private void LogSlotResolutionTransition(
@@ -1887,7 +2223,7 @@ public sealed class DadCoordinatorService
         var blocker = ResolveSingleWorkerAssemblyBlocker(plan, participant);
         if (!string.IsNullOrWhiteSpace(blocker))
         {
-            if (HasTimedOut(plan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            if (!persistentStartup && HasTimedOut(plan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
             {
                 FinalizeRun(DadRunStatus.TimedOut, "Dad run timed out during party assembly.", blocker);
                 return true;
@@ -2049,15 +2385,23 @@ public sealed class DadCoordinatorService
     {
         if (activePlan != null && status != DadRunStatus.Cancelled)
         {
+            var finalizationCommand = new DadCancelCommandDto
+            {
+                RunId = activePlan.Request.RequestId,
+                AuthorityWorkerSessionId = presenceService.WorkerSessionId,
+                CancellationState = DadRunCancellationState.Finalized,
+                Reason = $"Dad run finalized with status {status}.",
+            };
+            QueueCoordinatorCancellations(finalizationCommand, finalizationCommand.Reason);
             transportService.BroadcastCancel(
-                new DadCancelCommandDto
-                {
-                    RunId = activePlan.Request.RequestId,
-                    AuthorityWorkerSessionId = presenceService.WorkerSessionId,
-                    CancellationState = DadRunCancellationState.Finalized,
-                    Reason = $"Dad run finalized with status {status}.",
-                },
+                finalizationCommand,
                 activeParticipants.Where(static participant => !participant.IsLocalClient).ToList());
+            presenceService.HandleCancelRun(finalizationCommand);
+            workerExecutionService.Cancel(new DadWorkerExecutionCancel
+            {
+                RunId = activePlan.Request.RequestId,
+                Reason = finalizationCommand.Reason,
+            });
         }
 
         if (activePlan != null && status != DadRunStatus.Cancelled)
@@ -2096,6 +2440,7 @@ public sealed class DadCoordinatorService
         activeModuleIndex = -1;
         activeStepResultIndex = -1;
         workerStatuses.Clear();
+        workerCommands.Clear();
         nextWorkerStatusPollUtc = DateTime.MinValue;
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
@@ -2104,12 +2449,153 @@ public sealed class DadCoordinatorService
         assignmentTransitions.Clear();
         partyTransitions.Clear();
         workerCommandTransitions.Clear();
+        coordinatorProvenanceTransitions.Clear();
+        firstPartyInviteBoundaryRunId = string.Empty;
+        persistentStartup = false;
+        coordinatorContradictionTracker.Reset();
         remoteAssignmentTracker.Clear();
         partyInviteGateway.Reset();
         presenceService.ResetToIdle();
 
         log.Information("[dad] Finalized run {RequestId}: {Status} {Summary}", CurrentResult.RequestId, status, summary);
         return PublishAndClone();
+    }
+
+    private void QueueCoordinatorCancellations(DadCancelCommandDto command, string workerReason)
+    {
+        var targets = activeParticipants
+            .Where(static participant => !participant.IsLocalClient && !participant.WorkerSessionId.IsEmpty)
+            .Select(static participant => participant.Clone())
+            .ToList();
+        if (activeSlotManifest != null)
+        {
+            foreach (var slot in activeSlotManifest.Slots.Where(slot =>
+                         !slot.WorkerSessionId.IsEmpty &&
+                         !string.Equals(
+                             slot.WorkerSessionId.Value,
+                             presenceService.WorkerSessionId.Value,
+                             StringComparison.OrdinalIgnoreCase) &&
+                         targets.All(target => !string.Equals(
+                             target.WorkerSessionId.Value,
+                             slot.WorkerSessionId.Value,
+                             StringComparison.OrdinalIgnoreCase))))
+            {
+                targets.Add(new DadParticipantSnapshot
+                {
+                    WorkerSessionId = slot.WorkerSessionId,
+                    ManagedAccountKey = slot.AccountKey,
+                    ActiveCharacterKey = slot.CharacterKey,
+                    AssignedSlotId = slot.SlotId,
+                    Character = new DadAcquiredCharacter
+                    {
+                        AccountId = slot.AccountKey.Value,
+                        CharacterKey = slot.CharacterKey.Value,
+                        ContentId = slot.ContentId,
+                    },
+                });
+            }
+        }
+
+        foreach (var participant in targets)
+        {
+            var key = $"{command.RunId}|{participant.WorkerSessionId.Value}";
+            if (pendingCoordinatorCancellations.ContainsKey(key))
+                continue;
+
+            pendingCoordinatorCancellations[key] = new PendingCoordinatorCancellation
+            {
+                Target = participant.Clone(),
+                RunCommand = new DadCancelCommandDto
+                {
+                    RunId = command.RunId,
+                    AuthorityWorkerSessionId = command.AuthorityWorkerSessionId,
+                    CancellationState = command.CancellationState,
+                    Reason = command.Reason,
+                },
+                WorkerCommand = new DadWorkerExecutionCancel
+                {
+                    RunId = command.RunId,
+                    Reason = string.IsNullOrWhiteSpace(workerReason) ? command.Reason : workerReason,
+                },
+            };
+        }
+
+        UpdatePendingCoordinatorCancellations();
+    }
+
+    private void UpdatePendingCoordinatorCancellations()
+    {
+        if (pendingCoordinatorCancellations.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var pair in pendingCoordinatorCancellations.ToList())
+        {
+            var pending = pair.Value;
+            if (now < pending.NextAttemptUtc)
+                continue;
+
+            pending.NextAttemptUtc = now + CancellationRetryInterval;
+            if (!transportService.IsWorkerOnline(pending.Target.WorkerSessionId))
+            {
+                LogCoordinatorCancellationTransition(pair.Key, pending, "waiting-route");
+                continue;
+            }
+
+            if (!pending.RunAcknowledged)
+            {
+                var ack = transportService.SendCancelRun(pending.Target, pending.RunCommand);
+                pending.RunAcknowledged = ack is { Acknowledged: true } &&
+                                          string.Equals(ack.RunId, pending.RunCommand.RunId, StringComparison.Ordinal) &&
+                                          string.Equals(
+                                              ack.WorkerSessionId.Value,
+                                              pending.Target.WorkerSessionId.Value,
+                                              StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (!pending.WorkerAcknowledged)
+            {
+                var ack = transportService.SendWorkerExecutionCancel(pending.Target, pending.WorkerCommand);
+                pending.WorkerAcknowledged = ack is { Accepted: true } &&
+                                             string.Equals(ack.RunId, pending.WorkerCommand.RunId, StringComparison.Ordinal) &&
+                                             string.Equals(
+                                                 ack.WorkerSessionId.Value,
+                                                 pending.Target.WorkerSessionId.Value,
+                                                 StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (!pending.RunAcknowledged || !pending.WorkerAcknowledged)
+            {
+                LogCoordinatorCancellationTransition(
+                    pair.Key,
+                    pending,
+                    $"waiting-ack:run={pending.RunAcknowledged}:worker={pending.WorkerAcknowledged}");
+                continue;
+            }
+
+            LogCoordinatorCancellationTransition(pair.Key, pending, "acknowledged");
+            pendingCoordinatorCancellations.Remove(pair.Key);
+        }
+    }
+
+    private void LogCoordinatorCancellationTransition(
+        string key,
+        PendingCoordinatorCancellation pending,
+        string state)
+    {
+        if (string.Equals(pending.LastDiagnosticState, state, StringComparison.Ordinal))
+            return;
+
+        pending.LastDiagnosticState = state;
+        log.Information(
+            "[dad] Coordinator cancellation transition command={CommandId} request={RequestId} worker={WorkerSessionId} state={State} runAck={RunAcknowledged} workerAck={WorkerAcknowledged} reason={Reason}.",
+            key,
+            pending.RunCommand.RunId,
+            pending.Target.WorkerSessionId,
+            state,
+            pending.RunAcknowledged,
+            pending.WorkerAcknowledged,
+            pending.RunCommand.Reason);
     }
 
     private void LogCoordinatorPhaseTransition()

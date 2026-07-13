@@ -85,14 +85,17 @@ public static class DadSchedulerRoutingRules
         if (requiredAccountKey.IsEmpty)
             return null;
 
-        return participants.FirstOrDefault(participant =>
+        var matches = participants.Where(participant =>
             !participant.WorkerSessionId.IsEmpty &&
             participant.State != DadParticipantState.Stale &&
             string.Equals(
                 participant.ManagedAccountKey.Value,
                 requiredAccountKey.Value,
                 StringComparison.OrdinalIgnoreCase) &&
-            isWorkerOnline(participant.WorkerSessionId));
+            isWorkerOnline(participant.WorkerSessionId))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
     }
 
     public static DadParticipantSnapshot? ResolveFrozenConnectedClient(
@@ -115,6 +118,37 @@ public static class DadSchedulerRoutingRules
                 requiredAccountKey.Value,
                 StringComparison.OrdinalIgnoreCase) &&
             isWorkerOnline(participant.WorkerSessionId));
+    }
+
+    public static DadParticipantSnapshot? ResolveCurrentOrSoleReconnectedClient(
+        DadAccountKey requiredAccountKey,
+        DadWorkerSessionId frozenWorkerSessionId,
+        IEnumerable<DadParticipantSnapshot> participants,
+        Func<DadWorkerSessionId, bool> isWorkerOnline)
+    {
+        var participantList = participants.ToList();
+        var frozen = ResolveFrozenConnectedClient(
+            requiredAccountKey,
+            frozenWorkerSessionId,
+            participantList,
+            isWorkerOnline);
+        if (frozen != null)
+            return frozen;
+
+        // An online exact old session reporting another account is a safety
+        // contradiction, not permission to route around it. Rebinding is only
+        // available once that old session is absent and one sole exact-account
+        // replacement route exists.
+        var oldSessionStillOnline = !frozenWorkerSessionId.IsEmpty && participantList.Any(participant =>
+            participant.State != DadParticipantState.Stale &&
+            string.Equals(
+                participant.WorkerSessionId.Value,
+                frozenWorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase) &&
+            isWorkerOnline(participant.WorkerSessionId));
+        return oldSessionStillOnline
+            ? null
+            : ResolveExactConnectedClient(requiredAccountKey, participantList, isWorkerOnline);
     }
 
     public static DadParticipantSnapshot? ResolveFrozenCancellationClient(

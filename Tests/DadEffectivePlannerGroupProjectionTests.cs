@@ -72,6 +72,43 @@ public sealed class DadEffectivePlannerGroupProjectionTests
         Assert.Equal("Character 4@World", bound.Slots[3].RequiredCharacterKey.Value);
     }
 
+    [Fact]
+    public void MsqFourPlayerTestPreservesRequestedJobsThroughProjectionAndAssignment()
+    {
+        uint[] requestedJobs = [40, 32, 24, 38];
+        var group = BuildGroup(4);
+        group.DisplayName = "msq 4 player test";
+        group.ActivityMode = DadPlannerActivityMode.DailyRoulette;
+        group.RouletteTarget = new DadQueueTarget
+        {
+            Kind = DadQueueTargetKind.Roulette,
+            Key = "3",
+            DisplayName = "Main Scenario",
+        };
+        for (var index = 0; index < group.Slots.Count; index++)
+            group.Slots[index].RequiredJobId = requestedJobs[index];
+
+        var projected = DadEffectivePlannerGroupProjection.Project(
+            group,
+            DadPlannerActivityMode.DailyRoulette,
+            requestedPartySize: 4);
+        var assignments = projected.Slots.Select((slot, index) => new DadPresetCharacterSlot
+        {
+            SlotId = slot.SlotId,
+            CharacterKey = slot.RequiredCharacterKey.Value,
+            RequiredCharacterKey = slot.RequiredCharacterKey,
+            RequiredAccountKey = slot.RequiredAccountKey,
+            RequiredJobId = requestedJobs[index],
+            ContentId = (ulong)(1001 + index),
+        }).ToList();
+        var bound = DadEffectivePlannerGroupProjection.BindResolvedSchedulerSlots(projected, assignments);
+
+        Assert.Equal("msq 4 player test", bound.DisplayName);
+        Assert.Equal(requestedJobs, bound.Slots.Select(static slot => slot.RequiredJobId!.Value).ToArray());
+        Assert.Equal(requestedJobs, group.Slots.Select(static slot => slot.RequiredJobId!.Value).ToArray());
+        Assert.Equal("3", bound.RouletteTarget.Key);
+    }
+
     private static DadPlannerGroup BuildGroup(int slotCount)
         => new()
         {

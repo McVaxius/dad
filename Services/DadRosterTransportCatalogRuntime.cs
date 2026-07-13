@@ -613,16 +613,11 @@ public static class DadRosterTransportCatalogRuntime
     private static bool IsLocalTransportParticipant(
         DadParticipantSnapshot participant,
         DadPeerTransportSnapshot currentTransport)
-    {
-        if (participant.IsLocalClient)
-            return true;
-
-        return MatchesRosterOwner(
+        => MatchesRosterOwner(
             currentTransport.LocalWorkerSessionId,
             currentTransport.LocalClientInstanceId,
             participant.WorkerSessionId,
             participant.ClientInstanceId?.Trim() ?? string.Empty);
-    }
 
     private static bool MatchesRuntimeOwner(
         DadRosterCharacter row,

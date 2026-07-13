@@ -5,16 +5,70 @@ namespace dad.Services;
 public static class DadFullPartyExecutionRules
 {
     public static DadAcquiredCharacter? ResolveActiveCoordinatorCharacter(
-        DadAcquiredCharacter? unfilteredLocalRuntimeCharacter,
-        IEnumerable<DadAcquiredCharacter> projectedCharacters)
+        DadParticipantSnapshot? liveCoordinatorTruth)
     {
-        ArgumentNullException.ThrowIfNull(projectedCharacters);
+        return TryResolveActiveCoordinatorCharacter(liveCoordinatorTruth, out var character, out _)
+            ? character
+            : null;
+    }
 
-        if (unfilteredLocalRuntimeCharacter?.Source == DadCharacterSource.LocalRuntime)
-            return unfilteredLocalRuntimeCharacter;
+    public static bool TryResolveActiveCoordinatorCharacter(
+        DadParticipantSnapshot? liveCoordinatorTruth,
+        out DadAcquiredCharacter character,
+        out string blocker)
+    {
+        character = new DadAcquiredCharacter();
+        blocker = string.Empty;
+        if (liveCoordinatorTruth == null)
+            return FailCoordinatorTruth("Explicit live coordinator truth is unavailable.", out blocker);
 
-        return projectedCharacters.FirstOrDefault(static character =>
-            character.Source == DadCharacterSource.LocalRuntime);
+        if (!liveCoordinatorTruth.IsLocalClient ||
+            liveCoordinatorTruth.WorkerSessionId.IsEmpty ||
+            string.IsNullOrWhiteSpace(liveCoordinatorTruth.ClientInstanceId))
+        {
+            return FailCoordinatorTruth(
+                "Explicit coordinator truth is not bound to an exact local worker/client session.",
+                out blocker);
+        }
+
+        var liveCharacter = liveCoordinatorTruth.Character;
+        if (!liveCoordinatorTruth.IsAvailable ||
+            liveCharacter.Source != DadCharacterSource.LocalRuntime ||
+            liveCoordinatorTruth.ActiveCharacterKey.IsEmpty ||
+            string.IsNullOrWhiteSpace(liveCharacter.CharacterKey) ||
+            liveCharacter.ContentId == 0 ||
+            !string.Equals(
+                liveCoordinatorTruth.ActiveCharacterKey.Value,
+                liveCharacter.CharacterKey,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return FailCoordinatorTruth(
+                "Explicit live coordinator truth does not contain one exact loaded local character and Content ID.",
+                out blocker);
+        }
+
+        if (liveCoordinatorTruth.ManagedAccountKey.IsEmpty)
+            return FailCoordinatorTruth("Explicit live coordinator truth has no managed account identity.", out blocker);
+
+        var liveAccount = ResolveCharacterAccount(liveCharacter);
+        if (!liveAccount.IsEmpty &&
+            !DadRosterIdentity.SameAccount(liveAccount, liveCoordinatorTruth.ManagedAccountKey))
+        {
+            return FailCoordinatorTruth(
+                $"Explicit live coordinator character account '{liveAccount}' conflicts with managed account '{liveCoordinatorTruth.ManagedAccountKey}'.",
+                out blocker);
+        }
+
+        character = liveCharacter.Clone();
+        if (liveAccount.IsEmpty)
+            character.AccountId = liveCoordinatorTruth.ManagedAccountKey.Value;
+        return true;
+    }
+
+    private static bool FailCoordinatorTruth(string reason, out string blocker)
+    {
+        blocker = reason;
+        return false;
     }
 
     public static bool RequiresLocalCoordinatorLeader(DadRunRequest request)
@@ -89,11 +143,23 @@ public static class DadFullPartyExecutionRules
         }
 
         var requestedLeaderAccount = ResolveLeaderAccount(request, leader, requestedLeaderKey);
-        if (coordinatorAccountKey.IsEmpty)
+        if (coordinatorAccountKey.IsEmpty && activeCoordinatorCharacter != null)
             coordinatorAccountKey = ResolveCharacterAccount(activeCoordinatorCharacter);
         if (coordinatorAccountKey.IsEmpty || requestedLeaderAccount.IsEmpty)
         {
             blocker = $"Full-party Slot1 '{requestedLeaderKey}' must have an exact coordinator account identity.";
+            return false;
+        }
+
+        if (activeCoordinatorCharacter == null ||
+            activeCoordinatorCharacter.Source != DadCharacterSource.LocalRuntime ||
+            string.IsNullOrWhiteSpace(activeCoordinatorCharacter.CharacterKey) ||
+            activeCoordinatorCharacter.ContentId == 0)
+        {
+            if (!requireExactLocalIdentity && allowWakeableCoordinatorLeader)
+                return true;
+
+            blocker = "Full-party coordinator validation requires explicit live local character, account, and Content ID truth.";
             return false;
         }
 
@@ -110,9 +176,24 @@ public static class DadFullPartyExecutionRules
             return false;
         }
 
-        var exactLocalIdentity = leader.Source == DadCharacterSource.LocalRuntime &&
-                                 activeCoordinatorCharacter != null &&
-                                 string.Equals(activeCoordinatorCharacter.CharacterKey, requestedLeaderKey.Value, StringComparison.OrdinalIgnoreCase);
+        var activeCharacterKeyMatches = string.Equals(
+            activeCoordinatorCharacter.CharacterKey,
+            requestedLeaderKey.Value,
+            StringComparison.OrdinalIgnoreCase);
+        if (activeCharacterKeyMatches &&
+            leader.ContentId != 0 &&
+            activeCoordinatorCharacter.ContentId != leader.ContentId)
+        {
+            if (!requireExactLocalIdentity && allowWakeableCoordinatorLeader)
+                return true;
+
+            blocker = $"Full-party Slot1 '{requestedLeaderKey}' Content ID mismatch: planned {leader.ContentId}, live {activeCoordinatorCharacter.ContentId}.";
+            return false;
+        }
+
+        var exactLocalIdentity = activeCharacterKeyMatches &&
+                                 leader.ContentId != 0 &&
+                                 activeCoordinatorCharacter.ContentId == leader.ContentId;
         if (!requireExactLocalIdentity && (exactLocalIdentity || allowWakeableCoordinatorLeader))
             return true;
 

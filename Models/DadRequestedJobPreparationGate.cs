@@ -3,7 +3,8 @@ namespace dad.Models;
 // Pure, time-driven gate. The caller owns live-state reads and the one unsafe gearset mutation gateway.
 public sealed class DadRequestedJobPreparationGate
 {
-    public const int MaxAttemptCount = 6;
+    // Only an actual invocation of the gearset mutation gateway consumes an attempt.
+    public const int MaxAttemptCount = 3;
     public static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(1);
     public static readonly TimeSpan VerificationTimeout = TimeSpan.FromSeconds(5);
 
@@ -43,7 +44,7 @@ public sealed class DadRequestedJobPreparationGate
         var proof = GetOrCreate(expected, nowUtc);
 
         if (!DadRequestedJobPreparationKeyRules.Matches(expected, observation.Identity))
-            return CancelInternal(proof, nowUtc, "The live preparation identity no longer matches the requested assignment.");
+            return proof.Clone();
 
         if (!expected.RequiredJobId.HasValue)
             return proof.Clone();
@@ -59,7 +60,12 @@ public sealed class DadRequestedJobPreparationGate
         if (proof.Status is DadRequestedJobPreparationStatus.AlreadyMatched or DadRequestedJobPreparationStatus.Switched)
         {
             if (observation.CurrentJobId != requiredJobId)
-                return CancelInternal(proof, nowUtc, "The active class/job changed after preparation completed.");
+            {
+                return SoftFail(
+                    proof,
+                    nowUtc,
+                    $"The active class/job changed after preparation completed; continuing on current job {observation.CurrentJobId}.");
+            }
 
             return proof.Clone();
         }
@@ -85,10 +91,13 @@ public sealed class DadRequestedJobPreparationGate
                 return proof.Clone();
             }
 
-            return SoftFail(
-                proof,
-                nowUtc,
-                $"The game accepted gearset {proof.SelectedGearsetId?.ToString() ?? "?"}, but class/job {requiredJobId} was not observed within five seconds.");
+            proof.EquipAcceptedAtUtc = null;
+            var verificationFailure =
+                $"The game accepted gearset {proof.SelectedGearsetId?.ToString() ?? "?"}, but class/job {requiredJobId} was not observed within five seconds.";
+            if (proof.AttemptCount >= MaxAttemptCount)
+                return SoftFail(proof, nowUtc, verificationFailure);
+
+            return RecordWait(proof, nowUtc, verificationFailure);
         }
 
         if (proof.LastAttemptAtUtc.HasValue && nowUtc - proof.LastAttemptAtUtc.Value < RetryInterval)
@@ -96,7 +105,7 @@ public sealed class DadRequestedJobPreparationGate
 
         if (!observation.IsSafeToEquip)
         {
-            return RecordTransientFailure(
+            return RecordWait(
                 proof,
                 nowUtc,
                 string.IsNullOrWhiteSpace(observation.UnsafeReason)
@@ -107,7 +116,7 @@ public sealed class DadRequestedJobPreparationGate
         var catalog = observation.GearsetCatalog;
         if (catalog?.Available != true)
         {
-            return RecordTransientFailure(
+            return RecordWait(
                 proof,
                 nowUtc,
                 catalog?.FailureReason ?? "The gearset catalog is unavailable.");
@@ -125,27 +134,28 @@ public sealed class DadRequestedJobPreparationGate
         proof.SelectedGearsetId = gearsetId;
 
         if (tryEquip == null)
-            return RecordTransientFailure(proof, nowUtc, "The gearset mutation gateway is unavailable.");
+            return RecordWait(proof, nowUtc, "The gearset mutation gateway is unavailable.");
 
         DadClassJobEquipAttemptResult attempt;
+        // Count before invocation because a throwing gateway still performed the
+        // legitimate mutation call whose outcome is unknown.
+        proof.AttemptCount++;
+        proof.LastAttemptAtUtc = nowUtc;
+        proof.UpdatedAtUtc = nowUtc;
         try
         {
             attempt = tryEquip(gearsetId.Value);
         }
         catch (Exception ex)
         {
-            return RecordTransientFailure(
+            return CompleteAttemptFailure(
                 proof,
                 nowUtc,
                 $"The gearset mutation gateway threw {ex.GetType().Name}: {ex.Message}");
         }
 
-        proof.AttemptCount++;
-        proof.LastAttemptAtUtc = nowUtc;
-        proof.UpdatedAtUtc = nowUtc;
-
         if (!attempt.Accepted)
-            return CompleteTransientFailure(proof, nowUtc, attempt.FailureReason);
+            return CompleteAttemptFailure(proof, nowUtc, attempt.FailureReason);
 
         proof.Status = DadRequestedJobPreparationStatus.AwaitingVerification;
         proof.EquipAcceptedAtUtc = nowUtc;
@@ -223,18 +233,19 @@ public sealed class DadRequestedJobPreparationGate
         return proof.Clone();
     }
 
-    private static DadRequestedJobPreparationProof RecordTransientFailure(
+    private static DadRequestedJobPreparationProof RecordWait(
         DadRequestedJobPreparationProof proof,
         DateTime nowUtc,
         string reason)
     {
-        proof.AttemptCount++;
-        proof.LastAttemptAtUtc = nowUtc;
         proof.UpdatedAtUtc = nowUtc;
-        return CompleteTransientFailure(proof, nowUtc, reason);
+        proof.Status = DadRequestedJobPreparationStatus.Pending;
+        proof.FailureReason = NormalizeReason(reason, "Class/job preparation is waiting for safe runtime state.");
+        proof.Summary = $"Class/job preparation is waiting without consuming an attempt: {proof.FailureReason}";
+        return proof.Clone();
     }
 
-    private static DadRequestedJobPreparationProof CompleteTransientFailure(
+    private static DadRequestedJobPreparationProof CompleteAttemptFailure(
         DadRequestedJobPreparationProof proof,
         DateTime nowUtc,
         string reason)

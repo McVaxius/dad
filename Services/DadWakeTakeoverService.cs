@@ -20,6 +20,7 @@ public sealed class DadWakeTakeoverService : IDisposable
     private static readonly TimeSpan OperationRetention = TimeSpan.FromHours(1);
     private readonly IDadWakeTakeoverTarget target;
     private readonly Func<DateTime> utcNow;
+    private readonly Action<string>? diagnostic;
     private readonly object gate = new();
     private readonly Dictionary<string, OperationState> operations = new(StringComparer.OrdinalIgnoreCase);
     private string activeOperationKey = string.Empty;
@@ -28,10 +29,12 @@ public sealed class DadWakeTakeoverService : IDisposable
     public DadWakeTakeoverService(
         IDadWakeTakeoverTarget target,
         Func<DateTime>? utcNow = null,
-        TimeSpan? preCommitBudget = null)
+        TimeSpan? preCommitBudget = null,
+        Action<string>? diagnostic = null)
     {
         this.target = target;
         this.utcNow = utcNow ?? (() => DateTime.UtcNow);
+        this.diagnostic = diagnostic;
         _ = preCommitBudget; // Retained for constructor compatibility; readiness waits are intentionally unbounded.
     }
 
@@ -302,6 +305,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         if (IsTerminal(operation.Phase) || operation.Phase >= DadWakeTakeoverPhase.Prepared)
             return BuildResult(operation);
         operation.PreparationStarted = true;
+        if (operation.NextEpochEligibleUtc.HasValue && utcNow() < operation.NextEpochEligibleUtc.Value)
+            return BuildResult(operation, summary: $"Takeover epoch {operation.Epoch} is waiting for the five-second retry cadence.");
         if (operation.CleanupPending)
             return BuildResult(operation, summary: "Waiting for temporary DAD takeover state to finish releasing before preparation resumes.");
 
@@ -337,7 +342,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         snapshot = Capture(operation, forceExternalRefresh: true);
         if (reservation?.IsRejected == true)
-            return Block(operation, reservation.Summary, cleanup: true);
+            return BeginNextEpoch(operation, reservation.Summary);
         if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot))
             return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         if (snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
@@ -378,7 +383,7 @@ public sealed class DadWakeTakeoverService : IDisposable
                 () => target.ArmCharacterPostprocess(operation.Request.OperationToken),
                 "arm the AutoRetainer character postprocess request");
             if (!armed.Success)
-                return Block(operation, armed.Error, cleanup: true);
+                return BeginNextEpoch(operation, armed.Error);
             operation.CharacterPostprocessArmed = true;
             operation.Summary = "Waiting for AutoRetainer character postprocess; no timeout; cancel to stop.";
             operation.UpdatedAtUtc = utcNow();
@@ -614,7 +619,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             var disableMulti = Invoke(() => target.SetMultiModeEnabled(false), "disable AutoRetainer Multi Mode");
             if (!disableMulti.Success)
             {
-                Block(operation, disableMulti.Error, cleanup: true);
+                BeginNextEpoch(operation, disableMulti.Error);
                 return;
             }
         }
@@ -629,7 +634,7 @@ public sealed class DadWakeTakeoverService : IDisposable
                 "send /ays d");
             if (!disableAr.Success)
             {
-                Block(operation, disableAr.Error, cleanup: true);
+                BeginNextEpoch(operation, disableAr.Error);
                 return;
             }
         }
@@ -644,7 +649,7 @@ public sealed class DadWakeTakeoverService : IDisposable
                 "send /ays reset");
             if (!reset.Success)
             {
-                Block(operation, reset.Error, cleanup: true);
+                BeginNextEpoch(operation, reset.Error);
                 return;
             }
         }
@@ -689,6 +694,13 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (!CanExecuteRelogNow(operation, snapshot))
         {
+            if (snapshot.AccountMatches && snapshot.CharacterKnownToAccount &&
+                IsWorldReadyStable(snapshot) &&
+                (!snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed || snapshot.ExternalAutomationHeld))
+            {
+                BeginNextEpoch(operation, "Committed relog lost its operation-owned safety lease; returning to the readiness handshake.");
+                return;
+            }
             operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
             operation.UpdatedAtUtc = utcNow();
             return;
@@ -717,11 +729,15 @@ public sealed class DadWakeTakeoverService : IDisposable
                 $"send /ays relog {operation.Request.CharacterKey}");
             if (!relog.Success)
             {
-                Block(operation, relog.Error, cleanup: true);
+                BeginNextEpoch(operation, relog.Error);
                 return;
             }
             var issuedAt = utcNow();
             operation.RelogIssuedUtc = issuedAt;
+            operation.RelogAcceptedAtUtc = issuedAt;
+            operation.RelogSourceCharacterKey = snapshot.Participant.ActiveCharacterKey;
+            operation.RelogTransitionObserved = false;
+            operation.StableWrongCharacterSinceUtc = snapshot.Participant.WorldReadyStable ? issuedAt : null;
         }
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
@@ -744,6 +760,39 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (!snapshot.CorrectCharacter)
         {
+            var now = utcNow();
+            var activeCharacter = snapshot.Participant.ActiveCharacterKey;
+            if (!snapshot.Participant.IsAvailable || !snapshot.Participant.WorldReadyStable)
+            {
+                operation.RelogTransitionObserved = true;
+                operation.StableWrongCharacterSinceUtc = null;
+                operation.Summary = BuildRelogWaitSummary(operation, snapshot);
+                return;
+            }
+
+            if (!operation.RelogSourceCharacterKey.IsEmpty &&
+                !string.Equals(
+                    activeCharacter.Value,
+                    operation.RelogSourceCharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                operation.RelogTransitionObserved = true;
+            }
+
+            operation.StableWrongCharacterSinceUtc ??= now;
+            var provenNoEffect = !operation.RelogTransitionObserved &&
+                                 operation.RelogAcceptedAtUtc.HasValue &&
+                                 now - operation.RelogAcceptedAtUtc.Value >= TimeSpan.FromSeconds(15);
+            if (operation.RelogTransitionObserved || provenNoEffect)
+            {
+                BeginNextEpoch(
+                    operation,
+                    operation.RelogTransitionObserved
+                        ? $"Relog settled world-stable on {activeCharacter}; retrying target {operation.Request.CharacterKey}."
+                        : $"Relog had no transition effect for 15 seconds on {activeCharacter}; retrying target {operation.Request.CharacterKey}.");
+                return;
+            }
+
             operation.Summary = BuildRelogWaitSummary(operation, snapshot);
             return;
         }
@@ -993,6 +1042,40 @@ public sealed class DadWakeTakeoverService : IDisposable
         return BuildResult(operation, snapshot);
     }
 
+    private DadWakeTakeoverResultDto BeginNextEpoch(OperationState operation, string reason)
+    {
+        operation.CleanupReleaseReservation = true;
+        operation.CleanupPending = !TryCleanupOwnedLeases(
+            operation,
+            retryAtNextBoundary: false,
+            releaseReservation: true);
+        operation.Epoch++;
+        operation.EpochStartedAtUtc = utcNow();
+        operation.NextEpochEligibleUtc = operation.EpochStartedAtUtc + TimeSpan.FromSeconds(5);
+        operation.Phase = DadWakeTakeoverPhase.AwaitingArHook;
+        operation.Status = DadWakeTakeoverStatus.Pending;
+        operation.CommitKind = DadWakeCommitKind.None;
+        operation.ExecutionTimeUtc = null;
+        operation.Acknowledgement = DadWakeAcknowledgementState.Pending;
+        operation.BlockedReason = string.Empty;
+        operation.VermaxionMutationAuthorization = DadVermaxionMutationAuthorization.None;
+        operation.MultiModeDisableAttempted = false;
+        operation.DisableAutoRetainerAttempted = false;
+        operation.ResetCommandAttempted = false;
+        operation.RelogCommandAttempted = false;
+        operation.ResetIssuedUtc = null;
+        operation.RelogIssuedUtc = null;
+        operation.RelogAcceptedAtUtc = null;
+        operation.RelogSourceCharacterKey = new DadCharacterKey(string.Empty);
+        operation.RelogTransitionObserved = false;
+        operation.StableWrongCharacterSinceUtc = null;
+        operation.Summary = $"Takeover epoch {operation.Epoch} queued after retryable outcome: {reason}";
+        operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
+        diagnostic?.Invoke(
+            $"request={operation.Request.SchedulerRunId} slot={operation.Request.SlotId} account={operation.Request.AccountKey} character={operation.Request.CharacterKey} epoch={operation.Epoch} reason={reason}");
+        return BuildResult(operation);
+    }
+
     private bool CanContinueCommittedReset(
         OperationState operation,
         bool forceExternalRefresh,
@@ -1014,6 +1097,13 @@ public sealed class DadWakeTakeoverService : IDisposable
         if (!IsWorldAndLocalServicesSafe(snapshot) ||
             snapshot.ExternalAutomationHeld || !leaseReady || !authorizationReady)
         {
+            if (snapshot.AccountMatches && snapshot.CharacterKnownToAccount &&
+                IsWorldReadyStable(snapshot) &&
+                (!leaseReady || !authorizationReady || snapshot.ExternalAutomationHeld))
+            {
+                BeginNextEpoch(operation, "Committed reset lost its operation-owned safety lease; returning to the readiness handshake.");
+                return false;
+            }
             operation.Summary = $"Committed reset is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
             operation.UpdatedAtUtc = utcNow();
             return false;
@@ -1048,7 +1138,9 @@ public sealed class DadWakeTakeoverService : IDisposable
            !IsExternalAutomationBlocking(snapshot);
 
     private static bool IsWorldAndLocalServicesSafe(DadWakeTakeoverTargetSnapshot snapshot)
-        => IsWorldReadyStable(snapshot) &&
+        => snapshot.AccountMatches &&
+           snapshot.CharacterKnownToAccount &&
+           IsWorldReadyStable(snapshot) &&
            snapshot.AutoRetainerAvailable &&
            !snapshot.AutoRetainerBusy &&
            snapshot.LifestreamAvailable &&
@@ -1092,6 +1184,10 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private static string BuildReadinessWaitSummary(DadWakeTakeoverTargetSnapshot snapshot)
     {
+        if (!snapshot.AccountMatches)
+            return "Waiting for the exact configured stable-account client; no mutation and no timeout.";
+        if (!snapshot.CharacterKnownToAccount)
+            return "Waiting for authoritative character/account catalog truth; no mutation and no timeout.";
         if (!snapshot.Participant.IsAvailable)
             return "Waiting for a connected local character; no timeout; cancel to stop.";
         if (!snapshot.Participant.WorldReadyStable)
@@ -1131,10 +1227,6 @@ public sealed class DadWakeTakeoverService : IDisposable
             return "DAD is disabled on the target client.";
         if (!snapshot.RemoteMutationAllowed)
             return "Remote mutation is disabled on the target client.";
-        if (!snapshot.AccountMatches)
-            return $"Target DAD client does not own requested account {request.AccountKey}.";
-        if (!snapshot.CharacterKnownToAccount)
-            return $"Character {request.CharacterKey} is not known to account {request.AccountKey}.";
         return string.Empty;
     }
 
@@ -1367,6 +1459,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             Request = request;
             CreatedAtUtc = createdAtUtc;
             UpdatedAtUtc = createdAtUtc;
+            EpochStartedAtUtc = createdAtUtc;
         }
 
         public DadWakeTakeoverRequestDto Request { get; }
@@ -1395,5 +1488,12 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool DisableAutoRetainerAttempted { get; set; }
         public bool ResetCommandAttempted { get; set; }
         public bool RelogCommandAttempted { get; set; }
+        public int Epoch { get; set; } = 1;
+        public DateTime EpochStartedAtUtc { get; set; }
+        public DateTime? NextEpochEligibleUtc { get; set; }
+        public DateTime? RelogAcceptedAtUtc { get; set; }
+        public DadCharacterKey RelogSourceCharacterKey { get; set; } = new(string.Empty);
+        public bool RelogTransitionObserved { get; set; }
+        public DateTime? StableWrongCharacterSinceUtc { get; set; }
     }
 }

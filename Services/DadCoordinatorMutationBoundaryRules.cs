@@ -9,7 +9,7 @@ internal static class DadCoordinatorMutationBoundaryRules
         DadRunSlotManifest manifest,
         IReadOnlyList<DadParticipantSnapshot> currentParticipants,
         DadAccountKey coordinatorAccountKey,
-        DadAcquiredCharacter? activeCoordinatorCharacter,
+        DadParticipantSnapshot? liveCoordinatorTruth,
         out List<DadParticipantSnapshot> resolvedParticipants,
         out string blocker)
     {
@@ -82,6 +82,24 @@ internal static class DadCoordinatorMutationBoundaryRules
         {
             return Fail(
                 $"Strict coordinator mutation validation requires frozen {leaderSlot.SlotId} '{leaderSlot.CharacterKey}' on its exact local authority worker session '{leaderSlot.WorkerSessionId}'.",
+                out blocker);
+        }
+
+        if (!DadFullPartyExecutionRules.TryResolveActiveCoordinatorCharacter(
+                liveCoordinatorTruth,
+                out var activeCoordinatorCharacter,
+                out var liveTruthBlocker))
+        {
+            return Fail(liveTruthBlocker, out blocker);
+        }
+
+        if (!Same(liveCoordinatorTruth!.WorkerSessionId.Value, leaderSlot.WorkerSessionId.Value) ||
+            !Same(liveCoordinatorTruth.WorkerSessionId.Value, localLeader.WorkerSessionId.Value) ||
+            !Same(liveCoordinatorTruth.ClientInstanceId, localLeader.ClientInstanceId) ||
+            !liveCoordinatorTruth.WorldReadyStable)
+        {
+            return Fail(
+                $"Strict coordinator mutation validation requires live Slot1 worker/client/session/world-safety proof for '{leaderSlot.CharacterKey}'.",
                 out blocker);
         }
 

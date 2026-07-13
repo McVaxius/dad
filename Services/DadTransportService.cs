@@ -809,6 +809,15 @@ public sealed class DadTransportService : IDisposable
         return acks;
     }
 
+    public DadCancelAckDto? SendCancelRun(
+        DadParticipantSnapshot participant,
+        DadCancelCommandDto command)
+        => TryRequest<DadCancelCommandDto, DadCancelAckDto>(
+            participant.WorkerSessionId,
+            MessageCancelRun,
+            command,
+            $"cancel-run:{participant.WorkerSessionId.Value}:{command.RunId}");
+
     private async Task RunServerAsync(CancellationToken cancellationToken)
     {
         try

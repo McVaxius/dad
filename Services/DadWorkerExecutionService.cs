@@ -15,6 +15,11 @@ public sealed class DadWorkerExecutionService
     private readonly ConcurrentQueue<DadWorkerExecutionCommand> pendingCommands = new();
     private readonly object stateLock = new();
     private readonly DadParticipantFrenRiderHandoffGate participantFrenRiderHandoffGate = new();
+    private readonly DadImmutableCommandRegistry immutableCommandRegistry = new();
+    private readonly DadStableContradictionTracker mutationContradictionTracker = new();
+    private readonly Dictionary<string, DadWorkerExecutionStatus> commandStatuses = new(StringComparer.Ordinal);
+    private readonly HashSet<string> pendingCommandIds = new(StringComparer.Ordinal);
+    private readonly DadRunCancellationLedger cancelledRuns = new(StringComparer.OrdinalIgnoreCase);
 
     private DadWorkerExecutionCommand? activeCommand;
     private DadWorkerExecutionStatus status = new();
@@ -23,6 +28,7 @@ public sealed class DadWorkerExecutionService
     private DadLocalDutyResolvedContent? participantQueueContent;
     private string lastParticipantQueueTransition = string.Empty;
     private DadCombatRotationMode participantCombatRotationMode = DadCombatRotationMode.UseFrenRider;
+    private DateTime? persistentStartupRegisteredAtUtc;
 
     public DadWorkerExecutionService(
         DadQueueExecutionService queueExecutionService,
@@ -43,9 +49,40 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            var payload = DadIpcJson.Serialize(command);
+            var registration = immutableCommandRegistry.Register(
+                command.CommandId,
+                payload,
+                payload,
+                $"{command.Plan.Request.RequestedBy}:{command.RunId}/{command.ModuleIndex}->{presenceService.WorkerSessionId.Value}");
+            if (registration.Disposition == DadImmutableCommandDisposition.Collision)
+            {
+                log.Error(
+                    "[dad] Immutable worker command collision command={CommandId} originalProducerRoute={OriginalProducerRoute} incomingProducerRoute={IncomingProducerRoute} originalPayload={OriginalPayload} incomingPayload={IncomingPayload}.",
+                    registration.CommandId,
+                    registration.OriginalProducerRoute,
+                    registration.IncomingProducerRoute,
+                    registration.OriginalPayload,
+                    registration.IncomingPayload);
+                return BuildAck(false, command, $"Immutable worker command collision for {command.CommandId}.");
+            }
+
+            if (!cancelledRuns.CanAccept(command.RunId))
+                return BuildAck(false, command, $"Cancelled run {command.RunId} cannot accept later worker mutation.");
+
+            if (registration.Disposition == DadImmutableCommandDisposition.Duplicate &&
+                commandStatuses.TryGetValue(command.CommandId, out var priorStatus))
+            {
+                status = priorStatus.Clone();
+                return BuildAck(
+                    priorStatus.State != DadWorkerExecutionState.Cancelled,
+                    command,
+                    $"Worker assignment already recorded as {priorStatus.State}.");
+            }
+
             if (!DadWorkerCommandValidationRules.TryValidate(
                     command,
-                    presenceService.BuildSnapshotCopy(),
+                    presenceService.BuildLiveSafetySnapshot(),
                     out _,
                     out var validationBlocker))
             {
@@ -67,7 +104,12 @@ public sealed class DadWorkerExecutionService
                 return BuildAck(true, command, "Worker assignment already accepted.");
             }
 
-            pendingCommands.Enqueue(command);
+            if (pendingCommandIds.Contains(command.CommandId))
+                return BuildAck(true, command, "Worker assignment is already pending execution.");
+
+            var frozenCommand = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(payload) ?? command;
+            pendingCommands.Enqueue(frozenCommand);
+            pendingCommandIds.Add(command.CommandId);
             status = new DadWorkerExecutionStatus
             {
                 CommandId = command.CommandId,
@@ -79,6 +121,7 @@ public sealed class DadWorkerExecutionService
                 UpdatedAtUtc = DateTime.UtcNow,
                 Summary = $"Accepted {command.Role} assignment.",
             };
+            commandStatuses[command.CommandId] = status.Clone();
             return BuildAck(true, command, status.Summary);
         }
     }
@@ -87,6 +130,7 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            cancelledRuns.Record(cancel.RunId);
             // Active command matches → cancel the running execution.
             if (activeCommand != null &&
                 string.Equals(activeCommand.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
@@ -136,8 +180,8 @@ public sealed class DadWorkerExecutionService
             {
                 RunId = cancel.RunId,
                 WorkerSessionId = presenceService.WorkerSessionId,
-                Accepted = false,
-                Summary = "Worker has no matching run-owned execution.",
+                Accepted = true,
+                Summary = "Worker recorded the cancellation tombstone; no matching run-owned execution remains.",
                 Status = status.Clone(),
             };
         }
@@ -158,6 +202,9 @@ public sealed class DadWorkerExecutionService
                 queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
             queueExecutionService.CancelAll(reason);
             activeCommand = null;
+            if (!string.IsNullOrWhiteSpace(runId))
+                cancelledRuns.Record(runId);
+            pendingCommandIds.Clear();
             participantQueueContent = null;
             lastParticipantQueueTransition = string.Empty;
             participantFrenRiderHandoffGate.Reset();
@@ -193,7 +240,21 @@ public sealed class DadWorkerExecutionService
         while (pendingCommands.TryDequeue(out var pending))
         {
             if (string.Equals(pending.RunId, runId, StringComparison.OrdinalIgnoreCase))
+            {
                 removed = true;
+                pendingCommandIds.Remove(pending.CommandId);
+                commandStatuses[pending.CommandId] = new DadWorkerExecutionStatus
+                {
+                    CommandId = pending.CommandId,
+                    RunId = pending.RunId,
+                    WorkerSessionId = presenceService.WorkerSessionId,
+                    Role = pending.Role,
+                    State = DadWorkerExecutionState.Cancelled,
+                    IsTerminal = true,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Summary = "Pending worker assignment cancelled before start.",
+                };
+            }
             else
                 kept.Add(pending);
         }
@@ -215,13 +276,21 @@ public sealed class DadWorkerExecutionService
         lock (stateLock)
         {
             if (activeCommand == null && pendingCommands.TryDequeue(out var command))
+            {
+                pendingCommandIds.Remove(command.CommandId);
                 Start(command);
+            }
 
             if (activeCommand == null || status.IsTerminal)
                 return;
 
-            var timeout = TimeSpan.FromSeconds(Math.Clamp(activeCommand.TimeoutSeconds, 30, 7200));
-            if (DateTime.UtcNow - startedAtUtc >= timeout)
+            var timeoutStart = activeCommand.TimeoutSeconds <= 0
+                ? persistentStartupRegisteredAtUtc
+                : startedAtUtc;
+            var timeout = TimeSpan.FromSeconds(activeCommand.TimeoutSeconds <= 0
+                ? 1800
+                : Math.Clamp(activeCommand.TimeoutSeconds, 30, 7200));
+            if (timeoutStart.HasValue && DateTime.UtcNow - timeoutStart.Value >= timeout)
             {
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
                     status.ModuleId == DadModuleId.Mogtome)
@@ -242,6 +311,7 @@ public sealed class DadWorkerExecutionService
     {
         activeCommand = command;
         startedAtUtc = DateTime.UtcNow;
+        persistentStartupRegisteredAtUtc = null;
         enteredDuty = condition[ConditionFlag.BoundByDuty];
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
@@ -269,15 +339,17 @@ public sealed class DadWorkerExecutionService
 
         if (!DadWorkerCommandValidationRules.TryValidate(
                 command,
-                presenceService.BuildSnapshotCopy(),
+                presenceService.BuildLiveSafetySnapshot(),
                 out _,
                 out var validationBlocker))
         {
-            Finish(
-                DadWorkerExecutionState.Failed,
-                false,
-                $"Worker assignment became invalid before execution: {validationBlocker}",
-                validationBlocker);
+            status.State = DadWorkerExecutionState.Accepted;
+            status.Summary = $"Worker assignment is waiting for fresh safe runtime truth before execution: {validationBlocker}";
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            commandStatuses[command.CommandId] = status.Clone();
+            activeCommand = null;
+            pendingCommands.Enqueue(command);
+            pendingCommandIds.Add(command.CommandId);
             return;
         }
 
@@ -343,6 +415,11 @@ public sealed class DadWorkerExecutionService
         status.Summary = result.Summary;
         status.FailureReason = result.FailureReason;
         status.EnteredDuty |= result.ExecutorStatus.Phase == DadRunPhase.InDutyOrTask;
+        if (activeCommand?.TimeoutSeconds <= 0 &&
+            result.ExecutorStatus.Phase is DadRunPhase.WaitingForQueuePop or DadRunPhase.InDutyOrTask)
+        {
+            persistentStartupRegisteredAtUtc ??= DateTime.UtcNow;
+        }
 
         if (!result.Success)
         {
@@ -380,6 +457,14 @@ public sealed class DadWorkerExecutionService
 
             var pulse = queueExecutionService.ObserveParticipantQueue(activeCommand.RunId, participantQueueContent);
             LogParticipantQueueTransition(pulse);
+            if (activeCommand.TimeoutSeconds <= 0 &&
+                pulse.Kind is DadLocalDutyQueuePulseKind.WaitingForQueue or
+                    DadLocalDutyQueuePulseKind.AcceptedQueueConfirm or
+                    DadLocalDutyQueuePulseKind.DutyEntryTransition or
+                    DadLocalDutyQueuePulseKind.EnteredDuty)
+            {
+                persistentStartupRegisteredAtUtc ??= DateTime.UtcNow;
+            }
             if (!pulse.Success)
             {
                 Finish(
@@ -455,7 +540,7 @@ public sealed class DadWorkerExecutionService
         if (activeCommand == null)
             return false;
 
-        var localRuntime = presenceService.BuildSnapshotCopy();
+        var localRuntime = presenceService.BuildLiveSafetySnapshot();
         var queueOrDutyCommitted = enteredDuty ||
                                    condition[ConditionFlag.InDutyQueue] ||
                                    condition[ConditionFlag.WaitingForDuty] ||
@@ -474,7 +559,43 @@ public sealed class DadWorkerExecutionService
                 out _,
                 out blocker);
         if (valid)
+        {
+            mutationContradictionTracker.Reset();
             return true;
+        }
+
+        var expected = activeCommand.Participants.SingleOrDefault(static participant => participant.IsLocalClient);
+        var evidence = string.Empty;
+        if (expected != null && localRuntime.WorldReadyStable)
+        {
+            if (string.Equals(localRuntime.WorkerSessionId.Value, expected.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+                !localRuntime.ManagedAccountKey.IsEmpty &&
+                !DadRosterIdentity.SameAccount(localRuntime.ManagedAccountKey, expected.ManagedAccountKey))
+            {
+                evidence = $"Worker {expected.WorkerSessionId} reports stable account {localRuntime.ManagedAccountKey}; expected {expected.ManagedAccountKey}.";
+            }
+            else if (string.Equals(localRuntime.ActiveCharacterKey.Value, expected.ActiveCharacterKey.Value, StringComparison.OrdinalIgnoreCase) &&
+                     localRuntime.Character.ContentId != 0 &&
+                     localRuntime.Character.ContentId != expected.Character.ContentId)
+            {
+                evidence = $"Character {expected.ActiveCharacterKey} reports stable Content ID {localRuntime.Character.ContentId}; expected {expected.Character.ContentId}.";
+            }
+        }
+
+        var contradiction = mutationContradictionTracker.Observe(
+            evidence,
+            localRuntime.WorldReadyStable,
+            DateTime.UtcNow,
+            TimeSpan.FromSeconds(2),
+            localRuntime.LastHeartbeatUtc);
+        if (contradiction.Disposition != DadSafetyProofDisposition.Reject)
+        {
+            status.Summary = contradiction.Disposition == DadSafetyProofDisposition.Wait
+                ? contradiction.Summary
+                : $"Worker mutation is waiting for fresh safe frozen identity proof: {blocker}";
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            return false;
+        }
 
         if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader || status.ModuleId == DadModuleId.Mogtome)
             queueExecutionService.CancelActiveExecutor("Frozen worker mutation authority changed.");
@@ -482,8 +603,8 @@ public sealed class DadWorkerExecutionService
         Finish(
             DadWorkerExecutionState.Failed,
             false,
-            $"Worker mutation stopped because its frozen assignment changed: {blocker}",
-            blocker);
+            $"Worker mutation stopped after two fresh stable contradictions: {contradiction.Evidence}",
+            contradiction.Evidence);
         return false;
     }
 
@@ -555,6 +676,8 @@ public sealed class DadWorkerExecutionService
         status.Summary = summary;
         status.FailureReason = failureReason;
         status.UpdatedAtUtc = DateTime.UtcNow;
+        if (activeCommand != null)
+            commandStatuses[activeCommand.CommandId] = status.Clone();
     }
 
     private DadWorkerExecutionAck BuildAck(bool accepted, DadWorkerExecutionCommand command, string summary)
