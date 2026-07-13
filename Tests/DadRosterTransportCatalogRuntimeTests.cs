@@ -233,6 +233,24 @@ public sealed class DadRosterTransportCatalogRuntimeTests
     }
 
     [Fact]
+    public void PeerRuntimeAccountMismatchCannotBuildDurableFallbackRow()
+    {
+        var peer = Snapshot("client-x", "worker-x", "account-managed", "X Character@Alpha", 202);
+        peer.State = DadParticipantState.Ready;
+        peer.Character.AccountId = "account-stale";
+        var transport = Transport("client-w", "worker-w", peer);
+
+        var rows = DadRosterTransportCatalogRuntime.BuildParticipantRuntimeFallbackRows(
+            transport,
+            []);
+
+        Assert.Empty(rows);
+        Assert.False(DadRosterTransportCatalogRuntime.HasExactManagedAccountBinding(
+            peer,
+            peer.Character));
+    }
+
+    [Fact]
     public void ClientDadTransportRuntimeKeepsLocalSelfCoordinatorAndSiblingCatalogVisible()
     {
         var local = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);

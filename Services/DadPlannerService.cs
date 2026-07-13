@@ -19,7 +19,9 @@ public sealed class DadPlannerService
         DadRunRequest request,
         DadCharacterPool pool,
         out string rejectionReason,
-        bool requireLiveReadiness = true)
+        bool requireLiveReadiness = true,
+        bool allowWakeableCoordinatorLeader = false,
+        DadAcquiredCharacter? unfilteredLocalRuntimeCharacter = null)
     {
         rejectionReason = "No dad tasks were configured.";
         request.ApplyOrchestrationDefaults();
@@ -375,16 +377,21 @@ public sealed class DadPlannerService
             !ValidateRequiredRuntimeParticipants(request, pool, configuration.PartyValidationOverrideEnabled, out rejectionReason))
             return null;
 
-        var localCharacterKey = pool.Characters
-            .FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime)
-            ?.CharacterKey ?? string.Empty;
+        var activeCoordinatorCharacter = DadFullPartyExecutionRules.ResolveActiveCoordinatorCharacter(
+            unfilteredLocalRuntimeCharacter,
+            pool.Characters);
+        var localCharacterKey = activeCoordinatorCharacter?.CharacterKey ?? string.Empty;
         var leaderCharacterKey = string.IsNullOrWhiteSpace(request.Orchestration.PreferredLeaderCharacterKey)
             ? localCharacterKey
             : request.Orchestration.PreferredLeaderCharacterKey.Value;
         var requiredParticipantCount = Math.Max(
             request.Orchestration.RosterIntent.ExpectedPartySize,
             modules.Max(static module => module.ExpectedPartySize));
-        var inviterCharacterKey = ResolveInviterCharacterKey(request, pool, leaderCharacterKey, localCharacterKey);
+        var inviterCharacterKey = ResolveInviterCharacterKey(
+            request,
+            leaderCharacterKey,
+            localCharacterKey,
+            activeCoordinatorCharacter);
 
         if (!ValidatePartyAuthority(
                 request,
@@ -393,6 +400,8 @@ public sealed class DadPlannerService
                 leaderCharacterKey,
                 inviterCharacterKey,
                 requireLiveReadiness,
+                allowWakeableCoordinatorLeader,
+                activeCoordinatorCharacter,
                 out rejectionReason))
             return null;
 
@@ -413,28 +422,29 @@ public sealed class DadPlannerService
 
     private static string ResolveInviterCharacterKey(
         DadRunRequest request,
-        DadCharacterPool pool,
         string leaderCharacterKey,
-        string localCharacterKey)
+        string localCharacterKey,
+        DadAcquiredCharacter? activeCoordinatorCharacter)
         => request.Orchestration.InviteAuthority switch
         {
             DadInviteAuthority.NotNeeded => string.Empty,
-            DadInviteAuthority.ServerDad => pool.Characters
-                .FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime)
-                ?.CharacterKey ?? localCharacterKey,
+            DadInviteAuthority.ServerDad when DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(request) => leaderCharacterKey,
+            DadInviteAuthority.ServerDad => activeCoordinatorCharacter?.CharacterKey ?? localCharacterKey,
             DadInviteAuthority.PresetLeader => request.Orchestration.PreferredInviterCharacterKey.IsEmpty
                 ? leaderCharacterKey
                 : request.Orchestration.PreferredInviterCharacterKey.Value,
             _ => request.Orchestration.PreferredInviterCharacterKey.Value ?? string.Empty,
         };
 
-    private static bool ValidatePartyAuthority(
+    private bool ValidatePartyAuthority(
         DadRunRequest request,
         DadCharacterPool pool,
         int requiredParticipantCount,
         string leaderCharacterKey,
         string inviterCharacterKey,
         bool requireLiveReadiness,
+        bool allowWakeableCoordinatorLeader,
+        DadAcquiredCharacter? activeCoordinatorCharacter,
         out string rejectionReason)
     {
         rejectionReason = string.Empty;
@@ -453,15 +463,22 @@ public sealed class DadPlannerService
             return false;
         }
 
-        var leader = pool.Characters.FirstOrDefault(character =>
-            string.Equals(character.CharacterKey, leaderCharacterKey, StringComparison.OrdinalIgnoreCase));
+        var leader = ResolveAuthorityCharacter(pool, leaderCharacterKey, activeCoordinatorCharacter);
         if (leader == null)
         {
             rejectionReason = $"Party leader '{leaderCharacterKey}' is not known to Dad.";
             return false;
         }
 
-        if (!DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(request, leader, out rejectionReason))
+        var coordinatorAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
+        if (!DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+                request,
+                leader,
+                coordinatorAccountKey,
+                activeCoordinatorCharacter,
+                requireExactLocalIdentity: requireLiveReadiness,
+                allowWakeableCoordinatorLeader: !requireLiveReadiness && allowWakeableCoordinatorLeader,
+                out rejectionReason))
             return false;
 
         if (requireLiveReadiness && !IsConnectedForRuntime(leader))
@@ -494,8 +511,7 @@ public sealed class DadPlannerService
             return false;
         }
 
-        var inviter = pool.Characters.FirstOrDefault(character =>
-            string.Equals(character.CharacterKey, inviterCharacterKey, StringComparison.OrdinalIgnoreCase));
+        var inviter = ResolveAuthorityCharacter(pool, inviterCharacterKey, activeCoordinatorCharacter);
         if (inviter == null)
         {
             rejectionReason = $"Party inviter '{inviterCharacterKey}' is not known to Dad.";
@@ -524,6 +540,21 @@ public sealed class DadPlannerService
         }
 
         return true;
+    }
+
+    private static DadAcquiredCharacter? ResolveAuthorityCharacter(
+        DadCharacterPool pool,
+        string characterKey,
+        DadAcquiredCharacter? activeCoordinatorCharacter)
+    {
+        if (activeCoordinatorCharacter != null &&
+            string.Equals(activeCoordinatorCharacter.CharacterKey, characterKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return activeCoordinatorCharacter;
+        }
+
+        return pool.Characters.FirstOrDefault(character =>
+            string.Equals(character.CharacterKey, characterKey, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool ValidateRequiredRuntimeParticipants(DadRunRequest request, DadCharacterPool pool, bool partyValidationOverride, out string rejectionReason)

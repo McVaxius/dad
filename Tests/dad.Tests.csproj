@@ -21,6 +21,10 @@
   <ItemGroup>
     <Compile Include="..\Models\**\*.cs" LinkBase="Models" />
     <Compile Include="..\Services\DadRosterCharacterMerge.cs" Link="DadRosterCharacterMerge.cs" />
+    <Compile Include="..\Services\DadCharacterXadbMergeRules.cs" Link="DadCharacterXadbMergeRules.cs" />
+    <Compile Include="..\Services\DadRosterKnownCharacterLedger.cs" Link="DadRosterKnownCharacterLedger.cs" />
+    <Compile Include="..\Services\DadRosterKnowledgeLearningCursor.cs" Link="DadRosterKnowledgeLearningCursor.cs" />
+    <Compile Include="..\Services\DadRosterKnowledgeSourceRules.cs" Link="DadRosterKnowledgeSourceRules.cs" />
     <Compile Include="..\Services\DadRosterTransportCatalogRuntime.cs" Link="DadRosterTransportCatalogRuntime.cs" />
     <Compile Include="..\Services\DadEndpointHostOptions.cs" Link="DadEndpointHostOptions.cs" />
     <Compile Include="..\Services\DadFrenRiderEntryEnableGate.cs" Link="DadFrenRiderEntryEnableGate.cs" />
@@ -49,7 +53,10 @@
     <Compile Include="..\Services\DadDailyRoulettePlannerRules.cs" Link="DadDailyRoulettePlannerRules.cs" />
     <Compile Include="..\Services\DadRouletteQueueRuntimeRules.cs" Link="DadRouletteQueueRuntimeRules.cs" />
     <Compile Include="..\Services\DadFullPartyExecutionRules.cs" Link="DadFullPartyExecutionRules.cs" />
+    <Compile Include="..\Services\DadCoordinatorMutationBoundaryRules.cs" Link="DadCoordinatorMutationBoundaryRules.cs" />
     <Compile Include="..\Services\DadSchedulerGroupCloneRules.cs" Link="DadSchedulerGroupCloneRules.cs" />
+    <Compile Include="..\Services\DadEffectivePlannerGroupProjection.cs" Link="DadEffectivePlannerGroupProjection.cs" />
+    <Compile Include="..\Services\DadSchedulerSubmissionRules.cs" Link="DadSchedulerSubmissionRules.cs" />
     <Compile Include="..\Services\DadStopPolicyLoopRules.cs" Link="DadStopPolicyLoopRules.cs" />
   </ItemGroup>
 </Project>

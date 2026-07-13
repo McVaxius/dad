@@ -5,6 +5,42 @@ namespace dad.Tests;
 
 public sealed class DadRuntimeReadinessTests
 {
+    [Theory]
+    [InlineData(false, true, "Character@World", 123UL, DadReadinessState.Ready, false)]
+    [InlineData(true, false, "Character@World", 123UL, DadReadinessState.Ready, false)]
+    [InlineData(true, true, "", 123UL, DadReadinessState.Ready, false)]
+    [InlineData(true, true, "Character@World", 0UL, DadReadinessState.Ready, false)]
+    [InlineData(true, true, "Character@World", 123UL, DadReadinessState.Blocked, false)]
+    [InlineData(true, true, "Character@World", 123UL, DadReadinessState.Ready, true)]
+    public void LiveWorldSafetyFailsClosedOnEveryUnsafeOrIncompleteInput(
+        bool isLoggedIn,
+        bool hasLocalPlayer,
+        string characterKey,
+        ulong contentId,
+        DadReadinessState readiness,
+        bool unsafeConditionActive)
+    {
+        Assert.False(DadParticipantWorldSafetyRules.IsWorldReadyStable(
+            isLoggedIn,
+            hasLocalPlayer,
+            characterKey,
+            contentId,
+            readiness,
+            unsafeConditionActive));
+    }
+
+    [Fact]
+    public void LiveWorldSafetyRequiresExactIdentityAndNoUnsafeCondition()
+    {
+        Assert.True(DadParticipantWorldSafetyRules.IsWorldReadyStable(
+            isLoggedIn: true,
+            hasLocalPlayer: true,
+            activeCharacterKey: "Character@World",
+            contentId: 123UL,
+            readiness: DadReadinessState.Ready,
+            unsafeConditionActive: false));
+    }
+
     [Fact]
     public void RuntimeTransitionsCreateExactlyOneEdgeEach()
     {

@@ -40,7 +40,9 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
 
     public DadWakeTakeoverTargetSnapshot Capture(DadWakeTakeoverRequestDto request, bool forceExternalRefresh = false)
     {
-        var participant = presenceService.BuildSnapshotCopy();
+        var participant = forceExternalRefresh
+            ? presenceService.BuildLiveSafetySnapshot()
+            : presenceService.BuildSnapshotCopy();
         var currentAccountKey = new DadAccountKey(configManager.GetCurrentAccountKey());
         var requestedAccount = configManager.GetAccount(request.AccountKey);
         var identity = DadWakeTakeoverIdentityRules.Evaluate(

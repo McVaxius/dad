@@ -117,6 +117,7 @@ public sealed class Plugin : IDalamudPlugin
     private double plannerUiCacheMaxRebuildMilliseconds;
     private DateTime plannerUiCacheLastRebuiltAtUtc = DateTime.MinValue;
     private string plannerUiCacheLastRebuildReason = "cold";
+    private readonly DadRosterKnowledgeLearningCursor rosterKnowledgeLearningCursor = new();
     private readonly Dictionary<string, DebouncedUiWrite> debouncedUiWrites = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
@@ -958,7 +959,7 @@ public sealed class Plugin : IDalamudPlugin
             plannerPreviewOverride: plannerPreview,
             selectedGroup: selectedGroup,
             completionFallback: Configuration.CompletionActions);
-        return ApplyPlannerRuntimeTruth(requestPreview, pool);
+        return ApplyPlannerRuntimeTruth(requestPreview, pool, selectedGroup);
     }
 
     public string BuildPlannerRequestJson()
@@ -1593,6 +1594,34 @@ public sealed class Plugin : IDalamudPlugin
         return SchedulerService.BuildPreview(selectedGroup, requestPreview);
     }
 
+    public string ValidateSelectedPlannerPresetReadOnly()
+    {
+        var selectedGroup = GetSelectedPlannerGroup();
+        if (selectedGroup == null)
+        {
+            const string missing = "Select a saved preset before validating it.";
+            PrintStatus(missing);
+            return missing;
+        }
+
+        var pool = BuildPlannerPool();
+        var requestPreview = BuildPlannerGroupRunRequestPreview(pool, selectedGroup.GroupId, null);
+        var schedulerPreview = SchedulerService.BuildPreview(selectedGroup, requestPreview);
+        var schedulerStatus = schedulerPreview.CanStart
+            ? schedulerPreview.ReadyToStart
+                ? $"ready: {schedulerPreview.StatusSummary}"
+                : $"schedulable: {schedulerPreview.StatusSummary}"
+            : $"blocked: {schedulerPreview.BlockedReason}";
+        var plannerStatus = requestPreview.CanStart
+            ? $"ready: {requestPreview.StatusSummary}"
+            : requestPreview.CanSchedule
+                ? $"schedulable: {requestPreview.ReadinessSummary}"
+                : $"blocked: {requestPreview.BlockedReason}";
+        var status = $"Validation for preset '{selectedGroup.DisplayName}' (read-only) | Planner {plannerStatus} | Scheduler {schedulerStatus}";
+        PrintStatus(status);
+        return status;
+    }
+
     private bool CanAdvanceSchedulerQueue()
         => Configuration.RunAsServerDad &&
            (SchedulerService.CurrentState.IsActive || !IsBusy(GetVisibleRunState().VisibleRun));
@@ -1784,15 +1813,25 @@ public sealed class Plugin : IDalamudPlugin
             });
         }
 
-        SchedulerService.EnqueueScheduledPreset(group, request);
-        if (CanAdvanceSchedulerQueue())
+        var enqueue = SchedulerService.EnqueueScheduledPresetWithDisposition(group, request);
+        if (enqueue.Disposition == DadSchedulerEnqueueDisposition.Added && CanAdvanceSchedulerQueue())
         {
             SchedulerService.Update(
                 ResolvePlannerGroup,
                 BuildSchedulerPlannerPreview,
                 StartScheduledPlannerRequest);
         }
-        return DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+
+        var snapshot = SchedulerService.GetQueueSnapshot();
+        var disposition = DadSchedulerSubmissionRules.ResolveAfterUpdate(
+            enqueue.Disposition,
+            enqueue.Job.JobId,
+            snapshot);
+        snapshot.Summary = DadSchedulerSubmissionRules.BuildFeedback(
+            disposition,
+            enqueue.Job,
+            snapshot);
+        return DadIpcJson.Serialize(snapshot);
     }
 
     public string CancelScheduledJobFromJson(string json)
@@ -1804,8 +1843,14 @@ public sealed class Plugin : IDalamudPlugin
             request = new DadCancelScheduledJobRequest { JobId = fallbackId };
         }
 
-        SchedulerService.CancelScheduledJob(request.JobId, request.Reason);
-        return DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+        var cancelled = SchedulerService.CancelScheduledJob(request.JobId, request.Reason);
+        var snapshot = SchedulerService.GetQueueSnapshot();
+        snapshot.Summary = cancelled
+            ? SchedulerService.IsPendingTakeoverCleanupJob(request.JobId)
+                ? $"Cancellation cleanup pending for scheduler Job ID {request.JobId}; retry remains blocked until the wake takeover acknowledges full cleanup."
+                : $"Cancelled scheduler Job ID {request.JobId}."
+            : $"No active or pending scheduler job matched Job ID {request.JobId}.";
+        return DadIpcJson.Serialize(snapshot);
     }
 
     public int ImportLaunchProfilesFromBootDirectory()
@@ -1840,7 +1885,7 @@ public sealed class Plugin : IDalamudPlugin
             pool,
             options,
             plannerPreviewOverride: preview,
-            selectedGroup: group), pool);
+            selectedGroup: group), pool, group);
     }
 
     private static DadPlannerRunRequestPreview BuildBlockedPlannerGroupPreview(string reason)
@@ -2234,7 +2279,10 @@ public sealed class Plugin : IDalamudPlugin
         cachedPlannerPreviewRequestedAtUtc = DateTime.MinValue;
     }
 
-    private DadPlannerRunRequestPreview ApplyPlannerRuntimeTruth(DadPlannerRunRequestPreview requestPreview, DadCharacterPool pool)
+    private DadPlannerRunRequestPreview ApplyPlannerRuntimeTruth(
+        DadPlannerRunRequestPreview requestPreview,
+        DadCharacterPool pool,
+        DadPlannerGroup? selectedGroup = null)
     {
         if (requestPreview.Request == null)
         {
@@ -2246,11 +2294,16 @@ public sealed class Plugin : IDalamudPlugin
         if (!previewOnly)
         {
             var requireLiveReadiness = requestPreview.CanStart || !requestPreview.CanSchedule;
+            var allowWakeableCoordinatorLeader = HasWakeableEffectiveCoordinatorSlot(selectedGroup, requestPreview);
+            var unfilteredLocalRuntimeCharacter = CharacterIntelligenceService.CurrentPool.Characters
+                .FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime);
             var plan = PlannerService.BuildPlan(
                 requestPreview.Request,
                 pool,
                 out var rejectionReason,
-                requireLiveReadiness);
+                requireLiveReadiness,
+                allowWakeableCoordinatorLeader,
+                unfilteredLocalRuntimeCharacter);
             if (plan == null)
             {
                 var relaxedPlanBuilt = requireLiveReadiness &&
@@ -2258,7 +2311,9 @@ public sealed class Plugin : IDalamudPlugin
                                            requestPreview.Request,
                                            pool,
                                            out _,
-                                           requireLiveReadiness: false) != null;
+                                           requireLiveReadiness: false,
+                                           allowWakeableCoordinatorLeader: allowWakeableCoordinatorLeader,
+                                           unfilteredLocalRuntimeCharacter: unfilteredLocalRuntimeCharacter) != null;
                 if (DadPlannerValidationRules.IsStrictRuntimeOnlyFailure(
                         requireLiveReadiness,
                         strictPlanBuilt: false,
@@ -2282,6 +2337,26 @@ public sealed class Plugin : IDalamudPlugin
         return requestPreview;
     }
 
+    private static bool HasWakeableEffectiveCoordinatorSlot(
+        DadPlannerGroup? selectedGroup,
+        DadPlannerRunRequestPreview requestPreview)
+    {
+        if (selectedGroup == null)
+            return false;
+
+        var projected = DadEffectivePlannerGroupProjection.Project(
+            selectedGroup,
+            requestPreview.PlannerPreview.ActivityMode,
+            requestPreview.ExpectedPartySize);
+        var bound = DadEffectivePlannerGroupProjection.BindResolvedSchedulerSlots(
+            projected,
+            requestPreview.PlannerPreview.SelectedCharacters);
+        var slotOne = DadPlannerSlotRules.GetPrimaryRows(bound.Slots)
+            .FirstOrDefault(static slot =>
+                string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase));
+        return slotOne?.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline;
+    }
+
     private static void MergePlannerRuntimeStatus(DadPlannerRunRequestPreview requestPreview, DadModuleExecutionStatusDto runtimeStatus)
     {
         MergePlannerModuleBlockers(requestPreview.ModuleBlockers, runtimeStatus.Blockers);
@@ -2298,14 +2373,23 @@ public sealed class Plugin : IDalamudPlugin
                 return;
             }
 
+            requestPreview.CanStart = false;
             requestPreview.CanSchedule = decision.CanSchedule;
-            AddPlannerValidationBlocker(requestPreview.StaticBlockers, reason);
-            if (requestPreview.CanStart || string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
+            if (!string.IsNullOrWhiteSpace(reason) &&
+                requestPreview.ModuleBlockers.All(existing =>
+                    !string.Equals(existing.Summary, reason, StringComparison.OrdinalIgnoreCase)))
             {
-                requestPreview.CanStart = false;
-                requestPreview.BlockedReason = reason;
-                requestPreview.StatusSummary = $"Planner request blocked by runtime readiness: {reason}";
+                requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
+                {
+                    ModuleId = requestPreview.ModuleId,
+                    Capability = "PlannerRuntime",
+                    Severity = DadModuleBlockerSeverity.Blocked,
+                    Summary = reason,
+                });
             }
+
+            requestPreview.BlockedReason = DadPlannerValidationRules.BuildBlockedReason(requestPreview);
+            requestPreview.StatusSummary = $"Planner request blocked by module runtime: {requestPreview.BlockedReason}";
 
             return;
         }
@@ -2320,24 +2404,22 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         requestPreview.CanSchedule = false;
+        requestPreview.CanStart = false;
         AddPlannerValidationBlocker(requestPreview.StaticBlockers, blocker);
-        if (requestPreview.CanStart || string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
-        {
-            requestPreview.CanStart = false;
-            requestPreview.BlockedReason = blocker;
-            requestPreview.StatusSummary = $"Planner request blocked: {blocker}";
-        }
 
         if (requestPreview.ModuleBlockers.All(existing => !string.Equals(existing.Summary, blocker, StringComparison.OrdinalIgnoreCase)))
         {
             requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
             {
                 ModuleId = requestPreview.ModuleId,
-                Capability = "PlannerRuntime",
+                Capability = "Planner",
                 Severity = DadModuleBlockerSeverity.Blocked,
                 Summary = blocker,
             });
         }
+
+        requestPreview.BlockedReason = DadPlannerValidationRules.BuildBlockedReason(requestPreview);
+        requestPreview.StatusSummary = $"Planner request blocked: {requestPreview.BlockedReason}";
     }
 
     private static void MergePlannerReadinessBlocker(DadPlannerRunRequestPreview requestPreview, string blocker)
@@ -2347,9 +2429,7 @@ public sealed class Plugin : IDalamudPlugin
 
         requestPreview.CanStart = false;
         AddPlannerValidationBlocker(requestPreview.ReadinessBlockers, blocker);
-        requestPreview.BlockedReason = blocker;
         requestPreview.ReadinessSummary = $"Waiting for refreshed strict-runtime readiness: {blocker}";
-        requestPreview.StatusSummary = $"Planner request remains schedulable while runtime truth refreshes: {blocker}";
         if (requestPreview.ModuleBlockers.All(existing => !string.Equals(existing.Summary, blocker, StringComparison.OrdinalIgnoreCase)))
         {
             requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
@@ -2360,6 +2440,11 @@ public sealed class Plugin : IDalamudPlugin
                 Summary = blocker,
             });
         }
+
+        requestPreview.BlockedReason = DadPlannerValidationRules.BuildBlockedReason(requestPreview);
+        requestPreview.StatusSummary = requestPreview.CanSchedule
+            ? $"Planner request remains schedulable while runtime truth refreshes: {requestPreview.BlockedReason}"
+            : $"Planner request remains terminally blocked while retaining readiness detail: {requestPreview.BlockedReason}";
     }
 
     private static void MergePlannerModuleBlockers(List<DadModuleBlockerDto> target, IReadOnlyList<DadModuleBlockerDto> source)
@@ -2391,6 +2476,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private static void RefreshPlannerContractPreview(DadPlannerRunRequestPreview requestPreview)
     {
+        requestPreview.BlockedReason = requestPreview.CanStart
+            ? string.Empty
+            : DadPlannerValidationRules.BuildBlockedReason(requestPreview);
         requestPreview.StopPolicy = requestPreview.Request?.StopPolicy.Clone()
                                     ?? requestPreview.PlannerPreview.StopPolicy.Clone();
         requestPreview.ContractPreview.StopPolicy = requestPreview.StopPolicy.Clone();
@@ -2550,34 +2638,56 @@ public sealed class Plugin : IDalamudPlugin
 
     private DadStopAllWorkerResult StopAllLocal(DadStopAllRequest request)
     {
-        if (localStopAllResults.TryGetValue(request.OperationId, out var recorded))
-            return recorded.Clone();
+        var hasRecordedResult = localStopAllResults.TryGetValue(request.OperationId, out var recorded);
+        if (hasRecordedResult && !DadStopAllStatusRules.IsLocalCleanupPending(recorded!))
+            return recorded!.Clone();
 
         try
         {
             var reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by DAD Stop-all." : request.Reason;
-            var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
-            var scheduler = SchedulerService.StopAll(reason, suppression);
-            RunCoordinatorService.CancelAllLocal(reason);
-            var wake = WakeTakeoverService.StopAll(reason);
-            ClaimService.ReleaseAllClaims();
-            WorkerExecutionService.CancelAll(reason);
-            QueueExecutionService.CancelAll(reason);
-            PresenceService.ResetToIdle();
-
-            var result = new DadStopAllWorkerResult
+            DadStopAllWorkerResult result;
+            DadWakeTakeoverStopAllResult wake;
+            if (!hasRecordedResult)
             {
-                OperationId = request.OperationId,
-                WorkerSessionId = PresenceService.WorkerSessionId,
-                State = DadStopAllWorkerState.Acknowledged,
-                UpdatedAtUtc = DateTime.UtcNow,
-                LocalCleanupCompleted = true,
-                Partial = wake.PreservedCommittedCount > 0 || wake.CleanupPending,
-                CancelledSchedulerJobs = scheduler.PendingJobsCancelled + (scheduler.ActiveJobCancelled ? 1 : 0),
-                CancelledWakeTakeovers = wake.CancelledCount,
-                PreservedCommittedTakeovers = wake.PreservedCommittedCount,
-                Summary = $"{scheduler.Summary} {wake.Summary}",
-            };
+                var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
+                var scheduler = SchedulerService.StopAll(reason, suppression);
+                RunCoordinatorService.CancelAllLocal(reason);
+                wake = WakeTakeoverService.StopAll(reason);
+                ClaimService.ReleaseAllClaims();
+                WorkerExecutionService.CancelAll(reason);
+                QueueExecutionService.CancelAll(reason);
+                PresenceService.ResetToIdle();
+                result = new DadStopAllWorkerResult
+                {
+                    OperationId = request.OperationId,
+                    WorkerSessionId = PresenceService.WorkerSessionId,
+                    CancelledSchedulerJobs = scheduler.PendingJobsCancelled + (scheduler.ActiveJobCancelled ? 1 : 0),
+                    Summary = scheduler.Summary,
+                };
+            }
+            else
+            {
+                // Repeated delivery of the same operation is the cleanup acknowledgement poll. All
+                // broad stop mutations already ran; only retry DAD-owned takeover lease release.
+                result = recorded!.Clone();
+                wake = WakeTakeoverService.StopAll(reason);
+            }
+
+            result.UpdatedAtUtc = DateTime.UtcNow;
+            result.LocalCleanupCompleted = !wake.CleanupPending;
+            result.State = wake.CleanupPending
+                ? DadStopAllWorkerState.Expected
+                : DadStopAllWorkerState.Acknowledged;
+            result.CancelledWakeTakeovers = Math.Max(result.CancelledWakeTakeovers, wake.CancelledCount);
+            result.PreservedCommittedTakeovers = Math.Max(
+                result.PreservedCommittedTakeovers,
+                wake.PreservedCommittedCount);
+            result.Partial = result.PreservedCommittedTakeovers > 0;
+            var summary = hasRecordedResult
+                ? result.Summary
+                : $"{result.Summary} {wake.Summary}";
+            result.Summary = WithStopAllCleanupState(summary, wake.CleanupPending);
+            DadStopAllStatusRules.NormalizeLocalResult(result);
             localStopAllResults[request.OperationId] = result.Clone();
             while (localStopAllResults.Count > 32)
                 localStopAllResults.Remove(localStopAllResults.Keys.First());
@@ -2586,18 +2696,26 @@ public sealed class Plugin : IDalamudPlugin
         catch (Exception ex)
         {
             Log.Error(ex, "[dad] Stop-all {OperationId} local cleanup failed.", request.OperationId);
-            var result = new DadStopAllWorkerResult
-            {
-                OperationId = request.OperationId,
-                WorkerSessionId = PresenceService.WorkerSessionId,
-                State = DadStopAllWorkerState.Rejected,
-                UpdatedAtUtc = DateTime.UtcNow,
-                Partial = true,
-                Summary = $"Local Stop-all cleanup failed: {ex.Message}",
-            };
+            var result = hasRecordedResult ? recorded!.Clone() : new DadStopAllWorkerResult();
+            result.OperationId = request.OperationId;
+            result.WorkerSessionId = PresenceService.WorkerSessionId;
+            result.State = DadStopAllWorkerState.Rejected;
+            result.UpdatedAtUtc = DateTime.UtcNow;
+            result.LocalCleanupCompleted = false;
+            result.Partial = true;
+            result.Summary = $"Local Stop-all cleanup failed: {ex.Message}";
             localStopAllResults[request.OperationId] = result.Clone();
             return result;
         }
+    }
+
+    private static string WithStopAllCleanupState(string summary, bool cleanupPending)
+    {
+        const string pendingSuffix = " DAD-owned takeover cleanup is pending; acknowledgement will follow after all temporary leases release.";
+        summary = (summary ?? string.Empty).Trim();
+        if (summary.EndsWith(pendingSuffix.TrimStart(), StringComparison.Ordinal))
+            summary = summary[..^pendingSuffix.TrimStart().Length].TrimEnd();
+        return cleanupPending ? $"{summary}{pendingSuffix}".Trim() : summary;
     }
 
     public static bool IsBusy(DadRunResult result)
@@ -3899,6 +4017,16 @@ public sealed class Plugin : IDalamudPlugin
         CharacterIntelligenceService.RefreshLocalCharacterPool("remote-runtime-readiness", logRefresh: false);
     }
 
+    private void LearnRetainedTransportRosterKnowledge()
+    {
+        var revision = TransportService.RosterCatalogCacheRevision;
+        var pool = CharacterIntelligenceService.CurrentPool;
+        if (!rosterKnowledgeLearningCursor.TryAdvance(revision, pool.LastUpdatedUtc))
+            return;
+
+        RosterCatalogService.LearnRetainedTransportKnowledge(pool);
+    }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         RunFrameworkStep("FlushDebouncedUiWrites", () => FlushDebouncedUiWrites(force: false));
@@ -3937,6 +4065,8 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
+        RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
+        RunFrameworkStep("RetainedRosterKnowledge", LearnRetainedTransportRosterKnowledge);
         RunFrameworkStep("ClientReconnectWindow", () =>
         {
             var showReconnect = Configuration.PluginEnabled &&

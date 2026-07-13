@@ -330,6 +330,9 @@ public sealed class DadWorkerExecutionService
         if (!executor.IsActive)
             return;
 
+        if (!TryValidateActiveMutationBoundary())
+            return;
+
         ApplyLeaderResult(queueExecutionService.UpdateActiveExecutor());
     }
 
@@ -366,6 +369,9 @@ public sealed class DadWorkerExecutionService
     {
         if (activeCommand != null && participantQueueContent != null)
         {
+            if (!TryValidateActiveMutationBoundary())
+                return;
+
             if (enteredDuty && !condition[ConditionFlag.BoundByDuty])
             {
                 CompleteParticipant();
@@ -442,6 +448,43 @@ public sealed class DadWorkerExecutionService
 
         status.State = DadWorkerExecutionState.WaitingForQueue;
         status.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private bool TryValidateActiveMutationBoundary()
+    {
+        if (activeCommand == null)
+            return false;
+
+        var localRuntime = presenceService.BuildSnapshotCopy();
+        var queueOrDutyCommitted = enteredDuty ||
+                                   condition[ConditionFlag.InDutyQueue] ||
+                                   condition[ConditionFlag.WaitingForDuty] ||
+                                   condition[ConditionFlag.WaitingForDutyFinder] ||
+                                   condition[ConditionFlag.BoundByDuty] ||
+                                   condition[ConditionFlag.BoundByDuty56];
+        var valid = queueOrDutyCommitted
+            ? DadWorkerCommandValidationRules.TryValidateMutationIdentity(
+                activeCommand,
+                localRuntime,
+                out _,
+                out var blocker)
+            : DadWorkerCommandValidationRules.TryValidate(
+                activeCommand,
+                localRuntime,
+                out _,
+                out blocker);
+        if (valid)
+            return true;
+
+        if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader || status.ModuleId == DadModuleId.Mogtome)
+            queueExecutionService.CancelActiveExecutor("Frozen worker mutation authority changed.");
+
+        Finish(
+            DadWorkerExecutionState.Failed,
+            false,
+            $"Worker mutation stopped because its frozen assignment changed: {blocker}",
+            blocker);
+        return false;
     }
 
     private void CompleteParticipant()

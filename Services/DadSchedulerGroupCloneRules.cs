@@ -4,6 +4,13 @@ namespace dad.Services;
 
 public static class DadSchedulerGroupCloneRules
 {
+    public static IReadOnlyList<DadLaunchProfile> CloneNormalizedLaunchProfiles(
+        IEnumerable<DadLaunchProfile>? profiles)
+        => (profiles ?? [])
+            .Where(static profile => profile != null)
+            .Select(static profile => profile.Clone().Normalize())
+            .ToList();
+
     public static DadPlannerGroup CloneWithSlots(
         DadPlannerGroup source,
         IEnumerable<DadPlannerGroupSlot> slots)

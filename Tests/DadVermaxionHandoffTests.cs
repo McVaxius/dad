@@ -62,6 +62,43 @@ public sealed class DadVermaxionHandoffTests
     }
 
     [Theory]
+    [InlineData("Released")]
+    [InlineData("Rejected")]
+    public void ExactTokenTerminalReleaseResponseProvesNoOwnedReservation(string state)
+    {
+        var status = DadVermaxionReservationParser.Parse(
+            $$"""{"version":2,"operationToken":"operation-a","state":"{{state}}"}""",
+            Now);
+
+        Assert.True(DadVermaxionReleaseProofRules.ProvesNoOwnedReservation(status, "OPERATION-A"));
+    }
+
+    [Theory]
+    [InlineData("Released", "")]
+    [InlineData("Rejected", "")]
+    [InlineData("Released", "another-operation")]
+    [InlineData("Rejected", "another-operation")]
+    [InlineData("Pending", "operation-a")]
+    public void MissingMismatchedOrNonterminalReleaseResponseDoesNotProveCleanup(
+        string state,
+        string responseToken)
+    {
+        var status = DadVermaxionReservationParser.Parse(
+            $$"""{"version":2,"operationToken":"{{responseToken}}","state":"{{state}}"}""",
+            Now);
+
+        Assert.False(DadVermaxionReleaseProofRules.ProvesNoOwnedReservation(status, "operation-a"));
+    }
+
+    [Fact]
+    public void UnavailableReleaseResponseDoesNotProveCleanup()
+    {
+        var status = DadVermaxionReservationParser.Parse(null, Now, "release channel unavailable");
+
+        Assert.False(DadVermaxionReleaseProofRules.ProvesNoOwnedReservation(status, "operation-a"));
+    }
+
+    [Theory]
     [InlineData("5")]
     [InlineData("-1")]
     [InlineData("99")]
@@ -97,6 +134,28 @@ public sealed class DadVermaxionHandoffTests
         Assert.Equal(DadVermaxionMutationAuthorization.Granted, view.MutationAuthorization);
         Assert.Equal("DadHandoff", view.Activity);
         Assert.Equal("fresh grant", view.Summary);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReleasedReservationWithTokenFallsBackToFreshLegacyTruth(bool legacyBusy)
+    {
+        var released = DadVermaxionReservationParser.Parse(
+            """{"version":2,"operationToken":"op","state":"Released","summary":"released"}""",
+            Now);
+        var legacy = DadVermaxionStatusParser.Parse(
+            true,
+            $$"""{"version":1,"isBusy":{{legacyBusy.ToString().ToLowerInvariant()}},"activity":"{{(legacyBusy ? "NewWork" : "Idle")}}","state":"{{(legacyBusy ? "Busy" : "Idle")}}"}""",
+            Now);
+
+        var view = DadVermaxionAuthorityRules.Resolve("op", released, legacy);
+
+        Assert.False(released.IsAuthoritativeFor("op"));
+        Assert.False(view.Authoritative);
+        Assert.Equal(legacyBusy, view.Held);
+        Assert.Equal(legacyBusy ? "NewWork" : "Idle", view.Activity);
+        Assert.Equal(DadVermaxionMutationAuthorization.None, view.MutationAuthorization);
     }
 
     [Theory]

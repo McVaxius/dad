@@ -7,6 +7,30 @@ namespace dad.Tests;
 public sealed class DadSchedulerGroupCloneRulesTests
 {
     [Fact]
+    public void NormalizedLaunchProfileSnapshotDoesNotMutateSavedProfiles()
+    {
+        var source = new DadLaunchProfile
+        {
+            ProfileId = "  profile-id  ",
+            DisplayName = "  Profile Name  ",
+            BatchPath = "  C:\\Dad\\launch.bat  ",
+            TimeoutSeconds = 1,
+        };
+
+        var snapshot = DadSchedulerGroupCloneRules.CloneNormalizedLaunchProfiles([source]);
+
+        var normalized = Assert.Single(snapshot);
+        Assert.Equal("profile-id", normalized.ProfileId);
+        Assert.Equal("Profile Name", normalized.DisplayName);
+        Assert.Equal("C:\\Dad\\launch.bat", normalized.BatchPath);
+        Assert.Equal(30, normalized.TimeoutSeconds);
+        Assert.Equal("  profile-id  ", source.ProfileId);
+        Assert.Equal("  Profile Name  ", source.DisplayName);
+        Assert.Equal("  C:\\Dad\\launch.bat  ", source.BatchPath);
+        Assert.Equal(1, source.TimeoutSeconds);
+    }
+
+    [Fact]
     public void SchedulerClonePreservesExactRouletteTargetAndOwnsDeepCopies()
     {
         var target = new DadQueueTarget

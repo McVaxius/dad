@@ -3112,8 +3112,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void EnqueueSelectedPreset(
         DadSchedulerJobType jobType,
-        DadMapCrewJobMode mapMode,
-        bool dryRun = false)
+        DadMapCrewJobMode mapMode)
     {
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         if (selectedGroup == null)
@@ -3122,7 +3121,7 @@ public sealed class MainWindow : Window, IDisposable
         var request = new DadScheduledPresetRequest
         {
             GroupId = selectedGroup.GroupId,
-            DryRun = dryRun,
+            DryRun = false,
             RequestedBy = "crew-ui",
             Priority = selectedGroup.SchedulePriority,
             Enabled = true,
@@ -3444,22 +3443,84 @@ public sealed class MainWindow : Window, IDisposable
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         var queue = plugin.SchedulerService.GetQueueSnapshot();
         var schedulerState = plugin.SchedulerService.CurrentState;
+        var cancellationCleanupJob = selectedGroup == null
+            ? null
+            : plugin.SchedulerService.GetPendingTakeoverCleanupJob(selectedGroup.GroupId);
+        var existingSchedulerJob = selectedGroup == null
+            ? null
+            : queue.ActiveJob is { } activeJob &&
+              string.Equals(activeJob.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase)
+                ? activeJob
+                : queue.PendingJobs.FirstOrDefault(job =>
+                    string.Equals(job.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase))
+                  ?? cancellationCleanupJob;
+        var cancellationCleanupPending = cancellationCleanupJob != null &&
+                                         existingSchedulerJob != null &&
+                                         string.Equals(
+                                             cancellationCleanupJob.JobId,
+                                             existingSchedulerJob.JobId,
+                                             StringComparison.OrdinalIgnoreCase);
+        var runEnabled = selectedGroup != null && schedulerPreview.CanStart && existingSchedulerJob == null;
+        var showTerminalRunBlocker = selectedGroup != null && !schedulerPreview.CanStart;
+        var runButtonWidth = showTerminalRunBlocker
+            ? Math.Max(240f, ImGui.GetContentRegionAvail().X * 0.42f)
+            : -1f;
 
-        ImGui.BeginDisabled(selectedGroup == null);
-        if (ImGui.Button("Run preset — wake, relog, group, start", new Vector2(-1f, 0f)))
+        ImGui.BeginDisabled(!runEnabled);
+        if (ImGui.Button("Run preset — wake, relog, group, start", new Vector2(runButtonWidth, 0f)))
             EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
         var runPresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
-        if (runPresetHovered && selectedGroup == null)
-            ImGui.SetTooltip("Select a saved preset before running it.");
+        if (runPresetHovered)
+        {
+            var runTooltip = selectedGroup == null
+                ? "Select a saved preset before running it."
+                : existingSchedulerJob != null
+                    ? $"This preset already has an active or pending scheduler job. Phase {(cancellationCleanupPending ? "Cancellation cleanup" : ResolveSchedulerJobPhase(existingSchedulerJob, queue))}; Job ID {existingSchedulerJob.JobId}."
+                    : schedulerPreview.CanStart
+                        ? schedulerPreview.StatusSummary
+                        : schedulerPreview.BlockedReason;
+            ImGui.SetTooltip(FormatText(runTooltip, "Scheduler preview is blocked."));
+        }
+        if (showTerminalRunBlocker)
+        {
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.4f, 0.35f, 1f));
+            ImGui.TextWrapped(FormatText(schedulerPreview.BlockedReason, "Scheduler preview is terminally blocked."));
+            ImGui.PopStyleColor();
+        }
 
         ImGui.BeginDisabled(selectedGroup == null);
         if (ImGui.SmallButton("Validate preset"))
-            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady, dryRun: true);
+            plugin.ValidateSelectedPlannerPresetReadOnly();
         var validateHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
         if (validateHovered && selectedGroup == null)
             ImGui.SetTooltip("Select a saved preset before validating it.");
+
+        if (existingSchedulerJob != null)
+        {
+            var phase = cancellationCleanupPending
+                ? "Cancellation cleanup"
+                : ResolveSchedulerJobPhase(existingSchedulerJob, queue);
+            if (!cancellationCleanupPending)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Cancel scheduler job##planner-existing-job"))
+                {
+                    var responseJson = plugin.CancelScheduledJobFromJson(DadIpcJson.Serialize(new DadCancelScheduledJobRequest
+                    {
+                        JobId = existingSchedulerJob.JobId,
+                        Reason = $"Operator cancelled preset '{selectedGroup!.DisplayName}' from the planner.",
+                    }));
+                    var response = DadIpcJson.Deserialize<DadSchedulerQueueSnapshot>(responseJson);
+                    plugin.PrintStatus(response?.Summary ?? $"Cancelled scheduler Job ID {existingSchedulerJob.JobId}.");
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip($"Cancel phase {phase}, Job ID {existingSchedulerJob.JobId}. Temporary Dad-owned takeover state will be released without starting party or queue work.");
+            }
+            DrawStatusRow("Existing scheduler job", $"{phase} | Job ID {existingSchedulerJob.JobId}");
+        }
 
         if (plannerLocked)
         {
@@ -3503,6 +3564,17 @@ public sealed class MainWindow : Window, IDisposable
         if (!requestPreview.CanStart && requestPreview.CanSchedule)
             DrawStatusRow("Scheduler readiness", FormatText(requestPreview.ReadinessSummary, "Wakeable live-readiness blockers only."));
 
+        if (!schedulerPreview.CanStart && selectedGroup != null)
+            DrawStatusRow("Run blocker", FormatText(schedulerPreview.BlockedReason, "Scheduler preview is terminally blocked."));
+        else if (schedulerPreview.CanStart && !schedulerPreview.ReadyToStart)
+        {
+            var currentWait = schedulerPreview.Slots
+                .Where(static slot => !slot.Ready)
+                .Select(static slot => string.IsNullOrWhiteSpace(slot.Summary) ? slot.BlockedReason : slot.Summary)
+                .FirstOrDefault(static summary => !string.IsNullOrWhiteSpace(summary));
+            DrawStatusRow("Current wait", FormatText(currentWait, requestPreview.ReadinessSummary));
+        }
+
         if (firstBlocker != "(none)")
             DrawStatusRow("First blocker", firstBlocker);
         if (plugin.Configuration.DebugUiEnabled)
@@ -3511,6 +3583,14 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Stop policy", requestPreview.StopPolicy.Describe());
         }
     }
+
+    private static string ResolveSchedulerJobPhase(
+        DadScheduledCrewJob job,
+        DadSchedulerQueueSnapshot queue)
+        => queue.ActiveJob != null &&
+           string.Equals(queue.ActiveJob.JobId, job.JobId, StringComparison.OrdinalIgnoreCase)
+            ? queue.ActiveState.Phase.ToString()
+            : "Pending";
 
     private string FormatSchedulerSlotStage(DadSchedulerSlotState slot, DadSchedulerPresetState state)
     {
@@ -3546,11 +3626,20 @@ public sealed class MainWindow : Window, IDisposable
             plugin.Configuration.ParticipantReadyTimeoutSeconds);
         var timeout = stage is "Ready" or "Blocked"
             ? string.Empty
-            : $" | timeout {Math.Max(0, (int)Math.Ceiling(remaining.TotalSeconds))}s";
+            : slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline
+                ? $" | elapsed {FormatSchedulerElapsed(DateTime.UtcNow - state.StartedAtUtc)} | no timeout; cancel to stop"
+                : $" | timeout {Math.Max(0, (int)Math.Ceiling(remaining.TotalSeconds))}s";
         var summary = FormatText(slot.BlockedReason, slot.Summary);
         return string.IsNullOrWhiteSpace(summary)
             ? $"{stage}{timeout}"
             : $"{stage}{timeout} | {summary}";
+    }
+
+    private static string FormatSchedulerElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero)
+            elapsed = TimeSpan.Zero;
+        return $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
     }
 
     private static string FormatVermaxionWaitLabel(DadSchedulerSlotState slot)
@@ -6386,19 +6475,19 @@ public sealed class MainWindow : Window, IDisposable
 
         if (invalidSavedJob)
         {
-            ImGui.SetTooltip($"Saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)} is not a positive combat job in the exact selected character's current XADB snapshot. Reset it to Any or select a valid listed job.");
+            ImGui.SetTooltip($"Saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)} is not a positive combat job in the exact selected character's durable learned-job ledger. Reset it to Any or select a valid listed job.");
         }
         else if (selectedCharacter == null)
         {
             ImGui.SetTooltip("Select an exact character before choosing a job.");
         }
-        else if (!selectedCharacter.XadbReady || jobOptions.Count == 0)
+        else if (jobOptions.Count == 0)
         {
-            ImGui.SetTooltip("The exact selected character has no positive combat-job levels in its current XADB snapshot. Any uses the character's current job.");
+            ImGui.SetTooltip("The exact selected character has no positive combat-job levels in its durable learned-job ledger. Any uses the character's current job.");
         }
         else
         {
-            ImGui.SetTooltip("Job choices come from the exact selected character's XADB snapshot. Any uses the character's current job.");
+            ImGui.SetTooltip("Job choices come from the exact selected character's durable learned-job ledger and remain available while XADB is temporarily unavailable. Any uses the character's current job.");
         }
     }
 
@@ -6420,7 +6509,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private List<JobLevelEntry> BuildPlannerGroupJobOptions(DadAcquiredCharacter? character)
     {
-        if (character == null || !character.XadbReady)
+        if (character == null)
             return [];
 
         return character.JobLevels

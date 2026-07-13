@@ -18,10 +18,8 @@ public interface IDadWakeTakeoverTarget
 public sealed class DadWakeTakeoverService : IDisposable
 {
     private static readonly TimeSpan OperationRetention = TimeSpan.FromHours(1);
-    private static readonly TimeSpan RelogRetryInterval = TimeSpan.FromSeconds(5);
     private readonly IDadWakeTakeoverTarget target;
     private readonly Func<DateTime> utcNow;
-    private readonly TimeSpan preCommitBudget;
     private readonly object gate = new();
     private readonly Dictionary<string, OperationState> operations = new(StringComparer.OrdinalIgnoreCase);
     private string activeOperationKey = string.Empty;
@@ -34,7 +32,7 @@ public sealed class DadWakeTakeoverService : IDisposable
     {
         this.target = target;
         this.utcNow = utcNow ?? (() => DateTime.UtcNow);
-        this.preCommitBudget = preCommitBudget ?? TimeSpan.FromMinutes(20);
+        _ = preCommitBudget; // Retained for constructor compatibility; readiness waits are intentionally unbounded.
     }
 
     public DadWakeTakeoverResultDto Handle(DadWakeTakeoverRequestDto request)
@@ -55,7 +53,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             {
                 if (!string.IsNullOrWhiteSpace(activeOperationKey) &&
                     operations.TryGetValue(activeOperationKey, out var active) &&
-                    !IsTerminal(active.Phase))
+                    (!IsTerminal(active.Phase) || active.CleanupPending))
                 {
                     return Blocked(request, null, $"Stale or conflicting takeover token; active operation is {active.Request.OperationToken}.");
                 }
@@ -68,10 +66,13 @@ public sealed class DadWakeTakeoverService : IDisposable
             if (!SameOperation(operation.Request, request))
                 return Blocked(request, null, "Takeover token was reused with different target data.");
 
+            if (request.MessageKind == DadWakeTakeoverMessageKind.Cancel)
+                return Cancel(operation, "Takeover cancelled by coordinator.");
+
+            operation.CoordinatorAvailable = true;
             AdvanceDueOperation(operation);
             return request.MessageKind switch
             {
-                DadWakeTakeoverMessageKind.Cancel => Cancel(operation, "Takeover cancelled by coordinator."),
                 DadWakeTakeoverMessageKind.Go => Commit(operation, request),
                 DadWakeTakeoverMessageKind.Prepare => Prepare(operation),
                 _ => BuildResult(operation),
@@ -91,11 +92,18 @@ public sealed class DadWakeTakeoverService : IDisposable
                 return;
             }
 
-            var snapshot = Capture(operation);
-            var blocker = ValidateTarget(snapshot, operation.Request);
+            operation.CharacterPostprocessArmed = true;
+            var snapshot = Capture(operation, forceExternalRefresh: true);
+            var blocker = ValidateCoreTarget(snapshot, operation.Request);
             if (!string.IsNullOrWhiteSpace(blocker))
             {
                 Block(operation, blocker, cleanup: true);
+                return;
+            }
+
+            if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot))
+            {
+                ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
                 return;
             }
 
@@ -104,30 +112,52 @@ public sealed class DadWakeTakeoverService : IDisposable
                 snapshot.AutoRetainerSuppressed && !snapshot.DadOwnsSuppression ||
                 !snapshot.DadOwnsCharacterPostprocess)
             {
-                operation.Summary = BuildLeaseYieldSummary(snapshot);
-                operation.CleanupRetryAtNextBoundary = true;
-                operation.CleanupReleaseReservation = false;
-                operation.CleanupPending = !TryCleanupOwnedLeases(operation.Request.OperationToken, retryAtNextBoundary: true, releaseReservation: false);
-                operation.UpdatedAtUtc = utcNow();
+                ReturnToReadinessWait(operation, snapshot, BuildLeaseYieldSummary(snapshot), releaseReservation: true);
                 return;
             }
 
+            // VERMAXION and participant state can change during the callback. Re-read at the exact
+            // suppression boundary so no cached-idle window can authorize an unsafe mutation.
+            snapshot = Capture(operation, forceExternalRefresh: true);
+            blocker = ValidateCoreTarget(snapshot, operation.Request);
+            if (!string.IsNullOrWhiteSpace(blocker))
+            {
+                Block(operation, blocker, cleanup: true);
+                return;
+            }
+            if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot) ||
+                !snapshot.SuppressionReadable ||
+                snapshot.AutoRetainerSuppressed && !snapshot.DadOwnsSuppression ||
+                !snapshot.DadOwnsCharacterPostprocess)
+            {
+                ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+                return;
+            }
+
+            // Treat the write as conservatively owned until cleanup proves otherwise. The IPC
+            // service only releases when its own local ownership marker is set, so this is safe
+            // even if acquisition was rejected before writing.
+            operation.SuppressionAcquired = true;
             var acquire = Invoke(target.AcquireSuppression, "acquire DAD AutoRetainer suppression");
-            snapshot = Capture(operation);
+            operation.SuppressionAcquired |= acquire.Success;
+            snapshot = Capture(operation, forceExternalRefresh: true);
+            operation.SuppressionAcquired |= snapshot.DadOwnsSuppression;
+            if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot))
+            {
+                ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+                return;
+            }
             if (!acquire.Success || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
             {
-                operation.Summary = acquire.Success
+                var summary = acquire.Success
                     ? "DAD suppression ownership could not be verified; retrying at a future character boundary."
                     : $"{acquire.Error} Retrying at a future character boundary.";
-                operation.CleanupRetryAtNextBoundary = true;
-                operation.CleanupReleaseReservation = false;
-                operation.CleanupPending = !TryCleanupOwnedLeases(operation.Request.OperationToken, retryAtNextBoundary: true, releaseReservation: false);
-                operation.UpdatedAtUtc = utcNow();
+                ReturnToReadinessWait(operation, snapshot, summary, releaseReservation: true);
                 return;
             }
 
             operation.Phase = DadWakeTakeoverPhase.PostprocessOwned;
-            operation.Summary = "AR handoff acquired — validating local preparation.";
+            operation.Summary = "AR handoff acquired — validating local preparation with no timeout; cancel to stop.";
             operation.UpdatedAtUtc = utcNow();
         }
     }
@@ -141,10 +171,17 @@ public sealed class DadWakeTakeoverService : IDisposable
             var operation = operations.Values.FirstOrDefault(candidate =>
                 !IsTerminal(candidate.Phase) &&
                 string.Equals(candidate.Request.OperationToken, grant.OperationToken, StringComparison.OrdinalIgnoreCase));
-            if (operation == null || operation.Phase > DadWakeTakeoverPhase.Prepared)
+            if (operation == null || !operation.CoordinatorAvailable || operation.Phase > DadWakeTakeoverPhase.Prepared)
                 return;
 
             var snapshot = Capture(operation, forceExternalRefresh: true);
+            if (operation.Phase == DadWakeTakeoverPhase.Prepared &&
+                (!operation.CoordinatorAvailable || !IsWorldReadyStable(snapshot) ||
+                 !snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy || snapshot.ExternalAutomationHeld))
+            {
+                ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+                return;
+            }
             if (operation.Phase == DadWakeTakeoverPhase.Prepared &&
                 snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.Granted &&
                 IsVerifiedReservationPreparation(snapshot))
@@ -166,12 +203,16 @@ public sealed class DadWakeTakeoverService : IDisposable
             foreach (var operation in operations.Values)
             {
                 if (operation.CleanupPending)
+                {
                     operation.CleanupPending = !TryCleanupOwnedLeases(
-                        operation.Request.OperationToken,
-                        operation.CleanupRetryAtNextBoundary,
-                        operation.CleanupReleaseReservation);
-                if (operation.Phase == DadWakeTakeoverPhase.AwaitingArHook && operation.LastSnapshot.DadOwnsSuppression)
-                    target.ReleaseSuppressionIfOwned();
+                        operation,
+                        retryAtNextBoundary: false,
+                        releaseReservation: operation.CleanupReleaseReservation);
+                    if (!operation.CleanupPending && operation.Phase == DadWakeTakeoverPhase.Cancelled)
+                        FinalizeCancellation(operation);
+                    else if (!operation.CleanupPending && operation.Phase == DadWakeTakeoverPhase.Blocked)
+                        ClearActiveOperationIfMatches(operation);
+                }
                 AdvanceDueOperation(operation);
             }
         }
@@ -183,7 +224,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         {
             var operation = operations.Values.FirstOrDefault(candidate =>
                 string.Equals(candidate.Request.OperationToken, operationToken, StringComparison.OrdinalIgnoreCase));
-            if (operation != null && operation.Phase < DadWakeTakeoverPhase.ResetCommitted)
+            if (operation != null && operation.Phase != DadWakeTakeoverPhase.Ready)
                 Cancel(operation, reason);
         }
     }
@@ -204,27 +245,36 @@ public sealed class DadWakeTakeoverService : IDisposable
         lock (gate)
         {
             if (disposed || string.IsNullOrWhiteSpace(activeOperationKey) ||
-                !operations.TryGetValue(activeOperationKey, out var operation) ||
-                operation.Phase >= DadWakeTakeoverPhase.ResetCommitted || IsTerminal(operation.Phase))
+                !operations.TryGetValue(activeOperationKey, out var operation) || IsTerminal(operation.Phase))
                 return;
+
+            operation.CoordinatorAvailable = false;
+
+            if (operation.Phase >= DadWakeTakeoverPhase.ResetCommitted)
+            {
+                operation.Summary = "Coordinator disconnected after GO; the committed takeover command is preserved and continues once its local safety gates are clear.";
+                operation.UpdatedAtUtc = utcNow();
+                return;
+            }
 
             if (operation.Phase == DadWakeTakeoverPhase.AwaitingArHook &&
                 !operation.LastSnapshot.DadOwnsCharacterPostprocess &&
-                !operation.LastSnapshot.DadOwnsSuppression)
+                !operation.LastSnapshot.DadOwnsSuppression &&
+                !operation.CharacterPostprocessArmed &&
+                !operation.ReservationRequested)
                 return;
 
-            operation.CleanupRetryAtNextBoundary = false;
-            operation.CleanupReleaseReservation = false;
+            operation.CleanupReleaseReservation = true;
             operation.CleanupPending = !TryCleanupOwnedLeases(
-                operation.Request.OperationToken,
+                operation,
                 retryAtNextBoundary: false,
-                releaseReservation: false);
+                releaseReservation: true);
             operation.Phase = DadWakeTakeoverPhase.AwaitingArHook;
             operation.VermaxionMutationAuthorization = DadVermaxionMutationAuthorization.None;
             operation.LastSnapshot.DadOwnsCharacterPostprocess = false;
             operation.LastSnapshot.DadOwnsSuppression = false;
             operation.LastSnapshot.AutoRetainerSuppressed = false;
-            operation.Summary = "Coordinator disconnected; temporary DAD leases released while the logical order and VERMAXION reservation remain active.";
+            operation.Summary = "Coordinator disconnected; temporary DAD leases and the VERMAXION reservation were released while the logical order remains active.";
             operation.UpdatedAtUtc = utcNow();
         }
     }
@@ -234,22 +284,15 @@ public sealed class DadWakeTakeoverService : IDisposable
         lock (gate)
         {
             var result = new DadWakeTakeoverStopAllResult();
-            foreach (var operation in operations.Values.Where(static operation => !IsTerminal(operation.Phase)))
+            foreach (var operation in operations.Values.Where(static operation =>
+                         !IsTerminal(operation.Phase) || operation.CleanupPending))
             {
-                if (operation.Phase >= DadWakeTakeoverPhase.ResetCommitted)
-                {
-                    result.PreservedCommittedCount++;
-                    continue;
-                }
-
                 Cancel(operation, string.IsNullOrWhiteSpace(reason) ? "Stopped by DAD Stop-all." : reason);
                 result.CancelledCount++;
             }
 
             result.CleanupPending = operations.Values.Any(static operation => operation.CleanupPending);
-            result.Summary = result.PreservedCommittedCount > 0
-                ? $"Cancelled {result.CancelledCount} pre-commit takeover(s); preserved {result.PreservedCommittedCount} committed takeover(s)."
-                : $"Cancelled {result.CancelledCount} pre-commit takeover(s).";
+            result.Summary = $"Cancelled {result.CancelledCount} takeover(s).";
             return result;
         }
     }
@@ -258,23 +301,45 @@ public sealed class DadWakeTakeoverService : IDisposable
     {
         if (IsTerminal(operation.Phase) || operation.Phase >= DadWakeTakeoverPhase.Prepared)
             return BuildResult(operation);
+        operation.PreparationStarted = true;
+        if (operation.CleanupPending)
+            return BuildResult(operation, summary: "Waiting for temporary DAD takeover state to finish releasing before preparation resumes.");
 
-        var snapshot = Capture(operation);
+        var snapshot = Capture(operation, forceExternalRefresh: true);
         var blocker = ValidateCoreTarget(snapshot, operation.Request);
         if (!string.IsNullOrWhiteSpace(blocker))
             return Block(operation, blocker, cleanup: true);
-        var reservation = target.ReserveVermaxion(operation.Request);
-        snapshot = Capture(operation);
-        if (reservation.IsRejected)
-            return Block(operation, reservation.Summary, cleanup: true);
-        if (!snapshot.AutoRetainerAvailable)
+        if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot))
         {
-            operation.Summary = string.IsNullOrWhiteSpace(snapshot.AutoRetainerStatus)
-                ? "Waiting for readable AutoRetainer handoff state."
-                : snapshot.AutoRetainerStatus;
-            operation.UpdatedAtUtc = utcNow();
-            return BuildResult(operation, snapshot);
+            return ReturnToReadinessWait(
+                operation,
+                snapshot,
+                BuildReadinessWaitSummary(snapshot),
+                releaseReservation: operation.ReservationRequested);
         }
+        if (IsExternalAutomationBlocking(snapshot))
+        {
+            // An exact reservation owned by this operation may remain Pending/Granting while
+            // VERMAXION drains to the handoff boundary. Any other hold is not a reason to keep a
+            // prior DAD reservation or callback armed through an unsafe readiness wait.
+            return ReturnToReadinessWait(
+                operation,
+                snapshot,
+                BuildReadinessWaitSummary(snapshot),
+                releaseReservation: operation.ReservationRequested && !IsOwnedReservationWait(snapshot));
+        }
+
+        DadVermaxionReservationStatus? reservation = null;
+        if (!operation.ReservationRequested)
+        {
+            operation.ReservationRequested = true;
+            reservation = target.ReserveVermaxion(operation.Request);
+        }
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        if (reservation?.IsRejected == true)
+            return Block(operation, reservation.Summary, cleanup: true);
+        if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot))
+            return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         if (snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
             return PrepareFromVermaxionAuthorization(operation, snapshot);
 
@@ -291,40 +356,49 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         if (snapshot.ExternalAutomationHeld)
         {
-            operation.Summary = BuildExternalHoldSummary(snapshot);
-            return BuildResult(operation, snapshot);
+            return ReturnToReadinessWait(
+                operation,
+                snapshot,
+                $"{BuildExternalHoldSummary(snapshot)} No timeout; cancel to stop.",
+                releaseReservation: true);
         }
-
-        operation.ArBudgetStartedUtc ??= utcNow();
 
         if (operation.Phase == DadWakeTakeoverPhase.AwaitingArHook)
         {
+            snapshot = Capture(operation, forceExternalRefresh: true);
+            blocker = ValidateCoreTarget(snapshot, operation.Request);
+            if (!string.IsNullOrWhiteSpace(blocker))
+                return Block(operation, blocker, cleanup: true);
+            if (!operation.CoordinatorAvailable || !IsPreReservationReady(snapshot))
+                return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+
+            if (operation.CharacterPostprocessArmed)
+                return BuildResult(operation, snapshot, "Waiting for AutoRetainer character postprocess; no timeout; cancel to stop.");
             var armed = Invoke(
                 () => target.ArmCharacterPostprocess(operation.Request.OperationToken),
                 "arm the AutoRetainer character postprocess request");
             if (!armed.Success)
                 return Block(operation, armed.Error, cleanup: true);
-            operation.Summary = "Waiting for AutoRetainer character postprocess";
+            operation.CharacterPostprocessArmed = true;
+            operation.Summary = "Waiting for AutoRetainer character postprocess; no timeout; cancel to stop.";
             operation.UpdatedAtUtc = utcNow();
             return BuildResult(operation, snapshot);
         }
 
-        snapshot = Capture(operation);
-        if (snapshot.ExternalAutomationHeld || !snapshot.SuppressionReadable ||
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot) ||
+            snapshot.ExternalAutomationHeld || !snapshot.SuppressionReadable ||
             !snapshot.DadOwnsCharacterPostprocess || !snapshot.DadOwnsSuppression ||
             !snapshot.AutoRetainerSuppressed)
         {
-            operation.CleanupRetryAtNextBoundary = true;
-            operation.CleanupReleaseReservation = false;
-            operation.CleanupPending = !TryCleanupOwnedLeases(operation.Request.OperationToken, retryAtNextBoundary: true, releaseReservation: false);
-            operation.Phase = DadWakeTakeoverPhase.AwaitingArHook;
-            operation.Summary = BuildLeaseYieldSummary(snapshot);
-            operation.UpdatedAtUtc = utcNow();
-            return BuildResult(operation, snapshot);
+            var summary = IsWorldReadyStable(snapshot) && snapshot.AutoRetainerAvailable && !snapshot.AutoRetainerBusy
+                ? BuildLeaseYieldSummary(snapshot)
+                : BuildReadinessWaitSummary(snapshot);
+            return ReturnToReadinessWait(operation, snapshot, summary, releaseReservation: true);
         }
 
         operation.Phase = DadWakeTakeoverPhase.Prepared;
-        operation.Summary = "AR handoff acquired — waiting for crew";
+        operation.Summary = "AR handoff acquired — waiting for crew with no timeout; cancel to stop.";
         operation.Acknowledgement = DadWakeAcknowledgementState.Accepted;
         operation.UpdatedAtUtc = utcNow();
         return BuildResult(operation, snapshot);
@@ -338,7 +412,11 @@ public sealed class DadWakeTakeoverService : IDisposable
         if (authorization == DadVermaxionMutationAuthorization.None)
             return BuildResult(operation, snapshot);
 
-        if (!snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy || snapshot.MultiModeEnabled)
+        if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot))
+        {
+            return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+        }
+        if (snapshot.MultiModeEnabled)
         {
             operation.Summary = authorization == DadVermaxionMutationAuthorization.Granted
                 ? "VERMAXION grant received; waiting for verified AutoRetainer off/idle state."
@@ -355,20 +433,38 @@ public sealed class DadWakeTakeoverService : IDisposable
             return BuildResult(operation, snapshot);
         }
 
+        // Re-read the grant/compatibility evidence at the exact suppression boundary. A hold that
+        // starts inside the status cache window must win before DAD mutates AutoRetainer state.
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        var blocker = ValidateCoreTarget(snapshot, operation.Request);
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return Block(operation, blocker, cleanup: true);
+        if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot) ||
+            snapshot.MultiModeEnabled || !snapshot.SuppressionReadable ||
+            snapshot.AutoRetainerSuppressed && !snapshot.DadOwnsSuppression ||
+            snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None)
+        {
+            return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+        }
+
+        operation.SuppressionAcquired = true;
         var acquire = Invoke(
             target.AcquireSuppression,
             authorization == DadVermaxionMutationAuthorization.Granted
                 ? "acquire DAD AutoRetainer suppression after VERMAXION grant"
                 : "acquire DAD AutoRetainer suppression from verified-idle compatibility evidence");
-        snapshot = Capture(operation);
+        operation.SuppressionAcquired |= acquire.Success;
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        operation.SuppressionAcquired |= snapshot.DadOwnsSuppression;
+        if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot))
+        {
+            return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
+        }
         if (!acquire.Success || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed ||
             snapshot.AutoRetainerBusy || snapshot.MultiModeEnabled ||
             snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None)
         {
-            if (snapshot.DadOwnsSuppression)
-                target.ReleaseSuppressionIfOwned();
-            snapshot = Capture(operation);
-            operation.Summary = acquire.Success
+            var summary = acquire.Success
                 ? authorization == DadVermaxionMutationAuthorization.Granted
                     ? "VERMAXION granted, but DAD could not verify suppression with AutoRetainer off/idle."
                     : BuildReservationHoldSummary(
@@ -377,7 +473,7 @@ public sealed class DadWakeTakeoverService : IDisposable
                         snapshot.ExternalAutomationState,
                         snapshot.VermaxionReservationSummary)
                 : acquire.Error;
-            return BuildResult(operation, snapshot);
+            return ReturnToReadinessWait(operation, snapshot, summary, releaseReservation: true);
         }
 
         operation.VermaxionMutationAuthorization = snapshot.VermaxionMutationAuthorization;
@@ -390,6 +486,8 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private DadWakeTakeoverResultDto Commit(OperationState operation, DadWakeTakeoverRequestDto request)
     {
+        if (IsTerminal(operation.Phase))
+            return BuildResult(operation);
         if (request.CommitKind == DadWakeCommitKind.None || !request.ExecutionTimeUtc.HasValue)
             return Block(operation, "GO requires a commit kind and execution time.", cleanup: true);
 
@@ -400,6 +498,19 @@ public sealed class DadWakeTakeoverService : IDisposable
                 return BuildResult(operation);
             if (operation.Phase != DadWakeTakeoverPhase.Prepared)
                 return BuildResult(operation, summary: "Reset GO rejected until this client is Prepared.", acknowledgement: DadWakeAcknowledgementState.Rejected);
+            var snapshot = Capture(operation, forceExternalRefresh: true);
+            var blocker = ValidateCoreTarget(snapshot, operation.Request);
+            if (!string.IsNullOrWhiteSpace(blocker))
+                return Block(operation, blocker, cleanup: true);
+            if (!operation.CoordinatorAvailable || !CanAcceptResetGo(operation, snapshot))
+            {
+                ReturnToReadinessWait(
+                    operation,
+                    snapshot,
+                    $"Reset GO not accepted: {BuildReadinessWaitSummary(snapshot)}",
+                    releaseReservation: true);
+                return BuildResult(operation, acknowledgement: DadWakeAcknowledgementState.Rejected);
+            }
             operation.Phase = DadWakeTakeoverPhase.ResetCommitted;
             operation.CommitKind = DadWakeCommitKind.Reset;
             operation.ExecutionTimeUtc = execution;
@@ -426,31 +537,46 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private void AdvanceDueOperation(OperationState operation)
     {
+        if (IsTerminal(operation.Phase) || operation.CleanupPending)
+            return;
         if (operation.Phase == DadWakeTakeoverPhase.AwaitingArHook)
         {
-            var snapshot = Capture(operation);
-            if (snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
-                PrepareFromVermaxionAuthorization(operation, snapshot);
-            else if (snapshot.VermaxionReservationAuthoritative)
+            if (operation.PreparationStarted)
+                Prepare(operation);
+        }
+
+        if (operation.Phase == DadWakeTakeoverPhase.PostprocessOwned)
+        {
+            var snapshot = Capture(operation, forceExternalRefresh: true);
+            var blocker = ValidateCoreTarget(snapshot, operation.Request);
+            if (!string.IsNullOrWhiteSpace(blocker))
             {
-                operation.Summary = BuildReservationHoldSummary(
-                    snapshot.VermaxionReservationState,
-                    snapshot.ExternalAutomationActivity,
-                    snapshot.ExternalAutomationState,
-                    snapshot.VermaxionReservationSummary);
-                operation.UpdatedAtUtc = utcNow();
+                Block(operation, blocker, cleanup: true);
+            }
+            else if (!IsPreparedStateValid(operation, snapshot))
+            {
+                ReturnToReadinessWait(
+                    operation,
+                    snapshot,
+                    BuildReadinessWaitSummary(snapshot),
+                    releaseReservation: true);
             }
         }
 
-        if (operation.Phase == DadWakeTakeoverPhase.Prepared &&
-            operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
+        if (operation.Phase == DadWakeTakeoverPhase.Prepared)
         {
-            var snapshot = Capture(operation);
-            if (!IsVerifiedReservationPreparation(snapshot))
+            var snapshot = Capture(operation, forceExternalRefresh: true);
+            var blocker = ValidateCoreTarget(snapshot, operation.Request);
+            if (!string.IsNullOrWhiteSpace(blocker))
+            {
+                Block(operation, blocker, cleanup: true);
+            }
+            else if (!IsPreparedStateValid(operation, snapshot))
             {
                 ReturnToReservationWait(operation, snapshot);
             }
-            else if (operation.VermaxionMutationAuthorization != snapshot.VermaxionMutationAuthorization)
+            else if (operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None &&
+                     operation.VermaxionMutationAuthorization != snapshot.VermaxionMutationAuthorization)
             {
                 operation.VermaxionMutationAuthorization = snapshot.VermaxionMutationAuthorization;
                 operation.Summary = BuildPreparedSummary(operation.VermaxionMutationAuthorization);
@@ -473,80 +599,119 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private void ExecuteReset(OperationState operation)
     {
-        var snapshot = Capture(operation, forceExternalRefresh: true);
-        var blocker = operation.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None
-            ? ValidateTarget(snapshot, operation.Request)
-            : ValidateCoreTarget(snapshot, operation.Request);
-        if (operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None &&
-            !string.IsNullOrWhiteSpace(blocker))
+        if (operation.ResetCommandAttempted)
         {
-            Block(operation, blocker, cleanup: true);
+            TryFinalizeExecutedReset(operation);
             return;
         }
-        if (operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
+
+        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out _))
+            return;
+
+        if (!operation.MultiModeDisableAttempted)
         {
-            if (!snapshot.AutoRetainerAvailable ||
-                !IsVerifiedReservationPreparation(snapshot))
+            operation.MultiModeDisableAttempted = true;
+            var disableMulti = Invoke(() => target.SetMultiModeEnabled(false), "disable AutoRetainer Multi Mode");
+            if (!disableMulti.Success)
             {
-                ReturnToReservationWait(operation, snapshot);
+                Block(operation, disableMulti.Error, cleanup: true);
                 return;
             }
-
-            operation.VermaxionMutationAuthorization = snapshot.VermaxionMutationAuthorization;
         }
-        else
+
+        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out _))
+            return;
+        if (!operation.DisableAutoRetainerAttempted)
         {
-            if (string.IsNullOrWhiteSpace(blocker) && snapshot.ExternalAutomationHeld)
-                blocker = "VERMAXION became busy before the coordinated reset boundary.";
-            if (string.IsNullOrWhiteSpace(blocker) &&
-                (!snapshot.DadOwnsCharacterPostprocess ||
-                 !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed))
+            operation.DisableAutoRetainerAttempted = true;
+            var disableAr = Invoke(
+                () => target.ExecuteCommand(DadWakeTakeoverCommand.DisableAutoRetainer, operation.Request),
+                "send /ays d");
+            if (!disableAr.Success)
             {
-                blocker = "DAD no longer owns its character-postprocess suppression mutation lease.";
+                Block(operation, disableAr.Error, cleanup: true);
+                return;
             }
         }
-        if (!string.IsNullOrWhiteSpace(blocker))
-        {
-            Block(operation, blocker, cleanup: true);
+
+        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out _))
             return;
+        if (!operation.ResetCommandAttempted)
+        {
+            operation.ResetCommandAttempted = true;
+            var reset = Invoke(
+                () => target.ExecuteCommand(DadWakeTakeoverCommand.ResetAutoRetainer, operation.Request),
+                "send /ays reset");
+            if (!reset.Success)
+            {
+                Block(operation, reset.Error, cleanup: true);
+                return;
+            }
         }
 
-        var disableMulti = Invoke(() => target.SetMultiModeEnabled(false), "disable AutoRetainer Multi Mode");
-        var disableAr = disableMulti.Success
-            ? Invoke(() => target.ExecuteCommand(DadWakeTakeoverCommand.DisableAutoRetainer, operation.Request), "send /ays d")
-            : disableMulti;
-        var reset = disableAr.Success
-            ? Invoke(() => target.ExecuteCommand(DadWakeTakeoverCommand.ResetAutoRetainer, operation.Request), "send /ays reset")
-            : disableAr;
-        if (!reset.Success)
+        operation.ResetIssuedUtc ??= utcNow();
+        TryFinalizeExecutedReset(operation);
+    }
+
+    private bool TryFinalizeExecutedReset(OperationState operation)
+    {
+        // /ays reset already committed and executed once. Callback release is cleanup, so keep
+        // retrying it even if the world becomes unsafe after the command; no new mutation command
+        // is allowed and relog cannot be committed until this transition reaches ResetVerified.
+        if (operation.CharacterPostprocessArmed)
         {
-            Block(operation, reset.Error, cleanup: true);
-            return;
+            if (!target.FinishCharacterPostprocess(retryAtNextBoundary: false))
+            {
+                operation.Summary = "Coordinated reset executed once; waiting for the DAD AutoRetainer callback lease to finish before relog can be committed.";
+                operation.UpdatedAtUtc = utcNow();
+                return false;
+            }
+
+            operation.CharacterPostprocessArmed = false;
+            operation.LastSnapshot.DadOwnsCharacterPostprocess = false;
         }
 
-        operation.ResetIssuedUtc = utcNow();
         operation.Phase = DadWakeTakeoverPhase.ResetVerified;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
         operation.Summary = "Coordinated reset executed and verified; waiting for crew reset barrier.";
-        operation.UpdatedAtUtc = operation.ResetIssuedUtc.Value;
-        // /ays reset aborts AR's queued natural relog. The derived suppression lease remains ours.
-        target.FinishCharacterPostprocess(retryAtNextBoundary: false);
+        operation.UpdatedAtUtc = utcNow();
+        return true;
     }
 
     private void ExecuteRelog(OperationState operation)
     {
-        var snapshot = Capture(operation);
-        var blocker = ValidateTarget(snapshot, operation.Request);
-        if (string.IsNullOrWhiteSpace(blocker) && (!snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed))
-            blocker = "DAD no longer owns its derived pre-AutoRetainer suppression lease.";
+        var snapshot = Capture(operation, forceExternalRefresh: true);
+        var blocker = ValidateCoreTarget(snapshot, operation.Request);
         if (!string.IsNullOrWhiteSpace(blocker))
         {
             Block(operation, blocker, cleanup: true);
             return;
         }
-
-        if (!snapshot.CorrectCharacter)
+        if (!CanExecuteRelogNow(operation, snapshot))
         {
+            operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
+            operation.UpdatedAtUtc = utcNow();
+            return;
+        }
+
+        if (!snapshot.CorrectCharacter && !operation.RelogCommandAttempted)
+        {
+            // Nothing may intervene between this forced safety read and the relog command.
+            snapshot = Capture(operation, forceExternalRefresh: true);
+            blocker = ValidateCoreTarget(snapshot, operation.Request);
+            if (!string.IsNullOrWhiteSpace(blocker))
+            {
+                Block(operation, blocker, cleanup: true);
+                return;
+            }
+            if (!CanExecuteRelogNow(operation, snapshot))
+            {
+                operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
+                operation.UpdatedAtUtc = utcNow();
+                return;
+            }
+
+            operation.RelogCommandAttempted = true;
             var relog = Invoke(
                 () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.Request),
                 $"send /ays relog {operation.Request.CharacterKey}");
@@ -556,9 +721,7 @@ public sealed class DadWakeTakeoverService : IDisposable
                 return;
             }
             var issuedAt = utcNow();
-            operation.RelogIssuedUtc ??= issuedAt;
-            operation.LastRelogAttemptUtc = issuedAt;
-            operation.RelogAttemptCount++;
+            operation.RelogIssuedUtc = issuedAt;
         }
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
@@ -572,100 +735,146 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private void VerifyDestination(OperationState operation)
     {
-        var snapshot = Capture(operation);
+        var snapshot = Capture(operation, forceExternalRefresh: true);
+        var blocker = ValidateCoreTarget(snapshot, operation.Request);
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            Block(operation, blocker, cleanup: true);
+            return;
+        }
         if (!snapshot.CorrectCharacter)
         {
-            if (!TryRetryRelog(operation, snapshot))
-                operation.Summary = BuildRelogWaitSummary(operation, snapshot);
+            operation.Summary = BuildRelogWaitSummary(operation, snapshot);
             return;
         }
 
-        if (!snapshot.PostArReady || snapshot.MultiModeEnabled ||
-            !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
+        if (!IsDestinationReady(snapshot))
         {
             operation.Summary = $"Waiting for {operation.Request.CharacterKey} world-ready stability with AutoRetainer off.";
             return;
         }
 
-        if (!target.ReleaseSuppressionIfOwned())
+        if (operation.CharacterPostprocessArmed)
         {
-            operation.Summary = "Destination verified; waiting for DAD suppression release verification.";
+            if (!target.FinishCharacterPostprocess(retryAtNextBoundary: false))
+            {
+                operation.Summary = "Destination verified; waiting for the DAD AutoRetainer callback lease to release.";
+                return;
+            }
+
+            operation.CharacterPostprocessArmed = false;
+            operation.LastSnapshot.DadOwnsCharacterPostprocess = false;
+        }
+
+        if (operation.ReservationRequested)
+        {
+            if (!target.ReleaseVermaxion(operation.Request.OperationToken))
+            {
+                operation.Summary = "Destination verified; waiting for DAD VERMAXION reservation release verification.";
+                return;
+            }
+            operation.ReservationRequested = false;
+        }
+
+        if (operation.SuppressionAcquired || snapshot.DadOwnsSuppression)
+        {
+            if (!target.ReleaseSuppressionIfOwned())
+            {
+                operation.Summary = "Destination verified; waiting for DAD suppression release verification.";
+                return;
+            }
+            operation.SuppressionAcquired = false;
+        }
+
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        blocker = ValidateCoreTarget(snapshot, operation.Request);
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            Block(operation, blocker, cleanup: true);
+            return;
+        }
+        if (!IsDestinationReady(snapshot))
+        {
+            operation.Summary = snapshot.CorrectCharacter
+                ? "Destination changed while DAD leases were releasing; waiting for world/AR/Lifestream safety to stabilize again."
+                : BuildRelogWaitSummary(operation, snapshot);
             return;
         }
 
         operation.Phase = DadWakeTakeoverPhase.Ready;
         operation.ReadyUtc = utcNow();
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
-        operation.Summary = $"{operation.Request.CharacterKey} is ready after the post-AR gate.";
+        operation.Summary = $"{operation.Request.CharacterKey} is world-ready after takeover.";
         operation.UpdatedAtUtc = operation.ReadyUtc.Value;
-        target.ReleaseVermaxion(operation.Request.OperationToken);
         if (string.Equals(activeOperationKey, DadWakePolicyRules.BuildOperationKey(operation.Request), StringComparison.OrdinalIgnoreCase))
             activeOperationKey = string.Empty;
-    }
-
-    private bool TryRetryRelog(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
-    {
-        if (!operation.LastRelogAttemptUtc.HasValue ||
-            utcNow() - operation.LastRelogAttemptUtc.Value < RelogRetryInterval ||
-            !snapshot.Participant.IsAvailable || !snapshot.Participant.WorldReadyStable ||
-            snapshot.AutoRetainerBusy || !snapshot.LifestreamAvailable || snapshot.LifestreamBusy ||
-            snapshot.MultiModeEnabled || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
-        {
-            return false;
-        }
-
-        var attemptedAt = utcNow();
-        operation.LastRelogAttemptUtc = attemptedAt;
-        operation.RelogAttemptCount++;
-        var relog = Invoke(
-            () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.Request),
-            $"retry /ays relog {operation.Request.CharacterKey}");
-        operation.Summary = relog.Success
-            ? $"Relog attempt {operation.RelogAttemptCount} issued for {operation.Request.CharacterKey}; retaining DAD suppression through login."
-            : $"Relog attempt {operation.RelogAttemptCount} was rejected: {relog.Error} Retrying after the next safe interval.";
-        operation.UpdatedAtUtc = attemptedAt;
-        return true;
     }
 
     private static string BuildRelogWaitSummary(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
     {
         if (!snapshot.Participant.IsAvailable)
-            return $"Relog attempt {operation.RelogAttemptCount} started a login transition; waiting for a local character.";
+            return "Relog command started a login transition; waiting for a local character without timeout.";
         if (!snapshot.Participant.WorldReadyStable)
-            return $"Relog attempt {operation.RelogAttemptCount} started a world/login transition; waiting for stability.";
+            return "Relog command started a world/login transition; waiting for stability without timeout.";
         if (snapshot.AutoRetainerBusy)
-            return $"Relog attempt {operation.RelogAttemptCount} is in progress; AutoRetainer is busy.";
+            return "Relog command is in progress; AutoRetainer is busy.";
         if (!snapshot.LifestreamAvailable || snapshot.LifestreamBusy)
-            return $"Relog attempt {operation.RelogAttemptCount} is in progress; Lifestream is busy or unavailable.";
+            return "Relog command is in progress; Lifestream is busy or unavailable.";
         if (snapshot.MultiModeEnabled || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
-            return $"Waiting to retry relog with Multi Mode off and DAD suppression ownership verified.";
-        return $"Waiting after relog attempt {operation.RelogAttemptCount} for {operation.Request.CharacterKey}.";
+            return "Waiting for the committed relog destination with Multi Mode off and DAD suppression ownership verified.";
+        return $"Relog was issued once; waiting without timeout for {operation.Request.CharacterKey}. Cancel to stop.";
     }
 
     private DadWakeTakeoverResultDto Cancel(OperationState operation, string reason)
     {
-        if (operation.Phase >= DadWakeTakeoverPhase.ResetCommitted && !IsTerminal(operation.Phase))
-            return BuildResult(operation, summary: "Committed takeover continues locally; cancellation cannot invalidate its GO boundary.");
-        operation.CleanupRetryAtNextBoundary = false;
+        if (operation.Phase == DadWakeTakeoverPhase.Ready ||
+            (operation.Phase == DadWakeTakeoverPhase.Cancelled &&
+             !operation.CleanupPending &&
+             operation.Acknowledgement == DadWakeAcknowledgementState.Executed))
+        {
+            return BuildResult(operation);
+        }
+
+        if (operation.Phase != DadWakeTakeoverPhase.Cancelled || string.IsNullOrWhiteSpace(operation.BlockedReason))
+            operation.BlockedReason = string.IsNullOrWhiteSpace(reason) ? "Takeover cancelled." : reason;
+
+        operation.CoordinatorAvailable = false;
         operation.CleanupReleaseReservation = true;
-        operation.CleanupPending = !TryCleanupOwnedLeases(operation.Request.OperationToken, retryAtNextBoundary: false);
+        operation.Phase = DadWakeTakeoverPhase.Cancelled;
+        operation.Status = DadWakeTakeoverStatus.Blocked;
+        operation.Acknowledgement = DadWakeAcknowledgementState.Pending;
+        operation.CleanupPending = !TryCleanupOwnedLeases(operation, retryAtNextBoundary: false);
+        if (operation.CleanupPending)
+        {
+            operation.Summary = $"{operation.BlockedReason} Waiting for DAD-owned takeover state to release before acknowledging cancellation.";
+            operation.UpdatedAtUtc = utcNow();
+        }
+        else
+        {
+            FinalizeCancellation(operation);
+        }
+        return BuildResult(operation);
+    }
+
+    private void FinalizeCancellation(OperationState operation)
+    {
+        operation.CleanupPending = false;
         operation.Phase = DadWakeTakeoverPhase.Cancelled;
         operation.Status = DadWakeTakeoverStatus.Blocked;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
-        operation.BlockedReason = string.IsNullOrWhiteSpace(reason) ? "Takeover cancelled." : reason;
-        operation.Summary = operation.BlockedReason;
+        operation.Summary = string.IsNullOrWhiteSpace(operation.BlockedReason)
+            ? "Takeover cancelled."
+            : operation.BlockedReason;
         operation.UpdatedAtUtc = utcNow();
-        activeOperationKey = string.Empty;
-        return BuildResult(operation);
+        ClearActiveOperationIfMatches(operation);
     }
 
     private DadWakeTakeoverResultDto Block(OperationState operation, string reason, bool cleanup)
     {
         if (cleanup)
         {
-            operation.CleanupRetryAtNextBoundary = false;
             operation.CleanupReleaseReservation = true;
-            operation.CleanupPending = !TryCleanupOwnedLeases(operation.Request.OperationToken, retryAtNextBoundary: false);
+            operation.CleanupPending = !TryCleanupOwnedLeases(operation, retryAtNextBoundary: false);
         }
         operation.Phase = DadWakeTakeoverPhase.Blocked;
         operation.Status = DadWakeTakeoverStatus.Blocked;
@@ -673,15 +882,54 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.BlockedReason = string.IsNullOrWhiteSpace(reason) ? "Wake takeover blocked." : reason;
         operation.Summary = operation.BlockedReason;
         operation.UpdatedAtUtc = utcNow();
-        activeOperationKey = string.Empty;
+        if (!operation.CleanupPending)
+            ClearActiveOperationIfMatches(operation);
         return BuildResult(operation);
     }
 
-    private bool TryCleanupOwnedLeases(string operationToken, bool retryAtNextBoundary, bool releaseReservation = true)
+    private void ClearActiveOperationIfMatches(OperationState operation)
     {
-        var postprocessFinished = target.FinishCharacterPostprocess(retryAtNextBoundary);
-        var suppressionReleased = target.ReleaseSuppressionIfOwned();
-        var reservationReleased = !releaseReservation || target.ReleaseVermaxion(operationToken);
+        if (string.Equals(
+                activeOperationKey,
+                DadWakePolicyRules.BuildOperationKey(operation.Request),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            activeOperationKey = string.Empty;
+        }
+    }
+
+    private bool TryCleanupOwnedLeases(OperationState operation, bool retryAtNextBoundary, bool releaseReservation = true)
+    {
+        var postprocessFinished = true;
+        if (operation.CharacterPostprocessArmed || operation.LastSnapshot.DadOwnsCharacterPostprocess)
+        {
+            postprocessFinished = target.FinishCharacterPostprocess(retryAtNextBoundary);
+            if (postprocessFinished)
+            {
+                operation.CharacterPostprocessArmed = false;
+                operation.LastSnapshot.DadOwnsCharacterPostprocess = false;
+            }
+        }
+
+        var suppressionReleased = true;
+        if (operation.SuppressionAcquired || operation.LastSnapshot.DadOwnsSuppression)
+        {
+            suppressionReleased = target.ReleaseSuppressionIfOwned();
+            if (suppressionReleased)
+            {
+                operation.SuppressionAcquired = false;
+                operation.LastSnapshot.DadOwnsSuppression = false;
+                operation.LastSnapshot.AutoRetainerSuppressed = false;
+            }
+        }
+
+        var reservationReleased = true;
+        if (releaseReservation && operation.ReservationRequested)
+        {
+            reservationReleased = target.ReleaseVermaxion(operation.Request.OperationToken);
+            if (reservationReleased)
+                operation.ReservationRequested = false;
+        }
         return postprocessFinished && suppressionReleased && reservationReleased;
     }
 
@@ -705,23 +953,162 @@ public sealed class DadWakeTakeoverService : IDisposable
         OperationState operation,
         DadWakeTakeoverTargetSnapshot snapshot)
     {
-        target.ReleaseSuppressionIfOwned();
-        snapshot = Capture(operation, forceExternalRefresh: true);
+        var summary = !operation.CoordinatorAvailable || !IsWorldReadyStable(snapshot) ||
+                      !snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy || snapshot.ExternalAutomationHeld
+            ? BuildReadinessWaitSummary(snapshot)
+            : operation.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None
+                ? BuildLeaseYieldSummary(snapshot)
+                : snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.Granted
+                    ? "VERMAXION grant remains current; waiting for AutoRetainer idle, Multi Mode off, and DAD suppression reacquisition."
+                    : snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.CompatibilityIdle
+                        ? "Compatibility handoff evidence remains idle; waiting to reacquire and verify DAD suppression."
+                        : BuildReservationHoldSummary(
+                            snapshot.VermaxionReservationState,
+                            snapshot.ExternalAutomationActivity,
+                            snapshot.ExternalAutomationState,
+                            snapshot.VermaxionReservationSummary);
+        ReturnToReadinessWait(operation, snapshot, summary, releaseReservation: true);
+    }
+
+    private DadWakeTakeoverResultDto ReturnToReadinessWait(
+        OperationState operation,
+        DadWakeTakeoverTargetSnapshot snapshot,
+        string summary,
+        bool releaseReservation)
+    {
+        operation.CleanupReleaseReservation = releaseReservation;
+        operation.CleanupPending = !TryCleanupOwnedLeases(
+            operation,
+            retryAtNextBoundary: false,
+            releaseReservation: releaseReservation);
         operation.VermaxionMutationAuthorization = DadVermaxionMutationAuthorization.None;
         operation.Phase = DadWakeTakeoverPhase.AwaitingArHook;
         operation.CommitKind = DadWakeCommitKind.None;
         operation.ExecutionTimeUtc = null;
         operation.Acknowledgement = DadWakeAcknowledgementState.Pending;
-        operation.Summary = snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.Granted
-            ? "VERMAXION grant remains current; waiting for AutoRetainer idle, Multi Mode off, and DAD suppression reacquisition."
-            : snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.CompatibilityIdle
-                ? "Compatibility handoff evidence remains idle; waiting to reacquire and verify DAD suppression."
-                : BuildReservationHoldSummary(
-                    snapshot.VermaxionReservationState,
-                    snapshot.ExternalAutomationActivity,
-                    snapshot.ExternalAutomationState,
-                    snapshot.VermaxionReservationSummary);
+        operation.Summary = string.IsNullOrWhiteSpace(summary)
+            ? "Waiting for safe takeover readiness; no timeout; cancel to stop."
+            : summary;
         operation.UpdatedAtUtc = utcNow();
+        return BuildResult(operation, snapshot);
+    }
+
+    private bool CanContinueCommittedReset(
+        OperationState operation,
+        bool forceExternalRefresh,
+        out DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        snapshot = Capture(operation, forceExternalRefresh);
+        var blocker = ValidateCoreTarget(snapshot, operation.Request);
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            Block(operation, blocker, cleanup: true);
+            return false;
+        }
+
+        var leaseReady = snapshot.DadOwnsSuppression && snapshot.AutoRetainerSuppressed &&
+                         (operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None ||
+                          snapshot.DadOwnsCharacterPostprocess);
+        var authorizationReady = operation.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None ||
+                                 snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None;
+        if (!IsWorldAndLocalServicesSafe(snapshot) ||
+            snapshot.ExternalAutomationHeld || !leaseReady || !authorizationReady)
+        {
+            operation.Summary = $"Committed reset is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
+            operation.UpdatedAtUtc = utcNow();
+            return false;
+        }
+
+        if (operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
+            operation.VermaxionMutationAuthorization = snapshot.VermaxionMutationAuthorization;
+        return true;
+    }
+
+    private static bool CanAcceptResetGo(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot) ||
+            !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
+        {
+            return false;
+        }
+
+        return operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None
+            ? IsVerifiedReservationPreparation(snapshot)
+            : snapshot.DadOwnsCharacterPostprocess;
+    }
+
+    private static bool CanExecuteRelogNow(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+        => IsWorldMutationSafe(snapshot) &&
+           !snapshot.MultiModeEnabled &&
+           snapshot.DadOwnsSuppression &&
+           snapshot.AutoRetainerSuppressed;
+
+    private static bool IsPreReservationReady(DadWakeTakeoverTargetSnapshot snapshot)
+        => IsWorldAndLocalServicesSafe(snapshot) &&
+           !IsExternalAutomationBlocking(snapshot);
+
+    private static bool IsWorldAndLocalServicesSafe(DadWakeTakeoverTargetSnapshot snapshot)
+        => IsWorldReadyStable(snapshot) &&
+           snapshot.AutoRetainerAvailable &&
+           !snapshot.AutoRetainerBusy &&
+           snapshot.LifestreamAvailable &&
+           !snapshot.LifestreamBusy;
+
+    private static bool IsWorldMutationSafe(DadWakeTakeoverTargetSnapshot snapshot)
+        => IsWorldAndLocalServicesSafe(snapshot) && !snapshot.ExternalAutomationHeld;
+
+    private static bool IsDestinationReady(DadWakeTakeoverTargetSnapshot snapshot)
+        => snapshot.CorrectCharacter &&
+           IsWorldMutationSafe(snapshot) &&
+           !snapshot.MultiModeEnabled;
+
+    private static bool IsExternalAutomationBlocking(DadWakeTakeoverTargetSnapshot snapshot)
+        => snapshot.ExternalAutomationHeld &&
+           !(snapshot.VermaxionReservationAuthoritative &&
+             snapshot.VermaxionReservationState == DadVermaxionReservationState.Released);
+
+    private static bool IsOwnedReservationWait(DadWakeTakeoverTargetSnapshot snapshot)
+        => snapshot.VermaxionReservationAuthoritative &&
+           snapshot.VermaxionReservationState is DadVermaxionReservationState.Pending
+               or DadVermaxionReservationState.Granting;
+
+    private static bool IsWorldReadyStable(DadWakeTakeoverTargetSnapshot snapshot)
+        => snapshot.Participant.IsAvailable && snapshot.Participant.WorldReadyStable;
+
+    private static bool IsPreparedStateValid(
+        OperationState operation,
+        DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot) ||
+            !snapshot.SuppressionReadable || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
+        {
+            return false;
+        }
+
+        return operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None
+            ? IsVerifiedReservationPreparation(snapshot)
+            : snapshot.DadOwnsCharacterPostprocess;
+    }
+
+    private static string BuildReadinessWaitSummary(DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (!snapshot.Participant.IsAvailable)
+            return "Waiting for a connected local character; no timeout; cancel to stop.";
+        if (!snapshot.Participant.WorldReadyStable)
+            return "Waiting for world-ready stability (duty, queue, loading, or transition still active); no timeout; cancel to stop.";
+        if (!snapshot.AutoRetainerAvailable)
+            return string.IsNullOrWhiteSpace(snapshot.AutoRetainerStatus)
+                ? "Waiting for readable AutoRetainer handoff state; no timeout; cancel to stop."
+                : $"{snapshot.AutoRetainerStatus} No timeout; cancel to stop.";
+        if (snapshot.AutoRetainerBusy)
+            return "Waiting for AutoRetainer work to finish; no timeout; cancel to stop.";
+        if (snapshot.ExternalAutomationHeld)
+            return $"{BuildExternalHoldSummary(snapshot)} No timeout; cancel to stop.";
+        if (!snapshot.LifestreamAvailable || snapshot.LifestreamBusy)
+            return "Waiting for Lifestream to become available and idle; no timeout; cancel to stop.";
+        if (!snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
+            return "Waiting for the already-owned DAD suppression lease; no timeout; cancel to stop.";
+        return "Waiting for safe takeover readiness; no timeout; cancel to stop.";
     }
 
     private static bool IsVerifiedReservationPreparation(DadWakeTakeoverTargetSnapshot snapshot)
@@ -735,20 +1122,8 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private static string BuildPreparedSummary(DadVermaxionMutationAuthorization authorization)
         => authorization == DadVermaxionMutationAuthorization.CompatibilityIdle
-            ? "Compatibility handoff: VERMAXION idle / AR idle — DAD suppression acquired; waiting for crew"
-            : "VERMAXION handoff granted — AR off/idle and DAD suppression acquired; waiting for crew";
-
-    private static string ValidateTarget(DadWakeTakeoverTargetSnapshot snapshot, DadWakeTakeoverRequestDto request)
-    {
-        var blocker = ValidateCoreTarget(snapshot, request);
-        if (!string.IsNullOrWhiteSpace(blocker))
-            return blocker;
-        if (!snapshot.AutoRetainerAvailable)
-            return string.IsNullOrWhiteSpace(snapshot.AutoRetainerStatus)
-                ? "AutoRetainer handoff IPC is unavailable."
-                : snapshot.AutoRetainerStatus;
-        return string.Empty;
-    }
+            ? "Compatibility handoff: VERMAXION idle / AR idle; DAD suppression acquired; waiting for crew with no timeout; cancel to stop."
+            : "VERMAXION handoff granted; AR off/idle and DAD suppression acquired; waiting for crew with no timeout; cancel to stop.";
 
     private static string ValidateCoreTarget(DadWakeTakeoverTargetSnapshot snapshot, DadWakeTakeoverRequestDto request)
     {
@@ -782,7 +1157,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             "/",
             new[] { activity, state }.Where(static value => !string.IsNullOrWhiteSpace(value)));
         var activityText = string.IsNullOrWhiteSpace(detail) ? string.Empty : $" ({detail})";
-        return $"Waiting for VERMAXION reservation — {reservationState}{activityText}. {summary}".Trim();
+        return $"Waiting for VERMAXION reservation — {reservationState}{activityText}. {summary} No timeout; cancel to stop.".Trim();
     }
 
     private static string BuildLeaseYieldSummary(DadWakeTakeoverTargetSnapshot snapshot)
@@ -833,13 +1208,13 @@ public sealed class DadWakeTakeoverService : IDisposable
             CharacterKey = operation.Request.CharacterKey,
             OperationToken = operation.Request.OperationToken,
             Phase = phase,
-            Stage = snapshot.ExternalAutomationHeld && phase == DadWakeTakeoverPhase.AwaitingArHook
-                ? DadWakeTakeoverStage.WaitingForExternalAutomation
-                : ToStage(phase),
+            Stage = ResolveStage(phase, snapshot),
             Status = status,
             CommitKind = operation.CommitKind,
             ExecutionTimeUtc = operation.ExecutionTimeUtc,
             AcknowledgementState = acknowledgement ?? operation.Acknowledgement,
+            // Preserve the existing wire meaning. Takeover safety intentionally uses the
+            // independent Participant.WorldReadyStable value carried in Snapshot instead.
             PostArReady = snapshot.PostArReady,
             AutoRetainerAvailable = snapshot.AutoRetainerAvailable,
             AutoRetainerBusy = snapshot.AutoRetainerBusy,
@@ -895,6 +1270,23 @@ public sealed class DadWakeTakeoverService : IDisposable
             _ => DadWakeTakeoverStage.Blocked,
         };
 
+    private static DadWakeTakeoverStage ResolveStage(
+        DadWakeTakeoverPhase phase,
+        DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (phase != DadWakeTakeoverPhase.AwaitingArHook)
+            return ToStage(phase);
+        if (!snapshot.Participant.IsAvailable)
+            return DadWakeTakeoverStage.WaitingForClient;
+        if (!snapshot.Participant.WorldReadyStable)
+            return DadWakeTakeoverStage.WaitingForPostArReady;
+        if (!snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy)
+            return DadWakeTakeoverStage.WaitingForAutoRetainer;
+        if (snapshot.ExternalAutomationHeld)
+            return DadWakeTakeoverStage.WaitingForExternalAutomation;
+        return DadWakeTakeoverStage.AwaitingArHook;
+    }
+
     private static void NormalizeRequest(DadWakeTakeoverRequestDto request)
     {
         request.OperationToken = string.IsNullOrWhiteSpace(request.OperationToken)
@@ -936,7 +1328,10 @@ public sealed class DadWakeTakeoverService : IDisposable
     private void PruneOperations()
     {
         var cutoff = utcNow() - OperationRetention;
-        foreach (var key in operations.Where(pair => IsTerminal(pair.Value.Phase) && pair.Value.UpdatedAtUtc < cutoff)
+        foreach (var key in operations.Where(pair =>
+                         IsTerminal(pair.Value.Phase) &&
+                         !pair.Value.CleanupPending &&
+                         pair.Value.UpdatedAtUtc < cutoff)
                      .Select(static pair => pair.Key).ToList())
             operations.Remove(key);
     }
@@ -954,9 +1349,13 @@ public sealed class DadWakeTakeoverService : IDisposable
             if (disposed)
                 return;
             disposed = true;
-            var operationToken = operations.Values.FirstOrDefault(static operation => !IsTerminal(operation.Phase))?.Request.OperationToken
-                                 ?? string.Empty;
-            TryCleanupOwnedLeases(operationToken, retryAtNextBoundary: false);
+            foreach (var operation in operations.Values.Where(static operation =>
+                         !IsTerminal(operation.Phase) || operation.CleanupPending))
+            {
+                operation.CleanupPending = !TryCleanupOwnedLeases(operation, retryAtNextBoundary: false);
+                if (!operation.CleanupPending && operation.Phase == DadWakeTakeoverPhase.Cancelled)
+                    FinalizeCancellation(operation);
+            }
             activeOperationKey = string.Empty;
         }
     }
@@ -973,7 +1372,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         public DadWakeTakeoverRequestDto Request { get; }
         public DateTime CreatedAtUtc { get; }
         public DateTime UpdatedAtUtc { get; set; }
-        public DateTime? ArBudgetStartedUtc { get; set; }
+        public bool PreparationStarted { get; set; }
         public DadWakeTakeoverPhase Phase { get; set; } = DadWakeTakeoverPhase.AwaitingArHook;
         public DadWakeTakeoverStatus Status { get; set; } = DadWakeTakeoverStatus.Pending;
         public DadWakeCommitKind CommitKind { get; set; }
@@ -981,15 +1380,20 @@ public sealed class DadWakeTakeoverService : IDisposable
         public DadWakeAcknowledgementState Acknowledgement { get; set; } = DadWakeAcknowledgementState.Pending;
         public DateTime? ResetIssuedUtc { get; set; }
         public DateTime? RelogIssuedUtc { get; set; }
-        public DateTime? LastRelogAttemptUtc { get; set; }
-        public int RelogAttemptCount { get; set; }
         public DateTime? ReadyUtc { get; set; }
         public string Summary { get; set; } = "Waiting for AutoRetainer character postprocess";
         public string BlockedReason { get; set; } = string.Empty;
         public DadWakeTakeoverTargetSnapshot LastSnapshot { get; set; } = new();
         public bool CleanupPending { get; set; }
-        public bool CleanupRetryAtNextBoundary { get; set; }
         public bool CleanupReleaseReservation { get; set; } = true;
         public DadVermaxionMutationAuthorization VermaxionMutationAuthorization { get; set; }
+        public bool CoordinatorAvailable { get; set; } = true;
+        public bool ReservationRequested { get; set; }
+        public bool CharacterPostprocessArmed { get; set; }
+        public bool SuppressionAcquired { get; set; }
+        public bool MultiModeDisableAttempted { get; set; }
+        public bool DisableAutoRetainerAttempted { get; set; }
+        public bool ResetCommandAttempted { get; set; }
+        public bool RelogCommandAttempted { get; set; }
     }
 }

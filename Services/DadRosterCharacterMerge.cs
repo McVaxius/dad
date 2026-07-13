@@ -9,12 +9,13 @@ internal static class DadRosterCharacterMerge
 
     public static void NormalizeSnapshotJobLedger(DadRosterCharacter character)
     {
-        var normalizedJobLevels = new Dictionary<uint, int>();
-        MergeJobLedger(
-            normalizedJobLevels,
-            character.JobLevels,
-            character.CurrentJobId,
-            character.CurrentLevel);
+        // Normalization is allowed to learn, never forget. Preserve every already-stored entry verbatim,
+        // including unknown/future IDs and non-positive legacy values; positive validation is a caller concern.
+        var normalizedJobLevels = character.JobLevels == null
+            ? []
+            : new Dictionary<uint, int>(character.JobLevels);
+        if (character.CurrentJobId.HasValue && character.CurrentLevel.HasValue)
+            LearnJobLevel(normalizedJobLevels, character.CurrentJobId.Value, character.CurrentLevel.Value);
         character.JobLevels = normalizedJobLevels;
         character.CurrentJobId = ResolveCurrentJobId(
             character.JobLevels,
@@ -39,6 +40,14 @@ internal static class DadRosterCharacterMerge
 
         if (currentJobId.HasValue && currentLevel.HasValue)
             LearnJobLevel(target, currentJobId.Value, currentLevel.Value);
+    }
+
+    public static void RecordReportedJobLevel(Dictionary<uint, int> target, uint jobId, int level)
+    {
+        // Raw owner catalogs can contain future IDs and legacy/non-positive values. Preserve the
+        // maximum value reported for every ID before any combat-job presentation filtering occurs.
+        if (!target.TryGetValue(jobId, out var knownLevel) || level > knownLevel)
+            target[jobId] = level;
     }
 
     public static uint? ResolveCurrentJobId(
@@ -109,6 +118,11 @@ internal static class DadRosterCharacterMerge
         target.JobLevels ??= [];
         incoming.JobLevels ??= [];
         var runtimeSource = IsRuntimeSource(incoming.Source);
+        var applyRuntimeCurrentFields = runtimeSource &&
+                                        ShouldReplaceObservation(
+                                            MaxDate(incoming.LastRuntimeSeenUtc, incoming.LastSnapshotUtc),
+                                            target.LastRuntimeSeenUtc,
+                                            target.LastSnapshotUtc);
         var preserveExistingXadbObservations =
             runtimeSource &&
             HasCompleteXadbJobData(target);
@@ -121,7 +135,7 @@ internal static class DadRosterCharacterMerge
             incoming.CurrentJobId,
             incoming.CurrentLevel);
 
-        if (runtimeSource)
+        if (applyRuntimeCurrentFields)
             ApplyRuntimeCurrentFields(target, incoming);
 
         if (preserveExistingXadbObservations)
@@ -179,6 +193,33 @@ internal static class DadRosterCharacterMerge
 
     private static bool IsRuntimeSource(DadCharacterSource source)
         => source is DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime;
+
+    public static bool ShouldReplaceMutableObservation(
+        DadRosterCharacter target,
+        DadRosterCharacter incoming,
+        bool xadbAuthoritative)
+    {
+        var incomingUtc = xadbAuthoritative
+            ? incoming.LastSnapshotUtc
+            : IsRuntimeSource(incoming.Source)
+                ? MaxDate(incoming.LastRuntimeSeenUtc, incoming.LastSnapshotUtc)
+                : MaxDate(incoming.LastSnapshotUtc, incoming.LastRuntimeSeenUtc);
+        return ShouldReplaceObservation(
+            incomingUtc,
+            target.LastRuntimeSeenUtc,
+            target.LastSnapshotUtc);
+    }
+
+    private static bool ShouldReplaceObservation(
+        DateTime? incomingUtc,
+        DateTime? currentRuntimeUtc,
+        DateTime? currentSnapshotUtc)
+    {
+        var currentUtc = MaxDate(currentRuntimeUtc, currentSnapshotUtc);
+        if (!currentUtc.HasValue)
+            return true;
+        return incomingUtc.HasValue && incomingUtc.Value >= currentUtc.Value;
+    }
 
     private static DateTime? MaxDate(DateTime? left, DateTime? right)
     {

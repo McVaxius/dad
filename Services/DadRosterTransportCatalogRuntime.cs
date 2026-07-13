@@ -78,8 +78,7 @@ public static class DadRosterTransportCatalogRuntime
             if (!TryBuildParticipantFallbackRosterCharacter(
                     participant,
                     currentTransport,
-                    out var row,
-                    requireManagedAccountKey: true))
+                    out var row))
             {
                 continue;
             }
@@ -397,20 +396,17 @@ public static class DadRosterTransportCatalogRuntime
     private static bool TryBuildParticipantFallbackRosterCharacter(
         DadParticipantSnapshot participant,
         DadPeerTransportSnapshot currentTransport,
-        out DadRosterCharacter row,
-        bool requireManagedAccountKey = false)
+        out DadRosterCharacter row)
     {
         row = new DadRosterCharacter();
         var character = participant.Character.Clone();
+        if (!HasExactManagedAccountBinding(participant, character))
+            return false;
         var characterKey = ResolveParticipantCharacterKey(character, participant);
         if (string.IsNullOrWhiteSpace(characterKey) && character.ContentId == 0)
             return false;
 
-        var accountKey = requireManagedAccountKey
-            ? participant.ManagedAccountKey
-            : ResolveParticipantAccountKey(participant);
-        if (!requireManagedAccountKey && accountKey.IsEmpty)
-            accountKey = DadRosterIdentity.ResolveAccountKey(character.AccountId, character.AccountAlias);
+        var accountKey = participant.ManagedAccountKey;
         if (accountKey.IsEmpty)
             return false;
 
@@ -455,6 +451,21 @@ public static class DadRosterTransportCatalogRuntime
         var projection = DadPeerRuntimeProjectionRules.Evaluate(participant, character);
         row.Blockers = projection.Blockers;
         return true;
+    }
+
+    public static bool HasExactManagedAccountBinding(
+        DadParticipantSnapshot participant,
+        DadAcquiredCharacter character)
+    {
+        if (participant.ManagedAccountKey.IsEmpty)
+            return false;
+
+        // Account aliases are presentation only. A runtime row with no embedded account ID can be
+        // attributed by its authenticated participant envelope, but an explicit conflicting ID is rejected.
+        return string.IsNullOrWhiteSpace(character.AccountId) ||
+               DadRosterIdentity.SameAccount(
+                   new DadAccountKey(character.AccountId),
+                   participant.ManagedAccountKey);
     }
 
     public static bool ReplaceSourceBlockersFromSupersedingRuntime(

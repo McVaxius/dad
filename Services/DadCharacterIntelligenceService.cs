@@ -141,7 +141,7 @@ public sealed class DadCharacterIntelligenceService
 
         if (localCharacter != null)
         {
-            MergeXadb(localCharacter, xadbStatus);
+            DadCharacterXadbMergeRules.Merge(localCharacter, xadbStatus);
             UpsertCharacter(characters, localCharacter);
         }
         else if (HasXadbIdentity(xadbStatus))
@@ -296,67 +296,6 @@ public sealed class DadCharacterIntelligenceService
         }
 
         return territoryId == 0 ? "Unknown" : $"Territory {territoryId}";
-    }
-
-    private static void MergeXadb(DadAcquiredCharacter character, DadXadbStatus xadbStatus)
-    {
-        character.XadbReady = xadbStatus.IsReady;
-        character.XadbSnapshotUtc = xadbStatus.SnapshotUtc;
-        character.SnapshotVersion = xadbStatus.SnapshotVersion;
-        character.SnapshotQuality = xadbStatus.SnapshotQuality;
-
-        if (!xadbStatus.IsReady)
-        {
-            AddBlocker(character, "XADB unavailable.");
-            return;
-        }
-
-        if (character.ContentId == 0 && xadbStatus.ContentId != 0)
-            character.ContentId = xadbStatus.ContentId;
-
-        if (character.WorldId == 0 && xadbStatus.WorldId.HasValue)
-            character.WorldId = xadbStatus.WorldId.Value;
-
-        if (string.IsNullOrWhiteSpace(character.WorldName))
-            character.WorldName = xadbStatus.WorldName;
-
-        if (character.DataCenterId == null && xadbStatus.DataCenterId.HasValue)
-            character.DataCenterId = xadbStatus.DataCenterId;
-
-        if (string.IsNullOrWhiteSpace(character.DataCenterName))
-            character.DataCenterName = xadbStatus.DataCenterName;
-
-        if (character.CurrentJobId == null && xadbStatus.CurrentJobId.HasValue)
-            character.CurrentJobId = xadbStatus.CurrentJobId.Value;
-
-        if (string.IsNullOrWhiteSpace(character.CurrentJobAbbrev))
-            character.CurrentJobAbbrev = xadbStatus.CurrentJobAbbrev;
-
-        if (character.CurrentLevel == null && xadbStatus.CurrentLevel.HasValue)
-            character.CurrentLevel = xadbStatus.CurrentLevel.Value;
-
-        DadRosterCharacterMerge.MergeJobLedger(
-            character.JobLevels,
-            xadbStatus.JobLevels,
-            character.CurrentJobId,
-            character.CurrentLevel);
-
-        character.CurrentJobId = DadRosterCharacterMerge.ResolveCurrentJobId(
-            character.JobLevels,
-            character.CurrentJobId);
-        character.CurrentLevel = DadRosterCharacterMerge.ResolveCurrentLevel(
-            character.JobLevels,
-            character.CurrentJobId,
-            character.CurrentLevel);
-
-        if (character.JobLevels.Count == 0)
-            AddBlocker(character, "Missing XADB job levels.");
-
-        if (!string.IsNullOrWhiteSpace(xadbStatus.SnapshotQuality) &&
-            xadbStatus.SnapshotQuality.Contains("partial", StringComparison.OrdinalIgnoreCase))
-        {
-            AddBlocker(character, $"XADB snapshot quality {xadbStatus.SnapshotQuality}.");
-        }
     }
 
     private static DadAcquiredCharacter BuildXadbOnlyCharacter(DadXadbStatus xadbStatus)

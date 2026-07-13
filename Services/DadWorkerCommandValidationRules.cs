@@ -4,6 +4,22 @@ namespace dad.Services;
 
 internal static class DadWorkerCommandValidationRules
 {
+    public static bool TryValidateMutationIdentity(
+        DadWorkerExecutionCommand command,
+        DadParticipantSnapshot localRuntime,
+        out DadParticipantSnapshot localAssignment,
+        out string blocker)
+    {
+        ArgumentNullException.ThrowIfNull(localRuntime);
+
+        // Being registered for a duty intentionally makes PostArReady false. Mutation pulses after
+        // that point must still prove the frozen worker/account/character/content/slot identity,
+        // availability, requested-job proof, and role without treating the owned queue as drift.
+        var identityRuntime = localRuntime.Clone();
+        identityRuntime.PostArReady = true;
+        return TryValidate(command, identityRuntime, out localAssignment, out blocker);
+    }
+
     public static bool TryValidate(
         DadWorkerExecutionCommand command,
         DadParticipantSnapshot localRuntime,

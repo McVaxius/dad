@@ -104,6 +104,100 @@ public sealed class DadFullPartyExecutionRulesTests
         Assert.Empty(allowedBlocker);
     }
 
+    [Fact]
+    public void RelaxedCoordinatorIdentityRequiresLaunchIfOfflineAndTheSameAccount()
+    {
+        var request = new DadRunRequest
+        {
+            DailyMsq = new DadDailyMsqTask(),
+            Orchestration = new DadOrchestrationIntent
+            {
+                AuthorityMode = DadAuthorityMode.ServerDad,
+                QueueAuthority = DadQueueAuthority.Leader,
+                PreferredLeaderCharacterKey = new DadCharacterKey("Requested Leader@World"),
+                RequiredRosterCharacters =
+                [
+                    new DadRosterCharacterRef
+                    {
+                        AccountKey = new DadAccountKey("coordinator-account"),
+                        CharacterKey = new DadCharacterKey("Requested Leader@World"),
+                    },
+                ],
+            },
+        };
+        var requestedLeader = Character("Requested Leader@World", "coordinator-account", DadCharacterSource.XadbOnly);
+        var wrongCharacterSameAccount = Character("Other Character@World", "coordinator-account", DadCharacterSource.LocalRuntime);
+
+        Assert.True(DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+            request,
+            requestedLeader,
+            new DadAccountKey("coordinator-account"),
+            wrongCharacterSameAccount,
+            requireExactLocalIdentity: false,
+            allowWakeableCoordinatorLeader: true,
+            out var wakeableBlocker));
+        Assert.Empty(wakeableBlocker);
+
+        Assert.False(DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+            request,
+            requestedLeader,
+            new DadAccountKey("coordinator-account"),
+            wrongCharacterSameAccount,
+            requireExactLocalIdentity: false,
+            allowWakeableCoordinatorLeader: false,
+            out var policyBlocker));
+        Assert.Contains("exact character loaded", policyBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var wrongAccount = Character("Other Character@World", "different-account", DadCharacterSource.LocalRuntime);
+        Assert.False(DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+            request,
+            requestedLeader,
+            new DadAccountKey("coordinator-account"),
+            wrongAccount,
+            requireExactLocalIdentity: false,
+            allowWakeableCoordinatorLeader: true,
+            out var accountBlocker));
+        Assert.Contains("different account", accountBlocker, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+            request,
+            requestedLeader,
+            new DadAccountKey("coordinator-account"),
+            wrongCharacterSameAccount,
+            requireExactLocalIdentity: true,
+            allowWakeableCoordinatorLeader: true,
+            out var strictBlocker));
+        Assert.Contains("exact character loaded", strictBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var exactLocal = Character("Requested Leader@World", "coordinator-account", DadCharacterSource.LocalRuntime);
+        Assert.True(DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+            request,
+            exactLocal,
+            new DadAccountKey("coordinator-account"),
+            exactLocal,
+            requireExactLocalIdentity: true,
+            allowWakeableCoordinatorLeader: false,
+            out var exactBlocker));
+        Assert.Empty(exactBlocker);
+    }
+
+    [Fact]
+    public void UnfilteredLocalRuntimeIdentityWinsOverPresentationFilteredCharacters()
+    {
+        var projectedCharacters = new[]
+        {
+            Character("Requested Leader@World", "coordinator-account", DadCharacterSource.XadbOnly),
+        };
+        var hiddenRuntime = Character("Hidden Active@World", "different-account", DadCharacterSource.LocalRuntime);
+
+        var resolved = DadFullPartyExecutionRules.ResolveActiveCoordinatorCharacter(
+            hiddenRuntime,
+            projectedCharacters);
+
+        Assert.Same(hiddenRuntime, resolved);
+        Assert.Equal("different-account", resolved!.AccountId);
+    }
+
     private static IReadOnlyList<DadModuleBlockerDto> Evaluate(
         DadRunPlan plan,
         IReadOnlyList<DadParticipantSnapshot> participants)
@@ -113,6 +207,17 @@ public sealed class DadFullPartyExecutionRulesTests
             participants,
             4,
             "Daily Roulette");
+
+    private static DadAcquiredCharacter Character(
+        string characterKey,
+        string accountId,
+        DadCharacterSource source)
+        => new()
+        {
+            CharacterKey = characterKey,
+            AccountId = accountId,
+            Source = source,
+        };
 
     private static (DadRunPlan Plan, List<DadParticipantSnapshot> Participants) ValidParty()
     {

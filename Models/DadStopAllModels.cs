@@ -100,18 +100,44 @@ public sealed class DadSchedulerStopAllResult
 
 public static class DadStopAllStatusRules
 {
+    public static void NormalizeLocalResult(DadStopAllWorkerResult result)
+    {
+        if (result.LocalCleanupCompleted)
+        {
+            result.State = DadStopAllWorkerState.Acknowledged;
+            return;
+        }
+
+        // An acknowledgement is only authoritative after every DAD-owned cleanup lease has
+        // actually released. Keep the existing wire enum and represent that handshake as Expected.
+        if (result.State == DadStopAllWorkerState.Acknowledged)
+            result.State = DadStopAllWorkerState.Expected;
+    }
+
+    public static bool IsLocalCleanupPending(DadStopAllWorkerResult result)
+    {
+        NormalizeLocalResult(result);
+        return result.State == DadStopAllWorkerState.Expected;
+    }
+
     public static void FinalizeFromWorkers(DadStopAllStatus status, DateTime nowUtc)
     {
+        NormalizeLocalResult(status.LocalResult);
         var expected = status.Workers.Count;
         var acknowledged = status.Workers.Count(static worker => worker.State == DadStopAllWorkerState.Acknowledged);
         var rejected = status.Workers.Count(static worker => worker.State == DadStopAllWorkerState.Rejected);
         var disconnected = status.Workers.Count(static worker => worker.State == DadStopAllWorkerState.Disconnected);
         var timedOut = status.Workers.Count(static worker => worker.State == DadStopAllWorkerState.TimedOut);
         var pending = status.Workers.Count(static worker => worker.State == DadStopAllWorkerState.Expected);
-        status.Partial = status.LocalResult.Partial || rejected + disconnected + timedOut > 0 ||
+        var localPending = IsLocalCleanupPending(status.LocalResult);
+        var localFailed = status.LocalResult.State is DadStopAllWorkerState.Rejected or
+            DadStopAllWorkerState.Disconnected or DadStopAllWorkerState.TimedOut;
+        status.Partial = !status.RemotePropagationAvailable || status.LocalResult.Partial || localFailed ||
+                         rejected + disconnected + timedOut > 0 ||
                          status.Workers.Any(static worker => worker.Partial);
-        status.IsFinal = pending == 0;
+        status.IsFinal = !localPending && pending == 0;
         status.CompletedAtUtc = status.IsFinal ? nowUtc : null;
-        status.Summary = $"Stop-all acknowledgements: expected {expected}, acknowledged {acknowledged}, rejected {rejected}, disconnected {disconnected}, timed out {timedOut}, pending {pending}.";
+        var local = localPending ? "pending" : status.LocalResult.State.ToString().ToLowerInvariant();
+        status.Summary = $"Local cleanup {local}; Stop-all acknowledgements: expected {expected}, acknowledged {acknowledged}, rejected {rejected}, disconnected {disconnected}, timed out {timedOut}, pending {pending}.";
     }
 }

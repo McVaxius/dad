@@ -672,6 +672,9 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
+        if (!TryRefreshStrictMutationBoundary("party assembly and invite dispatch"))
+            return;
+
         if (TryResolveSingleWorkerAssembly(activePlan))
             return;
 
@@ -1027,6 +1030,12 @@ public sealed class DadCoordinatorService
             workerStatuses.Count > 0)
         {
             UpdateWorkerExecution(activePlan.Modules[activeModuleIndex]);
+            return;
+        }
+
+        if (activeModuleIndex + 1 < activePlan.Modules.Count &&
+            !TryRefreshStrictMutationBoundary("queue worker dispatch"))
+        {
             return;
         }
 
@@ -1563,6 +1572,42 @@ public sealed class DadCoordinatorService
             return characterIntelligenceService.RequestPeerSnapshots();
 
         return characterIntelligenceService.CurrentPool;
+    }
+
+    private bool TryRefreshStrictMutationBoundary(string boundary)
+    {
+        if (activePlan == null ||
+            activeSlotManifest == null ||
+            !DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(activePlan.Request))
+        {
+            return true;
+        }
+
+        var pool = GetPlanningPool(forcePeerRefresh: false);
+        var runtimeParticipants = BuildCurrentManifestParticipantSet(pool);
+        var activeCoordinatorCharacter = pool.Characters.FirstOrDefault(static character =>
+            character.Source == DadCharacterSource.LocalRuntime);
+        var coordinatorAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
+        if (!DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+                activePlan,
+                activeSlotManifest,
+                runtimeParticipants,
+                coordinatorAccountKey,
+                activeCoordinatorCharacter,
+                out var refreshedParticipants,
+                out var blocker))
+        {
+            FinalizeRun(
+                DadRunStatus.Failed,
+                $"Dad stopped before {boundary} because strict frozen Slot1 authority changed.",
+                blocker);
+            return false;
+        }
+
+        activeParticipants.Clear();
+        activeParticipants.AddRange(refreshedParticipants);
+        CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
+        return true;
     }
 
     private IReadOnlyList<DadParticipantSnapshot> BuildOnlineParticipantSet(DadCharacterPool pool)

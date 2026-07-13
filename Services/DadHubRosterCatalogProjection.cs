@@ -125,10 +125,19 @@ internal static class DadHubRosterCatalogProjection
                         SourceClientInstanceId = row.OwnerClientInstanceId,
                         SourceWorkerSessionId = row.OwnerWorkerSessionId,
                         Summary = "Pushed hub roster projection.",
+                        SourceDiagnostics = new DadRosterSourceDiagnostics
+                        {
+                            LocalAccountKey = row.AccountKey.Value,
+                        },
                     },
                 };
                 byOwner[ownerKey] = response;
             }
+
+            // A compact projection is still an owner catalog. Never let an older client that
+            // forwarded another account's retained row turn that row into durable peer knowledge.
+            if (!DadRosterKnowledgeSourceRules.IsDeclaredOwnerCatalogRow(response.Catalog, BuildRosterCharacter(row)))
+                continue;
 
             response.Catalog.Characters.Add(BuildRosterCharacter(row));
         }

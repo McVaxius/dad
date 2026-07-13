@@ -66,6 +66,34 @@ public sealed class DadRosterCharacterMergeTests
     }
 
     [Fact]
+    public void NormalizeSnapshotJobLedgerNeverDeletesStoredUnknownOrNonPositiveEntries()
+    {
+        var character = new DadRosterCharacter
+        {
+            CurrentJobId = DarkKnightJobId,
+            CurrentLevel = 95,
+            JobLevels = new Dictionary<uint, int>
+            {
+                [0] = 0,
+                [8] = 100,
+                [FisherJobId] = 90,
+                [36] = 80,
+                [999] = -1,
+            },
+        };
+
+        DadRosterCharacterMerge.NormalizeSnapshotJobLedger(character);
+
+        Assert.Equal(6, character.JobLevels.Count);
+        Assert.Equal(0, character.JobLevels[0]);
+        Assert.Equal(100, character.JobLevels[8]);
+        Assert.Equal(90, character.JobLevels[FisherJobId]);
+        Assert.Equal(80, character.JobLevels[36]);
+        Assert.Equal(-1, character.JobLevels[999]);
+        Assert.Equal(95, character.JobLevels[DarkKnightJobId]);
+    }
+
+    [Fact]
     public void MergeJobLedgerUnionsValidJobsAtTheirMaximumAndLearnsCurrentJob()
     {
         var ledger = new Dictionary<uint, int>
@@ -92,6 +120,79 @@ public sealed class DadRosterCharacterMergeTests
         Assert.Equal(25, ledger[PictomancerJobId]);
         Assert.False(ledger.ContainsKey(0));
         Assert.False(ledger.ContainsKey(DarkKnightJobId));
+    }
+
+    [Fact]
+    public void DuplicateRawJobReportsKeepMaximumForEveryId()
+    {
+        var reported = new Dictionary<uint, int>();
+
+        DadRosterCharacterMerge.RecordReportedJobLevel(reported, DarkKnightJobId, 95);
+        DadRosterCharacterMerge.RecordReportedJobLevel(reported, DarkKnightJobId, 80);
+        DadRosterCharacterMerge.RecordReportedJobLevel(reported, 999, 77);
+        DadRosterCharacterMerge.RecordReportedJobLevel(reported, 999, 60);
+        DadRosterCharacterMerge.RecordReportedJobLevel(reported, 0, -1);
+        DadRosterCharacterMerge.RecordReportedJobLevel(reported, 0, -2);
+
+        Assert.Equal(95, reported[DarkKnightJobId]);
+        Assert.Equal(77, reported[999]);
+        Assert.Equal(-1, reported[0]);
+    }
+
+    [Fact]
+    public void StaleRuntimeObservationLearnsJobsWithoutReplacingNewerCurrentFields()
+    {
+        var newerAt = new DateTime(2026, 7, 13, 12, 5, 0, DateTimeKind.Utc);
+        var target = new DadRosterCharacter
+        {
+            Source = DadCharacterSource.PeerRuntime,
+            LastRuntimeSeenUtc = newerAt,
+            CurrentJobId = DarkKnightJobId,
+            CurrentJobAbbrev = "DRK",
+            CurrentLevel = 95,
+            JobLevels = new Dictionary<uint, int> { [DarkKnightJobId] = 95 },
+        };
+        var stale = new DadRosterCharacter
+        {
+            Source = DadCharacterSource.PeerRuntime,
+            LastRuntimeSeenUtc = newerAt.AddMinutes(-1),
+            CurrentJobId = WhiteMageJobId,
+            CurrentJobAbbrev = "WHM",
+            CurrentLevel = 100,
+            JobLevels = new Dictionary<uint, int> { [WhiteMageJobId] = 100 },
+        };
+
+        DadRosterCharacterMerge.MergeNonAuthoritativeSnapshot(target, stale);
+
+        Assert.Equal(DarkKnightJobId, target.CurrentJobId);
+        Assert.Equal("DRK", target.CurrentJobAbbrev);
+        Assert.Equal(95, target.CurrentLevel);
+        Assert.Equal(95, target.JobLevels[DarkKnightJobId]);
+        Assert.Equal(100, target.JobLevels[WhiteMageJobId]);
+        Assert.Equal(newerAt, target.LastRuntimeSeenUtc);
+    }
+
+    [Fact]
+    public void MutableObservationReplacementRequiresNewestRuntimeOrSnapshot()
+    {
+        var target = new DadRosterCharacter
+        {
+            LastSnapshotUtc = new DateTime(2026, 7, 13, 12, 0, 0, DateTimeKind.Utc),
+            LastRuntimeSeenUtc = new DateTime(2026, 7, 13, 12, 5, 0, DateTimeKind.Utc),
+        };
+        var staleXadb = new DadRosterCharacter
+        {
+            Source = DadCharacterSource.XadbOnly,
+            LastSnapshotUtc = new DateTime(2026, 7, 13, 12, 1, 0, DateTimeKind.Utc),
+        };
+        var freshRuntime = new DadRosterCharacter
+        {
+            Source = DadCharacterSource.PeerRuntime,
+            LastRuntimeSeenUtc = new DateTime(2026, 7, 13, 12, 6, 0, DateTimeKind.Utc),
+        };
+
+        Assert.False(DadRosterCharacterMerge.ShouldReplaceMutableObservation(target, staleXadb, xadbAuthoritative: true));
+        Assert.True(DadRosterCharacterMerge.ShouldReplaceMutableObservation(target, freshRuntime, xadbAuthoritative: false));
     }
 
     [Fact]

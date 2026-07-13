@@ -30,13 +30,7 @@ public static class DadPlannerRequestedJobValidationRules
         if (exactCharacters.Count == 0)
             return DadPlannerRequestedJobValidationFailure.ExactCharacterUnavailable;
 
-        var xadbCharacters = exactCharacters
-            .Where(static character => character.XadbReady)
-            .ToList();
-        if (xadbCharacters.Count == 0)
-            return DadPlannerRequestedJobValidationFailure.XadbUnavailable;
-
-        return xadbCharacters.Any(character =>
+        return exactCharacters.Any(character =>
                 character.JobLevels != null &&
                 character.JobLevels.TryGetValue(requiredJobId, out var level) &&
                 level > 0)
@@ -48,8 +42,7 @@ public static class DadPlannerRequestedJobValidationRules
         DadAcquiredCharacter character,
         DadPresetCharacterSlot slot)
     {
-        if (slot.RequiredAccountKey.IsEmpty ||
-            !MatchesAccountKey(character, slot.RequiredAccountKey.Value))
+        if (slot.RequiredAccountKey.IsEmpty || !MatchesAccountKey(character, slot.RequiredAccountKey))
         {
             return false;
         }
@@ -70,9 +63,9 @@ public static class DadPlannerRequestedJobValidationRules
                    StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool MatchesAccountKey(DadAcquiredCharacter character, string accountKey)
-        => (!string.IsNullOrWhiteSpace(character.AccountId) &&
-            string.Equals(character.AccountId, accountKey, StringComparison.OrdinalIgnoreCase))
-           || (!string.IsNullOrWhiteSpace(character.AccountAlias) &&
-               string.Equals(character.AccountAlias, accountKey, StringComparison.OrdinalIgnoreCase));
+    private static bool MatchesAccountKey(DadAcquiredCharacter character, DadAccountKey accountKey)
+    {
+        var exactAccountKey = DadRosterIdentity.ResolveAccountKey(character.AccountId, character.AccountAlias);
+        return !exactAccountKey.IsEmpty && DadRosterIdentity.SameAccount(exactAccountKey, accountKey);
+    }
 }

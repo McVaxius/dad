@@ -167,6 +167,46 @@ public sealed class DadWorkerCommandValidationRulesTests
         AssertRejected(BuildCommand(), runtime, "not post-AR ready");
     }
 
+    [Fact]
+    public void QueuedMutationIdentityAllowsExpectedPostArLossButRetainsExactFrozenIdentity()
+    {
+        var command = BuildCommand();
+        var runtime = RuntimeForX();
+        runtime.PostArReady = false;
+
+        Assert.True(
+            DadWorkerCommandValidationRules.TryValidateMutationIdentity(
+                command,
+                runtime,
+                out var localAssignment,
+                out var blocker),
+            blocker);
+        Assert.Equal("Slot2", localAssignment.AssignedSlotId);
+
+        runtime.WorkerSessionId = new DadWorkerSessionId("replacement-worker");
+        Assert.False(DadWorkerCommandValidationRules.TryValidateMutationIdentity(
+            command,
+            runtime,
+            out _,
+            out var driftBlocker));
+        Assert.Contains("another worker/account/character/slot", driftBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void QueuedMutationIdentityStillRejectsUnavailableRuntime()
+    {
+        var runtime = RuntimeForX();
+        runtime.PostArReady = false;
+        runtime.IsAvailable = false;
+
+        Assert.False(DadWorkerCommandValidationRules.TryValidateMutationIdentity(
+            BuildCommand(),
+            runtime,
+            out _,
+            out var blocker));
+        Assert.Contains("unavailable or stale", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(DadRequestedJobPreparationStatus.AlreadyMatched)]
     [InlineData(DadRequestedJobPreparationStatus.Switched)]

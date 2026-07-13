@@ -13,6 +13,67 @@ public readonly record struct DadWakeSlotPipelineDecision(
 
 public static class DadSchedulerRoutingRules
 {
+    public static bool IsTakeoverCancellationComplete(DadWakeTakeoverResultDto? result)
+        => result is
+        {
+            Phase: DadWakeTakeoverPhase.Cancelled,
+            AcknowledgementState: DadWakeAcknowledgementState.Executed,
+        } or
+        {
+            Phase: DadWakeTakeoverPhase.Ready,
+        };
+
+    public static bool RequiresTakeoverCancellation(DadSchedulerSlotState slot)
+        => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline &&
+           !string.IsNullOrWhiteSpace(slot.OperationToken) &&
+           slot.TakeoverPhase != DadWakeTakeoverPhase.Ready &&
+           !(slot.TakeoverPhase == DadWakeTakeoverPhase.Cancelled &&
+             slot.AcknowledgementState == DadWakeAcknowledgementState.Executed);
+
+    public static DadWorkerSessionId PreserveFrozenWorkerSession(
+        DadWorkerSessionId frozenWorkerSessionId,
+        DadWorkerSessionId candidateWorkerSessionId)
+        => frozenWorkerSessionId.IsEmpty ? candidateWorkerSessionId : frozenWorkerSessionId;
+
+    public static bool HasLatestSafeTakeoverProjection(DadSchedulerSlotState slot)
+        => slot.ClientConnected &&
+           slot.BasePostArReady &&
+           slot.AutoRetainerAvailable &&
+           !slot.AutoRetainerBusy &&
+           !slot.ExternalAutomationHeld;
+
+    public static bool IsExactFrozenTakeoverSnapshot(
+        DadSchedulerSlotState slot,
+        DadParticipantSnapshot snapshot)
+        => snapshot != null &&
+           snapshot.IsAvailable &&
+           (slot.MatchedWorkerSessionId.IsEmpty || string.Equals(
+               slot.MatchedWorkerSessionId.Value,
+               snapshot.WorkerSessionId.Value,
+               StringComparison.OrdinalIgnoreCase)) &&
+           !slot.RequiredAccountKey.IsEmpty &&
+           string.Equals(
+               slot.RequiredAccountKey.Value,
+               snapshot.ManagedAccountKey.Value,
+               StringComparison.OrdinalIgnoreCase) &&
+           !slot.RequiredCharacterKey.IsEmpty &&
+           string.Equals(
+               slot.RequiredCharacterKey.Value,
+               snapshot.ActiveCharacterKey.Value,
+               StringComparison.OrdinalIgnoreCase);
+
+    public static bool CanAcceptReadyAcknowledgement(
+        DadSchedulerSlotState slot,
+        DadWakeTakeoverResultDto result)
+        => result.Status == DadWakeTakeoverStatus.Ready &&
+           result.Phase == DadWakeTakeoverPhase.Ready &&
+           IsExactFrozenTakeoverSnapshot(slot, result.Snapshot) &&
+           result.Snapshot.WorldReadyStable &&
+           result.AutoRetainerAvailable &&
+           !result.AutoRetainerBusy &&
+           !result.MultiModeEnabled &&
+           !result.ExternalAutomationHeld;
+
     public static DadAccountKey ResolveStableClientAccount(string configuredClientAccountId)
         => new((configuredClientAccountId ?? string.Empty).Trim());
 
@@ -56,6 +117,26 @@ public static class DadSchedulerRoutingRules
             isWorkerOnline(participant.WorkerSessionId));
     }
 
+    public static DadParticipantSnapshot? ResolveFrozenCancellationClient(
+        DadWorkerSessionId frozenWorkerSessionId,
+        IEnumerable<DadParticipantSnapshot> participants,
+        Func<DadWorkerSessionId, bool> isWorkerOnline)
+    {
+        if (frozenWorkerSessionId.IsEmpty)
+            return null;
+
+        // Cancellation is cleanup for an operation already accepted by this exact worker
+        // session. Account and character projections may legitimately drift while reset/relog
+        // cleanup is still pending, but cleanup authority must never move to another session.
+        return participants.FirstOrDefault(participant =>
+            participant.State != DadParticipantState.Stale &&
+            string.Equals(
+                participant.WorkerSessionId.Value,
+                frozenWorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase) &&
+            isWorkerOnline(participant.WorkerSessionId));
+    }
+
     public static DadWakeSlotPipelineDecision ResolveNextTakeoverAction(
         DadSchedulerSlotState slot,
         DateTime nowUtc)
@@ -72,6 +153,16 @@ public static class DadSchedulerRoutingRules
 
         if (slot.TakeoverPhase == DadWakeTakeoverPhase.Prepared)
         {
+            if (!HasLatestSafeTakeoverProjection(slot))
+            {
+                return new DadWakeSlotPipelineDecision(
+                    true,
+                    DadWakeTakeoverMessageKind.Status,
+                    DadWakeCommitKind.None,
+                    null,
+                    "Latest heartbeat is unsafe; poll without sending reset GO.");
+            }
+
             var execution = slot.ResetExecutionUtc ?? EnsureUtc(nowUtc).AddSeconds(5);
             return new DadWakeSlotPipelineDecision(
                 true,
@@ -83,6 +174,16 @@ public static class DadSchedulerRoutingRules
 
         if (slot.TakeoverPhase == DadWakeTakeoverPhase.ResetVerified)
         {
+            if (!HasLatestSafeTakeoverProjection(slot))
+            {
+                return new DadWakeSlotPipelineDecision(
+                    true,
+                    DadWakeTakeoverMessageKind.Status,
+                    DadWakeCommitKind.None,
+                    null,
+                    "Latest heartbeat is unsafe; poll without sending relog GO.");
+            }
+
             var execution = slot.RelogExecutionUtc ?? EnsureUtc(nowUtc).AddSeconds(5);
             return new DadWakeSlotPipelineDecision(
                 true,

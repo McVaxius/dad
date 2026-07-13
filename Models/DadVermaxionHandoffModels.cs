@@ -76,10 +76,33 @@ public sealed class DadVermaxionReservationStatus
         => !string.IsNullOrWhiteSpace(operationToken) &&
            !string.IsNullOrWhiteSpace(OperationToken) &&
            string.Equals(OperationToken, operationToken.Trim(), StringComparison.OrdinalIgnoreCase) &&
-           State != DadVermaxionReservationState.Rejected;
+           State != DadVermaxionReservationState.Rejected &&
+           State != DadVermaxionReservationState.Released;
 
     public DadVermaxionReservationStatus Clone()
         => (DadVermaxionReservationStatus)MemberwiseClone();
+}
+
+public static class DadVermaxionReleaseProofRules
+{
+    /// <summary>
+    /// A synchronous v2 Release response proves cleanup only when it names the exact token and
+    /// reports either Released or the provider's no-owner Rejected state. Empty, mismatched, or
+    /// unparsable responses remain unproven and must be retried.
+    /// </summary>
+    public static bool ProvesNoOwnedReservation(
+        DadVermaxionReservationStatus? status,
+        string? requestedOperationToken)
+        => status != null &&
+           status.Version == DadVermaxionHandoffContract.Version &&
+           status.WireFormat != DadVermaxionReservationWireFormat.Unavailable &&
+           status.State is DadVermaxionReservationState.Released or DadVermaxionReservationState.Rejected &&
+           !string.IsNullOrWhiteSpace(requestedOperationToken) &&
+           !string.IsNullOrWhiteSpace(status.OperationToken) &&
+           string.Equals(
+               status.OperationToken.Trim(),
+               requestedOperationToken.Trim(),
+               StringComparison.OrdinalIgnoreCase);
 }
 
 public static class DadVermaxionReservationParser

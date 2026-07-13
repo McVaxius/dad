@@ -28,7 +28,7 @@ public sealed class DadPlannerRequestedJobValidationRulesTests
     }
 
     [Fact]
-    public void ExactCharacterMayUseItsConfiguredAccountAlias()
+    public void AccountAliasCannotOverrideDifferentExactAccountId()
     {
         var slot = Slot(requiredJobId: 21);
         slot.RequiredAccountKey = new DadAccountKey("main-account");
@@ -37,7 +37,7 @@ public sealed class DadPlannerRequestedJobValidationRulesTests
 
         var failure = DadPlannerRequestedJobValidationRules.Validate(slot, [character]);
 
-        Assert.Equal(DadPlannerRequestedJobValidationFailure.None, failure);
+        Assert.Equal(DadPlannerRequestedJobValidationFailure.ExactCharacterUnavailable, failure);
     }
 
     [Theory]
@@ -55,13 +55,28 @@ public sealed class DadPlannerRequestedJobValidationRulesTests
     }
 
     [Fact]
-    public void RequestedJobRequiresCurrentXadbData()
+    public void LearnedRequestedJobDoesNotRequireCurrentXadbReadiness()
     {
         var failure = DadPlannerRequestedJobValidationRules.Validate(
             Slot(requiredJobId: 21),
             [Character(currentJobId: 21, xadbReady: false, (21, 100))]);
 
-        Assert.Equal(DadPlannerRequestedJobValidationFailure.XadbUnavailable, failure);
+        Assert.Equal(DadPlannerRequestedJobValidationFailure.None, failure);
+    }
+
+    [Fact]
+    public void AbsentRequestedJobRemainsUnavailableWhenXadbIsNotReady()
+    {
+        var character = Character(currentJobId: 24, xadbReady: false, (24, 100), (32, 95));
+
+        var failure = DadPlannerRequestedJobValidationRules.Validate(
+            Slot(requiredJobId: 21),
+            [character]);
+
+        Assert.Equal(DadPlannerRequestedJobValidationFailure.JobUnavailable, failure);
+        Assert.Equal(2, character.JobLevels.Count);
+        Assert.Equal(100, character.JobLevels[24]);
+        Assert.Equal(95, character.JobLevels[32]);
     }
 
     [Theory]

@@ -446,6 +446,81 @@ public sealed class DadPresenceService
 
     public DadParticipantSnapshot BuildSnapshotCopy() => CurrentParticipant.Clone();
 
+    /// <summary>
+    /// Builds a fail-closed, non-publishing safety projection directly from Dalamud's current
+    /// client, object-table, player-state, and condition truth. Takeover command boundaries use
+    /// this instead of the previous framework-tick participant snapshot.
+    /// </summary>
+    public DadParticipantSnapshot BuildLiveSafetySnapshot()
+    {
+        var snapshot = CurrentParticipant.Clone();
+        try
+        {
+            var isLoggedIn = Plugin.ClientState.IsLoggedIn;
+            var player = Plugin.ObjectTable.LocalPlayer;
+            if (!isLoggedIn || player == null)
+                return MarkLiveSnapshotUnavailable(snapshot, "The local character is offline or between sessions.");
+
+            var now = DateTime.UtcNow;
+            var characterName = player.Name.ToString().Trim();
+            var worldName = player.HomeWorld.Value.Name.ToString().Trim();
+            var characterKey = BuildCharacterKey(characterName, worldName);
+            var contentId = Plugin.PlayerState.ContentId;
+            var currentJobId = player.ClassJob.IsValid ? (uint?)player.ClassJob.RowId : null;
+            var readiness = contentId == 0 || string.IsNullOrWhiteSpace(characterName) || string.IsNullOrWhiteSpace(worldName)
+                ? DadReadinessState.Blocked
+                : DadReadinessState.Ready;
+            var liveCharacter = new DadAcquiredCharacter
+            {
+                CharacterKey = characterKey,
+                ContentId = contentId,
+                CharacterName = characterName,
+                WorldId = (uint)player.HomeWorld.RowId,
+                WorldName = worldName,
+                AccountId = configManager.CurrentAccountId,
+                AccountAlias = configManager.GetCurrentAccountAlias(),
+                Source = DadCharacterSource.LocalRuntime,
+                Freshness = DadSnapshotFreshness.Live,
+                LastSeenUtc = now,
+                CurrentJobId = currentJobId,
+                CurrentJobAbbrev = player.ClassJob.IsValid
+                    ? player.ClassJob.Value.Abbreviation.ToString()
+                    : string.Empty,
+                CurrentLevel = player.Level,
+                TerritoryId = Plugin.ClientState.TerritoryType,
+                Readiness = readiness,
+            };
+            if (currentJobId.HasValue)
+                liveCharacter.JobLevels[currentJobId.Value] = player.Level;
+            if (readiness != DadReadinessState.Ready)
+                liveCharacter.Blockers.Add("Exact live character identity is incomplete.");
+
+            var unsafeConditionActive = TryGetUnsafeWorldCondition(out _);
+            var worldReadyStable = DadParticipantWorldSafetyRules.IsWorldReadyStable(
+                isLoggedIn,
+                hasLocalPlayer: true,
+                characterKey,
+                contentId,
+                readiness,
+                unsafeConditionActive);
+
+            snapshot.IsAvailable = readiness == DadReadinessState.Ready;
+            snapshot.ActiveCharacterKey = new DadCharacterKey(characterKey);
+            snapshot.Character = liveCharacter;
+            snapshot.WorldReadyStable = worldReadyStable;
+            snapshot.PostArReady &= worldReadyStable;
+            snapshot.LastHeartbeatUtc = now;
+            if (!worldReadyStable)
+                snapshot.StatusText = "Live world safety is not stable for takeover mutation.";
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad] Failed to build live takeover safety snapshot.");
+            return MarkLiveSnapshotUnavailable(snapshot, "Live takeover safety could not be read.");
+        }
+    }
+
     public DadParticipantStatusSnapshot BuildStatusSnapshot(
         IEnumerable<DadParticipantSnapshot> peers,
         DadTransportMode transportMode,
@@ -576,18 +651,85 @@ public sealed class DadPresenceService
 
     private static bool EvaluateBasePostArReady(DadAcquiredCharacter? character)
     {
-        if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null || character == null)
+        var isLoggedIn = Plugin.ClientState.IsLoggedIn;
+        var hasLocalPlayer = Plugin.ObjectTable.LocalPlayer != null;
+        if (!isLoggedIn || !hasLocalPlayer || character == null)
             return false;
 
-        if (Plugin.Condition[ConditionFlag.BoundByDuty] ||
-            Plugin.Condition[ConditionFlag.InDutyQueue] ||
-            Plugin.Condition[ConditionFlag.WaitingForDuty] ||
-            Plugin.Condition[ConditionFlag.WaitingForDutyFinder])
+        return DadParticipantWorldSafetyRules.IsWorldReadyStable(
+            isLoggedIn,
+            hasLocalPlayer,
+            character.CharacterKey,
+            character.ContentId,
+            character.Readiness,
+            TryGetUnsafeWorldCondition(out _));
+    }
+
+    private static DadParticipantSnapshot MarkLiveSnapshotUnavailable(
+        DadParticipantSnapshot snapshot,
+        string status)
+    {
+        snapshot.IsAvailable = false;
+        snapshot.ActiveCharacterKey = new DadCharacterKey(string.Empty);
+        snapshot.Character = new DadAcquiredCharacter
         {
-            return false;
+            Source = DadCharacterSource.LocalRuntime,
+            Freshness = DadSnapshotFreshness.Unknown,
+            Readiness = DadReadinessState.Blocked,
+            Blockers = [status],
+        };
+        snapshot.WorldReadyStable = false;
+        snapshot.PostArReady = false;
+        snapshot.LastHeartbeatUtc = DateTime.UtcNow;
+        snapshot.StatusText = status;
+        return snapshot;
+    }
+
+    private static string BuildCharacterKey(string? name, string? worldName)
+    {
+        var cleanName = string.IsNullOrWhiteSpace(name) ? string.Empty : name.Trim();
+        var cleanWorld = string.IsNullOrWhiteSpace(worldName) ? string.Empty : worldName.Trim();
+        return string.IsNullOrWhiteSpace(cleanName) || string.IsNullOrWhiteSpace(cleanWorld)
+            ? string.Empty
+            : $"{cleanName}@{cleanWorld}";
+    }
+
+    private static bool TryGetUnsafeWorldCondition(out string label)
+    {
+        (ConditionFlag Flag, string Label)[] unsafeConditions =
+        [
+            (ConditionFlag.BoundByDuty, "bound by duty"),
+            (ConditionFlag.BoundByDuty56, "bound by duty"),
+            (ConditionFlag.InDutyQueue, "in the Duty Finder queue"),
+            (ConditionFlag.WaitingForDuty, "waiting for duty"),
+            (ConditionFlag.WaitingForDutyFinder, "waiting for Duty Finder"),
+            (ConditionFlag.BetweenAreas, "between areas"),
+            (ConditionFlag.BetweenAreas51, "between areas"),
+            (ConditionFlag.InCombat, "in combat"),
+            (ConditionFlag.Crafting, "crafting"),
+            (ConditionFlag.Gathering, "gathering"),
+            (ConditionFlag.Casting, "casting"),
+            (ConditionFlag.Occupied, "occupied"),
+            (ConditionFlag.Occupied30, "occupied"),
+            (ConditionFlag.OccupiedInEvent, "occupied in an event"),
+            (ConditionFlag.OccupiedInQuestEvent, "occupied in a quest event"),
+            (ConditionFlag.Occupied33, "occupied"),
+            (ConditionFlag.OccupiedInCutSceneEvent, "occupied in a cutscene"),
+            (ConditionFlag.WatchingCutscene, "watching a cutscene"),
+            (ConditionFlag.TradeOpen, "in a trade"),
+            (ConditionFlag.Occupied38, "occupied"),
+            (ConditionFlag.Occupied39, "occupied"),
+        ];
+        foreach (var condition in unsafeConditions)
+        {
+            if (!Plugin.Condition[condition.Flag])
+                continue;
+            label = condition.Label;
+            return true;
         }
 
-        return character.Readiness == DadReadinessState.Ready;
+        label = string.Empty;
+        return false;
     }
 
     private string BuildStatusText(
@@ -813,35 +955,8 @@ public sealed class DadPresenceService
         if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null || localCharacter == null)
             return (false, "The local character is not fully logged in.");
 
-        (ConditionFlag Flag, string Label)[] unsafeConditions =
-        [
-            (ConditionFlag.BoundByDuty, "bound by duty"),
-            (ConditionFlag.BoundByDuty56, "bound by duty"),
-            (ConditionFlag.InDutyQueue, "in the Duty Finder queue"),
-            (ConditionFlag.WaitingForDuty, "waiting for duty"),
-            (ConditionFlag.WaitingForDutyFinder, "waiting for Duty Finder"),
-            (ConditionFlag.BetweenAreas, "between areas"),
-            (ConditionFlag.BetweenAreas51, "between areas"),
-            (ConditionFlag.InCombat, "in combat"),
-            (ConditionFlag.Crafting, "crafting"),
-            (ConditionFlag.Gathering, "gathering"),
-            (ConditionFlag.Casting, "casting"),
-            (ConditionFlag.Occupied, "occupied"),
-            (ConditionFlag.Occupied30, "occupied"),
-            (ConditionFlag.OccupiedInEvent, "occupied in an event"),
-            (ConditionFlag.OccupiedInQuestEvent, "occupied in a quest event"),
-            (ConditionFlag.Occupied33, "occupied"),
-            (ConditionFlag.OccupiedInCutSceneEvent, "occupied in a cutscene"),
-            (ConditionFlag.WatchingCutscene, "watching a cutscene"),
-            (ConditionFlag.TradeOpen, "in a trade"),
-            (ConditionFlag.Occupied38, "occupied"),
-            (ConditionFlag.Occupied39, "occupied"),
-        ];
-        foreach (var condition in unsafeConditions)
-        {
-            if (Plugin.Condition[condition.Flag])
-                return (false, $"The client is {condition.Label}.");
-        }
+        if (TryGetUnsafeWorldCondition(out var label))
+            return (false, $"The client is {label}.");
 
         return (true, string.Empty);
     }

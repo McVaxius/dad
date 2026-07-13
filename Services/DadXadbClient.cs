@@ -408,7 +408,7 @@ public sealed class DadXadbClient
 
                 var level = ReadNullableInt32(property.Value);
                 if (level.HasValue)
-                    levels[jobId] = level.Value;
+                    DadRosterCharacterMerge.RecordReportedJobLevel(levels, jobId, level.Value);
             }
 
             return levels;
@@ -422,7 +422,7 @@ public sealed class DadXadbClient
             var jobId = ReadNullableUInt32(entry, "jobId", "classJobId", "id");
             var level = ReadNullableInt32(entry, "level", "currentLevel", "jobLevel");
             if (jobId.HasValue && level.HasValue)
-                levels[jobId.Value] = level.Value;
+                DadRosterCharacterMerge.RecordReportedJobLevel(levels, jobId.Value, level.Value);
         }
 
         return levels;

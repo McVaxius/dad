@@ -64,6 +64,11 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         {
             if (disposed || string.IsNullOrWhiteSpace(operationToken))
                 return false;
+            // A cancelled request that AutoRetainer has accepted but has not yet yielded to Dad
+            // remains an owned cleanup boundary. Do not let a later operation replace its token;
+            // the deferred callback must finish first and cleanup must observe that completion.
+            if (finishOnReady)
+                return false;
             if (!string.IsNullOrWhiteSpace(armedOperationToken) &&
                 !string.Equals(armedOperationToken, operationToken, StringComparison.OrdinalIgnoreCase))
                 return false;
@@ -96,10 +101,17 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         }
         catch (Exception ex)
         {
-            return new DadAutoRetainerState
+            lock (gate)
             {
-                Summary = $"AutoRetainer handoff IPC unavailable: {ex.Message}",
-            };
+                return new DadAutoRetainerState
+                {
+                    // Preserve conservative local ownership even when AR cannot currently be read.
+                    // Wake cleanup must not acknowledge until these DAD-owned markers are released.
+                    SuppressionOwnedByDad = suppressionOwned,
+                    CharacterPostprocessOwnedByDad = postprocessOwned,
+                    Summary = $"AutoRetainer handoff IPC unavailable: {ex.Message}",
+                };
+            }
         }
     }
 
@@ -202,6 +214,13 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         lock (gate)
         {
             shouldFinish = postprocessOwned || requestSent;
+            if (!shouldFinish && !retryAtNextBoundary)
+            {
+                // The request may only be armed locally and not yet sent to AR. Cancellation at
+                // that boundary must disarm it so a later character callback cannot resurrect it.
+                armedOperationToken = string.Empty;
+                finishOnReady = false;
+            }
             if (requestSent && !postprocessOwned)
             {
                 // AR's finish channel is a global lock release, not a named cancellation. Never
@@ -212,7 +231,10 @@ public sealed class DadAutoRetainerIpcService : IDisposable
                     finishOnReady = true;
                     armedOperationToken = string.Empty;
                 }
-                return true;
+                // The finish has not happened yet. Keep scheduler cancellation cleanup pending
+                // until AR delivers Dad's callback, OnCharacterReadyForPostprocess releases it,
+                // and a later cleanup poll observes requestSent/postprocessOwned both clear.
+                return false;
             }
         }
         if (!shouldFinish)

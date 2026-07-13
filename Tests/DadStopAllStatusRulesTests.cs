@@ -6,6 +6,70 @@ namespace dad.Tests;
 public sealed class DadStopAllStatusRulesTests
 {
     [Fact]
+    public void PendingLocalCleanupCannotReportAcknowledgedOrComplete()
+    {
+        var status = new DadStopAllStatus
+        {
+            OperationId = "operation",
+            LocalResult = new DadStopAllWorkerResult
+            {
+                State = DadStopAllWorkerState.Acknowledged,
+                LocalCleanupCompleted = false,
+                Summary = "Takeover cleanup pending.",
+            },
+        };
+
+        DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+
+        Assert.Equal(DadStopAllWorkerState.Expected, status.LocalResult.State);
+        Assert.False(status.LocalResult.LocalCleanupCompleted);
+        Assert.False(status.IsFinal);
+        Assert.Null(status.CompletedAtUtc);
+        Assert.Contains("Local cleanup pending", status.Summary);
+    }
+
+    [Fact]
+    public void LocalCleanupAcknowledgesOnlyAfterCompletion()
+    {
+        var completed = new DateTime(2026, 7, 13, 12, 0, 0, DateTimeKind.Utc);
+        var status = new DadStopAllStatus
+        {
+            OperationId = "operation",
+            LocalResult = new DadStopAllWorkerResult
+            {
+                State = DadStopAllWorkerState.Expected,
+                LocalCleanupCompleted = true,
+            },
+        };
+
+        DadStopAllStatusRules.FinalizeFromWorkers(status, completed);
+
+        Assert.Equal(DadStopAllWorkerState.Acknowledged, status.LocalResult.State);
+        Assert.True(status.IsFinal);
+        Assert.Equal(completed, status.CompletedAtUtc);
+    }
+
+    [Fact]
+    public void LocalCleanupFailureIsTerminalAndPartial()
+    {
+        var status = new DadStopAllStatus
+        {
+            OperationId = "operation",
+            LocalResult = new DadStopAllWorkerResult
+            {
+                State = DadStopAllWorkerState.TimedOut,
+                LocalCleanupCompleted = false,
+            },
+        };
+
+        DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+
+        Assert.True(status.IsFinal);
+        Assert.True(status.Partial);
+        Assert.Equal(DadStopAllWorkerState.TimedOut, status.LocalResult.State);
+    }
+
+    [Fact]
     public void PendingWorkerKeepsAggregateOpen()
     {
         var status = Status(DadStopAllWorkerState.Acknowledged, DadStopAllWorkerState.Expected);

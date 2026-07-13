@@ -23,6 +23,7 @@ public sealed class DadSchedulerService
     private readonly DadRosterCatalogService rosterCatalogService;
     private readonly IPluginLog log;
     private readonly Dictionary<string, string> takeoverDiagnosticStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingTakeoverCancellation> pendingTakeoverCancellations = new(StringComparer.OrdinalIgnoreCase);
     private DadStrictPlannerRevalidationTracker strictRevalidationTracker = new();
     private DadSchedulerPresetPhase? lastLoggedSchedulerPhase;
     private DadModuleId activeSchedulerModuleId = DadModuleId.None;
@@ -30,6 +31,16 @@ public sealed class DadSchedulerService
     private DadScheduledCrewJob? activeJob;
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private DateTime suppressAutomaticEnqueueUntilUtc = DateTime.MinValue;
+
+    private sealed class PendingTakeoverCancellation
+    {
+        public string SchedulerRunId { get; init; } = string.Empty;
+        public DadScheduledCrewJob Job { get; init; } = new();
+        public DadSchedulerSlotState Slot { get; init; } = new();
+        public string Reason { get; init; } = string.Empty;
+        public DateTime RequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
+    }
 
     public DadSchedulerService(
         Configuration configuration,
@@ -138,6 +149,13 @@ public sealed class DadSchedulerService
         schedulerHash.Add(configuration.ActiveScheduleRun?.Phase ?? DadScheduleRunPhase.Idle);
         schedulerHash.Add(configuration.ActiveScheduleRun?.UpdatedAtUtc.Ticks ?? 0);
         schedulerHash.Add(configuration.ScheduleHistory?.Count ?? 0);
+        schedulerHash.Add(pendingTakeoverCancellations.Count);
+        foreach (var pending in pendingTakeoverCancellations.OrderBy(static pair => pair.Key))
+        {
+            schedulerHash.Add(pending.Key, StringComparer.Ordinal);
+            schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
+            schedulerHash.Add(pending.Value.Job.GroupId, StringComparer.Ordinal);
+        }
 
         var launchProfilesHash = new HashCode();
         launchProfilesHash.Add(configuration.LaunchProfiles?.Count ?? 0);
@@ -183,6 +201,8 @@ public sealed class DadSchedulerService
                 .ToList(),
             Summary = currentState.IsActive
                 ? $"Active {currentState.JobType}: {currentState.Summary}"
+                : pendingTakeoverCancellations.Count > 0
+                    ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s)."
                 : configuration.SchedulerQueue.Count == 0
                     ? "Scheduler queue idle."
                     : $"{configuration.SchedulerQueue.Count} queued scheduler job(s).",
@@ -360,11 +380,21 @@ public sealed class DadSchedulerService
     }
 
     public DadScheduledCrewJob EnqueueScheduledPreset(DadPlannerGroup group, DadScheduledPresetRequest request)
+        => EnqueueScheduledPresetWithDisposition(group, request).Job;
+
+    internal DadSchedulerEnqueueResult EnqueueScheduledPresetWithDisposition(
+        DadPlannerGroup group,
+        DadScheduledPresetRequest request)
     {
         NormalizeQueue();
-        var existing = FindEquivalentActiveOrPendingJob(request.JobType, group.GroupId);
-        if (existing != null)
-            return existing.Clone();
+        var duplicate = DadSchedulerSubmissionRules.FindDuplicate(
+            group.GroupId,
+            activeJob,
+            currentState.IsActive,
+            configuration.SchedulerQueue,
+            pendingTakeoverCancellations.Values.Select(static pending => pending.Job));
+        if (duplicate != null)
+            return duplicate;
 
         var job = new DadScheduledCrewJob
         {
@@ -387,7 +417,11 @@ public sealed class DadSchedulerService
 
         configuration.SchedulerQueue.Add(job);
         configuration.Save();
-        return job.Clone();
+        return new DadSchedulerEnqueueResult
+        {
+            Disposition = DadSchedulerEnqueueDisposition.Added,
+            Job = job.Clone(),
+        };
     }
 
     public DadScheduledCrewJob EnqueueRosterUpdate(DadRosterRefreshPlan plan, DadAccountRosterCatalog catalog)
@@ -451,12 +485,20 @@ public sealed class DadSchedulerService
             return true;
         }
 
+        if (pendingTakeoverCancellations.Values.Any(pending =>
+                string.Equals(pending.Job.JobId, jobId, StringComparison.OrdinalIgnoreCase)))
+        {
+            UpdatePendingTakeoverCancellations();
+            return true;
+        }
+
         return false;
     }
 
     public int ClearAccountData()
     {
         NormalizeQueue();
+        CancelNonTerminalTakeovers("Scheduler account data cleared.");
         var clearedJobs = configuration.SchedulerQueue.Count;
         configuration.SchedulerQueue.Clear();
         activeJob = null;
@@ -610,10 +652,8 @@ public sealed class DadSchedulerService
         DadPlannerGroup? group,
         DadPlannerRunRequestPreview plannerRequestPreview)
     {
-        NormalizeLaunchProfiles();
-        configuration.CharacterLoadInstruction ??= new DadCharacterLoadInstruction();
-        configuration.CharacterLoadInstruction.Normalize();
         var pool = characterIntelligenceService.CurrentPool;
+        var launchProfiles = BuildNormalizedLaunchProfileSnapshot();
         var preview = new DadSchedulerPreview
         {
             GeneratedAtUtc = DateTime.UtcNow,
@@ -621,7 +661,7 @@ public sealed class DadSchedulerService
             PresetName = group?.DisplayName ?? "Auto roster",
             Phase = currentState.IsActive ? currentState.Phase : DadSchedulerPresetPhase.Resolving,
             PlannerRequestPreview = plannerRequestPreview,
-            LaunchProfiles = configuration.LaunchProfiles.Select(static profile => profile.Clone()).ToList(),
+            LaunchProfiles = launchProfiles.Select(static profile => profile.Clone()).ToList(),
         };
 
         if (group == null)
@@ -636,30 +676,25 @@ public sealed class DadSchedulerService
             return preview;
         }
 
-        var effectiveGroup = BuildEffectiveSchedulerGroup(group, pool, plannerRequestPreview);
+        var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
         var priorRuntimeSlots = currentState.IsActive &&
                                 string.Equals(currentState.GroupId, group.GroupId, StringComparison.OrdinalIgnoreCase)
             ? currentState.Slots
             : [];
-        if (!plannerRequestPreview.CanSchedule || plannerRequestPreview.Request == null)
-        {
-            BlockPreview(preview, string.IsNullOrWhiteSpace(plannerRequestPreview.BlockedReason)
-                ? plannerRequestPreview.StatusSummary
-                : plannerRequestPreview.BlockedReason);
-            preview.Slots = BuildSlotStates(effectiveGroup, pool, priorRuntimeSlots);
-            return preview;
-        }
-
-        preview.Slots = BuildSlotStates(effectiveGroup, pool, priorRuntimeSlots);
+        preview.Slots = BuildSlotStates(effectiveGroup, pool, priorRuntimeSlots, launchProfiles: launchProfiles);
         var blockers = preview.Slots
             .Select(static slot => slot.BlockedReason)
             .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (blockers.Count > 0)
+        if (!plannerRequestPreview.CanSchedule || plannerRequestPreview.Request == null || blockers.Count > 0)
         {
-            BlockPreview(preview, string.Join(" | ", blockers));
+            BlockPreview(
+                preview,
+                FirstNonEmpty(
+                    DadPlannerValidationRules.BuildSchedulerTerminalReason(plannerRequestPreview, blockers),
+                    "Scheduler preview is not startable."));
             return preview;
         }
 
@@ -715,7 +750,7 @@ public sealed class DadSchedulerService
         if (!preview.CanStart)
         {
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
-            currentState.Summary = $"Scheduler blocked for preset '{group.DisplayName}'.";
+            currentState.Summary = $"Scheduler blocked for preset '{group.DisplayName}': {preview.BlockedReason}";
             currentState.BlockedReason = preview.BlockedReason;
             currentState.CompletedAtUtc = DateTime.UtcNow;
             RecordTerminalResult(currentState);
@@ -755,6 +790,7 @@ public sealed class DadSchedulerService
         Func<DadRunRequest, DadRunResult> startPlannerRequest,
         Func<DadRunResult>? visibleRunProvider = null)
     {
+        UpdatePendingTakeoverCancellations();
         LogSchedulerPhaseTransition();
         TickScheduleEnqueue();
 
@@ -787,20 +823,34 @@ public sealed class DadSchedulerService
         }
 
         var plannerPreview = plannerPreviewBuilder(currentState.GroupId);
-        if (plannerPreview?.Request == null)
+        if (plannerPreview == null)
         {
             BlockActive("Scheduler could not rebuild the preset planner request.");
             return;
         }
-
         var groupPreviewSlots = currentState.Slots;
         var previewSlots = RebuildActiveSlots(plannerPreview, groupPreviewSlots);
         currentState.Slots = previewSlots;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
 
+        var preMutationSlotBlockers = currentState.Slots
+            .Select(static slot => slot.BlockedReason)
+            .Where(static reason => !string.IsNullOrWhiteSpace(reason))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (plannerPreview.Request == null || !plannerPreview.CanSchedule || preMutationSlotBlockers.Count > 0)
+        {
+            BlockActive(FirstNonEmpty(
+                DadPlannerValidationRules.BuildSchedulerTerminalReason(plannerPreview, preMutationSlotBlockers),
+                "Scheduler could not rebuild a startable preset planner request."));
+            return;
+        }
+
         if (!AdvanceWakeTakeoverPipelines(currentState.Slots, out var barrierBlocker))
         {
-            BlockActive(barrierBlocker);
+            BlockActive(DadPlannerValidationRules.BuildSchedulerTerminalReason(
+                plannerPreview,
+                [barrierBlocker]));
             return;
         }
 
@@ -813,15 +863,19 @@ public sealed class DadSchedulerService
         {
             if (!string.IsNullOrWhiteSpace(slot.BlockedReason))
             {
-                BlockActive(slot.BlockedReason);
+                BlockActive(DadPlannerValidationRules.BuildSchedulerTerminalReason(
+                    plannerPreview,
+                    [slot.BlockedReason]));
                 return;
             }
 
             if (IsParticipantReadyTimedOut(slot, out var timeoutReason))
             {
                 currentState.Phase = DadSchedulerPresetPhase.TimedOut;
-                currentState.BlockedReason = timeoutReason;
-                currentState.Summary = timeoutReason;
+                currentState.BlockedReason = DadPlannerValidationRules.BuildSchedulerTerminalReason(
+                    plannerPreview,
+                    [timeoutReason]);
+                currentState.Summary = currentState.BlockedReason;
                 currentState.CompletedAtUtc = DateTime.UtcNow;
                 currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
                 RecordTerminalResult(currentState);
@@ -835,7 +889,7 @@ public sealed class DadSchedulerService
         if (!currentState.Slots.All(static slot => slot.Ready))
         {
             currentState.Phase = ResolveWaitingPhase(currentState.Slots);
-            currentState.Summary = $"Scheduler waiting: {currentState.Slots.Count(static slot => slot.Ready)}/{currentState.Slots.Count} slot(s) ready.";
+            currentState.Summary = BuildReadinessWaitSummary(currentState);
             return;
         }
 
@@ -855,7 +909,9 @@ public sealed class DadSchedulerService
                 var readinessBudgetStartUtc = DadPlannerValidationRules.ResolveStrictReadinessBudgetStartUtc(
                     currentState.Slots,
                     DateTime.UtcNow);
-                if (DadWakePolicyRules.IsParticipantReadyTimedOut(
+                var unboundedWakeWait = currentState.Slots.Any(static slot =>
+                    slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline);
+                if (!unboundedWakeWait && DadWakePolicyRules.IsParticipantReadyTimedOut(
                         readinessBudgetStartUtc,
                         DateTime.UtcNow,
                         configuration.ParticipantReadyTimeoutSeconds))
@@ -871,7 +927,9 @@ public sealed class DadSchedulerService
                 }
 
                 currentState.Phase = DadSchedulerPresetPhase.Resolving;
-                currentState.Summary = $"Takeover is ready; waiting for transient strict-runtime revalidation: {strictDecision.Reason}";
+                currentState.Summary = unboundedWakeWait
+                    ? $"Takeover is ready; waiting for transient strict-runtime revalidation ({FormatElapsed(DateTime.UtcNow - currentState.StartedAtUtc)} elapsed; no timeout; cancel to stop): {strictDecision.Reason}"
+                    : $"Takeover is ready; waiting for transient strict-runtime revalidation: {strictDecision.Reason}";
                 currentState.UpdatedAtUtc = DateTime.UtcNow;
                 return;
             }
@@ -891,13 +949,74 @@ public sealed class DadSchedulerService
         currentState.Phase = currentState.PlannerStarted
             ? DadSchedulerPresetPhase.StartedPlanner
             : DadSchedulerPresetPhase.Blocked;
+        var startRejection = FirstNonEmpty(result.BlockedReason, result.FailureReason, result.Summary);
         currentState.Summary = currentState.PlannerStarted
             ? $"Scheduler started preset '{currentState.PresetName}': {result.Summary}"
-            : $"Scheduler could not start preset '{currentState.PresetName}'.";
-        currentState.BlockedReason = currentState.PlannerStarted ? string.Empty : result.Summary;
+            : $"Scheduler could not start preset '{currentState.PresetName}': {startRejection}";
+        currentState.BlockedReason = currentState.PlannerStarted ? string.Empty : startRejection;
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         RecordTerminalResult(currentState);
+    }
+
+    public void UpdatePendingTakeoverCancellations()
+    {
+        if (pendingTakeoverCancellations.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        foreach (var pair in pendingTakeoverCancellations.ToList())
+        {
+            var pending = pair.Value;
+            if (now < pending.NextAttemptUtc)
+                continue;
+
+            pending.NextAttemptUtc = now + RefreshInterval;
+            var slot = pending.Slot;
+            var participant = slot.MatchedWorkerSessionId.IsEmpty
+                ? DadSchedulerRoutingRules.ResolveExactConnectedClient(
+                    slot.RequiredAccountKey,
+                    participants,
+                    transportService.IsWorkerOnline)
+                : DadSchedulerRoutingRules.ResolveFrozenCancellationClient(
+                    slot.MatchedWorkerSessionId,
+                    participants,
+                    transportService.IsWorkerOnline);
+            if (participant == null ||
+                (!participant.IsLocalClient && !transportService.IsWorkerOnline(participant.WorkerSessionId)))
+            {
+                continue;
+            }
+
+            var request = new DadWakeTakeoverRequestDto
+            {
+                SchedulerRunId = pending.SchedulerRunId,
+                OperationToken = pending.SchedulerRunId,
+                SlotId = slot.SlotId,
+                AccountKey = slot.RequiredAccountKey,
+                CharacterKey = slot.RequiredCharacterKey,
+                RequestedAtUtc = pending.RequestedAtUtc,
+                MessageKind = DadWakeTakeoverMessageKind.Cancel,
+                CommitKind = DadWakeCommitKind.None,
+            };
+            var result = participant.IsLocalClient
+                ? wakeTakeoverService.Handle(request)
+                : transportService.SendWakeTakeoverRequest(participant, request);
+            if (result == null || !DadSchedulerRoutingRules.IsTakeoverCancellationComplete(result))
+                continue;
+
+            pendingTakeoverCancellations.Remove(pair.Key);
+            log.Information(
+                "[dad] Pending wake cancellation completed: request={SchedulerRunId}, slot={SlotId}, account={AccountKey}, character={CharacterKey}, acknowledgement={AcknowledgementState}, reason={Reason}, result={Summary}.",
+                pending.SchedulerRunId,
+                slot.SlotId,
+                slot.RequiredAccountKey,
+                slot.RequiredCharacterKey,
+                result.AcknowledgementState,
+                pending.Reason,
+                FirstNonEmpty(result.BlockedReason, result.Summary));
+        }
     }
 
     public void TickScheduleEnqueue()
@@ -919,7 +1038,7 @@ public sealed class DadSchedulerService
                 continue;
 
             var jobType = DadSchedulerJobType.ScheduledPreset;
-            if (FindEquivalentActiveOrPendingJob(jobType, group.GroupId) == null)
+            if (FindEquivalentActiveOrPendingJob(group.GroupId) == null)
             {
                 var job = new DadScheduledCrewJob
                 {
@@ -980,7 +1099,7 @@ public sealed class DadSchedulerService
         if (!currentState.IsActive)
             return;
 
-        CancelPreCommitTakeovers(reason);
+        CancelNonTerminalTakeovers(reason);
         currentState.Phase = DadSchedulerPresetPhase.Cancelled;
         currentState.Summary = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason;
         currentState.BlockedReason = currentState.Summary;
@@ -1009,6 +1128,7 @@ public sealed class DadSchedulerService
 
         if (currentState.IsActive)
         {
+            CancelNonTerminalTakeovers(reason);
             currentState.Phase = DadSchedulerPresetPhase.Cancelled;
             currentState.Summary = reason;
             currentState.BlockedReason = reason;
@@ -1039,6 +1159,9 @@ public sealed class DadSchedulerService
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder)
     {
         NormalizeQueue();
+        if (!DadSchedulerSubmissionRules.CanStartNextQueuedJob(pendingTakeoverCancellations.Count > 0))
+            return false;
+
         var now = DateTime.UtcNow;
         var nextJob = configuration.SchedulerQueue
             .Where(static job => job.Enabled)
@@ -1508,54 +1631,26 @@ public sealed class DadSchedulerService
         return rebuilt;
     }
 
-    private DadPlannerGroup BuildEffectiveSchedulerGroup(
+    private static DadPlannerGroup BuildEffectiveSchedulerGroup(
         DadPlannerGroup group,
-        DadCharacterPool pool,
         DadPlannerRunRequestPreview plannerRequestPreview)
     {
-        if (!IsLocalNpcPlannerRequest(plannerRequestPreview) || group.Slots.Count <= 1)
-            return group;
-
-        var participants = BuildParticipantSet(pool);
-        var effectiveSlot = SelectEffectiveLocalNpcSchedulerSlot(group.Slots, participants);
-        return CloneSchedulerGroupWithSlots(group, [effectiveSlot]);
+        var activityMode = plannerRequestPreview.PlannerPreview.ActivityMode;
+        var projected = DadEffectivePlannerGroupProjection.Project(
+            group,
+            activityMode,
+            plannerRequestPreview.ExpectedPartySize);
+        return DadEffectivePlannerGroupProjection.BindResolvedSchedulerSlots(
+            projected,
+            plannerRequestPreview.PlannerPreview.SelectedCharacters);
     }
-
-    private static bool IsLocalNpcPlannerRequest(DadPlannerRunRequestPreview plannerRequestPreview)
-        => plannerRequestPreview.Request?.DutySupport != null
-           || plannerRequestPreview.Request?.Trust != null
-           || plannerRequestPreview.Request?.Orchestration.ModuleTarget is DadModuleId.DutySupport or DadModuleId.Trust
-           || plannerRequestPreview.PlannerPreview.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust;
-
-    private static DadPlannerGroupSlot SelectEffectiveLocalNpcSchedulerSlot(
-        IReadOnlyList<DadPlannerGroupSlot> slots,
-        IReadOnlyList<DadParticipantSnapshot> participants)
-    {
-        var matchingSlot = slots.FirstOrDefault(slot =>
-            participants.Any(participant => participant.IsLocalClient &&
-                                            MatchesSlotAccount(participant, slot) &&
-                                            (slot.RequiredCharacterKey.IsEmpty ||
-                                             MatchesSlotCharacter(participant, slot))));
-
-        var effectiveSlot = CloneSchedulerGroupSlot(matchingSlot ?? slots[0]);
-        effectiveSlot.SlotId = DadPlannerSlotRules.LeaderSlotId;
-        effectiveSlot.IsSubstitute = false;
-        return effectiveSlot;
-    }
-
-    private static DadPlannerGroup CloneSchedulerGroupWithSlots(
-        DadPlannerGroup source,
-        IEnumerable<DadPlannerGroupSlot> slots)
-        => DadSchedulerGroupCloneRules.CloneWithSlots(source, slots);
-
-    private static DadPlannerGroupSlot CloneSchedulerGroupSlot(DadPlannerGroupSlot source)
-        => DadSchedulerGroupCloneRules.CloneSlot(source);
 
     private List<DadSchedulerSlotState> BuildSlotStates(
         DadPlannerGroup group,
         DadCharacterPool pool,
         IReadOnlyList<DadSchedulerSlotState> previousSlots,
-        bool allowRosterMaintenanceTarget = false)
+        bool allowRosterMaintenanceTarget = false,
+        IReadOnlyList<DadLaunchProfile>? launchProfiles = null)
     {
         var participants = BuildParticipantSet(pool);
         return group.Slots.Select(slot =>
@@ -1566,7 +1661,8 @@ public sealed class DadSchedulerService
                 slot,
                 participants,
                 allowRosterMaintenanceTarget,
-                previous?.MatchedWorkerSessionId ?? new DadWorkerSessionId(string.Empty));
+                previous?.MatchedWorkerSessionId ?? new DadWorkerSessionId(string.Empty),
+                launchProfiles);
             if (previous != null)
                 CopyWakeRuntimeState(previous, state);
 
@@ -1580,7 +1676,8 @@ public sealed class DadSchedulerService
         DadPlannerGroupSlot slot,
         IReadOnlyList<DadParticipantSnapshot> participants,
         bool allowRosterMaintenanceTarget = false,
-        DadWorkerSessionId frozenWorkerSessionId = default)
+        DadWorkerSessionId frozenWorkerSessionId = default,
+        IReadOnlyList<DadLaunchProfile>? launchProfiles = null)
     {
         var state = new DadSchedulerSlotState
         {
@@ -1590,6 +1687,7 @@ public sealed class DadSchedulerService
             RequiredCharacterKey = slot.RequiredCharacterKey,
             RequiredJobId = slot.RequiredJobId,
             LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty,
+            MatchedWorkerSessionId = frozenWorkerSessionId,
         };
         state.RosterVisibility = rosterCatalogService.ResolveVisibility(slot.RequiredCharacterKey, slot.RequiredAccountKey);
         state.NeedsRosterUpdate = rosterCatalogService.ResolveNeedsRosterUpdate(slot.RequiredCharacterKey, slot.RequiredAccountKey);
@@ -1635,7 +1733,9 @@ public sealed class DadSchedulerService
             state.ExternalAutomationActivity = selected.ExternalAutomationActivity;
             state.ExternalAutomationState = selected.ExternalAutomationState;
             state.ExternalAutomationSummary = selected.ExternalAutomationSummary;
-            state.MatchedWorkerSessionId = selected.WorkerSessionId;
+            state.MatchedWorkerSessionId = DadSchedulerRoutingRules.PreserveFrozenWorkerSession(
+                frozenWorkerSessionId,
+                selected.WorkerSessionId);
             state.ActiveCharacterKey = selected.ActiveCharacterKey;
             state.Summary = !state.IsOnline
                 ? $"Same-account Dad client connected as worker {selected.WorkerSessionId}; character offline or relogging."
@@ -1650,13 +1750,16 @@ public sealed class DadSchedulerService
             state.Summary = $"Slot {state.SlotId} is waiting for the same-account Dad client.";
         }
 
-        ApplyLaunchProfileState(state, slot);
+        ApplyLaunchProfileState(state, slot, launchProfiles);
         return state;
     }
 
-    private void ApplyLaunchProfileState(DadSchedulerSlotState state, DadPlannerGroupSlot slot)
+    private void ApplyLaunchProfileState(
+        DadSchedulerSlotState state,
+        DadPlannerGroupSlot slot,
+        IReadOnlyList<DadLaunchProfile>? launchProfiles = null)
     {
-        var profile = ResolveLaunchProfile(slot);
+        var profile = ResolveLaunchProfile(slot, launchProfiles);
         if (profile == null)
             return;
 
@@ -1717,6 +1820,9 @@ public sealed class DadSchedulerService
 
     private static void CopyWakeRuntimeState(DadSchedulerSlotState source, DadSchedulerSlotState target)
     {
+        target.MatchedWorkerSessionId = DadSchedulerRoutingRules.PreserveFrozenWorkerSession(
+            source.MatchedWorkerSessionId,
+            target.MatchedWorkerSessionId);
         target.LaunchStarted = source.LaunchStarted;
         target.LaunchStartedUtc = source.LaunchStartedUtc;
         target.LoadCommandSentUtc = source.LoadCommandSentUtc;
@@ -1735,8 +1841,9 @@ public sealed class DadSchedulerService
         target.RelogExecutionUtc = source.RelogExecutionUtc;
         target.ReadyUtc = source.ReadyUtc;
         var hasAuthoritativeReservation = !string.IsNullOrWhiteSpace(source.OperationToken) &&
-                                          source.VermaxionReservationState != DadVermaxionReservationState.NotLoaded &&
-                                          source.VermaxionReservationState != DadVermaxionReservationState.Rejected;
+                                           source.VermaxionReservationState != DadVermaxionReservationState.NotLoaded &&
+                                           source.VermaxionReservationState != DadVermaxionReservationState.Rejected &&
+                                           source.VermaxionReservationState != DadVermaxionReservationState.Released;
         if (hasAuthoritativeReservation)
         {
             target.VermaxionReservationState = source.VermaxionReservationState;
@@ -1788,12 +1895,19 @@ public sealed class DadSchedulerService
         return character?.ContentId ?? 0;
     }
 
-    private DadLaunchProfile? ResolveLaunchProfile(DadPlannerGroupSlot slot)
+    private DadLaunchProfile? ResolveLaunchProfile(
+        DadPlannerGroupSlot slot,
+        IReadOnlyList<DadLaunchProfile>? launchProfiles = null)
     {
-        NormalizeLaunchProfiles();
+        if (launchProfiles == null)
+        {
+            NormalizeLaunchProfiles();
+            launchProfiles = configuration.LaunchProfiles;
+        }
+
         if (!string.IsNullOrWhiteSpace(slot.LaunchProfileId))
         {
-            var exact = configuration.LaunchProfiles.FirstOrDefault(profile =>
+            var exact = launchProfiles.FirstOrDefault(profile =>
                 string.Equals(profile.ProfileId, slot.LaunchProfileId, StringComparison.OrdinalIgnoreCase));
             if (exact != null)
                 return exact;
@@ -1802,14 +1916,14 @@ public sealed class DadSchedulerService
         var primaryLaunchProfileId = ResolvePrimaryLaunchProfileId(slot.RequiredAccountKey);
         if (!string.IsNullOrWhiteSpace(primaryLaunchProfileId))
         {
-            var primary = configuration.LaunchProfiles.FirstOrDefault(profile =>
+            var primary = launchProfiles.FirstOrDefault(profile =>
                 string.Equals(profile.ProfileId, primaryLaunchProfileId, StringComparison.OrdinalIgnoreCase) &&
                 (profile.AccountKey.IsEmpty || DadRosterIdentity.SameAccount(profile.AccountKey, slot.RequiredAccountKey)));
             if (primary != null)
                 return primary;
         }
 
-        return configuration.LaunchProfiles.FirstOrDefault(profile =>
+        return launchProfiles.FirstOrDefault(profile =>
                    !slot.RequiredCharacterKey.IsEmpty &&
                    (slot.RequiredAccountKey.IsEmpty ||
                     profile.AccountKey.IsEmpty ||
@@ -1909,7 +2023,10 @@ public sealed class DadSchedulerService
                 decision.CommitKind,
                 decision.ExecutionTimeUtc);
             if (result == null)
+            {
+                ClearUnacknowledgedExecutionBoundary(slot, decision.CommitKind);
                 continue;
+            }
             ApplyWakeTakeoverResult(slot, result, participant);
             if (result.Status == DadWakeTakeoverStatus.Blocked)
             {
@@ -1929,7 +2046,10 @@ public sealed class DadSchedulerService
                 followThrough.CommitKind,
                 followThrough.ExecutionTimeUtc);
             if (result == null)
+            {
+                ClearUnacknowledgedExecutionBoundary(slot, followThrough.CommitKind);
                 continue;
+            }
             ApplyWakeTakeoverResult(slot, result, participant);
             if (result.Status == DadWakeTakeoverStatus.Blocked)
             {
@@ -1958,6 +2078,19 @@ public sealed class DadSchedulerService
             slot.RelogExecutionUtc ??= decision.ExecutionTimeUtc;
             currentState.RelogExecutionUtc ??= slot.RelogExecutionUtc;
         }
+    }
+
+    private static void ClearUnacknowledgedExecutionBoundary(
+        DadSchedulerSlotState slot,
+        DadWakeCommitKind commitKind)
+    {
+        // The worker may have committed despite a lost response; its operation token remains the
+        // authority in that case. Clearing only the coordinator's unacknowledged proposal ensures
+        // a genuinely missed GO is retried with a fresh future boundary instead of a past timestamp.
+        if (commitKind == DadWakeCommitKind.Reset)
+            slot.ResetExecutionUtc = null;
+        else if (commitKind == DadWakeCommitKind.Relog)
+            slot.RelogExecutionUtc = null;
     }
 
     private bool TryResolveTakeoverParticipant(
@@ -2029,8 +2162,11 @@ public sealed class DadSchedulerService
         DadWakeTakeoverResultDto result,
         DadParticipantSnapshot latestHeartbeat)
     {
-        var resetAuthorizationInvalidated = slot.TakeoverPhase == DadWakeTakeoverPhase.ResetCommitted &&
-                                            result.Phase < DadWakeTakeoverPhase.Prepared;
+        var previousPhase = slot.TakeoverPhase;
+        var resetAuthorizationInvalidated =
+            (previousPhase is DadWakeTakeoverPhase.Prepared or DadWakeTakeoverPhase.ResetCommitted) &&
+            (result.Phase < DadWakeTakeoverPhase.Prepared ||
+             result.AcknowledgementState == DadWakeAcknowledgementState.Rejected);
         slot.TakeoverStatus = result.Status;
         slot.TakeoverStage = result.Stage;
         slot.TakeoverPhase = result.Phase;
@@ -2068,13 +2204,14 @@ public sealed class DadSchedulerService
         }
 
         ApplyConnectedRoute(slot, latestHeartbeat);
-        slot.Ready = result.Status == DadWakeTakeoverStatus.Ready &&
+        if (DadSchedulerRoutingRules.IsExactFrozenTakeoverSnapshot(slot, result.Snapshot))
+            ApplyConnectedRoute(slot, result.Snapshot);
+        slot.Ready = DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(slot, result) &&
                      slot.CorrectCharacter &&
-                     slot.PostArReady &&
-                     !slot.MultiModeEnabled;
+                     slot.BasePostArReady;
         if (result.Status == DadWakeTakeoverStatus.Ready && !slot.Ready)
         {
-            slot.Summary = $"Takeover completed previously, but the latest heartbeat is not ready: target {slot.RequiredCharacterKey}, active {slot.ActiveCharacterKey}, exact match {slot.CorrectCharacter}, post-AR {slot.PostArReady}, Multi Mode {(slot.MultiModeEnabled ? "on" : "off")}.";
+            slot.Summary = $"Takeover completed previously, but exact world-ready proof is not current: target {slot.RequiredCharacterKey}, active {slot.ActiveCharacterKey}, exact match {slot.CorrectCharacter}, world ready {slot.BasePostArReady}, PostAr diagnostic {slot.PostArReady}, Multi Mode {(slot.MultiModeEnabled ? "on" : "off")}.";
         }
         LogTakeoverTransition(slot, "acknowledged");
     }
@@ -2108,7 +2245,8 @@ public sealed class DadSchedulerService
         slot.MultiModeEnabled = participant.AutoRetainerMultiModeEnabled;
         var authoritativeReservation = !string.IsNullOrWhiteSpace(slot.OperationToken) &&
                                        slot.VermaxionReservationState != DadVermaxionReservationState.NotLoaded &&
-                                       slot.VermaxionReservationState != DadVermaxionReservationState.Rejected;
+                                       slot.VermaxionReservationState != DadVermaxionReservationState.Rejected &&
+                                       slot.VermaxionReservationState != DadVermaxionReservationState.Released;
         if (authoritativeReservation)
         {
             slot.ExternalAutomationHeld = slot.VermaxionReservationState != DadVermaxionReservationState.Granted &&
@@ -2288,17 +2426,16 @@ public sealed class DadSchedulerService
         if (slot.Ready)
             return false;
 
+        var now = DateTime.UtcNow;
+        DadWakeStageTimeoutPolicy.Observe(slot, now);
+
         // Character ownership handoff is a logical wait, not a duration budget. Disconnects,
         // VERMAXION/AR work, and missed character boundaries remain pending until explicit cancel.
         if (slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline)
         {
-            slot.TimeoutStage = DadWakeTimeoutStage.None;
-            slot.TimeoutStageObservedUtc = DateTime.UtcNow;
             return false;
         }
 
-        var now = DateTime.UtcNow;
-        DadWakeStageTimeoutPolicy.Observe(slot, now);
         if (!DadWakeStageTimeoutPolicy.IsTimedOut(
                 slot,
                 now,
@@ -2325,7 +2462,7 @@ public sealed class DadSchedulerService
             : "No AutoRetainer, reset, or relog command was issued.";
         reason = $"{stage} timeout for slot {slot.SlotId} after {budget} seconds; " +
                  $"account {slot.RequiredAccountKey}, character {slot.RequiredCharacterKey}, takeover stage {slot.TakeoverStage}. {commandEvidence}";
-        CancelPreCommitTakeovers(reason);
+        CancelNonTerminalTakeovers(reason);
         return true;
     }
 
@@ -2343,6 +2480,30 @@ public sealed class DadSchedulerService
             return DadSchedulerPresetPhase.WaitingForHeartbeat;
 
         return DadSchedulerPresetPhase.Resolving;
+    }
+
+    private static string BuildReadinessWaitSummary(DadSchedulerPresetState state)
+    {
+        var waiting = state.Slots.Where(static slot => !slot.Ready).ToList();
+        var detail = waiting
+            .Select(static slot => string.IsNullOrWhiteSpace(slot.Summary)
+                ? $"{slot.SlotId}: waiting for {slot.RequiredCharacterKey}"
+                : $"{slot.SlotId}: {slot.Summary}")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var unbounded = waiting.Any(static slot => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline);
+        var waitPolicy = unbounded
+            ? $" {FormatElapsed(DateTime.UtcNow - state.StartedAtUtc)} elapsed; no timeout; cancel to stop."
+            : string.Empty;
+        var reasons = detail.Count == 0 ? string.Empty : $" {string.Join(" | ", detail)}";
+        return $"Scheduler waiting: {state.Slots.Count(static slot => slot.Ready)}/{state.Slots.Count} slot(s) ready.{waitPolicy}{reasons}";
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero)
+            elapsed = TimeSpan.Zero;
+        return $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
     }
 
     private static bool MatchesSlotAccount(DadParticipantSnapshot participant, DadPlannerGroupSlot slot)
@@ -2376,7 +2537,7 @@ public sealed class DadSchedulerService
 
     private void BlockActive(string reason)
     {
-        CancelPreCommitTakeovers(reason);
+        CancelNonTerminalTakeovers(reason);
         currentState.Phase = DadSchedulerPresetPhase.Blocked;
         currentState.Summary = string.IsNullOrWhiteSpace(reason) ? "Scheduler blocked." : reason;
         currentState.BlockedReason = currentState.Summary;
@@ -2385,52 +2546,69 @@ public sealed class DadSchedulerService
         RecordTerminalResult(currentState);
     }
 
-    private void CancelPreCommitTakeovers(string reason)
+    private void CancelNonTerminalTakeovers(string reason)
     {
         if (string.IsNullOrWhiteSpace(currentState.SchedulerRunId))
             return;
-        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
-        foreach (var slot in currentState.Slots.Where(static slot =>
-                     slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline &&
-                     slot.TakeoverPhase < DadWakeTakeoverPhase.ResetCommitted))
+
+        var cleanupJob = activeJob?.Clone() ?? new DadScheduledCrewJob
         {
-            if (!TryResolveTakeoverParticipant(slot, participants, out var participant))
+            JobId = currentState.JobId,
+            JobType = currentState.JobType,
+            GroupId = currentState.GroupId,
+            PresetName = currentState.PresetName,
+            RequestedBy = currentState.RequestedBy,
+            CreatedAtUtc = currentState.StartedAtUtc,
+        };
+        cleanupJob.StatusSummary = $"Cancellation cleanup pending for scheduler Job ID {cleanupJob.JobId}.";
+        cleanupJob.BlockedReason = string.Empty;
+
+        foreach (var slot in currentState.Slots.Where(DadSchedulerRoutingRules.RequiresTakeoverCancellation))
+        {
+            var key = $"{currentState.SchedulerRunId}|{slot.SlotId}";
+            pendingTakeoverCancellations[key] = new PendingTakeoverCancellation
             {
-                LogTakeoverTransition(slot, "cleanup-route-unavailable", "cancel-not-dispatched");
-                continue;
-            }
-            var result = SendWakeTakeover(
-                slot,
-                participant!,
-                DadWakeTakeoverMessageKind.Cancel,
-                DadWakeCommitKind.None,
-                null);
-            var cleanup = result == null
-                ? "cancel-awaiting-ack"
-                : result.AcknowledgementState == DadWakeAcknowledgementState.Rejected
-                    ? $"cancel-rejected:{result.BlockedReason}"
-                    : $"cancel-acknowledged:{result.Summary}";
-            LogTakeoverTransition(slot, "cleanup", cleanup);
+                SchedulerRunId = currentState.SchedulerRunId,
+                Job = cleanupJob.Clone(),
+                Slot = slot.Clone(),
+                Reason = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason.Trim(),
+                RequestedAtUtc = slot.TakeoverRequestedUtc ?? currentState.StartedAtUtc,
+            };
+            LogTakeoverTransition(slot, "cleanup-queued", "cancel-pending-route-or-ack");
         }
+
+        UpdatePendingTakeoverCancellations();
     }
 
-    private DadScheduledCrewJob? FindEquivalentActiveOrPendingJob(DadSchedulerJobType jobType, string groupId)
+    private DadScheduledCrewJob? FindEquivalentActiveOrPendingJob(string groupId)
     {
         if (string.IsNullOrWhiteSpace(groupId))
             return null;
 
-        if (activeJob != null &&
-            currentState.IsActive &&
-            activeJob.JobType == jobType &&
-            string.Equals(activeJob.GroupId, groupId, StringComparison.OrdinalIgnoreCase))
-        {
-            return activeJob;
-        }
-
-        return configuration.SchedulerQueue.FirstOrDefault(job =>
-            job.JobType == jobType &&
-            string.Equals(job.GroupId, groupId, StringComparison.OrdinalIgnoreCase));
+        return DadSchedulerSubmissionRules.FindDuplicate(
+            groupId,
+            activeJob,
+            currentState.IsActive,
+            configuration.SchedulerQueue,
+            pendingTakeoverCancellations.Values.Select(static pending => pending.Job))
+            ?.Job;
     }
+
+    internal DadScheduledCrewJob? GetPendingTakeoverCleanupJob(string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId))
+            return null;
+
+        return pendingTakeoverCancellations.Values
+            .Select(static pending => pending.Job)
+            .FirstOrDefault(job => string.Equals(job.GroupId, groupId, StringComparison.OrdinalIgnoreCase))
+            ?.Clone();
+    }
+
+    internal bool IsPendingTakeoverCleanupJob(string jobId)
+        => !string.IsNullOrWhiteSpace(jobId) &&
+           pendingTakeoverCancellations.Values.Any(pending =>
+               string.Equals(pending.Job.JobId, jobId, StringComparison.OrdinalIgnoreCase));
 
     private static string BuildQueuedJobSummary(DadScheduledCrewJob job)
         => job.JobType switch
@@ -2441,6 +2619,10 @@ public sealed class DadSchedulerService
                 : job.StatusSummary,
             _ => $"Queued preset '{job.PresetName}'.",
         };
+
+    private static string FirstNonEmpty(params string[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim()
+           ?? "Scheduler start was rejected.";
 
     private static string BuildMapCrewSummary(DadScheduledCrewJob? job, DadPlannerGroup group, string status)
     {
@@ -2997,6 +3179,9 @@ public sealed class DadSchedulerService
         foreach (var profile in configuration.LaunchProfiles)
             profile.Normalize();
     }
+
+    private IReadOnlyList<DadLaunchProfile> BuildNormalizedLaunchProfileSnapshot()
+        => DadSchedulerGroupCloneRules.CloneNormalizedLaunchProfiles(configuration.LaunchProfiles);
 
     private void NormalizeQueue()
     {

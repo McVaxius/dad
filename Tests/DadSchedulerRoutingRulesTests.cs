@@ -5,6 +5,55 @@ namespace dad.Tests;
 
 public sealed class DadSchedulerRoutingRulesTests
 {
+    [Fact]
+    public void TakeoverCancellationCompletionRequiresExecutedCancelledOrReady()
+    {
+        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(null));
+        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
+        {
+            Phase = DadWakeTakeoverPhase.Cancelled,
+            AcknowledgementState = DadWakeAcknowledgementState.Pending,
+        }));
+        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
+        {
+            Phase = DadWakeTakeoverPhase.Blocked,
+            AcknowledgementState = DadWakeAcknowledgementState.Rejected,
+        }));
+        Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
+        {
+            Phase = DadWakeTakeoverPhase.Cancelled,
+            AcknowledgementState = DadWakeAcknowledgementState.Executed,
+        }));
+        Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
+        {
+            Phase = DadWakeTakeoverPhase.Ready,
+        }));
+    }
+
+    [Fact]
+    public void NeverDispatchedOfflineSlotNeedsNoCancellationBarrier()
+    {
+        var offline = new DadSchedulerSlotState
+        {
+            WakePolicy = DadSchedulerWakePolicy.LaunchIfOffline,
+            TakeoverPhase = DadWakeTakeoverPhase.AwaitingArHook,
+        };
+        Assert.False(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
+
+        offline.OperationToken = "scheduler-run";
+        Assert.True(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
+
+        offline.TakeoverPhase = DadWakeTakeoverPhase.Cancelled;
+        Assert.True(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
+
+        offline.AcknowledgementState = DadWakeAcknowledgementState.Executed;
+        Assert.False(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
+
+        offline.TakeoverPhase = DadWakeTakeoverPhase.Blocked;
+        offline.AcknowledgementState = DadWakeAcknowledgementState.Rejected;
+        Assert.True(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
+    }
+
     private const string AccountW = "dad-client-01c4df9f09b5488abc6980d9c09f103e";
     private const string AccountX = "dad-client-42a9d8e48b3a411689c692ada8e3676f";
 
@@ -77,6 +126,8 @@ public sealed class DadSchedulerRoutingRulesTests
         var slots = Slots();
         var now = new DateTime(2026, 7, 12, 12, 0, 0, DateTimeKind.Utc);
         slots[0].ClientConnected = true;
+        slots[0].BasePostArReady = true;
+        slots[0].AutoRetainerAvailable = true;
         slots[0].TakeoverPhase = DadWakeTakeoverPhase.Prepared;
         slots[1].ClientConnected = false;
 
@@ -108,6 +159,8 @@ public sealed class DadSchedulerRoutingRulesTests
         slots[0].RelogExecutionUtc = now.AddSeconds(-10);
 
         slots[1].ClientConnected = true;
+        slots[1].BasePostArReady = true;
+        slots[1].AutoRetainerAvailable = true;
         slots[1].TakeoverPhase = DadWakeTakeoverPhase.AwaitingArHook;
         var xPrepare = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[1], now);
         Assert.Equal(DadWakeTakeoverMessageKind.Prepare, xPrepare.MessageKind);
@@ -142,6 +195,132 @@ public sealed class DadSchedulerRoutingRulesTests
 
         Assert.Same(frozen, reconnected);
         Assert.False(reconnected!.IsAvailable);
+    }
+
+    [Fact]
+    public void FrozenWorkerSessionSurvivesDisconnectedRebuildAndRejectsSubstituteUntilReconnect()
+    {
+        var frozenId = new DadWorkerSessionId("worker-x");
+        var substitute = Participant("worker-x-new", AccountX, true, "Hard'carry Gray'parse@Excalibur");
+
+        var afterDisconnectedRebuild = DadSchedulerRoutingRules.PreserveFrozenWorkerSession(
+            frozenId,
+            new DadWorkerSessionId(string.Empty));
+        Assert.Equal(frozenId, afterDisconnectedRebuild);
+        Assert.Null(DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+            new DadAccountKey(AccountX),
+            afterDisconnectedRebuild,
+            [substitute],
+            static _ => true));
+
+        var reconnected = Participant("worker-x", AccountX, false, string.Empty);
+        Assert.Same(reconnected, DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+            new DadAccountKey(AccountX),
+            afterDisconnectedRebuild,
+            [substitute, reconnected],
+            worker => worker.Value == "worker-x"));
+    }
+
+    [Fact]
+    public void CancellationRoutesToExactFrozenWorkerDespiteAccountEvidenceDrift()
+    {
+        var drifted = Participant(
+            "worker-x",
+            "temporarily-unresolved-account",
+            isAvailable: false,
+            activeCharacter: string.Empty);
+        var substitute = Participant(
+            "replacement-worker",
+            AccountX,
+            isAvailable: true,
+            activeCharacter: "Hard'carry Gray'parse@Excalibur");
+
+        Assert.Null(DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+            new DadAccountKey(AccountX),
+            new DadWorkerSessionId("worker-x"),
+            [drifted, substitute],
+            static _ => true));
+
+        var cleanupRoute = DadSchedulerRoutingRules.ResolveFrozenCancellationClient(
+            new DadWorkerSessionId("worker-x"),
+            [substitute, drifted],
+            worker => worker.Value == "worker-x");
+
+        Assert.Same(drifted, cleanupRoute);
+        Assert.Equal("worker-x", cleanupRoute!.WorkerSessionId.Value);
+    }
+
+    [Fact]
+    public void CancellationNeverRetargetsAndWaitsForFrozenWorkerToBeLive()
+    {
+        var stale = Participant("worker-x", AccountX, true, "Hard'carry Gray'parse@Excalibur");
+        stale.State = DadParticipantState.Stale;
+        var substitute = Participant("replacement-worker", AccountX, true, "Hard'carry Gray'parse@Excalibur");
+
+        Assert.Null(DadSchedulerRoutingRules.ResolveFrozenCancellationClient(
+            new DadWorkerSessionId("worker-x"),
+            [substitute],
+            static _ => true));
+        Assert.Null(DadSchedulerRoutingRules.ResolveFrozenCancellationClient(
+            new DadWorkerSessionId("worker-x"),
+            [stale, substitute],
+            static _ => true));
+
+        var online = Participant("worker-x", "drifted-account", false, string.Empty);
+        Assert.Null(DadSchedulerRoutingRules.ResolveFrozenCancellationClient(
+            new DadWorkerSessionId("worker-x"),
+            [online, substitute],
+            static _ => false));
+    }
+
+    [Fact]
+    public void UnsafeLatestHeartbeatPollsStatusWithoutSendingGo()
+    {
+        var slot = SafeTakeoverSlot(DadWakeTakeoverPhase.Prepared);
+        slot.BasePostArReady = false;
+
+        var reset = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow);
+        Assert.True(reset.CanDispatch);
+        Assert.Equal(DadWakeTakeoverMessageKind.Status, reset.MessageKind);
+        Assert.Equal(DadWakeCommitKind.None, reset.CommitKind);
+
+        slot = SafeTakeoverSlot(DadWakeTakeoverPhase.ResetVerified);
+        slot.AutoRetainerBusy = true;
+        var relog = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow);
+        Assert.True(relog.CanDispatch);
+        Assert.Equal(DadWakeTakeoverMessageKind.Status, relog.MessageKind);
+        Assert.Equal(DadWakeCommitKind.None, relog.CommitKind);
+    }
+
+    [Fact]
+    public void ReadyAcknowledgementUsesExactWorldTruthNotSuppressionSensitivePostAr()
+    {
+        var slot = new DadSchedulerSlotState
+        {
+            RequiredAccountKey = new DadAccountKey(AccountX),
+            RequiredCharacterKey = new DadCharacterKey("Hard'carry Gray'parse@Excalibur"),
+            MatchedWorkerSessionId = new DadWorkerSessionId("worker-x"),
+        };
+        var snapshot = Participant(
+            "worker-x",
+            AccountX,
+            isAvailable: true,
+            activeCharacter: "Hard'carry Gray'parse@Excalibur");
+        snapshot.WorldReadyStable = true;
+        snapshot.PostArReady = false;
+        var result = new DadWakeTakeoverResultDto
+        {
+            Status = DadWakeTakeoverStatus.Ready,
+            Phase = DadWakeTakeoverPhase.Ready,
+            PostArReady = false,
+            AutoRetainerAvailable = true,
+            Snapshot = snapshot,
+        };
+
+        Assert.True(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(slot, result));
+
+        result.Snapshot.WorkerSessionId = new DadWorkerSessionId("replacement-worker");
+        Assert.False(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(slot, result));
     }
 
     [Fact]
@@ -196,6 +375,15 @@ public sealed class DadSchedulerRoutingRulesTests
                 RequiredCharacterKey = new DadCharacterKey("Hard'carry Gray'parse@Excalibur"),
             },
         ];
+
+    private static DadSchedulerSlotState SafeTakeoverSlot(DadWakeTakeoverPhase phase)
+        => new()
+        {
+            ClientConnected = true,
+            BasePostArReady = true,
+            AutoRetainerAvailable = true,
+            TakeoverPhase = phase,
+        };
 
     private static DadParticipantSnapshot Participant(
         string worker,

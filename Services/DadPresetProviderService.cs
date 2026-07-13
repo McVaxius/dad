@@ -515,9 +515,7 @@ public sealed class DadPresetProviderService
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(
             options.ActivityMode,
             selectedGroup,
-            pool.Characters,
-            requestedPartySize,
-            lane);
+            requestedPartySize);
         var dutySelectorBlocker = string.IsNullOrWhiteSpace(autoLevelBlocker)
             ? BuildDutySelectorBlocker(lane, selectedDuty)
             : autoLevelBlocker;
@@ -733,9 +731,7 @@ public sealed class DadPresetProviderService
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(
             options.ActivityMode,
             selectedGroup,
-            pool.Characters,
-            requestedPartySize,
-            lane);
+            requestedPartySize);
         var capability = moduleRegistry.GetCapability(requestModuleId);
         var startCapabilityBlocker = capability.Blockers.FirstOrDefault(static blocker =>
             string.Equals(blocker.Capability, "CanStartQueue", StringComparison.OrdinalIgnoreCase));
@@ -1226,130 +1222,43 @@ public sealed class DadPresetProviderService
         if (selectedGroup == null || string.IsNullOrWhiteSpace(selectedGroup.GroupId))
             return null;
 
-        selectedGroup.DisplayName = string.IsNullOrWhiteSpace(selectedGroup.DisplayName)
+        var normalized = DadSchedulerGroupCloneRules.CloneWithSlots(
+            selectedGroup,
+            DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots));
+        normalized.DisplayName = string.IsNullOrWhiteSpace(normalized.DisplayName)
             ? "Dad Group"
-            : selectedGroup.DisplayName.Trim();
-        selectedGroup.MogtomeDutyPolicy = string.IsNullOrWhiteSpace(selectedGroup.MogtomeDutyPolicy)
+            : normalized.DisplayName.Trim();
+        normalized.MogtomeDutyPolicy = string.IsNullOrWhiteSpace(normalized.MogtomeDutyPolicy)
             ? DadMogtomeDutyPolicies.PresetHandoff
-            : selectedGroup.MogtomeDutyPolicy.Trim();
-        selectedGroup.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
-        selectedGroup.RunFamily = ResolveLaneDefinition(selectedGroup.ActivityMode).RunFamily;
-        selectedGroup.InviteAuthority = DadInviteAuthority.PresetLeader;
-        if (selectedGroup.ActivityMode == DadPlannerActivityMode.DailyRoulette)
+            : normalized.MogtomeDutyPolicy.Trim();
+        normalized.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
+        normalized.RunFamily = ResolveLaneDefinition(normalized.ActivityMode).RunFamily;
+        normalized.InviteAuthority = DadInviteAuthority.PresetLeader;
+        if (normalized.ActivityMode == DadPlannerActivityMode.DailyRoulette)
         {
-            selectedGroup.TransportOwner = DadTransportOwner.LanParty;
-            selectedGroup.QueueAuthority = DadQueueAuthority.Leader;
-            selectedGroup.DutyUnsynced = false;
-            selectedGroup.DutyExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize;
+            normalized.TransportOwner = DadTransportOwner.LanParty;
+            normalized.QueueAuthority = DadQueueAuthority.Leader;
+            normalized.DutyUnsynced = false;
+            normalized.DutyExpectedPartySize = DadDailyRoulettePlannerRules.RequiredPartySize;
         }
-        selectedGroup.StopPolicy ??= new DadRunStopPolicy();
-        selectedGroup.StopPolicy.Normalize();
-        selectedGroup.Slots = DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots);
-        return selectedGroup;
+        normalized.StopPolicy ??= new DadRunStopPolicy();
+        normalized.StopPolicy.Normalize();
+        return normalized;
     }
 
     private static DadPlannerGroup? BuildEffectiveSelectedGroupForLane(
         DadPlannerActivityMode activityMode,
         DadPlannerGroup? selectedGroup,
-        IReadOnlyList<DadAcquiredCharacter> candidates,
-        int requestedPartySize,
-        DadPlannerLaneDefinition lane)
+        int requestedPartySize)
     {
         if (selectedGroup == null)
             return null;
 
-        var effectiveSlots = ShouldCapPlannerGroupSlotsForLane(activityMode, lane)
-            ? DadPlannerSlotRules.TakePrimarySlotsWithSubstitutes(selectedGroup.Slots, requestedPartySize)
-            : DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots);
-        var effectiveGroup = ClonePlannerGroupWithSlots(selectedGroup, effectiveSlots);
-
-        if (!IsLocalNpcLane(activityMode) || effectiveGroup.Slots.Count <= 1)
-            return effectiveGroup;
-
-        var effectiveSlot = SelectEffectiveLocalNpcSlot(effectiveGroup.Slots, candidates);
-        return ClonePlannerGroupWithSlots(effectiveGroup, [effectiveSlot]);
+        return DadEffectivePlannerGroupProjection.Project(
+            selectedGroup,
+            activityMode,
+            requestedPartySize);
     }
-
-    private static bool ShouldCapPlannerGroupSlotsForLane(
-        DadPlannerActivityMode activityMode,
-        DadPlannerLaneDefinition lane)
-    {
-        if (IsLocalNpcLane(activityMode))
-            return true;
-
-        return lane.RequiresDutySelector || lane.RequiresRouletteSelector;
-    }
-
-    private static DadPlannerGroupSlot SelectEffectiveLocalNpcSlot(
-        IReadOnlyList<DadPlannerGroupSlot> slots,
-        IReadOnlyList<DadAcquiredCharacter> candidates)
-    {
-        var matchingSlot = slots.FirstOrDefault(slot =>
-            candidates.Any(character => IsReadyOnlineLocalNpcCandidate(character) && MatchesGroupSlot(character, slot)));
-
-        var effectiveSlot = ClonePlannerGroupSlot(matchingSlot ?? slots[0]);
-        effectiveSlot.SlotId = DadPlannerSlotRules.LeaderSlotId;
-        effectiveSlot.IsSubstitute = false;
-        return effectiveSlot;
-    }
-
-    private static bool IsReadyOnlineLocalNpcCandidate(DadAcquiredCharacter character)
-        => character.Source == DadCharacterSource.LocalRuntime &&
-           character.Readiness == DadReadinessState.Ready &&
-           IsConnectedForPlanning(character);
-
-    private static DadPlannerGroup ClonePlannerGroupWithSlots(
-        DadPlannerGroup source,
-        IEnumerable<DadPlannerGroupSlot> slots)
-        => new()
-        {
-            GroupId = source.GroupId,
-            DisplayName = source.DisplayName,
-            RunFamily = source.RunFamily,
-            ActivityMode = source.ActivityMode,
-            OperatorMode = source.OperatorMode,
-            ConnectedOnly = source.ConnectedOnly,
-            SameDatacenterOnly = source.SameDatacenterOnly,
-            AllowStaleForPlanning = source.AllowStaleForPlanning,
-            TransportOwner = source.TransportOwner,
-            QueueAuthority = source.QueueAuthority,
-            InviteAuthority = DadInviteAuthority.PresetLeader,
-            DutyContentFinderConditionId = source.DutyContentFinderConditionId,
-            DutyDisplayName = source.DutyDisplayName,
-            DutyUnsynced = source.DutyUnsynced,
-            DutyExpectedPartySize = source.DutyExpectedPartySize,
-            RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
-            MogtomePreset = source.MogtomePreset,
-            MogtomeDutyPolicy = source.MogtomeDutyPolicy,
-            RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
-            StopPolicy = source.StopPolicy.Clone(),
-            CompletionActions = source.CompletionActions?.Clone(),
-            Slots = slots.Select(ClonePlannerGroupSlot).ToList(),
-            ScheduleEnabled = source.ScheduleEnabled,
-            ScheduleCadenceHours = source.ScheduleCadenceHours,
-            NextEligibleTimeUtc = source.NextEligibleTimeUtc,
-            ScheduleRequester = source.ScheduleRequester,
-            SchedulePriority = source.SchedulePriority,
-            MapRunTemplate = source.MapRunTemplate,
-            MapMode = source.MapMode,
-            CreatedAtUtc = source.CreatedAtUtc,
-            UpdatedAtUtc = source.UpdatedAtUtc,
-        };
-
-    private static DadPlannerGroupSlot ClonePlannerGroupSlot(DadPlannerGroupSlot source)
-        => new()
-        {
-            SlotId = source.SlotId,
-            IsSubstitute = source.IsSubstitute,
-            RequiredRole = source.RequiredRole,
-            RequiredAccountKey = source.RequiredAccountKey,
-            RequiredCharacterKey = source.RequiredCharacterKey,
-            RequiredJobId = source.RequiredJobId,
-            WakePolicy = source.WakePolicy,
-            LaunchProfileId = source.LaunchProfileId,
-            CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
-            AllowSubstitution = source.AllowSubstitution,
-        };
 
     private static List<DadAcquiredCharacter> BuildAvailableCharacters(
         DadCharacterPool pool,
@@ -1866,6 +1775,9 @@ public sealed class DadPresetProviderService
         result.RequiredCharacterKeys = [..request.Orchestration.RequiredCharacterKeys];
         result.RequiredAccountKeys = [..request.Orchestration.RequiredAccountKeys];
         result.RequestJson = DadIpcJson.Serialize(request);
+        result.BlockedReason = result.CanStart
+            ? string.Empty
+            : DadPlannerValidationRules.BuildBlockedReason(result);
         result.ContractPreview = BuildContractPreview(result, request, lane, selectedDuty);
         result.ContractPreviewJson = DadIpcJson.Serialize(result.ContractPreview);
     }
@@ -2716,9 +2628,9 @@ public sealed class DadPresetProviderService
                 DadPlannerRequestedJobValidationFailure.ExactCharacterUnavailable =>
                     $"Planner group slot '{slot.SlotId}' cannot validate requested class/job {requiredJobId} because its exact selected character is unavailable.",
                 DadPlannerRequestedJobValidationFailure.XadbUnavailable =>
-                    $"Planner group slot '{slot.SlotId}' cannot validate requested class/job {requiredJobId} for '{characterLabel}' because current XADB job data is unavailable.",
+                    $"Planner group slot '{slot.SlotId}' cannot validate requested class/job {requiredJobId} for '{characterLabel}' because no durable exact-character learned-job ledger is available (legacy XADB-unavailable state).",
                 DadPlannerRequestedJobValidationFailure.JobUnavailable =>
-                    $"Planner group slot '{slot.SlotId}' requests class/job {requiredJobId}, but current XADB job data for '{characterLabel}' does not contain it at a positive level.",
+                    $"Planner group slot '{slot.SlotId}' requests class/job {requiredJobId}, but the exact character's durable learned-job ledger for '{characterLabel}' does not contain it at a positive level.",
                 _ => $"Planner group slot '{slot.SlotId}' has an invalid requested class/job selection.",
             };
 

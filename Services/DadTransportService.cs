@@ -35,6 +35,7 @@ public sealed class DadTransportService : IDisposable
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan OutboundWriteTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxReconnectBackoff = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan StopAllCleanupPollInterval = TimeSpan.FromMilliseconds(100);
     // B7: cadence to rebuild the local roster-catalog cache on the framework thread, and the max age an
     // inbound peer pull will accept from that cache before falling back to a live (framework-thread) build.
     private static readonly TimeSpan LocalRosterCatalogRebuildInterval = TimeSpan.FromSeconds(12);
@@ -580,15 +581,17 @@ public sealed class DadTransportService : IDisposable
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
             UpdatedAtUtc = DateTime.UtcNow,
-            CompletedAtUtc = DateTime.UtcNow,
             RemotePropagationAvailable = false,
-            IsFinal = true,
             Partial = true,
             Summary = "Local DAD work stopped; Dad Coordinator propagation was unavailable.",
             LocalResult = local,
         };
+        DadStopAllStatusRules.FinalizeFromWorkers(fallback, DateTime.UtcNow);
         RecordStopAllStatus(fallback);
-        LogStopAllFinal(fallback);
+        if (DadStopAllStatusRules.IsLocalCleanupPending(local))
+            QueueStopAllLocal(request);
+        else
+            LogStopAllFinal(fallback);
         return fallback.Clone();
     }
 
@@ -1529,12 +1532,11 @@ public sealed class DadTransportService : IDisposable
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
             UpdatedAtUtc = DateTime.UtcNow,
-            CompletedAtUtc = DateTime.UtcNow,
-            IsFinal = true,
             Partial = local.Partial,
             Summary = local.Summary,
             LocalResult = local,
         };
+        DadStopAllStatusRules.FinalizeFromWorkers(response, DateTime.UtcNow);
         RecordStopAllStatus(response, preserveCoordinatorMatrix: true);
         return response;
     }
@@ -2471,22 +2473,28 @@ public sealed class DadTransportService : IDisposable
                 Summary = "Awaiting Stop-all acknowledgement.",
             }).ToList(),
         };
-        status.Summary = targets.Count == 0
-            ? "Stop-all completed locally; no connected Client Dad workers were routable."
-            : $"Stop-all completed locally; awaiting {targets.Count} connected Client Dad acknowledgement(s).";
-        if (targets.Count == 0)
-        {
-            status.IsFinal = true;
-            status.CompletedAtUtc = DateTime.UtcNow;
-        }
+        DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
         RecordStopAllStatus(status);
 
+        if (DadStopAllStatusRules.IsLocalCleanupPending(local))
+            QueueStopAllLocal(request);
         foreach (var target in targets)
             QueueStopAllWorker(request, target);
 
-        if (targets.Count == 0)
+        if (status.IsFinal)
             LogStopAllFinal(status);
         return status.Clone();
+    }
+
+    private void QueueStopAllLocal(DadStopAllRequest request)
+    {
+        var operationKey = $"stop-all-local:{request.OperationId}";
+        if (!operations.TryAdd(operationKey, Task.CompletedTask))
+            return;
+
+        var task = RunStopAllLocalAsync(operationKey, request, roleCancellation.Token);
+        operations[operationKey] = task;
+        Track(task, operationKey);
     }
 
     private void QueueStopAllWorker(DadStopAllRequest request, DadWorkerSessionId target)
@@ -2508,6 +2516,62 @@ public sealed class DadTransportService : IDisposable
         var task = RunForwardStopAllAsync(operationKey, request, target, roleCancellation.Token);
         operations[operationKey] = task;
         Track(task, operationKey);
+    }
+
+    private async Task RunStopAllLocalAsync(
+        string operationKey,
+        DadStopAllRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
+            var deadlineUtc = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadlineUtc)
+            {
+                await Task.Delay(StopAllCleanupPollInterval, cancellationToken).ConfigureAwait(false);
+                var local = await Plugin.Framework
+                    .RunOnFrameworkThread(() => InvokeLocalStopAll(request))
+                    .ConfigureAwait(false);
+                if (DadStopAllStatusRules.IsLocalCleanupPending(local))
+                    continue;
+
+                UpdateStopAllLocal(request.OperationId, local);
+                return;
+            }
+
+            UpdateStopAllLocal(request.OperationId, BuildStopAllTimeoutResult(
+                request.OperationId,
+                presenceService.WorkerSessionId,
+                "Local DAD-owned takeover cleanup did not finish before the Stop-all acknowledgement timeout."));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await Plugin.Framework.RunOnFrameworkThread(() => UpdateStopAllLocal(
+                    request.OperationId,
+                    new DadStopAllWorkerResult
+                    {
+                        OperationId = request.OperationId,
+                        WorkerSessionId = presenceService.WorkerSessionId,
+                        State = DadStopAllWorkerState.Rejected,
+                        UpdatedAtUtc = DateTime.UtcNow,
+                        Partial = true,
+                        Summary = $"Local Stop-all cleanup acknowledgement failed: {ex.Message}",
+                    })).ConfigureAwait(false);
+            }
+            catch (Exception callbackException) when (DadBackgroundTaskObserver.IsExpectedShutdownException(callbackException))
+            {
+            }
+        }
+        finally
+        {
+            operations.TryRemove(operationKey, out _);
+        }
     }
 
     private async Task RunForwardStopAllAsync(
@@ -2560,29 +2624,47 @@ public sealed class DadTransportService : IDisposable
         try
         {
             var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
-            var response = await SendRequestAsync(
-                    target,
-                    MessageStopAll,
-                    DadIpcJson.Serialize(request),
-                    cancellationToken,
-                    timeout)
-                .ConfigureAwait(false);
-            if (response.Kind == DadHubFrameKind.Error)
-                throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
-
-            var aggregate = DadIpcJson.Deserialize<DadStopAllStatus>(response.PayloadJson);
-            var worker = aggregate?.LocalResult ?? new DadStopAllWorkerResult
+            var deadlineUtc = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadlineUtc)
             {
-                OperationId = request.OperationId,
-                WorkerSessionId = target,
-                State = DadStopAllWorkerState.Rejected,
-                Summary = "Client Dad returned an invalid Stop-all acknowledgement.",
-            };
-            worker.WorkerSessionId = target;
-            worker.State = worker.LocalCleanupCompleted
-                ? DadStopAllWorkerState.Acknowledged
-                : DadStopAllWorkerState.Rejected;
-            UpdateStopAllWorker(request.OperationId, worker);
+                var remaining = deadlineUtc - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                    break;
+
+                var response = await SendRequestAsync(
+                        target,
+                        MessageStopAll,
+                        DadIpcJson.Serialize(request),
+                        cancellationToken,
+                        remaining)
+                    .ConfigureAwait(false);
+                if (response.Kind == DadHubFrameKind.Error)
+                    throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+
+                var aggregate = DadIpcJson.Deserialize<DadStopAllStatus>(response.PayloadJson);
+                var worker = aggregate?.LocalResult ?? new DadStopAllWorkerResult
+                {
+                    OperationId = request.OperationId,
+                    WorkerSessionId = target,
+                    State = DadStopAllWorkerState.Rejected,
+                    Partial = true,
+                    Summary = "Client Dad returned an invalid Stop-all acknowledgement.",
+                };
+                worker.WorkerSessionId = target;
+                DadStopAllStatusRules.NormalizeLocalResult(worker);
+                if (!DadStopAllStatusRules.IsLocalCleanupPending(worker))
+                {
+                    UpdateStopAllWorker(request.OperationId, worker);
+                    return;
+                }
+
+                await Task.Delay(StopAllCleanupPollInterval, cancellationToken).ConfigureAwait(false);
+            }
+
+            UpdateStopAllWorker(request.OperationId, BuildStopAllTimeoutResult(
+                request.OperationId,
+                target,
+                "Client DAD-owned takeover cleanup did not finish before the Stop-all acknowledgement timeout."));
         }
         catch (DadHubProtocolException ex) when (string.Equals(ex.Code, "request-timeout", StringComparison.OrdinalIgnoreCase))
         {
@@ -2624,6 +2706,52 @@ public sealed class DadTransportService : IDisposable
         {
             operations.TryRemove(operationKey, out _);
         }
+    }
+
+    private static DadStopAllWorkerResult BuildStopAllTimeoutResult(
+        string operationId,
+        DadWorkerSessionId workerSessionId,
+        string summary)
+        => new()
+        {
+            OperationId = operationId,
+            WorkerSessionId = workerSessionId,
+            State = DadStopAllWorkerState.TimedOut,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Partial = true,
+            Summary = summary,
+        };
+
+    private void UpdateStopAllLocal(string operationId, DadStopAllWorkerResult local)
+    {
+        DadStopAllStatus? final = null;
+        DadStopAllStatus? updated = null;
+        lock (stopAllGate)
+        {
+            if (!stopAllOperations.TryGetValue(operationId, out var status) ||
+                !DadStopAllStatusRules.IsLocalCleanupPending(status.LocalResult))
+            {
+                return;
+            }
+
+            DadStopAllStatusRules.NormalizeLocalResult(local);
+            status.LocalResult = local.Clone();
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            log.Information("[dad] Stop-all {OperationId} local cleanup: {State}.",
+                operationId,
+                local.State);
+            DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+            stopAllOperations[operationId] = status;
+            latestStopAllStatus = status.Clone();
+            updated = status.Clone();
+            if (status.IsFinal)
+                final = status.Clone();
+        }
+
+        if (updated != null)
+            BroadcastStopAllStatus(updated);
+        if (final != null)
+            LogStopAllFinal(final);
     }
 
     private void UpdateStopAllWorker(string operationId, DadStopAllWorkerResult worker)
@@ -2700,8 +2828,7 @@ public sealed class DadTransportService : IDisposable
         result.OperationId = request.OperationId;
         result.WorkerSessionId = presenceService.WorkerSessionId;
         result.UpdatedAtUtc = DateTime.UtcNow;
-        if (result.LocalCleanupCompleted)
-            result.State = DadStopAllWorkerState.Acknowledged;
+        DadStopAllStatusRules.NormalizeLocalResult(result);
         log.Information("[dad] Stop-all {OperationId} local completion: {State}; {Summary}",
             request.OperationId,
             result.State,
@@ -2721,15 +2848,17 @@ public sealed class DadTransportService : IDisposable
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
             UpdatedAtUtc = DateTime.UtcNow,
-            CompletedAtUtc = DateTime.UtcNow,
             RemotePropagationAvailable = false,
-            IsFinal = true,
             Partial = true,
             Summary = $"Local DAD work stopped; Dad Coordinator propagation failed: {failure}",
             LocalResult = local,
         };
+        DadStopAllStatusRules.FinalizeFromWorkers(fallback, DateTime.UtcNow);
         RecordStopAllStatus(fallback);
-        LogStopAllFinal(fallback);
+        if (DadStopAllStatusRules.IsLocalCleanupPending(local))
+            QueueStopAllLocal(request);
+        else
+            LogStopAllFinal(fallback);
     }
 
     private void RecordStopAllStatus(DadStopAllStatus status, bool preserveCoordinatorMatrix = false)

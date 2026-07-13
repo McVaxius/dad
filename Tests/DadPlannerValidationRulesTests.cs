@@ -6,6 +6,25 @@ namespace dad.Tests;
 public sealed class DadPlannerValidationRulesTests
 {
     [Fact]
+    public void SchedulerTerminalReasonPreservesReadinessAndIndependentSlotCause()
+    {
+        var preview = new DadPlannerRunRequestPreview
+        {
+            CanSchedule = true,
+            CanStart = false,
+            ReadinessBlockers = ["Slot1 is duty-bound."],
+            ReadinessSummary = "Waiting for Slot1.",
+        };
+
+        var reason = DadPlannerValidationRules.BuildSchedulerTerminalReason(
+            preview,
+            ["Slot2 uses Already online and cannot wake."]);
+
+        Assert.Contains("Readiness: Slot1 is duty-bound.", reason, StringComparison.Ordinal);
+        Assert.Contains("Slot: Slot2 uses Already online and cannot wake.", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OnlyHardRuntimeReadinessModuleBlockersAreTransient()
     {
         var runtimeOnly = new DadModuleExecutionStatusDto
@@ -97,6 +116,53 @@ public sealed class DadPlannerValidationRulesTests
 
         Assert.False(staticBlocked.CanSchedule);
         Assert.False(policyBlocked.CanSchedule);
+    }
+
+    [Fact]
+    public void TerminalReasonRetainsEveryIndependentBlockerCategoryAndHardCause()
+    {
+        var preview = new DadPlannerRunRequestPreview
+        {
+            CanStart = false,
+            CanSchedule = false,
+            StaticBlockers = ["Slot1 is not on the coordinator account."],
+            ScheduleBlockers = ["Already-online policy cannot wake Slot2."],
+            ReadinessBlockers = ["Slot3 is still in Ocean Fishing."],
+            ModuleBlockers =
+            [
+                new DadModuleBlockerDto
+                {
+                    Capability = "QueueContract",
+                    Severity = DadModuleBlockerSeverity.Failed,
+                    Summary = "Queue module contract is unsupported.",
+                },
+                new DadModuleBlockerDto
+                {
+                    Capability = "RuntimeReadiness",
+                    Severity = DadModuleBlockerSeverity.Blocked,
+                    Summary = "Slot4 is loading.",
+                },
+                new DadModuleBlockerDto
+                {
+                    Capability = "Diagnostics",
+                    Severity = DadModuleBlockerSeverity.Info,
+                    Summary = "Informational only.",
+                },
+            ],
+        };
+
+        var reason = DadPlannerValidationRules.BuildBlockedReason(preview);
+
+        Assert.Contains("Static:", reason, StringComparison.Ordinal);
+        Assert.Contains("Slot1", reason, StringComparison.Ordinal);
+        Assert.Contains("Schedule:", reason, StringComparison.Ordinal);
+        Assert.Contains("Already-online", reason, StringComparison.Ordinal);
+        Assert.Contains("Readiness:", reason, StringComparison.Ordinal);
+        Assert.Contains("Ocean Fishing", reason, StringComparison.Ordinal);
+        Assert.Contains("Slot4 is loading", reason, StringComparison.Ordinal);
+        Assert.Contains("Module:", reason, StringComparison.Ordinal);
+        Assert.Contains("unsupported", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Informational only", reason, StringComparison.Ordinal);
     }
 
     [Fact]

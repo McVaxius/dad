@@ -107,6 +107,7 @@ public sealed class DadHubRosterProjectionTests
 
         var response = Assert.Single(responses);
         Assert.Equal("worker-a", response.WorkerSessionId.Value);
+        Assert.Equal("acct-a", response.Catalog.SourceDiagnostics.LocalAccountKey);
         var character = Assert.Single(response.Catalog.Characters);
         Assert.Equal(100ul, character.ContentId);
         Assert.Equal(80, character.JobLevels[21]);

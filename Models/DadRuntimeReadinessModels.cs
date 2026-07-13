@@ -1,5 +1,22 @@
 namespace dad.Models;
 
+public static class DadParticipantWorldSafetyRules
+{
+    public static bool IsWorldReadyStable(
+        bool isLoggedIn,
+        bool hasLocalPlayer,
+        string? activeCharacterKey,
+        ulong contentId,
+        DadReadinessState readiness,
+        bool unsafeConditionActive)
+        => isLoggedIn &&
+           hasLocalPlayer &&
+           !string.IsNullOrWhiteSpace(activeCharacterKey) &&
+           contentId != 0 &&
+           readiness == DadReadinessState.Ready &&
+           !unsafeConditionActive;
+}
+
 /// <summary>
 /// Semantic runtime truth that can change whether a scheduler slot may advance.
 /// Display text, warnings, and observation timestamps are intentionally excluded.
