@@ -528,7 +528,6 @@ internal static class DadDutyFinderMappedMutationRules
                fresh.TreeIndex == selected.TreeIndex &&
                fresh.CallbackOrdinal == selected.CallbackOrdinal &&
                selectedAgentType == target.ContentType &&
-               selectedAgentId == target.RowId &&
-               interfaceSelectedId == target.RowId;
+               selectedAgentId == target.RowId;
     }
 }
