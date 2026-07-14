@@ -61,8 +61,8 @@ internal sealed class DadPresetCrewEditor
         ImGui.TableSetupColumn("Type", ImGuiTableColumnFlags.WidthFixed, typeWidth);
         ImGui.TableSetupColumn("Account", ImGuiTableColumnFlags.WidthStretch, 1.05f);
         ImGui.TableSetupColumn("Character", ImGuiTableColumnFlags.WidthStretch, 1.25f);
-        ImGui.TableSetupColumn("Job", ImGuiTableColumnFlags.WidthFixed, jobWidth);
         ImGui.TableSetupColumn("Role", ImGuiTableColumnFlags.WidthFixed, roleWidth);
+        ImGui.TableSetupColumn("Job", ImGuiTableColumnFlags.WidthFixed, jobWidth);
         ImGui.TableSetupColumn("Loot", ImGuiTableColumnFlags.WidthFixed, lootWidth);
         ImGui.TableSetupColumn("Lv.", ImGuiTableColumnFlags.WidthFixed, levelWidth);
         ImGui.TableSetupColumn("Wake", ImGuiTableColumnFlags.WidthFixed, wakeWidth);
@@ -95,10 +95,10 @@ internal sealed class DadPresetCrewEditor
             DrawCharacter(plannerSnapshot, group, slot, index, idPrefix, changed);
 
             ImGui.TableNextColumn();
-            DrawJob(plannerSnapshot, group, slot, index, idPrefix, changed);
+            DrawRole(plannerSnapshot, group, slot, index, idPrefix, changed);
 
             ImGui.TableNextColumn();
-            DrawRole(group, slot, index, idPrefix, changed);
+            DrawJob(plannerSnapshot, group, slot, index, idPrefix, changed);
 
             ImGui.TableNextColumn();
             DrawLoot(group, slot, index, idPrefix, changed);
@@ -152,7 +152,7 @@ internal sealed class DadPresetCrewEditor
     private static void DrawHeaders()
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
-        foreach (var header in new[] { "Slot", "Type", "Account", "Character", "Job", "Role", "Loot", "Lv.", "Wake", "Profile", "Actions" })
+        foreach (var header in new[] { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv.", "Wake", "Profile", "Actions" })
         {
             ImGui.TableNextColumn();
             ImGui.TableHeader(header);
@@ -282,9 +282,13 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         var selectedCharacter = ResolveCharacter(plannerSnapshot, slot);
-        var options = BuildJobOptions(selectedCharacter);
+        var allOptions = BuildJobOptions(selectedCharacter);
+        var options = FilterJobOptions(allOptions, slot.RequiredRole);
         var selectedJob = slot.RequiredJobId is > 0
             ? options.FirstOrDefault(option => option.JobId == slot.RequiredJobId)
+            : null;
+        var learnedSavedJob = slot.RequiredJobId is > 0
+            ? allOptions.FirstOrDefault(option => option.JobId == slot.RequiredJobId)
             : null;
         var hasRequestedJob = slot.RequiredJobId is > 0;
         var invalidSavedJob = hasRequestedJob && selectedJob == null;
@@ -334,7 +338,12 @@ internal sealed class DadPresetCrewEditor
             return;
         if (invalidSavedJob)
         {
-            ImGui.SetTooltip($"Invalid saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)}. Reset to Any or choose a job from this character's learned-job ledger.");
+            var reason = selectedCharacter == null
+                ? "Select an exact character before validating this saved job."
+                : learnedSavedJob == null
+                    ? "This job is not present in the exact character's learned-job ledger."
+                    : $"{learnedSavedJob.Abbreviation} does not match the selected {FormatRole(slot.RequiredRole)} role.";
+            ImGui.SetTooltip($"Invalid saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)}. {reason} Choose Any or a compatible learned job; DAD will not rewrite the saved value until you explicitly change Role or Job.");
         }
         else if (selectedCharacter == null)
         {
@@ -350,7 +359,8 @@ internal sealed class DadPresetCrewEditor
         }
     }
 
-    private static void DrawRole(
+    private void DrawRole(
+        DadPlannerUiSnapshot plannerSnapshot,
         DadPlannerGroup group,
         DadPlannerGroupSlot slot,
         int index,
@@ -364,9 +374,22 @@ internal sealed class DadPresetCrewEditor
         foreach (var role in Enum.GetValues<DadPartyRole>())
         {
             var selected = role == slot.RequiredRole;
-            if (ImGui.Selectable(FormatRole(role), selected))
+            if (ImGui.Selectable(FormatRole(role), selected) && !selected)
             {
+                var selectedCharacter = ResolveCharacter(plannerSnapshot, slot);
+                var compatibleJobs = FilterJobOptions(BuildJobOptions(selectedCharacter), role);
+                var selectedJobStillMatches = slot.RequiredJobId is > 0 &&
+                                              compatibleJobs.Any(option => option.JobId == slot.RequiredJobId.Value);
                 slot.RequiredRole = role;
+                if (!selectedJobStillMatches)
+                {
+                    slot.RequiredJobId = compatibleJobs
+                        .OrderBy(static option => option.Level)
+                        .ThenBy(static option => option.Abbreviation, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(static option => option.JobId)
+                        .Select(static option => (uint?)option.JobId)
+                        .FirstOrDefault();
+                }
                 changed(group);
             }
             if (selected)
@@ -528,6 +551,34 @@ internal sealed class DadPresetCrewEditor
                 .OrderBy(static option => option.Abbreviation, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(static option => option.JobId)
                 .ToList();
+
+    private static List<JobOption> FilterJobOptions(
+        IEnumerable<JobOption> options,
+        DadPartyRole requiredRole)
+        => options
+            .Where(option => JobMatchesRole(option.JobId, requiredRole))
+            .ToList();
+
+    private static bool JobMatchesRole(uint jobId, DadPartyRole requiredRole)
+    {
+        if (requiredRole == DadPartyRole.Any)
+            return true;
+
+        var family = jobId switch
+        {
+            1 or 3 or 19 or 21 or 32 or 37 => DadPartyRole.Tank,
+            6 or 24 or 28 or 33 or 40 => DadPartyRole.Healer,
+            2 or 4 or 20 or 22 or 29 or 30 or 34 or 39 or 41 => DadPartyRole.Melee,
+            5 or 23 or 31 or 38 => DadPartyRole.PhysicalRanged,
+            7 or 25 or 26 or 27 or 35 or 42 => DadPartyRole.Caster,
+            36 => DadPartyRole.Limited,
+            _ => DadPartyRole.Any,
+        };
+
+        return requiredRole == DadPartyRole.Dps
+            ? family is DadPartyRole.Melee or DadPartyRole.PhysicalRanged or DadPartyRole.Caster
+            : family == requiredRole;
+    }
 
     private string ResolveClassJobAbbrev(uint jobId)
     {

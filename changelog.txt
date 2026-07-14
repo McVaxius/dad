@@ -1,5 +1,21 @@
 # dad — changelog
 
+## 2026-07-14 — P1180 corrective task-focused UX
+- Added the top-level Status workspace for current activity, queue and run history, schedule history, detailed
+  readiness, planner validation, and Debug-only authority, transport, IPC, and raw diagnostics. Existing Queue
+  and Active Job navigation now lands on the matching Status view while legacy Plan/Schedules routes remain valid.
+- Reworked Plan and Schedules around compact identity controls, full-width crew rows, responsive rule/action
+  cards, first-blocker review, and the existing scheduler-backed run and cancellation paths. Detailed progress and
+  technical summaries remain available under Status instead of crowding the task editors.
+- Put Role before Job and filter each exact character's positive learned combat jobs by the selected role. Explicit
+  Role changes retain compatible jobs, otherwise choose the lowest-level compatible job with deterministic ties,
+  or fall back to Any; incompatible saved jobs remain visible until the player explicitly corrects them.
+- Corrected Coordinator/Client guide exclusivity from applied role readiness without requiring a live peer, while
+  leaving a fresh installation unlocked and keeping Settings as the role-switch surface.
+- Replaced stale crew rows with compact Queue, staged Skip/Undo, and guarded local-copy Delete actions. Save and
+  Next moves staged rows to reversible Ignored state, preserves at least one Active row, and rechecks stale state.
+- No runtime, scheduler, IPC, wire, persistence, model, or configuration-schema contract changed.
+
 ## 2026-07-14 — Modern operator UI and player documentation
 - Corrected the initial P1179 navigation-only approach with five complete guided tasks: Coordinator, Client,
   first preset, crew/launch profiles, and schedule builder. Home leads with their live progress, and Guide is a

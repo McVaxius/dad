@@ -1,3 +1,4 @@
+using System.Net;
 using dad.Models;
 
 namespace dad.Windows;
@@ -25,6 +26,43 @@ internal sealed record DadGuideProgress(
 
 internal static class DadGuideReadiness
 {
+    public static bool TryGetConnectionFlowRestriction(
+        Plugin plugin,
+        DadGuideFlow requestedFlow,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (requestedFlow is not (DadGuideFlow.Coordinator or DadGuideFlow.Client))
+            return false;
+
+        var configuredAsCoordinator = plugin.Configuration.RunAsServerDad;
+        var requestedCoordinator = requestedFlow == DadGuideFlow.Coordinator;
+        if (configuredAsCoordinator == requestedCoordinator || !IsCurrentConnectionRoleConfigured(plugin))
+            return false;
+
+        var currentRole = configuredAsCoordinator ? "Coordinator" : "Client";
+        reason = $"Each DAD has one connection role. This DAD is already configured as {currentRole}. Change the role in Settings before opening the opposite workflow.";
+        return true;
+    }
+
+    public static bool IsCurrentConnectionRoleConfigured(Plugin plugin)
+    {
+        var configuration = plugin.Configuration;
+        var profile = plugin.ConfigManager.GetActiveConfig();
+        var endpointHost = configuration.RunAsServerDad
+            ? configuration.ServerListenHost
+            : configuration.ServerDadHost;
+        var endpointPort = configuration.RunAsServerDad
+            ? configuration.ServerListenPort
+            : configuration.ServerDadPort;
+
+        return configuration.PluginEnabled &&
+               profile.Enabled &&
+               !string.IsNullOrWhiteSpace(configuration.ClientAccountId) &&
+               ValidEndpoint(endpointHost, endpointPort) &&
+               (!RequiresLanSecret(endpointHost) || !string.IsNullOrWhiteSpace(configuration.TransportSharedSecret));
+    }
+
     public static DadGuideProgress Build(Plugin plugin, DadGuideFlow flow)
     {
         var configuration = plugin.Configuration;
@@ -135,4 +173,20 @@ internal static class DadGuideReadiness
 
     private static bool ValidEndpoint(string host, int port)
         => !string.IsNullOrWhiteSpace(host) && port is > 0 and <= 65535;
+
+    private static bool RequiresLanSecret(string host)
+    {
+        var normalized = host.Trim();
+        if (normalized.StartsWith("[", StringComparison.Ordinal) &&
+            normalized.EndsWith("]", StringComparison.Ordinal) &&
+            normalized.Length > 2)
+        {
+            normalized = normalized[1..^1];
+        }
+
+        if (string.Equals(normalized, "localhost", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return !IPAddress.TryParse(normalized, out var address) || !IPAddress.IsLoopback(address);
+    }
 }

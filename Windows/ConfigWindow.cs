@@ -294,11 +294,29 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawGeneralTab(Configuration configuration)
     {
         DadUi.Heading("CORE & CONNECTION", "Enable DAD, choose this client's role, and connect the crew securely.");
-        if (DadUi.Button("Guide: set up a Coordinator", DadUiTone.Accent))
-            plugin.OpenSetupWizard(DadGuideFlow.Coordinator);
-        ImGui.SameLine();
-        if (DadUi.Button("Guide: connect a Client"))
-            plugin.OpenSetupWizard(DadGuideFlow.Client);
+        if (ImGui.BeginTable("dad-settings-role-guides", 2, ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
+        {
+            foreach (var target in new[] { DadGuideFlow.Coordinator, DadGuideFlow.Client })
+            {
+                var restricted = DadGuideReadiness.TryGetConnectionFlowRestriction(plugin, target, out var restriction);
+                var coordinator = target == DadGuideFlow.Coordinator;
+                ImGui.TableNextColumn();
+                ImGui.BeginDisabled(restricted);
+                if (DadUi.BeginCard($"dad-settings-role-{target}", 92f))
+                {
+                    DadUi.Heading(coordinator ? "COORDINATOR" : "CLIENT", coordinator
+                        ? "Own plans, schedules, and crew dispatch."
+                        : "Connect this DAD to the configured Coordinator.");
+                    if (DadUi.Button($"Open {target} guide##dad-settings-role-guide-{target}", DadUiTone.Accent))
+                        plugin.OpenSetupWizard(target);
+                    if (restricted && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                        ImGui.SetTooltip(restriction);
+                    DadUi.EndCard();
+                }
+                ImGui.EndDisabled();
+            }
+            ImGui.EndTable();
+        }
         DadUi.Section("Core", "The switches most players need for normal runs.");
 
         var enabled = configuration.PluginEnabled;
@@ -312,7 +330,7 @@ public sealed class ConfigWindow : Window, IDisposable
             connectionEditor.Reset(configuration);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Enable on the one DAD client that plans and dispatches work. Leave off on crew clients.");
+            ImGui.SetTooltip("Each DAD has one role. Enable this on the DAD that plans and dispatches work; turn it off for a Client. This Settings control is how an already configured DAD changes roles.");
 
         var localOnly = configuration.LocalOnlyModeEnabled;
         if (ImGui.Checkbox("Keep runs on this client only", ref localOnly))
@@ -405,34 +423,6 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawStatusRow("Secret configured", transport.SharedSecretConfigured ? "Yes" : "No");
         if (!string.IsNullOrWhiteSpace(transport.LastAuthOrProtocolError))
             DrawStatusRow("Auth/protocol", transport.LastAuthOrProtocolError);
-        if (configuration.DebugUiEnabled)
-        {
-            DrawStatusRow("Publish epoch", FormatText(transport.HubRosterPublishEpochId, "(none)"));
-            DrawStatusRow("Publish generation", transport.HubRosterPublishGeneration.ToString());
-            DrawStatusRow("Roster participants", $"{transport.PublishedParticipantCount} published | {transport.KnownParticipantCount} known");
-            DrawStatusRow("Transport queues", $"{transport.PendingTransportEventCount} event(s) | {transport.PendingOutboundOperationCount} outbound");
-            DrawStatusRow("Last publish", $"{FormatTime(transport.LastRosterPublishUtc)} | {FormatText(transport.LastRosterPublishReason, "(none)")}");
-            if (transport.CoalescedRosterPublishCount > 0)
-                DrawStatusRow("Coalesced publishes", transport.CoalescedRosterPublishCount.ToString());
-            if (!string.IsNullOrWhiteSpace(transport.LastTransportTimeoutSummary))
-                DrawStatusRow("Transport timeout", transport.LastTransportTimeoutSummary);
-        }
-
-        if (configuration.DebugUiEnabled)
-        {
-            DadUi.Section("Debug diagnostics", "Runtime bridge and transport details shown by /dad debug.");
-            var dutyIpcStatus = plugin.DutyIpcService.GetStatus();
-            var bridgeStatus = plugin.QuestionableBridge.GetStatus();
-            DrawStatusRow("Debug UI", "Enabled via /dad debug.");
-            DrawStatusRow("DAD duty IPC", FormatDutyIpcRegistrationStatus(dutyIpcStatus));
-            DrawStatusRow("Questionable runtime bridge", FormatQuestionableBridgeStatus(bridgeStatus));
-            DrawStatusRow("Questionable cosmetic", FormatQuestionableCosmeticStatus(bridgeStatus));
-            DrawStatusRow("DAD duty IPC probe", FormatDutyIpcProbeStatus(dutyIpcStatus));
-            DrawStatusRow("DAD duty IPC run", FormatDutyIpcFailureStatus(dutyIpcStatus));
-            DrawStatusRow("DAD duty IPC cleanup", FormatDutyIpcCleanupStatus(dutyIpcStatus));
-            DrawStatusRow("Transport protocol", plugin.TransportService.CurrentTransport.ProtocolVersion.ToString());
-        }
-
         DadUi.Section("Advanced timing", "The defaults suit normal play; tune these only when clients or plugins need longer waits.");
         var showAdvancedTiming = configuration.AdvancedModeEnabled;
         if (ImGui.Checkbox("Show advanced timing controls", ref showAdvancedTiming))

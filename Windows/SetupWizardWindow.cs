@@ -25,6 +25,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private int stepIndex;
     private int furthestStep;
     private string validationMessage = string.Empty;
+    private string roleRestrictionMessage = string.Empty;
 
     private bool basicsDraftInitialized;
     private bool draftPluginEnabled;
@@ -43,6 +44,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private string presetCompletionCommands = string.Empty;
 
     private readonly HashSet<string> crewOwnershipAssignments = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> crewStagedSkips = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadLaunchProfile> launchProfileDrafts = new(StringComparer.OrdinalIgnoreCase);
 
     private string scheduleId = string.Empty;
@@ -84,6 +86,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         stepIndex = 0;
         furthestStep = 0;
         validationMessage = string.Empty;
+        roleRestrictionMessage = string.Empty;
         IsOpen = true;
     }
 
@@ -95,10 +98,19 @@ public sealed class SetupWizardWindow : Window, IDisposable
             return;
         }
 
+        if (DadGuideReadiness.TryGetConnectionFlowRestriction(plugin, requestedFlow, out var restriction))
+        {
+            OpenLanding();
+            roleRestrictionMessage = restriction;
+            plugin.PrintStatus(restriction);
+            return;
+        }
+
         flow = requestedFlow;
         stepIndex = 0;
         furthestStep = 0;
         validationMessage = string.Empty;
+        roleRestrictionMessage = string.Empty;
         InitializeDrafts();
         IsOpen = true;
     }
@@ -167,6 +179,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         DadUi.Heading("DAD GUIDE", "Choose the job you are trying to finish. Each guide edits the real DAD setup and reports live readiness.");
         ImGui.TextWrapped("DAD coordinates characters, saved presets, client wake/relog, party assembly, and scheduled runs. Start with Coordinator or Client setup, then build the crew, a preset, and a schedule.");
+        if (!string.IsNullOrWhiteSpace(roleRestrictionMessage))
+        {
+            DadUi.Badge("Connection role is already configured", DadUiTone.Warning);
+            ImGui.TextWrapped(roleRestrictionMessage);
+        }
         ImGui.Spacing();
 
         var flows = new[]
@@ -183,7 +200,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
             foreach (var candidate in flows)
             {
                 var progress = DadGuideReadiness.Build(plugin, candidate);
+                var restricted = DadGuideReadiness.TryGetConnectionFlowRestriction(plugin, candidate, out var restriction);
                 ImGui.TableNextColumn();
+                ImGui.BeginDisabled(restricted);
                 if (DadUi.BeginCard($"dad-guide-card-{candidate}", 132f))
                 {
                     DadUi.Badge(
@@ -193,8 +212,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     ImGui.TextWrapped(progress.Ready ? "Review or change this setup." : $"Next: {progress.NextAction}");
                     if (DadUi.Button($"Open guide##dad-guide-open-{candidate}", DadUiTone.Accent))
                         OpenFlow(candidate);
+                    if (restricted && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                        ImGui.SetTooltip(restriction);
                     DadUi.EndCard();
                 }
+                ImGui.EndDisabled();
             }
             ImGui.EndTable();
         }
@@ -987,6 +1009,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var stale = catalog.Characters
             .Where(static row => row.Visibility == DadRosterVisibility.Active && (row.IsStale || row.NeedsRosterUpdate))
             .ToList();
+        var staleKeys = stale
+            .Select(DadRosterIdentity.BuildKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        crewStagedSkips.RemoveWhere(key => !staleKeys.Contains(key));
         if (stale.Count == 0)
         {
             DadUi.Badge("No stale Active rows", DadUiTone.Success);
@@ -998,13 +1024,64 @@ public sealed class SetupWizardWindow : Window, IDisposable
         if (ImGui.Button("Queue updates for all stale rows"))
             QueueRosterUpdate(stale);
 
+        ImGui.TextWrapped("Skip is staged as Ignore on Save and Next. Ignored rows are reversible under Crew -> Ignored. Delete removes only DAD's local cached copy; XADB snapshots and remote authoritative data remain untouched.");
+        if (!ImGui.BeginTable(
+                "dad-guide-stale-rows",
+                4,
+                ImGuiTableFlags.Borders |
+                ImGuiTableFlags.RowBg |
+                ImGuiTableFlags.SizingStretchProp |
+                ImGuiTableFlags.NoSavedSettings))
+        {
+            return;
+        }
+
+        ImGui.TableSetupColumn("Character", ImGuiTableColumnFlags.WidthStretch, 1.1f);
+        ImGui.TableSetupColumn("Account / source", ImGuiTableColumnFlags.WidthStretch, 1.1f);
+        ImGui.TableSetupColumn("Problem", ImGuiTableColumnFlags.WidthStretch, 1f);
+        ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthStretch, 1.35f);
+        ImGui.TableHeadersRow();
+
         foreach (var row in stale)
         {
-            DadUi.KeyValue(
-                plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value),
-                row.NeedsRosterUpdate ? "Needs update" : "Stale snapshot",
-                220f);
+            var rowKey = DadRosterIdentity.BuildKey(row);
+            var staged = crewStagedSkips.Contains(rowKey);
+            var account = row.AccountKey.IsEmpty
+                ? "Unassigned"
+                : FormatText(row.AccountAlias, row.AccountKey.Value);
+            var source = IsRemoteRosterRow(row)
+                ? "Connected Client"
+                : plugin.PresetProviderService.GetCharacterSourceLabel(row.Source);
+            var problem = row.NeedsRosterUpdate && row.IsStale
+                ? "Needs update; snapshot is stale"
+                : row.NeedsRosterUpdate ? "Needs update" : "Snapshot is stale";
+
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value));
+            ImGui.TableNextColumn();
+            ImGui.TextWrapped($"{account} | {source}");
+            ImGui.TableNextColumn();
+            ImGui.TextWrapped(staged ? $"{problem} | Ignore on Save and Next" : problem);
+            ImGui.TableNextColumn();
+            if (ImGui.SmallButton($"Queue update##dad-guide-stale-queue-{rowKey}"))
+                QueueRosterUpdate([row]);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"{(staged ? "Undo" : "Skip")}##dad-guide-stale-skip-{rowKey}"))
+            {
+                if (staged)
+                    crewStagedSkips.Remove(rowKey);
+                else
+                    crewStagedSkips.Add(rowKey);
+            }
+            ImGui.SameLine();
+            if (DrawCrewDeleteButton(row, rowKey))
+                ForgetCrewRosterCopy(row);
         }
+
+        ImGui.EndTable();
+        if (crewStagedSkips.Count > 0)
+            DadUi.Badge($"{crewStagedSkips.Count} row(s) will move to Ignored on Save and Next", DadUiTone.Warning);
     }
 
     private void DrawCrewLaunchProfiles(DadAccountRosterCatalog catalog)
@@ -1495,7 +1572,43 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     .ToList();
                 return savedActive.Count > 0 && savedActive.All(static row => !row.AccountKey.IsEmpty) || Reject("Every Active roster row needs account ownership. Connected rows must be assigned on their owning Client.");
             case 2:
-                return active.Count > 0 && active.All(static row => !row.IsStale && !row.NeedsRosterUpdate) || Reject("Refresh or queue updates for every stale Active row.");
+                var stagedRows = active
+                    .Where(row => crewStagedSkips.Contains(DadRosterIdentity.BuildKey(row)))
+                    .ToList();
+                if (active.Count - stagedRows.Count < 1)
+                    return Reject("At least one Active roster row must remain. Undo one Skip, queue its update, or correct the source data.");
+
+                DadAccountRosterCatalog refreshedCatalog;
+                if (stagedRows.Count > 0)
+                {
+                    var resultJson = plugin.SetRosterVisibilityFromJson(DadIpcJson.Serialize(new DadRosterVisibilityChangeRequest
+                    {
+                        CharacterRefs = stagedRows.Select(DadRosterIdentity.From).ToList(),
+                        Visibility = DadRosterVisibility.Ignored,
+                        Reason = "Ignored from Build the Crew guide on Save and Next.",
+                    }));
+                    refreshedCatalog = DadIpcJson.Deserialize<DadAccountRosterCatalog>(resultJson)
+                                       ?? plugin.RosterCatalogService.CurrentCatalog;
+                    crewStagedSkips.Clear();
+                }
+                else
+                {
+                    refreshedCatalog = plugin.RosterCatalogService.RefreshCatalog(
+                        plugin.CharacterIntelligenceService.CurrentPool,
+                        new DadRosterRefreshPlan
+                        {
+                            IncludeHidden = true,
+                            IncludeIgnored = true,
+                            StaleAfterHours = plugin.Configuration.RosterCatalog.StaleAfterHours,
+                        });
+                }
+
+                var remainingActive = refreshedCatalog.Characters
+                    .Where(static row => row.Visibility == DadRosterVisibility.Active)
+                    .ToList();
+                return remainingActive.Count > 0 &&
+                       remainingActive.All(static row => !row.IsStale && !row.NeedsRosterUpdate) ||
+                       Reject("A remaining Active row is stale or still needs an update. Queue or refresh it, or stage Skip and save again.");
             case 3:
                 EnsureLaunchProfileDrafts();
                 if (!launchProfileDrafts.Values.Any(static profile => profile.Enabled && !profile.AccountKey.IsEmpty))
@@ -1637,6 +1750,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         presetDutySearch = presetPlannerDraft.DutyDisplayName;
 
         crewOwnershipAssignments.Clear();
+        crewStagedSkips.Clear();
         launchProfileDrafts.Clear();
         EnsureLaunchProfileDrafts();
 
@@ -1715,6 +1829,47 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }));
         var queue = DadIpcJson.Deserialize<DadSchedulerQueueSnapshot>(resultJson);
         plugin.PrintStatus(queue?.Summary ?? "Roster updates enqueued.");
+    }
+
+    private bool DrawCrewDeleteButton(DadRosterCharacter row, string rowKey)
+    {
+        var supported = plugin.RosterCatalogService.HasLocalRosterCopy(row);
+        var modifierHeld = ImGui.GetIO().KeyCtrl && ImGui.GetIO().KeyShift;
+        ImGui.BeginDisabled(!supported || !modifierHeld);
+        var clicked = ImGui.SmallButton($"Delete##dad-guide-stale-delete-{rowKey}");
+        var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.EndDisabled();
+
+        if (hovered)
+        {
+            ImGui.SetTooltip(!supported
+                ? "DAD has no removable local cached copy for this row. Choose Skip or correct the authoritative source data."
+                : modifierHeld
+                    ? "Delete DAD's local cached copy now. XADB snapshots and remote authoritative data remain untouched."
+                    : "Hold Ctrl+Shift to delete only DAD's local cached copy. XADB snapshots and remote authoritative data remain untouched.");
+        }
+
+        return clicked;
+    }
+
+    private void ForgetCrewRosterCopy(DadRosterCharacter row)
+    {
+        var rowKey = DadRosterIdentity.BuildKey(row);
+        var changed = plugin.RosterCatalogService.ForgetLocalRosterCopy(row);
+        plugin.RosterCatalogService.RefreshCatalog(
+            plugin.CharacterIntelligenceService.CurrentPool,
+            new DadRosterRefreshPlan
+            {
+                IncludeHidden = true,
+                IncludeIgnored = true,
+                StaleAfterHours = plugin.Configuration.RosterCatalog.StaleAfterHours,
+            });
+        crewStagedSkips.Remove(rowKey);
+
+        var account = row.AccountKey.IsEmpty ? "unassigned account" : FormatText(row.AccountAlias, row.AccountKey.Value);
+        plugin.PrintStatus(changed
+            ? $"Deleted DAD's local cached copy for {plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value)} on {account}. XADB snapshots and remote authoritative data were untouched."
+            : $"No supported local DAD cache copy was found for {plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value)}.");
     }
 
     private void EnsureLaunchProfileDrafts()
