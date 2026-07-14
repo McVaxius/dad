@@ -52,6 +52,8 @@ public static class DadPlannerGroupUpdateRules
                 result.RequiredAccountKey = prior.RequiredAccountKey;
                 result.RequiredCharacterKey = prior.RequiredCharacterKey;
                 result.RequiredJobId = prior.RequiredJobId;
+                result.AdsLootMode = prior.AdsLootMode;
+                result.LevelSeekTarget = prior.LevelSeekTarget;
                 result.WakePolicy = prior.WakePolicy;
                 result.LaunchProfileId = prior.LaunchProfileId;
                 result.CharacterLoadInstruction = prior.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction();
@@ -98,6 +100,8 @@ public static class DadPlannerGroupUpdateRules
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
             RequiredJobId = source.RequiredJobId,
+            AdsLootMode = source.AdsLootMode,
+            LevelSeekTarget = source.LevelSeekTarget,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),

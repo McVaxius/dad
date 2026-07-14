@@ -1,16 +1,27 @@
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Plugin;
+using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
+using dad.Models;
 using FFXIVClientStructs.FFXIV.Client.UI;
 
 namespace dad.Services;
 
-public sealed unsafe class DadDutySupportAdsService(IPluginLog log)
+public sealed unsafe class DadDutySupportAdsService
 {
     private const string AdsInternalName = "ADS";
     private const string AdsDisplayName = "AI Duty Solver";
     private const string AdsOutsideCommand = "/ads outside";
     private const string AdsLeaveCommand = "/ads leave";
     private const string AdsStopCommand = "/ads stop";
+    private readonly IPluginLog log;
+    private readonly ICallGateSubscriber<string, string> patchConfiguration;
+
+    public DadDutySupportAdsService(IDalamudPluginInterface pluginInterface, IPluginLog log)
+    {
+        this.log = log;
+        patchConfiguration = pluginInterface.GetIpcSubscriber<string, string>("ADS.PatchConfigurationJson");
+    }
 
     public string MissingAdsBlocker => "ADS is not loaded; cannot run Duty Support automation after queue";
 
@@ -38,6 +49,42 @@ public sealed unsafe class DadDutySupportAdsService(IPluginLog log)
 
     public bool TryStop(out string failureReason)
         => TrySendCommand(AdsStopCommand, "stop ADS ownership", out failureReason);
+
+    public bool TryPatchConfiguration(DadAdsLootMode? mode, out string failureReason)
+    {
+        // Installed-plugin metadata is diagnostic only. A successful invocation of the
+        // required endpoint is the readiness proof, including during plugin-list lag.
+        var installedMetadataReportsLoaded = IsAdsLoaded();
+
+        try
+        {
+            var response = patchConfiguration.InvokeFunc(DadAdsConfigurationPatchRules.BuildPatchJson(mode));
+            if (DadAdsConfigurationPatchRules.TryEvaluateReadiness(
+                    installedMetadataReportsLoaded,
+                    response,
+                    invocationFailure: null,
+                    out failureReason))
+            {
+                if (!installedMetadataReportsLoaded)
+                {
+                    log.Warning(
+                        "[dad][ADS] ADS.PatchConfigurationJson succeeded while installed-plugin metadata reported ADS unloaded; accepting responsive IPC as readiness proof.");
+                }
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad][ADS] Required configuration patch failed before queue mutation.");
+            return DadAdsConfigurationPatchRules.TryEvaluateReadiness(
+                installedMetadataReportsLoaded,
+                responseJson: null,
+                invocationFailure: ex.Message,
+                out failureReason);
+        }
+    }
 
     public bool IsLeaveBlocked(out string blocker)
     {

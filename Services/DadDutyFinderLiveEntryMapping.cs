@@ -501,4 +501,34 @@ internal static class DadDutyFinderMappedMutationRules
            mapping.Entry!.SelectionToken == lastSelectionToken &&
            selectedAgentType == target.ContentType &&
            selectedAgentId == target.RowId;
+
+    public static bool ShouldAwaitRegularPostSelectionMapping(
+        DadDutyFinderMappingResult mapping,
+        DadDutyFinderSelectionToken? selectionToken)
+        => selectionToken != null &&
+           mapping.Status is DadDutyFinderMappingStatus.Unstable or
+               DadDutyFinderMappingStatus.AwaitingStableSnapshot;
+
+    public static bool CanJoinRegularAfterSelection(
+        DadDutyFinderMappingResult mapping,
+        DadDutyFinderSelectionToken? selectionToken,
+        DadDutyFinderLiveContentType selectedAgentType,
+        uint selectedAgentId,
+        uint interfaceSelectedId,
+        DadDutyFinderLiveTarget target)
+    {
+        if (!mapping.IsReady || selectionToken == null)
+            return false;
+
+        var fresh = mapping.Entry!.SelectionToken;
+        var selected = selectionToken.Value;
+        return fresh.Target == target &&
+               selected.Target == target &&
+               fresh.CharacterContentId == selected.CharacterContentId &&
+               fresh.TreeIndex == selected.TreeIndex &&
+               fresh.CallbackOrdinal == selected.CallbackOrdinal &&
+               selectedAgentType == target.ContentType &&
+               selectedAgentId == target.RowId &&
+               interfaceSelectedId == target.RowId;
+    }
 }

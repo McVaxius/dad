@@ -69,6 +69,41 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
+    public void SummoningBellUnsafeStateBlocksReservationSuppressionResetAndRelogUntilItClears()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        // DadPresenceService maps ConditionFlag.OccupiedSummoningBell to this shared
+        // WorldReadyStable safety gate.
+        target.Snapshot.Participant.WorldReadyStable = false;
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+
+        service.Handle(Request());
+        service.Update();
+        service.Update();
+
+        Assert.Equal(0, target.ReserveCount);
+        Assert.DoesNotContain("AcquireSuppression", target.Actions);
+        Assert.DoesNotContain("DisableAutoRetainer", target.Actions);
+        Assert.DoesNotContain("ResetAutoRetainer", target.Actions);
+        Assert.DoesNotContain("RelogCharacter", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        target.Snapshot.Participant.WorldReadyStable = true;
+        Prepare(service, target);
+        Assert.Equal(1, target.ReserveCount);
+        Assert.Contains("AcquireSuppression", target.Actions);
+
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        ExecuteGo(service, clock, DadWakeCommitKind.Relog);
+
+        Assert.Contains("SetMultiMode:False", target.Actions);
+        Assert.Contains("DisableAutoRetainer", target.Actions);
+        Assert.Contains("ResetAutoRetainer", target.Actions);
+        Assert.Contains("RelogCharacter", target.Actions);
+    }
+
+    [Fact]
     public void ExistingVermaxionHoldWaitsBeforeReservationOrCallbackMutation()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);

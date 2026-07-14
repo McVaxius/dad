@@ -2434,6 +2434,7 @@ public sealed class DadTransportService : IDisposable
                 CharacterKey = reference.CharacterKey,
                 ContentId = reference.ContentId,
                 RequiredJobId = reference.RequiredJobId,
+                AdsLootMode = reference.AdsLootMode,
             }).ToList(),
             AccountKeys = [..source.AccountKeys],
             CharacterKeys = [..source.CharacterKeys],

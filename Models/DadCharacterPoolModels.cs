@@ -130,6 +130,14 @@ public enum DadInviteAuthority
     External,
 }
 
+public enum DadAdsLootMode
+{
+    NoChange = 0,
+    Need = 1,
+    Greed = 2,
+    Pass = 3,
+}
+
 public enum DadRosterSourceMode
 {
     ConnectedAndXadb,
@@ -419,6 +427,8 @@ public sealed class DadPlannerGroupSlot
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public uint? RequiredJobId { get; set; }
+    public DadAdsLootMode AdsLootMode { get; set; } = DadAdsLootMode.NoChange;
+    public int? LevelSeekTarget { get; set; }
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public string LaunchProfileId { get; set; } = string.Empty;
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
@@ -540,6 +550,8 @@ public sealed class DadPresetCharacterSlot
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public uint? RequiredJobId { get; set; }
+    public DadAdsLootMode AdsLootMode { get; set; } = DadAdsLootMode.NoChange;
+    public int? LevelSeekTarget { get; set; }
     public DadSlotAssignmentMode AssignmentMode { get; set; } = DadSlotAssignmentMode.Auto;
     public ulong? ContentId { get; set; }
     public string CharacterKey { get; set; } = string.Empty;

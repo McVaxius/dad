@@ -200,6 +200,7 @@ public sealed class DadRosterCharacterRef
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
     public ulong ContentId { get; set; }
     public uint? RequiredJobId { get; set; }
+    public DadAdsLootMode? AdsLootMode { get; set; }
 
     public bool IsEmpty => AccountKey.IsEmpty && CharacterKey.IsEmpty && ContentId == 0;
 
@@ -210,6 +211,7 @@ public sealed class DadRosterCharacterRef
             CharacterKey = CharacterKey,
             ContentId = ContentId,
             RequiredJobId = RequiredJobId,
+            AdsLootMode = AdsLootMode,
         };
 }
 

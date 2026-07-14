@@ -23,6 +23,7 @@ public enum DadSchedulerPresetPhase
     Blocked,
     TimedOut,
     Cancelled,
+    Skipped,
 }
 
 public sealed class DadLaunchProfile
@@ -143,6 +144,8 @@ public sealed class DadSchedulerSlotState
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public uint? RequiredJobId { get; set; }
+    public DadAdsLootMode AdsLootMode { get; set; } = DadAdsLootMode.NoChange;
+    public int? LevelSeekTarget { get; set; }
     public string LaunchProfileId { get; set; } = string.Empty;
     public string LaunchProfileName { get; set; } = string.Empty;
     public string BatchPath { get; set; } = string.Empty;
@@ -208,6 +211,8 @@ public sealed class DadSchedulerSlotState
             RequiredAccountKey = RequiredAccountKey,
             RequiredCharacterKey = RequiredCharacterKey,
             RequiredJobId = RequiredJobId,
+            AdsLootMode = AdsLootMode,
+            LevelSeekTarget = LevelSeekTarget,
             LaunchProfileId = LaunchProfileId,
             LaunchProfileName = LaunchProfileName,
             BatchPath = BatchPath,
@@ -346,9 +351,11 @@ public sealed class DadSchedulerPresetState
         => new()
         {
             RequestId = string.IsNullOrWhiteSpace(PlannerRequestId) ? SchedulerRunId : PlannerRequestId,
-            Status = Phase is DadSchedulerPresetPhase.Blocked or DadSchedulerPresetPhase.TimedOut
+            Status = Phase == DadSchedulerPresetPhase.Cancelled
+                ? DadRunStatus.Cancelled
+                : Phase is DadSchedulerPresetPhase.Blocked or DadSchedulerPresetPhase.TimedOut
                 ? DadRunStatus.Rejected
-                : Phase == DadSchedulerPresetPhase.Completed
+                : Phase is DadSchedulerPresetPhase.Completed or DadSchedulerPresetPhase.Skipped
                     ? DadRunStatus.Completed
                 : Phase == DadSchedulerPresetPhase.StartedPlanner
                     ? DadRunStatus.Queued

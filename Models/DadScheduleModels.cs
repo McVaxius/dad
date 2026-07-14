@@ -130,6 +130,7 @@ public sealed class DadScheduleRunState
     public int RepeatIteration { get; set; } = 1;
     public int TotalEntryExecutions { get; set; }
     public int CompletedEntryExecutions { get; set; }
+    public int SkippedEntryExecutions { get; set; }
     public string ActiveSchedulerJobId { get; set; } = string.Empty;
     public string ActivePlannerRequestId { get; set; } = string.Empty;
     public string Summary { get; set; } = "Schedule idle.";
@@ -163,6 +164,7 @@ public sealed class DadScheduleRunState
             RepeatIteration = RepeatIteration,
             TotalEntryExecutions = TotalEntryExecutions,
             CompletedEntryExecutions = CompletedEntryExecutions,
+            SkippedEntryExecutions = SkippedEntryExecutions,
             ActiveSchedulerJobId = ActiveSchedulerJobId,
             ActivePlannerRequestId = ActivePlannerRequestId,
             Summary = Summary,
@@ -184,6 +186,7 @@ public sealed class DadScheduleRunState
             CompletedAtUtc = CompletedAtUtc ?? DateTime.UtcNow,
             TotalEntryExecutions = TotalEntryExecutions,
             CompletedEntryExecutions = CompletedEntryExecutions,
+            SkippedEntryExecutions = SkippedEntryExecutions,
             Summary = Summary,
             BlockedReason = BlockedReason,
         };
@@ -203,6 +206,7 @@ public sealed class DadScheduleRunResult
     public DateTime CompletedAtUtc { get; set; } = DateTime.UtcNow;
     public int TotalEntryExecutions { get; set; }
     public int CompletedEntryExecutions { get; set; }
+    public int SkippedEntryExecutions { get; set; }
     public string Summary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
 
@@ -221,6 +225,7 @@ public sealed class DadScheduleRunResult
             CompletedAtUtc = CompletedAtUtc,
             TotalEntryExecutions = TotalEntryExecutions,
             CompletedEntryExecutions = CompletedEntryExecutions,
+            SkippedEntryExecutions = SkippedEntryExecutions,
             Summary = Summary,
             BlockedReason = BlockedReason,
         };
@@ -233,6 +238,27 @@ public sealed class DadScheduleSnapshot
     public List<DadScheduleDefinition> Schedules { get; set; } = [];
     public DadScheduleRunState ActiveRun { get; set; } = new();
     public List<DadScheduleRunResult> RecentResults { get; set; } = [];
+}
+
+public sealed class DadScheduleStartRequest
+{
+    public string ScheduleId { get; set; } = string.Empty;
+    public bool DryRun { get; set; }
+    public string RequestedBy { get; set; } = string.Empty;
+}
+
+public sealed class DadScheduleCancelRequest
+{
+    public string RunId { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class DadScheduleCancelResult
+{
+    public string RunId { get; set; } = string.Empty;
+    public bool Cancelled { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public DadScheduleRunState ActiveRun { get; set; } = new();
 }
 
 public static class DadScheduleRules
@@ -323,6 +349,7 @@ public static class DadScheduleRules
             RepeatIteration = 1,
             TotalEntryExecutions = schedule.Entries.Sum(static entry => entry.Normalize().RepeatCount),
             CompletedEntryExecutions = 0,
+            SkippedEntryExecutions = 0,
         };
         ApplyCurrentEntry(state, schedule.Entries[0]);
         state.Summary = BuildEntrySummary(state);
@@ -359,7 +386,8 @@ public static class DadScheduleRules
         IReadOnlyList<DadScheduleEntry> entries,
         bool entrySucceeded,
         string terminalSummary,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        bool entrySkipped = false)
     {
         var state = source.Clone();
         nowUtc = EnsureUtc(nowUtc);
@@ -376,6 +404,13 @@ public static class DadScheduleRules
             state.CompletedEntryExecutions + 1,
             0,
             Math.Max(state.TotalEntryExecutions, 1));
+        if (entrySkipped)
+        {
+            state.SkippedEntryExecutions = Math.Clamp(
+                state.SkippedEntryExecutions + 1,
+                0,
+                state.CompletedEntryExecutions);
+        }
 
         if (state.RepeatIteration < currentEntry.RepeatCount)
         {

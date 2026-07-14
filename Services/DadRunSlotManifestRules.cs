@@ -86,6 +86,7 @@ internal static class DadRunSlotManifestRules
                 CharacterKey = reference.CharacterKey,
                 ContentId = reference.ContentId,
                 RequiredJobId = reference.RequiredJobId,
+                AdsLootMode = reference.AdsLootMode,
                 IsLeader = string.Equals(reference.CharacterKey.Value, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase),
                 IsInviter = string.Equals(reference.CharacterKey.Value, plan.InviterCharacterKey, StringComparison.OrdinalIgnoreCase),
             });
@@ -385,7 +386,8 @@ internal static class DadRunSlotManifestRules
             if (!Same(left[index].AccountKey.Value, right[index].AccountKey.Value) ||
                 !Same(left[index].CharacterKey.Value, right[index].CharacterKey.Value) ||
                 left[index].ContentId != right[index].ContentId ||
-                left[index].RequiredJobId != right[index].RequiredJobId)
+                left[index].RequiredJobId != right[index].RequiredJobId ||
+                left[index].AdsLootMode != right[index].AdsLootMode)
             {
                 return false;
             }

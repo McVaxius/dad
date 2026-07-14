@@ -69,7 +69,7 @@ public static class DadOperatorPhaseText
             DadRunPhase.DiscoveringParticipants or DadRunPhase.WaitingForReadiness or DadRunPhase.ClaimingSlots or DadRunPhase.AssemblingParty => "Party",
             DadRunPhase.QueuePreparing or DadRunPhase.QueueStarting or DadRunPhase.WaitingForQueuePop => "Queue",
             DadRunPhase.InDutyOrTask => IsTaskLane(moduleId) ? "Task" : "Duty",
-            DadRunPhase.PostRunStabilizing or DadRunPhase.RequeueOrComplete or DadRunPhase.Finalizing => "Done",
+            DadRunPhase.PostRunStabilizing or DadRunPhase.RequeueOrComplete or DadRunPhase.TearingDownParty or DadRunPhase.Finalizing => "Done",
             _ => run.Status switch
             {
                 DadRunStatus.WaitingForParticipants => "Party",

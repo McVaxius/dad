@@ -203,6 +203,8 @@ public static class DadPlannerSlotRules
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
             RequiredJobId = source.RequiredJobId,
+            AdsLootMode = source.AdsLootMode,
+            LevelSeekTarget = source.LevelSeekTarget is > 0 ? source.LevelSeekTarget : null,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),

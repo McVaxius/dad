@@ -147,6 +147,7 @@ public enum DadRunPhase
     PostRunStabilizing,
     RequeueOrComplete,
     Finalizing,
+    TearingDownParty,
 }
 
 public enum DadModuleBlockerSeverity

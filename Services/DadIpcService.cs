@@ -68,6 +68,9 @@ public sealed class DadIpcService : IDisposable
         Register(pluginInterface, DadIpcContract.GetSchedulerQueue, this.plugin.GetSchedulerQueueJson);
         Register<string, string>(pluginInterface, DadIpcContract.EnqueueScheduledPreset, this.plugin.EnqueueScheduledPresetFromJson);
         Register<string, string>(pluginInterface, DadIpcContract.CancelScheduledJob, this.plugin.CancelScheduledJobFromJson);
+        Register(pluginInterface, DadIpcContract.GetSchedules, this.plugin.GetSchedulesJson);
+        Register<string, string>(pluginInterface, DadIpcContract.StartSchedule, this.plugin.StartScheduleFromJson);
+        Register<string, string>(pluginInterface, DadIpcContract.CancelSchedule, this.plugin.CancelScheduleFromJson);
         Register(pluginInterface, DadIpcContract.GetModuleCapabilities, () => DadIpcJson.Serialize(moduleRegistry.GetCapabilities()));
         Register(pluginInterface, DadIpcContract.GetSupportedJobHints, () => this.presetProviderService.GetSupportedJobHintsJson());
         Register<string, string>(pluginInterface, DadIpcContract.StartTasks, StartTasksFromJson);

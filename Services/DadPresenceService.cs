@@ -751,6 +751,7 @@ public sealed class DadPresenceService
             (ConditionFlag.Occupied30, "occupied"),
             (ConditionFlag.OccupiedInEvent, "occupied in an event"),
             (ConditionFlag.OccupiedInQuestEvent, "occupied in a quest event"),
+            (ConditionFlag.OccupiedSummoningBell, "occupied at a summoning bell"),
             (ConditionFlag.Occupied33, "occupied"),
             (ConditionFlag.OccupiedInCutSceneEvent, "occupied in a cutscene"),
             (ConditionFlag.WatchingCutscene, "watching a cutscene"),

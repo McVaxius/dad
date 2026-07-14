@@ -373,7 +373,18 @@ public sealed class DadSchedulerService
         }
 
         if (configuration.ActiveScheduleRun.IsActive)
-            return configuration.ActiveScheduleRun.Clone();
+        {
+            if (string.Equals(configuration.ActiveScheduleRun.ScheduleId, scheduleId?.Trim(), StringComparison.OrdinalIgnoreCase))
+                return configuration.ActiveScheduleRun.Clone();
+
+            return DadScheduleRules.BlockRun(new DadScheduleRunState
+            {
+                RunId = Guid.NewGuid().ToString("N"),
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                ScheduleName = "Schedule",
+                RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
+            }, $"Schedule '{configuration.ActiveScheduleRun.ScheduleName}' is already active as run {configuration.ActiveScheduleRun.RunId}.", DateTime.UtcNow);
+        }
 
         var schedule = FindSchedule(scheduleId);
         if (schedule == null)
@@ -393,11 +404,19 @@ public sealed class DadSchedulerService
     }
 
     public bool CancelScheduleRun(string reason)
+        => CancelScheduleRun(string.Empty, reason);
+
+    public bool CancelScheduleRun(string runId, string reason)
     {
         NormalizeSchedules();
         configuration.ActiveScheduleRun ??= new DadScheduleRunState();
         if (!configuration.ActiveScheduleRun.IsActive)
             return false;
+        if (!string.IsNullOrWhiteSpace(runId) &&
+            !string.Equals(configuration.ActiveScheduleRun.RunId, runId.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
 
         var jobId = configuration.ActiveScheduleRun.ActiveSchedulerJobId;
         if (!string.IsNullOrWhiteSpace(jobId))
@@ -747,6 +766,8 @@ public sealed class DadSchedulerService
         DadScheduledCrewJob? job = null)
     {
         var preview = BuildPreview(group, plannerRequestPreview);
+        var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
+        var levelSeek = DadLevelSeekEvaluator.Evaluate(effectiveGroup, characterIntelligenceService.CurrentPool);
         activeJob = job?.Clone() ?? new DadScheduledCrewJob
         {
             JobType = DadSchedulerJobType.ScheduledPreset,
@@ -755,7 +776,8 @@ public sealed class DadSchedulerService
             DryRun = dryRun,
             RequestedBy = "scheduler",
         };
-        frozenPlannerRequest = CloneRunRequest(plannerRequestPreview.Request);
+        // This decision is intentionally frozen before early job assignment, wake, launch, or relog.
+        frozenPlannerRequest = levelSeek.ShouldSkip ? null : CloneRunRequest(plannerRequestPreview.Request);
         frozenEarlyAssignments = frozenPlannerRequest == null
             ? []
             : BuildFrozenEarlyAssignments(frozenPlannerRequest, preview.Slots, activeJob);
@@ -795,6 +817,16 @@ public sealed class DadSchedulerService
         strictRevalidationTracker = new DadStrictPlannerRevalidationTracker();
         InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
         nextRefreshUtc = DateTime.MinValue;
+
+        if (levelSeek.ShouldSkip)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Skipped;
+            currentState.Summary = $"Skipped preset '{group.DisplayName}': {levelSeek.Summary}";
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+            RecordTerminalResult(currentState);
+            return CurrentState;
+        }
 
         if (requestRegistration?.Disposition == DadImmutableCommandDisposition.Collision)
         {
@@ -1579,6 +1611,8 @@ public sealed class DadSchedulerService
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
                 RequiredJobId = slot.RequiredJobId,
+                AdsLootMode = slot.AdsLootMode,
+                LevelSeekTarget = slot.LevelSeekTarget,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
             }).ToList(),
@@ -1802,6 +1836,8 @@ public sealed class DadSchedulerService
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
                 RequiredJobId = slot.RequiredJobId,
+                AdsLootMode = slot.AdsLootMode,
+                LevelSeekTarget = slot.LevelSeekTarget,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
             }).ToList(),
@@ -1906,6 +1942,8 @@ public sealed class DadSchedulerService
             RequiredAccountKey = slot.RequiredAccountKey,
             RequiredCharacterKey = slot.RequiredCharacterKey,
             RequiredJobId = slot.RequiredJobId,
+            AdsLootMode = slot.AdsLootMode,
+            LevelSeekTarget = slot.LevelSeekTarget,
             LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty,
             MatchedWorkerSessionId = frozenWorkerSessionId,
         };
@@ -3167,10 +3205,11 @@ public sealed class DadSchedulerService
             or DadSchedulerPresetPhase.Completed
             or DadSchedulerPresetPhase.Blocked
             or DadSchedulerPresetPhase.TimedOut
-            or DadSchedulerPresetPhase.Cancelled;
+            or DadSchedulerPresetPhase.Cancelled
+            or DadSchedulerPresetPhase.Skipped;
 
     private static bool IsSuccessfulTerminalPhase(DadSchedulerPresetPhase phase)
-        => phase is DadSchedulerPresetPhase.StartedPlanner or DadSchedulerPresetPhase.Completed;
+        => phase is DadSchedulerPresetPhase.StartedPlanner or DadSchedulerPresetPhase.Completed or DadSchedulerPresetPhase.Skipped;
 
     private void UpdateActiveScheduleRun(DadRunResult visibleRun)
     {
@@ -3254,6 +3293,23 @@ public sealed class DadSchedulerService
             if (!result.Success)
             {
                 BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(result.BlockedReason, result.Summary)}");
+                return;
+            }
+
+            if (result.FinalPhase == DadSchedulerPresetPhase.Skipped)
+            {
+                var advanced = DadScheduleRules.AdvanceAfterEntry(
+                    state,
+                    schedule.Entries,
+                    entrySucceeded: true,
+                    terminalSummary: $"Schedule entry '{state.CurrentPresetName}' was skipped because every targeted row already met its level target.",
+                    now,
+                    entrySkipped: true);
+                configuration.ActiveScheduleRun = advanced;
+                if (advanced.Status == DadScheduleRunStatus.Completed)
+                    FinalizeScheduleRun(advanced);
+                else
+                    configuration.Save();
                 return;
             }
 
@@ -3604,6 +3660,10 @@ public sealed class DadSchedulerService
             configuration.ActiveScheduleRun.CompletedEntryExecutions,
             0,
             Math.Max(configuration.ActiveScheduleRun.TotalEntryExecutions, configuration.ActiveScheduleRun.CompletedEntryExecutions));
+        configuration.ActiveScheduleRun.SkippedEntryExecutions = Math.Clamp(
+            configuration.ActiveScheduleRun.SkippedEntryExecutions,
+            0,
+            configuration.ActiveScheduleRun.CompletedEntryExecutions);
     }
 
     private void NormalizeScheduleHistory()
@@ -3616,6 +3676,9 @@ public sealed class DadSchedulerService
             result.ScheduleName = result.ScheduleName?.Trim() ?? string.Empty;
             result.Summary = result.Summary?.Trim() ?? string.Empty;
             result.BlockedReason = result.BlockedReason?.Trim() ?? string.Empty;
+            result.CompletedEntryExecutions = Math.Max(0, result.CompletedEntryExecutions);
+            result.TotalEntryExecutions = Math.Max(result.CompletedEntryExecutions, result.TotalEntryExecutions);
+            result.SkippedEntryExecutions = Math.Clamp(result.SkippedEntryExecutions, 0, result.CompletedEntryExecutions);
         }
 
         TrimScheduleHistory();

@@ -1,6 +1,7 @@
 using System.Net.Sockets;
 using dad.Models;
 using dad.Services;
+using Xunit;
 using Xunit.Abstractions;
 
 namespace dad.Tests;
@@ -10,10 +11,13 @@ public sealed class DadLiveStatusProbeTests(ITestOutputHelper output)
     [Fact]
     public async Task QueryConfiguredAuthorityStatusReadOnly()
     {
-        var endpoint = Environment.GetEnvironmentVariable("DAD_LIVE_ENDPOINT")
-                       ?? throw new InvalidOperationException("DAD_LIVE_ENDPOINT is required.");
-        var secret = Environment.GetEnvironmentVariable("DAD_LIVE_SECRET")
-                     ?? throw new InvalidOperationException("DAD_LIVE_SECRET is required.");
+        var endpoint = Environment.GetEnvironmentVariable("DAD_LIVE_ENDPOINT");
+        var secret = Environment.GetEnvironmentVariable("DAD_LIVE_SECRET");
+        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(secret))
+        {
+            output.WriteLine("Read-only live probe not configured; set DAD_LIVE_ENDPOINT and DAD_LIVE_SECRET to opt in.");
+            return;
+        }
         var separator = endpoint.LastIndexOf(':');
         var host = endpoint[..separator];
         var port = int.Parse(endpoint[(separator + 1)..]);
@@ -42,7 +46,7 @@ public sealed class DadLiveStatusProbeTests(ITestOutputHelper output)
                     {
                         ClientInstanceId = clientId,
                         WorkerSessionId = worker,
-                        Role = DadOrchestrationRole.ClientDad,
+                        Role = DadOrchestrationRole.Participant,
                         WorkerRole = DadWorkerRole.ClientDad,
                         IsAvailable = false,
                         IsEligibleForRun = false,
@@ -91,7 +95,7 @@ public sealed class DadLiveStatusProbeTests(ITestOutputHelper output)
             result.Phase,
             result.ActiveTaskName,
             result.ActiveTaskStatus,
-            result.CurrentExecutorStatus.Pulse,
+            result.CurrentExecutorStatus.StepName,
             result.CurrentExecutorStatus.Phase,
             result.BlockedReason,
             result.FailureReason,

@@ -66,6 +66,8 @@ public static class DadSchedulerGroupCloneRules
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
             RequiredJobId = source.RequiredJobId,
+            AdsLootMode = source.AdsLootMode,
+            LevelSeekTarget = source.LevelSeekTarget,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),

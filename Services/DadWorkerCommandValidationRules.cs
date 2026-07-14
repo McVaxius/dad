@@ -48,7 +48,13 @@ internal static class DadWorkerCommandValidationRules
             return false;
 
         if (!DadRunSlotManifestRules.RequiresFrozenRoster(command.Plan))
+        {
+            if (!localRuntime.IsAvailable || !localRuntime.IsEligibleForRun || localRuntime.State == DadParticipantState.Stale)
+                return Fail("Local worker runtime is unavailable or stale.", out blocker);
+            if (command.Plan.Orchestration.RequirePostArReady && !localRuntime.PostArReady)
+                return Fail("Local worker runtime is not post-AR ready.", out blocker);
             return true;
+        }
 
         if (command.Participants == null)
             return Fail("Worker command is missing its participant assignment payload.", out blocker);

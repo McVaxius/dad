@@ -10,6 +10,7 @@ public sealed class DadWorkerExecutionService
     private readonly DadQueueExecutionService queueExecutionService;
     private readonly DadPresenceService presenceService;
     private readonly DadCombatRotationService combatRotationService;
+    private readonly DadDutySupportAdsService adsService;
     private readonly ICondition condition;
     private readonly IPluginLog log;
     private readonly ConcurrentQueue<DadWorkerExecutionCommand> pendingCommands = new();
@@ -34,12 +35,14 @@ public sealed class DadWorkerExecutionService
         DadQueueExecutionService queueExecutionService,
         DadPresenceService presenceService,
         DadCombatRotationService combatRotationService,
+        DadDutySupportAdsService adsService,
         ICondition condition,
         IPluginLog log)
     {
         this.queueExecutionService = queueExecutionService;
         this.presenceService = presenceService;
         this.combatRotationService = combatRotationService;
+        this.adsService = adsService;
         this.condition = condition;
         this.log = log;
         status.WorkerSessionId = presenceService.WorkerSessionId;
@@ -337,10 +340,11 @@ public sealed class DadWorkerExecutionService
             Summary = $"Starting {command.Role} work for {module.DisplayName}.",
         };
 
+        var liveRuntime = presenceService.BuildLiveSafetySnapshot();
         if (!DadWorkerCommandValidationRules.TryValidate(
                 command,
-                presenceService.BuildLiveSafetySnapshot(),
-                out _,
+                liveRuntime,
+                out var localAssignment,
                 out var validationBlocker))
         {
             status.State = DadWorkerExecutionState.Accepted;
@@ -352,6 +356,37 @@ public sealed class DadWorkerExecutionService
             pendingCommandIds.Add(command.CommandId);
             return;
         }
+
+        var adsAssignment = localAssignment.WorkerSessionId.IsEmpty
+            ? liveRuntime
+            : localAssignment;
+        if (!TryResolveLocalAdsLootMode(command, adsAssignment, liveRuntime, out var adsLootMode, out var adsIdentityBlocker))
+        {
+            var attributedBlocker = DadWorkerPrequeueBarrierRules.AttributeFailure(
+                adsAssignment,
+                adsIdentityBlocker);
+            Finish(DadWorkerExecutionState.Failed, false, attributedBlocker, attributedBlocker);
+            return;
+        }
+        if (!adsService.TryPatchConfiguration(adsLootMode, out var adsBlocker))
+        {
+            var attributedBlocker = DadWorkerPrequeueBarrierRules.AttributeFailure(
+                adsAssignment,
+                $"required ADS configuration failed before queue mutation: {adsBlocker}");
+            Finish(
+                DadWorkerExecutionState.Failed,
+                false,
+                attributedBlocker,
+                attributedBlocker);
+            return;
+        }
+
+        log.Information(
+            "[dad][ADS] Required configuration patch accepted slot={SlotId} character={CharacterKey} worker={WorkerSessionId} lootMode={LootMode}.",
+            adsAssignment.AssignedSlotId,
+            adsAssignment.ActiveCharacterKey.Value,
+            adsAssignment.WorkerSessionId.Value,
+            adsLootMode?.ToString() ?? DadAdsLootMode.NoChange.ToString());
 
         if (command.Role == DadWorkerExecutionRole.Participant)
         {
@@ -661,6 +696,59 @@ public sealed class DadWorkerExecutionService
             pulse.Kind,
             pulse.Phase,
             pulse.Summary);
+    }
+
+    private static bool TryResolveLocalAdsLootMode(
+        DadWorkerExecutionCommand command,
+        DadParticipantSnapshot localAssignment,
+        DadParticipantSnapshot liveRuntime,
+        out DadAdsLootMode? mode,
+        out string blocker)
+    {
+        if (!liveRuntime.IsAvailable || !liveRuntime.IsEligibleForRun || liveRuntime.State == DadParticipantState.Stale)
+        {
+            mode = null;
+            blocker = "ADS patch identity proof requires a live, available, run-eligible worker snapshot.";
+            return false;
+        }
+
+        var contentId = localAssignment.Character.ContentId != 0
+            ? localAssignment.Character.ContentId
+            : liveRuntime.Character.ContentId;
+        var characterKey = !localAssignment.ActiveCharacterKey.IsEmpty
+            ? localAssignment.ActiveCharacterKey
+            : liveRuntime.ActiveCharacterKey;
+        var accountKey = !localAssignment.ManagedAccountKey.IsEmpty
+            ? localAssignment.ManagedAccountKey
+            : liveRuntime.ManagedAccountKey;
+
+        if (contentId == 0 || characterKey.IsEmpty)
+        {
+            mode = null;
+            blocker = "ADS patch identity proof requires a non-zero live Content ID and exact character key.";
+            return false;
+        }
+
+        var roster = command.Plan.Orchestration.RequiredRosterCharacters ?? [];
+        var matches = roster
+            .Where(reference =>
+                reference.ContentId == contentId &&
+                !reference.CharacterKey.IsEmpty &&
+                string.Equals(reference.CharacterKey.Value, characterKey.Value, StringComparison.OrdinalIgnoreCase) &&
+                (reference.AccountKey.IsEmpty ||
+                 (!accountKey.IsEmpty && DadRosterIdentity.SameAccount(reference.AccountKey, accountKey))))
+            .ToList();
+
+        if (roster.Count > 0 && matches.Count != 1)
+        {
+            mode = null;
+            blocker = $"ADS patch identity proof expected one frozen roster row for the live worker, found {matches.Count}.";
+            return false;
+        }
+
+        mode = matches.Count == 1 ? matches[0].AdsLootMode : DadAdsLootMode.NoChange;
+        blocker = string.Empty;
+        return true;
     }
 
     private void Finish(DadWorkerExecutionState state, bool success, string summary, string failureReason)

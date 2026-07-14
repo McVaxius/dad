@@ -64,6 +64,8 @@ public static class DadEffectivePlannerGroupProjection
                 if (!resolved.RequiredAccountKey.IsEmpty)
                     slot.RequiredAccountKey = resolved.RequiredAccountKey;
                 slot.RequiredJobId = resolved.RequiredJobId;
+                slot.AdsLootMode = resolved.AdsLootMode;
+                slot.LevelSeekTarget = resolved.LevelSeekTarget;
             }
             bound.Add(slot);
         }

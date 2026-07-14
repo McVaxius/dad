@@ -34,6 +34,9 @@ internal static class DadIpcContract
     public const string GetSchedulerQueue = $"{Prefix}.GetSchedulerQueue";
     public const string EnqueueScheduledPreset = $"{Prefix}.EnqueueScheduledPreset";
     public const string CancelScheduledJob = $"{Prefix}.CancelScheduledJob";
+    public const string GetSchedules = $"{Prefix}.GetSchedules";
+    public const string StartSchedule = $"{Prefix}.StartSchedule";
+    public const string CancelSchedule = $"{Prefix}.CancelSchedule";
     public const string GetModuleCapabilities = $"{Prefix}.GetModuleCapabilities";
     public const string GetSupportedJobHints = $"{Prefix}.GetSupportedJobHints";
     // Review M17: StartRun is an alias of StartTasks (same handler/payload) kept for back-compat.

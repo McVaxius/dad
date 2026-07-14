@@ -702,6 +702,15 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             {
                 if (lastSelectionToken != null)
                 {
+                    if (DadDutyFinderMappedMutationRules.ShouldAwaitRegularPostSelectionMapping(
+                            mapping,
+                            lastSelectionToken))
+                    {
+                        return MappingWait(
+                            content,
+                            $"Waiting for a fresh stable regular-duty scan after exact selection ({mapping.Reason}).");
+                    }
+
                     return RestartRegularSelectionAttempt(
                         content,
                         $"The live Duty Finder list changed before exact regular-duty proof ({mapping.Reason}); restarting with a fresh tab hydration.");
@@ -739,14 +748,15 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
             var selectedType = ConvertContentType(agent->SelectedDuty.ContentType);
             var selectedId = agent->SelectedDuty.Id;
-            var exactInterfaceId = agent->InterfaceSub.SelectedDutyId >= 0 &&
-                                   (uint)agent->InterfaceSub.SelectedDutyId == content.ContentFinderConditionId;
-            if (!exactInterfaceId ||
-                !DadDutyFinderMappedMutationRules.CanJoin(
+            var interfaceSelectedId = agent->InterfaceSub.SelectedDutyId >= 0
+                ? (uint)agent->InterfaceSub.SelectedDutyId
+                : 0;
+            if (!DadDutyFinderMappedMutationRules.CanJoinRegularAfterSelection(
                     mapping,
                     lastSelectionToken,
                     selectedType,
                     selectedId,
+                    interfaceSelectedId,
                     target))
             {
                 return RestartRegularSelectionAttempt(

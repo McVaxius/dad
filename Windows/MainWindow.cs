@@ -6131,7 +6131,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)
     {
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
-        if (!ImGui.BeginTable("dad-planner-group-slots", 9, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        if (!ImGui.BeginTable("dad-planner-group-slots", 11, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollX))
             return;
 
         ImGui.TableSetupColumn("Slot");
@@ -6140,6 +6140,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TableSetupColumn("Account");
         ImGui.TableSetupColumn("Character");
         ImGui.TableSetupColumn("Job");
+        ImGui.TableSetupColumn("ADS Loot");
+        ImGui.TableSetupColumn("Level Seek");
         ImGui.TableSetupColumn("Wake");
         ImGui.TableSetupColumn("Profile");
         ImGui.TableSetupColumn("Edit");
@@ -6174,6 +6176,12 @@ public sealed class MainWindow : Window, IDisposable
             DrawPlannerGroupJobCombo(plannerSnapshot, group, slot, index);
 
             ImGui.TableNextColumn();
+            DrawPlannerGroupAdsLootModeCombo(group, slot, index);
+
+            ImGui.TableNextColumn();
+            DrawPlannerGroupLevelSeekInput(group, slot, index);
+
+            ImGui.TableNextColumn();
             DrawPlannerGroupWakePolicyCombo(group, slot, index);
 
             ImGui.TableNextColumn();
@@ -6189,6 +6197,8 @@ public sealed class MainWindow : Window, IDisposable
                         SlotId = slot.SlotId,
                         IsSubstitute = true,
                         RequiredRole = slot.RequiredRole,
+                        AdsLootMode = slot.AdsLootMode,
+                        LevelSeekTarget = slot.LevelSeekTarget,
                         WakePolicy = slot.WakePolicy,
                         AllowSubstitution = false,
                     });
@@ -6211,6 +6221,52 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.EndTable();
+    }
+
+    private void DrawPlannerGroupAdsLootModeCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
+    {
+        ImGui.SetNextItemWidth(-1f);
+        if (!ImGui.BeginCombo($"##dad-group-ads-loot-{index}", slot.AdsLootMode.ToString()))
+            return;
+
+        foreach (var mode in Enum.GetValues<DadAdsLootMode>())
+        {
+            var selected = mode == slot.AdsLootMode;
+            if (ImGui.Selectable(mode.ToString(), selected))
+            {
+                slot.AdsLootMode = mode;
+                plugin.TouchPlannerGroup(group);
+            }
+            if (selected)
+                ImGui.SetItemDefaultFocus();
+        }
+
+        ImGui.EndCombo();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("NoChange preserves ADS lootMode. Need, Greed, and Pass are patched on the exact selected worker before queueing.");
+    }
+
+    private void DrawPlannerGroupLevelSeekInput(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
+    {
+        var text = slot.LevelSeekTarget?.ToString() ?? string.Empty;
+        ImGui.SetNextItemWidth(-1f);
+        if (ImGui.InputText($"##dad-group-level-seek-{index}", ref text, 4))
+        {
+            var trimmed = text.Trim();
+            if (trimmed.Length == 0)
+            {
+                slot.LevelSeekTarget = null;
+                plugin.TouchPlannerGroup(group);
+            }
+            else if (int.TryParse(trimmed, out var level) && level is >= 1 and <= 999)
+            {
+                slot.LevelSeekTarget = level;
+                plugin.TouchPlannerGroup(group);
+            }
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Blank disables Level seek. A preset is skipped only when every targeted exact row has a known level at or above its target.");
     }
 
     private static int FindSubstituteInsertIndex(IReadOnlyList<DadPlannerGroupSlot> slots, int primaryIndex)

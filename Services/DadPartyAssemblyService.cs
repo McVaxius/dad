@@ -13,6 +13,15 @@ public readonly record struct DadPartyMembershipDecision(
     DadPartyMembershipDisposition Disposition,
     string Summary);
 
+internal static class DadPartySnapshotSourceRules
+{
+    public static IReadOnlyList<DadPartyMemberSnapshot> Read(
+        bool crossRealmPartyActive,
+        Func<IReadOnlyList<DadPartyMemberSnapshot>> readPartyList,
+        Func<IReadOnlyList<DadPartyMemberSnapshot>> readCrossRealmParty)
+        => crossRealmPartyActive ? readCrossRealmParty() : readPartyList();
+}
+
 public sealed class DadPartyAssemblyService
 {
     public List<DadAssemblyInstructionDto> BuildInstructions(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants, out string blocker)

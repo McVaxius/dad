@@ -32,6 +32,7 @@ internal sealed class DadFrozenRunSlot
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
     public ulong ContentId { get; set; }
     public uint? RequiredJobId { get; set; }
+    public DadAdsLootMode? AdsLootMode { get; set; }
     public bool IsLeader { get; set; }
     public bool IsInviter { get; set; }
     public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
@@ -44,6 +45,7 @@ internal sealed class DadFrozenRunSlot
             CharacterKey = CharacterKey,
             ContentId = ContentId,
             RequiredJobId = RequiredJobId,
+            AdsLootMode = AdsLootMode,
             IsLeader = IsLeader,
             IsInviter = IsInviter,
             WorkerSessionId = WorkerSessionId,

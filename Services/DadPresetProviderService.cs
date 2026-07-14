@@ -504,14 +504,14 @@ public sealed class DadPresetProviderService
     {
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
-        var lane = ResolveLaneDefinition(options.ActivityMode);
+        selectedGroup = NormalizeSelectedGroup(selectedGroup);
+        var lane = ResolveEffectiveLaneDefinition(options.ActivityMode, selectedGroup);
         var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
         var selectedDuty = ResolvePlannerSelectedDuty(options, pool, localCharacter, out var autoLevelBlocker);
         var rouletteResolution = lane.RequiresRouletteSelector
             ? GetPlannerSelectedRoulette(options)
             : null;
-        var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
-        selectedGroup = NormalizeSelectedGroup(selectedGroup);
+        var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane, selectedGroup);
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(
             options.ActivityMode,
             selectedGroup,
@@ -599,9 +599,9 @@ public sealed class DadPresetProviderService
             StopPolicy = stopPolicy,
             OperatorMode = options.OperatorMode,
             OperatorModeLabel = GetPlannerOperatorModeLabel(options.OperatorMode),
-            TransportOwner = options.TransportOwner,
+            TransportOwner = lane.DefaultTransportOwner,
             InviteAuthority = effectiveInviteAuthority,
-            QueueAuthority = options.QueueAuthority,
+            QueueAuthority = lane.DefaultQueueAuthority,
             LaneDefinition = CloneLaneDefinition(lane),
             RosterSource = options.ConnectedOnly
                 ? DadRosterSourceMode.ConnectedOnly
@@ -716,7 +716,7 @@ public sealed class DadPresetProviderService
         options ??= new DadPresetPlannerOptions();
         NormalizePlannerOptions(options);
         selectedGroup = NormalizeSelectedGroup(selectedGroup);
-        var lane = ResolveLaneDefinition(options.ActivityMode);
+        var lane = ResolveEffectiveLaneDefinition(options.ActivityMode, selectedGroup);
         var requestModuleId = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane);
         var localCharacter = pool.Characters.FirstOrDefault(static candidate => candidate.Source == DadCharacterSource.LocalRuntime);
         var selectedDuty = ResolvePlannerSelectedDuty(options, pool, localCharacter, out var autoLevelBlocker);
@@ -727,7 +727,7 @@ public sealed class DadPresetProviderService
             ? GetPlannerSelectedRoulette(options)
             : null;
         var rouletteSelectorBlocker = rouletteResolution?.Blocker ?? string.Empty;
-        var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane);
+        var requestedPartySize = ResolveRequestedPartySize(options, selectedDuty, lane, selectedGroup);
         var effectiveSelectedGroup = BuildEffectiveSelectedGroupForLane(
             options.ActivityMode,
             selectedGroup,
@@ -746,7 +746,7 @@ public sealed class DadPresetProviderService
             RequestedBy = previewOnly ? "planner-preview" : selectedGroup == null ? "planner" : $"planner-group:{selectedGroup.DisplayName}",
             StopPolicy = plannerPreview.StopPolicy.Clone().Normalize(),
             CompletionActions = ResolvePlannerCompletionActions(options, effectiveSelectedGroup, completionFallback),
-            Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, selectedDuty, effectiveSelectedGroup),
+            Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, effectiveSelectedGroup, lane, requestedPartySize),
         };
 
         PopulatePlannerRequestTask(
@@ -754,7 +754,8 @@ public sealed class DadPresetProviderService
             options,
             selectedDuty,
             rouletteResolution?.Target,
-            requestedPartySize);
+            requestedPartySize,
+            DadAdaptiveDutyProjectionRules.Resolve(options.ActivityMode, effectiveSelectedGroup).UsesPremadeExecutor);
         request.ApplyOrchestrationDefaults();
 
         var result = new DadPlannerRunRequestPreview
@@ -767,7 +768,7 @@ public sealed class DadPresetProviderService
                 ? DadQueueAuthority.LocalOnly
                 : options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
                 ? DadQueueAuthority.LocalOnly
-                : options.QueueAuthority,
+                : lane.DefaultQueueAuthority,
             ExpectedPartySize = IsLocalNpcLane(options.ActivityMode)
                 ? 1
                 : options.OperatorMode == DadPlannerOperatorMode.TestOnThisMachine
@@ -879,7 +880,8 @@ public sealed class DadPresetProviderService
         DadPresetPlannerOptions options,
         DadPlannerDutyOption? selectedDuty,
         DadQueueTarget? selectedRouletteTarget,
-        int requestedPartySize)
+        int requestedPartySize,
+        bool useAdaptivePremadeDuty)
     {
         switch (options.ActivityMode)
         {
@@ -971,15 +973,15 @@ public sealed class DadPresetProviderService
                 };
                 break;
             case DadPlannerActivityMode.LocalDuty:
-                request.Dungeon = new DadDungeonTask
-                {
-                    Count = 1,
-                    Frequency = DadRunRequestOptions.FrequencyPerArRun,
-                    ContentFinderConditionId = selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
-                    SelectedDungeon = selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
-                    ExecutionPreference = DadRunRequestOptions.TrustThenDutySupport,
-                    Unsynced = options.DutyUnsynced,
-                };
+                DadAdaptiveDutyProjectionRules.PopulateDutyTask(
+                    request,
+                    new DadAdaptiveDutyProjection(
+                        requestedPartySize,
+                        requestedPartySize,
+                        useAdaptivePremadeDuty),
+                    selectedDuty?.ContentFinderConditionId ?? options.DutyContentFinderConditionId,
+                    selectedDuty?.DutyDisplayName ?? options.DutyDisplayName,
+                    options.DutyUnsynced);
                 break;
             case DadPlannerActivityMode.CustomDuty:
                 request.CustomDuty = new DadCustomDutyTask
@@ -1465,6 +1467,8 @@ public sealed class DadPresetProviderService
                 RequiredAccountKey = groupSlot.RequiredAccountKey,
                 RequiredCharacterKey = groupSlot.RequiredCharacterKey,
                 RequiredJobId = groupSlot.RequiredJobId,
+                AdsLootMode = groupSlot.AdsLootMode,
+                LevelSeekTarget = groupSlot.LevelSeekTarget,
                 AssignmentMode = groupSlot.RequiredCharacterKey.IsEmpty
                     ? DadSlotAssignmentMode.SpecificRole
                     : DadSlotAssignmentMode.SpecificCharacter,
@@ -1499,6 +1503,8 @@ public sealed class DadPresetProviderService
             RequiredAccountKey = accountKey,
             RequiredCharacterKey = requiredCharacterKey,
             RequiredJobId = groupSlot.RequiredJobId,
+            AdsLootMode = groupSlot.AdsLootMode,
+            LevelSeekTarget = groupSlot.LevelSeekTarget,
             AssignmentMode = DadSlotAssignmentMode.SpecificCharacter,
             AllowSubstitution = false,
             ContentId = character.ContentId == 0 ? null : character.ContentId,
@@ -2071,9 +2077,12 @@ public sealed class DadPresetProviderService
     private static int ResolveRequestedPartySize(
         DadPresetPlannerOptions options,
         DadPlannerDutyOption? selectedDuty,
-        DadPlannerLaneDefinition lane)
+        DadPlannerLaneDefinition lane,
+        DadPlannerGroup? selectedGroup = null)
         => lane.ActivityMode switch
         {
+            DadPlannerActivityMode.LocalDuty
+                => DadAdaptiveDutyProjectionRules.Resolve(lane.ActivityMode, selectedGroup).ExpectedPartySize,
             DadPlannerActivityMode.PremadeDuty or DadPlannerActivityMode.DutyPremade
                 => Math.Max(2, options.DutyExpectedPartySize > 0
                     ? options.DutyExpectedPartySize
@@ -2264,6 +2273,25 @@ public sealed class DadPresetProviderService
                ?? PlannerLaneDefinitions[0];
     }
 
+    private static DadPlannerLaneDefinition ResolveEffectiveLaneDefinition(
+        DadPlannerActivityMode activityMode,
+        DadPlannerGroup? selectedGroup)
+    {
+        var lane = CloneLaneDefinition(ResolveLaneDefinition(activityMode));
+        var adaptive = DadAdaptiveDutyProjectionRules.Resolve(activityMode, selectedGroup);
+        if (!adaptive.UsesPremadeExecutor)
+            return lane;
+
+        lane.ModuleId = DadModuleId.PremadeDuty;
+        lane.Summary = $"Exact {adaptive.ExpectedPartySize}-character Dad party using the guarded premade Duty Finder executor.";
+        lane.DefaultAuthorityMode = DadAuthorityMode.ServerDad;
+        lane.DefaultTransportOwner = DadTransportOwner.LanParty;
+        lane.DefaultQueueAuthority = DadQueueAuthority.Leader;
+        lane.ExpectedPartySize = adaptive.ExpectedPartySize;
+        lane.RequiresRemoteParty = true;
+        return lane;
+    }
+
     private static DadPlannerLaneDefinition CloneLaneDefinition(DadPlannerLaneDefinition lane)
         => new()
         {
@@ -2317,10 +2345,10 @@ public sealed class DadPresetProviderService
         DadActivityPreset plannerPreview,
         IReadOnlyList<DadAcquiredCharacter> selectedCharacters,
         bool previewOnly,
-        DadPlannerDutyOption? selectedDuty,
-        DadPlannerGroup? selectedGroup)
+        DadPlannerGroup? selectedGroup,
+        DadPlannerLaneDefinition lane,
+        int requestedPartySize)
     {
-        var lane = ResolveLaneDefinition(options.ActivityMode);
         var forceLocalNpc = IsLocalNpcLane(options.ActivityMode);
         var selectedCharacterKeys = selectedCharacters
             .Select(static character => new DadCharacterKey(character.CharacterKey))
@@ -2334,6 +2362,7 @@ public sealed class DadPresetProviderService
                 CharacterKey = new DadCharacterKey(slot.CharacterKey),
                 ContentId = slot.ContentId ?? 0,
                 RequiredJobId = slot.RequiredJobId,
+                AdsLootMode = slot.AdsLootMode,
             })
             .Where(static reference => !reference.IsEmpty)
             .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
@@ -2361,9 +2390,7 @@ public sealed class DadPresetProviderService
         List<DadCharacterKey> requiredCharacterKeys = groupRequiredCharacterKeys.Count > 0
             ? groupRequiredCharacterKeys
             : selectedCharacterKeys;
-        var expectedPartySize = previewOnly || forceLocalNpc
-            ? 1
-            : ResolveRequestedPartySize(options, selectedDuty, lane);
+        var expectedPartySize = previewOnly || forceLocalNpc ? 1 : requestedPartySize;
         var inviteAuthority = previewOnly || forceLocalNpc || expectedPartySize <= 1
             ? DadInviteAuthority.NotNeeded
             : ResolveEffectiveInviteAuthority(options);
@@ -2374,7 +2401,7 @@ public sealed class DadPresetProviderService
             AuthorityMode = previewOnly || forceLocalNpc ? DadAuthorityMode.LocalOnly : lane.DefaultAuthorityMode,
             TransportMode = previewOnly || forceLocalNpc || !lane.RequiresRemoteParty ? DadTransportMode.LocalOnly : DadTransportMode.ServerHub,
             ModuleTarget = ResolvePlannerModuleIdForRequest(options.ActivityMode, lane),
-            QueueAuthority = previewOnly || forceLocalNpc ? DadQueueAuthority.LocalOnly : options.QueueAuthority,
+            QueueAuthority = previewOnly || forceLocalNpc ? DadQueueAuthority.LocalOnly : lane.DefaultQueueAuthority,
             InviteAuthority = inviteAuthority,
             PreferredLeaderCharacterKey = new DadCharacterKey(plannerPreview.LeaderCharacterKey),
             PreferredInviterCharacterKey = inviteAuthority == DadInviteAuthority.PresetLeader

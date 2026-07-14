@@ -44,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadExternalPluginCapabilityService ExternalPluginCapabilityService { get; }
     public DadXadbClient XadbClient { get; }
     internal InfoProxyPartyInviteGateway PartyInviteGateway { get; }
+    internal DadPartyTeardownService PartyTeardownService { get; }
     public DadPresenceService PresenceService { get; }
     public DadVermaxionIpcService VermaxionIpcService { get; }
     public DadAutoRetainerIpcService AutoRetainerIpcService { get; }
@@ -147,6 +148,7 @@ public sealed class Plugin : IDalamudPlugin
         AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
         LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
         PartyInviteGateway = new InfoProxyPartyInviteGateway(Framework, PlayerState, PartyList, Log);
+        PartyTeardownService = new DadPartyTeardownService(CommandManager, PartyList, PlayerState, Condition, Log);
         var requestedJobPreparationGate = new DadRequestedJobPreparationGate();
         var classJobGearsetGateway = new DadClassJobGearsetGateway(Framework);
         PresenceService = new DadPresenceService(
@@ -190,7 +192,7 @@ public sealed class Plugin : IDalamudPlugin
         PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry, Configuration);
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
-        DutySupportAdsService = new DadDutySupportAdsService(Log);
+        DutySupportAdsService = new DadDutySupportAdsService(PluginInterface, Log);
         LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
@@ -207,6 +209,7 @@ public sealed class Plugin : IDalamudPlugin
             QueueExecutionService,
             PresenceService,
             CombatRotationService,
+            DutySupportAdsService,
             Condition,
             Log);
         SchedulerService = new DadSchedulerService(
@@ -229,6 +232,7 @@ public sealed class Plugin : IDalamudPlugin
             ClaimService,
             PartyAssemblyService,
             PartyInviteGateway,
+            PartyTeardownService,
             QueueExecutionService,
             WorkerExecutionService,
             PlannerService,
@@ -1660,8 +1664,19 @@ public sealed class Plugin : IDalamudPlugin
                 ? $"scheduler:{group.DisplayName}"
                 : startRequest.RequestedBy.Trim();
 
-        var state = SchedulerService.StartPreset(group, preview, startRequest.DryRun);
-        if (!startRequest.DryRun && CanAdvanceSchedulerQueue())
+        var schedulerRequestedBy = string.IsNullOrWhiteSpace(startRequest.RequestedBy)
+            ? "scheduler"
+            : startRequest.RequestedBy.Trim();
+        var state = SchedulerService.StartPreset(group, preview, startRequest.DryRun, new DadScheduledCrewJob
+        {
+            JobType = DadSchedulerJobType.ScheduledPreset,
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            DryRun = startRequest.DryRun,
+            RequestedBy = schedulerRequestedBy,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        if (!startRequest.DryRun && state.IsActive && CanAdvanceSchedulerQueue())
         {
             SchedulerService.Update(
                 ResolvePlannerGroup,
@@ -1768,6 +1783,48 @@ public sealed class Plugin : IDalamudPlugin
 
     public string GetSchedulerQueueJson()
         => DadIpcJson.Serialize(SchedulerService.GetQueueSnapshot());
+
+    public string GetSchedulesJson()
+        => DadIpcJson.Serialize(SchedulerService.GetScheduleSnapshot());
+
+    public string StartScheduleFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadScheduleStartRequest>(json);
+        if (request == null)
+        {
+            var fallbackId = (json ?? string.Empty).Trim().Trim('"');
+            request = new DadScheduleStartRequest { ScheduleId = fallbackId };
+        }
+
+        return DadIpcJson.Serialize(StartScheduleRunFromShell(
+            request.ScheduleId,
+            request.DryRun,
+            string.IsNullOrWhiteSpace(request.RequestedBy) ? "ipc-schedule" : request.RequestedBy.Trim()));
+    }
+
+    public string CancelScheduleFromJson(string json)
+    {
+        var request = DadIpcJson.Deserialize<DadScheduleCancelRequest>(json);
+        if (request == null)
+        {
+            var fallbackId = (json ?? string.Empty).Trim().Trim('"');
+            request = new DadScheduleCancelRequest { RunId = fallbackId };
+        }
+
+        var cancelled = !string.IsNullOrWhiteSpace(request.RunId) && SchedulerService.CancelScheduleRun(
+            request.RunId,
+            string.IsNullOrWhiteSpace(request.Reason) ? "Schedule cancelled through IPC." : request.Reason.Trim());
+        var snapshot = SchedulerService.GetScheduleSnapshot();
+        return DadIpcJson.Serialize(new DadScheduleCancelResult
+        {
+            RunId = request.RunId,
+            Cancelled = cancelled,
+            Summary = cancelled
+                ? $"Cancelled schedule run {request.RunId}."
+                : $"No active schedule run matched {request.RunId}.",
+            ActiveRun = snapshot.ActiveRun,
+        });
+    }
 
     public DadScheduleRunState StartScheduleRunFromShell(string scheduleId, bool dryRun, string requestedBy)
     {
@@ -1997,6 +2054,8 @@ public sealed class Plugin : IDalamudPlugin
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
             RequiredJobId = source.RequiredJobId,
+            AdsLootMode = source.AdsLootMode,
+            LevelSeekTarget = source.LevelSeekTarget,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
@@ -2025,6 +2084,8 @@ public sealed class Plugin : IDalamudPlugin
                     ? new DadCharacterKey(string.Empty)
                     : new DadCharacterKey(slot.CharacterKey),
                 RequiredJobId = slot.RequiredJobId,
+                AdsLootMode = slot.AdsLootMode,
+                LevelSeekTarget = slot.LevelSeekTarget,
                 WakePolicy = DadSchedulerWakePolicy.LaunchIfOffline,
                 AllowSubstitution = false,
             };
@@ -2147,6 +2208,8 @@ public sealed class Plugin : IDalamudPlugin
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
                 RequiredJobId = slot.RequiredJobId,
+                AdsLootMode = slot.AdsLootMode,
+                LevelSeekTarget = slot.LevelSeekTarget,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
                 CharacterLoadInstruction = slot.CharacterLoadInstruction.Clone(),

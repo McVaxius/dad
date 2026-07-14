@@ -146,6 +146,95 @@ public sealed class DadPartyAssemblyServiceTests
     }
 
     [Fact]
+    public void CrossWorldFourOfFourUsesCrossRealmMembersAndCompletesAssembly()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader, partySize: 4);
+        var participants = FourParticipants();
+        var partyListReads = 0;
+        var crossRealmReads = 0;
+
+        var selectedMembers = DadPartySnapshotSourceRules.Read(
+            crossRealmPartyActive: true,
+            () =>
+            {
+                partyListReads++;
+                return [PartyMember("Leader@Alpha", 100)];
+            },
+            () =>
+            {
+                crossRealmReads++;
+                return participants
+                    .Select(participant => PartyMember(
+                        participant.ActiveCharacterKey.Value,
+                        participant.Character.ContentId))
+                    .ToList();
+            });
+
+        var decision = service.EvaluatePartyMembership(plan, participants, selectedMembers);
+
+        Assert.Equal(0, partyListReads);
+        Assert.Equal(1, crossRealmReads);
+        Assert.Equal(DadPartyMembershipDisposition.Ready, decision.Disposition);
+        Assert.Contains("4/4", decision.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CrossWorldIncompletePartyWaitsForMissingContentId()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader, partySize: 4);
+        var participants = FourParticipants();
+
+        var selectedMembers = DadPartySnapshotSourceRules.Read(
+            crossRealmPartyActive: true,
+            () => participants.Select(participant => PartyMember(
+                participant.ActiveCharacterKey.Value,
+                participant.Character.ContentId)).ToList(),
+            () => participants.Take(3).Select(participant => PartyMember(
+                participant.ActiveCharacterKey.Value,
+                participant.Character.ContentId)).ToList());
+
+        var decision = service.EvaluatePartyMembership(plan, participants, selectedMembers);
+
+        Assert.Equal(DadPartyMembershipDisposition.Wait, decision.Disposition);
+        Assert.Contains("3/4", decision.Summary, StringComparison.Ordinal);
+        Assert.Contains("400", decision.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SameWorldStillUsesPartyListMembers()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader, partySize: 4);
+        var participants = FourParticipants();
+        var partyListReads = 0;
+        var crossRealmReads = 0;
+
+        var selectedMembers = DadPartySnapshotSourceRules.Read(
+            crossRealmPartyActive: false,
+            () =>
+            {
+                partyListReads++;
+                return participants.Select(participant => PartyMember(
+                    participant.ActiveCharacterKey.Value,
+                    participant.Character.ContentId)).ToList();
+            },
+            () =>
+            {
+                crossRealmReads++;
+                return [PartyMember("Leader@Alpha", 100)];
+            });
+
+        var decision = service.EvaluatePartyMembership(plan, participants, selectedMembers);
+
+        Assert.Equal(1, partyListReads);
+        Assert.Equal(0, crossRealmReads);
+        Assert.Equal(DadPartyMembershipDisposition.Ready, decision.Disposition);
+        Assert.Contains("4/4", decision.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TerminalBestEffortJobReportsProduceAllMissingFourPlayerInstructions()
     {
         var service = new DadPartyAssemblyService();
@@ -243,6 +332,16 @@ public sealed class DadPartyAssemblyServiceTests
             AssignedSlotId = slot,
             WorkerSessionId = new DadWorkerSessionId(characterKey),
         };
+
+    private static List<DadParticipantSnapshot> FourParticipants()
+        => Enumerable.Range(1, 4)
+            .Select(index => Participant(
+                index == 1 ? "Leader@Alpha" : $"Member {index}@Alpha",
+                (ulong)(index * 100),
+                isLocal: index == 1,
+                isAuthority: index == 1,
+                slot: $"Slot{index}"))
+            .ToList();
 
     private static DadPartyMemberSnapshot PartyMember(string characterKey, ulong contentId)
         => new()
