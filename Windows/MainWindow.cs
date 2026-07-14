@@ -3880,6 +3880,13 @@ public sealed class MainWindow : Window, IDisposable
         if (plannerLocked)
             DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
 
+        if (DadUi.BeginCard("dad-plan-review-card"))
+        {
+            DadUi.Heading("REVIEW & RUN", "Check the first blocker, validate, then deliberately start or cancel.");
+            DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked);
+            DadUi.EndCard();
+        }
+
         ImGui.BeginDisabled(plannerLocked);
         if (DadUi.BeginCard("dad-plan-identity-card"))
         {
@@ -3936,13 +3943,6 @@ public sealed class MainWindow : Window, IDisposable
         if (selectedGroup != null && ImGui.IsItemHovered())
             ImGui.SetTooltip("Crew rows save through their inline controls. This saves the activity, duty, stop rule, and finish rule selected above.");
         ImGui.EndDisabled();
-
-        if (DadUi.BeginCard("dad-plan-review-card"))
-        {
-            DadUi.Heading("REVIEW & RUN", "Check the first blocker, validate, then deliberately start or cancel.");
-            DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked);
-            DadUi.EndCard();
-        }
     }
 
     private void DrawPlannerLanePanel(

@@ -1,0 +1,1465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aethertek - FFXIV Plugins, Utilities & Guides</title>
+    <meta name="description" content="Aethertek - FFXIV plugins, utilities & guides. XA ecosystem, Dhog's performance plugins, automation solutions. Repo: https://aethertek.io/x.json">
+    <meta name="keywords" content="FFXIV, plugins, utilities, automation, Dalamud, AutoRetainer, XA Database, XA Slave, Dhog, performance, data collection, submarine, retainer, dashboard, guides">
+    
+    <!-- Open Graph / Discord Embed Tags -->
+    <meta property="og:title" content="Aethertek">
+    <meta property="og:description" content="FFXIV plugins, utilities & guides. XA ecosystem, Dhog's performance plugins, automation solutions. Comprehensive collection of tools for enhanced gameplay experience.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://aethertek.io/">
+    <meta property="og:image" content="https://aethertek.io/images/Aethertek.png">
+    <meta property="og:image:alt" content="Aethertek">
+    <meta property="og:site_name" content="Aethertek | Repo: https://aethertek.io/x.json | Total downloads: 32,650">
+    <meta property="og:image:width" content="128">
+    <meta property="og:image:height" content="128">
+    
+    <!-- Twitter Card Tags -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Aethertek">
+    <meta name="twitter:description" content="FFXIV plugins, utilities & guides. XA ecosystem, Dhog's performance plugins, automation solutions. Comprehensive collection of tools for enhanced gameplay experience.">
+    <meta name="twitter:image" content="https://aethertek.io/images/Aethertek.png">
+    
+    <!-- Discord Embed Tags -->
+    <meta name="theme-color" content="#8b5cf6">
+    <meta name="color-scheme" content="dark">
+    
+    <link rel="icon" type="image/x-icon" href="images/favicon..ico">
+    <script type="text/javascript" src="https://ff.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=zvmckpvESmqpG5SzFmHd4KfUV18GfG3AYLnvRtY5M5mn8gAoWbQbQlx5sAT1K3pqXiVsvcMbAOL7mvBWVNPrz8L294x6Mj_B9Bb9x2wFk6TgHRC7iDNGVTLCmIBkI5H4UA6AUEX1p_qSF85of9S1_aPqgaBhVH4U7KEgaYlu7wMVlSaZxhOOdGLHDLEf2NXbe-SBW_PFghjyZxcTUk10P6bEvzZnv12iAEVCn443jOMnxi_1rE3DG229bWhQhoPvQtZjndJgbeObzPyPT9-exg" charset="UTF-8"></script><script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+        .card-hover {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+        .plugin-card {
+            background: rgba(17, 24, 39, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(55, 65, 81, 0.5);
+        }
+        
+        .application-card {
+            background: rgba(17, 24, 39, 0.95);
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(55, 65, 81, 0.5);
+            position: relative;
+        }
+        
+        .application-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #f59e0b, #3b82f6, #8b5cf6);
+            border-radius: 0.5rem 0.5rem 0 0;
+        }
+        
+        .guide-card {
+            background: rgba(17, 24, 39, 0.95);
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(55, 65, 81, 0.5);
+            position: relative;
+        }
+        
+        .guide-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #10b981, #3b82f6, #8b5cf6);
+            border-radius: 0.5rem 0.5rem 0 0;
+        }
+        .hero-text {
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        body {
+            background: #000000;
+            color: #e2e8f0;
+        }
+        .text-gray-800 { color: #f1f5f9; }
+        .text-gray-600 { color: #cbd5e1; }
+        .text-gray-500 { color: #94a3b8; }
+        .text-gray-700 { color: #e2e8f0; }
+        .bg-white { background: #1e293b; }
+        .bg-gray-50 { background: #0f172a; }
+        .bg-gray-100 { background: #1e293b; }
+        .bg-gray-900 { background: #020617; }
+        .border-gray-800 { border-color: #334155; }
+        .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3); }
+        nav { background: #1e293b; }
+        .bg-blue-100 { background: rgba(59, 130, 246, 0.2); }
+        .bg-green-100 { background: rgba(34, 197, 94, 0.2); }
+        .bg-purple-100 { background: rgba(168, 85, 247, 0.2); }
+        .bg-orange-100 { background: rgba(251, 146, 60, 0.15); }
+        .bg-yellow-100 { background: rgba(217, 119, 6, 0.15); }
+        .bg-indigo-100 { background: rgba(99, 102, 241, 0.2); }
+        .bg-red-100 { background: rgba(239, 68, 68, 0.2); }
+        .bg-teal-100 { background: rgba(20, 184, 166, 0.2); }
+        .bg-pink-100 { background: rgba(236, 72, 153, 0.2); }
+        .bg-cyan-100 { background: rgba(6, 182, 212, 0.2); }
+        .bg-amber-100 { background: rgba(245, 158, 11, 0.2); }
+        .bg-lime-100 { background: rgba(132, 204, 22, 0.2); }
+        .bg-rose-100 { background: rgba(244, 63, 94, 0.2); }
+        .bg-violet-100 { background: rgba(139, 92, 246, 0.2); }
+        .bg-fuchsia-100 { background: rgba(217, 70, 239, 0.2); }
+        .text-blue-600 { color: #60a5fa; }
+        .text-green-600 { color: #4ade80; }
+        .text-purple-600 { color: #a78bfa; }
+        .text-orange-600 { color: #fb923c; }
+        .text-yellow-600 { color: #d97706; }
+        .text-indigo-600 { color: #818cf8; }
+        .text-red-600 { color: #f87171; }
+        .text-teal-600 { color: #14b8a6; }
+        .text-pink-600 { color: #ec4899; }
+        .text-cyan-600 { color: #06b6d4; }
+        .text-amber-600 { color: #f59e0b; }
+        .text-lime-600 { color: #84cc16; }
+        .text-rose-600 { color: #f43f5e; }
+        .text-violet-600 { color: #8b5cf6; }
+        .text-fuchsia-600 { color: #d946ef; }
+        .hover\:text-purple-600:hover { color: #a78bfa; }
+        .hover\:text-purple-700:hover { color: #9333ea; }
+        .hover\:bg-gray-100:hover { background: #334155; }
+        .hover\:bg-white:hover { background: #334155; }
+        .hover\:text-white:hover { color: #f1f5f9; }
+        .border-2 { border-width: 2px; }
+        .border-white { border-color: #e2e8f0; }
+        
+        /* Most Downloaded Plugin Highlight */
+        .most-downloaded {
+            border: 2px solid #fbbf24;
+            box-shadow: 0 0 0 1px #f59e0b, 0 0 15px rgba(251, 191, 36, 0.2);
+        }
+        
+        /* Mobile Navigation Styles */
+        .mobile-menu-toggle {
+            display: none;
+        }
+        
+        .mobile-nav {
+            display: none;
+            position: fixed;
+            top: 2rem;
+            left: 0;
+            right: 0;
+            background: #1e293b;
+            border-bottom: 1px solid #334155;
+            z-index: 40;
+            padding: 1rem;
+        }
+        
+        .mobile-nav.active {
+            display: block;
+        }
+        
+        .mobile-nav-content {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        
+        .mobile-nav-section {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #334155;
+        }
+        
+        .mobile-nav-section:last-child {
+            border-bottom: none;
+        }
+        
+        @media (max-width: 768px) {
+            .desktop-nav {
+                display: none !important;
+            }
+            
+            .mobile-menu-toggle {
+                display: block !important;
+            }
+            
+            .mobile-nav.active {
+                display: block !important;
+            }
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-white flex flex-col">
+    <!-- Navigation -->
+    <nav class="bg-gray-900 border-b border-gray-800 fixed top-0 left-0 right-0 z-50">
+        <div class="max-w-7xl mx-auto px-10 sm:px-15 lg:px-20">
+            <div class="flex justify-between items-center h-8">
+                <!-- Left Section: Brand -->
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center">
+                        <img src="images/Aethertek.png" alt="Aethertek" class="w-5 h-5 mr-2">
+                        <span id="brand-title" class="text-sm font-bold">Aethertek</span>
+                    </div>
+                </div>
+                
+                <!-- Desktop Navigation -->
+                <div class="desktop-nav flex justify-between items-center flex-1 mx-6">
+                    <!-- Left Spacer -->
+                    <div class="flex items-center">
+                        <!-- Empty left spacer for balance -->
+                    </div>
+                    
+                    <!-- Center Section: Plugin Count - Repo - Download Count -->
+                    <div class="flex items-center space-x-6">
+                        <div class="flex items-center space-x-2">
+                            <i class="fas fa-cube text-purple-400 text-xs"></i>
+                            <span class="text-gray-300 text-xs" id="plugin-count">Loading...</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-gray-300 text-xs">Repo:</span>
+                            <a href="https://aethertek.io/x.json" target="_blank" class="text-gray-300 hover:text-purple-400 transition text-xs">
+                                https://aethertek.io/x.json
+                            </a>
+                            <button onclick="copyToClipboard('https://aethertek.io/x.json', event)" class="text-gray-400 hover:text-purple-400 transition text-xs" title="Copy link to clipboard">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <i class="fas fa-download text-green-400 text-xs"></i>
+                            <span class="text-gray-300 text-xs" id="download-count">14,787 Downloads</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Right Section: Discord -->
+                    <div class="flex items-center">
+                        <a href="https://discord.gg/g2NmYxPQCa" target="_blank" class="text-gray-300 hover:text-purple-400 transition">
+                            <i class="fab fa-discord text-sm"></i>
+                        </a>
+                    </div>
+                </div>
+                
+                <!-- Mobile Menu Toggle -->
+                <button class="mobile-menu-toggle text-gray-300 hover:text-purple-400 transition" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars text-sm"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+    
+    <!-- Mobile Navigation -->
+    <div class="mobile-nav" id="mobileNav">
+        <div class="mobile-nav-content">
+            <!-- Plugin Stats Section -->
+            <div class="mobile-nav-section">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center space-x-2">
+                        <i class="fas fa-cube text-purple-400 text-sm"></i>
+                        <span class="text-gray-300 text-sm font-medium" id="mobile-plugin-count">Loading...</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <i class="fas fa-download text-green-400 text-sm"></i>
+                        <span class="text-gray-300 text-sm font-medium" id="mobile-download-count">14,787 Downloads</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Repo Section -->
+            <div class="mobile-nav-section">
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-300 text-sm">Repo:</span>
+                    <div class="flex items-center space-x-2">
+                        <a href="https://aethertek.io/x.json" target="_blank" class="text-gray-300 hover:text-purple-400 transition text-sm">
+                            aethertek.io/x.json
+                        </a>
+                        <button onclick="copyToClipboard('https://aethertek.io/x.json', event)" class="text-gray-400 hover:text-purple-400 transition text-sm" title="Copy link to clipboard">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Discord Section -->
+            <div class="mobile-nav-section">
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-300 text-sm">Join our Discord:</span>
+                    <a href="https://discord.gg/g2NmYxPQCa" target="_blank" class="text-gray-300 hover:text-purple-400 transition">
+                        <i class="fab fa-discord text-lg"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Applications Section -->
+    <section id="applications" class="py-12 pb-0 flex-grow">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-2">
+                <h2 class="text-2xl font-bold text-white mb-2">Utilities & Applications</h2>
+                <p class="text-gray-300 max-w-2xl mx-auto text-sm">
+                    Standalone utilities that enhance your FFXIV experience.
+                </p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- XA Sub Manager (formerly Auto-AutoRetainer) -->
+                <a href="applications/xa-sub-manager.html" class="application-card rounded-xl shadow-lg overflow-hidden card-hover block border-2 border-orange-600 border-opacity-30">
+                    <div class="p-4 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/XA Sub.png" alt="XA Sub Manager" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">XA Sub Manager</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Run multiple FFXIV clients on autopilot from one window. Submarine &amp; retainer automation, 2FA logins, window layouts, and a remote web dashboard. Free Aethertek software.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded text-xs font-medium">Automation</span>
+                            <span class="px-2 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs font-medium">Multi-Account</span>
+                            <span class="px-2 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs font-medium">2FA Support</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-robot mr-1"></i>
+                            <span id="xaSubManagerMeta">Utility Application</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- XA Dashboard (formerly AutoRetainer Dashboard) -->
+                <a href="applications/xa-dashboard.html" class="application-card rounded-xl shadow-lg overflow-hidden card-hover block border-2 border-blue-600 border-opacity-30">
+                    <div class="p-4 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/XA Dashboard.png" alt="XA Dashboard" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">XA Dashboard</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Native desktop dashboard displaying FFXIV character data from AutoRetainer, XA Database, and Lifestream. Windows &amp; Linux, one-click updates. Free Aethertek software.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-2 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs font-medium">Web Dashboard</span>
+                            <span class="px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs font-medium">Data Visualization</span>
+                            <span class="px-2 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs font-medium">Real-time Analytics</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-chart-line mr-1"></i>
+                            <span id="xaDashboardMeta">Utility Application</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Auto 2FA Launcher -->
+                <a href="applications/auto-2fa-launcher.html" class="application-card rounded-xl shadow-lg overflow-hidden card-hover block border-2 border-purple-600 border-opacity-30">
+                    <div class="p-4 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/XA 2FA.png" alt="Auto 2FA Launcher" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Auto 2FA Launcher</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Quick launcher for FFXIV with automatic Two-Factor Authentication. Perfect for launching the game without manual 2FA entry.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs font-medium">2FA Automation</span>
+                            <span class="px-2 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs font-medium">Quick Launch</span>
+                            <span class="px-2 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs font-medium">Secure Storage</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-shield-alt mr-1"></i>
+                            <span>Utility Application</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Plugins Section -->
+    <section id="plugins" class="py-0 pt-8 pb-0 flex-grow">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-2">
+                <h2 class="text-2xl font-bold text-white mb-2">Plugins</h2>
+                <p class="text-gray-300 max-w-2xl mx-auto text-sm">
+                    No one likes playing manually, use these.
+                </p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- XA Database -->
+                <a href="plugins/xa-database.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/XA Database.png" alt="XA Database" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">XA Database</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Passive data collection and persistence plugin. Observes game state, collects character data, 
+                                    and maintains comprehensive SQLite databases for all your FFXIV information.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Data Collection</span>
+                            <span class="px-1.5 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">SQLite Storage</span>
+                            <span class="px-1.5 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">IPC Provider</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- XA Slave -->
+                <a href="plugins/xa-slave.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/XA Slave.png" alt="XA Slave" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">XA Slave</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    XA Mods and automation plugin for FFXIV. Handles task workflows, IPC control, preset management, and local utility hooks while XA Database captures results.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs">Automation</span>
+                            <span class="px-1.5 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs">XA Mods</span>
+                            <span class="px-1.5 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs">IPC Client</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- XA HUD Navigator -->
+                <a href="plugins/xa-hud-navigator.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/XA HUD Navigator.png" alt="XA HUD Navigator" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">XA HUD Navigator</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    In-game inspection and debugging workspace. Explore loaded addons, node trees, 
+                                    ClientStructs runtime data, and Lumina sheet information in real-time.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs">Debug Tool</span>
+                            <span class="px-1.5 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs">Inspector</span>
+                            <span class="px-1.5 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs">Developer Tool</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- FrenRider -->
+                <a href="plugins/frenrider.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Fren Rider.png" alt="FrenRider" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">FrenRider</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Turn yourself or your alts into a Trust system that follows you everywhere.
+                                    Auto mounting, combat configurations follow distances and idling behaviour.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded text-xs">Multibox</span>
+                            <span class="px-1.5 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded text-xs">Follow</span>
+                            <span class="px-1.5 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded text-xs">Party Automation</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- LootGoblin -->
+                <a href="plugins/lootgoblin.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Loot Goblin.png" alt="LootGoblin" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">LootGoblin</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Automated Treasure Map completion. Bonus module for Alexandrite farming.
+                                    Party Friendly.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-yellow-900 bg-opacity-50 text-yellow-300 rounded text-xs">Treasure Maps</span>
+                            <span class="px-1.5 py-0.5 bg-yellow-900 bg-opacity-50 text-yellow-300 rounded text-xs">Travel</span>
+                            <span class="px-1.5 py-0.5 bg-yellow-900 bg-opacity-50 text-yellow-300 rounded text-xs">Party Coordination</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- MOGTOME -->
+                <a href="plugins/mogtome.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/M.O.G.T.O.M.E..png" alt="M.O.G.T.O.M.E." class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">M.O.G.T.O.M.E.</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Mogtome farming via Praetorium / Porta workflows.
+                                    Food, potions, rotations, and stuck handling.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-red-900 bg-opacity-50 text-red-300 rounded text-xs">Mogtomes</span>
+                            <span class="px-1.5 py-0.5 bg-red-900 bg-opacity-50 text-red-300 rounded text-xs">Duty Farming</span>
+                            <span class="px-1.5 py-0.5 bg-red-900 bg-opacity-50 text-red-300 rounded text-xs">Party Safe</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- VerMAXion -->
+                <a href="plugins/vermaxion.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/VerMAXion.png" alt="VerMAXion" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">VerMAXion</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Automate Daily and Weekly chores, configurable per char. Chocobo Racing,
+                                    both Cactpots, Verminion, Seal Buffs and more.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-indigo-900 bg-opacity-50 text-indigo-300 rounded text-xs">Post-Process</span>
+                            <span class="px-1.5 py-0.5 bg-indigo-900 bg-opacity-50 text-indigo-300 rounded text-xs">Weekly / Daily</span>
+                            <span class="px-1.5 py-0.5 bg-indigo-900 bg-opacity-50 text-indigo-300 rounded text-xs">AutoRetainer</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- HelloFellowHuman -->
+                <a href="plugins/hellofellowhuman.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/hfh.png" alt="HelloFellowHuman" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">HelloFellowHuman</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Automatic emote and command executions using a finite state automaton.
+                                    Let your imagination run wild.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Emotes</span>
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Proximity</span>
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">RP</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- ChocoboColourized -->
+                <a href="plugins/chocobocolourized.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Chocobo Colourized.png" alt="ChocoboColourized" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">ChocoboColourized</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    (Personal Chocobo) Automatically calculate a->b colour changes
+                                    and automatically feed your birb.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-pink-900 bg-opacity-50 text-pink-300 rounded text-xs">Chocobo</span>
+                            <span class="px-1.5 py-0.5 bg-pink-900 bg-opacity-50 text-pink-300 rounded text-xs">Colour Planning</span>
+                            <span class="px-1.5 py-0.5 bg-pink-900 bg-opacity-50 text-pink-300 rounded text-xs">Fruit Path</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- DhogPotatoSystem -->
+                <a href="plugins/dhogpotatosystem.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Dhog Potato System.png" alt="Dhog Potato System" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Dhog Potato System</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Experimental features to reduce CPU/GPU load.
+                                    Hiding people/things and turning off rendering.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-amber-900 bg-opacity-50 text-amber-300 rounded text-xs">Performance</span>
+                            <span class="px-1.5 py-0.5 bg-amber-900 bg-opacity-50 text-amber-300 rounded text-xs">Visibility</span>
+                            <span class="px-1.5 py-0.5 bg-amber-900 bg-opacity-50 text-amber-300 rounded text-xs">Potato Mode</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- DhogGPT -->
+                <a href="plugins/dhoggpt.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/DhogGPT.png" alt="DhogGPT" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">DhogGPT</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Automatically translate your chats to and from anyone ingame.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-cyan-900 bg-opacity-50 text-cyan-300 rounded text-xs">Translation</span>
+                            <span class="px-1.5 py-0.5 bg-cyan-900 bg-opacity-50 text-cyan-300 rounded text-xs">Chat</span>
+                            <span class="px-1.5 py-0.5 bg-cyan-900 bg-opacity-50 text-cyan-300 rounded text-xs">Composer</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Dheacon -->
+                <a href="plugins/dheacon.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Dheacon.png" alt="Dheacon" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Dheacon</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Another hand ...
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-lime-900 bg-opacity-50 text-lime-300 rounded text-xs">Crystal</span>
+                            <span class="px-1.5 py-0.5 bg-lime-900 bg-opacity-50 text-lime-300 rounded text-xs">Beacon</span>
+                            <span class="px-1.5 py-0.5 bg-lime-900 bg-opacity-50 text-lime-300 rounded text-xs">Utility</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Krangler -->
+                <a href="plugins/krangler.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Krangler.png" alt="Krangler" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Krangler</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Screenshot safety plugin. Can garble and replace almost everything to
+                                    de-aggregate your identity and others with you, in screenshots.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-rose-900 bg-opacity-50 text-rose-300 rounded text-xs">Privacy</span>
+                            <span class="px-1.5 py-0.5 bg-rose-900 bg-opacity-50 text-rose-300 rounded text-xs">Screenshots</span>
+                            <span class="px-1.5 py-0.5 bg-rose-900 bg-opacity-50 text-rose-300 rounded text-xs">Identity Shuffle</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                            <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Footballer -->
+                <a href="plugins/footballer.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Footballer.png" alt="Footballer" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Footballer</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Inspector Footybrand is here to make sure your feet are ok. 
+                                    Don't worry the inspector respects Lodestone privacy.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Privacy</span>
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Inspection</span>
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Lodestone</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- AI Duty Solver -->
+                <a href="plugins/ads.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/ADS.png" alt="AI Duty Solver" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">AI Duty Solver</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    An answer to a question nobody asked. Can we make a Finite State automaton
+                                    to just solve duties as a general problem? Very experimental for now.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-amber-900 bg-opacity-50 text-amber-300 rounded text-xs">Duty Solver</span>
+                            <span class="px-1.5 py-0.5 bg-amber-900 bg-opacity-50 text-amber-300 rounded text-xs">Multiplayer</span>
+                            <span class="px-1.5 py-0.5 bg-amber-900 bg-opacity-50 text-amber-300 rounded text-xs">FSM</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- DAD -->
+                <a href="plugins/dad.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="https://raw.githubusercontent.com/McVaxius/dad/main/images/icon.png" alt="DAD" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">DAD</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Plan solo or multibox runs, prepare the right crew, verify parties, queue supported
+                                    duties and roulettes, and chain reusable Plans into manual or daily schedules.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Duty Planner</span>
+                            <span class="px-1.5 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Multibox</span>
+                            <span class="px-1.5 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Schedules</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Choke-abo -->
+                <a href="plugins/chokeabo.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Choke-abo.png" alt="Choke-abo" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Choke-abo</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    (Racing Chocobo) Automatic racing chocobo feeding with grade 1 / 2 / 3 support,
+                                    buying flow, feeding flow, and upkeep.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-violet-900 bg-opacity-50 text-violet-300 rounded text-xs">Racing Chocobo</span>
+                            <span class="px-1.5 py-0.5 bg-violet-900 bg-opacity-50 text-violet-300 rounded text-xs">Feeding</span>
+                            <span class="px-1.5 py-0.5 bg-violet-900 bg-opacity-50 text-violet-300 rounded text-xs">Automation</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Thick Thighs Save Lives -->
+                <a href="plugins/thickthighssavelives.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Thick Thighs Save Lives.png" alt="Thick Thighs Save Lives" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Thick Thighs Save Lives</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    This is a WEB-BASED HUD you can run locally to watch your chars.
+                                    Features streaming, screenshots and remote control.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-fuchsia-900 bg-opacity-50 text-fuchsia-300 rounded text-xs">HUD</span>
+                            <span class="px-1.5 py-0.5 bg-fuchsia-900 bg-opacity-50 text-fuchsia-300 rounded text-xs">Reduced Render</span>
+                            <span class="px-1.5 py-0.5 bg-fuchsia-900 bg-opacity-50 text-fuchsia-300 rounded text-xs">Party Awareness</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Botology -->
+                <a href="plugins/botology.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Botology.png" alt="Botology" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Botology</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Compatibility manager for all of your 3rd party plugins.
+                                    You can also use it to explore plugins you didn't know about.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-cyan-900 bg-opacity-50 text-cyan-300 rounded text-xs">Compatibility</span>
+                            <span class="px-1.5 py-0.5 bg-cyan-900 bg-opacity-50 text-cyan-300 rounded text-xs">Manager</span>
+                            <span class="px-1.5 py-0.5 bg-cyan-900 bg-opacity-50 text-cyan-300 rounded text-xs">Bot Analysis</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- BFE -->
+                <a href="plugins/bfe.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/BFE.png" alt="BFE" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">BFE</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Automation for Eureka bunny fate farming.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Eureka</span>
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Bunnies</span>
+                            <span class="px-1.5 py-0.5 bg-teal-900 bg-opacity-50 text-teal-300 rounded text-xs">Pyros</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Coppelia -->
+                <a href="plugins/coppelia.html" class="plugin-card rounded-xl shadow-lg overflow-hidden card-hover block">
+                    <div class="p-3 flex flex-col h-full">
+                        <div class="flex items-start space-x-4 mb-auto">
+                            <div class="flex flex-col items-center">
+                                <img src="images/Coppelia.png" alt="Coppelia" class="w-24 h-24 rounded-lg">
+                            </div>
+                            <div class="flex-1">
+                                <h3 class="text-lg font-bold text-gray-400 mb-1">Coppelia</h3>
+                                <p class="text-xs text-gray-600 mb-2">
+                                    Healbot Coppelia is here to serve! Healing from outside of party for n targets.
+                                    Fully configurable healing, buffs, and prebuffs.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                            <span class="px-1.5 py-0.5 bg-rose-900 bg-opacity-50 text-rose-300 rounded text-xs">Healbot</span>
+                            <span class="px-1.5 py-0.5 bg-rose-900 bg-opacity-50 text-rose-300 rounded text-xs">Out-of-Party</span>
+                            <span class="px-1.5 py-0.5 bg-rose-900 bg-opacity-50 text-rose-300 rounded text-xs">Healing</span>
+                        </div>
+                        <div class="flex items-center justify-center text-xs text-gray-500">
+                            <i class="fas fa-download mr-1"></i>
+                            <span>Loading version and downloads...</span>
+                            <span class="ml-2 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                        </div>
+                    </div>
+                </a>
+                </div>
+        </div>
+    </section>
+
+    <!-- Guides Section -->
+    <section id="guides" class="py-6 pb-16 flex-grow">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-2">
+                <h2 class="text-2xl font-bold text-white mb-2">Guides</h2>
+                <p class="text-gray-300 max-w-2xl mx-auto text-sm">
+                    Step-by-step guides for FFXIV utilities and automation.
+                </p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Alternative Dalamud Launchers Guide -->
+                    <a href="guides/alternative-dalamud-launchers.html" class="guide-card rounded-xl shadow-lg overflow-hidden card-hover block border-2 border-green-600 border-opacity-30">
+                        <div class="p-4 flex flex-col h-full">
+                            <div class="flex items-start space-x-4 mb-auto">
+                                <div class="flex flex-col items-center">
+                                    <img src="images/Dalamud.png" alt="Dalamud" class="w-24 h-24 rounded-lg">
+                                </div>
+                                <div class="flex-1">
+                                    <h3 class="text-lg font-bold text-gray-400 mb-1">Alternative Dalamud Launchers</h3>
+                                    <p class="text-xs text-gray-600 mb-2">
+                                        Create separate launchers for alt accounts with isolated plugin configurations. Updated guide with current XIVLauncher path structure.
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                                <span class="px-2 py-0.5 bg-green-900 bg-opacity-50 text-green-300 rounded text-xs font-medium">Guide</span>
+                                <span class="px-2 py-0.5 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs font-medium">Multi-Account</span>
+                                <span class="px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs font-medium">Dalamud</span>
+                            </div>
+                            <div class="flex items-center justify-center text-xs text-gray-500">
+                                <i class="fas fa-book mr-1"></i>
+                                <span>Step-by-Step Guide</span>
+                                <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                                <span class="ml-1 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                            </div>
+                        </div>
+                    </a>
+
+                    <!-- Multiplayer Setup Guide -->
+                    <a href="guides/multiplayer-setup.html" class="guide-card rounded-xl shadow-lg overflow-hidden card-hover block border-2 border-blue-600 border-opacity-30">
+                        <div class="p-4 flex flex-col h-full">
+                            <div class="flex items-start space-x-4 mb-auto">
+                                <div class="flex flex-col items-center">
+                                    <img src="images/Dalamud.png" alt="Dalamud" class="w-24 h-24 rounded-lg">
+                                </div>
+                                <div class="flex-1">
+                                    <h3 class="text-lg font-bold text-gray-400 mb-1">Multiplayer Setup Guide</h3>
+                                    <p class="text-xs text-gray-600 mb-2">
+                                        Run 4+ FFXIV clients simultaneously with shared plugin configurations. Full multibox setup for treasure maps, raid alts, and crafting.
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap gap-1 mb-1 justify-center">
+                                <span class="px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded text-xs font-medium">Multibox</span>
+                                <span class="px-2 py-0.5 bg-yellow-900 bg-opacity-50 text-yellow-300 rounded text-xs font-medium">Treasure Maps</span>
+                                <span class="px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded text-xs font-medium">Raid Alts</span>
+                            </div>
+                            <div class="flex items-center justify-center text-xs text-gray-500">
+                                <i class="fas fa-book mr-1"></i>
+                                <span>Step-by-Step Guide</span>
+                                <span class="ml-2 px-2 py-0.5 bg-purple-900 bg-opacity-50 text-purple-300 rounded-full text-xs">XA</span>
+                                <span class="ml-1 px-2 py-0.5 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-xs">Dhog</span>
+                            </div>
+                        </div>
+                    </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 border-t border-gray-800 fixed bottom-0 left-0 right-0 z-50" style="isolation: isolate;">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
+            <div class="flex justify-center items-center">
+                <p class="text-xs text-gray-500 text-center">
+                    © 2026 Aethertek. All rights reserved. | Not affiliated with FFXIV or Square Enix. | Plugin use at your own risk. | Join our Discord: <a href="https://discord.gg/g2NmYxPQCa" target="_blank" class="text-purple-400 hover:text-purple-300 transition">discord.gg/g2NmYxPQCa</a>
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Smooth Scrolling Script -->
+    <script>
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+
+        // Random gradient for brand title
+        (function() {
+            const gradients = [
+                'linear-gradient(90deg, #4ade80, #60a5fa)',
+                'linear-gradient(90deg, #f472b6, #a78bfa)',
+                'linear-gradient(90deg, #fb923c, #facc15)',
+                'linear-gradient(90deg, #34d399, #06b6d4)',
+                'linear-gradient(90deg, #f87171, #fb923c)',
+                'linear-gradient(90deg, #a78bfa, #ec4899)',
+                'linear-gradient(90deg, #60a5fa, #818cf8)',
+                'linear-gradient(90deg, #facc15, #4ade80)',
+                'linear-gradient(90deg, #e879f9, #60a5fa)',
+                'linear-gradient(90deg, #2dd4bf, #a78bfa)',
+                'linear-gradient(90deg, #f472b6, #fb923c)',
+                'linear-gradient(90deg, #818cf8, #34d399)',
+                'linear-gradient(90deg, #fb923c, #e879f9)',
+                'linear-gradient(90deg, #60a5fa, #4ade80)',
+                'linear-gradient(90deg, #f87171, #a78bfa)',
+                'linear-gradient(90deg, #34d399, #facc15)',
+                'linear-gradient(90deg, #c084fc, #f472b6)',
+                'linear-gradient(90deg, #22d3ee, #4ade80)',
+                'linear-gradient(90deg, #fbbf24, #f87171)',
+                'linear-gradient(90deg, #a3e635, #06b6d4)',
+            ];
+            const el = document.getElementById('brand-title');
+            const chosen = gradients[Math.floor(Math.random() * gradients.length)];
+            el.style.backgroundImage = chosen;
+            el.style.webkitBackgroundClip = 'text';
+            el.style.backgroundClip = 'text';
+            el.style.webkitTextFillColor = 'transparent';
+            el.style.color = 'transparent';
+        })();
+
+        // Add scroll effect to navigation
+        window.addEventListener('scroll', function() {
+            const nav = document.querySelector('nav');
+            if (window.scrollY > 50) {
+                nav.classList.add('shadow-xl');
+            } else {
+                nav.classList.remove('shadow-xl');
+            }
+        });
+
+        // Copy to clipboard function
+        function copyToClipboard(text, event) {
+            // Fallback method for non-secure contexts
+            const fallbackCopy = function() {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                
+                try {
+                    document.execCommand('copy');
+                    showSuccessFeedback(event);
+                } catch (err) {
+                    console.error('Fallback copy failed: ', err);
+                }
+                
+                document.body.removeChild(textArea);
+            };
+            
+            // Show success feedback
+            const showSuccessFeedback = function(event) {
+                const button = event.target.closest('button');
+                const originalIcon = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check"></i>';
+                button.classList.add('text-green-400');
+                setTimeout(function() {
+                    button.innerHTML = originalIcon;
+                    button.classList.remove('text-green-400');
+                }, 2000);
+            };
+            
+            // Try modern clipboard API first
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    showSuccessFeedback(event);
+                }).catch(function(err) {
+                    console.error('Clipboard API failed, trying fallback: ', err);
+                    fallbackCopy();
+                });
+            } else {
+                // Use fallback for non-secure contexts
+                fallbackCopy();
+            }
+        }
+
+        // Load plugin data from x.json and update download counts
+        async function loadPluginData() {
+            try {
+                console.log('Attempting to load plugin data...');
+                
+                // For local files, use a simple direct approach
+                const response = await fetch('./x.json');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const plugins = await response.json();
+                console.log('Successfully loaded plugin data from local x.json');
+                
+                // Create a mapping of plugin names to their data
+                const pluginData = {};
+                plugins.forEach(plugin => {
+                    pluginData[plugin.Name] = {
+                        version: plugin.AssemblyVersion,
+                        downloads: plugin.DownloadCount
+                    };
+                });
+
+                // Update download counts in the page
+                updatePluginInfo('XA Database', pluginData['XA Database']);
+                updatePluginInfo('XA Slave', pluginData['XA Slave']);
+                updatePluginInfo('XA HUD Navigator', pluginData['XA HUD Navigator']);
+                updatePluginInfo('Botology', pluginData['Botology']);
+                updatePluginInfo('BFE', pluginData['BFE']);
+                updatePluginInfo('ChocoboColourized', pluginData['Chocobo Colourized']);
+                updatePluginInfo('Choke-abo', pluginData['Choke-abo']);
+                updatePluginInfo('Coppelia', pluginData['Coppelia']);
+                updatePluginInfo('Dheacon', pluginData['Dheacon']);
+                updatePluginInfo('DhogGPT', pluginData['DhogGPT']);
+                updatePluginInfo('Dhog Potato System', pluginData['Dhog Potato System']);
+                updatePluginInfo('FrenRider', pluginData['Fren Rider']);
+                updatePluginInfo('HelloFellowHuman', pluginData['Hello Fellow Human']);
+                updatePluginInfo('Krangler', pluginData['Krangler']);
+                updatePluginInfo('LootGoblin', pluginData['Loot Goblin']);
+                updatePluginInfo('M.O.G.T.O.M.E.', pluginData['M.O.G.T.O.M.E.']);
+                updatePluginInfo('Thick Thighs Save Lives', pluginData['Thick Thighs Save Lives']);
+                updatePluginInfo('VerMAXion', pluginData['Vermaxion']);
+                updatePluginInfo('Footballer', pluginData['Footballer']);
+                updatePluginInfo('AI Duty Solver', pluginData['AI Duty Solver']);
+                updatePluginInfo('DAD', pluginData['dad']);
+
+                // Store plugin data for individual plugin pages to access
+                localStorage.setItem('aethertekPluginData', JSON.stringify(pluginData));
+                
+                // Update header stats
+                updateHeaderStats(plugins);
+                
+                // Highlight most downloaded plugin
+                highlightMostDownloaded(plugins);
+                
+            } catch (error) {
+                console.error('Failed to load plugin data:', error);
+                // Show error message to user
+                showLoadError(error.message);
+                // Update header stats to show error
+                updateHeaderStatsError();
+            }
+        }
+
+        // Highlight the most downloaded plugin
+        function highlightMostDownloaded(plugins) {
+            try {
+                if (!plugins || plugins.length === 0) {
+                    console.log('No plugins available for highlighting');
+                    return;
+                }
+                
+                // Find the plugin with the highest download count
+                let mostDownloadedPlugin = null;
+                let maxDownloads = 0;
+                
+                plugins.forEach(plugin => {
+                    if (plugin.DownloadCount > maxDownloads) {
+                        maxDownloads = plugin.DownloadCount;
+                        mostDownloadedPlugin = plugin;
+                    }
+                });
+                
+                if (!mostDownloadedPlugin) {
+                    console.log('No plugin found with downloads');
+                    return;
+                }
+                
+                console.log(`Most downloaded plugin: ${mostDownloadedPlugin.Name} with ${maxDownloads.toLocaleString()} downloads`);
+                
+                // Find the plugin card and add the highlight class
+                const pluginCards = document.querySelectorAll('.plugin-card');
+                pluginCards.forEach(card => {
+                    const titleElement = card.querySelector('h3');
+                    if (titleElement && titleElement.textContent.trim() === mostDownloadedPlugin.Name) {
+                        card.classList.add('most-downloaded');
+                        console.log(`Added highlight to: ${mostDownloadedPlugin.Name}`);
+                        return;
+                    }
+                });
+                
+            } catch (error) {
+                console.error('Failed to highlight most downloaded plugin:', error);
+            }
+        }
+
+        // Update header statistics
+        function updateHeaderStats(pluginData) {
+            try {
+                const totalPlugins = pluginData.length;
+                const totalDownloads = pluginData.reduce((sum, plugin) => sum + (plugin.DownloadCount || 0), 0);
+                
+                // Update desktop stats
+                const pluginCountElement = document.getElementById('plugin-count');
+                const downloadCountElement = document.getElementById('download-count');
+                
+                if (pluginCountElement) {
+                    pluginCountElement.textContent = `${totalPlugins} Plugins`;
+                }
+                
+                if (downloadCountElement) {
+                    downloadCountElement.textContent = `${totalDownloads.toLocaleString()} Downloads`;
+                }
+                
+                // Update mobile stats
+                const mobilePluginCountElement = document.getElementById('mobile-plugin-count');
+                const mobileDownloadCountElement = document.getElementById('mobile-download-count');
+                
+                if (mobilePluginCountElement) {
+                    mobilePluginCountElement.textContent = `${totalPlugins} Plugins`;
+                }
+                
+                if (mobileDownloadCountElement) {
+                    mobileDownloadCountElement.textContent = `${totalDownloads.toLocaleString()} Downloads`;
+                }
+                
+                console.log(`Updated header stats: ${totalPlugins} plugins, ${totalDownloads.toLocaleString()} downloads`);
+                
+            } catch (error) {
+                console.error('Failed to update header stats:', error);
+                updateHeaderStatsError();
+            }
+        }
+
+        // Update header stats on error
+        function updateHeaderStatsError() {
+            // Update desktop stats
+            const pluginCountElement = document.getElementById('plugin-count');
+            const downloadCountElement = document.getElementById('download-count');
+            
+            if (pluginCountElement) {
+                pluginCountElement.textContent = 'Stats unavailable';
+                pluginCountElement.classList.add('text-red-400');
+            }
+            
+            if (downloadCountElement) {
+                downloadCountElement.textContent = 'Stats unavailable';
+                downloadCountElement.classList.add('text-red-400');
+            }
+            
+            // Update mobile stats
+            const mobilePluginCountElement = document.getElementById('mobile-plugin-count');
+            const mobileDownloadCountElement = document.getElementById('mobile-download-count');
+            
+            if (mobilePluginCountElement) {
+                mobilePluginCountElement.textContent = 'Stats unavailable';
+                mobilePluginCountElement.classList.add('text-red-400');
+            }
+            
+            if (mobileDownloadCountElement) {
+                mobileDownloadCountElement.textContent = 'Stats unavailable';
+                mobileDownloadCountElement.classList.add('text-red-400');
+            }
+        }
+
+        // Toggle mobile menu
+        function toggleMobileMenu() {
+            const mobileNav = document.getElementById('mobileNav');
+            mobileNav.classList.toggle('active');
+            
+            // Close menu when clicking outside
+            if (mobileNav.classList.contains('active')) {
+                setTimeout(() => {
+                    document.addEventListener('click', closeMobileMenuOutside);
+                }, 100);
+            } else {
+                document.removeEventListener('click', closeMobileMenuOutside);
+            }
+        }
+
+        // Close mobile menu when clicking outside
+        function closeMobileMenuOutside(event) {
+            const mobileNav = document.getElementById('mobileNav');
+            const menuToggle = document.querySelector('.mobile-menu-toggle');
+            
+            if (!mobileNav.contains(event.target) && !menuToggle.contains(event.target)) {
+                mobileNav.classList.remove('active');
+                document.removeEventListener('click', closeMobileMenuOutside);
+            }
+        }
+
+        // Show error message to user
+        function showLoadError(message) {
+            const errorElements = document.querySelectorAll('.text-gray-500 span');
+            errorElements.forEach(element => {
+                if (element.textContent === 'Loading version and downloads...') {
+                    element.textContent = 'Failed to load data';
+                    element.classList.add('text-red-400');
+                }
+            });
+        }
+
+        function updatePluginInfo(pluginName, data) {
+            if (!data) {
+                console.warn(`No data found for plugin: ${pluginName}`);
+                return;
+            }
+            
+            // Find all elements containing the plugin name and update their version/download info
+            const pluginCards = document.querySelectorAll('.plugin-card');
+            let updated = false;
+            
+            pluginCards.forEach(card => {
+                const titleElement = card.querySelector('h3');
+                if (titleElement && titleElement.textContent.trim() === pluginName) {
+                    const infoElement = card.querySelector('.text-gray-500');
+                    if (infoElement) {
+                        const versionElement = infoElement.querySelector('span');
+                        if (versionElement && versionElement.textContent === 'Loading version and downloads...') {
+                            versionElement.textContent = `v${data.version} • ${data.downloads.toLocaleString()} downloads`;
+                            versionElement.classList.remove('text-gray-500');
+                            versionElement.classList.add('text-green-400');
+                            updated = true;
+                        }
+                    }
+                }
+            });
+            
+            if (!updated) {
+                console.warn(`Could not find plugin card for: ${pluginName}`);
+            }
+        }
+
+        // Load plugin data when page loads
+        document.addEventListener('DOMContentLoaded', loadPluginData);
+
+        // Aethertek-hosted applications (not in x.json): version comes from each
+        // app's latest.json manifest, downloads from the site's download.php
+        // counter. On any failure the card keeps its static "Utility Application"
+        // label. Add new proprietary apps to AETHERTEK_APPS as they roll out.
+        const AETHERTEK_APPS = [
+            { slug: 'xa-dashboard', metaId: 'xaDashboardMeta' },
+            { slug: 'xa-sub-manager', metaId: 'xaSubManagerMeta' }
+        ];
+
+        async function loadAethertekAppInfo(app) {
+            try {
+                const manifestRes = await fetch(`./downloads/${app.slug}/latest.json`, { cache: 'no-store' });
+                if (!manifestRes.ok) throw new Error(`manifest HTTP ${manifestRes.status}`);
+                const manifest = await manifestRes.json();
+                if (!manifest.version) throw new Error('manifest has no version');
+
+                let downloadsText = '';
+                try {
+                    const statsRes = await fetch(`./download.php?app=${app.slug}&stats=1`, { cache: 'no-store' });
+                    if (statsRes.ok) {
+                        const stats = await statsRes.json();
+                        if (typeof stats.total === 'number') {
+                            downloadsText = ` • ${stats.total.toLocaleString()} downloads`;
+                        }
+                    }
+                } catch (statsError) {
+                    console.warn(`${app.slug} download stats unavailable:`, statsError.message);
+                }
+
+                const meta = document.getElementById(app.metaId);
+                if (meta) {
+                    meta.textContent = `v${manifest.version}${downloadsText}`;
+                    meta.classList.add('text-green-400');
+                    const icon = meta.parentElement.querySelector('i');
+                    if (icon) icon.className = 'fas fa-download mr-1';
+                }
+            } catch (error) {
+                console.warn(`${app.slug} version/downloads unavailable:`, error.message);
+            }
+        }
+        document.addEventListener('DOMContentLoaded', () => AETHERTEK_APPS.forEach(loadAethertekAppInfo));
+    </script>
+</body>
+</html>

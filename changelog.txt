@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-07-14 — P1183 planner priority and Aethertek web pages
+- Moved the existing REVIEW & RUN card directly below the Plan heading and active-run lock notice, before all
+  disabled editing controls. Validate, Run, Cancel, Open Status, and their locked/unlocked behavior still use the
+  existing planner action strip and scheduler-backed paths.
+- Added the static Aethertek handoff files `web/index.html` and `web/dad.html` from the confirmed site templates.
+  The index now includes DAD metadata binding and a DAD card; the detail page documents current setup, reusable
+  Plans and crews, Coordinator/Client readiness, supported live lanes, schedules, sharing, blockers, and recovery.
+- No runtime, scheduler, IPC, wire, persistence, configuration, manifest, version, release workflow, or client
+  contract changed.
+
 ## 2026-07-14 — P1181 Plan and Schedule sharing
 - Added versioned Base64 clipboard export/import for Plans and Schedules. Schedule shares preserve ordered entries
   and repeats while bundling every referenced Plan exactly once; matching IDs replace only after a compact preview.

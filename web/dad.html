@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAD - Aethertek</title>
+    <meta name="description" content="DAD is a duty planner and multibox coordinator for FFXIV. Build reusable Plans and crews, verify clients and parties, run supported duties and roulettes, and schedule manual or daily work.">
+    <meta name="keywords" content="FFXIV, Dalamud, plugin, DAD, duty planner, multibox, scheduler, party, automation, Dhog">
+    <link rel="canonical" href="https://aethertek.io/plugins/dad.html">
+    
+    <!-- Open Graph / Discord Embed Tags -->
+    <meta property="og:title" content="DAD">
+    <meta property="og:description" content="Plan solo and multibox duty runs with reusable crews, verified readiness, supported queues, schedules, sharing, and visible recovery controls.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://aethertek.io/plugins/dad.html">
+    <meta property="og:image" content="https://raw.githubusercontent.com/McVaxius/dad/main/images/icon.png">
+    <meta property="og:image:alt" content="DAD">
+    <meta property="og:site_name" content="Aethertek | Repo: https://aethertek.io/x.json">
+    <meta property="og:image:width" content="128">
+    <meta property="og:image:height" content="128">
+    
+    <!-- Twitter Card Tags -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="DAD">
+    <meta name="twitter:description" content="Plan solo and multibox duty runs with reusable crews, verified readiness, supported queues, schedules, sharing, and visible recovery controls.">
+    <meta name="twitter:image" content="https://raw.githubusercontent.com/McVaxius/dad/main/images/icon.png">
+    
+    <!-- Discord Embed Tags -->
+    <meta name="theme-color" content="#8b5cf6">
+    <meta name="color-scheme" content="dark">
+    
+    <link rel="icon" type="image/x-icon" href="../images/favicon..ico">
+    <script type="text/javascript" src="https://ff.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=tJx1xMHAnt3x0ddfWbSnJrtC8eOy28Y5Ku16IVV9EokysFnwnpf-w7KbodLRKcj-tiRjM5Rie_isAFoTiOofjZCfEygKQJ0t5V6Ndkzx1y1RVo4H1yzp3ah61NTkq5Dk4E-AYzd1hkTXFHuhRkOA_yhmtMT_gx0tnYkZCL-YzPUZon9ciy-1aDfgGPtJjkGVIFNlGFiyYqwhp4hp6fxBNRvhYYggiXn_HZGLJBmwfPW0FyzKxAWiAYBNm0TVZBza5KHO3sw1_uuDL4DqusCYhg" charset="UTF-8"></script><script src="https://cdn.tailwindcss.com">
+        // Random gradient for brand title
+        (function() {
+            const gradients = [
+                'linear-gradient(90deg, #4ade80, #60a5fa)',
+                'linear-gradient(90deg, #f472b6, #a78bfa)',
+                'linear-gradient(90deg, #fb923c, #facc15)',
+                'linear-gradient(90deg, #34d399, #06b6d4)',
+                'linear-gradient(90deg, #f87171, #fb923c)',
+                'linear-gradient(90deg, #a78bfa, #ec4899)',
+                'linear-gradient(90deg, #60a5fa, #818cf8)',
+                'linear-gradient(90deg, #facc15, #4ade80)',
+                'linear-gradient(90deg, #e879f9, #60a5fa)',
+                'linear-gradient(90deg, #2dd4bf, #a78bfa)',
+                'linear-gradient(90deg, #f472b6, #fb923c)',
+                'linear-gradient(90deg, #818cf8, #34d399)',
+                'linear-gradient(90deg, #fb923c, #e879f9)',
+                'linear-gradient(90deg, #60a5fa, #4ade80)',
+                'linear-gradient(90deg, #f87171, #a78bfa)',
+                'linear-gradient(90deg, #34d399, #facc15)',
+                'linear-gradient(90deg, #c084fc, #f472b6)',
+                'linear-gradient(90deg, #22d3ee, #4ade80)',
+                'linear-gradient(90deg, #fbbf24, #f87171)',
+                'linear-gradient(90deg, #a3e635, #06b6d4)',
+            ];
+            const el = document.getElementById('brand-title');
+            if (el) {
+                const chosen = gradients[Math.floor(Math.random() * gradients.length)];
+                el.style.backgroundImage = chosen;
+                el.style.webkitBackgroundClip = 'text';
+                el.style.backgroundClip = 'text';
+                el.style.webkitTextFillColor = 'transparent';
+                el.style.color = 'transparent';
+            }
+        })();
+    </script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+        .hero-text {
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        body {
+            padding-bottom: 60px;
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-white">
+    <!-- Navigation -->
+    <nav class="bg-gray-900 bg-opacity-90 backdrop-filter backdrop-blur-lg border-b border-gray-700 sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <a href="https://aethertek.io/" class="flex items-center">
+                            <img src="../images/Aethertek.png" alt="Aethertek" class="w-6 h-6 mr-2">
+                            <h1 id="brand-title" class="text-xl font-bold">Aethertek</h1>
+                        </a>
+                    </div>
+                    <div class="hidden md:block ml-10">
+                        <div class="flex items-baseline space-x-4">
+                           <a href="https://aethertek.io/" class="text-gray-300 hover:text-purple-400 px-3 py-2 rounded-md text-sm font-medium transition">
+                                <i class="fas fa-arrow-left mr-2"></i>Back to Plugins
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <a href="https://ko-fi.com/mcvaxius" target="_blank" class="bg-pink-600 hover:bg-pink-700 text-white font-medium py-2 px-4 rounded-lg transition text-sm mr-3">
+                        <i class="fas fa-heart mr-2"></i>Support
+                    </a>
+                    <a href="https://github.com/McVaxius/dad" target="_blank" class="bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-4 rounded-lg transition text-sm">
+                        <i class="fab fa-github mr-2"></i>GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Plugin Header -->
+    <section class="py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-12">
+                <img src="https://raw.githubusercontent.com/McVaxius/dad/main/images/icon.png" alt="DAD" class="w-32 h-32 mx-auto rounded-xl shadow-2xl mb-6">
+                <h1 class="text-4xl font-bold mb-4 hero-text">DAD</h1>
+                <p class="text-xl text-gray-300 max-w-3xl mx-auto">
+                    Plan solo and multibox duty runs from guided setup through scheduler-backed execution, with verified crews, visible blockers, and explicit recovery controls.
+                </p>
+                <div class="flex justify-center items-center mt-6">
+                    <div class="flex items-center space-x-2">
+                        <span class="text-gray-300 text-xs">Repo:</span>
+                        <a href="https://aethertek.io/x.json" target="_blank" class="text-gray-300 hover:text-purple-400 transition text-xs">
+                            https://aethertek.io/x.json
+                        </a>
+                        <button onclick="copyToClipboard('https://aethertek.io/x.json', event)" class="text-gray-400 hover:text-purple-400 transition text-xs" title="Copy link to clipboard">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex justify-center items-center mt-4">
+                    <div class="flex items-center space-x-2">
+                        <span class="text-gray-300 text-xs">Discord:</span>
+                        <a href="https://discord.gg/g2NmYxPQCa" target="_blank" class="text-gray-300 hover:text-purple-400 transition text-xs">
+                            discord.gg/g2NmYxPQCa
+                        </a>
+                        <button onclick="copyToClipboard('discord.gg/g2NmYxPQCa', event)" class="text-gray-400 hover:text-purple-400 transition text-xs" title="Copy Discord link to clipboard">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex justify-center items-center mt-4 space-x-6">
+                    <span class="text-sm text-gray-400">
+                        <i class="fas fa-download mr-2"></i>Loading version and downloads...
+                    </span>
+                    <span class="px-3 py-1 bg-orange-900 bg-opacity-50 text-orange-300 rounded-full text-sm font-medium">
+                        Dhog
+                    </span>
+                </div>
+                <div class="flex justify-center items-center mt-4">
+                    <div class="flex flex-wrap gap-2 justify-center">
+                        <span class="px-2 py-1 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Duty Planner</span>
+                        <span class="px-2 py-1 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Multibox</span>
+                        <span class="px-2 py-1 bg-blue-900 bg-opacity-50 text-blue-300 rounded text-xs">Schedules</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="grid lg:grid-cols-12 gap-8">
+                <!-- Column 1 - Overview (38%) -->
+                <div class="lg:col-span-5">
+                    <div class="bg-gray-800 bg-opacity-50 backdrop-filter backdrop-blur-lg rounded-xl p-6 border border-gray-700">
+                        <h2 class="text-2xl font-bold mb-4 text-purple-400">Overview</h2>
+                        <p class="text-gray-300 leading-relaxed mb-4">
+                            DAD turns repeatable duty work into reusable Plans. Choose the activity, crew, requested jobs, wake behavior, loot rules, stop condition, and finish actions once, then review the same explicit contract before every run.
+                        </p>
+                        <p class="text-gray-300 leading-relaxed mb-4">
+                            Five guided workflows cover Coordinator setup, Client setup, a first Plan, crew and launch profiles, and a first Schedule. Expert Plan, Crew, Clients, Schedules, and Status views remain available whenever you want direct control.
+                        </p>
+                        <p class="text-gray-300 leading-relaxed">
+                            Every live start uses the scheduler-backed path. DAD prepares the selected characters, verifies Coordinator and Client readiness, assembles the intended party, and keeps the first blocker and next action visible instead of hiding incomplete work.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Column 2 - Supported lanes (24%) -->
+                <div class="lg:col-span-3">
+                    <div class="bg-gray-800 bg-opacity-50 backdrop-filter backdrop-blur-lg rounded-xl p-6 border border-gray-700">
+                        <h2 class="text-2xl font-bold mb-4 text-purple-400">Supported Now</h2>
+                        <div class="space-y-6">
+                            <div>
+                                <h3 class="font-semibold text-white mb-2">Solo Planning</h3>
+                                <ul class="text-gray-400 text-sm space-y-1">
+                                    <li>• Duty Support and leveling</li>
+                                    <li>• Trust and leveling</li>
+                                    <li>• Local Duty and unsynced runs</li>
+                                </ul>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-white mb-2">Verified Parties</h3>
+                                <ul class="text-gray-400 text-sm space-y-1">
+                                    <li>• Premade and Custom Duty</li>
+                                    <li>• Eligible four-player non-PvP roulettes</li>
+                                    <li>• Commendation and MOGTOME helper runs</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Column 3 - Key Features (38%) -->
+                <div class="lg:col-span-4">
+                    <div class="bg-gray-800 bg-opacity-50 backdrop-filter backdrop-blur-lg rounded-xl p-6 border border-gray-700">
+                        <h2 class="text-2xl font-bold mb-4 text-purple-400">Key Features</h2>
+                        <div class="space-y-4">
+                            <div class="flex items-start">
+                                <i class="fas fa-route text-blue-400 mt-1 mr-3"></i>
+                                <div>
+                                    <h3 class="font-semibold text-white mb-1">Guided Setup and Reusable Plans</h3>
+                                    <p class="text-gray-400 text-sm">Save activity rules and reusable crews, or follow guided workflows from first connection through first Schedule.</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <i class="fas fa-network-wired text-purple-400 mt-1 mr-3"></i>
+                                <div>
+                                    <h3 class="font-semibold text-white mb-1">Coordinator and Client Readiness</h3>
+                                    <p class="text-gray-400 text-sm">See authenticated routing, reconnect state, worker roles, requested jobs, and exact-character preparation before queueing.</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <i class="fas fa-users text-amber-400 mt-1 mr-3"></i>
+                                <div>
+                                    <h3 class="font-semibold text-white mb-1">Prepared, Verified Parties</h3>
+                                    <p class="text-gray-400 text-sm">Wake or relog the right clients, prepare their jobs, assemble the saved crew, and verify the party before a supported queue starts.</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <i class="fas fa-calendar-check text-green-400 mt-1 mr-3"></i>
+                                <div>
+                                    <h3 class="font-semibold text-white mb-1">Scheduler-Backed Runs</h3>
+                                    <p class="text-gray-400 text-sm">Run one Plan now or chain ordered Plans and repeats into manual or daily-reset Schedules.</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <i class="fas fa-share-alt text-cyan-400 mt-1 mr-3"></i>
+                                <div>
+                                    <h3 class="font-semibold text-white mb-1">Plan and Schedule Sharing</h3>
+                                    <p class="text-gray-400 text-sm">Export versioned clipboard shares, preview ID-based replacement, then remap anonymous crew locally before validation.</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <i class="fas fa-shield-alt text-red-400 mt-1 mr-3"></i>
+                                <div>
+                                    <h3 class="font-semibold text-white mb-1">Visible Safety and Recovery</h3>
+                                    <p class="text-gray-400 text-sm">Read the first blocker and live status, cancel scoped work, or use guarded Stop All to drain DAD-owned activity across the crew.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 border-t border-gray-800 fixed bottom-0 left-0 right-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
+            <div class="flex justify-center items-center">
+                <p class="text-xs text-gray-500 text-center">
+                    © 2026 Aethertek. All rights reserved. | Not affiliated with FFXIV or Square Enix. | Plugin use at your own risk.
+                </p>
+            </div>
+        </div>
+    </footer>
+    <script>
+        // Copy to clipboard function
+        function copyToClipboard(text, event) {
+            // Fallback method for non-secure contexts
+            const fallbackCopy = function() {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                
+                try {
+                    document.execCommand('copy');
+                    showSuccessFeedback(event);
+                } catch (err) {
+                    console.error('Fallback copy failed: ', err);
+                }
+                
+                document.body.removeChild(textArea);
+            };
+            
+            // Show success feedback
+            const showSuccessFeedback = function(event) {
+                const button = event.target.closest('button');
+                const originalIcon = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check"></i>';
+                button.classList.add('text-green-400');
+                setTimeout(function() {
+                    button.innerHTML = originalIcon;
+                    button.classList.remove('text-green-400');
+                }, 2000);
+            };
+            
+            // Try modern clipboard API first
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    showSuccessFeedback(event);
+                }).catch(function(err) {
+                    console.error('Clipboard API failed, trying fallback: ', err);
+                    fallbackCopy();
+                });
+            } else {
+                // Use fallback for non-secure contexts
+                fallbackCopy();
+            }
+        }
+
+        // Direct fetch from x.json for DAD plugin data
+        async function loadDADData() {
+            try {
+                const response = await fetch('../x.json');
+                const plugins = await response.json();
+
+                const dad = plugins.find(p => p.InternalName === 'dad');
+                if (dad) {
+                    const downloadElement = document.querySelector('.text-gray-400:not(button)');
+                    if (downloadElement) {
+                        downloadElement.innerHTML = `<i class="fas fa-download mr-2"></i>v${dad.AssemblyVersion} • ${dad.DownloadCount} downloads`;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load DAD data:', error);
+            }
+        }
+
+        // Load data immediately when page loads
+        document.addEventListener('DOMContentLoaded', loadDADData);
+
+        // Random gradient for brand title
+        (function() {
+            const gradients = [
+                'linear-gradient(90deg, #4ade80, #60a5fa)',
+                'linear-gradient(90deg, #f472b6, #a78bfa)',
+                'linear-gradient(90deg, #fb923c, #facc15)',
+                'linear-gradient(90deg, #34d399, #06b6d4)',
+                'linear-gradient(90deg, #f87171, #fb923c)',
+                'linear-gradient(90deg, #a78bfa, #ec4899)',
+                'linear-gradient(90deg, #60a5fa, #818cf8)',
+                'linear-gradient(90deg, #facc15, #4ade80)',
+                'linear-gradient(90deg, #e879f9, #60a5fa)',
+                'linear-gradient(90deg, #2dd4bf, #a78bfa)',
+                'linear-gradient(90deg, #f472b6, #fb923c)',
+                'linear-gradient(90deg, #818cf8, #34d399)',
+                'linear-gradient(90deg, #fb923c, #e879f9)',
+                'linear-gradient(90deg, #60a5fa, #4ade80)',
+                'linear-gradient(90deg, #f87171, #a78bfa)',
+                'linear-gradient(90deg, #34d399, #facc15)',
+                'linear-gradient(90deg, #c084fc, #f472b6)',
+                'linear-gradient(90deg, #22d3ee, #4ade80)',
+                'linear-gradient(90deg, #fbbf24, #f87171)',
+                'linear-gradient(90deg, #a3e635, #06b6d4)',
+            ];
+            const el = document.getElementById('brand-title');
+            if (el) {
+                const chosen = gradients[Math.floor(Math.random() * gradients.length)];
+                el.style.backgroundImage = chosen;
+                el.style.webkitBackgroundClip = 'text';
+                el.style.backgroundClip = 'text';
+                el.style.webkitTextFillColor = 'transparent';
+                el.style.color = 'transparent';
+            }
+        })();
+    </script>
+</body>
+</html>
