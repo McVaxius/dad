@@ -6,17 +6,33 @@ namespace dad.Tests;
 public sealed class DadPartyTeardownRulesTests
 {
     [Fact]
-    public void TransientEmptyPartyListCannotReportSuccessfulTeardown()
+    public void CrossWorldLocalOnlyFrameCannotCompleteTeardown()
     {
         var now = DateTime.UtcNow;
         var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
 
-        var transientEmpty = controller.Pulse(Observation(now, members: []));
-        var restoredParty = controller.Pulse(Observation(now.AddSeconds(1), members: [1UL, 2UL]));
+        var breakup = controller.Pulse(Observation(now, members: [1UL], crossRealm: true));
+        var leave = controller.Pulse(Observation(now.AddMilliseconds(100), members: [1UL], crossRealm: true, partyMenu: true));
+        var beforePrompt = controller.Pulse(Observation(now.AddSeconds(1), members: [1UL], crossRealm: true));
+        var approve = controller.Pulse(Observation(
+            now.AddSeconds(2),
+            members: [1UL, 2UL],
+            crossRealm: true,
+            prompt: true,
+            identity: "fresh",
+            text: "Disband the party?",
+            worldStable: false));
+        var crossRealmLocalOnly = controller.Pulse(Observation(now.AddSeconds(3), members: [1UL], crossRealm: true));
+        var firstAbsentFrame = controller.Pulse(Observation(now.AddSeconds(4), members: [1UL]));
+        var complete = controller.Pulse(Observation(now.AddSeconds(5), members: [1UL]));
 
-        Assert.Equal(DadPartyTeardownAction.None, transientEmpty.Action);
-        Assert.Contains("temporarily reported solo", transientEmpty.Summary, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, restoredParty.Action);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, breakup.Action);
+        Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, leave.Action);
+        Assert.Equal(DadPartyTeardownAction.None, beforePrompt.Action);
+        Assert.Equal(DadPartyTeardownAction.ApprovePrompt, approve.Action);
+        Assert.Equal(DadPartyTeardownAction.None, crossRealmLocalOnly.Action);
+        Assert.Equal(DadPartyTeardownAction.None, firstAbsentFrame.Action);
+        Assert.Equal(DadPartyTeardownAction.Complete, complete.Action);
         Assert.Equal(1, controller.CommandAttempts);
     }
 
@@ -33,11 +49,13 @@ public sealed class DadPartyTeardownRulesTests
                 now.AddSeconds(1),
                 prompt: true,
                 identity: "fresh",
-                text: "Disband the party?")).Action);
+                text: "Disband the party?",
+                worldStable: false)).Action);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(2))).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(3), members: [1UL])).Action);
         Assert.Equal(
             DadPartyTeardownAction.Complete,
-            controller.Pulse(Observation(now.AddSeconds(3), members: [1UL])).Action);
+            controller.Pulse(Observation(now.AddSeconds(4), members: [1UL])).Action);
     }
 
     [Fact]
@@ -73,6 +91,17 @@ public sealed class DadPartyTeardownRulesTests
     }
 
     [Fact]
+    public void OutOfDutyLeaderSendsBreakupWithoutASeparateWorldStabilityGate()
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
+
+        Assert.Equal(
+            DadPartyTeardownAction.SendBreakup,
+            controller.Pulse(Observation(now, worldStable: false)).Action);
+    }
+
+    [Fact]
     public void SoloPresetRosterCanCompleteWithoutAFalseMultiMemberGate()
     {
         var now = DateTime.UtcNow;
@@ -83,20 +112,46 @@ public sealed class DadPartyTeardownRulesTests
             controller.Pulse(Observation(now, members: [])).Action);
     }
 
+    [Fact]
+    public void BreakupUsesTheExactFullChatCommand()
+    {
+        Assert.Equal("/partycmd breakup", DadPartyTeardownController.BreakupCommand);
+        Assert.Equal(2, DadPartyTeardownController.PartyMenuLeaveCallbackOperation);
+        Assert.Equal(3, DadPartyTeardownController.PartyMenuLeaveCallbackArgument);
+    }
+
+    [Fact]
+    public void CrossWorldPartyMenuCallbackFiresOncePerCommandAttempt()
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
+
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, crossRealm: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, controller.Pulse(Observation(now.AddMilliseconds(100), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddMilliseconds(200), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(10), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, controller.Pulse(Observation(now.AddSeconds(10.1), crossRealm: true, partyMenu: true)).Action);
+    }
+
     private static DadPartyTeardownObservation Observation(
         DateTime now,
         IReadOnlyCollection<ulong>? members = null,
+        bool crossRealm = false,
+        bool partyMenu = false,
         bool prompt = false,
         string identity = "",
-        string text = "")
+        string text = "",
+        bool worldStable = true)
         => new(
             now,
             LocalContentId: 1,
             PartyLeaderContentId: 1,
             PartyMemberContentIds: members ?? [1UL, 2UL],
+            IsCrossRealmParty: crossRealm,
             IsInDuty: false,
             IsQueued: false,
-            IsWorldStable: true,
+            IsWorldStable: worldStable,
+            PartyMenuVisible: partyMenu,
             PromptVisible: prompt,
             PromptIdentity: identity,
             PromptText: text,

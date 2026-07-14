@@ -70,7 +70,8 @@ public sealed class DadP1178SafetyRulesTests
         Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(1))).Action);
         Assert.Equal(DadPartyTeardownAction.ApprovePrompt, controller.Pulse(Observation(now.AddSeconds(2), prompt: true, identity: "new", text: "Disband the party?")).Action);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(3), prompt: true, identity: "new", text: "Disband the party?")).Action);
-        Assert.Equal(DadPartyTeardownAction.Complete, controller.Pulse(Observation(now.AddSeconds(4), members: [1UL])).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(4), members: [1UL])).Action);
+        Assert.Equal(DadPartyTeardownAction.Complete, controller.Pulse(Observation(now.AddSeconds(5), members: [1UL])).Action);
     }
 
     [Fact]
@@ -144,5 +145,5 @@ public sealed class DadP1178SafetyRulesTests
         bool prompt = false,
         string identity = "",
         string text = "")
-        => new(now, 1, leader, members ?? [1UL, 2UL], false, false, true, prompt, identity, text, "Leader");
+        => new(now, 1, leader, members ?? [1UL, 2UL], false, false, false, true, false, prompt, identity, text, "Leader");
 }

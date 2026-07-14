@@ -148,7 +148,7 @@ public sealed class Plugin : IDalamudPlugin
         AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
         LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
         PartyInviteGateway = new InfoProxyPartyInviteGateway(Framework, PlayerState, PartyList, Log);
-        PartyTeardownService = new DadPartyTeardownService(CommandManager, PartyList, PlayerState, Condition, Log);
+        PartyTeardownService = new DadPartyTeardownService(PartyList, PlayerState, Condition, Log);
         var requestedJobPreparationGate = new DadRequestedJobPreparationGate();
         var classJobGearsetGateway = new DadClassJobGearsetGateway(Framework);
         PresenceService = new DadPresenceService(

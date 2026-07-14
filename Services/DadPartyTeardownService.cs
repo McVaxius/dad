@@ -1,5 +1,7 @@
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
+using System.Text;
+using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
@@ -8,22 +10,20 @@ namespace dad.Services;
 
 internal sealed unsafe class DadPartyTeardownService
 {
-    private readonly ICommandManager commandManager;
     private readonly IPartyList partyList;
     private readonly IPlayerState playerState;
     private readonly ICondition condition;
     private readonly IPluginLog log;
     private DadPartyTeardownController? controller;
     private string fallbackInviterName = string.Empty;
+    private string lastDecisionDiagnostic = string.Empty;
 
     public DadPartyTeardownService(
-        ICommandManager commandManager,
         IPartyList partyList,
         IPlayerState playerState,
         ICondition condition,
         IPluginLog log)
     {
-        this.commandManager = commandManager;
         this.partyList = partyList;
         this.playerState = playerState;
         this.condition = condition;
@@ -34,6 +34,7 @@ internal sealed unsafe class DadPartyTeardownService
     {
         var prompt = ReadPrompt();
         fallbackInviterName = expectedLeaderName?.Trim() ?? string.Empty;
+        lastDecisionDiagnostic = string.Empty;
         controller = new DadPartyTeardownController(
             expectedMembers,
             expectedLeaderContentId,
@@ -48,39 +49,117 @@ internal sealed unsafe class DadPartyTeardownService
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "Party teardown controller was not initialized.");
 
         var prompt = ReadPrompt();
-        var memberIds = partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList();
+        var partyMenuAddon = RaptureAtkUnitManager.Instance()->GetAddonByName("PartyMemberList");
+        var partyMenuVisible = partyMenuAddon != null && partyMenuAddon->IsVisible;
+        var isCrossRealmParty = InfoProxyCrossRealm.IsCrossRealmParty();
+        var memberIds = isCrossRealmParty
+            ? ReadCrossRealmMemberIds()
+            : partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList();
         if (memberIds.Count == 0 && playerState.ContentId != 0)
             memberIds.Add(playerState.ContentId);
 
         var leaderContentId = 0UL;
-        var leaderIndex = partyList.PartyLeaderIndex;
-        if (leaderIndex < partyList.Length)
-            leaderContentId = partyList[(int)leaderIndex]?.ContentId ?? 0;
+        if (isCrossRealmParty)
+        {
+            if (InfoProxyCrossRealm.IsLocalPlayerPartyLeader())
+                leaderContentId = playerState.ContentId;
+        }
+        else
+        {
+            var leaderIndex = partyList.PartyLeaderIndex;
+            if (leaderIndex < partyList.Length)
+                leaderContentId = partyList[(int)leaderIndex]?.ContentId ?? 0;
+        }
 
         var proxy = InfoProxyPartyInvite.Instance();
         var inviterName = proxy == null ? string.Empty : proxy->InviterName.ToString();
         if (string.IsNullOrWhiteSpace(inviterName))
             inviterName = fallbackInviterName;
 
+        var isInDuty = condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56];
+        var isQueued = condition[ConditionFlag.InDutyQueue] || condition[ConditionFlag.WaitingForDuty] || condition[ConditionFlag.WaitingForDutyFinder];
+        var isWorldStable = IsWorldStable();
         var decision = controller.Pulse(new DadPartyTeardownObservation(
             DateTime.UtcNow,
             playerState.ContentId,
             leaderContentId,
             memberIds,
-            condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56],
-            condition[ConditionFlag.InDutyQueue] || condition[ConditionFlag.WaitingForDuty] || condition[ConditionFlag.WaitingForDutyFinder],
-            IsWorldStable(),
+            isCrossRealmParty,
+            isInDuty,
+            isQueued,
+            isWorldStable,
+            partyMenuVisible,
             prompt.Visible,
             prompt.Identity,
             prompt.Text,
             inviterName));
 
+        var diagnostic = string.Join(
+            "|",
+            decision.Action,
+            decision.Summary,
+            controller.CommandAttempts,
+            playerState.ContentId,
+            leaderContentId,
+            string.Join(",", memberIds),
+            isCrossRealmParty,
+            isInDuty,
+            isQueued,
+            isWorldStable,
+            partyMenuVisible,
+            prompt.Visible,
+            prompt.Identity);
+        if (!string.Equals(lastDecisionDiagnostic, diagnostic, StringComparison.Ordinal))
+        {
+            lastDecisionDiagnostic = diagnostic;
+            log.Information(
+                "[dad] Party teardown decision action={Action} attempts={Attempts}/{MaximumAttempts} source={PartySource} crossRealm={CrossRealm} local={LocalContentId} leader={LeaderContentId} members={Members} inDuty={InDuty} queued={Queued} worldStable={WorldStable} partyMenuVisible={PartyMenuVisible} promptVisible={PromptVisible} prompt={PromptIdentity} summary={Summary}",
+                decision.Action,
+                controller.CommandAttempts,
+                DadPartyTeardownController.MaximumAttempts,
+                isCrossRealmParty ? "InfoProxyCrossRealm" : "PartyList",
+                isCrossRealmParty,
+                playerState.ContentId,
+                leaderContentId,
+                memberIds.Count == 0 ? "(none)" : string.Join(",", memberIds),
+                isInDuty,
+                isQueued,
+                isWorldStable,
+                partyMenuVisible,
+                prompt.Visible,
+                string.IsNullOrWhiteSpace(prompt.Identity) ? "(none)" : prompt.Identity,
+                decision.Summary);
+        }
+
         try
         {
             if (decision.Action == DadPartyTeardownAction.SendBreakup)
-                commandManager.ProcessCommand("/partycmd breakup");
+            {
+                SubmitBreakupChatCommand();
+                log.Information(
+                    "[dad] Submitted exact chat command command={Command} characters={CharacterCount}. {Summary}",
+                    DadPartyTeardownController.BreakupCommand,
+                    DadPartyTeardownController.BreakupCommand.Length,
+                    decision.Summary);
+            }
+            else if (decision.Action == DadPartyTeardownAction.InvokePartyMenuLeave)
+            {
+                if (!FirePartyMenuLeave(partyMenuAddon))
+                    throw new InvalidOperationException("PartyMemberList disappeared before the cross-world leave callback could be fired.");
+
+                log.Information(
+                    "[dad] Fired PartyMemberList callback updateState=true values={Operation},{Argument}. {Summary}",
+                    DadPartyTeardownController.PartyMenuLeaveCallbackOperation,
+                    DadPartyTeardownController.PartyMenuLeaveCallbackArgument,
+                    decision.Summary);
+            }
             else if (decision.Action == DadPartyTeardownAction.ApprovePrompt)
-                FireYes(prompt.Addon);
+            {
+                if (!FireYes(prompt.Addon))
+                    throw new InvalidOperationException("The newly observed SelectYesno prompt disappeared before Yes could be fired.");
+
+                log.Information("[dad] Approved newly appeared SelectYesno breakup prompt. {Summary}", decision.Summary);
+            }
         }
         catch (Exception ex)
         {
@@ -108,10 +187,36 @@ internal sealed unsafe class DadPartyTeardownService
            !condition[ConditionFlag.Casting] &&
            !condition[ConditionFlag.TradeOpen];
 
+    private static List<ulong> ReadCrossRealmMemberIds()
+    {
+        var memberIds = new List<ulong>();
+        var memberCount = InfoProxyCrossRealm.GetPartyMemberCount();
+        for (uint memberIndex = 0; memberIndex < memberCount; memberIndex++)
+        {
+            var member = InfoProxyCrossRealm.GetGroupMember(memberIndex);
+            if (member != null && member->ContentId != 0)
+                memberIds.Add(member->ContentId);
+        }
+
+        return memberIds;
+    }
+
+    private static void SubmitBreakupChatCommand()
+    {
+        var uiModule = UIModule.Instance();
+        if (uiModule == null)
+            throw new InvalidOperationException("The native game UI module is unavailable for chat input.");
+
+        var bytes = Encoding.UTF8.GetBytes(DadPartyTeardownController.BreakupCommand);
+        var utf8String = Utf8String.FromSequence(bytes);
+        uiModule->ProcessChatBoxEntry(utf8String, nint.Zero);
+    }
+
     public void Reset()
     {
         controller = null;
         fallbackInviterName = string.Empty;
+        lastDecisionDiagnostic = string.Empty;
     }
 
     private static PromptSnapshot ReadPrompt()
@@ -127,15 +232,30 @@ internal sealed unsafe class DadPartyTeardownService
         return new PromptSnapshot(true, $"{(nint)addonBase:X}:{text}", text, addonBase);
     }
 
-    private static void FireYes(AtkUnitBase* addon)
+    private static bool FireYes(AtkUnitBase* addon)
     {
         if (addon == null || !addon->IsVisible)
-            return;
+            return false;
 
         var values = stackalloc AtkValue[1];
         values[0].Type = AtkValueType.Int;
         values[0].Int = 0;
         addon->FireCallback(1, values, true);
+        return true;
+    }
+
+    private static bool FirePartyMenuLeave(AtkUnitBase* addon)
+    {
+        if (addon == null || !addon->IsVisible)
+            return false;
+
+        var values = stackalloc AtkValue[2];
+        values[0].Type = AtkValueType.Int;
+        values[0].Int = DadPartyTeardownController.PartyMenuLeaveCallbackOperation;
+        values[1].Type = AtkValueType.Int;
+        values[1].Int = DadPartyTeardownController.PartyMenuLeaveCallbackArgument;
+        addon->FireCallback(2, values, true);
+        return true;
     }
 
     private readonly struct PromptSnapshot
