@@ -914,6 +914,24 @@ public sealed class DadSchedulerService
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
         Func<DadRunRequest, DadRunResult> startPlannerRequest,
         Func<DadRunResult>? visibleRunProvider = null)
+        => UpdateCore(
+            groupResolver,
+            plannerPreviewBuilder,
+            (request, _) => startPlannerRequest(request),
+            visibleRunProvider);
+
+    internal void UpdateWithScheduleRepeatBoundary(
+        Func<string, DadPlannerGroup?> groupResolver,
+        Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
+        Func<DadRunRequest, DadScheduleRepeatBoundary, DadRunResult> startPlannerRequest,
+        Func<DadRunResult>? visibleRunProvider = null)
+        => UpdateCore(groupResolver, plannerPreviewBuilder, startPlannerRequest, visibleRunProvider);
+
+    private void UpdateCore(
+        Func<string, DadPlannerGroup?> groupResolver,
+        Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
+        Func<DadRunRequest, DadScheduleRepeatBoundary, DadRunResult> startPlannerRequest,
+        Func<DadRunResult>? visibleRunProvider)
     {
         UpdatePendingTakeoverCancellations();
         UpdatePendingEarlyAssignmentCancellations();
@@ -1043,7 +1061,8 @@ public sealed class DadSchedulerService
             return;
 
         var strictRequest = CloneRunRequest(frozenPlannerRequest)!;
-        var result = startPlannerRequest(strictRequest);
+        var repeatBoundary = ResolveScheduleRepeatBoundary();
+        var result = startPlannerRequest(strictRequest, repeatBoundary);
         currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
         currentState.Phase = currentState.PlannerStarted
             ? DadSchedulerPresetPhase.StartedPlanner
@@ -3071,6 +3090,16 @@ public sealed class DadSchedulerService
         => request == null
             ? null
             : DadIpcJson.Deserialize<DadRunRequest>(DadIpcJson.Serialize(request));
+
+    private DadScheduleRepeatBoundary ResolveScheduleRepeatBoundary()
+    {
+        var schedule = FindSchedule(currentState.ScheduleId);
+        return DadScheduleRules.ResolveRepeatBoundary(
+            currentState.ScheduleRunId,
+            currentState.ScheduleEntryId,
+            currentState.ScheduleRepeatIteration,
+            schedule?.Entries);
+    }
 
     private List<FrozenEarlyAssignment> BuildFrozenEarlyAssignments(
         DadRunRequest request,

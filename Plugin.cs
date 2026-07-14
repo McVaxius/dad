@@ -1678,7 +1678,7 @@ public sealed class Plugin : IDalamudPlugin
         });
         if (!startRequest.DryRun && state.IsActive && CanAdvanceSchedulerQueue())
         {
-            SchedulerService.Update(
+            SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
                 BuildSchedulerPlannerPreview,
                 StartScheduledPlannerRequest);
@@ -1765,7 +1765,7 @@ public sealed class Plugin : IDalamudPlugin
         SchedulerService.EnqueueRosterUpdate(plan, catalog);
         if (CanAdvanceSchedulerQueue())
         {
-            SchedulerService.Update(
+            SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
                 BuildSchedulerPlannerPreview,
                 StartScheduledPlannerRequest);
@@ -1831,7 +1831,7 @@ public sealed class Plugin : IDalamudPlugin
         var state = SchedulerService.StartScheduleRun(scheduleId, dryRun, requestedBy);
         if (CanAdvanceSchedulerQueue())
         {
-            SchedulerService.Update(
+            SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
                 BuildSchedulerPlannerPreview,
                 StartScheduledPlannerRequest,
@@ -1875,7 +1875,7 @@ public sealed class Plugin : IDalamudPlugin
         var enqueue = SchedulerService.EnqueueScheduledPresetWithDisposition(group, request);
         if (enqueue.Disposition == DadSchedulerEnqueueDisposition.Added && CanAdvanceSchedulerQueue())
         {
-            SchedulerService.Update(
+            SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
                 BuildSchedulerPlannerPreview,
                 StartScheduledPlannerRequest);
@@ -2315,9 +2315,11 @@ public sealed class Plugin : IDalamudPlugin
         return group == null ? null : BuildPlannerGroupRunRequestPreview(group.GroupId, null);
     }
 
-    private DadRunResult StartScheduledPlannerRequest(DadRunRequest request)
+    private DadRunResult StartScheduledPlannerRequest(
+        DadRunRequest request,
+        DadScheduleRepeatBoundary repeatBoundary)
     {
-        var result = RunCoordinatorService.StartTasks(request, persistentStartup: true);
+        var result = RunCoordinatorService.StartScheduledTasks(request, repeatBoundary);
         PrimeAuthorityCacheFromRun(request, result);
         if (result.Status != DadRunStatus.Rejected)
             InvalidatePlannerPreviewCache("scheduled planner started");
@@ -4188,7 +4190,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (CanAdvanceSchedulerQueue())
             {
-                SchedulerService.Update(
+                SchedulerService.UpdateWithScheduleRepeatBoundary(
                     ResolvePlannerGroup,
                     BuildSchedulerPlannerPreview,
                     StartScheduledPlannerRequest,

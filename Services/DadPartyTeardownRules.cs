@@ -38,10 +38,10 @@ public sealed class DadPartyTeardownController
     private readonly DateTime startedAtUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
-    private bool promptWasAbsent;
-    private bool preExistingPromptCleared;
+    private bool lastPromptVisible;
     private bool commandSent;
     private bool approvalSent;
+    private bool frozenRosterObserved;
 
     public DadPartyTeardownController(
         IEnumerable<ulong> expectedMemberContentIds,
@@ -53,8 +53,8 @@ public sealed class DadPartyTeardownController
         expectedMembers = expectedMemberContentIds.Where(static id => id != 0).ToHashSet();
         this.expectedLeaderContentId = expectedLeaderContentId;
         this.startedAtUtc = startedAtUtc;
-        promptWasAbsent = !promptVisible;
-        preExistingPromptCleared = !promptVisible;
+        lastPromptVisible = promptVisible;
+        frozenRosterObserved = expectedMembers.Count <= 1;
         nextAttemptUtc = startedAtUtc;
     }
 
@@ -63,11 +63,24 @@ public sealed class DadPartyTeardownController
     public DadPartyTeardownDecision Pulse(DadPartyTeardownObservation observation)
     {
         var actualMembers = observation.PartyMemberContentIds.Where(static id => id != 0).ToHashSet();
-        if (actualMembers.Count <= 1)
+        if (actualMembers.SetEquals(expectedMembers))
+            frozenRosterObserved = true;
+
+        var partyListConfirmsSolo = observation.LocalContentId != 0 &&
+                                    (actualMembers.Count == 0 ||
+                                     (actualMembers.Count == 1 && actualMembers.Contains(observation.LocalContentId)));
+        if (partyListConfirmsSolo && frozenRosterObserved)
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Complete, "Party teardown complete; the local character is already solo.");
 
         if (observation.NowUtc - startedAtUtc >= Timeout)
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, $"Party teardown timed out after {commandAttempts} breakup command attempt(s).");
+
+        if (partyListConfirmsSolo)
+        {
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.None,
+                "PartyList temporarily reported solo before confirming the exact frozen party; waiting for membership truth.");
+        }
 
         if (!actualMembers.SetEquals(expectedMembers))
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "Party membership no longer matches the exact frozen roster; refusing teardown mutation.");
@@ -83,27 +96,18 @@ public sealed class DadPartyTeardownController
         if (observation.IsInDuty || observation.IsQueued || !observation.IsWorldStable)
             return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "Waiting for out-of-duty, not-queued, world-stable teardown state.");
 
-        if (!observation.PromptVisible)
-        {
-            promptWasAbsent = true;
-            preExistingPromptCleared = true;
-        }
+        var promptJustAppeared = observation.PromptVisible && !lastPromptVisible;
+        lastPromptVisible = observation.PromptVisible;
 
         if (observation.PromptVisible)
         {
-            if (!commandSent || !promptWasAbsent || !preExistingPromptCleared || approvalSent)
+            if (!commandSent || !promptJustAppeared || approvalSent)
             {
                 return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "A pre-existing or already-handled confirmation is visible; it will not be approved.");
             }
 
-            if (string.IsNullOrWhiteSpace(observation.InviterName) ||
-                !observation.PromptText.Contains(observation.InviterName, StringComparison.Ordinal))
-            {
-                return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "The fresh confirmation does not match the frozen party inviter name; it will not be approved.");
-            }
-
             approvalSent = true;
-            return new DadPartyTeardownDecision(DadPartyTeardownAction.ApprovePrompt, "Approving the fresh breakup confirmation associated with this command.");
+            return new DadPartyTeardownDecision(DadPartyTeardownAction.ApprovePrompt, "Approving the newly appeared breakup confirmation associated with this command.");
         }
 
         if (approvalSent)
@@ -114,7 +118,6 @@ public sealed class DadPartyTeardownController
 
         commandAttempts++;
         commandSent = true;
-        promptWasAbsent = true;
         nextAttemptUtc = observation.NowUtc + AttemptThrottle;
         return new DadPartyTeardownDecision(DadPartyTeardownAction.SendBreakup, $"Sending guarded party breakup command attempt {commandAttempts}/{MaximumAttempts}.");
     }

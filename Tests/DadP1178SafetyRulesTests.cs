@@ -62,14 +62,14 @@ public sealed class DadP1178SafetyRulesTests
     }
 
     [Fact]
-    public void TeardownRequiresExactLeaderRosterAndFreshMatchingPrompt()
+    public void TeardownRequiresExactLeaderRosterAndFreshPostCommandPrompt()
     {
         var now = DateTime.UtcNow;
         var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, promptVisible: true, promptIdentity: "old");
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now, prompt: true, identity: "old")).Action);
         Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(1))).Action);
-        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(2), prompt: true, identity: "new", text: "Wrong prompt")).Action);
-        Assert.Equal(DadPartyTeardownAction.ApprovePrompt, controller.Pulse(Observation(now.AddSeconds(3), prompt: true, identity: "new", text: "Break up Leader's party?")).Action);
+        Assert.Equal(DadPartyTeardownAction.ApprovePrompt, controller.Pulse(Observation(now.AddSeconds(2), prompt: true, identity: "new", text: "Disband the party?")).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(3), prompt: true, identity: "new", text: "Disband the party?")).Action);
         Assert.Equal(DadPartyTeardownAction.Complete, controller.Pulse(Observation(now.AddSeconds(4), members: [1UL])).Action);
     }
 

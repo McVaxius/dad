@@ -26,6 +26,21 @@ public enum DadScheduleRunPhase
     Cancelled = 6,
 }
 
+internal readonly record struct DadScheduleRepeatBoundary(
+    bool IsScheduleRun,
+    int RepeatIteration,
+    int RepeatCount)
+{
+    public static DadScheduleRepeatBoundary Standalone => new(false, 0, 0);
+
+    public bool PreservePartyAfterCompletion =>
+        IsScheduleRun &&
+        RepeatIteration > 0 &&
+        RepeatIteration < RepeatCount;
+
+    public bool RequiresPartyTeardown => !PreservePartyAfterCompletion;
+}
+
 public sealed class DadScheduleEntry
 {
     public string EntryId { get; set; } = Guid.NewGuid().ToString("N");
@@ -379,6 +394,29 @@ public static class DadScheduleRules
             return null;
 
         return entries[state.CurrentEntryIndex].Normalize();
+    }
+
+    internal static DadScheduleRepeatBoundary ResolveRepeatBoundary(
+        string scheduleRunId,
+        string scheduleEntryId,
+        int repeatIteration,
+        IEnumerable<DadScheduleEntry>? entries)
+    {
+        if (string.IsNullOrWhiteSpace(scheduleRunId) || string.IsNullOrWhiteSpace(scheduleEntryId))
+            return DadScheduleRepeatBoundary.Standalone;
+
+        var entry = (entries ?? [])
+            .FirstOrDefault(candidate =>
+                candidate != null &&
+                string.Equals(candidate.EntryId, scheduleEntryId, StringComparison.OrdinalIgnoreCase));
+        if (entry == null)
+            return DadScheduleRepeatBoundary.Standalone;
+
+        entry.Normalize();
+        return new DadScheduleRepeatBoundary(
+            IsScheduleRun: true,
+            RepeatIteration: Math.Clamp(repeatIteration, MinRepeatCount, entry.RepeatCount),
+            RepeatCount: entry.RepeatCount);
     }
 
     public static DadScheduleRunState AdvanceAfterEntry(

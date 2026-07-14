@@ -49,6 +49,7 @@ public sealed class DadCoordinatorService
     private DadRunPhase? lastLoggedCoordinatorPhase;
     private string firstPartyInviteBoundaryRunId = string.Empty;
     private bool persistentStartup;
+    private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
     private readonly DadStableContradictionTracker coordinatorContradictionTracker = new();
     private readonly Dictionary<string, PendingCoordinatorCancellation> pendingCoordinatorCancellations = new(StringComparer.OrdinalIgnoreCase);
 
@@ -179,6 +180,17 @@ public sealed class DadCoordinatorService
     }
 
     public DadRunResult StartTasks(DadRunRequest request, bool persistentStartup = false)
+        => StartTasksCore(request, persistentStartup, DadScheduleRepeatBoundary.Standalone);
+
+    internal DadRunResult StartScheduledTasks(
+        DadRunRequest request,
+        DadScheduleRepeatBoundary repeatBoundary)
+        => StartTasksCore(request, persistentStartup: true, repeatBoundary);
+
+    private DadRunResult StartTasksCore(
+        DadRunRequest request,
+        bool persistentStartup,
+        DadScheduleRepeatBoundary repeatBoundary)
     {
         if (!configuration.PluginEnabled)
             return DadRunResult.Rejected(request, "dad is disabled.");
@@ -251,6 +263,7 @@ public sealed class DadCoordinatorService
 
         activePlan = plan;
         this.persistentStartup = persistentStartup;
+        activeScheduleRepeatBoundary = repeatBoundary;
         coordinatorContradictionTracker.Reset();
         activeSlotManifest = acceptedManifest;
         activeParticipants.Clear();
@@ -282,6 +295,7 @@ public sealed class DadCoordinatorService
         {
             activePlan = null;
             activeSlotManifest = null;
+            activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
             remoteAssignmentTracker.Clear();
             presenceService.ResetToIdle();
             return DadRunResult.Rejected(request, preparationBlocker);
@@ -1187,7 +1201,7 @@ public sealed class DadCoordinatorService
         activeModuleIndex++;
         if (activeModuleIndex >= activePlan.Modules.Count)
         {
-            BeginPartyTeardown("Dad module routing complete.");
+            FinishSuccessfulWork("Dad module routing complete.");
             return;
         }
 
@@ -1601,7 +1615,7 @@ public sealed class DadCoordinatorService
                 if (TryContinueStopPolicyLoop(module, result))
                     return;
 
-                BeginPartyTeardown("Dad module routing complete.");
+                FinishSuccessfulWork("Dad module routing complete.");
                 return;
             }
 
@@ -1636,7 +1650,7 @@ public sealed class DadCoordinatorService
 
         if (stopProgress.StopReached)
         {
-            BeginPartyTeardown($"Dad stop policy reached after {stopProgress.CompletedRuns} run(s): {stopProgress.Summary}");
+            FinishSuccessfulWork($"Dad stop policy reached after {stopProgress.CompletedRuns} run(s): {stopProgress.Summary}");
             return true;
         }
 
@@ -1818,6 +1832,22 @@ public sealed class DadCoordinatorService
             DadRunPhase.Finalizing => DadParticipantState.Failed,
             _ => result.Deferred ? DadParticipantState.QueuePending : DadParticipantState.Running,
         };
+    }
+
+    private void FinishSuccessfulWork(string summary)
+    {
+        if (!activeScheduleRepeatBoundary.PreservePartyAfterCompletion)
+        {
+            BeginPartyTeardown(summary);
+            return;
+        }
+
+        var preservationSummary =
+            $"{summary} Preserving the party between repeats " +
+            $"{activeScheduleRepeatBoundary.RepeatIteration}/{activeScheduleRepeatBoundary.RepeatCount} " +
+            "of the same schedule preset row.";
+        log.Information("[dad] {Summary}", preservationSummary);
+        Transition(DadRunPhase.Finalizing, DadRunStatus.Running, preservationSummary);
     }
 
     private void BeginPartyTeardown(string summary)
@@ -2640,6 +2670,7 @@ public sealed class DadCoordinatorService
         coordinatorProvenanceTransitions.Clear();
         firstPartyInviteBoundaryRunId = string.Empty;
         persistentStartup = false;
+        activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
         coordinatorContradictionTracker.Reset();
         remoteAssignmentTracker.Clear();
         partyInviteGateway.Reset();
