@@ -6,7 +6,7 @@ namespace dad.Windows;
 
 public sealed class DadClientReconnectWindow : Window, IDisposable
 {
-    private static readonly Vector2 MinimumWindowSize = new(420f, 220f);
+    private static readonly Vector2 MinimumWindowSize = new(440f, 260f);
     private readonly Plugin plugin;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
@@ -21,7 +21,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
             MinimumSize = MinimumWindowSize,
             MaximumSize = new Vector2(720f, 520f),
         };
-        Size = new Vector2(500f, 300f);
+        Size = new Vector2(540f, 360f);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -52,30 +52,30 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
             ? $"Next attempt in {Math.Max(0, (transport.NextReconnectUtc.Value - DateTime.UtcNow).TotalSeconds):0}s"
             : "Connection attempt in progress";
 
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.78f, 0.28f, 1f));
-        ImGui.TextWrapped("Dad Coordinator is offline");
-        ImGui.PopStyleColor();
-        ImGui.TextWrapped("This DAD Client will keep reconnecting until the Coordinator returns or DAD is disabled.");
-        ImGui.Separator();
-        ImGui.TextWrapped($"Coordinator target: {Text(endpoint)}");
-        ImGui.TextWrapped($"Reconnect attempt: {Math.Max(1, transport.ReconnectAttempt)} | {retryText}");
-        ImGui.TextWrapped($"Transport: {Text(transport.ConnectionStatus)}");
-        if (!string.IsNullOrWhiteSpace(transport.LastDisconnectReason))
-            ImGui.TextWrapped($"Last disconnect: {transport.LastDisconnectReason}");
-        if (transport.LastConnectedUtc.HasValue)
-            ImGui.TextWrapped($"Last connected: {transport.LastConnectedUtc.Value.ToLocalTime():G}");
-
+        DadUi.Heading("Waiting for the Coordinator", "DAD will keep retrying automatically while this Client remains enabled.");
         ImGui.Spacing();
-        if (ImGui.Button("Open full DAD"))
+        DadUi.Badge("Coordinator offline", DadUiTone.Warning);
+        DadUi.KeyValue("Coordinator", Text(endpoint), 120f);
+        DadUi.KeyValue("Reconnect", $"Attempt {Math.Max(1, transport.ReconnectAttempt)} | {retryText}", 120f);
+        DadUi.KeyValue("Transport", Text(transport.ConnectionStatus), 120f);
+        if (!string.IsNullOrWhiteSpace(transport.LastDisconnectReason))
+            DadUi.KeyValue("Last disconnect", transport.LastDisconnectReason, 120f);
+        if (transport.LastConnectedUtc.HasValue)
+            DadUi.KeyValue("Last connected", transport.LastConnectedUtc.Value.ToLocalTime().ToString("G"), 120f);
+
+        DadUi.Section("Actions");
+        if (DadUi.Button("Open full DAD", DadUiTone.Accent))
             plugin.OpenMainUi();
         ImGui.SameLine();
-        if (ImGui.Button("Open DAD Mini"))
+        if (DadUi.Button("Open DAD Monitor"))
             plugin.OpenMiniStatusUi();
 
         var confirming = DateTime.UtcNow <= disableConfirmationExpiresUtc;
-        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.55f, 0.12f, 0.12f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.75f, 0.18f, 0.18f, 1f));
-        if (ImGui.Button(confirming ? "Confirm Disable DAD" : "Disable DAD", new Vector2(-1f, 30f)))
+        ImGui.Spacing();
+        if (DadUi.Button(
+                confirming ? "Confirm disable DAD" : "Disable DAD and stop reconnecting",
+                DadUiTone.Danger,
+                new Vector2(-1f, 32f)))
         {
             if (confirming)
             {
@@ -87,9 +87,12 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
                 disableConfirmationExpiresUtc = DateTime.UtcNow.AddSeconds(5);
             }
         }
-        ImGui.PopStyleColor(2);
         if (confirming)
-            ImGui.TextWrapped("Click Confirm Disable DAD within five seconds. Reconnect attempts stop only when DAD is disabled.");
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, DadUi.ToneColor(DadUiTone.Warning));
+            ImGui.TextWrapped("Click Confirm disable DAD within five seconds. Reconnect attempts stop only when DAD is disabled.");
+            ImGui.PopStyleColor();
+        }
     }
 
     private void QueuePosition(Vector2 position)

@@ -1,5 +1,21 @@
 # dad — changelog
 
+## 2026-07-14 — Modern operator UI and player documentation
+- Corrected the initial P1179 navigation-only approach with five complete guided tasks: Coordinator, Client,
+  first preset, crew/launch profiles, and schedule builder. Home leads with their live progress, and Guide is a
+  permanent header action; the first-install welcome and `/dad wizard` / `/dad setup` entry points remain.
+- Added a shared save-on-Next wizard framework with step explanations, blockers, Back navigation, final review,
+  direct expert links, and shared endpoint/security and preset-crew controls. Closing drops the current draft;
+  completed steps remain saved, and finishing a preset or schedule never starts it.
+- Reordered Plan and Schedules around their real creation sequences. Preset characters now render as one inline
+  physical row each, with no nested vertical/ScrollX viewport, compact Job/Wake/Lv. fields, stretch only for
+  Account/Character/Profile, and full hover text for clipped values.
+- Made normal Crew and Clients views task-readable, added guided links throughout Settings and empty states, and
+  retained the scheduler-backed primary start, active locks, debounced saves, cancel/Stop All guards, schedule
+  CRUD/dry-run/order paths, transport setters, command surface, and debug reachability.
+- Updated manifest discovery copy and added a player-facing Aethertek guide that distinguishes supported live
+  activities from future planner lanes. No runtime service, transport, model, or configuration contract changed.
+
 ## 2026-07-12 — Safe idle fallback for unavailable VERMAXION reservations
 - DAD can prepare an unavailable v2 handoff from explicit VERMAXION v1 idle plus readable AutoRetainer idle,
   Multi Mode off, and clear or DAD-owned suppression evidence, without waiting for an AR character callback.

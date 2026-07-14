@@ -32,6 +32,7 @@ public sealed class MainWindow : Window, IDisposable
     private const string RosterUnassignedAccountFilter = "__unassigned";
     private const string RosterNeedsUpdateFilter = "NeedsUpdate";
     private readonly Plugin plugin;
+    private readonly DadPresetCrewEditor presetCrewEditor;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string plannerDutySearch = string.Empty;
@@ -72,6 +73,8 @@ public sealed class MainWindow : Window, IDisposable
     private string plannerCompletionDraftOwner = string.Empty;
     private DadMainWindowTab? pendingMainTab;
     private DadPresetsWindowTab? pendingPresetsTab;
+    private DadMainWindowTab? deferredMainTab;
+    private DadPresetsWindowTab? deferredPresetsTab;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -90,6 +93,7 @@ public sealed class MainWindow : Window, IDisposable
     public MainWindow(Plugin plugin) : base($"{PluginInfo.DisplayName}##Main", ImGuiWindowFlags.None)
     {
         this.plugin = plugin;
+        presetCrewEditor = new DadPresetCrewEditor(plugin);
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = MinimumWindowSize,
@@ -151,33 +155,108 @@ public sealed class MainWindow : Window, IDisposable
         ApplyPendingPositionChange();
 
         var configuration = plugin.Configuration;
-        var debugUi = configuration.DebugUiEnabled;
         var profile = plugin.ConfigManager.GetActiveConfig();
         var runState = plugin.GetVisibleRunState();
-        var localRun = runState.LocalRun;
-        var authorityRun = runState.AuthorityRun;
         var characterPool = plugin.CharacterIntelligenceService.CurrentPool;
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
 
-        ImGui.Text($"{PluginInfo.DisplayName} v{version}");
-        const string koFiLabel = "Support (Ko-fi)";
-        var koFiWidth = ImGui.CalcTextSize(koFiLabel).X + (ImGui.GetStyle().FramePadding.X * 2f);
-        ImGui.SameLine(MathF.Max(0f, ImGui.GetWindowWidth() - koFiWidth - ImGui.GetStyle().WindowPadding.X));
-        if (ImGui.SmallButton(koFiLabel))
+        if (deferredMainTab.HasValue)
         {
-            ImGui.SetClipboardText(PluginInfo.SupportUrl);
-            plugin.PrintStatus($"Copied Ko-fi URL: {PluginInfo.SupportUrl}");
+            pendingMainTab = deferredMainTab;
+            pendingPresetsTab = deferredPresetsTab;
+            deferredMainTab = null;
+            deferredPresetsTab = null;
         }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Click to copy the Ko-fi support URL.");
 
-        ImGui.Separator();
+        DrawShellHeader(configuration, profile, runState, characterPool, version);
+        DrawActiveRunBanner(runState);
+        ImGui.Spacing();
+
+        if (ImGui.BeginTabBar("dad-main-tabs"))
+        {
+            if (ImGui.BeginTabItem("Home", BuildMainTabFlags(DadMainWindowTab.Overview)))
+            {
+                DrawOverviewTab(runState, profile);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Plan", BuildPlanningMainTabFlags(showPlanner: true)))
+            {
+                DrawPresetPlannerTab(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Schedules", BuildPlanningMainTabFlags(showPlanner: false)))
+            {
+                DrawSchedulesTab(runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Crew", BuildMainTabFlags(DadMainWindowTab.Crew)))
+            {
+                DrawCrewTab(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Clients", BuildMainTabFlags(DadMainWindowTab.Multiplayer)))
+            {
+                DrawMultiplayerTab(characterPool, runState);
+                ImGui.EndTabItem();
+            }
+
+            ImGui.EndTabBar();
+        }
+
+        pendingMainTab = null;
+        pendingPresetsTab = null;
+    }
+
+    private void DrawShellHeader(
+        Configuration configuration,
+        CharacterConfig profile,
+        DadVisibleRunState runState,
+        DadCharacterPool characterPool,
+        string version)
+    {
+        var localRun = runState.LocalRun;
+        var authorityRun = runState.AuthorityRun;
+        var role = configuration.RunAsServerDad ? "Coordinator" : "Client";
+        var routeReady = configuration.RunAsServerDad || plugin.HasServerDadAuthority();
+
+        if (DadUi.BeginCard("dad-shell-header", 88f))
+        {
+            DadUi.Heading("DAD CONTROL CENTER", PluginInfo.Summary);
+            DadUi.Badge($"v{version}", DadUiTone.Accent);
+            ImGui.SameLine();
+            DadUi.Badge(role, DadUiTone.Info);
+            ImGui.SameLine();
+            DadUi.Badge(configuration.PluginEnabled ? "Enabled" : "Paused",
+                configuration.PluginEnabled ? DadUiTone.Success : DadUiTone.Neutral);
+            ImGui.SameLine();
+            DadUi.Badge(profile.Enabled ? "Character allowed" : "Character not allowed",
+                profile.Enabled ? DadUiTone.Success : DadUiTone.Warning);
+            ImGui.SameLine();
+            DadUi.Badge(routeReady ? $"{characterPool.PeerTransport.ConnectedPeerCount} client(s) connected" : "Coordinator unavailable",
+                routeReady ? DadUiTone.Success : DadUiTone.Warning);
+            DadUi.EndCard();
+        }
 
         var pluginEnabled = configuration.PluginEnabled;
-        if (ImGui.Checkbox("Plugin enabled", ref pluginEnabled))
+        if (ImGui.Checkbox("DAD enabled", ref pluginEnabled))
             plugin.SetPluginEnabled(pluginEnabled, printStatus: false);
 
-        if (debugUi)
+        ImGui.SameLine();
+        var profileEnabled = profile.Enabled;
+        if (ImGui.Checkbox("Allow DAD to automate this character", ref profileEnabled))
+        {
+            profile.Enabled = profileEnabled;
+            plugin.ConfigManager.SaveCurrentAccount();
+            plugin.UpdateDtrBar();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Controls whether DAD may include and automate the active character.");
+
+        if (configuration.DebugUiEnabled)
         {
             ImGui.SameLine();
             var dtrEnabled = configuration.DtrBarEnabled;
@@ -187,27 +266,10 @@ public sealed class MainWindow : Window, IDisposable
                 configuration.Save();
                 plugin.UpdateDtrBar();
             }
-        }
 
-        ImGui.SameLine();
-        var profileEnabled = profile.Enabled;
-        if (ImGui.Checkbox("Profile armed", ref profileEnabled))
-        {
-            profile.Enabled = profileEnabled;
-            plugin.ConfigManager.SaveCurrentAccount();
-            plugin.UpdateDtrBar();
-        }
-
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Arms the active profile so Dad may act for it.");
-
-        if (debugUi)
-        {
             ImGui.SameLine();
             var allowIpcStarts = profile.AllowIpcStarts;
-            if (ImGui.Checkbox("Allow Dad starts", ref allowIpcStarts))
+            if (ImGui.Checkbox("Allow DAD starts", ref allowIpcStarts))
             {
                 profile.AllowIpcStarts = allowIpcStarts;
                 plugin.ConfigManager.SaveCurrentAccount();
@@ -222,99 +284,64 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
 
-        // New row: action buttons separated from the arming checkboxes above.
-        if (ImGui.SmallButton("Settings"))
+        if (DadUi.Button("Settings", DadUiTone.Accent))
             plugin.ToggleConfigUi();
 
         ImGui.SameLine();
-        if (ImGui.SmallButton("Wizard"))
+        if (DadUi.Button("Guide", DadUiTone.Accent))
             plugin.OpenSetupWizard();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Open the five guided DAD workflows at any time.");
 
-        if (debugUi)
+        ImGui.SameLine();
+        if (DadUi.Button(plugin.KrangleService.Enabled ? "Show character names" : "Hide character names"))
+            plugin.ToggleKrangleOperatorNames();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Changes local operator labels only. Run contracts keep their real identities.");
+
+        ImGui.SameLine();
+        if (DadUi.Button("Copy Ko-fi link"))
+        {
+            ImGui.SetClipboardText(PluginInfo.SupportUrl);
+            plugin.PrintStatus($"Copied Ko-fi URL: {PluginInfo.SupportUrl}");
+        }
+
+        if (configuration.DebugUiEnabled)
         {
             ImGui.SameLine();
-            if (ImGui.SmallButton("Status to chat"))
+            if (DadUi.Button("Status to chat"))
                 plugin.PrintStatusReport();
         }
 
-        ImGui.SameLine();
-        if (ImGui.SmallButton(plugin.KrangleService.Enabled ? "Un-Krangle" : "Krangle Names"))
-            plugin.ToggleKrangleOperatorNames();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Toggle Dad's local operator-name krangle display. Run contracts stay raw.");
+        if (Plugin.IsBusy(localRun) || Plugin.IsBusy(authorityRun))
+        {
+            ImGui.SameLine();
+            if (DadUi.Button("Cancel active run", DadUiTone.Danger))
+                plugin.CancelActiveRunFromShell();
+        }
+
+        if (!configuration.DebugUiEnabled)
+            return;
 
         var canStartLocalDemo = CanStartLocalDemo(profile, localRun);
         var canStartRemoteDemo = canStartLocalDemo &&
                                  !configuration.LocalOnlyModeEnabled &&
                                  plugin.HasServerDadAuthority() &&
                                  !Plugin.IsBusy(authorityRun);
-
         ImGui.Spacing();
-        DrawActiveRunBanner(runState);
-        ImGui.Spacing();
+        DrawDemoButton("Run local demo", canStartLocalDemo, plugin.StartLocalDemoRunFromShell);
+        ImGui.SameLine();
+        DrawDemoButton("Run server demo", canStartRemoteDemo, plugin.StartServerDemoRunFromShell);
+        ImGui.SameLine();
+        DrawDemoButton("Run Daily Roulette demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
+        ImGui.SameLine();
+        DrawDemoButton("Run commend demo", canStartRemoteDemo, plugin.StartCommendationDemoRunFromShell);
 
-        if (debugUi)
-        {
-            DrawDemoButton("Run local demo", canStartLocalDemo, plugin.StartLocalDemoRunFromShell);
-
-            ImGui.SameLine();
-            DrawDemoButton("Run server demo", canStartRemoteDemo, plugin.StartServerDemoRunFromShell);
-
-            ImGui.SameLine();
-            DrawDemoButton("Run Daily Roulette demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
-
-            ImGui.SameLine();
-            DrawDemoButton("Run commend demo", canStartRemoteDemo, plugin.StartCommendationDemoRunFromShell);
-
-            ImGui.SameLine();
-        }
-
-        ImGui.BeginDisabled(!Plugin.IsBusy(localRun) && !Plugin.IsBusy(authorityRun));
-        if (ImGui.SmallButton("Cancel active run"))
-            plugin.CancelActiveRunFromShell();
-        ImGui.EndDisabled();
-
-        if (debugUi)
-        {
-            ImGui.TextWrapped(PluginInfo.Summary);
-            DrawStatusRow("Krangle", plugin.KrangleService.BuildStatus(characterPool));
-            DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
-            DrawStatusRow("Character pool", characterPool.LastSummary);
-            DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
-            DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
-        }
-
-        if (ImGui.BeginTabBar("dad-main-tabs"))
-        {
-            if (ImGui.BeginTabItem("Overview", BuildMainTabFlags(DadMainWindowTab.Overview)))
-            {
-                DrawOverviewTab(runState, profile);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Presets", BuildMainTabFlags(DadMainWindowTab.Presets)))
-            {
-                DrawPresetsTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Crew", BuildMainTabFlags(DadMainWindowTab.Crew)))
-            {
-                DrawCrewTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Multiplayer", BuildMainTabFlags(DadMainWindowTab.Multiplayer)))
-            {
-                DrawMultiplayerTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
-        }
-
-        pendingMainTab = null;
-        pendingPresetsTab = null;
+        DrawStatusRow("Name privacy", plugin.KrangleService.BuildStatus(characterPool));
+        DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
+        DrawStatusRow("Character pool", characterPool.LastSummary);
+        DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
+        DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
     }
 
     private void DrawActiveRunBanner(DadVisibleRunState runState)
@@ -325,21 +352,23 @@ public sealed class MainWindow : Window, IDisposable
         var module = activeRun.ModuleId == DadModuleId.None ? "No module" : activeRun.ModuleId.ToString();
         var keyStatus = BuildActiveRunKeyStatus(activeRun);
 
-        ImGui.Separator();
-        DrawStateBadge("Phase", phase);
-        ImGui.SameLine();
-        DrawStateBadge("Module", module);
-        ImGui.SameLine();
-        DrawStateBadge("Status", activeRun.Status.ToString());
-        if (plannerLocked)
+        if (DadUi.BeginCard("dad-active-run-banner", plannerLocked ? 82f : 66f))
         {
+            DrawStateBadge("Phase", phase);
             ImGui.SameLine();
-            if (ImGui.SmallButton("Cancel active run##top-banner"))
-                plugin.CancelActiveRunFromShell();
-        }
+            DrawStateBadge("Module", module);
+            ImGui.SameLine();
+            DrawStateBadge("Status", activeRun.Status.ToString());
+            if (plannerLocked)
+            {
+                ImGui.SameLine();
+                if (DadUi.Button("Cancel active run##top-banner", DadUiTone.Danger))
+                    plugin.CancelActiveRunFromShell();
+            }
 
-        ImGui.TextWrapped(keyStatus);
-        ImGui.Separator();
+            ImGui.TextWrapped(keyStatus);
+            DadUi.EndCard();
+        }
     }
 
     private void DrawOverviewTab(DadVisibleRunState runState, CharacterConfig profile)
@@ -444,26 +473,130 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawOverviewCompact(DadVisibleRunState runState, CharacterConfig profile)
     {
         var activeRun = GetActiveRun(runState);
-        DrawSectionHeader("Run Summary", "Current Dad run state.");
-        DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(activeRun));
-        DrawStatusRow("Visible run", activeRun.Status == DadRunStatus.Idle
-            ? "Idle."
-            : $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
-        DrawStatusRow("Status", BuildActiveRunKeyStatus(activeRun));
-        DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
+        DadUi.Heading("HOME", "Start with a guided task, then check current activity or open an expert workspace.");
+        DrawHomeGuidedTasks();
 
-        if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
+        DrawSectionHeader("Current activity and next action", "Live DAD state after setup tasks.");
+        if (DadUi.BeginCard("dad-home-current-run", 148f))
         {
-            var blocker = FormatText(
-                string.IsNullOrWhiteSpace(activeRun.BlockedReason) ? activeRun.FailureReason : activeRun.BlockedReason,
-                activeRun.Summary);
-            DrawStatusRow("Blocker", blocker);
+            DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(activeRun));
+            DrawStatusRow("Visible run", activeRun.Status == DadRunStatus.Idle
+                ? "Idle."
+                : $"{activeRun.Status} / {activeRun.Phase} / {activeRun.ModuleId}");
+            DrawStatusRow("Status", BuildActiveRunKeyStatus(activeRun));
+
+            if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
+            {
+                var blocker = FormatText(
+                    string.IsNullOrWhiteSpace(activeRun.BlockedReason) ? activeRun.FailureReason : activeRun.BlockedReason,
+                    activeRun.Summary);
+                DrawStatusRow("Blocker", blocker);
+            }
+            DadUi.EndCard();
         }
 
         DrawDutySupportRuntimeSection(activeRun);
-
-        DrawSectionHeader("Next Action", "Operator-facing next step.");
         DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile));
+
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        DrawStatusRow("Scheduler", FormatText(plugin.SchedulerService.CurrentState.Summary, queue.Summary));
+        DrawStatusRow("Queue", $"{queue.PendingJobs.Count} pending | {(queue.ActiveJob == null ? "no active job" : queue.ActiveJob.PresetName)}");
+        if (DadUi.Button("Open queue"))
+            NavigateWithinMain(DadMainWindowTab.Presets, DadPresetsWindowTab.Queue);
+        ImGui.SameLine();
+        if (DadUi.Button("Open current activity"))
+            NavigateWithinMain(DadMainWindowTab.Presets, DadPresetsWindowTab.ActiveJob);
+
+        DrawSectionHeader("Expert shortcuts", "Direct editors for repeat users who already know what they need.");
+        DrawHomeExpertShortcuts();
+    }
+
+    private void DrawHomeGuidedTasks()
+    {
+        DrawSectionHeader("Guided tasks", "Five complete workflows with live progress and the first blocker.");
+        var flows = new[]
+        {
+            DadGuideFlow.Coordinator,
+            DadGuideFlow.Client,
+            DadGuideFlow.FirstPreset,
+            DadGuideFlow.Crew,
+            DadGuideFlow.Schedule,
+        };
+        if (!ImGui.BeginTable("dad-home-guided-tasks", 2, ImGuiTableFlags.SizingStretchSame))
+            return;
+
+        foreach (var flow in flows)
+        {
+            var progress = DadGuideReadiness.Build(plugin, flow);
+            ImGui.TableNextColumn();
+            if (!DadUi.BeginCard($"dad-home-guide-{flow}", 122f))
+                continue;
+            DadUi.Badge(
+                progress.Ready ? "Ready" : $"{progress.Complete}/{progress.Total} ready",
+                progress.Ready ? DadUiTone.Success : DadUiTone.Warning);
+            DadUi.Heading(progress.Title, progress.Ready ? "Review or change the completed setup." : $"Next: {progress.NextAction}");
+            if (DadUi.Button($"Open guide##dad-home-guide-open-{flow}", DadUiTone.Accent))
+                plugin.OpenSetupWizard(flow);
+            DadUi.EndCard();
+        }
+
+        ImGui.EndTable();
+    }
+
+    private void DrawHomeExpertShortcuts()
+    {
+        if (!ImGui.BeginTable("dad-home-quick-actions", 2, ImGuiTableFlags.SizingStretchSame))
+            return;
+
+        DrawHomeActionCard(
+            "dad-home-plan",
+            "Plan a run",
+            "Choose the activity, party, jobs, loot rules, and stop condition.",
+            "Open Plan",
+            () => NavigateWithinMain(DadMainWindowTab.Presets, DadPresetsWindowTab.Planner));
+        DrawHomeActionCard(
+            "dad-home-schedules",
+            "Schedules",
+            "Chain saved presets, repeat them, or run them at daily reset.",
+            "Open Schedules",
+            () => NavigateWithinMain(DadMainWindowTab.Presets, DadPresetsWindowTab.Scheduler));
+        DrawHomeActionCard(
+            "dad-home-crew",
+            "Crew",
+            "Review roster health, character permissions, and launch profiles.",
+            "Manage Crew",
+            () => NavigateWithinMain(DadMainWindowTab.Crew));
+        DrawHomeActionCard(
+            "dad-home-clients",
+            "Clients",
+            "Check Coordinator routing, connected clients, and readiness.",
+            "View Clients",
+            () => NavigateWithinMain(DadMainWindowTab.Multiplayer));
+
+        ImGui.EndTable();
+    }
+
+    private static void DrawHomeActionCard(
+        string id,
+        string title,
+        string detail,
+        string buttonLabel,
+        System.Action open)
+    {
+        ImGui.TableNextColumn();
+        if (DadUi.BeginCard(id, 112f))
+        {
+            DadUi.Heading(title, detail);
+            if (DadUi.Button($"{buttonLabel}##{id}", DadUiTone.Accent))
+                open();
+            DadUi.EndCard();
+        }
+    }
+
+    private void NavigateWithinMain(DadMainWindowTab tab, DadPresetsWindowTab? presetsTab = null)
+    {
+        deferredMainTab = tab;
+        deferredPresetsTab = presetsTab;
     }
 
     private void DrawMultiplayerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
@@ -712,35 +845,95 @@ public sealed class MainWindow : Window, IDisposable
         IReadOnlyList<DadParticipantSnapshot> participants,
         DadRunResult activeRun)
     {
+        var configuration = plugin.Configuration;
+        var profile = plugin.ConfigManager.GetActiveConfig();
+        var transport = characterPool.PeerTransport;
         var readyCount = participants.Count(static participant => participant.IsEligibleForRun);
         var staleCount = participants.Count(IsParticipantStale);
         var assignedCount = participants.Count(static participant => !string.IsNullOrWhiteSpace(participant.AssignedSlotId));
+        var endpoint = configuration.RunAsServerDad
+            ? $"{configuration.ServerListenHost}:{configuration.ServerListenPort}"
+            : $"{configuration.ServerDadHost}:{configuration.ServerDadPort}";
+        var firstBlocker = !configuration.PluginEnabled
+            ? "DAD is disabled."
+            : !profile.Enabled
+                ? "This character is not allowed."
+                : transport.SharedSecretRequired && !transport.SharedSecretConfigured
+                    ? "The LAN shared secret is missing."
+                    : configuration.RunAsServerDad
+                        ? string.IsNullOrWhiteSpace(transport.ListenerEndpoint)
+                            ? "The Coordinator listener is not ready."
+                            : transport.ConnectedPeerCount == 0 ? "No Client is connected yet." : string.Empty
+                        : !transport.AuthorityRoutable && !plugin.HasServerDadAuthority()
+                            ? FormatText(transport.LastAuthOrProtocolError, "The Coordinator authority is not authenticated or routable.")
+                            : string.Empty;
+        var nextAction = string.IsNullOrWhiteSpace(firstBlocker)
+            ? "Connection is ready. Build or review the crew and preset."
+            : firstBlocker;
 
-        DrawSectionHeader("Multiplayer Summary", "Current authority and participant readiness.");
+        DadUi.Heading("CLIENTS", "Understand this client's role, route, security, connected crew, and first required action.");
+        if (DadUi.Button(configuration.RunAsServerDad ? "Guide: Coordinator setup" : "Guide: Client connection", DadUiTone.Accent))
+            plugin.OpenSetupWizard(configuration.RunAsServerDad ? DadGuideFlow.Coordinator : DadGuideFlow.Client);
+
+        DrawSectionHeader("Connection", "The normal operator view; raw transport counters stay under /dad debug.");
+        DrawStatusRow("Role", configuration.RunAsServerDad ? "Coordinator" : "Client");
+        DrawStatusRow("Endpoint", endpoint);
+        DrawStatusRow("Connection", FormatText(transport.ConnectionStatus, transport.Availability));
+        DrawStatusRow("Security", transport.SharedSecretRequired
+            ? transport.SharedSecretConfigured ? "LAN secret configured" : "LAN secret missing"
+            : "Loopback; secret optional");
+        DrawStatusRow("Connected clients", transport.ConnectedPeerCount.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Authority", $"{runState.AuthorityView.StateText} | {runState.AuthorityView.FreshnessText}");
         DrawStatusRow("Visible run", activeRun.Status == DadRunStatus.Idle
             ? "Idle."
             : $"{activeRun.ModuleId} | {DadOperatorPhaseText.FormatPhaseLabel(activeRun)} | {activeRun.Status}");
         DrawStatusRow("Participants", $"{participants.Count} discovered | {readyCount} eligible | {assignedCount} assigned | {staleCount} stale");
-        DrawStatusRow("Peers", $"{characterPool.PeerTransport.ConnectedPeerCount} connected | {FormatText(characterPool.PeerTransport.Availability, "(unknown)")}");
+        DrawStatusRow("First blocker", FormatText(firstBlocker, "None"));
+        DrawStatusRow("Next action", nextAction);
 
         if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
             DrawStatusRow(DadOperatorPhaseText.HasBlockingFailure(activeRun) ? "Blocker" : "Runtime note", activeRun.BlockedReason);
 
+        DrawSectionHeader("Connected crew", "Account, character, and player-facing readiness for each visible participant.");
+        if (participants.Count == 0)
+        {
+            DrawMutedNotice("No participants discovered. Open the connection guide to resolve the first route or security blocker.");
+        }
+        else if (ImGui.BeginTable("dad-clients-compact", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Account");
+            ImGui.TableSetupColumn("Character");
+            ImGui.TableSetupColumn("Readiness");
+            ImGui.TableSetupColumn("Status");
+            ImGui.TableHeadersRow();
+            foreach (var participant in participants)
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorAccountLabel(participant.ManagedAccountAlias, participant.ManagedAccountKey.Value));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(participant.ActiveCharacterKey.Value, "(unknown)"));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(participant.IsEligibleForRun ? "Eligible" : participant.PostArReady ? "Post-AR ready" : "Waiting");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatText(participant.StatusText, participant.State.ToString()));
+            }
+            ImGui.EndTable();
+        }
+
         DrawDutySupportRuntimeSection(activeRun);
     }
 
-    private void DrawPresetsTab(DadCharacterPool characterPool, DadVisibleRunState runState)
+    private void DrawSchedulesTab(DadVisibleRunState runState)
     {
+        DadUi.Heading("SCHEDULES", "Build repeatable chains, watch the queue, and follow the current job.");
+        if (DadUi.Button("Schedule Wizard", DadUiTone.Accent))
+            plugin.OpenSetupWizard(DadGuideFlow.Schedule);
+        ImGui.SameLine();
+        ImGui.TextDisabled("Create, order, set cadence, validate, and dry-run with guidance.");
         if (ImGui.BeginTabBar("dad-presets-tabs"))
         {
-            if (ImGui.BeginTabItem("Planner", BuildPresetsTabFlags(DadPresetsWindowTab.Planner)))
-            {
-                DrawPresetPlannerTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Scheduler", BuildPresetsTabFlags(DadPresetsWindowTab.Scheduler)))
+            if (ImGui.BeginTabItem("Schedule Builder", BuildPresetsTabFlags(DadPresetsWindowTab.Scheduler)))
             {
                 DrawScheduleBuilderTab(runState);
                 ImGui.EndTabItem();
@@ -752,7 +945,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Active Job", BuildPresetsTabFlags(DadPresetsWindowTab.ActiveJob)))
+            if (ImGui.BeginTabItem("Current Activity", BuildPresetsTabFlags(DadPresetsWindowTab.ActiveJob)))
             {
                 DrawCrewActiveJobSection();
                 ImGui.EndTabItem();
@@ -765,11 +958,55 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawCrewTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         var catalog = plugin.RosterCatalogService.CurrentCatalog;
-        DrawAccountsProfilesSection(characterPool, catalog, runState);
+        var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
+        var activeRows = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
+        var blockerCount = activeRows.Count(static row => row.AccountKey.IsEmpty || row.IsStale || row.NeedsRosterUpdate);
+        DadUi.Heading("CREW", "Manage the characters DAD can use and how offline clients are launched.");
+        if (DadUi.Button("Guide: Build the Crew", DadUiTone.Accent))
+            plugin.OpenSetupWizard(DadGuideFlow.Crew);
+        ImGui.SameLine();
+        DadUi.Badge(blockerCount == 0 && activeRows.Count > 0 ? "Roster ready" : $"{blockerCount} roster blocker(s)",
+            blockerCount == 0 && activeRows.Count > 0 ? DadUiTone.Success : DadUiTone.Warning);
+        ImGui.SameLine();
+        DadUi.Badge($"{launchProfiles.Count(static profile => profile.Enabled)} launch profile(s) enabled",
+            launchProfiles.Any(static profile => profile.Enabled) ? DadUiTone.Info : DadUiTone.Neutral);
+
+        if (!ImGui.BeginTabBar("dad-crew-tabs"))
+            return;
+
+        if (ImGui.BeginTabItem("Roster"))
+        {
+            DrawCrewRosterSection(characterPool, catalog);
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("Character Profiles"))
+        {
+            DrawProfileTree(launchProfiles);
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("Launch Profiles"))
+        {
+            DrawLaunchProfileEditor(launchProfiles);
+            ImGui.EndTabItem();
+        }
+
+        ImGui.EndTabBar();
     }
 
     private ImGuiTabItemFlags BuildMainTabFlags(DadMainWindowTab tab)
         => pendingMainTab == tab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+
+    private ImGuiTabItemFlags BuildPlanningMainTabFlags(bool showPlanner)
+    {
+        if (pendingMainTab != DadMainWindowTab.Presets)
+            return ImGuiTabItemFlags.None;
+
+        var requested = pendingPresetsTab ?? DadPresetsWindowTab.Planner;
+        var plannerRequested = requested == DadPresetsWindowTab.Planner;
+        return plannerRequested == showPlanner ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+    }
 
     private ImGuiTabItemFlags BuildPresetsTabFlags(DadPresetsWindowTab tab)
         => pendingPresetsTab == tab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
@@ -801,7 +1038,9 @@ public sealed class MainWindow : Window, IDisposable
 
         if (profiles.Count == 0)
         {
-            ImGui.TextDisabled("No launch candidates imported.");
+            ImGui.TextWrapped("No launch profiles are imported. Launch profiles tell DAD how to bring an offline client online; imported batch files remain read-only and start disabled/dry-run.");
+            if (DadUi.Button("Guide: import and map launch profiles"))
+                plugin.OpenSetupWizard(DadGuideFlow.Crew);
             return;
         }
 
@@ -901,7 +1140,9 @@ public sealed class MainWindow : Window, IDisposable
         var catalogs = plugin.ProfileDirectoryService.GetCatalogs();
         if (catalogs.Count == 0)
         {
-            ImGui.TextDisabled("No owned account profiles available.");
+            ImGui.TextWrapped("No owned character profiles are available yet. Refresh the roster and confirm account ownership so DAD can build the account/profile tree.");
+            if (DadUi.Button("Guide: resolve account ownership"))
+                plugin.OpenSetupWizard(DadGuideFlow.Crew);
             return;
         }
 
@@ -1169,20 +1410,30 @@ public sealed class MainWindow : Window, IDisposable
 
         var showAccountColumn = string.IsNullOrWhiteSpace(rosterAccountFilter) ||
                                 string.Equals(rosterAccountFilter, RosterUnassignedAccountFilter, StringComparison.OrdinalIgnoreCase);
-        var columnCount = showAccountColumn ? 11 : 10;
-        if (!ImGui.BeginTable("dad-crew-roster", columnCount, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollX))
+        var showProvenance = plugin.Configuration.DebugUiEnabled;
+        var columnCount = (showAccountColumn ? 8 : 7) + (showProvenance ? 3 : 0);
+        var tableFlags = ImGuiTableFlags.Borders |
+                         ImGuiTableFlags.RowBg |
+                         ImGuiTableFlags.Resizable |
+                         ImGuiTableFlags.SizingStretchProp;
+        if (showProvenance)
+            tableFlags |= ImGuiTableFlags.ScrollX;
+        if (!ImGui.BeginTable("dad-crew-roster", columnCount, tableFlags))
             return;
 
         ImGui.TableSetupColumn("Sel");
         if (showAccountColumn)
             ImGui.TableSetupColumn("Account");
         ImGui.TableSetupColumn("Character");
-        ImGui.TableSetupColumn("ContentId");
+        if (showProvenance)
+            ImGui.TableSetupColumn("ContentId");
         ImGui.TableSetupColumn("World/DC");
-        ImGui.TableSetupColumn("Snapshot age");
+        if (showProvenance)
+            ImGui.TableSetupColumn("Snapshot age");
         ImGui.TableSetupColumn("Job/Lvl");
         ImGui.TableSetupColumn("State");
-        ImGui.TableSetupColumn("Source");
+        if (showProvenance)
+            ImGui.TableSetupColumn("Source");
         ImGui.TableSetupColumn("Blockers");
         ImGui.TableSetupColumn("Actions");
         ImGui.TableHeadersRow();
@@ -1207,12 +1458,18 @@ public sealed class MainWindow : Window, IDisposable
             }
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatOperatorCharacterKey(character.CharacterKey.Value, "(unknown)"));
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(character.ContentId == 0 ? "-" : character.ContentId.ToString(CultureInfo.InvariantCulture));
+            if (showProvenance)
+            {
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(character.ContentId == 0 ? "-" : character.ContentId.ToString(CultureInfo.InvariantCulture));
+            }
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatRosterWorldDc(character));
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted($"{FormatRosterFreshness(character)} | {FormatTime(character.LastSnapshotUtc)}");
+            if (showProvenance)
+            {
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{FormatRosterFreshness(character)} | {FormatTime(character.LastSnapshotUtc)}");
+            }
             ImGui.TableNextColumn();
             DrawJobLevelCell(BuildJobLevelDisplay(
                 character.JobLevels,
@@ -1221,8 +1478,11 @@ public sealed class MainWindow : Window, IDisposable
                 character.CurrentLevel));
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatRosterState(character));
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatRosterSource(character));
+            if (showProvenance)
+            {
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatRosterSource(character));
+            }
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatOperatorText(FormatRosterBlockers(character), "(none)"));
             ImGui.TableNextColumn();
@@ -1245,12 +1505,10 @@ public sealed class MainWindow : Window, IDisposable
         var activeRun = snapshot.ActiveRun;
         var activeScheduleLocked = activeRun.IsActive;
 
-        DrawSectionHeader("Scheduler", "Build ordered super presets from saved Planner presets.");
-        DrawStatusRow("Runner", activeRun.IsActive
-            ? $"{activeRun.Status} / {activeRun.Phase} | {activeRun.Summary}"
-            : FormatText(activeRun.Summary, "Schedule runner idle."));
+        DrawSectionHeader("1. Schedule identity", "Select, create, name, duplicate, or delete the saved schedule first.");
         if (activeRun.IsActive)
         {
+            DadUi.Badge("Schedule locked while a run is active", DadUiTone.Warning);
             DrawStatusRow("Active schedule", FormatText(activeRun.ScheduleName, activeRun.ScheduleId));
             DrawStatusRow("Progress", $"{activeRun.CompletedEntryExecutions}/{activeRun.TotalEntryExecutions} preset run(s)");
             DrawStatusRow("Entry", $"{activeRun.CurrentEntryIndex + 1} / repeat {activeRun.RepeatIteration} / {FormatText(activeRun.CurrentPresetName, activeRun.CurrentGroupId)}");
@@ -1260,7 +1518,6 @@ public sealed class MainWindow : Window, IDisposable
                 DrawStatusRow("Blocker", activeRun.BlockedReason);
         }
 
-        ImGui.Separator();
         ImGui.SetNextItemWidth(MathF.Min(320f, ImGui.GetContentRegionAvail().X));
         if (ImGui.BeginCombo("Schedule", schedule == null ? "(none)" : schedule.DisplayName))
         {
@@ -1330,10 +1587,18 @@ public sealed class MainWindow : Window, IDisposable
 
         if (schedule == null)
         {
-            DrawMutedNotice("Create a schedule, then add saved presets to it.");
+            DrawMutedNotice(groups.Count == 0
+                ? "No schedule can be populated yet because no saved presets exist. Create a preset or open Schedule Wizard for guided next steps."
+                : "No schedule selected. Create one here or use Schedule Wizard.");
+            if (DadUi.Button("Open Schedule Wizard", DadUiTone.Accent))
+                plugin.OpenSetupWizard(DadGuideFlow.Schedule);
             return;
         }
 
+        DrawSectionHeader("2. Ordered preset rows", "Add saved presets, set repeats, and arrange the exact execution order.");
+        DrawScheduleEntryEditor(schedule, groups, activeScheduleLocked);
+
+        DrawSectionHeader("3. Cadence", "Choose manual-only or one eligible run per FFXIV daily reset window.");
         var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;
         if (ImGui.Checkbox("Daily mode", ref dailyMode))
         {
@@ -1350,27 +1615,47 @@ public sealed class MainWindow : Window, IDisposable
             ? $"{schedule.LastRunStatus} at {FormatTime(schedule.LastRunCompletedAtUtc)} | {FormatText(schedule.LastSummary, "(no summary)")}"
             : "(never)");
 
+        DrawSectionHeader("4. Validation, dry-run, and run", "Review the first blocker, validate without launching, then deliberately run when ready.");
+        var knownGroupIds = groups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missingPresetCount = schedule.Entries.Count(entry =>
+            string.IsNullOrWhiteSpace(entry.GroupId) || !knownGroupIds.Contains(entry.GroupId));
+        var firstBlocker = schedule.Entries.Count == 0
+            ? "Add at least one saved preset entry."
+            : missingPresetCount > 0
+                ? $"{missingPresetCount} entry/entries reference a missing preset."
+                : activeScheduleLocked
+                    ? "A schedule is already running."
+                    : Plugin.IsBusy(runState.VisibleRun)
+                        ? "A DAD run is active."
+                        : !plugin.Configuration.RunAsServerDad
+                            ? "Live schedule execution requires the Coordinator role."
+                            : string.Empty;
+        DrawStatusRow("Runner", activeRun.IsActive
+            ? $"{activeRun.Status} / {activeRun.Phase} | {activeRun.Summary}"
+            : FormatText(activeRun.Summary, "Schedule runner idle."));
+        DrawStatusRow("First blocker", FormatText(firstBlocker, "None"));
+        var lastDryRun = snapshot.RecentResults.FirstOrDefault(result =>
+            result.DryRun && string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
+        DrawStatusRow("Last dry-run", lastDryRun == null
+            ? "Not run"
+            : $"{(lastDryRun.Success ? "Ready" : "Blocked")} | {FormatText(lastDryRun.BlockedReason, lastDryRun.Summary)}");
+
         var canRunSchedule = plugin.Configuration.RunAsServerDad &&
                               schedule.Entries.Count > 0 &&
+                              missingPresetCount == 0 &&
                               !activeScheduleLocked &&
                               !Plugin.IsBusy(runState.VisibleRun);
+        ImGui.BeginDisabled(schedule.Entries.Count == 0 || missingPresetCount > 0 || activeScheduleLocked);
+        if (ImGui.SmallButton("Dry-run"))
+            plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: true, requestedBy: "schedule-ui-dry-run");
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
         ImGui.BeginDisabled(!canRunSchedule);
         if (ImGui.SmallButton("Run now"))
             plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !canRunSchedule)
-            ImGui.SetTooltip(!plugin.Configuration.RunAsServerDad
-                ? "Only Dad Coordinator may run schedules."
-                : activeScheduleLocked
-                ? "A schedule is already running."
-                : schedule.Entries.Count == 0
-                    ? "Add at least one saved preset entry."
-                    : "A Dad run is active.");
-
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.BeginDisabled(schedule.Entries.Count == 0 || activeScheduleLocked);
-        if (ImGui.SmallButton("Dry-run"))
-            plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: true, requestedBy: "schedule-ui-dry-run");
+            ImGui.SetTooltip(FormatText(firstBlocker, "Schedule is not ready."));
         ImGui.EndDisabled();
 
         ImGui.SameLine();
@@ -1380,7 +1665,6 @@ public sealed class MainWindow : Window, IDisposable
             plugin.CancelScheduleRunFromShell("Schedule cancelled from Scheduler tab.");
         ImGui.EndDisabled();
 
-        DrawScheduleEntryEditor(schedule, groups, activeScheduleLocked);
         DrawScheduleRecentResults(snapshot, schedule.ScheduleId);
     }
 
@@ -1438,11 +1722,11 @@ public sealed class MainWindow : Window, IDisposable
         IReadOnlyList<DadPlannerGroup> groups,
         bool activeScheduleLocked)
     {
-        ImGui.Separator();
-        ImGui.TextUnformatted("Entries");
         if (groups.Count == 0)
         {
-            DrawMutedNotice("No saved Planner presets are available.");
+            DrawMutedNotice("No saved presets are available. Create a preset before adding schedule rows.");
+            if (DadUi.Button("Guide: Create a Preset"))
+                plugin.OpenSetupWizard(DadGuideFlow.FirstPreset);
             return;
         }
 
@@ -3208,6 +3492,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
+        DadUi.Heading("PLAN", "Choose a saved preset, configure the run, resolve blockers, then start through the scheduler-backed path.");
         var plannerOptions = plugin.PlannerOptions;
         var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
         var requestPreview = plannerSnapshot.RequestPreview;
@@ -3240,10 +3525,12 @@ public sealed class MainWindow : Window, IDisposable
         if (plannerLocked)
             DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
 
-        DrawPlannerLaneSummarySection(plannerPreview, requestPreview, runState, debugUi);
-        DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked);
         DrawPlannerConfigSection(plannerSnapshot, plannerOptions, plannerPreview, requestPreview, plannerLocked, debugUi);
+        DrawSectionHeader("5. Review readiness and blockers", "Confirm the saved activity, crew, stop rule, and first blocker before any action.");
+        DrawPlannerLaneSummarySection(plannerPreview, requestPreview, runState, debugUi);
         DrawPlannerRosterSummarySection(plannerPreview, runState, debugUi);
+        DrawPlannerValidationSection(plannerPreview, requestPreview);
+        DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked);
         if (debugUi)
             DrawPlannerDetailsSection(plannerSnapshot, plannerOptions, plannerPreview, requestPreview, runState, plannerLocked);
         if (debugUi)
@@ -3325,9 +3612,11 @@ public sealed class MainWindow : Window, IDisposable
         bool plannerLocked,
         bool debugUi)
     {
-        DrawSectionHeader("Plan", "Editable planner inputs plus lane-specific config. Read-only lanes stay explicit.");
+        DrawSectionHeader("1. Select, create, and name the preset", "Choose the saved identity before configuring what it will do.");
         ImGui.BeginDisabled(plannerLocked);
-        DrawPlannerGroupControls(plannerSnapshot, plannerOptions, plannerPreview, plannerLocked, debugUi);
+        DrawPlannerGroupIdentityControls(plannerSnapshot, plannerPreview, plannerLocked);
+
+        DrawSectionHeader("2. Choose activity, submode, and duty", "These inputs select the runtime contract and compatible content.");
         ImGui.Spacing();
         DrawPlannerRunFamilySelector(plannerOptions);
         ImGui.SameLine();
@@ -3370,10 +3659,32 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi);
+
+        DrawSectionHeader("3. Assign the crew", "Every primary and substitute character stays on one inline row with all operational fields visible.");
+        DrawPlannerGroupCrewControls(plannerSnapshot, plannerPreview, debugUi);
+
+        DrawSectionHeader("4. Configure stop and finish rules", "Bound the run, then choose the safe actions taken after successful completion.");
         ImGui.Spacing();
         DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
         ImGui.Spacing();
         DrawPlannerCompletionActionsControls(plannerOptions, requestPreview);
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        if (selectedGroup != null)
+        {
+            ImGui.Spacing();
+            if (DadUi.Button("Save activity and rules to selected preset", DadUiTone.Accent))
+            {
+                var saved = plugin.SaveCurrentPlannerGroup(
+                    string.IsNullOrWhiteSpace(plannerGroupNameBuffer) ? selectedGroup.DisplayName : plannerGroupNameBuffer,
+                    out _,
+                    out var rejectionReason);
+                plugin.PrintStatus(saved == null
+                    ? rejectionReason
+                    : $"Saved activity and rules to preset '{saved.DisplayName}'.");
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Crew rows save through their inline controls. This saves the activity, duty, stop rule, and finish rule selected above.");
+        }
         ImGui.EndDisabled();
     }
 
@@ -3436,7 +3747,7 @@ public sealed class MainWindow : Window, IDisposable
         DadVisibleRunState runState,
         bool plannerLocked)
     {
-        DrawSectionHeader("Run Preset", "One safe path wakes clients, performs typed relog takeover, groups the party, and starts the preset.");
+        DrawSectionHeader("6. Validate or run", "Validation is read-only. The primary Run button remains scheduler-backed and appears only here, after review.");
         var activeRun = GetActiveRun(runState);
         var blockers = BuildPlannerBlockerList(requestPreview);
         var firstBlocker = blockers.FirstOrDefault() ?? "(none)";
@@ -3703,8 +4014,11 @@ public sealed class MainWindow : Window, IDisposable
             ? "(none)"
             : FormatOperatorText(string.Join(" | ", requestPreview.ContractPreview.Blockers), "(none)"));
         DrawPlannerValidation(plannerPreview, requestPreview);
-        ImGui.Spacing();
-        DrawPlannerFilterCounts(plannerPreview);
+        if (plugin.Configuration.DebugUiEnabled)
+        {
+            ImGui.Spacing();
+            DrawPlannerFilterCounts(plannerPreview);
+        }
     }
 
     private void DrawPlannerRosterSummarySection(DadActivityPreset plannerPreview, DadVisibleRunState runState, bool debugUi)
@@ -4392,12 +4706,7 @@ public sealed class MainWindow : Window, IDisposable
         => blockers.Any(blocker => blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
 
     private void DrawSectionHeader(string title, string subtitle)
-    {
-        ImGui.Separator();
-        ImGui.TextUnformatted(title);
-        if (plugin.Configuration.DebugUiEnabled && !string.IsNullOrWhiteSpace(subtitle))
-            ImGui.TextDisabled(subtitle);
-    }
+        => DadUi.Section(title, plugin.Configuration.DebugUiEnabled ? subtitle : null);
 
     private static void DrawPlaceholderNotice(string text)
     {
@@ -5460,31 +5769,43 @@ public sealed class MainWindow : Window, IDisposable
         => DrawStatusRow(label, value, 92f);
 
     private static void DrawStatusRow(string label, string value, float preferredLabelWidth)
-    {
-        var availableWidth = ImGui.GetContentRegionAvail().X;
-        var labelWidth = MathF.Min(
-            MathF.Max(84f, preferredLabelWidth),
-            MathF.Max(84f, availableWidth * 0.36f));
-
-        ImGui.TextDisabled(label);
-        if (availableWidth > labelWidth + 120f)
-        {
-            ImGui.SameLine(labelWidth);
-            ImGui.TextWrapped(value);
-        }
-        else
-        {
-            ImGui.Indent();
-            ImGui.TextWrapped(value);
-            ImGui.Unindent();
-        }
-    }
+        => DadUi.KeyValue(label, value, preferredLabelWidth);
 
     private static void DrawStateBadge(string label, string value)
+        => DadUi.Badge($"{label}: {value}", ResolveBadgeTone(value));
+
+    private static DadUiTone ResolveBadgeTone(string value)
     {
-        ImGui.TextDisabled($"{label}:");
-        ImGui.SameLine();
-        ImGui.TextUnformatted(value);
+        if (value.Contains("Blocked", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Failed", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Rejected", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("TimedOut", StringComparison.OrdinalIgnoreCase))
+        {
+            return DadUiTone.Danger;
+        }
+
+        if (value.Contains("Ready", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Enabled", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Connected", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Completed", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Startable", StringComparison.OrdinalIgnoreCase))
+        {
+            return DadUiTone.Success;
+        }
+
+        if (value.Contains("Wait", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Stale", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Warning", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Partial", StringComparison.OrdinalIgnoreCase))
+        {
+            return DadUiTone.Warning;
+        }
+
+        return value.Contains("Idle", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("None", StringComparison.OrdinalIgnoreCase)
+            ? DadUiTone.Neutral
+            : DadUiTone.Info;
     }
 
     private static Vector4 GetStartabilityColor(string startabilityLabel, int blockerCount)
@@ -5512,14 +5833,6 @@ public sealed class MainWindow : Window, IDisposable
         => runtimeLabel.StartsWith("Idle", StringComparison.OrdinalIgnoreCase)
             ? "Idle"
             : runtimeLabel;
-
-    private static string GetWakePolicyLabel(DadSchedulerWakePolicy policy)
-        => policy switch
-        {
-            DadSchedulerWakePolicy.LaunchIfOffline => "Launch if offline",
-            DadSchedulerWakePolicy.LoadCharacterIfOnline => "Load character (stub)",
-            _ => "Already online",
-        };
 
     private static string BuildShortBlockerSummary(string firstBlocker, int blockerCount)
     {
@@ -5821,12 +6134,10 @@ public sealed class MainWindow : Window, IDisposable
         return FormatOperatorText($"{status.DisplayName} / {status.Status} / {status.Phase}{retry} | {status.Summary}{blocker}", "(none)");
     }
 
-    private void DrawPlannerGroupControls(
+    private void DrawPlannerGroupIdentityControls(
         DadPlannerUiSnapshot plannerSnapshot,
-        DadPresetPlannerOptions plannerOptions,
         DadActivityPreset plannerPreview,
-        bool plannerLocked,
-        bool debugUi)
+        bool plannerLocked)
     {
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         var duplicateNames = plannerSnapshot.PlannerGroups
@@ -5956,8 +6267,22 @@ public sealed class MainWindow : Window, IDisposable
                 }
             }
         }
+    }
 
-        DrawPlannerGroupScheduleControls(selectedGroup);
+    private void DrawPlannerGroupCrewControls(
+        DadPlannerUiSnapshot plannerSnapshot,
+        DadActivityPreset plannerPreview,
+        bool debugUi)
+    {
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        if (selectedGroup == null)
+        {
+            DrawMutedNotice("Create or select a saved preset in step 1 before assigning inline crew rows.");
+            if (DadUi.Button("Guide: Create a Preset"))
+                plugin.OpenSetupWizard(DadGuideFlow.FirstPreset);
+            return;
+        }
+
         if (debugUi && ImGui.SmallButton("Refresh group slots from current planner"))
         {
             plugin.ReplaceSelectedPlannerGroupSlotsFromCurrentPreview();
@@ -5985,6 +6310,13 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
 
         DrawPlannerGroupSlotEditor(plannerSnapshot, selectedGroup);
+
+        ImGui.Spacing();
+        if (ImGui.TreeNode("Preset scheduling hints"))
+        {
+            DrawPlannerGroupScheduleControls(selectedGroup);
+            ImGui.TreePop();
+        }
     }
 
     private static void DrawPlannerGroupSlotCapacityNotice(
@@ -6130,460 +6462,12 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)
     {
-        group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
-        if (!ImGui.BeginTable("dad-planner-group-slots", 11, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollX))
-            return;
-
-        ImGui.TableSetupColumn("Slot");
-        ImGui.TableSetupColumn("Type");
-        ImGui.TableSetupColumn("Role");
-        ImGui.TableSetupColumn("Account");
-        ImGui.TableSetupColumn("Character");
-        ImGui.TableSetupColumn("Job");
-        ImGui.TableSetupColumn("ADS Loot");
-        ImGui.TableSetupColumn("Level Seek");
-        ImGui.TableSetupColumn("Wake");
-        ImGui.TableSetupColumn("Profile");
-        ImGui.TableSetupColumn("Edit");
-        ImGui.TableHeadersRow();
-
-        for (var index = 0; index < group.Slots.Count; index++)
-        {
-            var slot = group.Slots[index];
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(slot.SlotId);
-            if (DadPlannerSlotRules.IsLeaderSlot(slot.SlotId) && !slot.IsSubstitute && ImGui.IsItemHovered())
-                ImGui.SetTooltip("Slot1 is the party leader and inviter for this preset.");
-
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(slot.IsSubstitute ? "Substitute" : "Primary");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(slot.IsSubstitute
-                    ? "Substitute rows are tried only if the primary row for this same SlotN does not resolve; rows are tried in UI order."
-                    : "Primary rows are resolved before substitute rows for the same SlotN.");
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupRoleCombo(group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupAccountCombo(plannerSnapshot.CuratedPool, plannerSnapshot.AccountOptions, group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupCharacterCombo(plannerSnapshot, group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupJobCombo(plannerSnapshot, group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupAdsLootModeCombo(group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupLevelSeekInput(group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupWakePolicyCombo(group, slot, index);
-
-            ImGui.TableNextColumn();
-            DrawPlannerGroupLaunchProfileCombo(plannerSnapshot.LaunchProfiles, group, slot, index);
-
-            ImGui.TableNextColumn();
-            if (!slot.IsSubstitute)
-            {
-                if (ImGui.SmallButton($"+ Sub##dad-group-slot-sub-{index}"))
-                {
-                    group.Slots.Insert(FindSubstituteInsertIndex(group.Slots, index), new DadPlannerGroupSlot
-                    {
-                        SlotId = slot.SlotId,
-                        IsSubstitute = true,
-                        RequiredRole = slot.RequiredRole,
-                        AdsLootMode = slot.AdsLootMode,
-                        LevelSeekTarget = slot.LevelSeekTarget,
-                        WakePolicy = slot.WakePolicy,
-                        AllowSubstitution = false,
-                    });
-                    plugin.TouchPlannerGroup(group);
-                    break;
-                }
-
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Adds an explicit fallback row for this same SlotN. Primary rows are tried first, then substitute rows in UI order.");
-
-                ImGui.SameLine();
-            }
-
-            if (ImGui.SmallButton($"Remove##dad-group-slot-remove-{index}"))
-            {
-                group.Slots.RemoveAt(index);
-                plugin.TouchPlannerGroup(group);
-                break;
-            }
-        }
-
-        ImGui.EndTable();
+        presetCrewEditor.Draw(
+            plannerSnapshot,
+            group,
+            plugin.TouchPlannerGroup,
+            "dad-planner-group");
     }
-
-    private void DrawPlannerGroupAdsLootModeCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
-    {
-        ImGui.SetNextItemWidth(-1f);
-        if (!ImGui.BeginCombo($"##dad-group-ads-loot-{index}", slot.AdsLootMode.ToString()))
-            return;
-
-        foreach (var mode in Enum.GetValues<DadAdsLootMode>())
-        {
-            var selected = mode == slot.AdsLootMode;
-            if (ImGui.Selectable(mode.ToString(), selected))
-            {
-                slot.AdsLootMode = mode;
-                plugin.TouchPlannerGroup(group);
-            }
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("NoChange preserves ADS lootMode. Need, Greed, and Pass are patched on the exact selected worker before queueing.");
-    }
-
-    private void DrawPlannerGroupLevelSeekInput(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
-    {
-        var text = slot.LevelSeekTarget?.ToString() ?? string.Empty;
-        ImGui.SetNextItemWidth(-1f);
-        if (ImGui.InputText($"##dad-group-level-seek-{index}", ref text, 4))
-        {
-            var trimmed = text.Trim();
-            if (trimmed.Length == 0)
-            {
-                slot.LevelSeekTarget = null;
-                plugin.TouchPlannerGroup(group);
-            }
-            else if (int.TryParse(trimmed, out var level) && level is >= 1 and <= 999)
-            {
-                slot.LevelSeekTarget = level;
-                plugin.TouchPlannerGroup(group);
-            }
-        }
-
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Blank disables Level seek. A preset is skipped only when every targeted exact row has a known level at or above its target.");
-    }
-
-    private static int FindSubstituteInsertIndex(IReadOnlyList<DadPlannerGroupSlot> slots, int primaryIndex)
-    {
-        var primarySlotId = slots[primaryIndex].SlotId;
-        var insertIndex = primaryIndex + 1;
-        while (insertIndex < slots.Count &&
-               string.Equals(slots[insertIndex].SlotId, primarySlotId, StringComparison.OrdinalIgnoreCase) &&
-               slots[insertIndex].IsSubstitute)
-        {
-            insertIndex++;
-        }
-
-        return insertIndex;
-    }
-
-    private void DrawPlannerGroupWakePolicyCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
-    {
-        ImGui.SetNextItemWidth(-1f);
-        if (!ImGui.BeginCombo($"##dad-group-wake-{index}", GetWakePolicyLabel(slot.WakePolicy)))
-            return;
-
-        foreach (var policy in Enum.GetValues<DadSchedulerWakePolicy>())
-        {
-            var selected = policy == slot.WakePolicy;
-            var disabledStub = policy == DadSchedulerWakePolicy.LoadCharacterIfOnline && !selected;
-            ImGui.BeginDisabled(disabledStub);
-            if (ImGui.Selectable(GetWakePolicyLabel(policy), selected))
-            {
-                slot.WakePolicy = policy;
-                plugin.TouchPlannerGroup(group);
-            }
-            var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
-            ImGui.EndDisabled();
-            if (hovered && policy == DadSchedulerWakePolicy.LoadCharacterIfOnline)
-                ImGui.SetTooltip("Compatibility stub only. New selections are disabled and the scheduler sends no commands for this policy.");
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private void DrawPlannerGroupLaunchProfileCombo(
-        IReadOnlyList<DadLaunchProfile> profiles,
-        DadPlannerGroup group,
-        DadPlannerGroupSlot slot,
-        int index)
-    {
-        var selectedProfile = profiles.FirstOrDefault(profile =>
-            string.Equals(profile.ProfileId, slot.LaunchProfileId, StringComparison.OrdinalIgnoreCase));
-        var preview = selectedProfile?.DisplayName ?? "Auto";
-        ImGui.SetNextItemWidth(-1f);
-        if (!ImGui.BeginCombo($"##dad-group-launch-profile-{index}", preview))
-            return;
-
-        if (ImGui.Selectable("Auto", string.IsNullOrWhiteSpace(slot.LaunchProfileId)))
-        {
-            slot.LaunchProfileId = string.Empty;
-            plugin.TouchPlannerGroup(group);
-        }
-
-        foreach (var profile in profiles)
-        {
-            var selected = string.Equals(profile.ProfileId, slot.LaunchProfileId, StringComparison.OrdinalIgnoreCase);
-            var label = string.IsNullOrWhiteSpace(profile.AccountKey.Value)
-                ? profile.DisplayName
-                : $"{profile.DisplayName} | {profile.AccountKey}";
-            if (ImGui.Selectable(label, selected))
-            {
-                slot.LaunchProfileId = profile.ProfileId;
-                plugin.TouchPlannerGroup(group);
-            }
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private void DrawPlannerGroupRoleCombo(DadPlannerGroup group, DadPlannerGroupSlot slot, int index)
-    {
-        ImGui.SetNextItemWidth(-1f);
-        if (!ImGui.BeginCombo($"##dad-group-role-{index}", FormatRoleRequirement(slot.RequiredRole)))
-            return;
-
-        foreach (var role in Enum.GetValues<DadPartyRole>())
-        {
-            var selected = role == slot.RequiredRole;
-            if (ImGui.Selectable(FormatRoleRequirement(role), selected))
-            {
-                slot.RequiredRole = role;
-                plugin.TouchPlannerGroup(group);
-            }
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private void DrawPlannerGroupAccountCombo(
-        DadCharacterPool characterPool,
-        IReadOnlyList<DadRosterAccountOption> accountOptions,
-        DadPlannerGroup group,
-        DadPlannerGroupSlot slot,
-        int index)
-    {
-        var selectedAccount = accountOptions.FirstOrDefault(option =>
-            string.Equals(option.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
-        var preview = slot.RequiredAccountKey.IsEmpty
-            ? "(missing)"
-            : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatRosterAccountOption(selectedAccount);
-        ImGui.SetNextItemWidth(-1f);
-        if (!ImGui.BeginCombo($"##dad-group-account-{index}", preview))
-            return;
-
-        foreach (var option in accountOptions)
-        {
-            var selected = string.Equals(slot.RequiredAccountKey.Value, option.AccountKey.Value, StringComparison.OrdinalIgnoreCase);
-            var label = $"{FormatRosterAccountOption(option)} ({option.AssignedCharacterCount})";
-            if (ImGui.Selectable(label, selected))
-            {
-                var accountChanged = !string.Equals(
-                    slot.RequiredAccountKey.Value,
-                    option.AccountKey.Value,
-                    StringComparison.OrdinalIgnoreCase);
-                var characterCleared = false;
-                slot.RequiredAccountKey = option.AccountKey;
-                if (!slot.RequiredCharacterKey.IsEmpty &&
-                    !characterPool.Characters.Any(character =>
-                        string.Equals(character.CharacterKey, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase) &&
-                        MatchesPlannerGroupAccount(character, option.AccountKey)))
-                {
-                    slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
-                    characterCleared = true;
-                }
-
-                if (accountChanged || characterCleared)
-                    slot.RequiredJobId = null;
-
-                plugin.TouchPlannerGroup(group);
-            }
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private void DrawPlannerGroupCharacterCombo(
-        DadPlannerUiSnapshot plannerSnapshot,
-        DadPlannerGroup group,
-        DadPlannerGroupSlot slot,
-        int index)
-    {
-        var needsAccount = slot.RequiredAccountKey.IsEmpty;
-        var preview = needsAccount
-            ? "Select account first"
-            : slot.RequiredCharacterKey.IsEmpty
-            ? "Any character"
-            : FormatOperatorCharacterKey(slot.RequiredCharacterKey.Value, slot.RequiredCharacterKey.Value);
-        ImGui.SetNextItemWidth(-1f);
-        ImGui.BeginDisabled(needsAccount);
-        if (ImGui.BeginCombo($"##dad-group-character-{index}", preview))
-        {
-            if (ImGui.Selectable("Any character on account", slot.RequiredCharacterKey.IsEmpty))
-            {
-                var characterChanged = !slot.RequiredCharacterKey.IsEmpty;
-                slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
-                if (characterChanged)
-                    slot.RequiredJobId = null;
-                plugin.TouchPlannerGroup(group);
-            }
-
-            foreach (var character in plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey))
-            {
-                var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
-                               MatchesPlannerGroupAccount(character, slot.RequiredAccountKey);
-                var source = plugin.PresetProviderService.GetCharacterSourceLabel(character.Source);
-                var world = string.IsNullOrWhiteSpace(character.WorldName) ? string.Empty : $" | {character.WorldName}";
-                var label = $"{FormatOperatorCharacterKey(character.CharacterKey, character.CharacterKey)}{world} | {source}";
-                if (ImGui.Selectable(label, selected))
-                {
-                    var characterChanged = !string.Equals(
-                        slot.RequiredCharacterKey.Value,
-                        character.CharacterKey,
-                        StringComparison.OrdinalIgnoreCase);
-                    slot.RequiredCharacterKey = new DadCharacterKey(character.CharacterKey);
-                    if (characterChanged)
-                        slot.RequiredJobId = null;
-                    plugin.TouchPlannerGroup(group);
-                }
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
-            }
-
-            ImGui.EndCombo();
-        }
-        ImGui.EndDisabled();
-    }
-
-    private void DrawPlannerGroupJobCombo(
-        DadPlannerUiSnapshot plannerSnapshot,
-        DadPlannerGroup group,
-        DadPlannerGroupSlot slot,
-        int index)
-    {
-        var selectedCharacter = ResolvePlannerGroupCharacter(plannerSnapshot, slot);
-        var jobOptions = BuildPlannerGroupJobOptions(selectedCharacter);
-        var selectedJob = slot.RequiredJobId is > 0
-            ? jobOptions.FirstOrDefault(option => option.JobId == slot.RequiredJobId)
-            : null;
-        var hasRequestedJob = slot.RequiredJobId is > 0;
-        var invalidSavedJob = hasRequestedJob && selectedJob == null;
-        var preview = !hasRequestedJob
-            ? "Any (current job)"
-            : selectedJob != null
-                ? FormatPlannerGroupJobOption(selectedJob)
-                : $"Invalid: {ResolveClassJobAbbrev(slot.RequiredJobId!.Value)} (#{slot.RequiredJobId.Value.ToString(CultureInfo.InvariantCulture)})";
-        var disabled = selectedCharacter == null && !hasRequestedJob;
-
-        ImGui.SetNextItemWidth(-1f);
-        ImGui.BeginDisabled(disabled);
-        if (invalidSavedJob)
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.4f, 0.35f, 1f));
-        var opened = ImGui.BeginCombo($"##dad-group-job-{index}", preview);
-        var comboHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
-        if (invalidSavedJob)
-            ImGui.PopStyleColor();
-
-        if (opened)
-        {
-            var anySelected = !hasRequestedJob;
-            if (ImGui.Selectable("Any (current job)", anySelected))
-            {
-                slot.RequiredJobId = null;
-                plugin.TouchPlannerGroup(group);
-            }
-            if (anySelected)
-                ImGui.SetItemDefaultFocus();
-
-            foreach (var option in jobOptions)
-            {
-                var selected = option.JobId == slot.RequiredJobId;
-                if (ImGui.Selectable(FormatPlannerGroupJobOption(option), selected))
-                {
-                    slot.RequiredJobId = option.JobId;
-                    plugin.TouchPlannerGroup(group);
-                }
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
-            }
-
-            ImGui.EndCombo();
-        }
-
-        ImGui.EndDisabled();
-
-        if (!comboHovered)
-            return;
-
-        if (invalidSavedJob)
-        {
-            ImGui.SetTooltip($"Saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)} is not a positive combat job in the exact selected character's durable learned-job ledger. Reset it to Any or select a valid listed job.");
-        }
-        else if (selectedCharacter == null)
-        {
-            ImGui.SetTooltip("Select an exact character before choosing a job.");
-        }
-        else if (jobOptions.Count == 0)
-        {
-            ImGui.SetTooltip("The exact selected character has no positive combat-job levels in its durable learned-job ledger. Any uses the character's current job.");
-        }
-        else
-        {
-            ImGui.SetTooltip("Job choices come from the exact selected character's durable learned-job ledger and remain available while XADB is temporarily unavailable. Any uses the character's current job.");
-        }
-    }
-
-    private DadAcquiredCharacter? ResolvePlannerGroupCharacter(
-        DadPlannerUiSnapshot plannerSnapshot,
-        DadPlannerGroupSlot slot)
-    {
-        if (slot.RequiredAccountKey.IsEmpty || slot.RequiredCharacterKey.IsEmpty)
-            return null;
-
-        return plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey)
-            .FirstOrDefault(character =>
-                string.Equals(
-                    character.CharacterKey,
-                    slot.RequiredCharacterKey.Value,
-                    StringComparison.OrdinalIgnoreCase) &&
-                MatchesPlannerGroupAccount(character, slot.RequiredAccountKey));
-    }
-
-    private List<JobLevelEntry> BuildPlannerGroupJobOptions(DadAcquiredCharacter? character)
-    {
-        if (character == null)
-            return [];
-
-        return character.JobLevels
-            .Where(static pair => pair.Key != 0 && pair.Value > 0 && DadRosterCharacterMerge.IsCombatJob(pair.Key))
-            .Select(pair => new JobLevelEntry(pair.Key, ResolveClassJobAbbrev(pair.Key), pair.Value))
-            .OrderBy(static option => option.Abbreviation, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(static option => option.JobId)
-            .ToList();
-    }
-
-    private static string FormatPlannerGroupJobOption(JobLevelEntry option)
-        => $"{option.Abbreviation} Lv {option.Level.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)}";
-
-    private static bool MatchesPlannerGroupAccount(DadAcquiredCharacter character, DadAccountKey accountKey)
-        => (!string.IsNullOrWhiteSpace(character.AccountId)
-            && string.Equals(character.AccountId, accountKey.Value, StringComparison.OrdinalIgnoreCase))
-           || (!string.IsNullOrWhiteSpace(character.AccountAlias)
-               && string.Equals(character.AccountAlias, accountKey.Value, StringComparison.OrdinalIgnoreCase));
 
     private void DrawPlannerOperatorModeSelector(DadPresetPlannerOptions plannerOptions)
     {

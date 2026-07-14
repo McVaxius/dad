@@ -5,7 +5,7 @@ internal static class PluginInfo
     public const string DisplayName = "dad";
     public const string InternalName = "dad";
     public const string Command = "/dad";
-    public const string Summary = "Private Dad duty operations shell with Dad Coordinator authority, Client Dad workers, preset planning, queue routing, and Duty Support automation.";
+    public const string Summary = "Plan and coordinate duty runs across your FFXIV characters with reusable presets, verified parties, supported queues, and schedules.";
     public const string SupportUrl = "https://ko-fi.com/mcvaxius";
 
     public static readonly string[] Services =

@@ -361,7 +361,11 @@ public sealed class Plugin : IDalamudPlugin
 
     public void ToggleConfigUi() => configWindow.Toggle();
 
+    public void OpenConfigUi() => configWindow.IsOpen = true;
+
     public void OpenSetupWizard() => setupWizardWindow.OpenLanding();
+
+    public void OpenSetupWizard(DadGuideFlow flow) => setupWizardWindow.OpenFlow(flow);
 
     public void OpenMainTab(DadMainWindowTab tab, DadPresetsWindowTab? presetsTab = null)
         => mainWindow.OpenTab(tab, presetsTab);

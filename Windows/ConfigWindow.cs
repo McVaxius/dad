@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using Dalamud.Utility;
 using dad.Models;
 using dad.Services;
 
@@ -11,17 +12,12 @@ public sealed class ConfigWindow : Window, IDisposable
 {
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
     private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
+    private const string CommunityDiscordUrl = "https://discord.gg/VsXqydsvpu";
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
     private readonly Plugin plugin;
+    private readonly DadConnectionEditor connectionEditor;
     private string draftCompletionCommands = string.Empty;
     private bool completionDraftInitialized;
-    private string draftServerHost = string.Empty;
-    private int draftServerPort;
-    private bool endpointDraftInitialized;
-    private string draftSharedSecret = string.Empty;
-    private bool sharedSecretDraftInitialized;
-    private IReadOnlyList<DadEndpointHostOption> endpointHostOptions = [];
-    private DateTime endpointHostOptionsLoadedUtc = DateTime.MinValue;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string pendingDeleteAccountId = string.Empty;
@@ -30,6 +26,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public ConfigWindow(Plugin plugin) : base($"{PluginInfo.DisplayName} Settings##Config", ImGuiWindowFlags.None)
     {
         this.plugin = plugin;
+        connectionEditor = new DadConnectionEditor(plugin);
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = MinimumWindowSize,
@@ -85,33 +82,43 @@ public sealed class ConfigWindow : Window, IDisposable
 
         var configuration = plugin.Configuration;
 
+        DadUi.Heading("DAD SETTINGS", "Everyday setup first; advanced and debug details stay close when you need them.");
+        DadUi.Badge(configuration.PluginEnabled ? "DAD enabled" : "DAD paused",
+            configuration.PluginEnabled ? DadUiTone.Success : DadUiTone.Warning);
+        ImGui.SameLine();
+        DadUi.Badge(configuration.RunAsServerDad ? "Coordinator" : "Client", DadUiTone.Info);
+        ImGui.SameLine();
+        DadUi.Badge(configuration.DebugUiEnabled ? "Debug details shown" : "Everyday view",
+            configuration.DebugUiEnabled ? DadUiTone.Warning : DadUiTone.Neutral);
+        ImGui.Spacing();
+
         if (ImGui.BeginTabBar("dad-config-tabs"))
         {
-            if (ImGui.BeginTabItem("General"))
+            if (ImGui.BeginTabItem("Core & Connection"))
             {
                 DrawGeneralTab(configuration);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Scheduler Settings"))
+            if (ImGui.BeginTabItem("Accounts & Launch"))
             {
                 DrawSchedulerTab(configuration);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Combat Rotation"))
+            if (ImGui.BeginTabItem("Combat"))
             {
                 DrawCombatRotationTab(configuration);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Completion & Safety"))
+            if (ImGui.BeginTabItem("Safety & Finish"))
             {
                 DrawCompletionSafetyTab(configuration);
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("About"))
+            if (ImGui.BeginTabItem("About & Support"))
             {
                 DrawAboutTab();
                 ImGui.EndTabItem();
@@ -125,8 +132,14 @@ public sealed class ConfigWindow : Window, IDisposable
     // and completion actions. Legacy kill settings are only shown when Advanced mode is on.
     private void DrawCompletionSafetyTab(Configuration configuration)
     {
+        DadUi.Heading("SAFETY & FINISH", "Set readiness safeguards and what happens after a successful run.");
+        if (DadUi.Button("Guide: Create a Preset", DadUiTone.Accent))
+            plugin.OpenSetupWizard(DadGuideFlow.FirstPreset);
+        ImGui.SameLine();
+        ImGui.TextDisabled("Configure per-preset stop and finish rules with live validation.");
+
         var advanced = configuration.AdvancedModeEnabled;
-        if (ImGui.Checkbox("Advanced mode (show legacy options)", ref advanced))
+        if (ImGui.Checkbox("Show advanced controls", ref advanced))
         {
             configuration.AdvancedModeEnabled = advanced;
             configuration.Save();
@@ -136,21 +149,21 @@ public sealed class ConfigWindow : Window, IDisposable
             ? "On - advanced options visible."
             : "Off. Also toggle with /dad advanced.");
 
-        DrawSectionHeader("Party validation");
+        DrawSectionHeader("Start safeguards");
 
         var partyOverride = configuration.PartyValidationOverrideEnabled;
-        if (ImGui.Checkbox("Party validation override", ref partyOverride))
+        if (ImGui.Checkbox("Skip live party readiness checks (unsafe)", ref partyOverride))
         {
             configuration.PartyValidationOverrideEnabled = partyOverride;
             configuration.Save();
         }
 
-        ImGui.TextWrapped("When on, Dad skips runtime connectivity/readiness checks before starting a run. Duplicate-slot checks stay enforced. Default off.");
+        ImGui.TextWrapped("When on, DAD skips runtime connectivity and readiness checks before starting. Duplicate-slot checks stay enforced. Leave this off for normal play.");
 
         DrawSectionHeader("Integrations");
 
         var questionableBridge = configuration.QuestionableBridgeEnabled;
-        if (ImGui.Checkbox("Questionable reflection bridge (AutoDuty/ADS handoff)", ref questionableBridge))
+        if (ImGui.Checkbox("Enable AutoDuty / ADS handoff through Questionable", ref questionableBridge))
         {
             configuration.QuestionableBridgeEnabled = questionableBridge;
             configuration.Save();
@@ -280,41 +293,40 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawGeneralTab(Configuration configuration)
     {
-        EnsureEndpointDraft(configuration);
+        DadUi.Heading("CORE & CONNECTION", "Enable DAD, choose this client's role, and connect the crew securely.");
+        if (DadUi.Button("Guide: set up a Coordinator", DadUiTone.Accent))
+            plugin.OpenSetupWizard(DadGuideFlow.Coordinator);
+        ImGui.SameLine();
+        if (DadUi.Button("Guide: connect a Client"))
+            plugin.OpenSetupWizard(DadGuideFlow.Client);
+        DadUi.Section("Core", "The switches most players need for normal runs.");
 
         var enabled = configuration.PluginEnabled;
-        if (ImGui.Checkbox("Plugin enabled", ref enabled))
+        if (ImGui.Checkbox("DAD enabled", ref enabled))
             plugin.SetPluginEnabled(enabled, printStatus: false);
 
         var runAsServerDad = configuration.RunAsServerDad;
-        if (ImGui.Checkbox("Run as Dad Coordinator", ref runAsServerDad))
+        if (ImGui.Checkbox("This client coordinates the crew", ref runAsServerDad))
         {
             plugin.SetRunAsServerDad(runAsServerDad);
-            ResetEndpointDraft(configuration);
+            connectionEditor.Reset(configuration);
         }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Enable on the one DAD client that plans and dispatches work. Leave off on crew clients.");
 
         var localOnly = configuration.LocalOnlyModeEnabled;
-        if (ImGui.Checkbox("Sticky local-only mode", ref localOnly))
+        if (ImGui.Checkbox("Keep runs on this client only", ref localOnly))
         {
             configuration.LocalOnlyModeEnabled = localOnly;
             configuration.Save();
         }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("DAD will not route work to connected crew clients while this is enabled.");
 
-        DrawStatusRow("Debug UI", configuration.DebugUiEnabled ? "Enabled via /dad debug." : "Disabled. Use /dad debug to show verbose diagnostics.");
-        var dutyIpcStatus = plugin.DutyIpcService.GetStatus();
-        var bridgeStatus = plugin.QuestionableBridge.GetStatus();
-        DrawStatusRow("Dad duty IPC", FormatDutyIpcRegistrationStatus(dutyIpcStatus));
-        DrawStatusRow("Questionable runtime bridge", FormatQuestionableBridgeStatus(bridgeStatus));
-        if (configuration.DebugUiEnabled)
-        {
-            DrawStatusRow("Questionable cosmetic", FormatQuestionableCosmeticStatus(bridgeStatus));
-            DrawStatusRow("Dad duty IPC probe", FormatDutyIpcProbeStatus(dutyIpcStatus));
-            DrawStatusRow("Dad duty IPC run", FormatDutyIpcFailureStatus(dutyIpcStatus));
-            DrawStatusRow("Dad duty IPC cleanup", FormatDutyIpcCleanupStatus(dutyIpcStatus));
-        }
+        DadUi.Section("Status & privacy", "Choose what DAD shows locally; identity hiding never changes run contracts.");
 
         var dtr = configuration.DtrBarEnabled;
-        if (ImGui.Checkbox("Show DTR bar entry", ref dtr))
+        if (ImGui.Checkbox("Show DAD in the server info bar (DTR)", ref dtr))
         {
             configuration.DtrBarEnabled = dtr;
             configuration.Save();
@@ -322,14 +334,16 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var krangle = configuration.KrangleOperatorNamesEnabled;
-        if (ImGui.Checkbox("Krangle operator names", ref krangle))
+        if (ImGui.Checkbox("Hide operator names inside DAD", ref krangle))
         {
             configuration.KrangleOperatorNamesEnabled = krangle;
             configuration.Save();
         }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Changes local DAD labels only. Saved identities and run contracts stay unchanged.");
 
         var mode = configuration.DtrBarMode;
-        if (ImGui.Combo("DTR mode", ref mode, DtrModes, DtrModes.Length))
+        if (ImGui.Combo("Server info display", ref mode, DtrModes, DtrModes.Length))
         {
             configuration.DtrBarMode = mode;
             configuration.Save();
@@ -337,7 +351,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var onIcon = configuration.DtrIconEnabled;
-        if (ImGui.InputText("DTR enabled glyph", ref onIcon, 8))
+        if (ImGui.InputText("Enabled glyph", ref onIcon, 8))
         {
             var committedSignature = BuildDtrGlyphSignature(configuration);
             configuration.DtrIconEnabled = onIcon.Length <= 3 ? onIcon : onIcon[..3];
@@ -349,7 +363,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var offIcon = configuration.DtrIconDisabled;
-        if (ImGui.InputText("DTR disabled glyph", ref offIcon, 8))
+        if (ImGui.InputText("Paused glyph", ref offIcon, 8))
         {
             var committedSignature = BuildDtrGlyphSignature(configuration);
             configuration.DtrIconDisabled = offIcon.Length <= 3 ? offIcon : offIcon[..3];
@@ -360,44 +374,112 @@ public sealed class ConfigWindow : Window, IDisposable
                 plugin.UpdateDtrBar);
         }
 
-        ImGui.Separator();
-        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Dad Coordinator listener" : "Dad Coordinator connection");
+        DadUi.Section("Connection & security", configuration.RunAsServerDad
+            ? "Choose where crew clients connect to this Coordinator."
+            : "Point this client at the Coordinator that owns the crew plan.");
+        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Coordinator listener" : "Coordinator connection");
         ImGui.TextWrapped(configuration.RunAsServerDad
             ? "Listen on 127.0.0.1 for same-host clients. Use a LAN interface address and shared secret for multi-host clients."
-            : "Enter the Dad Coordinator LAN IP/DNS or 127.0.0.1 for same-host use.");
+            : "Enter the Coordinator's LAN IP/DNS, or use 127.0.0.1 when both clients are on this PC.");
 
-        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Listen host" : "Dad Coordinator host");
-        var comboWidth = ImGui.GetFontSize() * 13f;
-        var hostInputWidth = MathF.Max(180f, ImGui.GetContentRegionAvail().X - comboWidth - ImGui.GetStyle().ItemSpacing.X);
-        ImGui.SetNextItemWidth(hostInputWidth);
-        ImGui.InputText("##dad-endpoint-host-input", ref draftServerHost, 128);
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(comboWidth);
-        DrawEndpointHostDropdown();
-        ImGui.InputInt(configuration.RunAsServerDad ? "Listen port" : "Dad Coordinator port", ref draftServerPort);
-        draftServerPort = Math.Clamp(draftServerPort, 1, 65535);
+        connectionEditor.DrawEndpointFields(configuration, "dad-settings-connection", showApplyActions: true);
 
-        var hasPendingEndpointDraftChanges = HasPendingEndpointDraftChanges(configuration);
-        if (hasPendingEndpointDraftChanges)
-            ImGui.TextDisabled("Endpoint draft has unapplied changes.");
-
-        if (ImGui.Button("Apply endpoint changes"))
-            ApplyEndpointDraft(configuration);
-        if (!hasPendingEndpointDraftChanges)
-            ImGui.BeginDisabled();
-        ImGui.SameLine();
-        if (ImGui.Button("Revert endpoint draft"))
-            ResetEndpointDraft(configuration);
-        if (!hasPendingEndpointDraftChanges)
-            ImGui.EndDisabled();
-
-        DrawStatusRow("Hub endpoint", FormatText(plugin.TransportService.GetConfiguredAuthorityEndpoint(), "(invalid endpoint)"));
+        DrawStatusRow("Coordinator endpoint", FormatText(plugin.TransportService.GetConfiguredAuthorityEndpoint(), "(invalid endpoint)"));
         DrawStatusRow("Connection", plugin.TransportService.CurrentTransport.ConnectionStatus);
-        DrawStatusRow("Protocol", plugin.TransportService.CurrentTransport.ProtocolVersion.ToString());
-        DrawLanSharedSecretSetup(configuration);
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Wait policy");
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Shared secret");
+        ImGui.TextWrapped(configuration.RunAsServerDad
+            ? "Use this Coordinator as the source. Paste the same secret into every Client; DAD never sends the secret over the connection."
+            : "Paste the Coordinator's shared secret here. DAD never fetches or sends it over the connection.");
+        connectionEditor.DrawSharedSecretFields(
+            configuration,
+            "dad-settings-connection",
+            showApplyActions: true,
+            showGenerateAndCopy: true);
+
+        var transport = plugin.TransportService.CurrentTransport;
+        DrawStatusRow("Configured endpoint", FormatText(transport.ConfiguredEndpoint, "(none)"));
+        DrawStatusRow("Advertised endpoint", FormatText(transport.AdvertisedEndpoint, "(none)"));
+        DrawStatusRow("Secret required", transport.SharedSecretRequired ? "Yes" : "No (loopback endpoint)");
+        DrawStatusRow("Secret configured", transport.SharedSecretConfigured ? "Yes" : "No");
+        if (!string.IsNullOrWhiteSpace(transport.LastAuthOrProtocolError))
+            DrawStatusRow("Auth/protocol", transport.LastAuthOrProtocolError);
+        if (configuration.DebugUiEnabled)
+        {
+            DrawStatusRow("Publish epoch", FormatText(transport.HubRosterPublishEpochId, "(none)"));
+            DrawStatusRow("Publish generation", transport.HubRosterPublishGeneration.ToString());
+            DrawStatusRow("Roster participants", $"{transport.PublishedParticipantCount} published | {transport.KnownParticipantCount} known");
+            DrawStatusRow("Transport queues", $"{transport.PendingTransportEventCount} event(s) | {transport.PendingOutboundOperationCount} outbound");
+            DrawStatusRow("Last publish", $"{FormatTime(transport.LastRosterPublishUtc)} | {FormatText(transport.LastRosterPublishReason, "(none)")}");
+            if (transport.CoalescedRosterPublishCount > 0)
+                DrawStatusRow("Coalesced publishes", transport.CoalescedRosterPublishCount.ToString());
+            if (!string.IsNullOrWhiteSpace(transport.LastTransportTimeoutSummary))
+                DrawStatusRow("Transport timeout", transport.LastTransportTimeoutSummary);
+        }
+
+        if (configuration.DebugUiEnabled)
+        {
+            DadUi.Section("Debug diagnostics", "Runtime bridge and transport details shown by /dad debug.");
+            var dutyIpcStatus = plugin.DutyIpcService.GetStatus();
+            var bridgeStatus = plugin.QuestionableBridge.GetStatus();
+            DrawStatusRow("Debug UI", "Enabled via /dad debug.");
+            DrawStatusRow("DAD duty IPC", FormatDutyIpcRegistrationStatus(dutyIpcStatus));
+            DrawStatusRow("Questionable runtime bridge", FormatQuestionableBridgeStatus(bridgeStatus));
+            DrawStatusRow("Questionable cosmetic", FormatQuestionableCosmeticStatus(bridgeStatus));
+            DrawStatusRow("DAD duty IPC probe", FormatDutyIpcProbeStatus(dutyIpcStatus));
+            DrawStatusRow("DAD duty IPC run", FormatDutyIpcFailureStatus(dutyIpcStatus));
+            DrawStatusRow("DAD duty IPC cleanup", FormatDutyIpcCleanupStatus(dutyIpcStatus));
+            DrawStatusRow("Transport protocol", plugin.TransportService.CurrentTransport.ProtocolVersion.ToString());
+        }
+
+        DadUi.Section("Advanced timing", "The defaults suit normal play; tune these only when clients or plugins need longer waits.");
+        var showAdvancedTiming = configuration.AdvancedModeEnabled;
+        if (ImGui.Checkbox("Show advanced timing controls", ref showAdvancedTiming))
+        {
+            configuration.AdvancedModeEnabled = showAdvancedTiming;
+            configuration.Save();
+        }
+
+        if (configuration.AdvancedModeEnabled)
+            DrawWaitPolicyControls(configuration);
+        else
+            ImGui.TextDisabled("Hidden in everyday view. Enable here or use /dad advanced to reveal every timing control.");
+
+        DadUi.Section("Commands & troubleshooting", "Useful shortcuts stay available without crowding everyday setup.");
+        if (ImGui.CollapsingHeader("Command reference"))
+        {
+            ImGui.BulletText("/dad ws -> reset DAD windows to 1,1");
+            ImGui.BulletText("/dad j -> jump DAD windows somewhere visible");
+            ImGui.BulletText("/dad status -> print the live shell summary to chat");
+            ImGui.BulletText("/dad mini -> toggle the compact cached status and Stop-all window");
+            ImGui.BulletText("Offline Client DADs automatically show reconnect progress and retry until DAD is disabled");
+            ImGui.BulletText("/dad wizard or /dad setup -> open the DAD Setup Guide");
+            ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
+            ImGui.BulletText("/dad krangle -> toggle local operator-name hiding");
+            ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
+            ImGui.BulletText("/dad run coordinator -> start a Coordinator Sastasha premade demo");
+            ImGui.BulletText("/dad run roulette -> start a Coordinator Daily Roulette demo (/dad run msq is a legacy alias)");
+            ImGui.BulletText("/dad run commend -> start a Coordinator commendation demo");
+            ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
+            ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
+            ImGui.BulletText("Stop all is available in /dad mini and requires a second click within five seconds");
+
+            if (configuration.DebugUiEnabled)
+            {
+                ImGui.Separator();
+                ImGui.TextDisabled("Diagnostics");
+                ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
+                ImGui.BulletText("/dad test profiles -> profile owner/cache/revision diagnostics");
+                ImGui.BulletText("/dad test launch-profiles -> launch path/mapping diagnostics");
+                ImGui.BulletText("/dad test workers -> distributed worker diagnostics");
+                ImGui.BulletText("/dad test duty-ipc current|territory <id>|cfc <id> -> diagnose DAD duty IPC availability");
+            }
+        }
+    }
+
+    private void DrawWaitPolicyControls(Configuration configuration)
+    {
 
         var readyTimeout = configuration.ParticipantReadyTimeoutSeconds;
         if (ImGui.InputInt("Participant ready timeout (s)", ref readyTimeout))
@@ -497,37 +579,6 @@ public sealed class ConfigWindow : Window, IDisposable
                 committedSignature,
                 () => BuildWaitPolicySignature(configuration));
         }
-
-        ImGui.Separator();
-        if (ImGui.CollapsingHeader("Command reference"))
-        {
-            ImGui.BulletText("/dad ws -> reset Dad windows to 1,1");
-            ImGui.BulletText("/dad j -> jump Dad windows somewhere visible");
-            ImGui.BulletText("/dad status -> print the live shell summary to chat");
-            ImGui.BulletText("/dad mini -> toggle the compact cached status and Stop-all window");
-            ImGui.BulletText("Offline Client Dads automatically show reconnect progress and retry until DAD is disabled");
-            ImGui.BulletText("/dad wizard or /dad setup -> open the Dad Setup Wizard");
-            ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");
-            ImGui.BulletText("/dad krangle -> toggle local operator-name krangling");
-            ImGui.BulletText("/dad run or /dad run local -> start a local Sastasha demo");
-            ImGui.BulletText("/dad run coordinator -> start a Dad Coordinator Sastasha premade demo");
-            ImGui.BulletText("/dad run roulette -> start a Dad Coordinator Daily Roulette demo (/dad run msq is a legacy alias)");
-            ImGui.BulletText("/dad run commend -> start a Dad Coordinator commendation demo");
-            ImGui.BulletText("/dad run planner -> start the current startable Preset Planner request");
-            ImGui.BulletText("/dad cancel -> cancel the active orchestration run");
-            ImGui.BulletText("Stop all is available in /dad mini and requires a second click within five seconds");
-
-            if (configuration.DebugUiEnabled)
-            {
-                ImGui.Separator();
-                ImGui.TextDisabled("Diagnostics");
-                ImGui.BulletText("/dad test planner-groups -> run non-starting planner group IPC diagnostics");
-                ImGui.BulletText("/dad test profiles -> profile owner/cache/revision diagnostics");
-                ImGui.BulletText("/dad test launch-profiles -> launch path/mapping diagnostics");
-                ImGui.BulletText("/dad test workers -> distributed worker diagnostics");
-                ImGui.BulletText("/dad test duty-ipc current|territory <id>|cfc <id> -> diagnose Dad duty IPC availability");
-            }
-        }
     }
 
     private void DrawSchedulerTab(Configuration configuration)
@@ -535,25 +586,30 @@ public sealed class ConfigWindow : Window, IDisposable
         configuration.CharacterLoadInstruction ??= new DadCharacterLoadInstruction();
         configuration.CharacterLoadInstruction.Normalize();
 
-        ImGui.TextWrapped("Account, character, and launch profile mapping lives under Crew / Scheduler -> Accounts & Profiles.");
-        ImGui.TextUnformatted("Character load command");
+        DadUi.Heading("ACCOUNTS & LAUNCH", "Teach DAD how to recognize the crew and bring the right character online.");
+        if (DadUi.Button("Guide: Build the Crew", DadUiTone.Accent))
+            plugin.OpenSetupWizard(DadGuideFlow.Crew);
+        ImGui.SameLine();
+        ImGui.TextDisabled("Refresh ownership and import/map launch profiles step by step.");
+        ImGui.TextWrapped("Character and launch-profile mapping lives in the main window under Crew -> Character Profiles and Launch Profiles.");
+        DrawSectionHeader("Character launch command");
         var instruction = configuration.CharacterLoadInstruction;
         var loadEnabled = instruction.Enabled;
-        if (ImGui.Checkbox("Enable command template", ref loadEnabled))
+        if (ImGui.Checkbox("Enable character launch command", ref loadEnabled))
         {
             instruction.Enabled = loadEnabled;
             configuration.Save();
         }
 
         var loadDryRun = instruction.DryRun;
-        if (ImGui.Checkbox("Dry-run character load", ref loadDryRun))
+        if (ImGui.Checkbox("Simulate character launch (dry run)", ref loadDryRun))
         {
             instruction.DryRun = loadDryRun;
             configuration.Save();
         }
 
         var commandTemplate = instruction.CommandTemplate;
-        if (ImGui.InputText("Command template", ref commandTemplate, 256))
+        if (ImGui.InputText("Launch command", ref commandTemplate, 256))
         {
             var committedSignature = BuildCharacterLoadSignature(instruction);
             instruction.CommandTemplate = commandTemplate;
@@ -564,7 +620,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var loadTimeout = instruction.TimeoutSeconds;
-        if (ImGui.InputInt("Load timeout (s)", ref loadTimeout))
+        if (ImGui.InputInt("Character launch timeout (s)", ref loadTimeout))
         {
             var committedSignature = BuildCharacterLoadSignature(instruction);
             instruction.TimeoutSeconds = Math.Clamp(loadTimeout, 30, 1800);
@@ -577,8 +633,7 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawStatusRow("Placeholders", "{Character}, {CharacterName}, {World}, {Account}");
         DrawStatusRow("Scheduler state", plugin.SchedulerService.CurrentState.Summary);
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Roster catalog");
+        DrawSectionHeader("Crew roster");
         configuration.RosterCatalog ??= new DadRosterCatalogConfiguration();
         var staleHours = configuration.RosterCatalog.StaleAfterHours;
         if (ImGui.InputInt("Roster stale after (h)", ref staleHours))
@@ -592,7 +647,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var showHidden = configuration.RosterCatalog.ShowHiddenInRoster;
-        if (ImGui.Checkbox("Include hidden/ignored in roster IPC export", ref showHidden))
+        if (ImGui.Checkbox("Share hidden and ignored characters with connected DAD clients", ref showHidden))
         {
             configuration.RosterCatalog.ShowHiddenInRoster = showHidden;
             configuration.Save();
@@ -604,13 +659,12 @@ public sealed class ConfigWindow : Window, IDisposable
         var queue = plugin.SchedulerService.GetQueueSnapshot();
         DrawStatusRow("Queue", queue.Summary);
 
-        ImGui.Separator();
         DrawAccountAliasEditor(configuration);
     }
 
     private void DrawAccountAliasEditor(Configuration configuration)
     {
-        ImGui.TextUnformatted("Dad account aliases");
+        DrawSectionHeader("Account names");
         ImGui.TextDisabled("Full account tools (merge / delete / forget copies) live in the main window under Crew -> Roster state -> Account tools.");
         if (DrawClearAllAccountDataButton("dad-config-clear-all-account-data"))
         {
@@ -802,7 +856,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawCombatRotationTab(Configuration configuration)
     {
-        ImGui.TextWrapped("Select what Dad does for combat when it starts a duty operation.");
+        DadUi.Heading("COMBAT HANDOFF", "Choose who takes over combat after DAD confirms duty entry.");
+        ImGui.TextWrapped("DAD always owns crew setup and queueing; this decides what happens once the duty begins.");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
         ImGui.Separator();
@@ -810,15 +865,15 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawCombatRotationModeRadio(
             configuration,
             DadCombatRotationMode.ForceCommands,
-            "Force BossMod + auto-rotation");
+            "Send BossMod and auto-rotation commands");
         DrawCombatRotationModeRadio(
             configuration,
             DadCombatRotationMode.UseFrenRider,
-            "Use FrenRider (default)");
+            "Hand combat to FrenRider (recommended)");
         DrawCombatRotationModeRadio(
             configuration,
             DadCombatRotationMode.DoNothing,
-            "Do nothing; leave it up to user");
+            "Leave combat to me");
 
         ImGui.Separator();
         switch (configuration.CombatRotationMode)
@@ -877,52 +932,58 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BulletText(DadCombatRotationService.AutoRotationCommand);
     }
 
-    private static void DrawAboutTab()
+    private void DrawAboutTab()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
-        ImGui.Text($"{PluginInfo.DisplayName} v{version}");
-        ImGui.TextWrapped(PluginInfo.Summary);
+        DadUi.Heading($"{PluginInfo.DisplayName} v{version}", "Build a crew once, then turn repeat duties into a repeatable plan.");
+        DadUi.Badge("Crew orchestration", DadUiTone.Accent);
+        ImGui.SameLine();
+        DadUi.Badge("Multi-client", DadUiTone.Info);
+        ImGui.SameLine();
+        DadUi.Badge("Safety-first stops", DadUiTone.Success);
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Roadmap");
-        foreach (var item in PluginInfo.Phases)
-            ImGui.BulletText(item);
+        ImGui.Spacing();
+        if (DadUi.Button("Open DAD Guide", DadUiTone.Accent))
+            plugin.OpenSetupWizard();
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("What Dad verifies");
-        foreach (var item in PluginInfo.Tests)
-            ImGui.BulletText(item);
+        DadUi.Section("What DAD does");
+        ImGui.TextWrapped("DAD coordinates your FFXIV characters across clients: it can wake or relog the right crew, assemble the party, queue a saved duty plan, and track the run through cleanup.");
+
+        DadUi.Section("A typical run", "Most players only need this four-step loop.");
+        ImGui.BulletText("Connect each Client to one Coordinator under Core & Connection.");
+        ImGui.BulletText("Name accounts and configure character launch profiles under Accounts & Launch.");
+        ImGui.BulletText("Build a preset in Plan, including duty, crew slots, stop rules, and finish actions.");
+        ImGui.BulletText("Run it now or add it to a Schedule; use /dad mini for cached status and guarded Stop all.");
+
+        DadUi.Section("Support & community", "Plugin-specific help belongs with the Dumpster Fire community.");
+        ImGui.TextWrapped("For DAD setup help, bug reports, release news, and other Dumpster Fire plugins, join the Discord. Scroll down to the \"The Dumpster Fire\" channel. Please do not take DAD-specific support requests to the official Dalamud Discord.");
+        if (DadUi.Button("Support on Ko-fi", DadUiTone.Accent))
+            Util.OpenLink(PluginInfo.SupportUrl);
+        ImGui.SameLine();
+        if (DadUi.Button("Join Dumpster Fire Discord", DadUiTone.Info))
+            Util.OpenLink(CommunityDiscordUrl);
+
+        if (plugin.Configuration.DebugUiEnabled)
+        {
+            DadUi.Section("Developer details", "Visible while /dad debug is enabled.");
+            ImGui.TextUnformatted("Roadmap");
+            foreach (var item in PluginInfo.Phases)
+                ImGui.BulletText(item);
+
+            ImGui.TextUnformatted("What DAD verifies");
+            foreach (var item in PluginInfo.Tests)
+                ImGui.BulletText(item);
+        }
     }
 
     private static void DrawStatusRow(string label, string value)
         => DrawStatusRow(label, value, 180f);
 
     private static void DrawStatusRow(string label, string value, float preferredLabelWidth)
-    {
-        var availableWidth = ImGui.GetContentRegionAvail().X;
-        var labelWidth = MathF.Min(
-            MathF.Max(84f, preferredLabelWidth),
-            MathF.Max(84f, availableWidth * 0.36f));
-
-        ImGui.TextDisabled(label);
-        if (availableWidth > labelWidth + 120f)
-        {
-            ImGui.SameLine(labelWidth);
-            ImGui.TextWrapped(value);
-        }
-        else
-        {
-            ImGui.Indent();
-            ImGui.TextWrapped(value);
-            ImGui.Unindent();
-        }
-    }
+        => DadUi.KeyValue(label, value, preferredLabelWidth);
 
     private static void DrawSectionHeader(string title)
-    {
-        ImGui.Separator();
-        ImGui.TextUnformatted(title);
-    }
+        => DadUi.Section(title);
 
     private static string FormatDutyIpcRegistrationStatus(DadDutyIpcStatus status)
     {
@@ -985,179 +1046,6 @@ public sealed class ConfigWindow : Window, IDisposable
         return string.IsNullOrWhiteSpace(dutyName)
             ? $"#{contentFinderConditionId}"
             : $"#{contentFinderConditionId} {dutyName}";
-    }
-
-    private void EnsureEndpointDraft(Configuration configuration)
-    {
-        if (endpointDraftInitialized)
-            return;
-
-        ResetEndpointDraft(configuration);
-    }
-
-    private void ResetEndpointDraft(Configuration configuration)
-    {
-        draftServerHost = configuration.RunAsServerDad
-            ? configuration.ServerListenHost
-            : configuration.ServerDadHost;
-        draftServerPort = configuration.RunAsServerDad
-            ? configuration.ServerListenPort
-            : configuration.ServerDadPort;
-        endpointDraftInitialized = true;
-    }
-
-    private bool HasPendingEndpointDraftChanges(Configuration configuration)
-    {
-        var configuredHost = configuration.RunAsServerDad
-            ? configuration.ServerListenHost
-            : configuration.ServerDadHost;
-        var configuredPort = configuration.RunAsServerDad
-            ? configuration.ServerListenPort
-            : configuration.ServerDadPort;
-        return !string.Equals(draftServerHost.Trim(), configuredHost, StringComparison.Ordinal)
-               || Math.Clamp(draftServerPort, 1, 65535) != configuredPort;
-    }
-
-    private void ApplyEndpointDraft(Configuration configuration)
-    {
-        var host = string.IsNullOrWhiteSpace(draftServerHost) ? "127.0.0.1" : draftServerHost.Trim();
-        var port = Math.Clamp(draftServerPort, 1, 65535);
-        if (!HasPendingEndpointDraftChanges(configuration))
-            return;
-
-        plugin.ApplyTransportEndpoint(host, port);
-
-        draftServerHost = host;
-        draftServerPort = port;
-        endpointDraftInitialized = true;
-    }
-
-    private void DrawLanSharedSecretSetup(Configuration configuration)
-    {
-        EnsureSharedSecretDraft(configuration);
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("LAN shared secret");
-        ImGui.TextWrapped(configuration.RunAsServerDad
-            ? "Use this Coordinator Dad as the shared-secret source. Paste the same secret into every Client Dad. Dad never sends the secret over the transport."
-            : "Paste the Coordinator Dad's shared secret here. Dad never fetches or sends the secret over the transport.");
-
-        ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-        var label = configuration.RunAsServerDad ? "Shared secret" : "Paste shared secret";
-        ImGui.InputText(label, ref draftSharedSecret, 128);
-
-        var hasPendingSecretChanges = HasPendingSharedSecretDraftChanges(configuration);
-        if (hasPendingSecretChanges)
-            ImGui.TextDisabled("Shared secret draft has unapplied changes.");
-
-        if (ImGui.Button("Apply shared secret"))
-            ApplySharedSecretDraft(configuration);
-        if (!hasPendingSecretChanges)
-            ImGui.BeginDisabled();
-        ImGui.SameLine();
-        if (ImGui.Button("Revert shared secret"))
-            ResetSharedSecretDraft(configuration);
-        if (!hasPendingSecretChanges)
-            ImGui.EndDisabled();
-
-        if (configuration.RunAsServerDad)
-        {
-            if (ImGui.Button("Generate LAN shared secret"))
-                SetSharedSecret(configuration, plugin.GenerateAndApplyTransportSharedSecret());
-
-            ImGui.SameLine();
-            if (string.IsNullOrWhiteSpace(configuration.TransportSharedSecret))
-                ImGui.BeginDisabled();
-            if (ImGui.Button("Copy shared secret"))
-            {
-                ImGui.SetClipboardText(configuration.TransportSharedSecret);
-                plugin.PrintStatus("Copied LAN shared secret.");
-            }
-            if (string.IsNullOrWhiteSpace(configuration.TransportSharedSecret))
-                ImGui.EndDisabled();
-        }
-
-        var transport = plugin.TransportService.CurrentTransport;
-        DrawStatusRow("Configured endpoint", FormatText(transport.ConfiguredEndpoint, "(none)"));
-        DrawStatusRow("Advertised endpoint", FormatText(transport.AdvertisedEndpoint, "(none)"));
-        DrawStatusRow("Secret required", transport.SharedSecretRequired ? "Yes" : "No (loopback endpoint)");
-        DrawStatusRow("Secret configured", transport.SharedSecretConfigured ? "Yes" : "No");
-        if (!string.IsNullOrWhiteSpace(transport.LastAuthOrProtocolError))
-            DrawStatusRow("Auth/protocol", transport.LastAuthOrProtocolError);
-        DrawStatusRow("Publish epoch", FormatText(transport.HubRosterPublishEpochId, "(none)"));
-        DrawStatusRow("Publish generation", transport.HubRosterPublishGeneration.ToString());
-        DrawStatusRow("Roster participants", $"{transport.PublishedParticipantCount} published | {transport.KnownParticipantCount} known");
-        DrawStatusRow("Transport queues", $"{transport.PendingTransportEventCount} event(s) | {transport.PendingOutboundOperationCount} outbound");
-        DrawStatusRow("Last publish", $"{FormatTime(transport.LastRosterPublishUtc)} | {FormatText(transport.LastRosterPublishReason, "(none)")}");
-        if (transport.CoalescedRosterPublishCount > 0)
-            DrawStatusRow("Coalesced publishes", transport.CoalescedRosterPublishCount.ToString());
-        if (!string.IsNullOrWhiteSpace(transport.LastTransportTimeoutSummary))
-            DrawStatusRow("Transport timeout", transport.LastTransportTimeoutSummary);
-    }
-
-    private void EnsureSharedSecretDraft(Configuration configuration)
-    {
-        if (sharedSecretDraftInitialized &&
-            string.Equals(draftSharedSecret, configuration.TransportSharedSecret, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        if (!sharedSecretDraftInitialized || !HasPendingSharedSecretDraftChanges(configuration))
-            ResetSharedSecretDraft(configuration);
-    }
-
-    private void ResetSharedSecretDraft(Configuration configuration)
-    {
-        draftSharedSecret = configuration.TransportSharedSecret;
-        sharedSecretDraftInitialized = true;
-    }
-
-    private bool HasPendingSharedSecretDraftChanges(Configuration configuration)
-        => !string.Equals(draftSharedSecret.Trim(), configuration.TransportSharedSecret, StringComparison.Ordinal);
-
-    private void ApplySharedSecretDraft(Configuration configuration)
-        => SetSharedSecret(configuration, draftSharedSecret.Trim());
-
-    private void SetSharedSecret(Configuration configuration, string sharedSecret)
-    {
-        sharedSecret = sharedSecret.Trim();
-        plugin.SetTransportSharedSecret(sharedSecret);
-        ResetSharedSecretDraft(configuration);
-    }
-
-    private void DrawEndpointHostDropdown()
-    {
-        var options = GetEndpointHostOptions();
-        var current = options.FirstOrDefault(option =>
-            string.Equals(option.Host, draftServerHost.Trim(), StringComparison.OrdinalIgnoreCase));
-        var preview = current?.Label ?? "Select IP/host";
-        if (!ImGui.BeginCombo("##dad-endpoint-host-options", preview))
-            return;
-
-        foreach (var option in options)
-        {
-            var selected = string.Equals(option.Host, draftServerHost.Trim(), StringComparison.OrdinalIgnoreCase);
-            if (ImGui.Selectable($"{option.Label}##{option.Host}", selected))
-                draftServerHost = option.Host;
-            if (selected)
-                ImGui.SetItemDefaultFocus();
-        }
-
-        ImGui.EndCombo();
-    }
-
-    private IReadOnlyList<DadEndpointHostOption> GetEndpointHostOptions()
-    {
-        if (endpointHostOptions.Count > 0 &&
-            DateTime.UtcNow - endpointHostOptionsLoadedUtc < TimeSpan.FromSeconds(10))
-        {
-            return endpointHostOptions;
-        }
-
-        endpointHostOptions = DadEndpointHostOptions.GetLocalIpv4Options();
-        endpointHostOptionsLoadedUtc = DateTime.UtcNow;
-        return endpointHostOptions;
     }
 
     private static string FormatText(string? value, string fallback)

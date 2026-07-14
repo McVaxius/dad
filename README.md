@@ -1,6 +1,18 @@
-# dad
+# DAD
 
-Dalamud plugin for Dad-owned FFXIV run planning, authority, party assembly, queue routing, status, cancellation, and recovery.
+DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,
+assemble and verify parties, queue supported duties and roulettes, and chain proven presets into schedules.
+
+[Read the player-friendly Aethertek guide](DAD_AETHERTEK.md) for supported activities, setup, safety,
+integrations, and everyday commands.
+
+## What DAD does
+
+- Plans repeatable solo or multibox duty runs from saved presets and role-based templates.
+- Shows live readiness, blockers, queue state, reconnect progress, and scoped cancellation controls.
+- Coordinates launch or relog preparation, requested jobs, verified party formation, and supported queues.
+- Runs presets immediately or in ordered manual and daily-reset schedules.
+- Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
 ## Build
 
@@ -20,8 +32,9 @@ dotnet test .\Tests\dad.Tests.csproj
 - `/dad mini` toggles a compact, manually opened status window. It renders cached authority, run, scheduler,
   slot, queue, worker-heartbeat, failure, and Stop-all acknowledgement state without polling peers from Draw.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
-  target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff and never gives up;
-  the only operator action that stops retries is the guarded `Disable DAD` confirmation.
+  target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
+  enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.
+  The guarded `Disable DAD` confirmation is the reconnect window's explicit stop action.
 - Item-level cancel buttons require a confirming second click and affect only the selected run, schedule, or job.
 - `Stop all` requires confirmation within five seconds. The Coordinator snapshots every routable Client Dad,
   drains DAD-owned scheduler/run/worker/executor and pre-commit takeover work locally, then sends the same
@@ -43,7 +56,8 @@ dotnet test .\Tests\dad.Tests.csproj
 ## Deployment notes
 
 - **Hub transport protocol is version 2** (raised from 1 on 2026-06-27). Every paired dad — the Coordinator Dad
-  and all Client Dads — must run the **same build**; mismatched versions are rejected with `protocol-mismatch`.
+  and all Client Dads — should run the **same build**. Incompatible hub protocol versions are rejected with
+  `protocol-mismatch`; exact assembly-build equality is not otherwise enforced.
 - Non-loopback (LAN) connections require a matching `TransportSharedSecret` on every peer (HMAC-SHA256). Envelopes
   are now replay-resistant (signed nonce + timestamp); peers should keep clocks within ~30s of each other.
 - A configured Coordinator endpoint is not presented as a live authority route until the authenticated handshake

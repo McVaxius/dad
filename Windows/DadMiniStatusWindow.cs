@@ -7,7 +7,7 @@ namespace dad.Windows;
 
 public sealed class DadMiniStatusWindow : Window, IDisposable
 {
-    private static readonly Vector2 MinimumWindowSize = new(520f, 420f);
+    private static readonly Vector2 MinimumWindowSize = new(440f, 320f);
     private static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(5);
     private readonly Plugin plugin;
     private Vector2? pendingPosition;
@@ -24,7 +24,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
             MinimumSize = MinimumWindowSize,
             MaximumSize = new Vector2(1100f, 1200f),
         };
-        Size = new Vector2(680f, 720f);
+        Size = new Vector2(560f, 540f);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -49,18 +49,22 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         ApplyPendingPositionChange();
         var snapshot = plugin.BuildMiniStatusSnapshot();
         DrawHeader(snapshot);
-        DrawControls(snapshot);
+        DrawNavigationControls();
+        DrawEmergencyStop();
         DrawRun(snapshot);
         DrawInboundTakeover(snapshot.LocalTakeover);
         DrawScheduler(snapshot);
-        DrawWorkers(snapshot);
         DrawFailures(snapshot);
         DrawStopAllStatus(snapshot.LastStopAll);
+        DrawWorkers(snapshot);
     }
 
     private static void DrawInboundTakeover(DadWakeTakeoverResultDto? takeover)
     {
-        if (takeover == null || !ImGui.CollapsingHeader("Inbound wake order", ImGuiTreeNodeFlags.DefaultOpen))
+        var flags = takeover?.Status == DadWakeTakeoverStatus.Blocked
+            ? ImGuiTreeNodeFlags.DefaultOpen
+            : ImGuiTreeNodeFlags.None;
+        if (takeover == null || !ImGui.CollapsingHeader("Inbound wake order", flags))
             return;
 
         var created = takeover.VermaxionReservationCreatedAtUtc ?? takeover.Snapshot.LastHeartbeatUtc;
@@ -84,14 +88,17 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
 
     private void DrawHeader(DadMiniStatusSnapshot snapshot)
     {
-        DrawStateText($"{snapshot.RoleText} | {snapshot.Authority.StateText}",
-            snapshot.Authority.Kind == DadAuthorityViewKind.RemoteStale || !string.IsNullOrWhiteSpace(snapshot.TransportError)
-                ? MiniState.Warning
-                : snapshot.Authority.HasRemoteAuthority || snapshot.IsCoordinator
-                    ? MiniState.Good
-                    : MiniState.Neutral);
-        ImGui.TextWrapped($"Route: {snapshot.Authority.OwnershipText}");
-        ImGui.TextWrapped($"Connected workers: {snapshot.ConnectedWorkerCount} | Transport: {snapshot.TransportStatus}");
+        DadUi.Heading("DAD Monitor", "Current activity, connection health, and safe stop controls.");
+        var authorityTone = snapshot.Authority.Kind == DadAuthorityViewKind.RemoteStale || !string.IsNullOrWhiteSpace(snapshot.TransportError)
+            ? DadUiTone.Warning
+            : snapshot.Authority.HasRemoteAuthority || snapshot.IsCoordinator
+                ? DadUiTone.Success
+                : DadUiTone.Neutral;
+        DadUi.Badge($"{snapshot.RoleText} | {snapshot.Authority.StateText}", authorityTone);
+        ImGui.SameLine();
+        DadUi.Badge($"{snapshot.ConnectedWorkerCount} client(s)", snapshot.ConnectedWorkerCount > 0 || snapshot.IsCoordinator ? DadUiTone.Info : DadUiTone.Neutral);
+        DadUi.KeyValue("Route", snapshot.Authority.OwnershipText, 92f);
+        DadUi.KeyValue("Connection", snapshot.TransportStatus, 92f);
         if (!snapshot.IsCoordinator && !plugin.TransportService.CurrentTransport.AuthorityRoutable)
         {
             var transport = plugin.TransportService.CurrentTransport;
@@ -102,21 +109,23 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         }
         if (!string.IsNullOrWhiteSpace(snapshot.TransportError))
             DrawStateText($"Transport error: {snapshot.TransportError}", MiniState.Bad);
-        ImGui.Separator();
     }
 
-    private void DrawControls(DadMiniStatusSnapshot snapshot)
+    private void DrawNavigationControls()
     {
-        if (ImGui.Button("Open full DAD"))
+        ImGui.Spacing();
+        if (DadUi.Button("Open full DAD", DadUiTone.Accent))
             plugin.OpenMainUi();
         ImGui.SameLine();
-        if (ImGui.Button("Generate issue report"))
+        if (DadUi.Button("Generate issue report"))
             plugin.GenerateIssueReport();
+    }
 
-        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.55f, 0.12f, 0.12f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.75f, 0.18f, 0.18f, 1f));
+    private void DrawEmergencyStop()
+    {
+        DadUi.Section("Emergency stop", "Stops the current run, schedule, and connected DAD work after confirmation.");
         var stopLabel = IsPending("stop-all") ? "Confirm Stop all" : "Stop all";
-        if (ImGui.Button(stopLabel, new Vector2(-1f, 30f)))
+        if (DadUi.Button(stopLabel, DadUiTone.Danger, new Vector2(-1f, 32f)))
         {
             Guarded("stop-all", () =>
             {
@@ -124,24 +133,21 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
                 plugin.PrintStatus($"Stop-all {status.OperationId}: {status.Summary}");
             });
         }
-        ImGui.PopStyleColor(2);
         if (IsPending("stop-all"))
             DrawStateText("Click Confirm Stop all within five seconds.", MiniState.Warning);
-        ImGui.Separator();
     }
 
     private void DrawRun(DadMiniStatusSnapshot snapshot)
     {
-        if (!ImGui.CollapsingHeader("Current run", ImGuiTreeNodeFlags.DefaultOpen))
-            return;
+        DadUi.Section("Current activity");
         var run = snapshot.VisibleRun;
         var module = run.CurrentExecutorStatus.ModuleId != DadModuleId.None ? run.CurrentExecutorStatus.ModuleId : run.ModuleId;
-        DrawStateText($"{run.Status} | {DadOperatorPhaseText.GetPhaseLabel(run)} | {module}", StateForRun(run));
-        ImGui.TextWrapped($"Task: {Text(run.ActiveTaskName)} | {Text(run.ActiveTaskStatus)}");
-        ImGui.TextWrapped($"Progress: {Math.Max(0, run.ActiveTaskIndex)}/{Math.Max(run.TotalTaskCount, run.RequestedTaskCount)} completed {run.CompletedTaskCount}");
+        DadUi.Badge($"{run.Status} | {DadOperatorPhaseText.GetPhaseLabel(run)} | {module}", ToneForRun(run));
+        DadUi.KeyValue("Task", $"{Text(run.ActiveTaskName)} | {Text(run.ActiveTaskStatus)}", 92f);
+        DadUi.KeyValue("Progress", $"{Math.Max(0, run.ActiveTaskIndex)}/{Math.Max(run.TotalTaskCount, run.RequestedTaskCount)} | {run.CompletedTaskCount} completed", 92f);
         var runStarted = run.CurrentExecutorStatus.StartedAtUtc;
-        ImGui.TextWrapped($"Elapsed: {(runStarted.HasValue ? FormatDuration(DateTime.UtcNow - runStarted.Value) : "not reported by active run")}");
-        ImGui.TextWrapped($"Summary: {Text(run.Summary)}");
+        DadUi.KeyValue("Elapsed", runStarted.HasValue ? FormatDuration(DateTime.UtcNow - runStarted.Value) : "not reported by active run", 92f);
+        DadUi.KeyValue("Summary", Text(run.Summary), 92f);
         if (!string.IsNullOrWhiteSpace(run.BlockedReason))
             DrawStateText($"Blocker: {run.BlockedReason}", MiniState.Bad);
         foreach (var warning in run.Warnings)
@@ -150,36 +156,42 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         if (Plugin.IsBusy(run))
         {
             var label = IsPending("cancel-run") ? "Confirm cancel active run" : "Cancel active run";
-            if (ImGui.SmallButton(label))
+            if (DadUi.Button(label, DadUiTone.Warning))
                 Guarded("cancel-run", plugin.CancelActiveRunFromMini);
         }
     }
 
     private void DrawScheduler(DadMiniStatusSnapshot snapshot)
     {
-        if (!ImGui.CollapsingHeader("Scheduler", ImGuiTreeNodeFlags.DefaultOpen))
-            return;
         var schedule = snapshot.Schedule.ActiveRun;
         var state = snapshot.SchedulerQueue.ActiveState;
-        ImGui.TextWrapped($"Schedule: {Text(schedule.ScheduleName)} | {schedule.Status}/{schedule.Phase} | owner {Text(schedule.RequestedBy)}");
-        ImGui.TextWrapped($"Active job: {Text(state.JobId)} | preset {Text(state.PresetName)} | owner {Text(snapshot.SchedulerQueue.ActiveQueueOwner)}");
+        var pendingCount = snapshot.SchedulerQueue.PendingJobs.Count;
+        var hasActivity = schedule.IsActive || state.IsActive || pendingCount > 0;
+        var flags = schedule.IsActive || state.IsActive ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+        var schedulerHeaderLabel = hasActivity ? $"Schedule & queue ({pendingCount} waiting)" : "Schedule & queue";
+        if (!ImGui.CollapsingHeader(schedulerHeaderLabel, flags))
+            return;
+
+        DadUi.KeyValue("Schedule", $"{Text(schedule.ScheduleName)} | {schedule.Status}/{schedule.Phase} | owner {Text(schedule.RequestedBy)}");
+        DadUi.KeyValue("Active job", $"{Text(state.JobId)} | preset {Text(state.PresetName)} | owner {Text(snapshot.SchedulerQueue.ActiveQueueOwner)}");
         DrawStateText($"Phase: {state.Phase} | {Text(state.Summary)}", StateForScheduler(state.Phase));
         if (state.IsActive)
-            ImGui.TextWrapped($"Scheduler elapsed: {FormatDuration(DateTime.UtcNow - state.StartedAtUtc)}");
+            DadUi.KeyValue("Elapsed", FormatDuration(DateTime.UtcNow - state.StartedAtUtc));
         if (!string.IsNullOrWhiteSpace(state.BlockedReason))
             DrawStateText($"Blocker: {state.BlockedReason}", MiniState.Bad);
 
         if (schedule.IsActive)
         {
-            var label = IsPending("cancel-schedule") ? "Confirm cancel schedule" : "Cancel active schedule";
-            if (ImGui.SmallButton(label))
+            var cancelLabel = IsPending("cancel-schedule") ? "Confirm cancel schedule" : "Cancel active schedule";
+            if (DadUi.Button(cancelLabel, DadUiTone.Warning))
                 Guarded("cancel-schedule", () => plugin.CancelActiveScheduleFromMini());
-            ImGui.SameLine();
+            if (state.IsActive && !string.IsNullOrWhiteSpace(state.JobId))
+                ImGui.SameLine();
         }
         if (state.IsActive && !string.IsNullOrWhiteSpace(state.JobId))
         {
-            var label = IsPending("cancel-scheduler") ? "Confirm cancel scheduler job" : "Cancel active scheduler job";
-            if (ImGui.SmallButton(label))
+            var cancelLabel = IsPending("cancel-scheduler") ? "Confirm cancel scheduler job" : "Cancel active scheduler job";
+            if (DadUi.Button(cancelLabel, DadUiTone.Warning))
                 Guarded("cancel-scheduler", () => plugin.CancelSchedulerJobFromMini(state.JobId));
         }
 
@@ -218,7 +230,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
             ImGui.TreePop();
         }
 
-        if (snapshot.SchedulerQueue.PendingJobs.Count > 0 && ImGui.TreeNode($"Pending jobs ({snapshot.SchedulerQueue.PendingJobs.Count})"))
+        if (pendingCount > 0 && ImGui.TreeNode($"Pending jobs ({pendingCount})"))
         {
             for (var index = 0; index < snapshot.SchedulerQueue.PendingJobs.Count; index++)
             {
@@ -236,7 +248,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
 
     private void DrawWorkers(DadMiniStatusSnapshot snapshot)
     {
-        if (!ImGui.CollapsingHeader("Workers", ImGuiTreeNodeFlags.DefaultOpen))
+        if (!ImGui.CollapsingHeader($"Client details ({snapshot.ConnectedParticipants.Count + 1})"))
             return;
         var worker = snapshot.LocalWorker;
         DrawStateText($"Local execution: {worker.State} | {worker.Role} | {worker.ModuleId} | {Text(worker.Summary)}",
@@ -256,13 +268,16 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     {
         if (string.IsNullOrWhiteSpace(snapshot.RecentFailure))
             return;
-        if (ImGui.CollapsingHeader("Most recent terminal failure"))
-            DrawStateText(snapshot.RecentFailure, MiniState.Bad);
+        DadUi.Section("Most recent terminal failure");
+        DrawStateText(snapshot.RecentFailure, MiniState.Bad);
     }
 
     private static void DrawStopAllStatus(DadStopAllStatus? status)
     {
-        if (status == null || !ImGui.CollapsingHeader("Latest Stop-all acknowledgement", ImGuiTreeNodeFlags.DefaultOpen))
+        var flags = status is { IsFinal: false } || status?.Partial == true
+            ? ImGuiTreeNodeFlags.DefaultOpen
+            : ImGuiTreeNodeFlags.None;
+        if (status == null || !ImGui.CollapsingHeader("Latest Stop-all acknowledgement", flags))
             return;
         DrawStateText($"Operation {status.OperationId} | {(status.IsFinal ? "final" : "pending")} | {(status.Partial ? "partial" : "complete")}",
             status.Partial ? MiniState.Warning : status.IsFinal ? MiniState.Good : MiniState.Neutral);
@@ -315,10 +330,10 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         }
     }
 
-    private static MiniState StateForRun(DadRunResult run)
+    private static DadUiTone ToneForRun(DadRunResult run)
         => run.Status is DadRunStatus.Failed or DadRunStatus.PartialFailure or DadRunStatus.TimedOut or DadRunStatus.Rejected
-            ? MiniState.Bad
-            : Plugin.IsBusy(run) ? MiniState.Good : MiniState.Neutral;
+            ? DadUiTone.Danger
+            : Plugin.IsBusy(run) ? DadUiTone.Success : DadUiTone.Neutral;
 
     private static MiniState StateForScheduler(DadSchedulerPresetPhase phase)
         => phase is DadSchedulerPresetPhase.Blocked or DadSchedulerPresetPhase.TimedOut ? MiniState.Bad
@@ -335,9 +350,9 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     {
         var color = state switch
         {
-            MiniState.Good => new Vector4(0.35f, 0.9f, 0.45f, 1f),
-            MiniState.Warning => new Vector4(1f, 0.78f, 0.28f, 1f),
-            MiniState.Bad => new Vector4(1f, 0.38f, 0.38f, 1f),
+            MiniState.Good => DadUi.ToneColor(DadUiTone.Success),
+            MiniState.Warning => DadUi.ToneColor(DadUiTone.Warning),
+            MiniState.Bad => DadUi.ToneColor(DadUiTone.Danger),
             _ => ImGui.GetStyle().Colors[(int)ImGuiCol.Text],
         };
         ImGui.PushStyleColor(ImGuiCol.Text, color);
