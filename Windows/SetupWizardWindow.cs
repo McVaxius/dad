@@ -54,6 +54,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private string scheduleAddGroupId = string.Empty;
     private int scheduleRepeatCount = DadScheduleRules.MinRepeatCount;
     private DadScheduleCadence scheduleCadenceDraft = DadScheduleCadence.Manual;
+    private string scheduleStarterStatus = string.Empty;
 
     private sealed record GuideStep(
         string Title,
@@ -411,7 +412,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var selected = plugin.GetSelectedPlannerGroup();
         var snapshot = plugin.GetPlannerUiSnapshot(plugin.GetVisibleRunState());
         var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(presetPlannerDraft.ActivityMode);
-        var contentReady = !lane.RequiresDutySelector || presetPlannerDraft.DutyContentFinderConditionId > 0;
+        var contentReady = DadLegacyActivityRules.IsCreationActivity(presetPlannerDraft.ActivityMode) &&
+                           (!lane.RequiresDutySelector || presetPlannerDraft.DutyContentFinderConditionId > 0);
         if (lane.RequiresRouletteSelector)
             contentReady = !string.IsNullOrWhiteSpace(presetPlannerDraft.RouletteTarget?.Key);
         var crew = presetCrewDraft ?? selected;
@@ -668,7 +670,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     ImGui.TextDisabled("No saved preset is selected. Choose Create a new preset.");
                 ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
                 ImGui.InputText("Preset name", ref presetName, 96);
-                ImGui.TextWrapped("Use a name that explains the job, such as 'Daily MSQ - four players' or 'Solo Trust leveling'. Finishing this guide will not run it.");
+                ImGui.TextWrapped("Use a name that explains the job, such as 'Daily Main Scenario Roulette' or 'Solo Trust leveling'. Finishing this guide will not run it.");
+                ImGui.TextWrapped("Saved Plans can be copied as Base64 clipboard shares. Base64 is not encryption, and finish slash commands are preserved verbatim. Imported crew arrives as anonymous placeholders that must be remapped here before validation or run.");
                 break;
             case 2:
                 DrawPresetCrewDraft();
@@ -723,6 +726,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("What this lane does", currentLane.Summary);
         DrawStatusRow("Party size", currentLane.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Maturity", currentLane.MaturityLabel);
+
+        if (presetPlannerDraft.ActivityMode == DadPlannerActivityMode.Msq)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.62f, 0.28f, 1f));
+            ImGui.TextWrapped(DadLegacyActivityRules.MsqUnsupportedBlocker);
+            ImGui.PopStyleColor();
+        }
 
         if (currentLane.RequiresRouletteSelector)
         {
@@ -1218,6 +1228,36 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.InputText("Schedule name", ref scheduleName, 128);
         DrawStatusRow("Saved schedules", snapshot.Schedules.Count.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Available presets", plugin.Configuration.PlannerGroups.Count.ToString(CultureInfo.InvariantCulture));
+
+        ImGui.Spacing();
+        ImGui.TextWrapped("Schedules can be shared through the clipboard as Base64. A Schedule bundles each referenced Plan once while preserving entry order and repeats. Base64 is not encryption; imported anonymous crew must be remapped locally in each Plan before validation or run.");
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(mutationBlocker));
+        if (ImGui.SmallButton("Install Daily MSQ + Leveling starter bundle"))
+        {
+            var result = plugin.InstallStarterShareBundle();
+            scheduleStarterStatus = result.Summary;
+            if (result.Success)
+            {
+                var installed = plugin.Configuration.Schedules.FirstOrDefault(candidate =>
+                    string.Equals(candidate.ScheduleId, DadStarterShareBundle.ScheduleId, StringComparison.OrdinalIgnoreCase));
+                if (installed != null)
+                {
+                    scheduleId = installed.ScheduleId;
+                    scheduleName = installed.DisplayName;
+                    scheduleCadenceDraft = installed.Cadence;
+                    scheduleDraft = installed.Clone();
+                    scheduleCreateNew = false;
+                }
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(!string.IsNullOrWhiteSpace(mutationBlocker)
+                ? mutationBlocker
+                : "Installs only missing stable starter IDs. Existing Plans or Schedule with those IDs are never overwritten.");
+        ImGui.EndDisabled();
+        if (!string.IsNullOrWhiteSpace(scheduleStarterStatus))
+            ImGui.TextDisabled(scheduleStarterStatus);
     }
 
     private void DrawScheduleEntries(DadScheduleDefinition? schedule, bool locked)
@@ -1470,6 +1510,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         switch (stepIndex)
         {
             case 0:
+                if (!DadLegacyActivityRules.IsCreationActivity(presetPlannerDraft.ActivityMode))
+                    return Reject(DadLegacyActivityRules.MsqUnsupportedBlocker);
                 var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(presetPlannerDraft.ActivityMode);
                 if (lane.RequiresDutySelector && presetPlannerDraft.DutyContentFinderConditionId == 0)
                     return Reject("Select a compatible duty for this activity.");
@@ -1516,6 +1558,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     return Reject("The saved preset no longer exists.");
                 presetStopDraft.Normalize();
                 target.StopPolicy = presetStopDraft.Clone();
+                DadSharedPlanRules.ReconcileStopTarget(target);
                 if (presetUseGlobalCompletionDefaults)
                 {
                     target.CompletionActions = null;
@@ -1739,6 +1782,18 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
         presetPlannerDraft = ClonePlannerOptions(plugin.PlannerOptions);
         var group = plugin.GetSelectedPlannerGroup();
+        if (group == null && presetPlannerDraft.ActivityMode == DadPlannerActivityMode.Msq)
+        {
+            var dutySupport = plugin.PresetProviderService.GetPlannerLaneDefinition(DadPlannerActivityMode.DutySupport);
+            presetPlannerDraft.RunFamily = dutySupport.RunFamily;
+            presetPlannerDraft.ActivityMode = dutySupport.ActivityMode;
+            presetPlannerDraft.TransportOwner = dutySupport.DefaultTransportOwner;
+            presetPlannerDraft.QueueAuthority = dutySupport.DefaultQueueAuthority;
+            presetPlannerDraft.DutyContentFinderConditionId = 0;
+            presetPlannerDraft.DutyDisplayName = string.Empty;
+            presetPlannerDraft.DutyExpectedPartySize = dutySupport.ExpectedPartySize;
+            presetPlannerDraft.DutyUnsynced = false;
+        }
         presetName = group?.DisplayName ?? $"{plugin.PresetProviderService.GetPlannerLaneDefinition(presetPlannerDraft.ActivityMode).DisplayName} Preset";
         presetCreateNew = group == null;
         presetDraftGroupId = group?.GroupId ?? string.Empty;
@@ -1763,6 +1818,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         scheduleCadenceDraft = schedule?.Cadence ?? DadScheduleCadence.Manual;
         scheduleAddGroupId = plugin.Configuration.PlannerGroups.FirstOrDefault()?.GroupId ?? string.Empty;
         scheduleRepeatCount = DadScheduleRules.MinRepeatCount;
+        scheduleStarterStatus = string.Empty;
     }
 
     private void EnsureBasicsDraft()
@@ -1966,10 +2022,14 @@ public sealed class SetupWizardWindow : Window, IDisposable
         => DadIpcJson.Deserialize<DadPresetPlannerOptions>(DadIpcJson.Serialize(source)) ?? new DadPresetPlannerOptions();
 
     private static DadPlannerGroup ClonePlannerGroup(DadPlannerGroup source)
-        => DadIpcJson.Deserialize<DadPlannerGroup>(DadIpcJson.Serialize(source)) ?? new DadPlannerGroup();
+    {
+        var clone = DadSchedulerGroupCloneRules.CloneWithSlots(source, source.Slots ?? []);
+        clone.InviteAuthority = source.InviteAuthority;
+        return clone;
+    }
 
     private static DadPlannerGroupSlot CloneSlot(DadPlannerGroupSlot source)
-        => DadIpcJson.Deserialize<DadPlannerGroupSlot>(DadIpcJson.Serialize(source)) ?? new DadPlannerGroupSlot();
+        => DadSchedulerGroupCloneRules.CloneSlot(source);
 
     private bool IsRemoteRosterRow(DadRosterCharacter row)
         => !string.IsNullOrWhiteSpace(row.SourceClientInstanceId) &&

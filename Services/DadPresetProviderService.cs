@@ -7,7 +7,6 @@ public sealed class DadPresetProviderService
 {
     private static readonly DadPlannerActivityMode[] PlannerActivityModes =
     [
-        DadPlannerActivityMode.Msq,
         DadPlannerActivityMode.DutySupport,
         DadPlannerActivityMode.Trust,
         DadPlannerActivityMode.DutySupportLeveling,
@@ -33,16 +32,16 @@ public sealed class DadPresetProviderService
             RunFamily = DadPlannerRunFamily.Msq,
             ModuleId = DadModuleId.Msq,
             DisplayName = "MSQ Story Duty (NPC)",
-            Summary = "Solo MSQ Story selected-duty progression with Trust then Duty Support fallback.",
-            Maturity = DadLaneMaturity.LiveReady,
-            MaturityLabel = "Live fallback",
-            AccentColorHex = "#3B82F6",
+            Summary = "Legacy MSQ Story configuration retained for compatibility; new selection and execution are unsupported.",
+            Maturity = DadLaneMaturity.IntegrationDeferred,
+            MaturityLabel = "Unsupported",
+            AccentColorHex = "#EF4444",
             DefaultAuthorityMode = DadAuthorityMode.LocalOnly,
             DefaultTransportOwner = DadTransportOwner.DadDirect,
             DefaultQueueAuthority = DadQueueAuthority.LocalOnly,
             ExpectedPartySize = 1,
             RequiresDutySelector = true,
-            NextAction = "Select an MSQ Story duty; Dad tries Trust then Duty Support.",
+            NextAction = "Select another activity explicitly. Daily Roulette -> Main Scenario remains supported and separate.",
         },
         new()
         {
@@ -344,7 +343,6 @@ public sealed class DadPresetProviderService
     public IReadOnlyList<DadPlannerRunFamily> GetPlannerRunFamilies()
         =>
         [
-            DadPlannerRunFamily.Msq,
             DadPlannerRunFamily.LevelingNpc,
             DadPlannerRunFamily.DutyFinder,
             DadPlannerRunFamily.FarmLoops,
@@ -354,7 +352,7 @@ public sealed class DadPresetProviderService
 
     public IReadOnlyList<DadPlannerLaneDefinition> GetPlannerSubmodes(DadPlannerRunFamily runFamily)
         => PlannerLaneDefinitions
-            .Where(lane => lane.RunFamily == runFamily)
+            .Where(lane => lane.RunFamily == runFamily && DadLegacyActivityRules.IsCreationActivity(lane.ActivityMode))
             .Select(CloneLaneDefinition)
             .ToArray();
 
@@ -365,8 +363,9 @@ public sealed class DadPresetProviderService
         => ResolveLaneDefinition(activityMode).RunFamily;
 
     public DadPlannerActivityMode GetDefaultPlannerSubmode(DadPlannerRunFamily runFamily)
-        => PlannerLaneDefinitions.FirstOrDefault(lane => lane.RunFamily == runFamily)?.ActivityMode
-           ?? DadPlannerActivityMode.Msq;
+        => PlannerLaneDefinitions.FirstOrDefault(lane =>
+               lane.RunFamily == runFamily && DadLegacyActivityRules.IsCreationActivity(lane.ActivityMode))?.ActivityMode
+           ?? DadPlannerActivityMode.DutySupport;
 
     public IReadOnlyList<DadPlannerRouletteOption> GetPlannerRouletteOptions()
         => GetPlannerRouletteCatalog().Select(static option => option.Clone()).ToList();
@@ -560,6 +559,10 @@ public sealed class DadPresetProviderService
             availableCharacters);
         var staticBlockers = new List<string>();
         var readinessBlockers = new List<string>();
+        staticBlockers.AddRange(DadSharedPlanRules.BuildBlockers(selectedGroup));
+        var legacyActivityBlocker = DadLegacyActivityRules.GetValidationBlocker(options.ActivityMode);
+        if (!string.IsNullOrWhiteSpace(legacyActivityBlocker))
+            staticBlockers.Add(legacyActivityBlocker);
         if (leaderCandidate == null && slot1Blockers.Count == 0)
             readinessBlockers.Add("Slot1 leader/inviter is not connected and ready.");
         if (missingRoleSlots.Count > 0)
@@ -2270,7 +2273,7 @@ public sealed class DadPresetProviderService
             activityMode = DadPlannerActivityMode.PremadeDuty;
 
         return PlannerLaneDefinitions.FirstOrDefault(lane => lane.ActivityMode == activityMode)
-               ?? PlannerLaneDefinitions[0];
+               ?? PlannerLaneDefinitions.First(lane => lane.ActivityMode == DadPlannerActivityMode.DutySupport);
     }
 
     private static DadPlannerLaneDefinition ResolveEffectiveLaneDefinition(

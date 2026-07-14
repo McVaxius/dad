@@ -40,6 +40,7 @@ public static class DadSchedulerGroupCloneRules
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,
             CompletionActions = source.CompletionActions?.Clone(),
             Slots = slots.Select(CloneSlot).ToList(),
             IsTemplate = source.IsTemplate,
@@ -71,6 +72,7 @@ public static class DadSchedulerGroupCloneRules
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
+            SharedIdentity = source.SharedIdentity?.Clone(),
             AllowSubstitution = source.AllowSubstitution,
         };
     }

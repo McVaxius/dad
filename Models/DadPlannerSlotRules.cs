@@ -208,6 +208,7 @@ public static class DadPlannerSlotRules
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
+            SharedIdentity = source.SharedIdentity?.Clone(),
             AllowSubstitution = source.AllowSubstitution,
         };
 

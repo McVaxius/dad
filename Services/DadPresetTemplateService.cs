@@ -24,7 +24,11 @@ internal static class DadPresetTemplateService
             slot.RequiredAccountKey = new DadAccountKey(string.Empty);
             slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
             slot.RequiredJobId = null;
+            slot.SharedIdentity = null;
         }
+        template.SharedStopTargetIdentityToken = string.Empty;
+        template.StopPolicy.TargetCharacterKey = new DadCharacterKey(string.Empty);
+        template.StopPolicy.TargetCharacterLabel = string.Empty;
 
         return template;
     }

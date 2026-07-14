@@ -49,10 +49,20 @@ public sealed class MainWindow : Window, IDisposable
     private IReadOnlyList<DadPlannerDutyOption> cachedPlannerDutySearchResults = [];
     private string plannerGroupNameBuffer = string.Empty;
     private string pendingDeletePlannerGroupId = string.Empty;
+    private string plannerShareStatus = string.Empty;
+    private string plannerShareIdOwner = string.Empty;
+    private string plannerShareIdEdit = string.Empty;
+    private DadShareEnvelopeDto? pendingPlannerShareImport;
+    private DadShareImportPreview? pendingPlannerSharePreview;
     private string selectedScheduleId = string.Empty;
     private string schedulerScheduleNameBuffer = "Dad Schedule";
     private string schedulerAddPresetGroupId = string.Empty;
     private string pendingDeleteScheduleId = string.Empty;
+    private string scheduleShareStatus = string.Empty;
+    private string scheduleShareIdOwner = string.Empty;
+    private string scheduleShareIdEdit = string.Empty;
+    private DadShareEnvelopeDto? pendingScheduleShareImport;
+    private DadShareImportPreview? pendingScheduleSharePreview;
     private string pendingDeleteAccountId = string.Empty;
     private string pendingForgetAccountId = string.Empty;
     private string pendingMergeAccountId = string.Empty;
@@ -1770,6 +1780,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
 
         DrawDeleteSchedulePopup(snapshot);
+        DrawScheduleShareControls(schedule);
 
         if (schedule == null)
         {
@@ -1923,6 +1934,170 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.CloseCurrentPopup();
         }
 
+        ImGui.EndPopup();
+    }
+
+    private void DrawScheduleShareControls(DadScheduleDefinition? schedule)
+    {
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        var mutationLocked = !string.IsNullOrWhiteSpace(mutationBlocker);
+
+        ImGui.Spacing();
+        ImGui.BeginDisabled(schedule == null);
+        if (ImGui.SmallButton("Export##dad-share-schedule-export") && schedule != null)
+        {
+            if (plugin.TryExportSchedule(schedule.ScheduleId, out var encoded, out var error))
+            {
+                ImGui.SetClipboardText(encoded);
+                scheduleShareStatus = $"Copied Schedule '{schedule.DisplayName}' to the clipboard.";
+            }
+            else
+            {
+                scheduleShareStatus = error;
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Copies this Schedule and every referenced Plan exactly once. Base64 is transport encoding, not encryption; finish slash commands remain verbatim.");
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(mutationLocked);
+        if (ImGui.SmallButton("Import##dad-share-schedule-import"))
+        {
+            var clipboard = ImGui.GetClipboardText() ?? string.Empty;
+            if (plugin.TryDecodeShare(clipboard, DadShareConstants.ScheduleKind, out var envelope, out var error) && envelope != null)
+            {
+                pendingScheduleShareImport = envelope;
+                pendingScheduleSharePreview = plugin.ShareService.BuildImportPreview(
+                    envelope,
+                    plugin.Configuration.PlannerGroups,
+                    plugin.Configuration.Schedules);
+                scheduleShareStatus = string.Empty;
+                ImGui.OpenPopup("Confirm Schedule import##dad-share-schedule-confirm");
+            }
+            else
+            {
+                scheduleShareStatus = error;
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(mutationLocked
+                ? mutationBlocker
+                : "Reads a Schedule share from the clipboard. Matching IDs are replaced after confirmation; imported crew must be remapped locally.");
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(schedule == null || mutationLocked);
+        if (ImGui.SmallButton("ID##dad-share-schedule-id") && schedule != null)
+        {
+            scheduleShareIdOwner = schedule.ScheduleId;
+            scheduleShareIdEdit = schedule.ScheduleId;
+            ImGui.OpenPopup("Schedule share details##dad-share-schedule-details");
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(mutationLocked ? mutationBlocker : "View, copy, or safely change this Schedule's sharing ID.");
+        ImGui.EndDisabled();
+
+        if (!string.IsNullOrWhiteSpace(scheduleShareStatus))
+            ImGui.TextDisabled(scheduleShareStatus);
+
+        DrawScheduleShareDetailsPopup(schedule);
+        DrawScheduleImportConfirmation();
+    }
+
+    private void DrawScheduleShareDetailsPopup(DadScheduleDefinition? schedule)
+    {
+        if (!ImGui.BeginPopup("Schedule share details##dad-share-schedule-details", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        schedule = plugin.Configuration.Schedules.FirstOrDefault(candidate =>
+            string.Equals(candidate.ScheduleId, scheduleShareIdOwner, StringComparison.OrdinalIgnoreCase)) ?? schedule;
+        if (schedule == null)
+        {
+            ImGui.TextDisabled("The Schedule is no longer available.");
+            ImGui.EndPopup();
+            return;
+        }
+
+        ImGui.TextUnformatted("Share details");
+        var currentId = schedule.ScheduleId;
+        ImGui.SetNextItemWidth(310f);
+        ImGui.InputText("Current ID##dad-share-schedule-current-id", ref currentId, 33, ImGuiInputTextFlags.ReadOnly);
+        if (ImGui.SmallButton("Copy##dad-share-schedule-copy-id"))
+        {
+            ImGui.SetClipboardText(schedule.ScheduleId);
+            scheduleShareStatus = "Copied Schedule ID.";
+        }
+
+        ImGui.SetNextItemWidth(310f);
+        ImGui.InputText("New ID##dad-share-schedule-new-id", ref scheduleShareIdEdit, 33);
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(mutationBlocker));
+        if (ImGui.SmallButton("Apply##dad-share-schedule-apply-id"))
+        {
+            var result = plugin.RenameScheduleId(schedule.ScheduleId, scheduleShareIdEdit);
+            scheduleShareStatus = result.Summary;
+            if (result.Success)
+            {
+                selectedScheduleId = result.NewId;
+                scheduleShareIdOwner = result.NewId;
+                scheduleShareIdEdit = result.NewId;
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !string.IsNullOrWhiteSpace(mutationBlocker))
+            ImGui.SetTooltip(mutationBlocker);
+        ImGui.EndDisabled();
+        ImGui.TextDisabled("Use a unique canonical lowercase 32-hex GUID.");
+        ImGui.EndPopup();
+    }
+
+    private void DrawScheduleImportConfirmation()
+    {
+        if (!ImGui.BeginPopupModal("Confirm Schedule import##dad-share-schedule-confirm", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        var preview = pendingScheduleSharePreview;
+        if (preview == null || pendingScheduleShareImport == null)
+        {
+            ImGui.TextDisabled("The decoded Schedule share is no longer available.");
+        }
+        else
+        {
+            ImGui.TextWrapped($"Import Schedule '{preview.Name}'?");
+            ImGui.TextUnformatted($"ID: {preview.Id}");
+            ImGui.TextUnformatted($"Bundled Plans: {preview.BundledPlanCount.ToString(CultureInfo.InvariantCulture)}");
+            DrawShareReplacementSummary(preview);
+            ImGui.TextWrapped("Imported crew identities are anonymous placeholders. Remap every row in the Plan crew editor before validation or run.");
+            ImGui.TextWrapped("Base64 is not encryption. Finish slash commands are preserved verbatim; review them before running an imported Plan.");
+        }
+
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        ImGui.BeginDisabled(preview == null || pendingScheduleShareImport == null || !string.IsNullOrWhiteSpace(mutationBlocker));
+        if (ImGui.SmallButton("Import##dad-share-schedule-confirm-import"))
+        {
+            var result = plugin.ApplyShareImport(pendingScheduleShareImport!);
+            scheduleShareStatus = result.Summary;
+            if (result.Success)
+            {
+                selectedScheduleId = result.ResultId;
+                var imported = plugin.Configuration.Schedules.FirstOrDefault(candidate =>
+                    string.Equals(candidate.ScheduleId, result.ResultId, StringComparison.OrdinalIgnoreCase));
+                schedulerScheduleNameBuffer = imported?.DisplayName ?? schedulerScheduleNameBuffer;
+            }
+            pendingScheduleShareImport = null;
+            pendingScheduleSharePreview = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Cancel##dad-share-schedule-confirm-cancel"))
+        {
+            pendingScheduleShareImport = null;
+            pendingScheduleSharePreview = null;
+            ImGui.CloseCurrentPopup();
+        }
+        if (!string.IsNullOrWhiteSpace(mutationBlocker))
+            ImGui.TextDisabled(mutationBlocker);
         ImGui.EndPopup();
     }
 
@@ -4949,6 +5124,13 @@ public sealed class MainWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
+
+        if (plannerOptions.ActivityMode == DadPlannerActivityMode.Msq)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.62f, 0.28f, 1f));
+            ImGui.TextWrapped(DadLegacyActivityRules.MsqUnsupportedBlocker);
+            ImGui.PopStyleColor();
+        }
     }
 
     private void DrawPlannerStopPolicyControls(
@@ -5558,13 +5740,7 @@ public sealed class MainWindow : Window, IDisposable
 
         if (lane.ActivityMode == DadPlannerActivityMode.Msq)
         {
-            if (debugUi)
-            {
-                DrawStatusRow("Preset", "MSQ Story");
-                DrawStatusRow("Attempts", "1");
-                DrawStatusRow("Expected party size", lane.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
-                DrawStatusRow("MSQ Story mapping", "Solo selected-duty progression routes through Trust, then Duty Support. Roulettes are a separate run family.");
-            }
+            DrawStatusRow("MSQ Story", "Unsupported compatibility value; select another activity explicitly.");
         }
 
         if (lane.ActivityMode == DadPlannerActivityMode.Commendation)
@@ -5878,7 +6054,7 @@ public sealed class MainWindow : Window, IDisposable
         var submodes = plugin.PresetProviderService.GetPlannerSubmodes(family);
         var lane = submodes.Any(candidate => IsSelectedPlannerLane(plannerOptions.ActivityMode, candidate.ActivityMode))
             ? plugin.PresetProviderService.GetPlannerLaneDefinition(plannerOptions.ActivityMode)
-            : submodes.FirstOrDefault() ?? plugin.PresetProviderService.GetPlannerLaneDefinition(DadPlannerActivityMode.Msq);
+            : submodes.FirstOrDefault() ?? plugin.PresetProviderService.GetPlannerLaneDefinition(DadPlannerActivityMode.DutySupport);
         SelectPlannerLane(plannerOptions, lane);
     }
 
@@ -6451,6 +6627,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
 
         DrawDeletePresetPopup(plannerPreview);
+        DrawPlannerShareControls(selectedGroup);
 
         selectedGroup = plugin.GetSelectedPlannerGroup();
         if (selectedGroup == null)
@@ -6548,7 +6725,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
 
         var notice = group.ActivityMode == DadPlannerActivityMode.Msq
-            ? $"MSQ Story is a solo lane and currently uses {effectiveSlotCount} of {savedSlotCount} saved slots. To use the saved four-slot roster for a roulette, select Daily Roulette → Main Scenario; Dad does not migrate presets by name."
+            ? $"MSQ Story is retained only for compatibility and is unsupported. Select another activity explicitly; Daily Roulette -> Main Scenario remains separate. {savedSlotCount} saved row(s) remain intact until then."
             : $"{plannerPreview.LaneDefinition.DisplayName} currently uses {effectiveSlotCount} of {savedSlotCount} saved slots. Saved rows remain available when this preset is used with a larger party lane.";
         ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.78f, 0.3f, 1f));
         ImGui.TextWrapped(notice);
@@ -6665,6 +6842,184 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.EndPopup();
+    }
+
+    private void DrawPlannerShareControls(DadPlannerGroup? selectedGroup)
+    {
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        var mutationLocked = !string.IsNullOrWhiteSpace(mutationBlocker);
+
+        ImGui.Spacing();
+        ImGui.BeginDisabled(selectedGroup == null);
+        if (ImGui.SmallButton("Export##dad-share-plan-export"))
+        {
+            if (plugin.TryExportSelectedPlan(out var encoded, out var error))
+            {
+                ImGui.SetClipboardText(encoded);
+                plannerShareStatus = $"Copied Plan '{selectedGroup!.DisplayName}' to the clipboard.";
+            }
+            else
+            {
+                plannerShareStatus = error;
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Copies this Plan with anonymous account tokens and forced character krangling. Base64 is transport encoding, not encryption; finish slash commands remain verbatim.");
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(mutationLocked);
+        if (ImGui.SmallButton("Import##dad-share-plan-import"))
+        {
+            var clipboard = ImGui.GetClipboardText() ?? string.Empty;
+            if (plugin.TryDecodeShare(clipboard, DadShareConstants.PlanKind, out var envelope, out var error) && envelope != null)
+            {
+                pendingPlannerShareImport = envelope;
+                pendingPlannerSharePreview = plugin.ShareService.BuildImportPreview(
+                    envelope,
+                    plugin.Configuration.PlannerGroups,
+                    plugin.Configuration.Schedules);
+                plannerShareStatus = string.Empty;
+                ImGui.OpenPopup("Confirm Plan import##dad-share-plan-confirm");
+            }
+            else
+            {
+                plannerShareStatus = error;
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(mutationLocked
+                ? mutationBlocker
+                : "Reads a Plan share from the clipboard. A matching ID is fully replaced after confirmation; imported crew must be remapped locally.");
+        ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(selectedGroup == null || mutationLocked);
+        if (ImGui.SmallButton("ID##dad-share-plan-id") && selectedGroup != null)
+        {
+            plannerShareIdOwner = selectedGroup.GroupId;
+            plannerShareIdEdit = selectedGroup.GroupId;
+            ImGui.OpenPopup("Plan share details##dad-share-plan-details");
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(mutationLocked ? mutationBlocker : "View, copy, or safely change this Plan's sharing ID.");
+        ImGui.EndDisabled();
+
+        if (!string.IsNullOrWhiteSpace(plannerShareStatus))
+            ImGui.TextDisabled(plannerShareStatus);
+
+        DrawPlannerShareDetailsPopup(selectedGroup);
+        DrawPlannerImportConfirmation();
+    }
+
+    private void DrawPlannerShareDetailsPopup(DadPlannerGroup? selectedGroup)
+    {
+        if (!ImGui.BeginPopup("Plan share details##dad-share-plan-details", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        selectedGroup = plugin.ResolvePlannerGroup(plannerShareIdOwner) ?? selectedGroup;
+        if (selectedGroup == null)
+        {
+            ImGui.TextDisabled("The Plan is no longer available.");
+            ImGui.EndPopup();
+            return;
+        }
+
+        ImGui.TextUnformatted("Share details");
+        var currentId = selectedGroup.GroupId;
+        ImGui.SetNextItemWidth(310f);
+        ImGui.InputText("Current ID##dad-share-plan-current-id", ref currentId, 33, ImGuiInputTextFlags.ReadOnly);
+        if (ImGui.SmallButton("Copy##dad-share-plan-copy-id"))
+        {
+            ImGui.SetClipboardText(selectedGroup.GroupId);
+            plannerShareStatus = "Copied Plan ID.";
+        }
+
+        ImGui.SetNextItemWidth(310f);
+        ImGui.InputText("New ID##dad-share-plan-new-id", ref plannerShareIdEdit, 33);
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(mutationBlocker));
+        if (ImGui.SmallButton("Apply##dad-share-plan-apply-id"))
+        {
+            var result = plugin.RenamePlanId(selectedGroup.GroupId, plannerShareIdEdit);
+            plannerShareStatus = result.Summary;
+            if (result.Success)
+            {
+                plannerShareIdOwner = result.NewId;
+                plannerShareIdEdit = result.NewId;
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !string.IsNullOrWhiteSpace(mutationBlocker))
+            ImGui.SetTooltip(mutationBlocker);
+        ImGui.EndDisabled();
+        ImGui.TextDisabled("Use a unique canonical lowercase 32-hex GUID.");
+        ImGui.EndPopup();
+    }
+
+    private void DrawPlannerImportConfirmation()
+    {
+        if (!ImGui.BeginPopupModal("Confirm Plan import##dad-share-plan-confirm", ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        var preview = pendingPlannerSharePreview;
+        if (preview == null || pendingPlannerShareImport == null)
+        {
+            ImGui.TextDisabled("The decoded Plan share is no longer available.");
+        }
+        else
+        {
+            ImGui.TextWrapped($"Import Plan '{preview.Name}'?");
+            ImGui.TextUnformatted($"ID: {preview.Id}");
+            ImGui.TextUnformatted($"Bundled Plans: {preview.BundledPlanCount.ToString(CultureInfo.InvariantCulture)}");
+            DrawShareReplacementSummary(preview);
+            ImGui.TextWrapped("Imported crew identities are anonymous placeholders. Remap every row in the Plan crew editor before validation or run.");
+            ImGui.TextWrapped("Base64 is not encryption. Finish slash commands are preserved verbatim; review them before running the imported Plan.");
+        }
+
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        ImGui.BeginDisabled(preview == null || pendingPlannerShareImport == null || !string.IsNullOrWhiteSpace(mutationBlocker));
+        if (ImGui.SmallButton("Import##dad-share-plan-confirm-import"))
+        {
+            var result = plugin.ApplyShareImport(pendingPlannerShareImport!);
+            plannerShareStatus = result.Summary;
+            if (result.Success)
+            {
+                var imported = plugin.ResolvePlannerGroup(result.ResultId);
+                plannerGroupNameBuffer = imported?.DisplayName ?? plannerGroupNameBuffer;
+            }
+            pendingPlannerShareImport = null;
+            pendingPlannerSharePreview = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Cancel##dad-share-plan-confirm-cancel"))
+        {
+            pendingPlannerShareImport = null;
+            pendingPlannerSharePreview = null;
+            ImGui.CloseCurrentPopup();
+        }
+        if (!string.IsNullOrWhiteSpace(mutationBlocker))
+            ImGui.TextDisabled(mutationBlocker);
+        ImGui.EndPopup();
+    }
+
+    private static void DrawShareReplacementSummary(DadShareImportPreview preview)
+    {
+        if (preview.ReplacementIds.Count == 0)
+        {
+            ImGui.TextDisabled("No matching IDs will be replaced.");
+            return;
+        }
+
+        ImGui.TextWrapped("Matching IDs will be fully replaced:");
+        var useScroll = preview.ReplacementIds.Count > 8;
+        if (useScroll)
+            ImGui.BeginChild("dad-share-replacement-ids", new Vector2(410f, ImGui.GetTextLineHeightWithSpacing() * 8f), true);
+        foreach (var replacementId in preview.ReplacementIds)
+            ImGui.BulletText(replacementId);
+        if (useScroll)
+            ImGui.EndChild();
     }
 
     private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)

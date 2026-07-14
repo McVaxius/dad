@@ -346,22 +346,22 @@ public sealed class DadPlannerAccountOption
 
 public sealed class DadPresetPlannerOptions
 {
-    public string PresetName { get; set; } = "MSQ Main Group";
+    public string PresetName { get; set; } = "Duty Support Group";
     public string SelectedPlannerGroupId { get; set; } = string.Empty;
-    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.Msq;
-    public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
-    public string ActivityName { get; set; } = "MSQ";
+    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.LevelingNpc;
+    public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.DutySupport;
+    public string ActivityName { get; set; } = "Duty Support";
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
     public bool ConnectedOnly { get; set; } = true;
     public bool SameDatacenterOnly { get; set; } = true;
     public bool AllowStaleForPlanning { get; set; }
-    public DadTransportOwner TransportOwner { get; set; } = DadTransportOwner.LanParty;
-    public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.Leader;
+    public DadTransportOwner TransportOwner { get; set; } = DadTransportOwner.DadDirect;
+    public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.LocalOnly;
     public DadInviteAuthority InviteAuthority { get; set; } = DadInviteAuthority.PresetLeader;
     public uint DutyContentFinderConditionId { get; set; }
     public string DutyDisplayName { get; set; } = string.Empty;
     public bool DutyUnsynced { get; set; }
-    public int DutyExpectedPartySize { get; set; } = 4;
+    public int DutyExpectedPartySize { get; set; } = 1;
     public DadQueueTarget RouletteTarget { get; set; } = new()
     {
         Kind = DadQueueTargetKind.Roulette,
@@ -380,19 +380,19 @@ public sealed class DadPlannerGroup
 {
     public string GroupId { get; set; } = Guid.NewGuid().ToString("N");
     public string DisplayName { get; set; } = "Dad Group";
-    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.Msq;
-    public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.Msq;
+    public DadPlannerRunFamily RunFamily { get; set; } = DadPlannerRunFamily.LevelingNpc;
+    public DadPlannerActivityMode ActivityMode { get; set; } = DadPlannerActivityMode.DutySupport;
     public DadPlannerOperatorMode OperatorMode { get; set; } = DadPlannerOperatorMode.RemotePartyPlan;
     public bool ConnectedOnly { get; set; } = true;
     public bool SameDatacenterOnly { get; set; } = true;
     public bool AllowStaleForPlanning { get; set; }
-    public DadTransportOwner TransportOwner { get; set; } = DadTransportOwner.LanParty;
-    public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.Leader;
+    public DadTransportOwner TransportOwner { get; set; } = DadTransportOwner.DadDirect;
+    public DadQueueAuthority QueueAuthority { get; set; } = DadQueueAuthority.LocalOnly;
     public DadInviteAuthority InviteAuthority { get; set; } = DadInviteAuthority.PresetLeader;
     public uint DutyContentFinderConditionId { get; set; }
     public string DutyDisplayName { get; set; } = string.Empty;
     public bool DutyUnsynced { get; set; }
-    public int DutyExpectedPartySize { get; set; } = 4;
+    public int DutyExpectedPartySize { get; set; } = 1;
     public DadQueueTarget RouletteTarget { get; set; } = new()
     {
         Kind = DadQueueTargetKind.Roulette,
@@ -403,6 +403,10 @@ public sealed class DadPlannerGroup
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
+    // Dalamud configuration uses Newtonsoft.Json, while DAD IPC uses System.Text.Json.
+    // Keep the unresolved share marker in the main config without changing IPC JSON.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string SharedStopTargetIdentityToken { get; set; } = string.Empty;
     public DadCompletionActions? CompletionActions { get; set; }
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
     // Feature batch B (dadfeatures20260620b line 56): a template is a reusable group whose slots are NOT
@@ -432,6 +436,8 @@ public sealed class DadPlannerGroupSlot
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public string LaunchProfileId { get; set; } = string.Empty;
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DadSharedIdentityPlaceholder? SharedIdentity { get; set; }
     // Legacy config field only. Runtime fallback is driven by explicit IsSubstitute rows.
     public bool AllowSubstitution { get; set; } = true;
 }

@@ -28,6 +28,7 @@ public static class DadPlannerGroupUpdateRules
         target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
         target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
         target.StopPolicy = source.StopPolicy.Clone();
+        DadSharedPlanRules.ReconcileStopTarget(target);
         target.CompletionActions = source.CompletionActions?.Clone();
         target.UpdatedAtUtc = EnsureUtc(updatedAtUtc);
     }
@@ -57,6 +58,7 @@ public static class DadPlannerGroupUpdateRules
                 result.WakePolicy = prior.WakePolicy;
                 result.LaunchProfileId = prior.LaunchProfileId;
                 result.CharacterLoadInstruction = prior.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction();
+                result.SharedIdentity = prior.SharedIdentity?.Clone();
                 result.AllowSubstitution = prior.AllowSubstitution;
             }
             else
@@ -105,6 +107,7 @@ public static class DadPlannerGroupUpdateRules
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
+            SharedIdentity = source.SharedIdentity?.Clone(),
             AllowSubstitution = source.AllowSubstitution,
         };
 

@@ -64,5 +64,6 @@
     <Compile Include="..\Services\DadLevelSeekEvaluator.cs" Link="DadLevelSeekEvaluator.cs" />
     <Compile Include="..\Services\DadAdsConfigurationPatchRules.cs" Link="DadAdsConfigurationPatchRules.cs" />
     <Compile Include="..\Services\DadPartyTeardownRules.cs" Link="DadPartyTeardownRules.cs" />
+    <Compile Include="..\Services\DadShareService.cs" Link="DadShareService.cs" />
   </ItemGroup>
 </Project>

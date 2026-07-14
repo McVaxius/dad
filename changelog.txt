@@ -1,5 +1,19 @@
 # dad — changelog
 
+## 2026-07-14 — P1181 Plan and Schedule sharing
+- Added versioned Base64 clipboard export/import for Plans and Schedules. Schedule shares preserve ordered entries
+  and repeats while bundling every referenced Plan exactly once; matching IDs replace only after a compact preview.
+- Shared crew uses payload-local anonymous account tokens and forced character krangling. Imported identities remain
+  Plan-local placeholders and block validation/run until every row is remapped through the crew editor. Base64 is
+  transport encoding, not encryption, and configured finish slash commands are preserved verbatim.
+- Added guarded Plan/Schedule ID detail controls with copy and canonical GUID rename cascades, plus an explicit,
+  idempotent Daily MSQ + Leveling starter installer that never overwrites an existing stable component ID.
+- Removed MSQ Story from new activity selection and changed fresh drafts to Duty Support. Legacy MSQ Story values
+  remain wire/config compatible and unchanged, but are visibly unsupported and blocked until explicitly changed;
+  Daily Roulette -> Main Scenario remains available.
+- No IPC, transport wire, configuration version, scheduler execution, account-database, manifest, release, or client
+  contract changed.
+
 ## 2026-07-14 — P1180 corrective task-focused UX
 - Added the top-level Status workspace for current activity, queue and run history, schedule history, detailed
   readiness, planner validation, and Debug-only authority, transport, IPC, and raw diagnostics. Existing Queue

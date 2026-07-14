@@ -175,7 +175,9 @@ internal sealed class DadPresetCrewEditor
         var selectedAccount = accountOptions.FirstOrDefault(option =>
             string.Equals(option.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
         var preview = slot.RequiredAccountKey.IsEmpty
-            ? "(missing)"
+            ? slot.SharedIdentity == null
+                ? "(missing)"
+                : $"Shared {ShortSharedToken(slot.SharedIdentity.AccountToken)} - remap"
             : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatAccountOption(selectedAccount);
         ImGui.SetNextItemWidth(-1f);
         var open = ImGui.BeginCombo($"##{idPrefix}-account-{index}", preview);
@@ -205,6 +207,7 @@ internal sealed class DadPresetCrewEditor
 
                     if (accountChanged || characterCleared)
                         slot.RequiredJobId = null;
+                    DadSharedPlanRules.CompleteAccountOnlyRemap(group, slot);
                     changed(group);
                 }
                 if (selected)
@@ -226,9 +229,13 @@ internal sealed class DadPresetCrewEditor
     {
         var needsAccount = slot.RequiredAccountKey.IsEmpty;
         var preview = needsAccount
-            ? "Select account first"
+            ? slot.SharedIdentity == null
+                ? "Select account first"
+                : $"{FormatSharedCharacter(slot.SharedIdentity)} - map account first"
             : slot.RequiredCharacterKey.IsEmpty
-                ? "Any character"
+                ? slot.SharedIdentity is { RequiresCharacter: true } placeholder
+                    ? $"{FormatSharedCharacter(placeholder)} - remap"
+                    : "Any character"
                 : plugin.KrangleService.FormatCharacterKey(slot.RequiredCharacterKey.Value);
         ImGui.SetNextItemWidth(-1f);
         ImGui.BeginDisabled(needsAccount);
@@ -261,6 +268,7 @@ internal sealed class DadPresetCrewEditor
                     slot.RequiredCharacterKey = new DadCharacterKey(character.CharacterKey);
                     if (characterChanged)
                         slot.RequiredJobId = null;
+                    DadSharedPlanRules.CompleteCharacterRemap(group, slot);
                     changed(group);
                 }
                 if (selected)
@@ -644,6 +652,17 @@ internal sealed class DadPresetCrewEditor
 
     private static string FormatRole(DadPartyRole role)
         => role == DadPartyRole.Dps ? "DPS" : role.ToString();
+
+    private static string FormatSharedCharacter(DadSharedIdentityPlaceholder placeholder)
+        => string.IsNullOrWhiteSpace(placeholder.CharacterLabel)
+            ? "Shared character"
+            : placeholder.CharacterLabel;
+
+    private static string ShortSharedToken(string token)
+    {
+        var value = token?.Trim() ?? string.Empty;
+        return value.Length <= 14 ? value : value[..14];
+    }
 
     private static string CompactWakeLabel(DadSchedulerWakePolicy policy)
         => policy switch

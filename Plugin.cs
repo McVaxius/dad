@@ -56,6 +56,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadRosterCatalogService RosterCatalogService { get; }
     public DadProfileDirectoryService ProfileDirectoryService { get; }
     public DadKrangleService KrangleService { get; }
+    public DadShareService ShareService { get; }
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
     public IReadOnlyList<DadPlannerGroup> PlannerGroups => Configuration.PlannerGroups;
     public DadPresetProviderService PresetProviderService { get; }
@@ -187,6 +188,7 @@ public sealed class Plugin : IDalamudPlugin
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
+        ShareService = new DadShareService(forceKrangle: KrangleService.KrangleName);
         ModuleRegistry = new DadModuleRegistry();
         PresetProviderService = new DadPresetProviderService(ModuleRegistry, () => RosterCatalogService.GetAccountDirectory());
         PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry, Configuration);
@@ -984,6 +986,194 @@ public sealed class Plugin : IDalamudPlugin
         InvalidatePlannerPreviewCache("planner options saved");
     }
 
+    public string GetShareMutationBlocker()
+        => DadShareService.GetMutationBlocker(
+            IsBusy(GetVisibleRunState().VisibleRun),
+            SchedulerService.CurrentState.IsActive,
+            Configuration.ActiveScheduleRun?.IsActive == true);
+
+    public bool TryExportSelectedPlan(out string encoded, out string error)
+    {
+        var selected = GetSelectedPlannerGroup();
+        if (selected == null)
+        {
+            encoded = string.Empty;
+            error = "Select a saved Plan before exporting.";
+            return false;
+        }
+
+        return ShareService.TryExportPlan(
+            selected,
+            BuildShareKnownIdentities(),
+            Configuration.CompletionActions,
+            out encoded,
+            out error);
+    }
+
+    public bool TryExportSchedule(string scheduleId, out string encoded, out string error)
+    {
+        var matches = Configuration.Schedules
+            .Where(schedule => string.Equals(schedule.ScheduleId, scheduleId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matches.Count != 1)
+        {
+            encoded = string.Empty;
+            error = matches.Count == 0
+                ? "Select a saved Schedule before exporting."
+                : "Schedule ID is duplicated; repair it before export.";
+            return false;
+        }
+
+        return ShareService.TryExportSchedule(
+            matches[0],
+            Configuration.PlannerGroups,
+            BuildShareKnownIdentities(),
+            Configuration.CompletionActions,
+            out encoded,
+            out error);
+    }
+
+    public bool TryDecodeShare(
+        string encoded,
+        string expectedKind,
+        out DadShareEnvelopeDto? envelope,
+        out string error)
+        => ShareService.TryDecode(encoded, expectedKind, out envelope, out error);
+
+    public DadShareApplyResult ApplyShareImport(DadShareEnvelopeDto envelope)
+        => ApplyShareEnvelope(envelope, DadShareApplyMode.ReplaceMatching);
+
+    public DadShareApplyResult InstallStarterShareBundle()
+    {
+        var blocker = GetShareMutationBlocker();
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return new DadShareApplyResult { Summary = blocker };
+        if (!DadStarterShareBundle.TryCreateEncoded(ShareService, out var encoded, out var error))
+            return new DadShareApplyResult { Summary = error };
+        if (!ShareService.TryDecode(encoded, DadShareConstants.ScheduleKind, out var envelope, out error) || envelope == null)
+            return new DadShareApplyResult { Summary = error };
+        return ApplyShareEnvelope(envelope, DadShareApplyMode.SkipExisting);
+    }
+
+    public DadShareRenameResult RenamePlanId(string currentId, string requestedId)
+    {
+        var blocker = GetShareMutationBlocker();
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return new DadShareRenameResult { Summary = blocker };
+
+        var result = ShareService.RenamePlanId(
+            Configuration.PlannerGroups,
+            Configuration.Schedules,
+            Configuration.SchedulerQueue,
+            PlannerOptions,
+            currentId,
+            requestedId);
+        if (!result.Success)
+            return result;
+
+        DropDebouncedUiWrites($"planner-group:{currentId}:");
+        Configuration.Save();
+        InvalidatePlannerPreviewCache("Plan ID changed");
+        return result;
+    }
+
+    public DadShareRenameResult RenameScheduleId(string currentId, string requestedId)
+    {
+        var blocker = GetShareMutationBlocker();
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return new DadShareRenameResult { Summary = blocker };
+
+        var result = ShareService.RenameScheduleId(
+            Configuration.Schedules,
+            Configuration.SchedulerQueue,
+            Configuration.ActiveScheduleRun,
+            currentId,
+            requestedId);
+        if (!result.Success)
+            return result;
+
+        Configuration.Save();
+        InvalidatePlannerPreviewCache("Schedule ID changed");
+        return result;
+    }
+
+    private DadShareApplyResult ApplyShareEnvelope(
+        DadShareEnvelopeDto envelope,
+        DadShareApplyMode mode)
+    {
+        var blocker = GetShareMutationBlocker();
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return new DadShareApplyResult { Summary = blocker };
+
+        var result = ShareService.Apply(
+            envelope,
+            Configuration.PlannerGroups,
+            Configuration.Schedules,
+            mode);
+        if (!result.Success)
+            return result;
+
+        var changed = result.AddedPlanCount > 0 ||
+                      result.ReplacedPlanCount > 0 ||
+                      result.ScheduleAdded ||
+                      result.ScheduleReplaced;
+        if (!changed)
+            return result;
+
+        // Replacement invalidates delayed callbacks that captured the old Plan
+        // objects. Leave unrelated account/profile/config drafts alone.
+        var transferredPlanIds = envelope.Kind == DadShareConstants.PlanKind
+            ? new[] { envelope.Plan!.GroupId }
+            : envelope.Plans.Select(static plan => plan.GroupId);
+        var replacedPlanIds = mode == DadShareApplyMode.ReplaceMatching
+            ? transferredPlanIds.Where(planId => Configuration.PlannerGroups.Any(plan => string.Equals(
+                plan.GroupId,
+                planId,
+                StringComparison.OrdinalIgnoreCase)))
+            : [];
+        foreach (var planId in replacedPlanIds)
+            DropDebouncedUiWrites($"planner-group:{planId}:");
+        if (envelope.Kind == DadShareConstants.PlanKind)
+            DropDebouncedUiWrites("planner-options:");
+        Configuration.PlannerGroups = result.PlannerGroups;
+        Configuration.Schedules = result.Schedules;
+        if (envelope.Kind == DadShareConstants.PlanKind)
+        {
+            var selected = Configuration.PlannerGroups.Single(plan =>
+                string.Equals(plan.GroupId, result.ResultId, StringComparison.OrdinalIgnoreCase));
+            ApplyPlannerGroupDefaults(selected, PlannerOptions);
+        }
+        else if (mode == DadShareApplyMode.ReplaceMatching &&
+                 envelope.Plans.Any(plan => string.Equals(
+                     plan.GroupId,
+                     PlannerOptions.SelectedPlannerGroupId,
+                     StringComparison.OrdinalIgnoreCase)))
+        {
+            var selected = Configuration.PlannerGroups.Single(plan => string.Equals(
+                plan.GroupId,
+                PlannerOptions.SelectedPlannerGroupId,
+                StringComparison.OrdinalIgnoreCase));
+            ApplyPlannerGroupDefaults(selected, PlannerOptions);
+        }
+
+        Configuration.Save();
+        InvalidatePlannerPreviewCache(mode == DadShareApplyMode.SkipExisting
+            ? "starter bundle installed"
+            : "share imported");
+        return result;
+    }
+
+    private IReadOnlyList<DadShareKnownIdentity> BuildShareKnownIdentities()
+        => CharacterIntelligenceService.CurrentPool.Characters
+            .Select(static character => new DadShareKnownIdentity
+            {
+                AccountKey = character.AccountId,
+                AccountAlias = character.AccountAlias,
+                CharacterKey = character.CharacterKey,
+                CharacterName = character.CharacterName,
+            })
+            .ToList();
+
     public DadCharacterPool BuildPlannerPool()
         => RosterCatalogService.BuildCuratedPool(CharacterIntelligenceService.CurrentPool);
 
@@ -1381,6 +1571,11 @@ public sealed class Plugin : IDalamudPlugin
         rejectionReason = string.Empty;
 
         var selected = GetSelectedPlannerGroup();
+        if (selected == null && PlannerOptions.ActivityMode == DadPlannerActivityMode.Msq)
+        {
+            rejectionReason = DadLegacyActivityRules.MsqUnsupportedBlocker;
+            return null;
+        }
         DadAcquiredCharacter? localNpcRunner = null;
         if (selected == null &&
             PlannerOptions.ActivityMode is DadPlannerActivityMode.DutySupport
@@ -2063,6 +2258,7 @@ public sealed class Plugin : IDalamudPlugin
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),
+            SharedIdentity = source.SharedIdentity?.Clone(),
             AllowSubstitution = source.AllowSubstitution,
         };
 
@@ -2203,6 +2399,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,
             CompletionActions = source.CompletionActions?.Clone(),
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
             {
@@ -2217,6 +2414,7 @@ public sealed class Plugin : IDalamudPlugin
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
                 CharacterLoadInstruction = slot.CharacterLoadInstruction.Clone(),
+                SharedIdentity = slot.SharedIdentity?.Clone(),
                 AllowSubstitution = slot.AllowSubstitution,
             }).ToList(),
             ScheduleEnabled = source.ScheduleEnabled,
