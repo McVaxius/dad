@@ -50,6 +50,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
             request.AccountKey,
             request.CharacterKey,
             requestedAccount,
+            configuration.RosterCatalog?.KnownCharacters,
             currentAccountKey,
             participant.ManagedAccountKey);
         var ar = autoRetainer.Inspect();
