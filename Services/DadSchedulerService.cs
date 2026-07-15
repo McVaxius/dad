@@ -3257,6 +3257,12 @@ public sealed class DadSchedulerService
             return;
         }
 
+        if (DadScheduleRules.UpdateOwnedDailyResetBoundary(schedule, state, now))
+        {
+            configuration.ActiveScheduleRun = state;
+            configuration.Save();
+        }
+
         if (TryProcessWaitingDadRun(schedule, visibleRun, now))
             return;
 
@@ -3471,8 +3477,7 @@ public sealed class DadSchedulerService
         schedule.LastRunStartedAtUtc = now;
         schedule.LastRunStatus = state.Status;
         schedule.LastSummary = state.Summary;
-        if (!manualRun)
-            schedule.LastDailyResetUtc = DadScheduleRules.GetDailyResetBoundaryUtc(now);
+        DadScheduleRules.UpdateOwnedDailyResetBoundary(schedule, state, now);
 
         if (state.Status == DadScheduleRunStatus.Blocked)
         {

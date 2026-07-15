@@ -10,6 +10,7 @@ public sealed class DadPresenceService
     private readonly ConfigManager configManager;
     private readonly DadVermaxionIpcService vermaxion;
     private readonly DadAutoRetainerIpcService autoRetainer;
+    private readonly DadLifestreamIpcService lifestream;
     private readonly InfoProxyPartyInviteGateway partyInviteGateway;
     private readonly DadRequestedJobPreparationGate requestedJobPreparationGate;
     private readonly IDadClassJobGearsetGateway classJobGearsetGateway;
@@ -24,13 +25,25 @@ public sealed class DadPresenceService
     private DadRequestedJobPreparationKey? requestedJobPreparationKey;
     private string lastRequestedJobPreparationTransition = string.Empty;
     private readonly DadImmutableCommandRegistry assignmentCommandRegistry = new();
+    private readonly DadImmutableCommandRegistry travelTargetCommandRegistry = new();
     private readonly DadRunCancellationLedger cancelledAssignmentRuns = new(StringComparer.Ordinal);
+    private readonly DadClientTravelGate clientTravelGate = new();
+    private Func<DadAccountKey, DadOceTravelCapacityProof> oceTravelCapacityProofProvider = static account => new DadOceTravelCapacityProof
+    {
+        AccountKey = account,
+        Summary = "Local XADB OCE capacity proof provider is not configured.",
+    };
+    private DadWakeRequestDto? currentTravelAssignment;
+    private DadOceTravelCapacityProof? cachedOceTravelCapacityProof;
+    private DateTime nextOceTravelCapacityRefreshUtc = DateTime.MinValue;
+    private string lastTravelTransition = string.Empty;
 
     internal DadPresenceService(
         Configuration configuration,
         ConfigManager configManager,
         DadVermaxionIpcService vermaxion,
         DadAutoRetainerIpcService autoRetainer,
+        DadLifestreamIpcService lifestream,
         InfoProxyPartyInviteGateway partyInviteGateway,
         DadRequestedJobPreparationGate requestedJobPreparationGate,
         IDadClassJobGearsetGateway classJobGearsetGateway,
@@ -40,6 +53,7 @@ public sealed class DadPresenceService
         this.configManager = configManager;
         this.vermaxion = vermaxion;
         this.autoRetainer = autoRetainer;
+        this.lifestream = lifestream;
         this.partyInviteGateway = partyInviteGateway;
         this.requestedJobPreparationGate = requestedJobPreparationGate;
         this.classJobGearsetGateway = classJobGearsetGateway;
@@ -68,12 +82,23 @@ public sealed class DadPresenceService
     public void ConfigureParticipantResolver(Func<DadWorkerSessionId, DadParticipantSnapshot?> resolver)
         => participantResolver = resolver ?? (static _ => null);
 
+    public void ConfigureOceTravelCapacityProofProvider(Func<DadAccountKey, DadOceTravelCapacityProof> provider)
+        => oceTravelCapacityProofProvider = provider ?? oceTravelCapacityProofProvider;
+
     public void Update(DadCharacterPool pool, string endpoint = "")
     {
+        var nowUtc = DateTime.UtcNow;
         // Stored/XADB rows describe the roster, not the character currently loaded in this client.
         // Falling back to one of them would keep a relogging client falsely available under the old identity.
         var localCharacter = RefreshLocalRuntimeJobTruth(
             pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime));
+        if (localCharacter != null &&
+            DadWorldLocationRuntime.TryResolveWorld(localCharacter.WorldId, nowUtc, out var homeLocation))
+        {
+            localCharacter.DataCenterId = homeLocation.DataCenterId;
+            localCharacter.DataCenterName = homeLocation.DataCenterName;
+        }
+        var currentLocation = DadWorldLocationRuntime.CaptureCurrent(nowUtc);
         var availableCharacterKeys = BuildAvailableCharacterKeys(localCharacter);
         var managedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
         var managedAccountAlias = configManager.GetCurrentAccountAlias();
@@ -115,7 +140,7 @@ public sealed class DadPresenceService
             ExternalAutomationActivity = vermaxionStatus.Activity,
             ExternalAutomationState = vermaxionStatus.State,
             ExternalAutomationSummary = vermaxionStatus.Summary,
-            LastHeartbeatUtc = DateTime.UtcNow,
+            LastHeartbeatUtc = nowUtc,
             ManagedAccountKey = managedAccountKey,
             ManagedAccountAlias = managedAccountAlias,
             ActiveCharacterKey = new DadCharacterKey(localCharacter?.CharacterKey ?? string.Empty),
@@ -128,6 +153,7 @@ public sealed class DadPresenceService
                 CharacterKey = string.Empty,
                 Blockers = ["No local character snapshot."],
             },
+            CurrentLocation = currentLocation,
             AssignedSlotId = assignedSlotId,
             DesiredCharacterKey = requiredCharacterKey.ToString(),
             RequestedJobPreparation = CurrentParticipant.RequestedJobPreparation?.Clone(),
@@ -138,13 +164,17 @@ public sealed class DadPresenceService
             StatusText = BuildStatusText(localCharacter, postArReady, nextState, vermaxionStatus),
         };
 
+        AdvanceCoordinatorTravel(localCharacter, vermaxionStatus, autoRetainerStatus, nowUtc);
         AdvanceRequestedJobPreparation(localCharacter);
     }
 
     public void MarkLeader(string runId, DadAuthorityMode authorityMode, string summary)
     {
         if (!string.Equals(currentRunId, runId, StringComparison.Ordinal))
+        {
             ResetRequestedJobPreparation();
+            ResetClientTravel();
+        }
 
         currentRunId = runId;
         currentAuthorityWorkerSessionId = WorkerSessionId;
@@ -210,7 +240,9 @@ public sealed class DadPresenceService
     public DadParticipantReadyDto HandleWakeRequest(DadWakeRequestDto request)
     {
         var commandId = $"{request.RunId}:{request.AssignedSlotId}:{WorkerSessionId.Value}:job-assignment";
-        var payload = DadIpcJson.Serialize(request);
+        var coreRequest = request.Clone();
+        coreRequest.CoordinatorTravelTarget = null;
+        var payload = DadIpcJson.Serialize(coreRequest);
         var registration = assignmentCommandRegistry.Register(
             commandId,
             payload,
@@ -230,6 +262,44 @@ public sealed class DadPresenceService
                 acceptedAssignment: false);
         }
 
+        if (request.CoordinatorTravelTarget != null)
+        {
+            var target = request.CoordinatorTravelTarget;
+            if (!target.IsComplete ||
+                !string.Equals(target.RunId, request.RunId, StringComparison.Ordinal) ||
+                !string.Equals(
+                    target.CoordinatorWorkerSessionId.Value,
+                    request.AuthorityWorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !TravelTargetMatchesWorldCatalog(target))
+            {
+                return BuildReadyResponse(
+                    blockerSummary: "Coordinator travel target is incomplete or contradicts the assignment run/authority identity.",
+                    acceptedAssignment: false);
+            }
+
+            var travelCommandId = $"{request.RunId}:{request.AssignedSlotId}:{WorkerSessionId.Value}:coordinator-travel-target";
+            var targetPayload = DadIpcJson.Serialize(request);
+            var travelRegistration = travelTargetCommandRegistry.Register(
+                travelCommandId,
+                targetPayload,
+                targetPayload,
+                $"{request.AuthorityWorkerSessionId.Value}/{request.AuthorityMode}->{WorkerSessionId.Value}");
+            if (travelRegistration.Disposition == DadImmutableCommandDisposition.Collision)
+            {
+                log.Error(
+                    "[dad] Immutable Coordinator travel-target collision command={CommandId} originalProducerRoute={OriginalProducerRoute} incomingProducerRoute={IncomingProducerRoute} originalPayload={OriginalPayload} incomingPayload={IncomingPayload}.",
+                    travelRegistration.CommandId,
+                    travelRegistration.OriginalProducerRoute,
+                    travelRegistration.IncomingProducerRoute,
+                    travelRegistration.OriginalPayload,
+                    travelRegistration.IncomingPayload);
+                return BuildReadyResponse(
+                    blockerSummary: $"Immutable Coordinator travel-target collision for {travelCommandId}.",
+                    acceptedAssignment: false);
+            }
+        }
+
         if (!cancelledAssignmentRuns.CanAccept(request.RunId))
         {
             return BuildReadyResponse(
@@ -238,7 +308,10 @@ public sealed class DadPresenceService
         }
 
         if (!string.Equals(currentRunId, request.RunId, StringComparison.Ordinal))
+        {
             ResetRequestedJobPreparation();
+            ResetClientTravel();
+        }
 
         partyInviteGateway.BeginParticipantRun(request.RunId);
         currentRunId = request.RunId;
@@ -247,6 +320,8 @@ public sealed class DadPresenceService
         requiredAccountKey = request.RequiredAccountKey;
         requiredCharacterKey = request.RequiredCharacterKey;
         assignedSlotId = request.AssignedSlotId;
+        if (request.CoordinatorTravelTarget != null)
+            currentTravelAssignment = request.Clone();
         CurrentParticipant.Role = DadOrchestrationRole.Participant;
         CurrentParticipant.WorkerRole = GetConfiguredWorkerRole();
         CurrentParticipant.State = DadParticipantState.Assigned;
@@ -309,6 +384,16 @@ public sealed class DadPresenceService
         {
             CurrentParticipant.State = DadParticipantState.WaitingForPostArReady;
             CurrentParticipant.StatusText = "Waiting for post-AR readiness.";
+            return BuildReadyResponse(blockerSummary: CurrentParticipant.StatusText, acceptedAssignment: true);
+        }
+
+        if (currentTravelAssignment?.CoordinatorTravelTarget is { } travelTarget &&
+            !CurrentLocationMatchesTarget(CurrentParticipant.CurrentLocation, travelTarget))
+        {
+            CurrentParticipant.PostArReady = false;
+            CurrentParticipant.State = DadParticipantState.WaitingForPostArReady;
+            CurrentParticipant.StatusText =
+                $"Waiting for guarded travel and fresh current-DC proof on {travelTarget.DataCenterName}.";
             return BuildReadyResponse(blockerSummary: CurrentParticipant.StatusText, acceptedAssignment: true);
         }
 
@@ -528,6 +613,11 @@ public sealed class DadPresenceService
                 TerritoryId = Plugin.ClientState.TerritoryType,
                 Readiness = readiness,
             };
+            if (DadWorldLocationRuntime.TryResolveWorld(liveCharacter.WorldId, now, out var homeLocation))
+            {
+                liveCharacter.DataCenterId = homeLocation.DataCenterId;
+                liveCharacter.DataCenterName = homeLocation.DataCenterName;
+            }
             if (currentJobId.HasValue)
                 liveCharacter.JobLevels[currentJobId.Value] = player.Level;
             if (readiness != DadReadinessState.Ready)
@@ -545,6 +635,7 @@ public sealed class DadPresenceService
             snapshot.IsAvailable = readiness == DadReadinessState.Ready;
             snapshot.ActiveCharacterKey = new DadCharacterKey(characterKey);
             snapshot.Character = liveCharacter;
+            snapshot.CurrentLocation = DadWorldLocationRuntime.CaptureCurrent(now);
             snapshot.WorldReadyStable = worldReadyStable;
             snapshot.PostArReady &= worldReadyStable;
             snapshot.LastHeartbeatUtc = now;
@@ -716,6 +807,7 @@ public sealed class DadPresenceService
             Readiness = DadReadinessState.Blocked,
             Blockers = [status],
         };
+        snapshot.CurrentLocation = null;
         snapshot.WorldReadyStable = false;
         snapshot.PostArReady = false;
         snapshot.LastHeartbeatUtc = DateTime.UtcNow;
@@ -862,6 +954,167 @@ public sealed class DadPresenceService
 
         return (true,
             $"Native party invitation acceptance armed for exact inviter {expected.CharacterKey}; waiting for fresh invitation and PartyList confirmation.");
+    }
+
+    private void AdvanceCoordinatorTravel(
+        DadAcquiredCharacter? localCharacter,
+        DadVermaxionReadinessStatus vermaxionStatus,
+        DadAutoRetainerState autoRetainerStatus,
+        DateTime nowUtc)
+    {
+        var assignment = currentTravelAssignment;
+        var target = assignment?.CoordinatorTravelTarget;
+        if (assignment == null || target == null)
+            return;
+
+        DadWorldLocationObservation? homeLocation = null;
+        if (localCharacter != null)
+            DadWorldLocationRuntime.TryResolveWorld(localCharacter.WorldId, nowUtc, out homeLocation);
+
+        DadOceTravelCapacityProof? oceProof = null;
+        if (!CurrentLocationMatchesTarget(CurrentParticipant.CurrentLocation, target) &&
+            target.RegionId == DadClientTravelGate.OceRegionId &&
+            homeLocation?.RegionId != DadClientTravelGate.OceRegionId)
+        {
+            oceProof = GetOceTravelCapacityProof(assignment.RequiredAccountKey, nowUtc);
+        }
+
+        var lifestreamStatus = CurrentLocationMatchesTarget(CurrentParticipant.CurrentLocation, target)
+            ? new DadLifestreamState(true, false, "Lifestream travel not required.")
+            : lifestream.Inspect();
+        var decision = clientTravelGate.Evaluate(
+            new DadClientTravelContext
+            {
+                Assignment = assignment.Clone(),
+                Participant = CurrentParticipant.Clone(),
+                HomeRegionId = homeLocation?.RegionId ?? 0,
+                HomeRegionName = homeLocation?.RegionName ?? string.Empty,
+                OceCapacityProof = oceProof,
+                Safety = new DadClientTravelSafetyEvidence
+                {
+                    VermaxionSafe = vermaxionStatus.Kind is DadVermaxionReadinessKind.Idle or DadVermaxionReadinessKind.NotLoaded,
+                    AutoRetainerAvailable = autoRetainerStatus.Available,
+                    AutoRetainerBusy = autoRetainerStatus.IsBusy,
+                    AutoRetainerMultiModeEnabled = autoRetainerStatus.MultiModeEnabled,
+                    LifestreamAvailable = lifestreamStatus.Available,
+                    LifestreamBusy = lifestreamStatus.IsBusy,
+                },
+            },
+            nowUtc);
+
+        if (decision.Action == DadClientTravelAction.InvokeLifestream)
+        {
+            log.Information(
+                "[dad] Guarded Client Dad travel invoking Lifestream.ChangeWorld request={RequestId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} targetWorld={WorldName} targetDc={DataCenterName} targetRegion={RegionName} attempt={Attempt}/{MaxAttempts}.",
+                assignment.RunId,
+                assignment.AssignedSlotId,
+                assignment.RequiredAccountKey,
+                assignment.RequiredCharacterKey,
+                assignment.RequiredContentId,
+                decision.DestinationWorldName,
+                target.DataCenterName,
+                target.RegionName,
+                decision.AttemptNumber,
+                DadClientTravelGate.MaxChangeWorldAttempts);
+            var result = lifestream.ChangeWorld(decision.DestinationWorldName);
+            clientTravelGate.RecordInvocationResult(result, nowUtc);
+            decision = new DadClientTravelDecision
+            {
+                Action = result.Outcome == DadLifestreamChangeWorldOutcome.Uncertain
+                    ? DadClientTravelAction.Reject
+                    : DadClientTravelAction.Wait,
+                AttemptNumber = decision.AttemptNumber,
+                DestinationWorldName = decision.DestinationWorldName,
+                Summary = result.Summary,
+            };
+        }
+
+        ApplyClientTravelDecision(decision, assignment, target);
+    }
+
+    private DadOceTravelCapacityProof GetOceTravelCapacityProof(DadAccountKey accountKey, DateTime nowUtc)
+    {
+        if (cachedOceTravelCapacityProof == null ||
+            !DadRosterIdentity.SameAccount(cachedOceTravelCapacityProof.AccountKey, accountKey) ||
+            nowUtc >= nextOceTravelCapacityRefreshUtc)
+        {
+            try
+            {
+                cachedOceTravelCapacityProof = oceTravelCapacityProofProvider(accountKey)?.Clone() ?? new DadOceTravelCapacityProof
+                {
+                    AccountKey = accountKey,
+                    Summary = "Local XADB OCE capacity proof provider returned no proof.",
+                };
+            }
+            catch (Exception ex)
+            {
+                cachedOceTravelCapacityProof = new DadOceTravelCapacityProof
+                {
+                    AccountKey = accountKey,
+                    ObservedAtUtc = nowUtc,
+                    Summary = $"Local XADB OCE capacity proof failed: {ex.Message}",
+                };
+            }
+
+            nextOceTravelCapacityRefreshUtc = nowUtc + TimeSpan.FromSeconds(10);
+        }
+
+        return cachedOceTravelCapacityProof.Clone();
+    }
+
+    private void ApplyClientTravelDecision(
+        DadClientTravelDecision decision,
+        DadWakeRequestDto assignment,
+        DadCoordinatorTravelTarget target)
+    {
+        var transition = $"{decision.Action}|{decision.AttemptNumber}|{decision.Summary}";
+        if (!string.Equals(transition, lastTravelTransition, StringComparison.Ordinal))
+        {
+            lastTravelTransition = transition;
+            log.Information(
+                "[dad] Guarded Client Dad travel transition request={RequestId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} target={WorldName}/{DataCenterName}/{RegionName} action={Action} attempt={Attempt} summary={Summary}.",
+                assignment.RunId,
+                assignment.AssignedSlotId,
+                assignment.RequiredAccountKey,
+                assignment.RequiredCharacterKey,
+                assignment.RequiredContentId,
+                target.WorldName,
+                target.DataCenterName,
+                target.RegionName,
+                decision.Action,
+                decision.AttemptNumber,
+                decision.Summary);
+        }
+
+        if (decision.Action == DadClientTravelAction.Ready)
+            return;
+
+        CurrentParticipant.PostArReady = false;
+        CurrentParticipant.State = DadParticipantState.WaitingForPostArReady;
+        CurrentParticipant.StatusText = decision.Summary;
+        if (decision.Action == DadClientTravelAction.Reject)
+            AddWarning(decision.Summary);
+    }
+
+    private static bool CurrentLocationMatchesTarget(
+        DadWorldLocationObservation? current,
+        DadCoordinatorTravelTarget target)
+        => current is { IsComplete: true } &&
+           current.DataCenterId == target.DataCenterId &&
+           current.RegionId == target.RegionId &&
+           string.Equals(current.DataCenterName.Trim(), target.DataCenterName.Trim(), StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(current.RegionName.Trim(), target.RegionName.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static bool TravelTargetMatchesWorldCatalog(DadCoordinatorTravelTarget target)
+    {
+        if (!DadWorldLocationRuntime.TryResolveWorld(target.WorldId, DateTime.UtcNow, out var resolved))
+            return false;
+
+        return string.Equals(resolved.WorldName, target.WorldName, StringComparison.OrdinalIgnoreCase) &&
+               resolved.DataCenterId == target.DataCenterId &&
+               string.Equals(resolved.DataCenterName, target.DataCenterName, StringComparison.OrdinalIgnoreCase) &&
+               resolved.RegionId == target.RegionId &&
+               string.Equals(resolved.RegionName, target.RegionName, StringComparison.OrdinalIgnoreCase);
     }
 
     private void SetRequestedJobPreparation(DadRequestedJobPreparationKey key)
@@ -1021,11 +1274,21 @@ public sealed class DadPresenceService
     {
         partyInviteGateway.Reset();
         ResetRequestedJobPreparation();
+        ResetClientTravel();
         currentRunId = string.Empty;
         currentAuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
         currentAuthorityMode = configuration.LocalOnlyModeEnabled ? DadAuthorityMode.LocalOnly : DadAuthorityMode.ServerDad;
         requiredAccountKey = new DadAccountKey(string.Empty);
         requiredCharacterKey = new DadCharacterKey(string.Empty);
         assignedSlotId = string.Empty;
+    }
+
+    private void ResetClientTravel()
+    {
+        clientTravelGate.Reset();
+        currentTravelAssignment = null;
+        cachedOceTravelCapacityProof = null;
+        nextOceTravelCapacityRefreshUtc = DateTime.MinValue;
+        lastTravelTransition = string.Empty;
     }
 }

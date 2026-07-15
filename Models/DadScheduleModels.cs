@@ -357,7 +357,9 @@ public static class DadScheduleRules
             RequestedBy = NormalizeRequester(requestedBy),
             DryRun = dryRun,
             ManualRun = manualRun,
-            DailyResetUtc = manualRun ? null : GetDailyResetBoundaryUtc(nowUtc),
+            DailyResetUtc = schedule.Cadence == DadScheduleCadence.DailyReset && !dryRun
+                ? GetDailyResetBoundaryUtc(nowUtc)
+                : null,
             StartedAtUtc = nowUtc,
             UpdatedAtUtc = nowUtc,
             CurrentEntryIndex = 0,
@@ -369,6 +371,39 @@ public static class DadScheduleRules
         ApplyCurrentEntry(state, schedule.Entries[0]);
         state.Summary = BuildEntrySummary(state);
         return state;
+    }
+
+    public static bool UpdateOwnedDailyResetBoundary(
+        DadScheduleDefinition schedule,
+        DadScheduleRunState state,
+        DateTime nowUtc)
+    {
+        if (schedule.Cadence != DadScheduleCadence.DailyReset ||
+            state.DryRun ||
+            !state.IsActive ||
+            !state.DailyResetUtc.HasValue)
+        {
+            return false;
+        }
+
+        var changed = false;
+        var ownedBoundary = EnsureUtc(state.DailyResetUtc.Value);
+        var currentBoundary = GetDailyResetBoundaryUtc(nowUtc);
+        if (currentBoundary > ownedBoundary)
+        {
+            ownedBoundary = currentBoundary;
+            state.DailyResetUtc = ownedBoundary;
+            changed = true;
+        }
+
+        if (!schedule.LastDailyResetUtc.HasValue ||
+            EnsureUtc(schedule.LastDailyResetUtc.Value) < ownedBoundary)
+        {
+            schedule.LastDailyResetUtc = ownedBoundary;
+            changed = true;
+        }
+
+        return changed;
     }
 
     public static string ValidateCurrentEntry(

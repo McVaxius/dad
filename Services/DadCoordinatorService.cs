@@ -259,6 +259,40 @@ public sealed class DadCoordinatorService
             {
                 return DadRunResult.Rejected(request, rejectionReason);
             }
+
+            if (plan.RequiredParticipantCount > 1 || plan.RequiresRemoteParticipants)
+            {
+                if (!DadCoordinatorTravelRules.TryFreezeTarget(
+                        plan.Request.RequestId,
+                        liveCoordinatorTruth,
+                        DateTime.UtcNow,
+                        out var travelTarget,
+                        out rejectionReason))
+                {
+                    return DadRunResult.Rejected(request, rejectionReason);
+                }
+
+                var coordinatorSlots = acceptedManifest.Slots
+                    .Where(slot => string.Equals(
+                        slot.WorkerSessionId.Value,
+                        travelTarget.CoordinatorWorkerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (coordinatorSlots.Count != 1 ||
+                    !DadRosterIdentity.SameAccount(coordinatorSlots[0].AccountKey, travelTarget.CoordinatorAccountKey) ||
+                    !string.Equals(
+                        coordinatorSlots[0].CharacterKey.Value,
+                        travelTarget.CoordinatorCharacterKey.Value,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    coordinatorSlots[0].ContentId != travelTarget.CoordinatorContentId)
+                {
+                    return DadRunResult.Rejected(
+                        request,
+                        "Frozen Coordinator travel target does not match exactly one bound roster slot identity.");
+                }
+
+                acceptedManifest.CoordinatorTravelTarget = travelTarget;
+            }
         }
 
         activePlan = plan;
@@ -571,6 +605,7 @@ public sealed class DadCoordinatorService
                 RequiredJobId = frozenSlot.RequiredJobId,
                 AssignedSlotId = participant.AssignedSlotId,
                 RequirePostArReady = activePlan.Orchestration.RequirePostArReady,
+                CoordinatorTravelTarget = activeSlotManifest.CoordinatorTravelTarget?.Clone(),
             });
 
             if (ready == null)
@@ -615,6 +650,25 @@ public sealed class DadCoordinatorService
                 participant);
             if (!string.IsNullOrWhiteSpace(preparationBlocker))
                 blockers.Add(preparationBlocker);
+        }
+
+        if (activeSlotManifest.CoordinatorTravelTarget != null)
+        {
+            var travelProof = DadCoordinatorTravelRules.ValidateParticipants(
+                activeSlotManifest.CoordinatorTravelTarget,
+                activeParticipants,
+                DateTime.UtcNow);
+            if (travelProof.ImmutableTargetChanged)
+            {
+                FinalizeRun(
+                    DadRunStatus.Failed,
+                    "Dad rejected participant discovery because the immutable Coordinator travel target changed.",
+                    travelProof.Summary);
+                return;
+            }
+
+            if (!travelProof.Ready)
+                blockers.Add(travelProof.Summary);
         }
 
         blockers.AddRange(activeParticipants
@@ -1923,9 +1977,13 @@ public sealed class DadCoordinatorService
 
     private bool TryRefreshStrictMutationBoundary(string boundary)
     {
-        if (activePlan == null ||
-            activeSlotManifest == null ||
-            !DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(activePlan.Request))
+        if (activePlan == null || activeSlotManifest == null)
+        {
+            return true;
+        }
+
+        if (!DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(activePlan.Request) &&
+            activeSlotManifest.CoordinatorTravelTarget == null)
         {
             return true;
         }
@@ -1986,6 +2044,32 @@ public sealed class DadCoordinatorService
             CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
             Publish();
             return false;
+        }
+
+        if (activeSlotManifest.CoordinatorTravelTarget != null)
+        {
+            var travelProof = DadCoordinatorTravelRules.ValidateParticipants(
+                activeSlotManifest.CoordinatorTravelTarget,
+                refreshedParticipants,
+                DateTime.UtcNow);
+            if (!travelProof.Ready)
+            {
+                if (travelProof.ImmutableTargetChanged)
+                {
+                    FinalizeRun(
+                        DadRunStatus.Failed,
+                        $"Dad rejected {boundary} because the immutable Coordinator travel target changed.",
+                        travelProof.Summary);
+                    return false;
+                }
+
+                CurrentResult.Status = DadRunStatus.WaitingForParticipants;
+                CurrentResult.ActiveTaskStatus = $"Waiting at strict {boundary} boundary: {travelProof.Summary}";
+                CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+                CurrentResult.Participants = refreshedParticipants.Select(static participant => participant.Clone()).ToList();
+                Publish();
+                return false;
+            }
         }
 
         coordinatorContradictionTracker.Reset();

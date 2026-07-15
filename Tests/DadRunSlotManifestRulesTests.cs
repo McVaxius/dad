@@ -71,10 +71,26 @@ public sealed class DadRunSlotManifestRulesTests
         Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var blocker), blocker);
         Assert.Equal((uint?)21, manifest.Slots[0].RequiredJobId);
         Assert.Equal((uint?)24, manifest.Slots[1].RequiredJobId);
+        manifest.CoordinatorTravelTarget = new DadCoordinatorTravelTarget
+        {
+            RunId = plan.Request.RequestId,
+            CoordinatorWorkerSessionId = "worker-w",
+            CoordinatorAccountKey = WAccount,
+            CoordinatorCharacterKey = WCharacter,
+            CoordinatorContentId = WContentId,
+            WorldId = 1,
+            WorldName = "Alpha",
+            DataCenterId = 10,
+            DataCenterName = "DC",
+            RegionId = 2,
+            RegionName = "North America",
+        };
 
         var clone = manifest.Clone();
         Assert.Equal((uint?)21, clone.Slots[0].RequiredJobId);
         Assert.Equal((uint?)24, clone.Slots[1].RequiredJobId);
+        manifest.CoordinatorTravelTarget.WorldName = "Mutated";
+        Assert.Equal("Alpha", clone.CoordinatorTravelTarget!.WorldName);
 
         var identity = plan.Orchestration.RequiredRosterCharacters[0].Clone();
         identity.RequiredJobId = 37;

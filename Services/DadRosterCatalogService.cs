@@ -425,6 +425,72 @@ public sealed class DadRosterCatalogService
         return catalog;
     }
 
+    public DadOceTravelCapacityProof BuildLocalOceTravelCapacityProof(DadAccountKey requiredAccountKey)
+    {
+        var observedAtUtc = DateTime.UtcNow;
+        var localAccountKey = GetLocalClientAccountKey();
+        var proof = new DadOceTravelCapacityProof
+        {
+            AccountKey = localAccountKey,
+            ObservedAtUtc = observedAtUtc,
+        };
+        if (requiredAccountKey.IsEmpty ||
+            localAccountKey.IsEmpty ||
+            !DadRosterIdentity.SameAccount(requiredAccountKey, localAccountKey))
+        {
+            proof.Summary = $"OCE roster proof requested for account '{requiredAccountKey}', but this Client Dad manages exact account '{localAccountKey}'.";
+            return proof;
+        }
+
+        var xadbCatalog = xadbClient.GetAccountCharacterList();
+        proof.IsFullRosterAvailable = xadbCatalog.IsFullRosterAvailable;
+        proof.XadbContractVersion = xadbCatalog.XadbContractVersion;
+        proof.AdvertisedCharacterCount = xadbCatalog.XadbPayloadRowCount;
+        var uniqueRows = xadbCatalog.Characters
+            .Where(static character => !character.CharacterKey.IsEmpty || character.ContentId != 0)
+            .DistinctBy(static character => character.ContentId != 0
+                ? $"cid:{character.ContentId}"
+                : $"key:{character.CharacterKey.Value.Trim()}", StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        proof.AttributedCharacterCount = uniqueRows.Count;
+
+        var everyHomeRegionResolved = true;
+        foreach (var character in uniqueRows)
+        {
+            if (!character.WorldId.HasValue ||
+                !DadWorldLocationRuntime.TryResolveWorld(character.WorldId.Value, observedAtUtc, out var home))
+            {
+                everyHomeRegionResolved = false;
+                continue;
+            }
+
+            proof.Characters.Add(new DadOceRosterCharacterProof
+            {
+                AccountKey = localAccountKey,
+                CharacterKey = character.CharacterKey,
+                ContentId = character.ContentId,
+                HomeWorldId = home.WorldId,
+                HomeWorldName = home.WorldName,
+                HomeRegionId = home.RegionId,
+                HomeRegionName = home.RegionName,
+            });
+        }
+
+        var mergedCount = xadbCatalog.SourceDiagnostics.XadbMergedRows;
+        proof.IsComplete =
+            proof.IsFullRosterAvailable &&
+            proof.XadbContractVersion.GetValueOrDefault() >= 6 &&
+            uniqueRows.Count > 0 &&
+            proof.AdvertisedCharacterCount == uniqueRows.Count &&
+            mergedCount == uniqueRows.Count &&
+            everyHomeRegionResolved &&
+            proof.Characters.Count == uniqueRows.Count;
+        proof.Summary = proof.IsComplete
+            ? $"Complete local XADB roster proof for exact account {localAccountKey}: {uniqueRows.Count} unique character(s)."
+            : $"Incomplete local XADB roster proof for exact account {localAccountKey}: full={proof.IsFullRosterAvailable}, contract={proof.XadbContractVersion?.ToString() ?? "?"}, advertised={proof.AdvertisedCharacterCount}, merged={mergedCount}, attributed={uniqueRows.Count}, regionResolved={proof.Characters.Count}.";
+        return proof;
+    }
+
     public DadAccountRosterCatalog BuildLocalXadbCatalog(DadRosterRefreshPlan? plan = null)
         => BuildLocalCatalog(new DadCharacterPool
         {

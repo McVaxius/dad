@@ -10,6 +10,7 @@ internal sealed class DadRunSlotManifest
     public int ExpectedPartySize { get; set; }
     public string LeaderCharacterKey { get; set; } = string.Empty;
     public string InviterCharacterKey { get; set; } = string.Empty;
+    public DadCoordinatorTravelTarget? CoordinatorTravelTarget { get; set; }
     public List<DadFrozenModulePayload> Modules { get; set; } = [];
     public List<DadFrozenRunSlot> Slots { get; set; } = [];
 
@@ -20,6 +21,7 @@ internal sealed class DadRunSlotManifest
             ExpectedPartySize = ExpectedPartySize,
             LeaderCharacterKey = LeaderCharacterKey,
             InviterCharacterKey = InviterCharacterKey,
+            CoordinatorTravelTarget = CoordinatorTravelTarget?.Clone(),
             Modules = Modules.Select(static module => module.Clone()).ToList(),
             Slots = Slots.Select(static slot => slot.Clone()).ToList(),
         };

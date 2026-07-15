@@ -237,48 +237,170 @@ internal sealed class DadPresetCrewEditor
                     ? $"{FormatSharedCharacter(placeholder)} - remap"
                     : "Any character"
                 : plugin.KrangleService.FormatCharacterKey(slot.RequiredCharacterKey.Value);
-        ImGui.SetNextItemWidth(-1f);
+        var allCharacters = plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey);
+        var selectedWarning = slot.RequiredCharacterKey.IsEmpty
+            ? new DadRoulettePresetConflictWarning()
+            : plannerSnapshot.RouletteConflictIndex.Find(
+                group,
+                slot.RequiredAccountKey,
+                slot.RequiredCharacterKey);
+        var viewportSize = ImGui.GetMainViewport().WorkSize;
+        var pickerLayout = DadCharacterPickerLayoutRules.Resolve(
+            viewportSize.X,
+            viewportSize.Y,
+            ImGui.GetContentRegionAvail().X);
+        ImGui.SetNextItemWidth(pickerLayout.ComboWidth);
         ImGui.BeginDisabled(needsAccount);
+        ImGui.SetNextWindowSizeConstraints(
+            new Vector2(pickerLayout.PopupWidth, 1f),
+            new Vector2(pickerLayout.PopupWidth, pickerLayout.PopupMaxHeight));
         var open = ImGui.BeginCombo($"##{idPrefix}-character-{index}", preview);
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         if (open)
         {
-            if (ImGui.Selectable("Any character on account", slot.RequiredCharacterKey.IsEmpty))
-            {
-                var characterChanged = !slot.RequiredCharacterKey.IsEmpty;
-                slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
-                if (characterChanged)
-                    slot.RequiredJobId = null;
-                changed(group);
-            }
+            var popupContentWidth = PositiveWidth(
+                pickerLayout.PopupWidth - (ImGui.GetStyle().WindowPadding.X * 2f));
+            DrawCharacterFilters(allCharacters, idPrefix, index, popupContentWidth);
+            var filterResult = DadCharacterFilterRules.Apply(
+                allCharacters,
+                plugin.CharacterFilterSessionState);
+            ImGui.TextDisabled($"Showing {filterResult.ResultCount} of {filterResult.TotalCount} character(s)");
+            ImGui.Separator();
 
-            foreach (var character in plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey))
+            if (ImGui.BeginChild(
+                    $"{idPrefix}-character-results-{index}",
+                    new Vector2(popupContentWidth, pickerLayout.ResultsPaneHeight),
+                    true))
             {
-                var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
-                               MatchesAccount(character, slot.RequiredAccountKey);
-                var source = plugin.PresetProviderService.GetCharacterSourceLabel(character.Source);
-                var world = string.IsNullOrWhiteSpace(character.WorldName) ? string.Empty : $" | {character.WorldName}";
-                var name = plugin.KrangleService.FormatCharacterKey(character.CharacterKey);
-                if (ImGui.Selectable($"{name}{world} | {source}", selected))
+                var anyRowWidth = PositiveWidth(ImGui.GetContentRegionAvail().X);
+                if (ImGui.Selectable(
+                        "Any character on account",
+                        slot.RequiredCharacterKey.IsEmpty,
+                        ImGuiSelectableFlags.None,
+                        new Vector2(anyRowWidth, 0f)))
                 {
-                    var characterChanged = !string.Equals(
-                        slot.RequiredCharacterKey.Value,
-                        character.CharacterKey,
-                        StringComparison.OrdinalIgnoreCase);
-                    slot.RequiredCharacterKey = new DadCharacterKey(character.CharacterKey);
+                    var characterChanged = !slot.RequiredCharacterKey.IsEmpty;
+                    slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
                     if (characterChanged)
                         slot.RequiredJobId = null;
-                    DadSharedPlanRules.CompleteCharacterRemap(group, slot);
                     changed(group);
+                }
+
+                foreach (var character in filterResult.Characters)
+                {
+                    var selected = string.Equals(slot.RequiredCharacterKey.Value, character.CharacterKey, StringComparison.OrdinalIgnoreCase) &&
+                                   MatchesAccount(character, slot.RequiredAccountKey);
+                    var source = plugin.PresetProviderService.GetCharacterSourceLabel(character.Source);
+                    var world = KnownLocation(character.WorldName);
+                    var dataCenter = KnownLocation(character.DataCenterName);
+                    var name = plugin.KrangleService.FormatCharacterKey(character.CharacterKey);
+                    var candidate = $"{name} | World: {world} | DC: {dataCenter} | {source}";
+                    var candidateRowWidth = PositiveWidth(ImGui.GetContentRegionAvail().X);
+                    if (ImGui.Selectable(
+                            candidate,
+                            selected,
+                            ImGuiSelectableFlags.None,
+                            new Vector2(candidateRowWidth, 0f)))
+                    {
+                        var characterChanged = !string.Equals(
+                            slot.RequiredCharacterKey.Value,
+                            character.CharacterKey,
+                            StringComparison.OrdinalIgnoreCase);
+                        slot.RequiredCharacterKey = new DadCharacterKey(character.CharacterKey);
+                        if (characterChanged)
+                            slot.RequiredJobId = null;
+                        DadSharedPlanRules.CompleteCharacterRemap(group, slot);
+                        changed(group);
+                    }
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+
+                    var warning = plannerSnapshot.RouletteConflictIndex.Find(
+                        group,
+                        slot.RequiredAccountKey,
+                        new DadCharacterKey(character.CharacterKey));
+                    if (warning.HasConflict)
+                    {
+                        DrawConflictWarning(
+                            warning.Message,
+                            PositiveWidth(ImGui.GetContentRegionAvail().X));
+                    }
+                }
+            }
+            ImGui.EndChild();
+            ImGui.EndCombo();
+        }
+        ImGui.EndDisabled();
+        if (hovered)
+            ImGui.SetTooltip(preview);
+        if (selectedWarning.HasConflict)
+            DrawConflictWarning(selectedWarning.Message, pickerLayout.ComboWidth);
+    }
+
+    private void DrawCharacterFilters(
+        IReadOnlyList<DadAcquiredCharacter> characters,
+        string idPrefix,
+        int index,
+        float popupContentWidth)
+    {
+        var state = plugin.CharacterFilterSessionState;
+        var search = state.CharacterSearch;
+        ImGui.TextUnformatted("Search");
+        ImGui.SetNextItemWidth(popupContentWidth);
+        if (ImGui.InputText($"##{idPrefix}-character-search-{index}", ref search, 128))
+            state.CharacterSearch = search;
+
+        var filterResult = DadCharacterFilterRules.Apply(characters, state);
+        ImGui.TextUnformatted("Data Center");
+        ImGui.SetNextItemWidth(popupContentWidth);
+        if (ImGui.BeginCombo(
+                $"##{idPrefix}-character-dc-{index}",
+                string.IsNullOrWhiteSpace(state.DataCenterName) ? "All Data Centers" : state.DataCenterName))
+        {
+            if (ImGui.Selectable("All Data Centers", string.IsNullOrWhiteSpace(state.DataCenterName)))
+                state.DataCenterName = string.Empty;
+            foreach (var dataCenter in filterResult.DataCenters)
+            {
+                var selected = string.Equals(state.DataCenterName, dataCenter, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(dataCenter, selected))
+                {
+                    state.DataCenterName = dataCenter;
+                    if (!string.IsNullOrWhiteSpace(state.WorldName) &&
+                        !DadCharacterFilterRules.WorldBelongsToDataCenter(characters, state.WorldName, dataCenter))
+                    {
+                        state.WorldName = string.Empty;
+                    }
                 }
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
             ImGui.EndCombo();
         }
+
+        filterResult = DadCharacterFilterRules.Apply(characters, state);
+        ImGui.TextUnformatted("World (Server)");
+        ImGui.SetNextItemWidth(popupContentWidth);
+        if (ImGui.BeginCombo(
+                $"##{idPrefix}-character-world-{index}",
+                string.IsNullOrWhiteSpace(state.WorldName) ? "All Worlds" : state.WorldName))
+        {
+            if (ImGui.Selectable("All Worlds", string.IsNullOrWhiteSpace(state.WorldName)))
+                state.WorldName = string.Empty;
+            foreach (var world in filterResult.Worlds)
+            {
+                var selected = string.Equals(state.WorldName, world, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(world, selected))
+                    state.WorldName = world;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+
+        ImGui.BeginDisabled(!state.HasFilters);
+        if (ImGui.SmallButton($"Clear Filters##{idPrefix}-character-filter-clear-{index}"))
+            state.Clear();
         ImGui.EndDisabled();
-        if (hovered)
-            ImGui.SetTooltip(preview);
     }
 
     private void DrawJob(
@@ -657,6 +779,21 @@ internal sealed class DadPresetCrewEditor
         => string.IsNullOrWhiteSpace(placeholder.CharacterLabel)
             ? "Shared character"
             : placeholder.CharacterLabel;
+
+    private static string KnownLocation(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Trim();
+
+    private static void DrawConflictWarning(string message, float wrapWidth)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.72f, 0.25f, 1f));
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + PositiveWidth(wrapWidth));
+        ImGui.TextUnformatted(message);
+        ImGui.PopTextWrapPos();
+        ImGui.PopStyleColor();
+    }
+
+    private static float PositiveWidth(float width)
+        => float.IsFinite(width) && width > 0f ? width : 1f;
 
     private static string ShortSharedToken(string token)
     {

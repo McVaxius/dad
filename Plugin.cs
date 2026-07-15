@@ -57,6 +57,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadProfileDirectoryService ProfileDirectoryService { get; }
     public DadKrangleService KrangleService { get; }
     public DadShareService ShareService { get; }
+    internal DadCharacterFilterSessionState CharacterFilterSessionState { get; } = new();
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
     public IReadOnlyList<DadPlannerGroup> PlannerGroups => Configuration.PlannerGroups;
     public DadPresetProviderService PresetProviderService { get; }
@@ -157,6 +158,7 @@ public sealed class Plugin : IDalamudPlugin
             ConfigManager,
             VermaxionIpcService,
             AutoRetainerIpcService,
+            LifestreamIpcService,
             PartyInviteGateway,
             requestedJobPreparationGate,
             classJobGearsetGateway,
@@ -186,6 +188,7 @@ public sealed class Plugin : IDalamudPlugin
                 ?.Clone());
         CharacterIntelligenceService = new DadCharacterIntelligenceService(ConfigManager, XadbClient, TransportService, Log);
         RosterCatalogService = new DadRosterCatalogService(Configuration, ConfigManager, XadbClient, TransportService, PresenceService, Log);
+        PresenceService.ConfigureOceTravelCapacityProofProvider(RosterCatalogService.BuildLocalOceTravelCapacityProof);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
         ShareService = new DadShareService(forceKrangle: KrangleService.KrangleName);
@@ -1229,6 +1232,7 @@ public sealed class Plugin : IDalamudPlugin
                 SelectedDuty = selectedDuty,
                 RouletteOptions = PresetProviderService.GetPlannerRouletteOptions(),
                 SelectedRoulette = selectedRoulette.Option,
+                RouletteConflictIndex = DadRoulettePresetConflictRules.BuildIndex(groups),
             };
             cachedPlannerUiCacheKey = cacheKey;
             plannerUiCacheInvalidationReason = string.Empty;
@@ -4430,6 +4434,8 @@ internal sealed class DadPlannerUiSnapshot
     public DadPlannerDutyOption? SelectedDuty { get; init; }
     public IReadOnlyList<DadPlannerRouletteOption> RouletteOptions { get; init; } = [];
     public DadPlannerRouletteOption? SelectedRoulette { get; init; }
+    public DadRoulettePresetConflictIndex RouletteConflictIndex { get; init; } =
+        DadRoulettePresetConflictRules.BuildIndex([]);
     public IReadOnlyDictionary<string, IReadOnlyList<DadAcquiredCharacter>> CharactersByAccountKey { get; init; } =
         new Dictionary<string, IReadOnlyList<DadAcquiredCharacter>>(StringComparer.OrdinalIgnoreCase);
 

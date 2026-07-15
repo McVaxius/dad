@@ -257,6 +257,7 @@ public sealed class DadParticipantSnapshot
     public DadCharacterKey ActiveCharacterKey { get; set; } = new(string.Empty);
     public List<DadCharacterKey> AvailableCharacterKeys { get; set; } = [];
     public DadAcquiredCharacter Character { get; set; } = new();
+    public DadWorldLocationObservation? CurrentLocation { get; set; }
     public string AssignedSlotId { get; set; } = string.Empty;
     public string DesiredCharacterKey { get; set; } = string.Empty;
     public DadRequestedJobPreparationProof? RequestedJobPreparation { get; set; }
@@ -300,6 +301,7 @@ public sealed class DadParticipantSnapshot
         ActiveCharacterKey = ActiveCharacterKey,
         AvailableCharacterKeys = [..AvailableCharacterKeys],
         Character = Character.Clone(),
+        CurrentLocation = CurrentLocation?.Clone(),
         AssignedSlotId = AssignedSlotId,
         DesiredCharacterKey = DesiredCharacterKey,
         RequestedJobPreparation = RequestedJobPreparation?.Clone(),
@@ -330,6 +332,23 @@ public sealed class DadWakeRequestDto
     public uint? RequiredJobId { get; set; }
     public string AssignedSlotId { get; set; } = string.Empty;
     public bool RequirePostArReady { get; set; } = true;
+    public DadCoordinatorTravelTarget? CoordinatorTravelTarget { get; set; }
+
+    public DadWakeRequestDto Clone()
+        => new()
+        {
+            RunId = RunId,
+            AuthorityWorkerSessionId = AuthorityWorkerSessionId,
+            AuthorityMode = AuthorityMode,
+            ModuleId = ModuleId,
+            RequiredAccountKey = RequiredAccountKey,
+            RequiredCharacterKey = RequiredCharacterKey,
+            RequiredContentId = RequiredContentId,
+            RequiredJobId = RequiredJobId,
+            AssignedSlotId = AssignedSlotId,
+            RequirePostArReady = RequirePostArReady,
+            CoordinatorTravelTarget = CoordinatorTravelTarget?.Clone(),
+        };
 }
 
 public sealed class DadParticipantReadyDto

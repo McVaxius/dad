@@ -52,6 +52,10 @@
     <Compile Include="..\Services\DadPlannerWarningRules.cs" Link="DadPlannerWarningRules.cs" />
     <Compile Include="..\Services\DadRouletteCatalogProjection.cs" Link="DadRouletteCatalogProjection.cs" />
     <Compile Include="..\Services\DadDailyRoulettePlannerRules.cs" Link="DadDailyRoulettePlannerRules.cs" />
+    <Compile Include="..\Services\DadCharacterPickerLayoutRules.cs" Link="DadCharacterPickerLayoutRules.cs" />
+    <Compile Include="..\Services\DadCharacterFilterRules.cs" Link="DadCharacterFilterRules.cs" />
+    <Compile Include="..\Services\DadRoulettePresetConflictRules.cs" Link="DadRoulettePresetConflictRules.cs" />
+    <Compile Include="..\Services\DadCoordinatorTravelRules.cs" Link="DadCoordinatorTravelRules.cs" />
     <Compile Include="..\Services\DadDutyFinderLiveEntryMapping.cs" Link="DadDutyFinderLiveEntryMapping.cs" />
     <Compile Include="..\Services\DadRouletteQueueRuntimeRules.cs" Link="DadRouletteQueueRuntimeRules.cs" />
     <Compile Include="..\Services\DadFullPartyExecutionRules.cs" Link="DadFullPartyExecutionRules.cs" />
