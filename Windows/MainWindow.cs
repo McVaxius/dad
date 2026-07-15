@@ -57,7 +57,10 @@ public sealed class MainWindow : Window, IDisposable
     private string selectedScheduleId = string.Empty;
     private string schedulerScheduleNameBuffer = "Dad Schedule";
     private string schedulerAddPresetGroupId = string.Empty;
+    private bool addSavedPlanToSchedule;
+    private string plannerAttachScheduleId = string.Empty;
     private string pendingDeleteScheduleId = string.Empty;
+    private string pendingRetryScheduleRunId = string.Empty;
     private string scheduleShareStatus = string.Empty;
     private string scheduleShareIdOwner = string.Empty;
     private string scheduleShareIdEdit = string.Empty;
@@ -1813,6 +1816,18 @@ public sealed class MainWindow : Window, IDisposable
                               missingPresetCount == 0 &&
                               !activeScheduleLocked &&
                               !Plugin.IsBusy(runState.VisibleRun);
+        var latestFailedRun = snapshot.RecentResults.FirstOrDefault(result =>
+            string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
+            result.Status == DadScheduleRunStatus.Blocked);
+        var retryEligibility = latestFailedRun == null
+            ? new DadScheduleRetryResult { Summary = "No failed schedule entry is available to retry." }
+            : plugin.SchedulerService.EvaluateFailedEntryRetry(
+                new DadScheduleRetryRequest
+                {
+                    FailedRunId = latestFailedRun.RunId,
+                    RequestedBy = "schedule-ui-retry",
+                },
+                Plugin.IsBusy(runState.VisibleRun));
         var useColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 66f;
         if (!ImGui.BeginTable(
                 "dad-schedule-workspace",
@@ -1882,10 +1897,64 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SameLine();
             if (ImGui.SmallButton("Open Status"))
                 NavigateToStatus(activeScheduleLocked ? DadStatusWindowTab.CurrentActivity : DadStatusWindowTab.QueueHistory);
+            ImGui.BeginDisabled(latestFailedRun == null || !retryEligibility.Eligible);
+            if (ImGui.SmallButton("Retry failed entry") && latestFailedRun != null)
+            {
+                pendingRetryScheduleRunId = latestFailedRun.RunId;
+                ImGui.OpenPopup("Confirm retry failed schedule entry##dad-schedule-retry-confirm");
+            }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip(retryEligibility.Summary);
+            ImGui.EndDisabled();
             DadUi.EndCard();
         }
 
         ImGui.EndTable();
+        DrawRetryFailedEntryPopup(runState);
+    }
+
+    private void DrawRetryFailedEntryPopup(DadVisibleRunState runState)
+    {
+        if (!ImGui.BeginPopupModal(
+                "Confirm retry failed schedule entry##dad-schedule-retry-confirm",
+                ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            return;
+        }
+
+        var request = new DadScheduleRetryRequest
+        {
+            FailedRunId = pendingRetryScheduleRunId,
+            RequestedBy = "schedule-ui-retry",
+        };
+        var eligibility = plugin.SchedulerService.EvaluateFailedEntryRetry(
+            request,
+            Plugin.IsBusy(runState.VisibleRun));
+        ImGui.TextWrapped("Retry this failed Schedule entry from the same entry and repeat cursor?");
+        ImGui.TextWrapped("The original failure remains in history. A new Schedule run ID is created, and nothing is replayed automatically after a coordinator or leader crash.");
+        DrawStatusRow("Eligibility", eligibility.Summary);
+
+        ImGui.BeginDisabled(!eligibility.Eligible);
+        if (ImGui.Button("Retry failed entry"))
+        {
+            var retried = plugin.SchedulerService.RetryFailedEntry(
+                request,
+                Plugin.IsBusy(runState.VisibleRun));
+            plugin.PrintStatus(retried.Summary);
+            if (retried.Retried)
+            {
+                pendingRetryScheduleRunId = string.Empty;
+                ImGui.CloseCurrentPopup();
+            }
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+        {
+            pendingRetryScheduleRunId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
     }
 
     private void EnsureScheduleSelection(DadScheduleSnapshot snapshot)
@@ -6582,9 +6651,63 @@ public sealed class MainWindow : Window, IDisposable
             {
                 plannerGroupNameBuffer = group.DisplayName;
                 plugin.PrintStatus($"{(created ? "Created" : "Updated")} preset '{group.DisplayName}'.");
+                if (addSavedPlanToSchedule)
+                {
+                    var attachment = plugin.AttachSavedPlanToSchedule(plannerAttachScheduleId, group);
+                    plugin.PrintStatus(attachment.Summary);
+                }
             }
         }
         ImGui.EndDisabled();
+
+        var schedules = plugin.Configuration.Schedules ?? [];
+        if (!schedules.Any(schedule => string.Equals(
+                schedule.ScheduleId,
+                plannerAttachScheduleId,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            plannerAttachScheduleId = schedules.FirstOrDefault()?.ScheduleId ?? string.Empty;
+        }
+        var attachmentMutationBlocker = plugin.GetShareMutationBlocker();
+        var attachmentLocked = schedules.Count == 0 || !string.IsNullOrWhiteSpace(attachmentMutationBlocker);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(attachmentLocked);
+        ImGui.Checkbox("Add saved Plan to Schedule", ref addSavedPlanToSchedule);
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && attachmentLocked)
+        {
+            ImGui.SetTooltip(schedules.Count == 0
+                ? "Create a Schedule before attaching saved Plans."
+                : attachmentMutationBlocker);
+        }
+        if (addSavedPlanToSchedule)
+        {
+            ImGui.SameLine();
+            var selectedAttachSchedule = schedules.FirstOrDefault(schedule => string.Equals(
+                schedule.ScheduleId,
+                plannerAttachScheduleId,
+                StringComparison.OrdinalIgnoreCase));
+            ImGui.BeginDisabled(attachmentLocked);
+            ImGui.SetNextItemWidth(MathF.Min(220f, MathF.Max(120f, ImGui.GetContentRegionAvail().X)));
+            if (ImGui.BeginCombo(
+                    "##planner-save-attach-schedule",
+                    selectedAttachSchedule?.DisplayName ?? "(select Schedule)"))
+            {
+                foreach (var candidate in schedules)
+                {
+                    var selected = string.Equals(
+                        candidate.ScheduleId,
+                        plannerAttachScheduleId,
+                        StringComparison.OrdinalIgnoreCase);
+                    if (ImGui.Selectable(candidate.DisplayName, selected))
+                        plannerAttachScheduleId = candidate.ScheduleId;
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+                ImGui.EndCombo();
+            }
+            ImGui.EndDisabled();
+        }
 
         ImGui.SameLine();
         ImGui.BeginDisabled(selectedGroup == null || plannerLocked);

@@ -12,6 +12,12 @@ public sealed class ConfigWindow : Window, IDisposable
 {
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
     private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
+    private static readonly string[] PreDutyRepairModes =
+    {
+        "Self",
+        "NPC, excluding inns",
+        "Nearby NPC, no teleport/inn",
+    };
     private const string CommunityDiscordUrl = "https://discord.gg/VsXqydsvpu";
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
     private readonly Plugin plugin;
@@ -159,6 +165,36 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.TextWrapped("When on, DAD skips runtime connectivity and readiness checks before starting. Duplicate-slot checks stay enforced. Leave this off for normal play.");
+
+        DrawSectionHeader("Pre-duty repair");
+        configuration.PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
+        var repairPolicy = configuration.PreDutyRepairPolicy.Normalize();
+        var repairEnabled = repairPolicy.Enabled;
+        if (ImGui.Checkbox("Repair equipped gear before queue-capable duties", ref repairEnabled))
+        {
+            repairPolicy.Enabled = repairEnabled;
+            configuration.Save();
+        }
+
+        ImGui.TextWrapped("When enabled, every assigned worker must prove equipped durability at or above the threshold before it can reach the queue barrier. Blunderville is excluded.");
+        ImGui.BeginDisabled(!repairPolicy.Enabled);
+        var repairThreshold = repairPolicy.ThresholdPercent;
+        ImGui.SetNextItemWidth(180f);
+        if (ImGui.SliderInt("Durability threshold", ref repairThreshold, 1, 100, "%d%%"))
+        {
+            repairPolicy.ThresholdPercent = Math.Clamp(repairThreshold, 1, 100);
+            configuration.Save();
+        }
+
+        var repairMode = (int)repairPolicy.Mode;
+        ImGui.SetNextItemWidth(260f);
+        if (ImGui.Combo("Repair route", ref repairMode, PreDutyRepairModes, PreDutyRepairModes.Length))
+        {
+            repairPolicy.Mode = (DadPreDutyRepairMode)Math.Clamp(repairMode, 0, PreDutyRepairModes.Length - 1);
+            configuration.Save();
+        }
+        ImGui.EndDisabled();
+        DrawStatusRow("ADS mode", repairPolicy.AdsMode);
 
         DrawSectionHeader("Integrations");
 

@@ -27,6 +27,7 @@ public sealed class DadRunResult
     public string BlockedReason { get; set; } = string.Empty;
     public string FailureReason { get; set; } = string.Empty;
     public string Summary { get; set; } = "Idle";
+    public DadScheduleFailureKind ScheduleFailureKind { get; set; }
     public DadRunRequest? Request { get; set; }
     public DadRunStopProgress StopProgress { get; set; } = new();
     public DadModuleExecutionStatusDto CurrentExecutorStatus { get; set; } = new();
@@ -129,6 +130,7 @@ public sealed class DadRunResult
         BlockedReason = BlockedReason,
         FailureReason = FailureReason,
         Summary = Summary,
+        ScheduleFailureKind = ScheduleFailureKind,
         Request = Request,
         StopProgress = StopProgress.Clone(),
         CurrentExecutorStatus = CurrentExecutorStatus.Clone(),

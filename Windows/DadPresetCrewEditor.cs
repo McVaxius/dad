@@ -238,12 +238,24 @@ internal sealed class DadPresetCrewEditor
                     : "Any character"
                 : plugin.KrangleService.FormatCharacterKey(slot.RequiredCharacterKey.Value);
         var allCharacters = plannerSnapshot.GetCharactersForAccount(slot.RequiredAccountKey);
-        var selectedWarning = slot.RequiredCharacterKey.IsEmpty
-            ? new DadRoulettePresetConflictWarning()
-            : plannerSnapshot.RouletteConflictIndex.Find(
-                group,
-                slot.RequiredAccountKey,
-                slot.RequiredCharacterKey);
+        var conflictPresentation = DadCharacterConflictPresentationRules.Build(
+            allCharacters.Select(character =>
+            {
+                var warning = plannerSnapshot.RouletteConflictIndex.Find(
+                    group,
+                    slot.RequiredAccountKey,
+                    new DadCharacterKey(character.CharacterKey));
+                return new DadCharacterConflictChoice(
+                    character.CharacterKey,
+                    plugin.KrangleService.FormatCharacterKey(character.CharacterKey),
+                    warning.HasConflict);
+            }),
+            slot.RequiredCharacterKey.Value);
+        var selectedUseBoldOrange = !slot.RequiredCharacterKey.IsEmpty &&
+                                    plannerSnapshot.RouletteConflictIndex.Find(
+                                        group,
+                                        slot.RequiredAccountKey,
+                                        slot.RequiredCharacterKey).HasConflict;
         var viewportSize = ImGui.GetMainViewport().WorkSize;
         var pickerLayout = DadCharacterPickerLayoutRules.Resolve(
             viewportSize.X,
@@ -254,7 +266,14 @@ internal sealed class DadPresetCrewEditor
         ImGui.SetNextWindowSizeConstraints(
             new Vector2(pickerLayout.PopupWidth, 1f),
             new Vector2(pickerLayout.PopupWidth, pickerLayout.PopupMaxHeight));
+        if (selectedUseBoldOrange)
+            ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
         var open = ImGui.BeginCombo($"##{idPrefix}-character-{index}", preview);
+        if (selectedUseBoldOrange)
+        {
+            DrawBoldOrangeItemOverlay(preview, framed: true);
+            ImGui.PopStyleColor();
+        }
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         if (open)
         {
@@ -265,6 +284,16 @@ internal sealed class DadPresetCrewEditor
                 allCharacters,
                 plugin.CharacterFilterSessionState);
             ImGui.TextDisabled($"Showing {filterResult.ResultCount} of {filterResult.TotalCount} character(s)");
+            var showConflictSummary = plugin.Configuration.ShowCharacterConflictSummary;
+            if (ImGui.Checkbox(
+                    $"Show character conflict summary##{idPrefix}-character-conflict-summary-{index}",
+                    ref showConflictSummary))
+            {
+                plugin.Configuration.ShowCharacterConflictSummary = showConflictSummary;
+                plugin.Configuration.Save();
+            }
+            if (showConflictSummary && !string.IsNullOrWhiteSpace(conflictPresentation.Summary))
+                DrawBoldOrangeText(conflictPresentation.Summary);
             ImGui.Separator();
 
             if (ImGui.BeginChild(
@@ -296,11 +325,23 @@ internal sealed class DadPresetCrewEditor
                     var name = plugin.KrangleService.FormatCharacterKey(character.CharacterKey);
                     var candidate = $"{name} | World: {world} | DC: {dataCenter} | {source}";
                     var candidateRowWidth = PositiveWidth(ImGui.GetContentRegionAvail().X);
-                    if (ImGui.Selectable(
+                    var warning = plannerSnapshot.RouletteConflictIndex.Find(
+                        group,
+                        slot.RequiredAccountKey,
+                        new DadCharacterKey(character.CharacterKey));
+                    if (warning.HasConflict)
+                        ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
+                    var chosen = ImGui.Selectable(
                             candidate,
                             selected,
                             ImGuiSelectableFlags.None,
-                            new Vector2(candidateRowWidth, 0f)))
+                            new Vector2(candidateRowWidth, 0f));
+                    if (warning.HasConflict)
+                    {
+                        DrawBoldOrangeItemOverlay(candidate);
+                        ImGui.PopStyleColor();
+                    }
+                    if (chosen)
                     {
                         var characterChanged = !string.Equals(
                             slot.RequiredCharacterKey.Value,
@@ -314,17 +355,6 @@ internal sealed class DadPresetCrewEditor
                     }
                     if (selected)
                         ImGui.SetItemDefaultFocus();
-
-                    var warning = plannerSnapshot.RouletteConflictIndex.Find(
-                        group,
-                        slot.RequiredAccountKey,
-                        new DadCharacterKey(character.CharacterKey));
-                    if (warning.HasConflict)
-                    {
-                        DrawConflictWarning(
-                            warning.Message,
-                            PositiveWidth(ImGui.GetContentRegionAvail().X));
-                    }
                 }
             }
             ImGui.EndChild();
@@ -333,8 +363,6 @@ internal sealed class DadPresetCrewEditor
         ImGui.EndDisabled();
         if (hovered)
             ImGui.SetTooltip(preview);
-        if (selectedWarning.HasConflict)
-            DrawConflictWarning(selectedWarning.Message, pickerLayout.ComboWidth);
     }
 
     private void DrawCharacterFilters(
@@ -783,13 +811,30 @@ internal sealed class DadPresetCrewEditor
     private static string KnownLocation(string? value)
         => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Trim();
 
-    private static void DrawConflictWarning(string message, float wrapWidth)
+    private static readonly Vector4 ConflictOrange = new(1f, 0.56f, 0.16f, 1f);
+
+    private static void DrawBoldOrangeText(string message)
     {
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.72f, 0.25f, 1f));
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + PositiveWidth(wrapWidth));
+        ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
         ImGui.TextUnformatted(message);
-        ImGui.PopTextWrapPos();
+        DrawBoldOrangeItemOverlay(message);
         ImGui.PopStyleColor();
+    }
+
+    private static void DrawBoldOrangeItemOverlay(string text, bool framed = false)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var itemMin = ImGui.GetItemRectMin();
+        var padding = ImGui.GetStyle().FramePadding;
+        var position = framed
+            ? new Vector2(itemMin.X + padding.X + 0.7f, itemMin.Y + padding.Y)
+            : new Vector2(itemMin.X + 0.7f, itemMin.Y);
+        ImGui.GetWindowDrawList().AddText(
+            position,
+            ImGui.ColorConvertFloat4ToU32(ConflictOrange),
+            text);
     }
 
     private static float PositiveWidth(float width)

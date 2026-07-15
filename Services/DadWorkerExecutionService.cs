@@ -11,6 +11,7 @@ public sealed class DadWorkerExecutionService
     private readonly DadPresenceService presenceService;
     private readonly DadCombatRotationService combatRotationService;
     private readonly DadDutySupportAdsService adsService;
+    private readonly DadPreDutyRepairRuntimeService preDutyRepairService;
     private readonly ICondition condition;
     private readonly IPluginLog log;
     private readonly ConcurrentQueue<DadWorkerExecutionCommand> pendingCommands = new();
@@ -30,12 +31,14 @@ public sealed class DadWorkerExecutionService
     private string lastParticipantQueueTransition = string.Empty;
     private DadCombatRotationMode participantCombatRotationMode = DadCombatRotationMode.UseFrenRider;
     private DateTime? persistentStartupRegisteredAtUtc;
+    private bool prequeuePrepared;
 
     public DadWorkerExecutionService(
         DadQueueExecutionService queueExecutionService,
         DadPresenceService presenceService,
         DadCombatRotationService combatRotationService,
         DadDutySupportAdsService adsService,
+        DadPreDutyRepairRuntimeService preDutyRepairService,
         ICondition condition,
         IPluginLog log)
     {
@@ -43,6 +46,7 @@ public sealed class DadWorkerExecutionService
         this.presenceService = presenceService;
         this.combatRotationService = combatRotationService;
         this.adsService = adsService;
+        this.preDutyRepairService = preDutyRepairService;
         this.condition = condition;
         this.log = log;
         status.WorkerSessionId = presenceService.WorkerSessionId;
@@ -302,6 +306,12 @@ public sealed class DadWorkerExecutionService
                 return;
             }
 
+            if (!prequeuePrepared)
+            {
+                UpdatePrequeuePreparation();
+                return;
+            }
+
             if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
                 status.ModuleId == DadModuleId.Mogtome)
                 UpdateQueueLeader();
@@ -320,6 +330,8 @@ public sealed class DadWorkerExecutionService
         lastParticipantQueueTransition = string.Empty;
         participantCombatRotationMode = combatRotationService.CombatRotationMode;
         participantFrenRiderHandoffGate.Reset();
+        preDutyRepairService.Reset();
+        prequeuePrepared = false;
         var module = ResolveModule(command);
         if (module == null)
         {
@@ -357,10 +369,69 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
+        preDutyRepairService.Begin(command.Plan.Request, module.ModuleId, DateTime.UtcNow);
+        UpdatePrequeuePreparation();
+    }
+
+    private void UpdatePrequeuePreparation()
+    {
+        if (activeCommand == null || prequeuePrepared || status.IsTerminal)
+            return;
+
+        var module = ResolveModule(activeCommand);
+        if (module == null)
+        {
+            Finish(DadWorkerExecutionState.Failed, false, "Worker assignment has no module.", "Missing module.");
+            return;
+        }
+
+        var liveRuntime = presenceService.BuildLiveSafetySnapshot();
+        if (!DadWorkerCommandValidationRules.TryValidate(
+                activeCommand,
+                liveRuntime,
+                out var localAssignment,
+                out var validationBlocker))
+        {
+            status.State = DadWorkerExecutionState.Preparing;
+            status.Summary = $"Worker preparation is waiting for fresh exact prequeue safety proof: {validationBlocker}";
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            commandStatuses[activeCommand.CommandId] = status.Clone();
+            return;
+        }
+
+        if (!liveRuntime.WorldReadyStable)
+        {
+            status.State = DadWorkerExecutionState.Preparing;
+            status.Summary = "Worker preparation is waiting for normal world-stable prequeue safety proof before durability or ADS inspection.";
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            commandStatuses[activeCommand.CommandId] = status.Clone();
+            return;
+        }
+
+        var repairDecision = preDutyRepairService.Update(DateTime.UtcNow);
+        if (repairDecision.Action == DadPreDutyRepairAction.Reject)
+        {
+            var assignment = localAssignment.WorkerSessionId.IsEmpty ? liveRuntime : localAssignment;
+            var attributed = DadWorkerPrequeueBarrierRules.AttributeFailure(assignment, repairDecision.Summary);
+            Finish(DadWorkerExecutionState.Failed, false, attributed, attributed);
+            return;
+        }
+
+        if (repairDecision.Action != DadPreDutyRepairAction.Ready)
+        {
+            status.State = preDutyRepairService.IsRequired
+                ? DadWorkerExecutionState.Repairing
+                : DadWorkerExecutionState.Preparing;
+            status.Summary = repairDecision.Summary;
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            commandStatuses[activeCommand.CommandId] = status.Clone();
+            return;
+        }
+
         var adsAssignment = localAssignment.WorkerSessionId.IsEmpty
             ? liveRuntime
             : localAssignment;
-        if (!TryResolveLocalAdsLootMode(command, adsAssignment, liveRuntime, out var adsLootMode, out var adsIdentityBlocker))
+        if (!TryResolveLocalAdsLootMode(activeCommand, adsAssignment, liveRuntime, out var adsLootMode, out var adsIdentityBlocker))
         {
             var attributedBlocker = DadWorkerPrequeueBarrierRules.AttributeFailure(
                 adsAssignment,
@@ -382,12 +453,19 @@ public sealed class DadWorkerExecutionService
         }
 
         log.Information(
-            "[dad][ADS] Required configuration patch accepted slot={SlotId} character={CharacterKey} worker={WorkerSessionId} lootMode={LootMode}.",
+            "[dad][ADS] Required configuration patch accepted slot={SlotId} character={CharacterKey} worker={WorkerSessionId} lootMode={LootMode} after repairProof={RepairProof}.",
             adsAssignment.AssignedSlotId,
             adsAssignment.ActiveCharacterKey.Value,
             adsAssignment.WorkerSessionId.Value,
-            adsLootMode?.ToString() ?? DadAdsLootMode.NoChange.ToString());
+            adsLootMode?.ToString() ?? DadAdsLootMode.NoChange.ToString(),
+            repairDecision.Summary);
 
+        prequeuePrepared = true;
+        BeginQueueWork(activeCommand, module);
+    }
+
+    private void BeginQueueWork(DadWorkerExecutionCommand command, DadPlannedModuleExecution module)
+    {
         if (command.Role == DadWorkerExecutionRole.Participant)
         {
             if (module.ModuleId == DadModuleId.Mogtome)
@@ -758,6 +836,8 @@ public sealed class DadWorkerExecutionService
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
         participantFrenRiderHandoffGate.Reset();
+        preDutyRepairService.Reset();
+        prequeuePrepared = false;
         status.State = state;
         status.IsTerminal = true;
         status.Success = success;

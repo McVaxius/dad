@@ -8,15 +8,29 @@ public enum DadWorkerExecutionRole
 
 public enum DadWorkerExecutionState
 {
-    Idle,
-    Accepted,
-    Starting,
-    WaitingForQueue,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    TimedOut,
+    Idle = 0,
+    Accepted = 1,
+    Starting = 2,
+    WaitingForQueue = 3,
+    Running = 4,
+    Completed = 5,
+    Failed = 6,
+    Cancelled = 7,
+    TimedOut = 8,
+    Preparing = 9,
+    Repairing = 10,
+}
+
+internal static class DadWorkerCommandSchemaRules
+{
+    public const int LegacySchema = 1;
+    public const int RepairPolicySchema = 2;
+
+    public static bool IsSupported(int schemaVersion)
+        => schemaVersion is LegacySchema or RepairPolicySchema;
+
+    public static int ResolveEmissionSchema(DadPreDutyRepairPolicy? policy)
+        => policy?.Enabled == true ? RepairPolicySchema : LegacySchema;
 }
 
 public sealed class DadWorkerExecutionCommand

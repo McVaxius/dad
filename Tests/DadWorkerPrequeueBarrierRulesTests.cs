@@ -53,6 +53,27 @@ public sealed class DadWorkerPrequeueBarrierRulesTests
         Assert.Empty(afterDispatch);
     }
 
+    [Theory]
+    [InlineData(DadWorkerExecutionState.Accepted)]
+    [InlineData(DadWorkerExecutionState.Preparing)]
+    [InlineData(DadWorkerExecutionState.Repairing)]
+    public void PreparationStatesNeverReleaseQueueLeader(DadWorkerExecutionState preparationState)
+    {
+        var (plan, module, participants) = Scenario();
+        var statuses = participants
+            .Where(participant => Worker(participant) != "worker-w")
+            .ToDictionary(
+                Worker,
+                participant => Status(participant, DadWorkerExecutionState.WaitingForQueue),
+                StringComparer.OrdinalIgnoreCase);
+        statuses["worker-y"].State = preparationState;
+
+        Assert.False(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, participants, statuses));
+        Assert.True(DadWorkerPrequeueBarrierRules.TryResolveDispatchTargets(
+            plan, module, participants, statuses, out var targets, out var blocker), blocker);
+        Assert.Empty(targets);
+    }
+
     [Fact]
     public void FailureNamesExactSlotCharacterAndWorker()
     {

@@ -32,8 +32,18 @@ internal static class DadWorkerCommandValidationRules
         if (command == null || command.Plan == null || command.Plan.Request == null || command.Plan.Modules == null)
             return Fail("Worker command is missing its plan, request, or modules.", out blocker);
 
-        if (command.SchemaVersion != 1)
+        if (!DadWorkerCommandSchemaRules.IsSupported(command.SchemaVersion))
             return Fail($"Unsupported worker command schema {command.SchemaVersion}.", out blocker);
+
+        command.Plan.Request.PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
+        command.Plan.Request.PreDutyRepairPolicy.Normalize();
+        if (command.SchemaVersion == DadWorkerCommandSchemaRules.LegacySchema &&
+            command.Plan.Request.PreDutyRepairPolicy.Enabled)
+        {
+            return Fail(
+                "Worker command schema 1 cannot carry required pre-duty repair policy; schema 2 is required.",
+                out blocker);
+        }
 
         if (string.IsNullOrWhiteSpace(command.RunId) ||
             !string.Equals(command.RunId, command.Plan.Request.RequestId, StringComparison.OrdinalIgnoreCase))

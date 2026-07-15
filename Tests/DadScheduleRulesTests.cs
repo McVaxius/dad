@@ -279,4 +279,169 @@ public sealed class DadScheduleRulesTests
         Assert.Equal(2, resultClone.ScheduleEntryIndex);
         Assert.Equal(3, resultClone.ScheduleRepeatIteration);
     }
+
+    [Fact]
+    public void SavedPlanAttachmentAppendsOneRepeatAndBumpsRevisionOnce()
+    {
+        var now = new DateTime(2026, 7, 15, 17, 0, 0, DateTimeKind.Utc);
+        var schedule = new DadScheduleDefinition
+        {
+            ScheduleId = "schedule",
+            Revision = 4,
+            Entries = [new DadScheduleEntry { GroupId = "existing", RepeatCount = 3 }],
+        };
+        var group = new DadPlannerGroup { GroupId = "stable-plan", DisplayName = "Saved Plan" };
+
+        var result = DadScheduleRules.AttachSavedPlan(schedule, group, now);
+
+        Assert.Equal(DadScheduleAttachmentDisposition.Added, result.Disposition);
+        Assert.True(result.Added);
+        Assert.Equal(5, schedule.Revision);
+        var attached = Assert.Single(schedule.Entries, entry => entry.GroupId == "stable-plan");
+        Assert.Equal("Saved Plan", attached.PresetName);
+        Assert.Equal(1, attached.RepeatCount);
+        Assert.Equal(now, attached.CreatedAtUtc);
+        Assert.Equal(now, schedule.UpdatedAtUtc);
+    }
+
+    [Fact]
+    public void SavedPlanAttachmentIsIdempotentByStableGroupId()
+    {
+        var originalUpdated = new DateTime(2026, 7, 15, 16, 0, 0, DateTimeKind.Utc);
+        var schedule = new DadScheduleDefinition
+        {
+            ScheduleId = "schedule",
+            Revision = 9,
+            UpdatedAtUtc = originalUpdated,
+            Entries = [new DadScheduleEntry { GroupId = "stable-plan", RepeatCount = 7 }],
+        };
+
+        var result = DadScheduleRules.AttachSavedPlan(
+            schedule,
+            new DadPlannerGroup { GroupId = " STABLE-PLAN ", DisplayName = "Changed version" },
+            originalUpdated.AddHours(1));
+
+        Assert.Equal(DadScheduleAttachmentDisposition.AlreadyPresent, result.Disposition);
+        Assert.False(result.Added);
+        Assert.Equal(DadScheduleRules.DuplicatePlanAttachmentMessage, result.Summary);
+        Assert.Equal(9, schedule.Revision);
+        Assert.Equal(originalUpdated, schedule.UpdatedAtUtc);
+        Assert.Single(schedule.Entries);
+        Assert.Equal(7, schedule.Entries[0].RepeatCount);
+    }
+
+    [Theory]
+    [InlineData(DadScheduleFailureKind.PreStartRejected)]
+    [InlineData(DadScheduleFailureKind.EntryTerminalFailure)]
+    public void RetryCreatesNewRunAtExactCursorAndPreservesAuditProgress(DadScheduleFailureKind failureKind)
+    {
+        var now = new DateTime(2026, 7, 15, 18, 0, 0, DateTimeKind.Utc);
+        var reset = new DateTime(2026, 7, 15, 15, 0, 0, DateTimeKind.Utc);
+        var schedule = RetrySchedule();
+        var failed = RetryFailure(schedule, failureKind, reset);
+
+        var allowed = DadScheduleRules.TryCreateRetryState(
+            failed,
+            schedule,
+            "operator",
+            now,
+            out var retry,
+            out var blocker);
+
+        Assert.True(allowed, blocker);
+        Assert.NotEqual(failed.RunId, retry.RunId);
+        Assert.Equal(failed.RunId, retry.RetriedFromRunId);
+        Assert.Equal(failed.CurrentEntryIndex, retry.CurrentEntryIndex);
+        Assert.Equal(failed.CurrentEntryId, retry.CurrentEntryId);
+        Assert.Equal(failed.CurrentGroupId, retry.CurrentGroupId);
+        Assert.Equal(failed.RepeatIteration, retry.RepeatIteration);
+        Assert.Equal(failed.TotalEntryExecutions, retry.TotalEntryExecutions);
+        Assert.Equal(failed.CompletedEntryExecutions, retry.CompletedEntryExecutions);
+        Assert.Equal(failed.SkippedEntryExecutions, retry.SkippedEntryExecutions);
+        Assert.Equal(reset, retry.DailyResetUtc);
+        Assert.Equal(schedule.Revision, retry.ScheduleRevisionAtStart);
+        Assert.Empty(retry.ActiveSchedulerJobId);
+        Assert.Empty(retry.ActivePlannerRequestId);
+        Assert.Equal(DadScheduleRunStatus.Running, retry.Status);
+        Assert.Equal(DadScheduleRunPhase.StartingEntry, retry.Phase);
+        Assert.Equal(failureKind, failed.FailureKind);
+        Assert.Equal("failed-run", failed.RunId);
+    }
+
+    [Theory]
+    [InlineData(DadScheduleFailureKind.CoordinatorReloadAbandonment)]
+    [InlineData(DadScheduleFailureKind.MissingOrUnknownLeaderState)]
+    [InlineData(DadScheduleFailureKind.SchedulerStateDisappeared)]
+    [InlineData(DadScheduleFailureKind.Cancellation)]
+    [InlineData(DadScheduleFailureKind.ScheduleRevisionChanged)]
+    [InlineData(DadScheduleFailureKind.EntryIdentityChanged)]
+    [InlineData(DadScheduleFailureKind.Unknown)]
+    public void ProvenanceKindsOutsideOrdinaryEntryFailureAreNotRetryable(DadScheduleFailureKind failureKind)
+    {
+        var schedule = RetrySchedule();
+        var failed = RetryFailure(schedule, failureKind, DateTime.UtcNow);
+
+        Assert.False(DadScheduleRules.TryCreateRetryState(
+            failed, schedule, "operator", DateTime.UtcNow, out _, out var blocker));
+        Assert.Contains("not retryable", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RetryRejectsChangedScheduleRevisionOrEntryIdentity()
+    {
+        var schedule = RetrySchedule();
+        var failed = RetryFailure(schedule, DadScheduleFailureKind.EntryTerminalFailure, DateTime.UtcNow);
+
+        schedule.Revision++;
+        Assert.False(DadScheduleRules.TryCreateRetryState(
+            failed, schedule, "operator", DateTime.UtcNow, out _, out var revisionBlocker));
+        Assert.Contains("revision changed", revisionBlocker, StringComparison.OrdinalIgnoreCase);
+
+        schedule.Revision = failed.ScheduleRevisionAtStart;
+        schedule.Entries[1].EntryId = "replacement-entry";
+        Assert.False(DadScheduleRules.TryCreateRetryState(
+            failed, schedule, "operator", DateTime.UtcNow, out _, out var identityBlocker));
+        Assert.Contains("identity changed", identityBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static DadScheduleDefinition RetrySchedule()
+        => new DadScheduleDefinition
+        {
+            ScheduleId = "schedule",
+            DisplayName = "Schedule",
+            Revision = 7,
+            Entries =
+            [
+                new DadScheduleEntry { EntryId = "entry-a", GroupId = "group-a", RepeatCount = 1 },
+                new DadScheduleEntry { EntryId = "entry-b", GroupId = "group-b", PresetName = "Plan B", RepeatCount = 3 },
+            ],
+        }.Normalize();
+
+    private static DadScheduleRunResult RetryFailure(
+        DadScheduleDefinition schedule,
+        DadScheduleFailureKind failureKind,
+        DateTime dailyResetUtc)
+        => new()
+        {
+            RunId = "failed-run",
+            ScheduleId = schedule.ScheduleId,
+            ScheduleName = schedule.DisplayName,
+            Status = DadScheduleRunStatus.Blocked,
+            FailureKind = failureKind,
+            ScheduleRevisionAtStart = schedule.Revision,
+            CurrentEntryIndex = 1,
+            CurrentEntryId = "entry-b",
+            CurrentGroupId = "group-b",
+            CurrentPresetName = "Plan B",
+            RepeatIteration = 2,
+            TotalEntryExecutions = 4,
+            CompletedEntryExecutions = 2,
+            SkippedEntryExecutions = 1,
+            DailyResetUtc = dailyResetUtc,
+            ManualRun = true,
+            StartedAtUtc = dailyResetUtc.AddMinutes(1),
+            CompletedAtUtc = dailyResetUtc.AddMinutes(30),
+            Summary = "original failure",
+            BlockedReason = "original failure",
+        };
 }

@@ -35,6 +35,7 @@ public sealed class DadRunRequest
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
     public string RequestedBy { get; set; } = string.Empty;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
+    public DadPreDutyRepairPolicy PreDutyRepairPolicy { get; set; } = new();
     public DadCompletionActions? CompletionActions { get; set; }
     public DadOrchestrationIntent Orchestration { get; set; } = new();
     public DadDungeonTask? Dungeon { get; set; }
@@ -166,6 +167,8 @@ public sealed class DadRunRequest
     {
         StopPolicy ??= new DadRunStopPolicy();
         StopPolicy.Normalize();
+        PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
+        PreDutyRepairPolicy.Normalize();
         Orchestration ??= new DadOrchestrationIntent();
         Orchestration.RosterIntent ??= new DadRosterIntent();
         Orchestration.WaitPolicy ??= new DadRunWaitPolicy();

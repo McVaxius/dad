@@ -175,6 +175,9 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
     public DadWakeTakeoverActionResult SetMultiModeEnabled(bool enabled)
         => autoRetainer.SetMultiModeAndVerify(enabled);
 
+    public DadLifestreamChangeWorldResult ChangeWorld(string worldName)
+        => lifestream.ChangeWorld(worldName);
+
     public DadWakeTakeoverActionResult ExecuteCommand(
         DadWakeTakeoverCommand command,
         DadWakeTakeoverRequestDto request)

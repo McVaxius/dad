@@ -25,6 +25,12 @@ public sealed class DadAttemptStopPolicyTests
                     Attempts = 5,
                 },
                 StopPolicy = new DadRunStopPolicy { Mode = DadPlannerStopMode.AfterRuns, AfterRuns = 1 },
+                PreDutyRepairPolicy = new DadPreDutyRepairPolicy
+                {
+                    Enabled = true,
+                    ThresholdPercent = 81,
+                    Mode = DadPreDutyRepairMode.NpcExcludingInns,
+                },
             },
         };
 
@@ -36,6 +42,10 @@ public sealed class DadAttemptStopPolicyTests
         Assert.Equal(1, effectivePlan.Request.PremadeDuty!.Attempts);          // (a) executor run-count is 1, not N
         Assert.True(effectivePlan.Request.StopPolicy.AfterRuns >= 5);          // (a) stop policy AfterRuns >= N
         Assert.Equal(5, effectivePlan.Request.StopPolicy.AfterRuns);
+        Assert.True(effectivePlan.Request.PreDutyRepairPolicy.Enabled);
+        Assert.Equal(81, effectivePlan.Request.PreDutyRepairPolicy.ThresholdPercent);
+        Assert.Equal("npc-no-inn", effectivePlan.Request.PreDutyRepairPolicy.AdsMode);
+        Assert.NotSame(plan.Request.PreDutyRepairPolicy, effectivePlan.Request.PreDutyRepairPolicy);
         Assert.False(ExecutorBlocksRepeatRun(effectivePlan));                  // rewritten plan no longer trips the guard
     }
 
@@ -80,6 +90,12 @@ public sealed class DadAttemptStopPolicyTests
                     Attempts = 3,
                 },
                 StopPolicy = new DadRunStopPolicy { Mode = DadPlannerStopMode.AfterRuns, AfterRuns = 1 },
+                PreDutyRepairPolicy = new DadPreDutyRepairPolicy
+                {
+                    Enabled = true,
+                    ThresholdPercent = 76,
+                    Mode = DadPreDutyRepairMode.NearbyNpcNoTeleportOrInn,
+                },
             },
         };
 
@@ -91,6 +107,10 @@ public sealed class DadAttemptStopPolicyTests
         Assert.Equal(1, effectivePlan.Request.PremadeDuty!.Attempts);          // (a) executor run-count is 1, not N
         Assert.True(effectivePlan.Request.StopPolicy.AfterRuns >= 3);          // (a) stop policy AfterRuns >= N
         Assert.Equal(3, effectivePlan.Request.StopPolicy.AfterRuns);
+        Assert.True(effectivePlan.Request.PreDutyRepairPolicy.Enabled);
+        Assert.Equal(76, effectivePlan.Request.PreDutyRepairPolicy.ThresholdPercent);
+        Assert.Equal("npc-no-teleport-no-inn", effectivePlan.Request.PreDutyRepairPolicy.AdsMode);
+        Assert.NotSame(plan.Request.PreDutyRepairPolicy, effectivePlan.Request.PreDutyRepairPolicy);
         Assert.False(ExecutorBlocksRepeatRun(effectivePlan));
     }
 

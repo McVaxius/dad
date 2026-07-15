@@ -294,6 +294,56 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
+    public void VisitingCharacterReturnsHomeBeforeRelogWhileSafetyLeaseRemainsOwned()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.UtcNow = clock.UtcNow;
+        target.Snapshot.Participant.CurrentLocation = new DadWorldLocationObservation
+        {
+            WorldId = 2,
+            WorldName = "Visitor World",
+            DataCenterId = 2,
+            DataCenterName = "Visitor DC",
+            RegionId = 1,
+            RegionName = "Region",
+            ObservedAtUtc = clock.Now,
+        };
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        Prepare(service, target);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+
+        var relogAt = clock.Now.AddSeconds(5);
+        service.Handle(Go(DadWakeCommitKind.Relog, relogAt));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+
+        Assert.Contains("ChangeWorld:World", target.Actions);
+        Assert.DoesNotContain("RelogCharacter", target.Actions);
+        Assert.True(target.Snapshot.DadOwnsSuppression);
+        Assert.Equal(DadWakeTakeoverStage.WaitingForHomeWorld, service.GetActiveStatus()!.Stage);
+
+        target.Snapshot.Participant.CurrentLocation = new DadWorldLocationObservation
+        {
+            WorldId = 1,
+            WorldName = "World",
+            DataCenterId = 1,
+            DataCenterName = "Data Center",
+            RegionId = 1,
+            RegionName = "Region",
+            ObservedAtUtc = clock.Now,
+        };
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+
+        var changeWorldIndex = target.Actions.IndexOf("ChangeWorld:World");
+        var relogIndex = target.Actions.IndexOf("RelogCharacter");
+        Assert.True(changeWorldIndex >= 0 && relogIndex > changeWorldIndex);
+        Assert.True(target.Snapshot.DadOwnsSuppression);
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.GetActiveStatus()!.Phase);
+    }
+
+    [Fact]
     public void AcceptedRelogIsNeverDuplicatedInFlightAndAProvenNoEffectStartsANewEpoch()
     {
         var clock = new TestClock();
@@ -1138,6 +1188,7 @@ public sealed class DadWakeTakeoverServiceTests
         TestClock clock,
         int expectedRelogCount = 1)
     {
+        target.UtcNow = clock.UtcNow;
         Prepare(service, target);
         ExecuteGo(service, clock, DadWakeCommitKind.Reset);
         ExecuteGo(service, clock, DadWakeCommitKind.Relog);
@@ -1270,6 +1321,7 @@ public sealed class DadWakeTakeoverServiceTests
         public List<bool> CaptureForceFlags { get; } = [];
         public Action<bool>? OnCapture { get; set; }
         public Action? OnSuppressionReleased { get; set; }
+        public Func<DateTime>? UtcNow { get; set; }
 
         public static FakeTarget Valid(bool wrongCharacter)
         {
@@ -1293,6 +1345,23 @@ public sealed class DadWakeTakeoverServiceTests
                 WorldReadyStable = true,
                 ActiveCharacterKey = new DadCharacterKey(
                     wrongCharacter ? "Other Character@World" : "Target Character@World"),
+                Character = new DadAcquiredCharacter
+                {
+                    CharacterKey = wrongCharacter ? "Other Character@World" : "Target Character@World",
+                    ContentId = wrongCharacter ? 10UL : 20UL,
+                    WorldId = 1,
+                    WorldName = "World",
+                },
+                CurrentLocation = new DadWorldLocationObservation
+                {
+                    WorldId = 1,
+                    WorldName = "World",
+                    DataCenterId = 1,
+                    DataCenterName = "Data Center",
+                    RegionId = 1,
+                    RegionName = "Region",
+                    ObservedAtUtc = new DateTime(2026, 7, 9, 12, 0, 0, DateTimeKind.Utc),
+                },
             };
             return target;
         }
@@ -1303,6 +1372,8 @@ public sealed class DadWakeTakeoverServiceTests
         {
             CaptureForceFlags.Add(forceExternalRefresh);
             OnCapture?.Invoke(forceExternalRefresh);
+            if (UtcNow != null && Snapshot.Participant.CurrentLocation != null)
+                Snapshot.Participant.CurrentLocation.ObservedAtUtc = UtcNow();
             RefreshAuthority(request.OperationToken);
             return Snapshot;
         }
@@ -1398,6 +1469,14 @@ public sealed class DadWakeTakeoverServiceTests
             Actions.Add($"SetMultiMode:{enabled}");
             Snapshot.MultiModeEnabled = enabled;
             return DadWakeTakeoverActionResult.Accepted();
+        }
+
+        public DadLifestreamChangeWorldResult ChangeWorld(string worldName)
+        {
+            Actions.Add($"ChangeWorld:{worldName}");
+            return new DadLifestreamChangeWorldResult(
+                DadLifestreamChangeWorldOutcome.Accepted,
+                $"Accepted {worldName}.");
         }
 
         public DadWakeTakeoverActionResult ExecuteCommand(DadWakeTakeoverCommand command, DadWakeTakeoverRequestDto request)

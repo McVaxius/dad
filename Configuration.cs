@@ -20,6 +20,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool DebugUiEnabled { get; set; }
     public bool SetupWizardLoaded { get; set; }
     public bool KrangleOperatorNamesEnabled { get; set; }
+    public bool ShowCharacterConflictSummary { get; set; }
     public bool DtrBarEnabled { get; set; } = true;
     public int DtrBarMode { get; set; } = 1;
     public string DtrIconEnabled { get; set; } = "\uE044";
@@ -55,6 +56,7 @@ public sealed class Configuration : IPluginConfiguration
     public int LeaseDurationSeconds { get; set; } = 20;
     public int CancelAckTimeoutSeconds { get; set; } = 6;
     public DadCombatRotationMode CombatRotationMode { get; set; } = DadCombatRotationMode.UseFrenRider;
+    public DadPreDutyRepairPolicy PreDutyRepairPolicy { get; set; } = new();
     public DadPresetPlannerOptions PlannerOptions { get; set; } = new();
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
     public List<DadLaunchProfile> LaunchProfiles { get; set; } = [];
@@ -136,6 +138,20 @@ public sealed class Configuration : IPluginConfiguration
         var autoRetainerBusy = NormalizeMinimum(AutoRetainerBusyTimeoutSeconds, 1200, 60);
         changed |= autoRetainerBusy != AutoRetainerBusyTimeoutSeconds;
         AutoRetainerBusyTimeoutSeconds = autoRetainerBusy;
+
+        if (PreDutyRepairPolicy == null)
+        {
+            PreDutyRepairPolicy = new DadPreDutyRepairPolicy();
+            changed = true;
+        }
+        else
+        {
+            var priorThreshold = PreDutyRepairPolicy.ThresholdPercent;
+            var priorMode = PreDutyRepairPolicy.Mode;
+            PreDutyRepairPolicy.Normalize();
+            changed |= priorThreshold != PreDutyRepairPolicy.ThresholdPercent ||
+                       priorMode != PreDutyRepairPolicy.Mode;
+        }
         return changed;
     }
 

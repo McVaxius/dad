@@ -198,6 +198,7 @@ public sealed class Plugin : IDalamudPlugin
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
         DutySupportAdsService = new DadDutySupportAdsService(PluginInterface, Log);
+        var preDutyRepairService = new DadPreDutyRepairRuntimeService(DutySupportAdsService, Log);
         LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
@@ -215,6 +216,7 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService,
             CombatRotationService,
             DutySupportAdsService,
+            preDutyRepairService,
             Condition,
             Log);
         SchedulerService = new DadSchedulerService(
@@ -994,6 +996,12 @@ public sealed class Plugin : IDalamudPlugin
             IsBusy(GetVisibleRunState().VisibleRun),
             SchedulerService.CurrentState.IsActive,
             Configuration.ActiveScheduleRun?.IsActive == true);
+
+    public DadScheduleAttachmentResult AttachSavedPlanToSchedule(string scheduleId, DadPlannerGroup group)
+        => SchedulerService.AttachSavedPlanToSchedule(
+            scheduleId,
+            group,
+            !string.IsNullOrWhiteSpace(GetShareMutationBlocker()));
 
     public bool TryExportSelectedPlan(out string encoded, out string error)
     {

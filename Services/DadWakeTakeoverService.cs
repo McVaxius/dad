@@ -12,6 +12,7 @@ public interface IDadWakeTakeoverTarget
     bool FinishCharacterPostprocess(bool retryAtNextBoundary);
     bool ReleaseSuppressionIfOwned(bool force = false);
     DadWakeTakeoverActionResult SetMultiModeEnabled(bool enabled);
+    DadLifestreamChangeWorldResult ChangeWorld(string worldName);
     DadWakeTakeoverActionResult ExecuteCommand(DadWakeTakeoverCommand command, DadWakeTakeoverRequestDto request);
 }
 
@@ -708,6 +709,9 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         if (!snapshot.CorrectCharacter && !operation.RelogCommandAttempted)
         {
+            if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
+                return;
+
             // Nothing may intervene between this forced safety read and the relog command.
             snapshot = Capture(operation, forceExternalRefresh: true);
             blocker = ValidateCoreTarget(snapshot, operation.Request);
@@ -722,6 +726,8 @@ public sealed class DadWakeTakeoverService : IDisposable
                 operation.UpdatedAtUtc = utcNow();
                 return;
             }
+            if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
+                return;
 
             operation.RelogCommandAttempted = true;
             var relog = Invoke(
@@ -747,6 +753,49 @@ public sealed class DadWakeTakeoverService : IDisposable
             : $"Relog issued for {operation.Request.CharacterKey}; retaining DAD suppression through login.";
         operation.UpdatedAtUtc = utcNow();
         VerifyDestination(operation);
+    }
+
+    private bool PrepareHomeWorldBeforeRelog(
+        OperationState operation,
+        DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        var decision = operation.HomeWorldReturnGate.Evaluate(
+            snapshot.Participant,
+            snapshot.LifestreamAvailable,
+            snapshot.LifestreamBusy,
+            utcNow());
+        switch (decision.Action)
+        {
+            case DadHomeWorldReturnAction.Ready:
+                operation.Summary = decision.Summary;
+                operation.UpdatedAtUtc = utcNow();
+                return true;
+            case DadHomeWorldReturnAction.InvokeLifestream:
+                operation.HomeWorldReturnStarted = true;
+                var result = target.ChangeWorld(decision.DestinationWorldName);
+                operation.HomeWorldReturnGate.RecordInvocationResult(result, utcNow());
+                if (result.Outcome == DadLifestreamChangeWorldOutcome.Uncertain)
+                {
+                    Block(
+                        operation,
+                        $"Return-home travel failed closed before relog: {result.Summary}",
+                        cleanup: true);
+                    return false;
+                }
+                operation.Summary = result.Outcome == DadLifestreamChangeWorldOutcome.Accepted
+                    ? $"{result.Summary} Waiting for fresh world-stable home proof before relog."
+                    : result.Summary;
+                operation.UpdatedAtUtc = utcNow();
+                return false;
+            case DadHomeWorldReturnAction.Wait:
+                operation.HomeWorldReturnStarted = true;
+                operation.Summary = decision.Summary;
+                operation.UpdatedAtUtc = utcNow();
+                return false;
+            default:
+                Block(operation, decision.Summary, cleanup: true);
+                return false;
+        }
     }
 
     private void VerifyDestination(OperationState operation)
@@ -1069,6 +1118,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.RelogSourceCharacterKey = new DadCharacterKey(string.Empty);
         operation.RelogTransitionObserved = false;
         operation.StableWrongCharacterSinceUtc = null;
+        operation.HomeWorldReturnGate = new DadHomeWorldReturnGate();
+        operation.HomeWorldReturnStarted = false;
         operation.Summary = $"Takeover epoch {operation.Epoch} queued after retryable outcome: {reason}";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
@@ -1300,7 +1351,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             CharacterKey = operation.Request.CharacterKey,
             OperationToken = operation.Request.OperationToken,
             Phase = phase,
-            Stage = ResolveStage(phase, snapshot),
+            Stage = ResolveStage(operation, snapshot),
             Status = status,
             CommitKind = operation.CommitKind,
             ExecutionTimeUtc = operation.ExecutionTimeUtc,
@@ -1363,9 +1414,16 @@ public sealed class DadWakeTakeoverService : IDisposable
         };
 
     private static DadWakeTakeoverStage ResolveStage(
-        DadWakeTakeoverPhase phase,
+        OperationState operation,
         DadWakeTakeoverTargetSnapshot snapshot)
     {
+        var phase = operation.Phase;
+        if (phase == DadWakeTakeoverPhase.RelogCommitted && operation.HomeWorldReturnStarted)
+        {
+            return operation.HomeWorldReturnGate.AcceptedInvocation
+                ? DadWakeTakeoverStage.WaitingForHomeWorld
+                : DadWakeTakeoverStage.ReturningHome;
+        }
         if (phase != DadWakeTakeoverPhase.AwaitingArHook)
             return ToStage(phase);
         if (!snapshot.Participant.IsAvailable)
@@ -1495,5 +1553,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         public DadCharacterKey RelogSourceCharacterKey { get; set; } = new(string.Empty);
         public bool RelogTransitionObserved { get; set; }
         public DateTime? StableWrongCharacterSinceUtc { get; set; }
+        public DadHomeWorldReturnGate HomeWorldReturnGate { get; set; } = new();
+        public bool HomeWorldReturnStarted { get; set; }
     }
 }

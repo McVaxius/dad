@@ -39,6 +39,7 @@ internal static class DadEffectivePlanFactory
             RequestedAtUtc = plan.Request.RequestedAtUtc,
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = BuildAttemptStopPolicy(plan.Request.StopPolicy, task.Attempts),
+            PreDutyRepairPolicy = (plan.Request.PreDutyRepairPolicy ?? new DadPreDutyRepairPolicy()).Clone(),
             CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
         };
@@ -100,6 +101,7 @@ internal static class DadEffectivePlanFactory
             RequestedAtUtc = plan.Request.RequestedAtUtc,
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = BuildAttemptStopPolicy(plan.Request.StopPolicy, task.Attempts),
+            PreDutyRepairPolicy = (plan.Request.PreDutyRepairPolicy ?? new DadPreDutyRepairPolicy()).Clone(),
             CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
             PremadeDuty = new DadPremadeDutyTask

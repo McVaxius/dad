@@ -289,6 +289,7 @@ public sealed class DadQueueExecutionService
             RequestedAtUtc = plan.Request.RequestedAtUtc,
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = plan.Request.StopPolicy,
+            PreDutyRepairPolicy = (plan.Request.PreDutyRepairPolicy ?? new DadPreDutyRepairPolicy()).Clone(),
             CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
         };

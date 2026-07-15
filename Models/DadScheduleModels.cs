@@ -26,6 +26,38 @@ public enum DadScheduleRunPhase
     Cancelled = 6,
 }
 
+public enum DadScheduleFailureKind
+{
+    None = 0,
+    PreStartRejected = 1,
+    EntryTerminalFailure = 2,
+    CoordinatorReloadAbandonment = 3,
+    MissingOrUnknownLeaderState = 4,
+    SchedulerStateDisappeared = 5,
+    Cancellation = 6,
+    ScheduleRevisionChanged = 7,
+    EntryIdentityChanged = 8,
+    Unknown = 9,
+}
+
+public enum DadScheduleAttachmentDisposition
+{
+    Added = 0,
+    AlreadyPresent = 1,
+    ScheduleMissing = 2,
+    MutationLocked = 3,
+    InvalidPlan = 4,
+}
+
+public sealed class DadScheduleAttachmentResult
+{
+    public DadScheduleAttachmentDisposition Disposition { get; set; }
+    public string ScheduleId { get; set; } = string.Empty;
+    public string GroupId { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public bool Added => Disposition == DadScheduleAttachmentDisposition.Added;
+}
+
 internal readonly record struct DadScheduleRepeatBoundary(
     bool IsScheduleRun,
     int RepeatIteration,
@@ -150,6 +182,9 @@ public sealed class DadScheduleRunState
     public string ActivePlannerRequestId { get; set; } = string.Empty;
     public string Summary { get; set; } = "Schedule idle.";
     public string BlockedReason { get; set; } = string.Empty;
+    public DadScheduleFailureKind FailureKind { get; set; }
+    public long ScheduleRevisionAtStart { get; set; }
+    public string RetriedFromRunId { get; set; } = string.Empty;
 
     public bool IsActive =>
         Status == DadScheduleRunStatus.Running &&
@@ -184,6 +219,9 @@ public sealed class DadScheduleRunState
             ActivePlannerRequestId = ActivePlannerRequestId,
             Summary = Summary,
             BlockedReason = BlockedReason,
+            FailureKind = FailureKind,
+            ScheduleRevisionAtStart = ScheduleRevisionAtStart,
+            RetriedFromRunId = RetriedFromRunId,
         };
 
     public DadScheduleRunResult ToResult(bool success)
@@ -204,6 +242,14 @@ public sealed class DadScheduleRunState
             SkippedEntryExecutions = SkippedEntryExecutions,
             Summary = Summary,
             BlockedReason = BlockedReason,
+            FailureKind = FailureKind,
+            ScheduleRevisionAtStart = ScheduleRevisionAtStart,
+            RetriedFromRunId = RetriedFromRunId,
+            CurrentEntryId = CurrentEntryId,
+            CurrentGroupId = CurrentGroupId,
+            CurrentPresetName = CurrentPresetName,
+            CurrentEntryIndex = CurrentEntryIndex,
+            RepeatIteration = RepeatIteration,
         };
 }
 
@@ -224,6 +270,14 @@ public sealed class DadScheduleRunResult
     public int SkippedEntryExecutions { get; set; }
     public string Summary { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
+    public DadScheduleFailureKind FailureKind { get; set; }
+    public long ScheduleRevisionAtStart { get; set; }
+    public string RetriedFromRunId { get; set; } = string.Empty;
+    public string CurrentEntryId { get; set; } = string.Empty;
+    public string CurrentGroupId { get; set; } = string.Empty;
+    public string CurrentPresetName { get; set; } = string.Empty;
+    public int CurrentEntryIndex { get; set; }
+    public int RepeatIteration { get; set; } = 1;
 
     public DadScheduleRunResult Clone()
         => new()
@@ -243,6 +297,14 @@ public sealed class DadScheduleRunResult
             SkippedEntryExecutions = SkippedEntryExecutions,
             Summary = Summary,
             BlockedReason = BlockedReason,
+            FailureKind = FailureKind,
+            ScheduleRevisionAtStart = ScheduleRevisionAtStart,
+            RetriedFromRunId = RetriedFromRunId,
+            CurrentEntryId = CurrentEntryId,
+            CurrentGroupId = CurrentGroupId,
+            CurrentPresetName = CurrentPresetName,
+            CurrentEntryIndex = CurrentEntryIndex,
+            RepeatIteration = RepeatIteration,
         };
 }
 
@@ -276,11 +338,79 @@ public sealed class DadScheduleCancelResult
     public DadScheduleRunState ActiveRun { get; set; } = new();
 }
 
+public sealed class DadScheduleRetryRequest
+{
+    public string FailedRunId { get; set; } = string.Empty;
+    public string RequestedBy { get; set; } = string.Empty;
+}
+
+public sealed class DadScheduleRetryResult
+{
+    public string FailedRunId { get; set; } = string.Empty;
+    public bool Eligible { get; set; }
+    public bool Retried { get; set; }
+    public DadScheduleFailureKind FailureKind { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public DadScheduleRunState ActiveRun { get; set; } = new();
+}
+
 public static class DadScheduleRules
 {
     public const int MinRepeatCount = 1;
     public const int MaxRepeatCount = 99;
     public const int DailyResetHourUtc = 15;
+    public const string DuplicatePlanAttachmentMessage = "Maybe you should have hit Duplicate first before making this version. This one has the same ID as an existing Plan in the schedule already.";
+
+    public static DadScheduleAttachmentResult AttachSavedPlan(
+        DadScheduleDefinition schedule,
+        DadPlannerGroup group,
+        DateTime nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentNullException.ThrowIfNull(group);
+        schedule.Entries ??= [];
+        var groupId = group.GroupId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(groupId))
+        {
+            return new DadScheduleAttachmentResult
+            {
+                Disposition = DadScheduleAttachmentDisposition.InvalidPlan,
+                ScheduleId = schedule.ScheduleId,
+                Summary = "The saved Plan has no stable ID and cannot be attached.",
+            };
+        }
+
+        if (schedule.Entries.Any(entry =>
+                string.Equals(entry.GroupId?.Trim(), groupId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return new DadScheduleAttachmentResult
+            {
+                Disposition = DadScheduleAttachmentDisposition.AlreadyPresent,
+                ScheduleId = schedule.ScheduleId,
+                GroupId = groupId,
+                Summary = DuplicatePlanAttachmentMessage,
+            };
+        }
+
+        var now = EnsureUtc(nowUtc);
+        schedule.Entries.Add(new DadScheduleEntry
+        {
+            GroupId = groupId,
+            PresetName = group.DisplayName?.Trim() ?? string.Empty,
+            RepeatCount = 1,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+        });
+        schedule.Revision++;
+        schedule.UpdatedAtUtc = now;
+        return new DadScheduleAttachmentResult
+        {
+            Disposition = DadScheduleAttachmentDisposition.Added,
+            ScheduleId = schedule.ScheduleId,
+            GroupId = groupId,
+            Summary = $"Added Plan '{group.DisplayName}' to Schedule '{schedule.DisplayName}' with repeat count 1.",
+        };
+    }
 
     public static List<DadScheduleDefinition> NormalizeSchedules(IEnumerable<DadScheduleDefinition>? schedules)
         => (schedules ?? [])
@@ -344,6 +474,7 @@ public static class DadScheduleRules
                 StartedAtUtc = nowUtc,
                 UpdatedAtUtc = nowUtc,
                 TotalEntryExecutions = 0,
+                ScheduleRevisionAtStart = schedule.Revision,
             }, $"Schedule '{schedule.DisplayName}' has no entries.", nowUtc);
         }
 
@@ -367,6 +498,7 @@ public static class DadScheduleRules
             TotalEntryExecutions = schedule.Entries.Sum(static entry => entry.Normalize().RepeatCount),
             CompletedEntryExecutions = 0,
             SkippedEntryExecutions = 0,
+            ScheduleRevisionAtStart = schedule.Revision,
         };
         ApplyCurrentEntry(state, schedule.Entries[0]);
         state.Summary = BuildEntrySummary(state);
@@ -515,6 +647,7 @@ public static class DadScheduleRules
         state.Phase = DadScheduleRunPhase.StartingEntry;
         state.CompletedAtUtc = null;
         state.BlockedReason = string.Empty;
+        state.FailureKind = DadScheduleFailureKind.None;
         state.Summary = BuildEntrySummary(state);
         return state;
     }
@@ -530,11 +663,16 @@ public static class DadScheduleRules
         state.ActiveSchedulerJobId = string.Empty;
         state.ActivePlannerRequestId = string.Empty;
         state.BlockedReason = string.Empty;
+        state.FailureKind = DadScheduleFailureKind.None;
         state.Summary = string.IsNullOrWhiteSpace(summary) ? $"Schedule '{state.ScheduleName}' completed." : summary.Trim();
         return state;
     }
 
-    public static DadScheduleRunState BlockRun(DadScheduleRunState source, string reason, DateTime nowUtc)
+    public static DadScheduleRunState BlockRun(
+        DadScheduleRunState source,
+        string reason,
+        DateTime nowUtc,
+        DadScheduleFailureKind failureKind = DadScheduleFailureKind.Unknown)
     {
         var state = source.Clone();
         nowUtc = EnsureUtc(nowUtc);
@@ -543,6 +681,7 @@ public static class DadScheduleRules
         state.CompletedAtUtc = nowUtc;
         state.UpdatedAtUtc = nowUtc;
         state.BlockedReason = string.IsNullOrWhiteSpace(reason) ? "Schedule blocked." : reason.Trim();
+        state.FailureKind = failureKind;
         state.Summary = state.BlockedReason;
         return state;
     }
@@ -556,12 +695,90 @@ public static class DadScheduleRules
         state.CompletedAtUtc = nowUtc;
         state.UpdatedAtUtc = nowUtc;
         state.BlockedReason = string.Empty;
+        state.FailureKind = DadScheduleFailureKind.Cancellation;
         state.Summary = string.IsNullOrWhiteSpace(reason) ? "Schedule cancelled." : reason.Trim();
         return state;
     }
 
     public static string BuildEntrySummary(DadScheduleRunState state)
         => $"Schedule '{state.ScheduleName}' entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}: {state.CurrentPresetName}.";
+
+    public static bool IsRetryableFailure(DadScheduleFailureKind failureKind)
+        => failureKind is DadScheduleFailureKind.PreStartRejected or DadScheduleFailureKind.EntryTerminalFailure;
+
+    public static bool TryCreateRetryState(
+        DadScheduleRunResult failed,
+        DadScheduleDefinition schedule,
+        string requestedBy,
+        DateTime nowUtc,
+        out DadScheduleRunState state,
+        out string blocker)
+    {
+        state = new DadScheduleRunState();
+        blocker = string.Empty;
+        ArgumentNullException.ThrowIfNull(failed);
+        ArgumentNullException.ThrowIfNull(schedule);
+        schedule.Normalize();
+        if (failed.Status != DadScheduleRunStatus.Blocked || !IsRetryableFailure(failed.FailureKind))
+        {
+            blocker = $"Schedule failure kind {failed.FailureKind} is not retryable.";
+            return false;
+        }
+        if (failed.ScheduleRevisionAtStart <= 0 || schedule.Revision != failed.ScheduleRevisionAtStart)
+        {
+            blocker = "Schedule revision changed after the failed entry; retry requires the exact original revision.";
+            return false;
+        }
+        if (failed.CurrentEntryIndex < 0 || failed.CurrentEntryIndex >= schedule.Entries.Count)
+        {
+            blocker = "The failed schedule cursor no longer resolves to an entry.";
+            return false;
+        }
+
+        var entry = schedule.Entries[failed.CurrentEntryIndex].Normalize();
+        if (!string.Equals(entry.EntryId, failed.CurrentEntryId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(entry.GroupId, failed.CurrentGroupId, StringComparison.OrdinalIgnoreCase))
+        {
+            blocker = "The failed schedule entry identity changed; retry is not permitted.";
+            return false;
+        }
+        if (failed.RepeatIteration < MinRepeatCount || failed.RepeatIteration > entry.RepeatCount)
+        {
+            blocker = "The failed schedule repeat cursor no longer resolves to the exact entry repeat.";
+            return false;
+        }
+
+        var now = EnsureUtc(nowUtc);
+        state = new DadScheduleRunState
+        {
+            RunId = Guid.NewGuid().ToString("N"),
+            ScheduleId = schedule.ScheduleId,
+            ScheduleName = schedule.DisplayName,
+            Status = DadScheduleRunStatus.Running,
+            Phase = DadScheduleRunPhase.StartingEntry,
+            RequestedBy = NormalizeRequester(requestedBy),
+            DryRun = failed.DryRun,
+            ManualRun = failed.ManualRun,
+            DailyResetUtc = failed.DailyResetUtc,
+            StartedAtUtc = now,
+            UpdatedAtUtc = now,
+            CurrentEntryId = entry.EntryId,
+            CurrentGroupId = entry.GroupId,
+            CurrentPresetName = string.IsNullOrWhiteSpace(entry.PresetName) ? entry.GroupId : entry.PresetName,
+            CurrentEntryIndex = failed.CurrentEntryIndex,
+            RepeatIteration = failed.RepeatIteration,
+            TotalEntryExecutions = failed.TotalEntryExecutions,
+            CompletedEntryExecutions = failed.CompletedEntryExecutions,
+            SkippedEntryExecutions = failed.SkippedEntryExecutions,
+            ActiveSchedulerJobId = string.Empty,
+            ActivePlannerRequestId = string.Empty,
+            FailureKind = DadScheduleFailureKind.None,
+            ScheduleRevisionAtStart = failed.ScheduleRevisionAtStart,
+            RetriedFromRunId = failed.RunId,
+        };
+        state.Summary = $"Retrying failed schedule entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}: {state.CurrentPresetName}.";
+        return true;
+    }
 
     private static void ApplyCurrentEntry(DadScheduleRunState state, DadScheduleEntry entry)
     {

@@ -58,6 +58,72 @@ public sealed class DadWorkerCommandValidationRulesTests
     }
 
     [Fact]
+    public void SchemaOneRemainsValidWhenRepairIsDisabled()
+    {
+        var command = BuildCommand();
+        command.SchemaVersion = 1;
+        command.Plan.Request.PreDutyRepairPolicy = new DadPreDutyRepairPolicy { Enabled = false };
+
+        Assert.True(
+            DadWorkerCommandValidationRules.TryValidate(command, RuntimeForX(), out _, out var blocker),
+            blocker);
+    }
+
+    [Fact]
+    public void SchemaTwoCarriesEnabledRepairPolicy()
+    {
+        var command = BuildCommand();
+        command.SchemaVersion = 2;
+        command.Plan.Request.PreDutyRepairPolicy = new DadPreDutyRepairPolicy
+        {
+            Enabled = true,
+            ThresholdPercent = 80,
+            Mode = DadPreDutyRepairMode.NpcExcludingInns,
+        };
+
+        Assert.True(
+            DadWorkerCommandValidationRules.TryValidate(command, RuntimeForX(), out _, out var blocker),
+            blocker);
+        Assert.Equal("npc-no-inn", command.Plan.Request.PreDutyRepairPolicy.AdsMode);
+    }
+
+    [Fact]
+    public void SchemaOneCannotSilentlySkipEnabledRepair()
+    {
+        var command = BuildCommand();
+        command.SchemaVersion = 1;
+        command.Plan.Request.PreDutyRepairPolicy = new DadPreDutyRepairPolicy { Enabled = true };
+
+        AssertRejected(command, RuntimeForX(), "schema 2");
+    }
+
+    [Fact]
+    public void CoordinatorEmissionSchemaChangesOnlyWhenRepairIsEnabled()
+    {
+        Assert.Equal(1, DadWorkerCommandSchemaRules.ResolveEmissionSchema(null));
+        Assert.Equal(1, DadWorkerCommandSchemaRules.ResolveEmissionSchema(
+            new DadPreDutyRepairPolicy { Enabled = false }));
+        Assert.Equal(2, DadWorkerCommandSchemaRules.ResolveEmissionSchema(
+            new DadPreDutyRepairPolicy { Enabled = true }));
+    }
+
+    [Fact]
+    public void WorkerExecutionStateValuesRemainCompatibleAndAppendPreparationStates()
+    {
+        Assert.Equal(0, (int)DadWorkerExecutionState.Idle);
+        Assert.Equal(1, (int)DadWorkerExecutionState.Accepted);
+        Assert.Equal(2, (int)DadWorkerExecutionState.Starting);
+        Assert.Equal(3, (int)DadWorkerExecutionState.WaitingForQueue);
+        Assert.Equal(4, (int)DadWorkerExecutionState.Running);
+        Assert.Equal(5, (int)DadWorkerExecutionState.Completed);
+        Assert.Equal(6, (int)DadWorkerExecutionState.Failed);
+        Assert.Equal(7, (int)DadWorkerExecutionState.Cancelled);
+        Assert.Equal(8, (int)DadWorkerExecutionState.TimedOut);
+        Assert.Equal(9, (int)DadWorkerExecutionState.Preparing);
+        Assert.Equal(10, (int)DadWorkerExecutionState.Repairing);
+    }
+
+    [Fact]
     public void ReversedParticipantListPreservesFrozenSlotAssignments()
     {
         var command = BuildCommand();

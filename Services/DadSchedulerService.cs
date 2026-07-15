@@ -89,6 +89,7 @@ public sealed class DadSchedulerService
         this.wakeTakeoverService = wakeTakeoverService;
         this.rosterCatalogService = rosterCatalogService;
         this.log = log;
+        RecoverAbandonedScheduleRun();
     }
 
     public DadSchedulerPresetState CurrentState => currentState.Clone();
@@ -354,6 +355,41 @@ public sealed class DadSchedulerService
         return normalized.Clone();
     }
 
+    public DadScheduleAttachmentResult AttachSavedPlanToSchedule(
+        string scheduleId,
+        DadPlannerGroup group,
+        bool dadMutationLocked)
+    {
+        NormalizeSchedules();
+        if (dadMutationLocked || currentState.IsActive || configuration.ActiveScheduleRun?.IsActive == true)
+        {
+            return new DadScheduleAttachmentResult
+            {
+                Disposition = DadScheduleAttachmentDisposition.MutationLocked,
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                GroupId = group?.GroupId?.Trim() ?? string.Empty,
+                Summary = "The Plan was saved, but schedule attachment is disabled while DAD or scheduler state is mutating.",
+            };
+        }
+
+        var schedule = FindSchedule(scheduleId);
+        if (schedule == null)
+        {
+            return new DadScheduleAttachmentResult
+            {
+                Disposition = DadScheduleAttachmentDisposition.ScheduleMissing,
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                GroupId = group?.GroupId?.Trim() ?? string.Empty,
+                Summary = "The Plan was saved, but the selected Schedule no longer exists.",
+            };
+        }
+
+        var result = DadScheduleRules.AttachSavedPlan(schedule, group, DateTime.UtcNow);
+        if (result.Added)
+            configuration.Save();
+        return result;
+    }
+
     public DadScheduleRunState StartScheduleRun(string scheduleId, bool dryRun, string requestedBy)
     {
         NormalizeSchedules();
@@ -429,6 +465,91 @@ public sealed class DadSchedulerService
         FinalizeScheduleRun(configuration.ActiveScheduleRun);
         configuration.Save();
         return true;
+    }
+
+    public DadScheduleRetryResult EvaluateFailedEntryRetry(
+        DadScheduleRetryRequest request,
+        bool dadWorkActive)
+        => EvaluateFailedEntryRetryCore(request, dadWorkActive, startRetry: false);
+
+    public DadScheduleRetryResult RetryFailedEntry(
+        DadScheduleRetryRequest request,
+        bool dadWorkActive)
+        => EvaluateFailedEntryRetryCore(request, dadWorkActive, startRetry: true);
+
+    private DadScheduleRetryResult EvaluateFailedEntryRetryCore(
+        DadScheduleRetryRequest request,
+        bool dadWorkActive,
+        bool startRetry)
+    {
+        request ??= new DadScheduleRetryRequest();
+        NormalizeSchedules();
+        NormalizeScheduleHistory();
+        NormalizeQueue();
+        NormalizeHistory();
+        var failedRunId = request.FailedRunId?.Trim() ?? string.Empty;
+        var result = new DadScheduleRetryResult
+        {
+            FailedRunId = failedRunId,
+            ActiveRun = (configuration.ActiveScheduleRun ?? new DadScheduleRunState()).Clone(),
+        };
+        var failedMatches = configuration.ScheduleHistory.Where(candidate =>
+            string.Equals(candidate.RunId, failedRunId, StringComparison.OrdinalIgnoreCase)).ToList();
+        var failed = failedMatches.Count == 1 ? failedMatches[0] : null;
+        if (failed == null)
+        {
+            result.Summary = "The failed schedule run is missing or no longer unique in persisted history.";
+            return result;
+        }
+
+        result.FailureKind = failed.FailureKind;
+        if (!DadScheduleRules.IsRetryableFailure(failed.FailureKind))
+        {
+            result.Summary = $"Schedule failure kind {failed.FailureKind} is not retryable.";
+            return result;
+        }
+        if ((configuration.ActiveScheduleRun?.IsActive ?? false) ||
+            currentState.IsActive ||
+            dadWorkActive ||
+            configuration.SchedulerQueue.Count > 0 ||
+            HasPendingCleanup)
+        {
+            result.Summary = "Retry is unavailable while DAD, the scheduler, queued jobs, or cancellation cleanup still owns active work.";
+            return result;
+        }
+
+        var schedule = FindSchedule(failed.ScheduleId);
+        if (schedule == null)
+        {
+            result.Summary = "The failed run's Schedule disappeared.";
+            return result;
+        }
+        if (!DadScheduleRules.TryCreateRetryState(
+                failed,
+                schedule,
+                request.RequestedBy,
+                DateTime.UtcNow,
+                out var retryState,
+                out var blocker))
+        {
+            result.Summary = blocker;
+            return result;
+        }
+
+        result.Eligible = true;
+        result.Summary = $"Failed entry {retryState.CurrentEntryIndex + 1}, repeat {retryState.RepeatIteration} can be retried without changing prior history.";
+        if (!startRetry)
+            return result;
+
+        configuration.ActiveScheduleRun = retryState;
+        schedule.LastRunStartedAtUtc = retryState.StartedAtUtc;
+        schedule.LastRunStatus = retryState.Status;
+        schedule.LastSummary = retryState.Summary;
+        result.Retried = true;
+        result.ActiveRun = retryState.Clone();
+        result.Summary = retryState.Summary;
+        configuration.Save();
+        return result;
     }
 
     public DadScheduledCrewJob EnqueueScheduledPreset(DadPlannerGroup group, DadScheduledPresetRequest request)
@@ -3253,7 +3374,28 @@ public sealed class DadSchedulerService
         var schedule = FindSchedule(state.ScheduleId);
         if (schedule == null)
         {
-            BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' could not be resolved.");
+            BlockActiveScheduleRun(
+                $"Schedule '{state.ScheduleName}' could not be resolved.",
+                DadScheduleFailureKind.SchedulerStateDisappeared);
+            return;
+        }
+
+        if (state.ScheduleRevisionAtStart <= 0 || schedule.Revision != state.ScheduleRevisionAtStart)
+        {
+            BlockActiveScheduleRun(
+                $"Schedule '{state.ScheduleName}' revision changed from {state.ScheduleRevisionAtStart} to {schedule.Revision} while the run was active.",
+                DadScheduleFailureKind.ScheduleRevisionChanged);
+            return;
+        }
+
+        var currentEntry = DadScheduleRules.GetCurrentEntry(state, schedule.Entries);
+        if (currentEntry == null ||
+            !string.Equals(currentEntry.EntryId, state.CurrentEntryId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(currentEntry.GroupId, state.CurrentGroupId, StringComparison.OrdinalIgnoreCase))
+        {
+            BlockActiveScheduleRun(
+                $"Schedule '{state.ScheduleName}' entry identity changed at cursor {state.CurrentEntryIndex + 1}.",
+                DadScheduleFailureKind.EntryIdentityChanged);
             return;
         }
 
@@ -3298,7 +3440,16 @@ public sealed class DadSchedulerService
             var detail = string.IsNullOrWhiteSpace(run.FailureReason)
                 ? FormatScheduleText(run.Summary, run.Status.ToString())
                 : run.FailureReason;
-            BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped after '{state.CurrentPresetName}' ended with {run.Status}: {detail}");
+            var failureKind = run.ScheduleFailureKind != DadScheduleFailureKind.None
+                ? run.ScheduleFailureKind
+                : run.Status == DadRunStatus.Cancelled
+                    ? DadScheduleFailureKind.Cancellation
+                    : run.Status == DadRunStatus.Rejected
+                        ? DadScheduleFailureKind.PreStartRejected
+                        : DadScheduleFailureKind.EntryTerminalFailure;
+            BlockActiveScheduleRun(
+                $"Schedule '{state.ScheduleName}' stopped after '{state.CurrentPresetName}' ended with {run.Status}: {detail}",
+                failureKind);
             return true;
         }
 
@@ -3327,7 +3478,11 @@ public sealed class DadSchedulerService
         {
             if (!result.Success)
             {
-                BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(result.BlockedReason, result.Summary)}");
+                BlockActiveScheduleRun(
+                    $"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(result.BlockedReason, result.Summary)}",
+                    result.FinalPhase == DadSchedulerPresetPhase.Cancelled
+                        ? DadScheduleFailureKind.Cancellation
+                        : DadScheduleFailureKind.PreStartRejected);
                 return;
             }
 
@@ -3356,7 +3511,9 @@ public sealed class DadSchedulerService
 
             if (string.IsNullOrWhiteSpace(state.ActivePlannerRequestId))
             {
-                BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: scheduler job did not produce a Dad run id.");
+                BlockActiveScheduleRun(
+                    $"Schedule '{state.ScheduleName}' stopped: scheduler job did not produce a Dad run id.",
+                    DadScheduleFailureKind.PreStartRejected);
                 return;
             }
 
@@ -3387,7 +3544,11 @@ public sealed class DadSchedulerService
                 or DadSchedulerPresetPhase.TimedOut
                 or DadSchedulerPresetPhase.Cancelled)
             {
-                BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(currentState.BlockedReason, currentState.Summary)}");
+                BlockActiveScheduleRun(
+                    $"Schedule '{state.ScheduleName}' stopped: {FormatScheduleText(currentState.BlockedReason, currentState.Summary)}",
+                    currentState.Phase == DadSchedulerPresetPhase.Cancelled
+                        ? DadScheduleFailureKind.Cancellation
+                        : DadScheduleFailureKind.PreStartRejected);
                 return;
             }
 
@@ -3408,7 +3569,9 @@ public sealed class DadSchedulerService
             return;
         }
 
-        BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' stopped: scheduler job {state.ActiveSchedulerJobId} disappeared before producing a result.");
+        BlockActiveScheduleRun(
+            $"Schedule '{state.ScheduleName}' stopped: scheduler job {state.ActiveSchedulerJobId} disappeared before producing a result.",
+            DadScheduleFailureKind.SchedulerStateDisappeared);
     }
 
     private void MaterializeScheduleEntryJob(DadScheduleDefinition schedule, DadScheduleRunState state, DateTime now)
@@ -3417,21 +3580,25 @@ public sealed class DadSchedulerService
         var blocker = DadScheduleRules.ValidateCurrentEntry(state, schedule.Entries, groupIds);
         if (!string.IsNullOrWhiteSpace(blocker))
         {
-            BlockActiveScheduleRun(blocker);
+            BlockActiveScheduleRun(blocker, DadScheduleFailureKind.PreStartRejected);
             return;
         }
 
         var entry = DadScheduleRules.GetCurrentEntry(state, schedule.Entries);
         if (entry == null)
         {
-            BlockActiveScheduleRun($"Schedule '{state.ScheduleName}' has no entry at index {state.CurrentEntryIndex + 1}.");
+            BlockActiveScheduleRun(
+                $"Schedule '{state.ScheduleName}' has no entry at index {state.CurrentEntryIndex + 1}.",
+                DadScheduleFailureKind.EntryIdentityChanged);
             return;
         }
 
         var group = FindPlannerGroup(entry.GroupId);
         if (group == null)
         {
-            BlockActiveScheduleRun($"Schedule entry {state.CurrentEntryIndex + 1} references missing preset '{entry.GroupId}'.");
+            BlockActiveScheduleRun(
+                $"Schedule entry {state.CurrentEntryIndex + 1} references missing preset '{entry.GroupId}'.",
+                DadScheduleFailureKind.PreStartRejected);
             return;
         }
 
@@ -3505,10 +3672,16 @@ public sealed class DadSchedulerService
         return state;
     }
 
-    private void BlockActiveScheduleRun(string reason)
+    private void BlockActiveScheduleRun(
+        string reason,
+        DadScheduleFailureKind failureKind = DadScheduleFailureKind.Unknown)
     {
         configuration.ActiveScheduleRun ??= new DadScheduleRunState();
-        configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(configuration.ActiveScheduleRun, reason, DateTime.UtcNow);
+        configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(
+            configuration.ActiveScheduleRun,
+            reason,
+            DateTime.UtcNow,
+            failureKind);
         FinalizeScheduleRun(configuration.ActiveScheduleRun);
     }
 
@@ -3661,6 +3834,27 @@ public sealed class DadSchedulerService
         configuration.Save();
     }
 
+    private void RecoverAbandonedScheduleRun()
+    {
+        NormalizeSchedules();
+        NormalizeScheduleHistory();
+        NormalizeQueue();
+        var active = configuration.ActiveScheduleRun ?? new DadScheduleRunState();
+        if (!active.IsActive)
+            return;
+
+        // Scheduler runtime state is intentionally not reconstructed after reload. Remove only
+        // jobs owned by the abandoned schedule run so a stale entry cannot start independently.
+        configuration.SchedulerQueue.RemoveAll(job =>
+            string.Equals(job.ScheduleRunId, active.RunId, StringComparison.OrdinalIgnoreCase));
+        configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(
+            active,
+            "Schedule run abandoned by coordinator/plugin reload; explicit retry is not permitted.",
+            DateTime.UtcNow,
+            DadScheduleFailureKind.CoordinatorReloadAbandonment);
+        FinalizeScheduleRun(configuration.ActiveScheduleRun);
+    }
+
     private DadScheduleDefinition? FindSchedule(string scheduleId)
     {
         if (string.IsNullOrWhiteSpace(scheduleId))
@@ -3688,6 +3882,8 @@ public sealed class DadSchedulerService
         configuration.ActiveScheduleRun.ActivePlannerRequestId = configuration.ActiveScheduleRun.ActivePlannerRequestId?.Trim() ?? string.Empty;
         configuration.ActiveScheduleRun.Summary = configuration.ActiveScheduleRun.Summary?.Trim() ?? string.Empty;
         configuration.ActiveScheduleRun.BlockedReason = configuration.ActiveScheduleRun.BlockedReason?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.RetriedFromRunId = configuration.ActiveScheduleRun.RetriedFromRunId?.Trim() ?? string.Empty;
+        configuration.ActiveScheduleRun.ScheduleRevisionAtStart = Math.Max(0, configuration.ActiveScheduleRun.ScheduleRevisionAtStart);
         configuration.ActiveScheduleRun.RepeatIteration = Math.Max(1, configuration.ActiveScheduleRun.RepeatIteration);
         configuration.ActiveScheduleRun.TotalEntryExecutions = Math.Max(0, configuration.ActiveScheduleRun.TotalEntryExecutions);
         configuration.ActiveScheduleRun.CompletedEntryExecutions = Math.Clamp(
@@ -3710,6 +3906,13 @@ public sealed class DadSchedulerService
             result.ScheduleName = result.ScheduleName?.Trim() ?? string.Empty;
             result.Summary = result.Summary?.Trim() ?? string.Empty;
             result.BlockedReason = result.BlockedReason?.Trim() ?? string.Empty;
+            result.RetriedFromRunId = result.RetriedFromRunId?.Trim() ?? string.Empty;
+            result.CurrentEntryId = result.CurrentEntryId?.Trim() ?? string.Empty;
+            result.CurrentGroupId = result.CurrentGroupId?.Trim() ?? string.Empty;
+            result.CurrentPresetName = result.CurrentPresetName?.Trim() ?? string.Empty;
+            result.ScheduleRevisionAtStart = Math.Max(0, result.ScheduleRevisionAtStart);
+            result.CurrentEntryIndex = Math.Max(0, result.CurrentEntryIndex);
+            result.RepeatIteration = Math.Max(1, result.RepeatIteration);
             result.CompletedEntryExecutions = Math.Max(0, result.CompletedEntryExecutions);
             result.TotalEntryExecutions = Math.Max(result.CompletedEntryExecutions, result.TotalEntryExecutions);
             result.SkippedEntryExecutions = Math.Clamp(result.SkippedEntryExecutions, 0, result.CompletedEntryExecutions);

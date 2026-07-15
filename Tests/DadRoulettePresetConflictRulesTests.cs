@@ -89,6 +89,41 @@ public sealed class DadRoulettePresetConflictRulesTests
         Assert.Equal(string.Empty, warning.Message);
     }
 
+    [Fact]
+    public void ConflictPresentationMarksEveryChoiceAndSelectedPreviewBoldOrange()
+    {
+        var presentation = DadCharacterConflictPresentationRules.Build(
+        [
+            new("alpha@siren", "Alpha", true),
+            new("beta@siren", "Beta", false),
+            new("gamma@siren", "Gamma", true),
+        ], "GAMMA@SIREN");
+
+        Assert.True(presentation.Choices.Single(choice => choice.DisplayName == "Alpha").UseBoldOrange);
+        Assert.False(presentation.Choices.Single(choice => choice.DisplayName == "Beta").UseBoldOrange);
+        Assert.True(presentation.Choices.Single(choice => choice.DisplayName == "Gamma").UseBoldOrange);
+        Assert.True(presentation.SelectedUseBoldOrange);
+    }
+
+    [Fact]
+    public void ConflictSummaryContainsUniqueNamesOnlyAndDefaultsEmpty()
+    {
+        var empty = DadCharacterConflictPresentationRules.Build([], null);
+        var presentation = DadCharacterConflictPresentationRules.Build(
+        [
+            new("alpha@siren", "Alpha", false),
+            new("ALPHA@SIREN", "Alpha", true),
+            new("gamma@siren", "gamma", true),
+            new("delta@siren", "Gamma", true),
+        ], "beta@siren");
+
+        Assert.Empty(empty.SummaryNames);
+        Assert.Equal(string.Empty, empty.Summary);
+        Assert.False(presentation.SelectedUseBoldOrange);
+        Assert.Equal(["Alpha", "gamma"], presentation.SummaryNames);
+        Assert.Equal("Characters in multiple presets: Alpha, gamma", presentation.Summary);
+    }
+
     private static DadPlannerGroup Group(
         string id,
         string name,

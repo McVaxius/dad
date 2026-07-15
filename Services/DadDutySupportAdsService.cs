@@ -3,7 +3,9 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
 using dad.Models;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using System.Text.Json;
 
 namespace dad.Services;
 
@@ -16,11 +18,15 @@ public sealed unsafe class DadDutySupportAdsService
     private const string AdsStopCommand = "/ads stop";
     private readonly IPluginLog log;
     private readonly ICallGateSubscriber<string, string> patchConfiguration;
+    private readonly ICallGateSubscriber<string, bool> startRepair;
+    private readonly ICallGateSubscriber<string> getStatusJson;
 
     public DadDutySupportAdsService(IDalamudPluginInterface pluginInterface, IPluginLog log)
     {
         this.log = log;
         patchConfiguration = pluginInterface.GetIpcSubscriber<string, string>("ADS.PatchConfigurationJson");
+        startRepair = pluginInterface.GetIpcSubscriber<string, bool>("ADS.StartRepair");
+        getStatusJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetStatusJson");
     }
 
     public string MissingAdsBlocker => "ADS is not loaded; cannot run Duty Support automation after queue";
@@ -85,6 +91,103 @@ public sealed unsafe class DadDutySupportAdsService
                 out failureReason);
         }
     }
+
+    public DadAdsRepairObservation InspectRepair()
+    {
+        if (!IsAdsLoaded())
+            return DadAdsRepairObservation.Absent();
+
+        try
+        {
+            var json = getStatusJson.InvokeFunc();
+            if (string.IsNullOrWhiteSpace(json))
+                return DadAdsRepairObservation.Unreadable("ADS.GetStatusJson returned an empty payload.");
+
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("utilityRunning", out var runningElement) ||
+                runningElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            {
+                return DadAdsRepairObservation.Unreadable("ADS.GetStatusJson omitted readable utilityRunning truth.");
+            }
+
+            var running = runningElement.GetBoolean();
+            var task = TryReadString(root, "utilityTask");
+            var mode = TryReadString(root, "utilityMode");
+            var status = TryReadString(root, "utilityStatus");
+            var repair = running &&
+                         (mode is "self" or "npc" or "npc-no-inn" or "npc-no-teleport-no-inn" ||
+                          task.Contains("repair", StringComparison.OrdinalIgnoreCase));
+            return running
+                ? DadAdsRepairObservation.Running(repair, task, mode, status)
+                : DadAdsRepairObservation.Idle(string.IsNullOrWhiteSpace(status) ? "ADS utility is idle." : status);
+        }
+        catch (Exception ex)
+        {
+            return DadAdsRepairObservation.Unreadable($"ADS.GetStatusJson is temporarily unreadable: {ex.Message}");
+        }
+    }
+
+    public DadAdsRepairInvocationResult StartRepair(string mode)
+    {
+        try
+        {
+            return startRepair.InvokeFunc(mode)
+                ? new DadAdsRepairInvocationResult(
+                    DadAdsRepairInvocationOutcome.Accepted,
+                    $"ADS accepted repair mode '{mode}'.")
+                : new DadAdsRepairInvocationResult(
+                    DadAdsRepairInvocationOutcome.ExplicitFalse,
+                    $"ADS explicitly declined repair mode '{mode}'.");
+        }
+        catch (Exception ex)
+        {
+            // The provider may have accepted the request before the caller observed the exception.
+            // Treat that boundary as uncertain and never replay it.
+            return new DadAdsRepairInvocationResult(
+                DadAdsRepairInvocationOutcome.Uncertain,
+                ex.Message);
+        }
+    }
+
+    public static DadEquippedDurabilityObservation ReadEquippedDurability()
+    {
+        try
+        {
+            var manager = InventoryManager.Instance();
+            if (manager == null)
+                return DadEquippedDurabilityObservation.Unreadable("InventoryManager is unavailable.");
+
+            var equipped = manager->GetInventoryContainer(InventoryType.EquippedItems);
+            if (equipped == null || !equipped->IsLoaded)
+                return DadEquippedDurabilityObservation.Unreadable("Equipped inventory is unavailable or not loaded.");
+
+            var found = false;
+            var minimum = 100;
+            for (var index = 0; index < equipped->Size; index++)
+            {
+                var item = equipped->GetInventorySlot(index);
+                if (item == null || item->ItemId == 0)
+                    continue;
+
+                found = true;
+                minimum = Math.Min(minimum, (int)(item->Condition / 300));
+            }
+
+            return found
+                ? DadEquippedDurabilityObservation.ReadableAt(minimum)
+                : DadEquippedDurabilityObservation.Unreadable("No equipped item durability was readable.");
+        }
+        catch (Exception ex)
+        {
+            return DadEquippedDurabilityObservation.Unreadable($"Equipped durability read failed: {ex.Message}");
+        }
+    }
+
+    private static string TryReadString(JsonElement root, string propertyName)
+        => root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.String
+            ? element.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
 
     public bool IsLeaveBlocked(out string blocker)
     {

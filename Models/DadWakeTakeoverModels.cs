@@ -28,6 +28,8 @@ public enum DadWakeTakeoverStage
     ResetCommitted = 15,
     ResetVerified = 16,
     RelogCommitted = 17,
+    ReturningHome = 18,
+    WaitingForHomeWorld = 19,
 }
 
 public enum DadWakeTakeoverPhase
