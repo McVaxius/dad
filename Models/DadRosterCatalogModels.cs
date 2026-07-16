@@ -454,10 +454,10 @@ public sealed class DadRosterRefreshPlan
     public static DadRosterRefreshPlan ConnectedDads(string diagnosticsReason = "", bool logDiagnostics = true)
         => new()
         {
-            ForcePeerRefresh = true,
+            ForcePeerRefresh = false,
             IncludeHidden = true,
             IncludeIgnored = true,
-            LiveConnectedOnly = false,
+            LiveConnectedOnly = true,
             LogDiagnostics = logDiagnostics,
             DiagnosticsReason = diagnosticsReason,
         };

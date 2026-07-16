@@ -28,7 +28,8 @@ internal sealed class DadPresetCrewEditor
         DadPlannerUiSnapshot plannerSnapshot,
         DadPlannerGroup group,
         Action<DadPlannerGroup> changed,
-        string idPrefix)
+        string idPrefix,
+        bool showDetails = false)
     {
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
         var showProfile = plugin.Configuration.DebugUiEnabled;
@@ -91,7 +92,7 @@ internal sealed class DadPresetCrewEditor
             }
 
             ImGui.TableNextColumn();
-            DrawAccount(plannerSnapshot.CuratedPool, plannerSnapshot.AccountOptions, group, slot, index, idPrefix, changed);
+            DrawAccount(plannerSnapshot.CuratedPool, plannerSnapshot.AccountOptions, group, slot, index, idPrefix, changed, showDetails);
 
             ImGui.TableNextColumn();
             DrawCharacter(plannerSnapshot, group, slot, index, idPrefix, changed);
@@ -178,7 +179,8 @@ internal sealed class DadPresetCrewEditor
         DadPlannerGroupSlot slot,
         int index,
         string idPrefix,
-        Action<DadPlannerGroup> changed)
+        Action<DadPlannerGroup> changed,
+        bool showDetails)
     {
         var selectedAccount = accountOptions.FirstOrDefault(option =>
             string.Equals(option.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
@@ -186,7 +188,7 @@ internal sealed class DadPresetCrewEditor
             ? slot.SharedIdentity == null
                 ? "(missing)"
                 : $"Shared {ShortSharedToken(slot.SharedIdentity.AccountToken)} - remap"
-            : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatAccountOption(selectedAccount);
+            : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatAccountOption(selectedAccount, showDetails);
         ImGui.SetNextItemWidth(-1f);
         var open = ImGui.BeginCombo($"##{idPrefix}-account-{index}", preview);
         var hovered = ImGui.IsItemHovered();
@@ -195,7 +197,7 @@ internal sealed class DadPresetCrewEditor
             foreach (var option in accountOptions)
             {
                 var selected = string.Equals(slot.RequiredAccountKey.Value, option.AccountKey.Value, StringComparison.OrdinalIgnoreCase);
-                var label = $"{FormatAccountOption(option)} ({option.AssignedCharacterCount})";
+                var label = $"{FormatAccountOption(option, showDetails)} ({option.AssignedCharacterCount})";
                 if (ImGui.Selectable(label, selected))
                 {
                     var accountChanged = !string.Equals(
@@ -259,7 +261,7 @@ internal sealed class DadPresetCrewEditor
                     warning.HasConflict);
             }),
             slot.RequiredCharacterKey.Value);
-        var selectedUseBoldOrange = !slot.RequiredCharacterKey.IsEmpty &&
+        var selectedUseOrange = !slot.RequiredCharacterKey.IsEmpty &&
                                     plannerSnapshot.RouletteConflictIndex.Find(
                                         group,
                                         slot.RequiredAccountKey,
@@ -274,14 +276,11 @@ internal sealed class DadPresetCrewEditor
         ImGui.SetNextWindowSizeConstraints(
             new Vector2(pickerLayout.PopupWidth, 1f),
             new Vector2(pickerLayout.PopupWidth, pickerLayout.PopupMaxHeight));
-        if (selectedUseBoldOrange)
+        if (selectedUseOrange)
             ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
         var open = ImGui.BeginCombo($"##{idPrefix}-character-{index}", preview);
-        if (selectedUseBoldOrange)
-        {
-            DrawBoldOrangeItemOverlay(preview, framed: true);
+        if (selectedUseOrange)
             ImGui.PopStyleColor();
-        }
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         if (open)
         {
@@ -301,7 +300,7 @@ internal sealed class DadPresetCrewEditor
                 plugin.Configuration.Save();
             }
             if (showConflictSummary && !string.IsNullOrWhiteSpace(conflictPresentation.Summary))
-                DrawBoldOrangeText(conflictPresentation.Summary);
+                DrawOrangeText(conflictPresentation.Summary);
             ImGui.Separator();
 
             if (ImGui.BeginChild(
@@ -345,10 +344,7 @@ internal sealed class DadPresetCrewEditor
                             ImGuiSelectableFlags.None,
                             new Vector2(candidateRowWidth, 0f));
                     if (warning.HasConflict)
-                    {
-                        DrawBoldOrangeItemOverlay(candidate);
                         ImGui.PopStyleColor();
-                    }
                     if (chosen)
                     {
                         var characterChanged = !string.Equals(
@@ -792,21 +788,8 @@ internal sealed class DadPresetCrewEditor
            || (!string.IsNullOrWhiteSpace(character.AccountAlias) &&
                string.Equals(character.AccountAlias, accountKey.Value, StringComparison.OrdinalIgnoreCase));
 
-    private static string FormatAccountOption(DadRosterAccountOption option)
-    {
-        var accountKey = option.AccountKey.Value?.Trim() ?? string.Empty;
-        var displayName = !string.IsNullOrWhiteSpace(option.AccountAlias)
-            ? option.AccountAlias.Trim()
-            : !string.IsNullOrWhiteSpace(option.DisplayName)
-                ? option.DisplayName.Trim()
-                : accountKey;
-        var onlineSuffix = option.OwnerOnline ? string.Empty : " [offline]";
-        if (string.IsNullOrWhiteSpace(displayName) || string.Equals(displayName, accountKey, StringComparison.OrdinalIgnoreCase))
-            return (string.IsNullOrWhiteSpace(displayName) ? "(account)" : displayName) + onlineSuffix;
-        return string.IsNullOrWhiteSpace(accountKey)
-            ? displayName + onlineSuffix
-            : $"{displayName} [{accountKey}]{onlineSuffix}";
-    }
+    private static string FormatAccountOption(DadRosterAccountOption option, bool showDetails)
+        => DadCrewAccountPresentationRules.Format(option, showDetails);
 
     private static string FormatRole(DadPartyRole role)
         => role == DadPartyRole.Dps ? "DPS" : role.ToString();
@@ -821,28 +804,11 @@ internal sealed class DadPresetCrewEditor
 
     private static readonly Vector4 ConflictOrange = new(1f, 0.56f, 0.16f, 1f);
 
-    private static void DrawBoldOrangeText(string message)
+    private static void DrawOrangeText(string message)
     {
         ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
         ImGui.TextUnformatted(message);
-        DrawBoldOrangeItemOverlay(message);
         ImGui.PopStyleColor();
-    }
-
-    private static void DrawBoldOrangeItemOverlay(string text, bool framed = false)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return;
-
-        var itemMin = ImGui.GetItemRectMin();
-        var padding = ImGui.GetStyle().FramePadding;
-        var position = framed
-            ? new Vector2(itemMin.X + padding.X + 0.7f, itemMin.Y + padding.Y)
-            : new Vector2(itemMin.X + 0.7f, itemMin.Y);
-        ImGui.GetWindowDrawList().AddText(
-            position,
-            ImGui.ColorConvertFloat4ToU32(ConflictOrange),
-            text);
     }
 
     private static float PositiveWidth(float width)

@@ -18,13 +18,13 @@ public sealed record DadCharacterConflictChoice(
     string DisplayName,
     bool IsConflict)
 {
-    public bool UseBoldOrange => IsConflict;
+    public bool UseOrange => IsConflict;
 }
 
 public sealed class DadCharacterConflictPresentation
 {
     public IReadOnlyList<DadCharacterConflictChoice> Choices { get; init; } = [];
-    public bool SelectedUseBoldOrange { get; init; }
+    public bool SelectedUseOrange { get; init; }
     public IReadOnlyList<string> SummaryNames { get; init; } = [];
     public string Summary => SummaryNames.Count == 0
         ? string.Empty
@@ -51,7 +51,7 @@ public static class DadCharacterConflictPresentationRules
         return new DadCharacterConflictPresentation
         {
             Choices = normalized,
-            SelectedUseBoldOrange = normalized.Any(choice =>
+            SelectedUseOrange = normalized.Any(choice =>
                 choice.IsConflict &&
                 string.Equals(choice.CharacterKey, selected, StringComparison.OrdinalIgnoreCase)),
             SummaryNames = normalized

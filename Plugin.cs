@@ -23,7 +23,7 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan EndpointApplyAuthorityRefreshSuppression = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan PlannerUiCacheSlowRebuildThreshold = TimeSpan.FromMilliseconds(25);
     private static readonly TimeSpan PlannerUiCacheSlowRebuildLogCooldown = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan DebouncedUiWriteDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan DebouncedUiWriteDelay = TimeSpan.FromSeconds(5);
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -339,11 +339,12 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         CommandManager.RemoveHandler(PluginInfo.Command);
-        // Close/cancel transport work first, without synchronously waiting on the framework thread.
+        FlushDebouncedUiWrites(force: true);
+        RosterCatalogService.FlushPendingPersistence();
+        // After persistence is forced, close/cancel transport work without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
         TransportService.Dispose();
         DependencyService.Dispose();
-        FlushDebouncedUiWrites(force: true);
         WindowSystem.RemoveAllWindows();
         QuestionableBridge.Dispose();
         DutyIpcService.Dispose();
@@ -688,6 +689,7 @@ public sealed class Plugin : IDalamudPlugin
             return false;
 
         var purgedRoster = RosterCatalogService.PurgeAccount(resolvedAccountKey);
+        ProfileDirectoryService.PurgeAccount(resolvedAccountKey);
         var clearedLastAccount = false;
         if (string.Equals(Configuration.LastAccountId, resolvedAccountKey.Value, StringComparison.OrdinalIgnoreCase))
         {
@@ -708,6 +710,40 @@ public sealed class Plugin : IDalamudPlugin
             IncludeIgnored = true,
             StaleAfterHours = Configuration.RosterCatalog.StaleAfterHours,
         });
+        return true;
+    }
+
+    public bool ForgetDadAccountCopies(DadAccountKey accountKey)
+    {
+        var purged = RosterCatalogService.PurgeAccount(accountKey);
+        ProfileDirectoryService.PurgeAccount(accountKey);
+        return purged;
+    }
+
+    public bool NameClientDad(string alias, out string status)
+    {
+        var accountId = Configuration.ClientAccountId?.Trim() ?? string.Empty;
+        if (!DadClientNamingRules.TryValidate(alias, accountId, out var normalizedAlias, out status))
+            return false;
+
+        var accountKey = new DadAccountKey(accountId);
+        if (accountKey.IsEmpty || ConfigManager.GetAccount(accountKey) == null)
+        {
+            status = "The stable local DAD account is unavailable.";
+            return false;
+        }
+
+        DropDebouncedAccountAlias(accountKey);
+        if (!ConfigManager.UpdateAccountAlias(accountKey, normalizedAlias))
+        {
+            status = "Could not save this DAD's name.";
+            return false;
+        }
+
+        RosterCatalogService.NotifyAccountPresentationChanged(accountKey, normalizedAlias);
+        PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
+        TransportService.NotifyLocalRosterChanged("Local DAD account alias changed.");
+        status = $"Named this DAD '{normalizedAlias}'.";
         return true;
     }
 
@@ -4457,6 +4493,7 @@ public sealed class Plugin : IDalamudPlugin
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
         RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);
         RunFrameworkStep("RetainedRosterKnowledge", LearnRetainedTransportRosterKnowledge);
+        RunFrameworkStep("DeferredRosterPersistence", RosterCatalogService.UpdateDeferredPersistence);
         RunFrameworkStep("ClientReconnectWindow", () =>
         {
             var showReconnect = Configuration.PluginEnabled &&

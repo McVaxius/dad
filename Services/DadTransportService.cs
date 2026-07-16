@@ -61,6 +61,7 @@ public sealed class DadTransportService : IDisposable
     private readonly ConcurrentDictionary<string, CompletedOperation> completedOperations = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DadPeerRosterCatalogResponse> rosterCatalogs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DadProfileCatalogResponse> profileCatalogs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> profileCatalogOfflineSinceUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DadWorkerExecutionAck> workerCommandAcks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStopAllStatus> stopAllOperations = new(StringComparer.OrdinalIgnoreCase);
     private readonly object stopAllGate = new();
@@ -78,6 +79,7 @@ public sealed class DadTransportService : IDisposable
     private DateTime lastReconnectLogUtc = DateTime.MinValue;
     private int lastReconnectLogDelaySeconds = -1;
     private bool hubRosterProjectionOversize;
+    private string transportRosterSignature = string.Empty;
 
     private CancellationTokenSource roleCancellation = new();
     private TcpListener? listener;
@@ -218,10 +220,13 @@ public sealed class DadTransportService : IDisposable
             disconnectedParticipants.Clear();
             rosterCatalogs.Clear();
             profileCatalogs.Clear();
+            profileCatalogOfflineSinceUtc.Clear();
             completedOperations.Clear();
             workerCommandAcks.Clear();
             lastHubRosterPublish = null;
             lastPushedCatalogRows = [];
+            transportRosterSignature = string.Empty;
+            Interlocked.Increment(ref CurrentTransport.TransportRevision);
             cachedLocalRosterCatalog = null;
             nextLocalRosterCatalogRebuildUtc = DateTime.MinValue;
             lastAppliedHubRosterPublish = DadHubRosterPublishCursor.Empty;
@@ -351,6 +356,7 @@ public sealed class DadTransportService : IDisposable
         DrainFrameworkCallbacks();
         SweepDisconnectedParticipants();
         SweepCompletedOperations();
+        PruneOfflineProfileCatalogs(DateTime.UtcNow);
 
         var now = DateTime.UtcNow;
         if (!pluginEnabled)
@@ -627,6 +633,8 @@ public sealed class DadTransportService : IDisposable
     // B1: monotonic revision the roster UI polls; advances whenever a fresh peer catalog (pull response or
     // pushed projection) lands so the merged catalog can re-render itself without a manual click.
     public long RosterCatalogCacheRevision => Interlocked.Read(ref CurrentTransport.RosterCatalogCacheRevision);
+    public long TransportRevision => Interlocked.Read(ref CurrentTransport.TransportRevision);
+    public long ProfileCatalogCacheRevision => Interlocked.Read(ref CurrentTransport.ProfileCatalogCacheRevision);
 
     // B1: already-cached peer catalog responses (no network pull), used by the UI to re-merge when the
     // revision advances. Excludes the local worker's own response.
@@ -642,6 +650,68 @@ public sealed class DadTransportService : IDisposable
     // peers (and the coordinator) with no pull at all. Empty on the coordinator (it builds the projection).
     public IReadOnlyList<DadPeerRosterCatalogResponse> GetPushedPeerCatalogResponses()
         => DadHubRosterCatalogProjection.BuildPeerCatalogResponses(lastPushedCatalogRows, presenceService.WorkerSessionId);
+
+    public bool PurgeAccountCaches(DadAccountKey accountKey)
+    {
+        var rosterChanged = false;
+        foreach (var pair in rosterCatalogs.ToList())
+        {
+            var response = pair.Value;
+            var removedCharacters = response.Catalog.Characters.RemoveAll(character => DadRosterIdentity.SameAccount(character.AccountKey, accountKey));
+            var removedAccounts = response.Catalog.Accounts.RemoveAll(account => DadRosterIdentity.SameAccount(account.AccountKey, accountKey));
+            var removedVisibility = response.Catalog.Visibility.RemoveAll(record => DadRosterIdentity.SameAccount(record.AccountKey, accountKey));
+            rosterChanged |= removedCharacters + removedAccounts + removedVisibility > 0;
+        }
+
+        var profileChanged = false;
+        foreach (var pair in profileCatalogs.ToList())
+        {
+            var removed = pair.Value.Catalog.Accounts.RemoveAll(account => DadRosterIdentity.SameAccount(account.AccountKey, accountKey));
+            profileChanged |= removed > 0;
+        }
+
+        var retainedParticipants = CurrentTransport.KnownParticipants
+            .Where(participant => !DadRosterIdentity.SameAccount(participant.ManagedAccountKey, accountKey) &&
+                                  !DadRosterIdentity.SameAccount(
+                                      DadRosterIdentity.ResolveAccountKey(
+                                          participant.Character.AccountId,
+                                          participant.Character.AccountAlias),
+                                      accountKey))
+            .ToList();
+        if (retainedParticipants.Count != CurrentTransport.KnownParticipants.Count)
+        {
+            SetTransportRoster(retainedParticipants);
+            rosterChanged = true;
+        }
+
+        var pushedRows = lastPushedCatalogRows
+            .Where(row => !DadRosterIdentity.SameAccount(row.AccountKey, accountKey))
+            .ToList();
+        if (pushedRows.Count != lastPushedCatalogRows.Count)
+        {
+            lastPushedCatalogRows = pushedRows;
+            rosterChanged = true;
+        }
+
+        if (lastHubRosterPublish != null)
+        {
+            var removed = lastHubRosterPublish.CatalogRows.RemoveAll(row => DadRosterIdentity.SameAccount(row.AccountKey, accountKey));
+            rosterChanged |= removed > 0;
+        }
+
+        if (rosterChanged)
+        {
+            Interlocked.Increment(ref CurrentTransport.RosterCatalogCacheRevision);
+            InvalidateLocalRosterCatalogCache();
+            if (configuration.RunAsServerDad)
+                MarkHubRosterDirty($"Purged cached account {accountKey}.", fast: true);
+        }
+
+        if (profileChanged)
+            Interlocked.Increment(ref CurrentTransport.ProfileCatalogCacheRevision);
+
+        return rosterChanged || profileChanged;
+    }
 
     // B5: a local level/active-job-level change happened; promptly republish (server) or request a publish
     // (client) and invalidate the cached local catalog so the projection picks up the new job levels. The
@@ -2267,6 +2337,9 @@ public sealed class DadTransportService : IDisposable
                 continue;
             }
 
+            if (!IsWorkerOnline(response.Catalog.OwnerWorkerSessionId))
+                continue;
+
             aggregate.Responses.Add(response);
         }
     }
@@ -2277,7 +2350,8 @@ public sealed class DadTransportService : IDisposable
     {
         foreach (var workerId in targetWorkerIds.Order(StringComparer.OrdinalIgnoreCase))
         {
-            if (profileCatalogs.TryGetValue(workerId, out var response))
+            if (profileCatalogs.TryGetValue(workerId, out var response) &&
+                IsWorkerOnline(response.Catalog.OwnerWorkerSessionId))
                 aggregate.Responses.Add(response);
         }
     }
@@ -2356,7 +2430,11 @@ public sealed class DadTransportService : IDisposable
             target.Responses.Add(response);
             var workerId = response.Catalog.OwnerWorkerSessionId.Value;
             if (!string.IsNullOrWhiteSpace(workerId))
+            {
                 profileCatalogs[workerId] = response;
+                profileCatalogOfflineSinceUtc.TryRemove(workerId, out _);
+                Interlocked.Increment(ref CurrentTransport.ProfileCatalogCacheRevision);
+            }
         }
 
         foreach (var warning in source.Warnings)
@@ -3580,9 +3658,68 @@ public sealed class DadTransportService : IDisposable
 
     private void SetTransportRoster(IReadOnlyList<DadParticipantSnapshot> participants)
     {
-        CurrentTransport.KnownParticipants = SortParticipants(participants);
-        CurrentTransport.KnownParticipantCount = CurrentTransport.KnownParticipants.Count;
-        CurrentTransport.LastResponses = DadHubRosterPublishRuntime.BuildSnapshotResponses(CurrentTransport.KnownParticipants);
+        var sorted = SortParticipants(participants);
+        var signature = BuildTransportRosterSignature(sorted);
+        var semanticChange = !string.Equals(signature, transportRosterSignature, StringComparison.Ordinal);
+        CurrentTransport.KnownParticipants = sorted;
+        CurrentTransport.KnownParticipantCount = sorted.Count;
+        CurrentTransport.LastResponses = DadHubRosterPublishRuntime.BuildSnapshotResponses(sorted);
+        if (semanticChange)
+        {
+            transportRosterSignature = signature;
+            Interlocked.Increment(ref CurrentTransport.TransportRevision);
+        }
+    }
+
+    private static string BuildTransportRosterSignature(IEnumerable<DadParticipantSnapshot> participants)
+        => string.Join(
+            "\n",
+            participants.Select(BuildParticipantTransportSignature));
+
+    private static string BuildParticipantTransportSignature(DadParticipantSnapshot participant)
+    {
+        var character = participant.Character;
+        return string.Join(
+            "|",
+            participant.WorkerSessionId.Value,
+            participant.ClientInstanceId,
+            participant.ProcessId,
+            participant.AuthorityMode,
+            participant.Role,
+            participant.WorkerRole,
+            participant.State,
+            participant.IsLocalClient,
+            participant.IsAuthority,
+            participant.IsAvailable,
+            participant.IsEligibleForRun,
+            participant.ManagedAccountKey.Value,
+            participant.ManagedAccountAlias,
+            participant.ActiveCharacterKey.Value,
+            character.CharacterKey,
+            character.ContentId,
+            character.CharacterName,
+            character.WorldId,
+            character.WorldName,
+            character.DataCenterId,
+            character.DataCenterName,
+            character.AccountId,
+            character.AccountAlias,
+            character.Source,
+            character.Freshness,
+            character.CurrentJobId,
+            character.CurrentJobAbbrev,
+            character.CurrentLevel,
+            character.Readiness,
+            character.RosterVisibility,
+            character.NeedsRosterUpdate,
+            character.SnapshotQuality,
+            character.SnapshotVersion,
+            character.XadbReady,
+            character.MapEligible,
+            character.MapEligibilitySummary,
+            string.Join(",", character.JobLevels.OrderBy(static pair => pair.Key).Select(static pair => $"{pair.Key}:{pair.Value}")),
+            string.Join("\u001f", character.Blockers),
+            string.Join("\u001f", participant.Warnings));
     }
 
     private static List<DadParticipantSnapshot> SortParticipants(IEnumerable<DadParticipantSnapshot> participants)
@@ -3693,7 +3830,10 @@ public sealed class DadTransportService : IDisposable
                 response.Catalog.OwnerEndpoint = string.Empty;
                 response.Catalog.OwnerOnline = true;
                 response.Catalog.ReadOnly = false;
+                response.Catalog.GeneratedAtUtc = DateTime.UtcNow;
                 profileCatalogs[workerId] = response;
+                profileCatalogOfflineSinceUtc.TryRemove(workerId, out _);
+                Interlocked.Increment(ref CurrentTransport.ProfileCatalogCacheRevision);
             });
     }
 
@@ -3841,6 +3981,28 @@ public sealed class DadTransportService : IDisposable
         {
             if (DateTime.UtcNow - pair.Value.DisconnectedAtUtc >= retention)
                 disconnectedParticipants.TryRemove(pair.Key, out _);
+        }
+    }
+
+    private void PruneOfflineProfileCatalogs(DateTime nowUtc)
+    {
+        var staleAfter = GetHeartbeatStaleThreshold();
+        foreach (var pair in profileCatalogs.ToList())
+        {
+            var workerSessionId = pair.Value.Catalog.OwnerWorkerSessionId;
+            if (IsWorkerOnline(workerSessionId))
+            {
+                profileCatalogOfflineSinceUtc.TryRemove(pair.Key, out _);
+                continue;
+            }
+
+            var offlineSince = profileCatalogOfflineSinceUtc.GetOrAdd(pair.Key, nowUtc);
+            if (nowUtc - offlineSince < staleAfter)
+                continue;
+
+            if (profileCatalogs.TryRemove(pair.Key, out _))
+                Interlocked.Increment(ref CurrentTransport.ProfileCatalogCacheRevision);
+            profileCatalogOfflineSinceUtc.TryRemove(pair.Key, out _);
         }
     }
 

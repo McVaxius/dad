@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using dad.Models;
@@ -14,6 +15,7 @@ public sealed class ConfigManager
     private readonly string configDirectory;
     private readonly Dictionary<string, AccountConfig> accounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> deletedAccountIds = new(StringComparer.OrdinalIgnoreCase);
+    private long profileCatalogRevision = 1;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -30,6 +32,7 @@ public sealed class ConfigManager
 
     public string CurrentAccountId { get; set; } = string.Empty;
     public string SelectedCharacterKey { get; set; } = string.Empty;
+    public long ProfileCatalogRevision => Interlocked.Read(ref profileCatalogRevision);
 
     public AccountConfig? GetCurrentAccount()
         => string.IsNullOrWhiteSpace(CurrentAccountId) ? null : accounts.GetValueOrDefault(CurrentAccountId);
@@ -243,6 +246,8 @@ public sealed class ConfigManager
             SelectedCharacterKey = string.Empty;
         }
 
+        Interlocked.Increment(ref profileCatalogRevision);
+
         return true;
     }
 
@@ -288,6 +293,8 @@ public sealed class ConfigManager
         accounts.Clear();
         CurrentAccountId = string.Empty;
         SelectedCharacterKey = string.Empty;
+        if (result.AccountConfigsCleared > 0 || result.AccountConfigFilesDeleted > 0)
+            Interlocked.Increment(ref profileCatalogRevision);
         return result;
     }
 
@@ -521,6 +528,7 @@ public sealed class ConfigManager
         {
             var path = Path.Combine(configDirectory, $"{accountId}_dad.json");
             File.WriteAllText(path, JsonSerializer.Serialize(account, JsonOptions));
+            Interlocked.Increment(ref profileCatalogRevision);
         }
         catch (Exception ex)
         {

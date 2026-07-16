@@ -71,7 +71,43 @@ public static class DadRosterTransportCatalogRuntime
             },
         };
 
-        foreach (var participant in currentTransport.KnownParticipants)
+        var localPresence = currentTransport.KnownParticipants.FirstOrDefault(participant =>
+                                participant.IsLocalClient &&
+                                !currentTransport.LocalWorkerSessionId.IsEmpty &&
+                                string.Equals(
+                                    participant.WorkerSessionId.Value,
+                                    currentTransport.LocalWorkerSessionId.Value,
+                                    StringComparison.OrdinalIgnoreCase))
+                            ?? currentTransport.KnownParticipants.FirstOrDefault(participant =>
+                                !currentTransport.LocalWorkerSessionId.IsEmpty &&
+                                string.Equals(
+                                    participant.WorkerSessionId.Value,
+                                    currentTransport.LocalWorkerSessionId.Value,
+                                    StringComparison.OrdinalIgnoreCase))
+                            ?? currentTransport.KnownParticipants.FirstOrDefault(participant =>
+                                participant.IsLocalClient &&
+                                string.Equals(
+                                    participant.ClientInstanceId,
+                                    currentTransport.LocalClientInstanceId,
+                                    StringComparison.OrdinalIgnoreCase))
+                            ?? new DadParticipantSnapshot
+                            {
+                                ClientInstanceId = currentTransport.LocalClientInstanceId,
+                                WorkerSessionId = currentTransport.LocalWorkerSessionId,
+                                IsLocalClient = true,
+                                State = DadParticipantState.Stale,
+                            };
+        var onlineWorkers = currentTransport.KnownParticipants
+            .Where(static participant => participant.State != DadParticipantState.Stale)
+            .Select(static participant => participant.WorkerSessionId.Value)
+            .Where(static workerId => !string.IsNullOrWhiteSpace(workerId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var participants = DadCoordinatorRuntimeProjectionRules.BuildOnlineParticipantSet(
+            localPresence,
+            currentTransport.KnownParticipants,
+            workerSessionId => onlineWorkers.Contains(workerSessionId.Value));
+
+        foreach (var participant in participants)
         {
             if (!IsLiveConnectedCatalogParticipant(participant))
                 continue;

@@ -13,7 +13,7 @@ public enum DadCombatRotationMode
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -27,7 +27,7 @@ public sealed class Configuration : IPluginConfiguration
     public string DtrIconDisabled { get; set; } = "\uE04C";
     // Review M18 — config/account-store boundary:
     //   * This Configuration blob owns planner/scheduler/run state: PlannerGroups, LaunchProfiles,
-    //     ProfileCatalogCache, RunHistory, SchedulerQueue/History, RosterCatalog, and the account *identity*
+    //     RunHistory, SchedulerQueue/History, RosterCatalog, and the account *identity*
     //     pointers below (ClientAccountId / LastAccountId).
     //   * ConfigManager owns the per-account character roster (one {accountId}_dad.json file per account).
     //   Account add/delete/merge must update BOTH stores; that scrub logic lives in Plugin (ClearAllDadAccountData
@@ -60,7 +60,6 @@ public sealed class Configuration : IPluginConfiguration
     public DadPresetPlannerOptions PlannerOptions { get; set; } = new();
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
     public List<DadLaunchProfile> LaunchProfiles { get; set; } = [];
-    public List<DadProfileCatalog> ProfileCatalogCache { get; set; } = [];
     public List<DadRunResult> RunHistory { get; set; } = [];
     public DadRunResult? PersistedActiveRun { get; set; }
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
@@ -106,6 +105,15 @@ public sealed class Configuration : IPluginConfiguration
                 ServerDadPort = AuthorityTargetPort;
 
             Version = 3;
+            changed = true;
+        }
+
+        // Version 4 removes the historical remote profile catalog from the persistent configuration.
+        // JsonSerializer ignores the old property while loading, and the constructor's one migration save
+        // rewrites the blob without it. Per-account profiles remain in their dedicated account JSON files.
+        if (Version < 4)
+        {
+            Version = 4;
             changed = true;
         }
 

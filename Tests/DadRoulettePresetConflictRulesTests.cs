@@ -90,7 +90,7 @@ public sealed class DadRoulettePresetConflictRulesTests
     }
 
     [Fact]
-    public void ConflictPresentationMarksEveryChoiceAndSelectedPreviewBoldOrange()
+    public void ConflictPresentationMarksEveryChoiceAndSelectedPreviewOrange()
     {
         var presentation = DadCharacterConflictPresentationRules.Build(
         [
@@ -99,10 +99,10 @@ public sealed class DadRoulettePresetConflictRulesTests
             new("gamma@siren", "Gamma", true),
         ], "GAMMA@SIREN");
 
-        Assert.True(presentation.Choices.Single(choice => choice.DisplayName == "Alpha").UseBoldOrange);
-        Assert.False(presentation.Choices.Single(choice => choice.DisplayName == "Beta").UseBoldOrange);
-        Assert.True(presentation.Choices.Single(choice => choice.DisplayName == "Gamma").UseBoldOrange);
-        Assert.True(presentation.SelectedUseBoldOrange);
+        Assert.True(presentation.Choices.Single(choice => choice.DisplayName == "Alpha").UseOrange);
+        Assert.False(presentation.Choices.Single(choice => choice.DisplayName == "Beta").UseOrange);
+        Assert.True(presentation.Choices.Single(choice => choice.DisplayName == "Gamma").UseOrange);
+        Assert.True(presentation.SelectedUseOrange);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public sealed class DadRoulettePresetConflictRulesTests
 
         Assert.Empty(empty.SummaryNames);
         Assert.Equal(string.Empty, empty.Summary);
-        Assert.False(presentation.SelectedUseBoldOrange);
+        Assert.False(presentation.SelectedUseOrange);
         Assert.Equal(["Alpha", "gamma"], presentation.SummaryNames);
         Assert.Equal("Characters in multiple presets: Alpha, gamma", presentation.Summary);
     }

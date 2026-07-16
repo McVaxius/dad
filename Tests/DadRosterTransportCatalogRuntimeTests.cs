@@ -106,12 +106,12 @@ public sealed class DadRosterTransportCatalogRuntimeTests
     }
 
     [Fact]
-    public void ConnectedDadsRefreshPlanRequestsFullPeerCatalogs()
+    public void ConnectedDadsRefreshPlanUsesLiveParticipantProjection()
     {
         var plan = DadRosterRefreshPlan.ConnectedDads("manual connected roster refresh");
 
-        Assert.True(plan.ForcePeerRefresh);
-        Assert.False(plan.LiveConnectedOnly);
+        Assert.False(plan.ForcePeerRefresh);
+        Assert.True(plan.LiveConnectedOnly);
         Assert.True(plan.IncludeHidden);
         Assert.True(plan.IncludeIgnored);
         Assert.True(plan.LogDiagnostics);
@@ -638,6 +638,43 @@ public sealed class DadRosterTransportCatalogRuntimeTests
                                                           row.SourceWorkerSessionId.Value == "worker-y");
         Assert.Contains(catalog.Characters, static row => row.AccountKey.Value == "acct-t" &&
                                                           row.SourceWorkerSessionId.Value == "worker-t");
+    }
+
+    [Fact]
+    public void LiveConnectedCatalogSuppressesMirroredLocalWorker()
+    {
+        var local = Snapshot("client-x", "worker-x", "acct-x", "X Character@Alpha", 202);
+        local.IsLocalClient = true;
+        local.State = DadParticipantState.Ready;
+        var mirror = local.Clone();
+        mirror.IsLocalClient = false;
+        mirror.StatusText = "mirrored local projection";
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-x", "worker-x", mirror, local));
+
+        var row = Assert.Single(catalog.Characters);
+        Assert.Equal("worker-x", row.SourceWorkerSessionId.Value);
+        Assert.Equal(DadCharacterSource.LocalRuntime, row.Source);
+    }
+
+    [Fact]
+    public void LiveConnectedCatalogPreservesDistinctRemoteWorkerSessions()
+    {
+        var local = Snapshot("client-local", "worker-local", "acct-local", "Local@Alpha", 101);
+        local.IsLocalClient = true;
+        local.State = DadParticipantState.Ready;
+        var remoteOne = Snapshot("shared-client", "worker-one", "acct-one", "One@Alpha", 201);
+        var remoteTwo = Snapshot("shared-client", "worker-two", "acct-two", "Two@Alpha", 202);
+        remoteOne.State = DadParticipantState.Ready;
+        remoteTwo.State = DadParticipantState.Ready;
+
+        var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("client-local", "worker-local", local, remoteOne, remoteTwo));
+
+        Assert.Equal(3, catalog.Characters.Count);
+        Assert.Contains(catalog.Characters, static row => row.SourceWorkerSessionId.Value == "worker-one");
+        Assert.Contains(catalog.Characters, static row => row.SourceWorkerSessionId.Value == "worker-two");
     }
 
     [Fact]

@@ -1,5 +1,30 @@
 # dad — changelog
 
+## 2026-07-16 — Ko-fi action and hub clock recovery
+- Changed the main-window Ko-fi button to open the configured support URL, matching the Config window, without
+  writing to the clipboard or printing a copied-link status message.
+- Added the companion `Fix-FtUsbSrv-Time.ps1` operator script for the account-1 hub. It preserves the existing
+  2020 `ftusbsrv` restart flow, then restores automatic domain-hierarchy or standalone Windows NTP synchronization,
+  retries rediscovery/resync up to three times, and prints the active time source and status.
+- No public API, configuration schema, protocol v2, shared-secret, endpoint, replay-window, or network wire-format
+  contract changed.
+
+## 2026-07-16 — P1191 DAD performance and Crew UX
+- Advanced persistent configuration to schema v4 and removed the serialized historical profile-catalog cache.
+  Remote profile catalogs now remain in memory only for current online worker sessions, refresh on the 60-second
+  reconcile cadence, and disappear after the existing stale window; per-account character profiles remain in their
+  dedicated account JSON files.
+- Replaced per-frame roster/profile projection rebuilding with semantic revision caches, cached Crew filtering, and
+  clipped roster-table rendering. Passive roster learning now coalesces saves after 10 quiet seconds with a 60-second
+  maximum delay and disposal flush; alias/free-text edits use a five-second quiet period.
+- Added session-only crew Details labels, account character browsing with Show in roster, direct Ctrl+Shift remote-copy
+  forgetting, participant-projected Connected Crew, and immediate account/cache eviction. Removed the per-row account
+  assignment controls while retaining read-only assignment filters and compatibility IPC/service contracts.
+- Hid Character Profiles alongside Launch Profiles unless Debug UI is enabled. Added the one-step Name this DAD Home
+  guide for the stable client account ID, and changed roulette-conflict emphasis to one normal-weight orange render.
+- Kept plugin/manifest version, protocol v2, public IPC names, planner schemas, account IDs, ownership rules, release
+  artifacts, deployment paths, and supported profile-update behavior unchanged.
+
 ## 2026-07-15 — P1189 dependency gate, readiness refresh, and debug-only launch profiles
 - Added versioned dependency truth for Fren Rider, AI Duty Solver, vnavmesh, XA Database 0.0.0.39+, XA Slave,
   and either BossModReborn or BossMod. A persistent non-modal DAD Dependencies window provides filtered installer

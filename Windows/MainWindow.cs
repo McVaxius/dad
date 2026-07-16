@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using Dalamud.Utility;
 using dad.Models;
 using dad.Services;
 using Lumina.Excel.Sheets;
@@ -48,6 +49,7 @@ public sealed class MainWindow : Window, IDisposable
     private string cachedPlannerDutySearchText = string.Empty;
     private IReadOnlyList<DadPlannerDutyOption> cachedPlannerDutySearchResults = [];
     private string plannerGroupNameBuffer = string.Empty;
+    private bool plannerCrewDetails;
     private string pendingDeletePlannerGroupId = string.Empty;
     private string plannerShareStatus = string.Empty;
     private string plannerShareIdOwner = string.Empty;
@@ -67,7 +69,6 @@ public sealed class MainWindow : Window, IDisposable
     private DadShareEnvelopeDto? pendingScheduleShareImport;
     private DadShareImportPreview? pendingScheduleSharePreview;
     private string pendingDeleteAccountId = string.Empty;
-    private string pendingForgetAccountId = string.Empty;
     private string pendingMergeAccountId = string.Empty;
     private string rosterSearch = string.Empty;
     private string rosterAccountFilter = string.Empty;
@@ -79,6 +80,8 @@ public sealed class MainWindow : Window, IDisposable
     private bool rosterStaleOnly;
     private bool rosterAccountInitialized;
     private readonly HashSet<string> rosterSelectedRows = new(StringComparer.OrdinalIgnoreCase);
+    private RosterFilterCacheKey? rosterFilterCacheKey;
+    private IReadOnlyList<DadRosterCharacter> rosterFilteredRows = [];
     // B1: last roster-catalog cache revision rendered; when the transport bumps it (a peer pull landed or the
     // coordinator pushed a fresh projection), the roster section re-merges from cache without a second click.
     private long lastRosterCatalogCacheRevision = -1;
@@ -112,6 +115,18 @@ public sealed class MainWindow : Window, IDisposable
     private sealed record JobLevelDisplay(string Summary, string Tooltip);
 
     private sealed record JobLevelEntry(uint? JobId, string Abbreviation, int? Level);
+
+    private sealed record RosterFilterCacheKey(
+        long CatalogRevision,
+        long TransportRevision,
+        string Search,
+        string Account,
+        string Assigned,
+        string Visibility,
+        string WorldDc,
+        string Source,
+        string Client,
+        bool StaleOnly);
 
     public MainWindow(Plugin plugin) : base($"{PluginInfo.DisplayName}##Main", ImGuiWindowFlags.None)
     {
@@ -297,7 +312,7 @@ public sealed class MainWindow : Window, IDisposable
         if (DadUi.Button("Guide", DadUiTone.Accent))
             plugin.OpenSetupWizard();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Open the five guided DAD workflows at any time.");
+            ImGui.SetTooltip("Open the six guided DAD workflows at any time.");
 
         ImGui.SameLine();
         if (DadUi.Button(plugin.KrangleService.Enabled ? "Show character names" : "Hide character names"))
@@ -306,11 +321,8 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetTooltip("Changes local operator labels only. Run contracts keep their real identities.");
 
         ImGui.SameLine();
-        if (DadUi.Button("Copy Ko-fi link"))
-        {
-            ImGui.SetClipboardText(PluginInfo.SupportUrl);
-            plugin.PrintStatus($"Copied Ko-fi URL: {PluginInfo.SupportUrl}");
-        }
+        if (DadUi.Button("Support on Ko-fi", DadUiTone.Accent))
+            Util.OpenLink(PluginInfo.SupportUrl);
 
         if (Plugin.IsBusy(localRun) || Plugin.IsBusy(authorityRun))
         {
@@ -455,9 +467,10 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawHomeGuidedTasks()
     {
-        DrawSectionHeader("Guided tasks", "Five complete workflows with live progress and the first blocker.");
+        DrawSectionHeader("Guided tasks", "Six complete workflows with live progress and the first blocker.");
         var flows = new[]
         {
+            DadGuideFlow.NameDad,
             DadGuideFlow.Coordinator,
             DadGuideFlow.Client,
             DadGuideFlow.FirstPreset,
@@ -1159,8 +1172,8 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawCrewTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
-        var catalog = plugin.RosterCatalogService.CurrentCatalog;
-        var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
+        var rosterSnapshot = plugin.RosterCatalogService.GetUiSnapshot();
+        var catalog = rosterSnapshot.Catalog;
         var activeRows = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
         var blockerCount = activeRows.Count(static row => row.AccountKey.IsEmpty || row.IsStale || row.NeedsRosterUpdate);
         DadUi.Heading("CREW", "Manage the accounts and characters DAD can use.");
@@ -1171,6 +1184,7 @@ public sealed class MainWindow : Window, IDisposable
             blockerCount == 0 && activeRows.Count > 0 ? DadUiTone.Success : DadUiTone.Warning);
         if (plugin.Configuration.DebugUiEnabled)
         {
+            var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
             ImGui.SameLine();
             DadUi.Badge($"{launchProfiles.Count(static profile => profile.Enabled)} launch profile(s) enabled",
                 launchProfiles.Any(static profile => profile.Enabled) ? DadUiTone.Info : DadUiTone.Neutral);
@@ -1181,18 +1195,20 @@ public sealed class MainWindow : Window, IDisposable
 
         if (ImGui.BeginTabItem("Roster"))
         {
-            DrawCrewRosterSection(characterPool, catalog);
+            DrawCrewRosterSection(characterPool, rosterSnapshot);
             ImGui.EndTabItem();
         }
 
-        if (ImGui.BeginTabItem("Character Profiles"))
+        if (plugin.Configuration.DebugUiEnabled && ImGui.BeginTabItem("Character Profiles"))
         {
+            var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
             DrawProfileTree(launchProfiles);
             ImGui.EndTabItem();
         }
 
         if (plugin.Configuration.DebugUiEnabled && ImGui.BeginTabItem("Launch Profiles"))
         {
+            var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
             DrawLaunchProfileEditor(launchProfiles);
             ImGui.EndTabItem();
         }
@@ -1228,11 +1244,12 @@ public sealed class MainWindow : Window, IDisposable
         if (plugin.Configuration.DebugUiEnabled && ImGui.CollapsingHeader("Launch profiles", ImGuiTreeNodeFlags.DefaultOpen))
             DrawLaunchProfileEditor(launchProfiles);
 
-        if (ImGui.CollapsingHeader("Account profile tree", ImGuiTreeNodeFlags.DefaultOpen))
+        if (plugin.Configuration.DebugUiEnabled &&
+            ImGui.CollapsingHeader("Account profile tree", ImGuiTreeNodeFlags.DefaultOpen))
             DrawProfileTree(launchProfiles);
 
         if (ImGui.CollapsingHeader("Roster state", ImGuiTreeNodeFlags.DefaultOpen))
-            DrawCrewRosterSection(characterPool, catalog);
+            DrawCrewRosterSection(characterPool, plugin.RosterCatalogService.GetUiSnapshot());
     }
 
     private void DrawLaunchProfileEditor(IReadOnlyList<DadLaunchProfile> profiles)
@@ -1522,8 +1539,9 @@ public sealed class MainWindow : Window, IDisposable
         profileSaveStatus = ack.Summary;
     }
 
-    private void DrawCrewRosterSection(DadCharacterPool characterPool, DadAccountRosterCatalog catalog)
+    private unsafe void DrawCrewRosterSection(DadCharacterPool characterPool, DadRosterUiSnapshot rosterSnapshot)
     {
+        var catalog = rosterSnapshot.Catalog;
         // B1: complete-then-render. When the transport's roster-catalog cache revision advances (an async peer
         // pull landed, or the coordinator pushed a fresh projection (B2)), re-merge from cache once so the new
         // rows render themselves. Reads cache only (no network pull), so it cannot loop on the revision bump.
@@ -1535,32 +1553,38 @@ public sealed class MainWindow : Window, IDisposable
         else if (rosterCacheRevision != lastRosterCatalogCacheRevision)
         {
             lastRosterCatalogCacheRevision = rosterCacheRevision;
-            catalog = plugin.RosterCatalogService.RefreshCatalogFromCache(characterPool, "roster cache revision advanced");
+            plugin.RosterCatalogService.RefreshCatalogFromCache(characterPool, "roster cache revision advanced");
+            rosterSnapshot = plugin.RosterCatalogService.GetUiSnapshot();
+            catalog = rosterSnapshot.Catalog;
         }
 
         DrawSectionHeader("Roster Accounts", "Pick an account first. Assigned Active rows feed normal crew slots.");
         if (ImGui.SmallButton("Refresh local roster"))
         {
-            catalog = plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
+            plugin.RosterCatalogService.RefreshCatalog(characterPool, new DadRosterRefreshPlan
             {
                 IncludeHidden = true,
                 IncludeIgnored = true,
                 LogDiagnostics = true,
                 DiagnosticsReason = "manual local roster refresh",
             });
+            rosterSnapshot = plugin.RosterCatalogService.GetUiSnapshot();
+            catalog = rosterSnapshot.Catalog;
             ResetRosterBrowseFilters(catalog, RosterBrowseResetMode.AllRows);
         }
 
         ImGui.SameLine();
-        if (ImGui.SmallButton("Populate connected roster"))
+        if (ImGui.SmallButton("Build Connected Crew"))
         {
-            catalog = plugin.RosterCatalogService.RefreshCatalog(
+            plugin.RosterCatalogService.RefreshCatalog(
                 characterPool,
                 DadRosterRefreshPlan.ConnectedDads("manual connected roster refresh"));
+            rosterSnapshot = plugin.RosterCatalogService.GetUiSnapshot();
+            catalog = rosterSnapshot.Catalog;
             ResetRosterBrowseFilters(catalog, RosterBrowseResetMode.AllRows);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Pulls roster rows from connected Dads over the transport.");
+            ImGui.SetTooltip("Builds the Crew view from current connected participants, suppressing this client's mirrored worker row.");
 
         EnsureRosterAccountSelection(catalog);
         ImGui.SetNextItemWidth(MathF.Min(260f, ImGui.GetContentRegionAvail().X));
@@ -1576,7 +1600,7 @@ public sealed class MainWindow : Window, IDisposable
         if (showAdvanced)
             DrawRosterAdvancedFilters(catalog);
 
-        var filtered = FilterRosterCharacters(catalog.Characters).ToList();
+        var filtered = GetCachedFilteredRosterRows(rosterSnapshot);
         TrimRosterSelection(catalog.Characters);
         var selectedFiltered = filtered
             .Where(character => rosterSelectedRows.Contains(BuildRosterSelectionKey(character)))
@@ -1624,10 +1648,11 @@ public sealed class MainWindow : Window, IDisposable
         var tableFlags = ImGuiTableFlags.Borders |
                          ImGuiTableFlags.RowBg |
                          ImGuiTableFlags.Resizable |
-                         ImGuiTableFlags.SizingStretchProp;
+                         ImGuiTableFlags.SizingStretchProp |
+                         ImGuiTableFlags.ScrollY;
         if (showProvenance)
             tableFlags |= ImGuiTableFlags.ScrollX;
-        if (!ImGui.BeginTable("dad-crew-roster", columnCount, tableFlags))
+        if (!ImGui.BeginTable("dad-crew-roster", columnCount, tableFlags, new Vector2(0f, 430f)))
             return;
 
         ImGui.TableSetupColumn("Sel");
@@ -1645,58 +1670,67 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableSetupColumn("Source");
         ImGui.TableSetupColumn("Blockers");
         ImGui.TableSetupColumn("Actions");
+        ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableHeadersRow();
 
-        foreach (var character in filtered)
+        var clipper = ImGui.ImGuiListClipper();
+        clipper.Begin(filtered.Count);
+        while (clipper.Step())
         {
-            var selectionKey = BuildRosterSelectionKey(character);
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-            var selected = rosterSelectedRows.Contains(selectionKey);
-            if (ImGui.Checkbox($"##dad-roster-select-{selectionKey}", ref selected))
+            for (var rowIndex = clipper.DisplayStart; rowIndex < clipper.DisplayEnd; rowIndex++)
             {
-                if (selected)
-                    rosterSelectedRows.Add(selectionKey);
-                else
-                    rosterSelectedRows.Remove(selectionKey);
-            }
-            if (showAccountColumn)
-            {
+                var character = filtered[rowIndex];
+                var selectionKey = BuildRosterSelectionKey(character);
+                ImGui.TableNextRow();
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatRosterAccount(character));
-            }
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatOperatorCharacterKey(character.CharacterKey.Value, "(unknown)"));
-            if (showProvenance)
-            {
+                var selected = rosterSelectedRows.Contains(selectionKey);
+                if (ImGui.Checkbox($"##dad-roster-select-{selectionKey}", ref selected))
+                {
+                    if (selected)
+                        rosterSelectedRows.Add(selectionKey);
+                    else
+                        rosterSelectedRows.Remove(selectionKey);
+                }
+                if (showAccountColumn)
+                {
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(FormatRosterAccount(character));
+                }
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(character.ContentId == 0 ? "-" : character.ContentId.ToString(CultureInfo.InvariantCulture));
-            }
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatRosterWorldDc(character));
-            if (showProvenance)
-            {
+                ImGui.TextUnformatted(FormatOperatorCharacterKey(character.CharacterKey.Value, "(unknown)"));
+                if (showProvenance)
+                {
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(character.ContentId == 0 ? "-" : character.ContentId.ToString(CultureInfo.InvariantCulture));
+                }
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted($"{FormatRosterFreshness(character)} | {FormatTime(character.LastSnapshotUtc)}");
-            }
-            ImGui.TableNextColumn();
-            DrawJobLevelCell(BuildJobLevelDisplay(
-                character.JobLevels,
-                character.CurrentJobId,
-                character.CurrentJobAbbrev,
-                character.CurrentLevel));
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatRosterState(character));
-            if (showProvenance)
-            {
+                ImGui.TextUnformatted(FormatRosterWorldDc(character));
+                if (showProvenance)
+                {
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted($"{FormatRosterFreshness(character)} | {FormatTime(character.LastSnapshotUtc)}");
+                }
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(FormatRosterSource(character));
+                DrawJobLevelCell(BuildJobLevelDisplay(
+                    character.JobLevels,
+                    character.CurrentJobId,
+                    character.CurrentJobAbbrev,
+                    character.CurrentLevel));
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatRosterState(character));
+                if (showProvenance)
+                {
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(FormatRosterSource(character));
+                }
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(FormatOperatorText(FormatRosterBlockers(character), "(none)"));
+                ImGui.TableNextColumn();
+                DrawRosterRowActions(character, selectionKey);
             }
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted(FormatOperatorText(FormatRosterBlockers(character), "(none)"));
-            ImGui.TableNextColumn();
-            DrawRosterRowActions(catalog, character, selectionKey);
         }
+        clipper.End();
+        clipper.Destroy();
 
         ImGui.EndTable();
     }
@@ -2930,15 +2964,13 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextDisabled("No Dad roster accounts.");
             DrawMergeAccountPopup(catalog);
             DrawDeleteAccountPopup(catalog);
-            DrawForgetAccountCopiesPopup(catalog);
             return;
         }
 
-        if (!ImGui.BeginTable("dad-roster-account-tools", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+        if (!ImGui.BeginTable("dad-roster-account-tools", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
             DrawMergeAccountPopup(catalog);
             DrawDeleteAccountPopup(catalog);
-            DrawForgetAccountCopiesPopup(catalog);
             return;
         }
 
@@ -2946,6 +2978,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TableSetupColumn("Alias");
         ImGui.TableSetupColumn("Config");
         ImGui.TableSetupColumn("Rows");
+        ImGui.TableSetupColumn("Characters");
         ImGui.TableSetupColumn("Actions");
         ImGui.TableHeadersRow();
 
@@ -2981,6 +3014,12 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(rowCount.ToString(CultureInfo.InvariantCulture));
             ImGui.TableNextColumn();
+            var characterLabels = GetRosterAccountCharacterLabels(catalog, accountKey, account);
+            ImGui.TextWrapped(characterLabels.Count == 0 ? "(none)" : string.Join(", ", characterLabels));
+            ImGui.TableNextColumn();
+            if (ImGui.SmallButton($"Show in roster##dad-roster-show-account-{accountId}"))
+                ShowAccountInRoster(accountKey);
+            ImGui.SameLine();
             if (account != null)
             {
                 var currentAccountId = plugin.ConfigManager.CurrentAccountId?.Trim() ?? string.Empty;
@@ -3010,15 +3049,56 @@ public sealed class MainWindow : Window, IDisposable
                          "Click to forget local Dad roster metadata for this remote account. XADB snapshots and remote Dad data stay untouched.",
                          "Hold Ctrl+Shift to forget local Dad roster metadata for this remote account. XADB snapshots and remote Dad data stay untouched."))
             {
-                pendingForgetAccountId = accountId;
-                ImGui.OpenPopup("Confirm forget account copies##dad-roster-forget-account");
+                ForgetAccountCopies(accountKey, ResolveRosterAccountDisplayName(option));
             }
         }
 
         ImGui.EndTable();
         DrawMergeAccountPopup(catalog);
         DrawDeleteAccountPopup(catalog);
-        DrawForgetAccountCopiesPopup(catalog);
+    }
+
+    private IReadOnlyList<string> GetRosterAccountCharacterLabels(
+        DadAccountRosterCatalog catalog,
+        DadAccountKey accountKey,
+        AccountConfig? account)
+        => (account == null ? Enumerable.Empty<string>() : account.Characters.Keys)
+            .Concat(catalog.Characters
+                .Where(character => DadRosterIdentity.SameAccount(character.AccountKey, accountKey))
+                .Select(static character => character.CharacterKey.Value))
+            .Where(static key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .Select(key => FormatOperatorCharacterKey(key, "(unknown)"))
+            .ToList();
+
+    private void ShowAccountInRoster(DadAccountKey accountKey)
+    {
+        var state = DadRosterBrowseFilterState.ShowAccount(accountKey);
+        rosterSearch = state.Search;
+        rosterAccountFilter = state.Account;
+        rosterAssignedFilter = state.Assigned;
+        rosterVisibilityFilter = state.Visibility;
+        rosterWorldDcFilter = state.WorldDc;
+        rosterSourceFilter = state.Source;
+        rosterClientFilter = state.Client;
+        rosterStaleOnly = state.StaleOnly;
+        rosterSelectedRows.Clear();
+        rosterAccountInitialized = true;
+    }
+
+    private void ForgetAccountCopies(DadAccountKey accountKey, string label)
+    {
+        var purged = plugin.ForgetDadAccountCopies(accountKey);
+        if (MatchesRosterAccountFilterKey(accountKey.Value, rosterAccountFilter))
+        {
+            rosterAccountFilter = string.Empty;
+            rosterAccountInitialized = true;
+        }
+        rosterSelectedRows.Clear();
+        plugin.PrintStatus(purged
+            ? $"Forgot local Dad roster copies for '{label}'. XADB snapshots and remote Dad data untouched."
+            : $"No local Dad roster copies found for '{label}'.");
     }
 
     private List<DadRosterAccountOption> GetRosterAccountToolOptions(DadAccountRosterCatalog catalog)
@@ -3071,7 +3151,6 @@ public sealed class MainWindow : Window, IDisposable
             return false;
 
         pendingDeleteAccountId = string.Empty;
-        pendingForgetAccountId = string.Empty;
         pendingMergeAccountId = string.Empty;
         var result = plugin.ClearAllDadAccountData();
         plugin.PrintStatus(result.ToStatusMessage());
@@ -3193,67 +3272,6 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.SmallButton("Cancel"))
         {
             pendingDeleteAccountId = string.Empty;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.EndPopup();
-    }
-
-    private void DrawForgetAccountCopiesPopup(DadAccountRosterCatalog catalog)
-    {
-        if (!ImGui.BeginPopup("Confirm forget account copies##dad-roster-forget-account"))
-            return;
-
-        var accountKey = new DadAccountKey(pendingForgetAccountId);
-        if (accountKey.IsEmpty)
-        {
-            ImGui.TextUnformatted("No account selected.");
-            if (ImGui.SmallButton("Close"))
-                ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-            return;
-        }
-
-        var option = GetRosterAccountToolOptions(catalog)
-            .FirstOrDefault(candidate => DadRosterIdentity.SameAccount(candidate.AccountKey, accountKey));
-        var label = option == null ? accountKey.Value : FormatRosterAccountOption(option);
-        var rowCount = catalog.Characters
-            .Where(character => !character.AccountKey.IsEmpty &&
-                                DadRosterIdentity.SameAccount(character.AccountKey, accountKey))
-            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
-            .Count();
-        ImGui.TextWrapped($"Forget local Dad roster copies for '{label}'?");
-        ImGui.TextDisabled($"Removes local Dad roster metadata for {rowCount} row(s). XADB snapshots and remote Dad data stay untouched.");
-        if (DrawCtrlShiftSmallButton(
-                "Forget account copies",
-                "dad-roster-confirm-forget-account",
-                "Click to forget local Dad roster metadata for this remote account. XADB snapshots and remote Dad data stay untouched.",
-                "Hold Ctrl+Shift to forget local Dad roster metadata for this remote account. XADB snapshots and remote Dad data stay untouched."))
-        {
-            var purged = plugin.RosterCatalogService.PurgeAccount(accountKey);
-            plugin.RosterCatalogService.RefreshCatalog(plugin.CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
-            {
-                IncludeHidden = true,
-                IncludeIgnored = true,
-                StaleAfterHours = plugin.Configuration.RosterCatalog.StaleAfterHours,
-            });
-            if (MatchesRosterAccountFilterKey(accountKey.Value, rosterAccountFilter))
-            {
-                rosterAccountFilter = string.Empty;
-                rosterAccountInitialized = true;
-            }
-
-            plugin.PrintStatus(purged
-                ? $"Forgot local Dad roster copies for '{label}'. XADB snapshots and remote Dad data untouched."
-                : $"No local Dad roster copies found for '{label}'.");
-            pendingForgetAccountId = string.Empty;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Cancel"))
-        {
-            pendingForgetAccountId = string.Empty;
             ImGui.CloseCurrentPopup();
         }
 
@@ -3449,6 +3467,27 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.EndCombo();
+    }
+
+    private IReadOnlyList<DadRosterCharacter> GetCachedFilteredRosterRows(DadRosterUiSnapshot snapshot)
+    {
+        var key = new RosterFilterCacheKey(
+            snapshot.CatalogRevision,
+            snapshot.TransportRevision,
+            rosterSearch,
+            rosterAccountFilter,
+            rosterAssignedFilter,
+            rosterVisibilityFilter,
+            rosterWorldDcFilter,
+            rosterSourceFilter,
+            rosterClientFilter,
+            rosterStaleOnly);
+        if (Equals(key, rosterFilterCacheKey))
+            return rosterFilteredRows;
+
+        rosterFilterCacheKey = key;
+        rosterFilteredRows = FilterRosterCharacters(snapshot.Catalog.Characters).ToList();
+        return rosterFilteredRows;
     }
 
     private IEnumerable<DadRosterCharacter> FilterRosterCharacters(IEnumerable<DadRosterCharacter> characters)
@@ -3683,12 +3722,10 @@ public sealed class MainWindow : Window, IDisposable
         plugin.PrintStatus(queue?.Summary ?? "Roster update enqueued.");
     }
 
-    private void DrawRosterRowActions(DadAccountRosterCatalog catalog, DadRosterCharacter character, string selectionKey)
+    private void DrawRosterRowActions(DadRosterCharacter character, string selectionKey)
     {
         if (ImGui.SmallButton($"Activate##dad-roster-active-{selectionKey}"))
             SetRosterVisibility([character], DadRosterVisibility.Active);
-        ImGui.SameLine();
-        DrawRosterAssignCombo(character, selectionKey, catalog);
         ImGui.SameLine();
         if (ImGui.SmallButton($"More...##dad-roster-more-{selectionKey}"))
             ImGui.OpenPopup($"dad-roster-more-popup-{selectionKey}");
@@ -3710,17 +3747,6 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.SmallButton($"Dry-run update##dad-roster-dry-update-{selectionKey}"))
                 QueueRosterUpdate([character], dryRun: true);
 
-            var canClear = !character.AccountKey.IsEmpty && !IsRemoteRosterRow(character);
-            ImGui.BeginDisabled(!canClear);
-            if (ImGui.SmallButton($"Clear assignment##dad-roster-clear-{selectionKey}"))
-                ChangeRosterAssignment(new DadRosterAssignmentChangeRequest
-                {
-                    CharacterRef = DadRosterIdentity.From(character),
-                    ClearAssignment = true,
-                    Reason = "Cleared from Crew / Scheduler browser.",
-                });
-            ImGui.EndDisabled();
-
             if (plugin.RosterCatalogService.HasLocalRosterCopy(character))
             {
                 if (DrawCtrlShiftSmallButton(
@@ -3735,48 +3761,6 @@ public sealed class MainWindow : Window, IDisposable
 
             ImGui.EndPopup();
         }
-    }
-
-    private void DrawRosterAssignCombo(DadRosterCharacter character, string selectionKey, DadAccountRosterCatalog catalog)
-    {
-        var localAccountKey = new DadAccountKey(plugin.Configuration.ClientAccountId);
-        var localAccount = plugin.ConfigManager.GetAccount(localAccountKey);
-        var localOption = GetRosterAccountOptions(catalog)
-            .FirstOrDefault(option => DadRosterIdentity.SameAccount(option.AccountKey, localAccountKey));
-        var canAssign = !IsRemoteRosterRow(character) && !localAccountKey.IsEmpty && (localAccount != null || localOption != null);
-        ImGui.BeginDisabled(!canAssign);
-        if (ImGui.BeginCombo($"##dad-roster-assign-{selectionKey}", "Assign account"))
-        {
-            var accountId = localAccount?.AccountId ?? localOption?.AccountKey.Value ?? string.Empty;
-            var accountAlias = localAccount?.AccountAlias ?? localOption?.AccountAlias ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(accountId))
-            {
-                var label = string.IsNullOrWhiteSpace(accountAlias) ||
-                            string.Equals(accountAlias, accountId, StringComparison.OrdinalIgnoreCase)
-                    ? accountId
-                    : $"{accountAlias} ({accountId})";
-                if (ImGui.Selectable(label, false))
-                {
-                    ChangeRosterAssignment(new DadRosterAssignmentChangeRequest
-                    {
-                        CharacterRef = DadRosterIdentity.From(character),
-                        AccountKey = new DadAccountKey(accountId),
-                        AccountAlias = accountAlias,
-                        Reason = "Assigned from Crew / Scheduler browser.",
-                    });
-                }
-            }
-
-            ImGui.EndCombo();
-        }
-        ImGui.EndDisabled();
-    }
-
-    private void ChangeRosterAssignment(DadRosterAssignmentChangeRequest request)
-    {
-        var resultJson = plugin.ChangeRosterAssignmentFromJson(DadIpcJson.Serialize(request));
-        var catalog = DadIpcJson.Deserialize<DadAccountRosterCatalog>(resultJson);
-        plugin.PrintStatus(catalog?.Summary ?? "Roster assignment updated.");
     }
 
     private void ForgetRosterCopy(DadRosterCharacter character)
@@ -6830,6 +6814,10 @@ public sealed class MainWindow : Window, IDisposable
                 ? $"All Slot1-Slot{DadPlannerSlotRules.MaxSlotNumber.ToString(CultureInfo.InvariantCulture)} rows already exist."
                 : "Adds the next generated SlotN row.");
         ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.Checkbox("Details##dad-planner-crew-details", ref plannerCrewDetails);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Show stable account IDs beside account aliases for this session.");
 
         DrawPlannerGroupSlotEditor(plannerSnapshot, selectedGroup);
 
@@ -7169,7 +7157,8 @@ public sealed class MainWindow : Window, IDisposable
             plannerSnapshot,
             group,
             plugin.TouchPlannerGroup,
-            "dad-planner-group");
+            "dad-planner-group",
+            plannerCrewDetails);
     }
 
     private void DrawPlannerOperatorModeSelector(DadPresetPlannerOptions plannerOptions)

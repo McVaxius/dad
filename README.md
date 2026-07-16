@@ -26,6 +26,20 @@ dotnet build .\dad.csproj -c Debug -p:Platform=x64
 dotnet test .\Tests\dad.Tests.csproj
 ```
 
+## Crew and persistence
+
+- Home includes a one-step **Name this DAD** guide. It gives the immutable local client account a meaningful alias;
+  normal crew choices show the alias only, while the session-only **Details** checkbox also shows the stable ID.
+- Crew account tools list each account's characters, can show every matching roster row by clearing secondary filters,
+  and forget remote account copies immediately with Ctrl+Shift. **Build Connected Crew** uses current participant
+  projections and suppresses the mirrored local worker while retaining distinct remote sessions.
+- Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
+  Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
+  existing compatibility contracts remain available.
+- Configuration schema v4 no longer serializes remote profile catalogs. Online remote catalogs are session-only and
+  reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
+  Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached.
+
 ## Operator status and cancellation
 
 - `/dad status` keeps its existing behavior and prints the live shell report to chat.
@@ -63,8 +77,8 @@ dotnet test .\Tests\dad.Tests.csproj
 - A configured Coordinator endpoint is not presented as a live authority route until the authenticated handshake
   succeeds. Client liveness is checked from inbound frames, and a stale route is closed and reconnected.
 - Roster sync is passive: the Coordinator pushes a compact roster catalog (account / character / job→level) to all
-  clients on connect, on change (incl. level-ups), and on a periodic reconcile — no manual "Populate roster" click
-  is required for normal operation (that button remains as a debug fallback).
+  clients on connect, on change (incl. level-ups), and on a periodic reconcile. **Build Connected Crew** remains an
+  explicit current-participant view; normal sync does not require a manual catalog pull.
 
 See `changelog.txt` for the full history. Durable design/review notes live in the XIV KB under
 `Dhog/Dad/` (e.g. `DAD_FIX_IMPLEMENTATION_GUIDE_2026-06-26.md`).

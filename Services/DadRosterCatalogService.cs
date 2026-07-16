@@ -14,6 +14,8 @@ public sealed class DadRosterCatalogService
     private DadAccountRosterCatalog currentCatalog = new() { Summary = "Roster catalog not refreshed yet." };
     private IReadOnlyList<DadPeerRosterCatalogResponse> lastPeerResponses = [];
     private long catalogVersion;
+    private readonly DadDeferredSaveGate deferredSaveGate = new(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(60));
+    private readonly DadRevisionSnapshotCache<DadRosterUiSnapshot> uiSnapshotCache = new();
     // B1/B7: short-lived reuse of the locally-built catalog so the cache-driven auto-refresh re-merges peers
     // WITHOUT re-running the XADB IPC fetch on the framework thread on every coordinator publish (~5 s).
     private static readonly TimeSpan LocalCatalogReuseWindow = TimeSpan.FromSeconds(10);
@@ -42,20 +44,41 @@ public sealed class DadRosterCatalogService
         var normalized = DadRosterKnownCharacterLedger.Normalize(configuration.RosterCatalog.KnownCharacters);
         normalized |= NormalizeRosterVisibilityRecords(saveIfChanged: false);
         if (normalized)
-            configuration.Save();
+            SaveImmediately();
     }
 
-    public DadAccountRosterCatalog CurrentCatalog
-    {
-        get
+    public DadAccountRosterCatalog CurrentCatalog => GetUiSnapshot().Catalog.Clone();
+
+    internal DadRosterUiSnapshot GetUiSnapshot()
+        => uiSnapshotCache.GetOrCreate(catalogVersion, transportService.TransportRevision, () =>
         {
             var catalog = ApplyOwnerConnectivity(currentCatalog.Clone());
             catalog.Accounts = BuildCurrentAccountDirectory(catalog).ToList();
-            return catalog;
-        }
-    }
+            return new DadRosterUiSnapshot
+            {
+                CatalogRevision = catalogVersion,
+                TransportRevision = transportService.TransportRevision,
+                Catalog = catalog,
+            };
+        });
 
     public long CatalogVersion => catalogVersion;
+
+    public void NotifyAccountPresentationChanged(DadAccountKey accountKey, string alias)
+    {
+        alias = alias?.Trim() ?? string.Empty;
+        foreach (var account in currentCatalog.Accounts.Where(account => DadRosterIdentity.SameAccount(account.AccountKey, accountKey)))
+        {
+            account.AccountAlias = alias;
+            account.DisplayName = string.IsNullOrWhiteSpace(alias) ? accountKey.Value : alias;
+        }
+
+        foreach (var character in currentCatalog.Characters.Where(character => DadRosterIdentity.SameAccount(character.AccountKey, accountKey)))
+            character.AccountAlias = alias;
+
+        cachedLocalCatalog = null;
+        catalogVersion++;
+    }
 
     public bool LearnRetainedTransportKnowledge(DadCharacterPool pool)
     {
@@ -66,7 +89,8 @@ public sealed class DadRosterCatalogService
             peerResponses);
         var changed = PersistTrustedCatalogKnowledge(
             peerResponses.Select(static response => response.Catalog),
-            [runtimeOverlay, peerRuntimeFallback]);
+            [runtimeOverlay, peerRuntimeFallback],
+            deferSave: true);
         if (changed)
             catalogVersion++;
         return changed;
@@ -74,8 +98,19 @@ public sealed class DadRosterCatalogService
 
     public IReadOnlyList<DadRosterAccountOption> GetAccountDirectory()
     {
-        var connectedCatalog = ApplyOwnerConnectivity(currentCatalog.Clone());
-        return BuildCurrentAccountDirectory(connectedCatalog);
+        return GetUiSnapshot().Catalog.Accounts.Select(static account => account.Clone()).ToList();
+    }
+
+    public void UpdateDeferredPersistence()
+    {
+        if (deferredSaveGate.TryConsumeDue(DateTime.UtcNow))
+            configuration.Save();
+    }
+
+    public void FlushPendingPersistence()
+    {
+        if (deferredSaveGate.TryConsumeDue(DateTime.UtcNow, force: true))
+            configuration.Save();
     }
 
     private IReadOnlyList<DadRosterAccountOption> BuildCurrentAccountDirectory(DadAccountRosterCatalog connectedCatalog)
@@ -268,7 +303,8 @@ public sealed class DadRosterCatalogService
 
         PersistTrustedCatalogKnowledge(
             peerResponses.Select(static response => response.Catalog),
-            [runtimeOverlay, peerRuntimeFallback]);
+            [runtimeOverlay, peerRuntimeFallback],
+            deferSave: true);
         allCatalogs.Add(BuildKnownRosterCatalog());
 
         currentCatalog = ApplyOwnerConnectivity(MergeCatalogs(allCatalogs, plan));
@@ -284,7 +320,7 @@ public sealed class DadRosterCatalogService
         if (cachedLocalCatalog != null && DateTime.UtcNow - cachedLocalCatalogUtc < LocalCatalogReuseWindow)
             return cachedLocalCatalog.Clone();
 
-        var built = BuildLocalCatalog(pool, plan);
+        var built = BuildLocalCatalog(pool, plan, deferKnowledgeSave: true);
         WarmLocalCatalogCache(built);
         return built;
     }
@@ -309,7 +345,7 @@ public sealed class DadRosterCatalogService
         lastPeerResponses = [];
         var catalog = DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(currentTransport);
         catalog.SourceDiagnostics.LocalAccountKey = GetLocalClientAccountKey().Value;
-        var learnedDurableKnowledge = PersistTrustedCatalogKnowledge([], [catalog]);
+        PersistTrustedCatalogKnowledge([], [catalog]);
         ApplyVisibility(catalog, plan);
         catalog.Characters = catalog.Characters
             .Where(character => ShouldIncludeInCatalog(character, plan))
@@ -322,15 +358,18 @@ public sealed class DadRosterCatalogService
 
         var liveProjection = ApplyOwnerConnectivity(catalog);
         liveProjection.Accounts = BuildLiveConnectedAccountDirectory(liveProjection).ToList();
-        if (learnedDurableKnowledge)
-            catalogVersion++;
+        currentCatalog = liveProjection.Clone();
+        catalogVersion++;
         if (plan.LogDiagnostics)
             LogRosterDiagnostics(liveProjection, plan);
 
         return liveProjection.Clone();
     }
 
-    public DadAccountRosterCatalog BuildLocalCatalog(DadCharacterPool pool, DadRosterRefreshPlan? plan = null)
+    public DadAccountRosterCatalog BuildLocalCatalog(
+        DadCharacterPool pool,
+        DadRosterRefreshPlan? plan = null,
+        bool deferKnowledgeSave = false)
     {
         plan ??= new DadRosterRefreshPlan
         {
@@ -410,7 +449,14 @@ public sealed class DadRosterCatalogService
             UpsertKnownCharacter(rosterCharacter);
         }
 
-        CompleteKnownCharacterBatch(knownLedgerBaseline, saveIfChanged: true);
+        var learnedKnowledge = CompleteKnownCharacterBatch(knownLedgerBaseline, saveIfChanged: false);
+        if (learnedKnowledge)
+        {
+            if (deferKnowledgeSave)
+                deferredSaveGate.MarkDirty(DateTime.UtcNow);
+            else
+                SaveImmediately();
+        }
 
         StampCatalogSource(catalog, catalog.SourceClientInstanceId, catalog.SourceWorkerSessionId);
         ApplyVisibility(catalog, plan);
@@ -506,7 +552,8 @@ public sealed class DadRosterCatalogService
                 currentPool,
                 fallbackSnapshot,
                 transportService.CurrentTransport),
-            plan);
+            plan,
+            deferKnowledgeSave: true);
 
     public DadCharacterPool BuildCuratedPool(
         DadCharacterPool pool,
@@ -638,7 +685,7 @@ public sealed class DadRosterCatalogService
             record.Reason = request.Reason?.Trim() ?? string.Empty;
         }
 
-        configuration.Save();
+        SaveImmediately();
         if (marksRosterUpdate)
             log.Information("[dad][Roster] Marked {Count} roster row(s) as needing update.", changedKeys.Count);
         else
@@ -680,7 +727,7 @@ public sealed class DadRosterCatalogService
             var removedKnown = RemoveKnownCharacter(character);
             var removedAccountConfig = configManager.RemoveCharacterFromAccount(character.AccountKey, character.CharacterKey);
             if (removedKnown || removedAccountConfig)
-                configuration.Save();
+                SaveImmediately();
 
             return RefreshCatalog(pool, new DadRosterRefreshPlan
             {
@@ -727,7 +774,7 @@ public sealed class DadRosterCatalogService
             assigned.CharacterName,
             assigned.WorldName);
         if (changed)
-            configuration.Save();
+            SaveImmediately();
 
         return RefreshCatalog(pool, new DadRosterRefreshPlan
         {
@@ -773,17 +820,43 @@ public sealed class DadRosterCatalogService
         var knownRemoved = knownBefore - configuration.RosterCatalog.KnownCharacters.Count;
         var visibilityRemoved = visibilityBefore - configuration.RosterCatalog.Visibility.Count;
         var refreshRemoved = refreshBefore - configuration.RosterCatalog.RefreshHistory.Count;
-        if (knownRemoved == 0 && visibilityRemoved == 0 && refreshRemoved == 0)
-            return false;
 
+        var currentCharacterBefore = currentCatalog.Characters.Count;
+        var currentAccountBefore = currentCatalog.Accounts.Count;
+        currentCatalog.Characters = currentCatalog.Characters
+            .Where(character => !DadRosterIdentity.SameAccount(character.AccountKey, accountKey))
+            .ToList();
         currentCatalog.Accounts = currentCatalog.Accounts
             .Where(account => !DadRosterIdentity.SameAccount(account.AccountKey, accountKey))
             .ToList();
         currentCatalog.Visibility = currentCatalog.Visibility
             .Where(record => !DadRosterIdentity.SameAccount(record.AccountKey, accountKey))
             .ToList();
+        cachedLocalCatalog = null;
 
-        configuration.Save();
+        var peerBefore = lastPeerResponses.Sum(static response =>
+            response.Catalog.Characters.Count + response.Catalog.Accounts.Count);
+        foreach (var response in lastPeerResponses)
+        {
+            response.Catalog.Characters.RemoveAll(character => DadRosterIdentity.SameAccount(character.AccountKey, accountKey));
+            response.Catalog.Accounts.RemoveAll(account => DadRosterIdentity.SameAccount(account.AccountKey, accountKey));
+            response.Catalog.Visibility.RemoveAll(record => DadRosterIdentity.SameAccount(record.AccountKey, accountKey));
+        }
+        var peerAfter = lastPeerResponses.Sum(static response =>
+            response.Catalog.Characters.Count + response.Catalog.Accounts.Count);
+        var transportCacheChanged = transportService.PurgeAccountCaches(accountKey);
+
+        var durableChanged = knownRemoved + visibilityRemoved + refreshRemoved > 0;
+        var projectionChanged = currentCharacterBefore != currentCatalog.Characters.Count ||
+                                currentAccountBefore != currentCatalog.Accounts.Count ||
+                                peerBefore != peerAfter ||
+                                transportCacheChanged;
+        if (!durableChanged && !projectionChanged)
+            return false;
+
+        if (durableChanged)
+            SaveImmediately();
+        catalogVersion++;
         log.Information(
             "[dad][Roster] Purged Dad metadata for account {AccountKey}: {KnownCount} known, {VisibilityCount} visibility, {RefreshCount} refresh record(s).",
             accountKey.Value,
@@ -869,7 +942,7 @@ public sealed class DadRosterCatalogService
             return false;
 
         if (removedKnown || removedVisibility || removedRefresh)
-            configuration.Save();
+            SaveImmediately();
 
         currentCatalog.Characters = currentCatalog.Characters
             .Where(existing => !DadRosterIdentity.SameRow(existing, character))
@@ -909,7 +982,7 @@ public sealed class DadRosterCatalogService
         if (!changed)
             return false;
 
-        configuration.Save();
+        SaveImmediately();
         log.Information(
             "[dad][Roster] Merged Dad metadata from account {SourceAccountKey} into {TargetAccountKey}.",
             sourceAccountKey.Value,
@@ -944,7 +1017,7 @@ public sealed class DadRosterCatalogService
         }
 
         TrimRefreshHistory();
-        configuration.Save();
+        SaveImmediately();
     }
 
     public DadRosterCharacter? FindCharacter(DadCharacterKey characterKey)
@@ -1785,14 +1858,23 @@ public sealed class DadRosterCatalogService
 
     private bool PersistTrustedCatalogKnowledge(
         IEnumerable<DadAccountRosterCatalog> declaredOwnerCatalogs,
-        IEnumerable<DadAccountRosterCatalog>? runtimeCatalogs = null)
+        IEnumerable<DadAccountRosterCatalog>? runtimeCatalogs = null,
+        bool deferSave = false)
     {
         var baseline = DadRosterKnownCharacterLedger.CloneLedger(
             configuration.RosterCatalog.KnownCharacters);
 
         PersistCatalogRows(declaredOwnerCatalogs, requireDeclaredOwnerMatch: true);
         PersistCatalogRows(runtimeCatalogs ?? [], requireDeclaredOwnerMatch: false);
-        return CompleteKnownCharacterBatch(baseline, saveIfChanged: true);
+        var changed = CompleteKnownCharacterBatch(baseline, saveIfChanged: false);
+        if (!changed)
+            return false;
+
+        if (deferSave)
+            deferredSaveGate.MarkDirty(DateTime.UtcNow);
+        else
+            SaveImmediately();
+        return true;
 
         void PersistCatalogRows(
             IEnumerable<DadAccountRosterCatalog> catalogs,
@@ -1837,7 +1919,7 @@ public sealed class DadRosterCatalogService
         }
 
         if (saveIfChanged)
-            configuration.Save();
+            SaveImmediately();
         return true;
     }
 
@@ -2067,9 +2149,15 @@ public sealed class DadRosterCatalogService
         }
 
         if (changed && saveIfChanged)
-            configuration.Save();
+            SaveImmediately();
 
         return changed;
+    }
+
+    private void SaveImmediately()
+    {
+        configuration.Save();
+        deferredSaveGate.Discard();
     }
 
     private static DadRosterVisibility NormalizeVisibility(DadRosterVisibility visibility)

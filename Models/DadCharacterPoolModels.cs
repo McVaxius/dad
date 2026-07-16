@@ -311,6 +311,11 @@ public sealed class DadPeerTransportSnapshot
     // lands. Plain fields so Interlocked.Increment(ref ...) is legal; the UI polls these to re-render itself.
     public long RosterCatalogCacheRevision;
 
+    // P1191: semantic transport and profile-cache revisions. Heartbeat timestamps do not advance the
+    // transport revision, so UI/profile projections can remain stable until roster meaning actually changes.
+    public long TransportRevision;
+    public long ProfileCatalogCacheRevision;
+
     // B6: count of roster completion callbacks dropped because the framework queue was full (surfaced in
     // diagnostics; a drop also marks the publish dirty so the result is re-issued instead of silently lost).
     public long RosterCatalogDroppedCount;

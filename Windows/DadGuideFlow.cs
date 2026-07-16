@@ -7,6 +7,7 @@ namespace dad.Windows;
 public enum DadGuideFlow
 {
     Landing,
+    NameDad,
     Coordinator,
     Client,
     FirstPreset,
@@ -64,18 +65,35 @@ internal static class DadGuideReadiness
     }
 
     public static DadGuideProgress Build(Plugin plugin, DadGuideFlow flow)
+        => flow switch
+        {
+            DadGuideFlow.NameDad => BuildNameDadProgress(plugin),
+            DadGuideFlow.Coordinator => BuildConnectionProgress(plugin, coordinator: true),
+            DadGuideFlow.Client => BuildConnectionProgress(plugin, coordinator: false),
+            DadGuideFlow.FirstPreset => BuildFirstPresetProgress(plugin),
+            DadGuideFlow.Crew => BuildCrewProgress(plugin),
+            DadGuideFlow.Schedule => BuildScheduleProgress(plugin),
+            _ => new DadGuideProgress(DadGuideFlow.Landing, "DAD Guide", 0, 0, "Choose a guided task."),
+        };
+
+    private static DadGuideProgress BuildNameDadProgress(Plugin plugin)
+    {
+        var accountId = plugin.Configuration.ClientAccountId?.Trim() ?? string.Empty;
+        var account = plugin.ConfigManager.GetAccount(new DadAccountKey(accountId));
+        return Progress(
+            DadGuideFlow.NameDad,
+            "Name this DAD",
+            [(DadClientNamingRules.IsReady(account, accountId), "Give this DAD a meaningful account alias.")]);
+    }
+
+    private static DadGuideProgress BuildConnectionProgress(Plugin plugin, bool coordinator)
     {
         var configuration = plugin.Configuration;
         var profile = plugin.ConfigManager.GetActiveConfig();
         var transport = plugin.TransportService.CurrentTransport;
-        var catalog = plugin.RosterCatalogService.CurrentCatalog;
-        var runState = plugin.GetVisibleRunState();
-        var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
-        var selectedGroup = plugin.GetSelectedPlannerGroup();
-
-        return flow switch
-        {
-            DadGuideFlow.Coordinator => Progress(
+        var flow = coordinator ? DadGuideFlow.Coordinator : DadGuideFlow.Client;
+        return coordinator
+            ? Progress(
                 flow,
                 "Set up a Coordinator",
                 [
@@ -87,8 +105,8 @@ internal static class DadGuideReadiness
                     (!transport.SharedSecretRequired || transport.SharedSecretConfigured, "Generate and apply a LAN shared secret."),
                     (plugin.TransportService.IsReady && !string.IsNullOrWhiteSpace(transport.ListenerEndpoint), "Start the Coordinator listener and resolve its first connection blocker."),
                     (Math.Max(transport.PublishedParticipantCount, transport.KnownParticipantCount) > 0, "Connect at least one participant and refresh the crew."),
-                ]),
-            DadGuideFlow.Client => Progress(
+                ])
+            : Progress(
                 flow,
                 "Connect a Client",
                 [
@@ -99,31 +117,40 @@ internal static class DadGuideReadiness
                     (ValidEndpoint(configuration.ServerDadHost, configuration.ServerDadPort), "Enter the Coordinator endpoint."),
                     (!transport.SharedSecretRequired || transport.SharedSecretConfigured, "Paste and apply the Coordinator's LAN shared secret."),
                     (transport.AuthorityRoutable || plugin.HasServerDadAuthority(), "Verify the endpoint and secret until authenticated authority is discovered."),
-                ]),
-            DadGuideFlow.FirstPreset => Progress(
-                flow,
-                "Create a Preset",
-                [
-                    (configuration.PlannerGroups.Count > 0, "Choose an activity and create a named preset."),
-                    (selectedGroup != null, "Select the preset you want to finish."),
-                    (selectedGroup != null && selectedGroup.Slots.Any(static slot =>
-                        !slot.IsSubstitute && (!slot.RequiredAccountKey.IsEmpty || !slot.RequiredCharacterKey.IsEmpty)), "Assign at least one primary character row."),
-                    (selectedGroup?.StopPolicy != null, "Choose a stop rule and finish behavior."),
-                    (selectedGroup != null && plannerSnapshot.SchedulerPreview.CanStart, "Resolve the first validation blocker."),
-                ]),
-            DadGuideFlow.Crew => Progress(
-                flow,
-                "Build the Crew",
-                [
-                    (catalog.Characters.Count > 0, "Refresh the local and connected roster."),
-                    (catalog.Accounts.Count > 0, "Confirm which account owns each local character."),
-                    (catalog.Characters.Any(static row => row.Visibility == DadRosterVisibility.Active) &&
-                     !catalog.Characters.Any(static row => row.Visibility == DadRosterVisibility.Active &&
-                         (row.AccountKey.IsEmpty || row.IsStale || row.NeedsRosterUpdate)), "Resolve stale or unassigned Active rows."),
-                ]),
-            DadGuideFlow.Schedule => BuildScheduleProgress(plugin),
-            _ => new DadGuideProgress(DadGuideFlow.Landing, "DAD Guide", 0, 0, "Choose a guided task."),
-        };
+                ]);
+    }
+
+    private static DadGuideProgress BuildFirstPresetProgress(Plugin plugin)
+    {
+        var configuration = plugin.Configuration;
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var plannerSnapshot = plugin.GetPlannerUiSnapshot(plugin.GetVisibleRunState());
+        return Progress(
+            DadGuideFlow.FirstPreset,
+            "Create a Preset",
+            [
+                (configuration.PlannerGroups.Count > 0, "Choose an activity and create a named preset."),
+                (selectedGroup != null, "Select the preset you want to finish."),
+                (selectedGroup != null && selectedGroup.Slots.Any(static slot =>
+                    !slot.IsSubstitute && (!slot.RequiredAccountKey.IsEmpty || !slot.RequiredCharacterKey.IsEmpty)), "Assign at least one primary character row."),
+                (selectedGroup?.StopPolicy != null, "Choose a stop rule and finish behavior."),
+                (selectedGroup != null && plannerSnapshot.SchedulerPreview.CanStart, "Resolve the first validation blocker."),
+            ]);
+    }
+
+    private static DadGuideProgress BuildCrewProgress(Plugin plugin)
+    {
+        var catalog = plugin.RosterCatalogService.GetUiSnapshot().Catalog;
+        return Progress(
+            DadGuideFlow.Crew,
+            "Build the Crew",
+            [
+                (catalog.Characters.Count > 0, "Refresh the local and connected roster."),
+                (catalog.Accounts.Count > 0, "Confirm which account owns each local character."),
+                (catalog.Characters.Any(static row => row.Visibility == DadRosterVisibility.Active) &&
+                 !catalog.Characters.Any(static row => row.Visibility == DadRosterVisibility.Active &&
+                     (row.AccountKey.IsEmpty || row.IsStale || row.NeedsRosterUpdate)), "Resolve stale or unassigned Active rows."),
+            ]);
     }
 
     private static DadGuideProgress BuildScheduleProgress(Plugin plugin)

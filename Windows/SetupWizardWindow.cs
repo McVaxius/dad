@@ -32,12 +32,14 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private bool draftPluginEnabled;
     private bool draftProfileEnabled;
     private string draftAccountId = string.Empty;
+    private string nameDadAliasDraft = string.Empty;
 
     private DadPresetPlannerOptions presetPlannerDraft = new();
     private string presetDutySearch = string.Empty;
     private string presetName = string.Empty;
     private bool presetCreateNew;
     private DadPlannerGroup? presetCrewDraft;
+    private bool presetCrewDetails;
     private string presetDraftGroupId = string.Empty;
     private DadRunStopPolicy presetStopDraft = new();
     private DadCompletionActions presetCompletionDraft = new();
@@ -200,6 +202,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
         var flows = new[]
         {
+            DadGuideFlow.NameDad,
             DadGuideFlow.Coordinator,
             DadGuideFlow.Client,
             DadGuideFlow.FirstPreset,
@@ -327,6 +330,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         switch (flow)
         {
+            case DadGuideFlow.NameDad:
+                DrawNameDadStep();
+                break;
             case DadGuideFlow.Coordinator:
             case DadGuideFlow.Client:
                 DrawConnectionFlowStep(flow == DadGuideFlow.Coordinator);
@@ -346,6 +352,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private IReadOnlyList<GuideStep> BuildSteps()
         => flow switch
         {
+            DadGuideFlow.NameDad => BuildNameDadSteps(),
             DadGuideFlow.Coordinator => BuildConnectionSteps(coordinator: true),
             DadGuideFlow.Client => BuildConnectionSteps(coordinator: false),
             DadGuideFlow.FirstPreset => BuildPresetSteps(),
@@ -353,6 +360,31 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.Schedule => BuildScheduleSteps(),
             _ => [],
         };
+
+    private IReadOnlyList<GuideStep> BuildNameDadSteps()
+    {
+        var accountId = plugin.Configuration.ClientAccountId?.Trim() ?? string.Empty;
+        var ready = DadClientNamingRules.TryValidate(nameDadAliasDraft, accountId, out _, out var blocker);
+        return
+        [
+            new GuideStep(
+                "Name this DAD",
+                "The friendly alias shown for this stable local client account.",
+                "A recognizable name keeps account and Crew choices readable without exposing the immutable ID everywhere.",
+                "The alias is meaningful and the stable account ID remains unchanged.",
+                ready,
+                blocker),
+        ];
+    }
+
+    private void DrawNameDadStep()
+    {
+        var accountId = plugin.Configuration.ClientAccountId?.Trim() ?? string.Empty;
+        DrawStatusRow("Immutable account ID", FormatText(accountId, "(missing)"));
+        ImGui.TextWrapped("This ID is permanent for this DAD installation. Only the friendly name below changes.");
+        ImGui.SetNextItemWidth(MathF.Min(480f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText("DAD name", ref nameDadAliasDraft, 96);
+    }
 
     private void SynchronizeStepSelection(IReadOnlyList<GuideStep> steps)
     {
@@ -525,7 +557,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 "DAD cannot assign a character it has never learned.",
                 "At least one roster row is visible.",
                 catalog.Characters.Count > 0,
-                "Refresh local roster, then populate connected roster if this is a multi-client crew.",
+                "Refresh the local roster, then build Connected Crew if this is a multi-client crew.",
                 DadDebugUiRules.CrewRosterStepId),
             new GuideStep(
                 "Account ownership",
@@ -855,10 +887,14 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
+        ImGui.Checkbox("Details##dad-guide-preset-details", ref presetCrewDetails);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Show stable account IDs beside account aliases for this session.");
+        ImGui.SameLine();
         ImGui.TextDisabled("All rows stay inline and expand with the Guide window's normal scrollbar.");
 
         var snapshot = plugin.GetPlannerUiSnapshot(plugin.GetVisibleRunState());
-        presetCrewEditor.Draw(snapshot, presetCrewDraft, static _ => { }, "dad-guide-preset");
+        presetCrewEditor.Draw(snapshot, presetCrewDraft, static _ => { }, "dad-guide-preset", presetCrewDetails);
     }
 
     private void DrawPresetRulesDraft()
@@ -1003,7 +1039,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 if (ImGui.Button("Refresh local roster"))
                     plugin.RefreshCharacterPoolFromShell();
                 ImGui.SameLine();
-                if (ImGui.Button("Populate connected roster"))
+                if (ImGui.Button("Build Connected Crew"))
                     plugin.RequestPeerSnapshotsFromShell();
                 DrawStatusRow("Roster", FormatText(catalog.Summary, "Not refreshed"));
                 DrawStatusRow("Rows", $"{catalog.Characters.Count} character(s) | {catalog.Accounts.Count} account(s)");
@@ -1509,6 +1545,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private bool ValidateAndCommitCurrentStep()
         => flow switch
         {
+            DadGuideFlow.NameDad => CommitNameDadStep(),
             DadGuideFlow.Coordinator => CommitConnectionStep(coordinator: true),
             DadGuideFlow.Client => CommitConnectionStep(coordinator: false),
             DadGuideFlow.FirstPreset => CommitPresetStep(),
@@ -1516,6 +1553,14 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.Schedule => CommitScheduleStep(),
             _ => true,
         };
+
+    private bool CommitNameDadStep()
+    {
+        if (!plugin.NameClientDad(nameDadAliasDraft, out var status))
+            return Reject(status);
+        plugin.PrintStatus(status);
+        return true;
+    }
 
     private bool CommitConnectionStep(bool coordinator)
     {
@@ -1664,7 +1709,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         switch (currentStepId)
         {
             case DadDebugUiRules.CrewRosterStepId:
-                return catalog.Characters.Count > 0 || Reject("No roster rows are visible yet. Refresh local roster, then populate connected roster if needed.");
+                return catalog.Characters.Count > 0 || Reject("No roster rows are visible yet. Refresh local roster, then build Connected Crew if needed.");
             case DadDebugUiRules.CrewAccountsStepId:
                 var account = plugin.ConfigManager.GetCurrentAccount();
                 if (crewOwnershipAssignments.Count > 0 && account == null)
@@ -1846,6 +1891,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         draftPluginEnabled = configuration.PluginEnabled;
         draftProfileEnabled = profile.Enabled;
         draftAccountId = configuration.ClientAccountId;
+        var stableAccount = plugin.ConfigManager.GetAccount(new DadAccountKey(configuration.ClientAccountId));
+        nameDadAliasDraft = stableAccount?.AccountAlias ?? string.Empty;
         connectionEditor.Reset(configuration);
 
         presetPlannerDraft = ClonePlannerOptions(plugin.PlannerOptions);
@@ -2064,6 +2111,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
             return;
         switch (currentFlow)
         {
+            case DadGuideFlow.NameDad:
+                plugin.OpenMainTab(DadMainWindowTab.Crew);
+                break;
             case DadGuideFlow.Coordinator:
             case DadGuideFlow.Client:
                 plugin.OpenConfigUi();
@@ -2124,6 +2174,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private static string FlowTitle(DadGuideFlow target)
         => target switch
         {
+            DadGuideFlow.NameDad => "NAME THIS DAD",
             DadGuideFlow.Coordinator => "SET UP A COORDINATOR",
             DadGuideFlow.Client => "CONNECT A CLIENT",
             DadGuideFlow.FirstPreset => "CREATE A PRESET",
@@ -2135,6 +2186,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private static string FlowSummary(DadGuideFlow target)
         => target switch
         {
+            DadGuideFlow.NameDad => "Give this stable client account a friendly name without changing its ID.",
             DadGuideFlow.Coordinator => "Enable the one client that owns plans, schedules, and crew dispatch.",
             DadGuideFlow.Client => "Authenticate a crew client to the Coordinator and verify authority.",
             DadGuideFlow.FirstPreset => "Choose content, assign every inline character field, and validate without running.",
