@@ -807,27 +807,15 @@ public sealed class DadTransportService : IDisposable
         if (result != null)
             workerCommandAcks[BuildWorkerRunKey(participant.WorkerSessionId, command.RunId)] = result;
 
-        return result ?? new DadWorkerExecutionAck
-        {
-            CommandId = command.CommandId,
-            RunId = command.RunId,
-            WorkerSessionId = participant.WorkerSessionId,
-            Accepted = true,
-            Summary = "Worker command queued through Dad Coordinator hub.",
-            Status = new DadWorkerExecutionStatus
-            {
-                CommandId = command.CommandId,
-                RunId = command.RunId,
-                WorkerSessionId = participant.WorkerSessionId,
-                Role = command.Role,
-                State = DadWorkerExecutionState.Accepted,
-                UpdatedAtUtc = DateTime.UtcNow,
-                Summary = "Awaiting Client Dad acknowledgement.",
-            },
-        };
+        return result ?? DadWorkerStatusPollingRules.BuildQueuedAcknowledgement(
+            command,
+            participant.WorkerSessionId,
+            DateTime.UtcNow);
     }
 
-    public DadWorkerExecutionStatus? GetWorkerExecutionStatus(DadParticipantSnapshot participant)
+    public DadWorkerExecutionStatus? GetWorkerExecutionStatus(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionStatus? cachedStatus)
     {
         var runKey = BuildWorkerRunKey(participant.WorkerSessionId, participant.RunId);
         if (workerCommandAcks.TryGetValue(runKey, out var ack) && !ack.Accepted)
@@ -844,11 +832,17 @@ public sealed class DadTransportService : IDisposable
             return failed;
         }
 
-        return TryRequest<string, DadWorkerExecutionStatus>(
+        var operationKey = $"worker-status:{participant.WorkerSessionId.Value}:{participant.RunId}";
+        var liveStatus = TryRequest<string, DadWorkerExecutionStatus>(
             participant.WorkerSessionId,
             MessageWorkerExecutionStatus,
             participant.RunId,
-            $"worker-status:{participant.WorkerSessionId.Value}:{participant.RunId}");
+            operationKey);
+        return DadWorkerStatusPollingRules.SelectRemoteStatus(
+            liveStatus,
+            cachedStatus,
+            operations.ContainsKey(operationKey),
+            ResolveConnection(participant.WorkerSessionId) is { IsRoutable: true });
     }
 
     public DadWorkerExecutionAck? SendWorkerExecutionCancel(

@@ -45,6 +45,9 @@ dotnet test .\Tests\dad.Tests.csproj
 - `/dad status` keeps its existing behavior and prints the live shell report to chat.
 - `/dad mini` toggles a compact, manually opened status window. It renders cached authority, run, scheduler,
   slot, queue, worker-heartbeat, failure, and Stop-all acknowledgement state without polling peers from Draw.
+- An active Schedule shows the same `Running now` cursor in Status and in Schedules > Cadence & Actions:
+  schedule and preset names, current entry/total entries, and current repeat/entry repeats. When the saved
+  definition cannot supply a total, DAD omits that denominator instead of guessing.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.
@@ -76,6 +79,9 @@ dotnet test .\Tests\dad.Tests.csproj
   are now replay-resistant (signed nonce + timestamp); peers should keep clocks within ~30s of each other.
 - A configured Coordinator endpoint is not presented as a live authority route until the authenticated handshake
   succeeds. Client liveness is checked from inbound frames, and a stale route is closed and reconnected.
+- Remote worker status polling preserves the newest exact cached status only while that worker's status request is
+  pending on an authenticated, routable connection. A live response always replaces it; disconnected or non-pending
+  requests return no substitute so the existing missing-peer timeout and strict provenance checks remain active.
 - Roster sync is passive: the Coordinator pushes a compact roster catalog (account / character / job→level) to all
   clients on connect, on change (incl. level-ups), and on a periodic reconcile. **Build Connected Crew** remains an
   explicit current-participant view; normal sync does not require a manual catalog pull.

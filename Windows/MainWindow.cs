@@ -954,7 +954,7 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.BeginTabItem("Current Activity", BuildStatusTabFlags(DadStatusWindowTab.CurrentActivity)))
         {
             DrawCurrentActivitySummary(runState, profile);
-            DrawActiveScheduleStatus(plugin.SchedulerService.GetScheduleSnapshot().ActiveRun);
+            DrawActiveScheduleStatus(plugin.SchedulerService.GetScheduleSnapshot());
             DrawCrewActiveJobSection();
             if (plugin.Configuration.DebugUiEnabled)
                 DrawStatusCurrentActivityDetails(runState, profile);
@@ -995,8 +995,9 @@ public sealed class MainWindow : Window, IDisposable
         DrawDutySupportRuntimeSection(activeRun);
     }
 
-    private void DrawActiveScheduleStatus(DadScheduleRunState activeRun)
+    private void DrawActiveScheduleStatus(DadScheduleSnapshot snapshot)
     {
+        var activeRun = snapshot.ActiveRun;
         DrawSectionHeader("Schedule runner", "Live schedule progress and cancellation; terminal history is under Queue & History.");
         if (!activeRun.IsActive)
         {
@@ -1004,10 +1005,9 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        DrawStatusRow("Schedule", FormatText(activeRun.ScheduleName, activeRun.ScheduleId));
+        DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
         DrawStatusRow("State", $"{activeRun.Status} / {activeRun.Phase}");
         DrawStatusRow("Progress", $"{activeRun.CompletedEntryExecutions}/{activeRun.TotalEntryExecutions} preset run(s)");
-        DrawStatusRow("Entry", $"{activeRun.CurrentEntryIndex + 1} / repeat {activeRun.RepeatIteration} / {FormatText(activeRun.CurrentPresetName, activeRun.CurrentGroupId)}");
         if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
             DrawStatusRow("Blocker", activeRun.BlockedReason);
         if (DadUi.Button("Cancel active schedule", DadUiTone.Danger))
@@ -1895,6 +1895,8 @@ public sealed class MainWindow : Window, IDisposable
             DadUi.Heading("CADENCE & ACTIONS", "Choose when this chain is eligible, then validate or run it.");
             if (activeScheduleLocked)
                 DadUi.Badge("Locked while a schedule is active", DadUiTone.Warning);
+            if (activeRun.IsActive)
+                DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
 
             var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;
             ImGui.BeginDisabled(activeScheduleLocked);

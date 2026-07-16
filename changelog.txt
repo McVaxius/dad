@@ -1,5 +1,18 @@
 # dad — changelog
 
+## 2026-07-16 — P1192 worker-status regression and Schedule cursor
+- Corrected the Coordinator's temporary remote worker acknowledgement to carry the exact command, run, worker,
+  role, and guarded module provenance. Invalid module indexes remain `None` and continue to fail closed under the
+  unchanged strict assignment validator.
+- Remote status polling now lets a live response win, otherwise cloning only the freshest coordinator cache while
+  that exact status operation is pending and the authenticated route remains routable. Disconnects and non-pending
+  requests still return no status so existing missing-peer timers and failure rules remain effective.
+- Added a shared Schedule cursor to Status and the Scheduler's Cadence & Actions card: schedule, preset, entry X/Y,
+  and repeat R/N. Stable Schedule/entry IDs resolve totals first, with index fallback and no invented denominators.
+- Added focused regression coverage for queued acknowledgement provenance, guarded cache fallback and clone isolation,
+  and Schedule cursor identity/fallback formatting. No public IPC, transport wire, protocol, configuration, persistence,
+  manifest, plugin version, release artifact, AutoRetainer, or VERMAXION contract changed.
+
 ## 2026-07-16 — Ko-fi action and hub clock recovery
 - Changed the main-window Ko-fi button to open the configured support URL, matching the Config window, without
   writing to the clipboard or printing a copied-link status message.

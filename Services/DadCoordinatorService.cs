@@ -1485,14 +1485,15 @@ public sealed class DadCoordinatorService
         var queueLeader = queueLeaders.Count == 1 ? queueLeaders[0] : null;
         foreach (var participant in dispatchedParticipants)
         {
+            var workerKey = participant.WorkerSessionId.Value;
+            workerStatuses.TryGetValue(workerKey, out var freshestCachedStatus);
             DadWorkerExecutionStatus? workerStatus = participant.IsLocalClient
                 ? workerExecutionService.GetStatus()
-                : transportService.GetWorkerExecutionStatus(participant);
-            var workerKey = participant.WorkerSessionId.Value;
+                : transportService.GetWorkerExecutionStatus(participant, freshestCachedStatus);
             if (workerStatus == null)
             {
                 missingWorkerSinceUtc.TryAdd(workerKey, DateTime.UtcNow);
-                workerStatuses.TryGetValue(workerKey, out var cachedStatus);
+                var cachedStatus = freshestCachedStatus;
                 if (cachedStatus is { IsTerminal: true, Success: true } &&
                     workerCommands.TryGetValue(workerKey, out var completedCommand) &&
                     DadDroppedPeerContinuationRules.MatchesExactCommand(participant, completedCommand, cachedStatus))
