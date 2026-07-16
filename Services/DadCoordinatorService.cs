@@ -206,6 +206,9 @@ public sealed class DadCoordinatorService
         if (IsBusy)
             return DadRunResult.Rejected(request, "dad already has an active run.");
 
+        if (!presenceService.BuildSnapshotCopy().Dependencies.IsReady)
+            return DadRunResult.Rejected(request, DadDependencyRules.DependencyBlocker);
+
         ApplyConfigurationDefaults(request);
 
         if (!IsServerDad && RequiresServerDadAuthority(request))
@@ -294,6 +297,38 @@ public sealed class DadCoordinatorService
 
                 acceptedManifest.CoordinatorTravelTarget = travelTarget;
             }
+        }
+
+        var selectedDependencyParticipants = new List<DadParticipantSnapshot?>();
+        if (acceptedManifest != null)
+        {
+            var currentParticipants = BuildOnlineParticipantSet(pool, liveCoordinatorTruth);
+            foreach (var workerSessionId in acceptedManifest.Slots
+                         .Select(static slot => slot.WorkerSessionId)
+                         .Where(workerSessionId => !workerSessionId.IsEmpty &&
+                             !string.Equals(
+                                 workerSessionId.Value,
+                                 liveCoordinatorTruth.WorkerSessionId.Value,
+                                 StringComparison.OrdinalIgnoreCase))
+                         .DistinctBy(static workerSessionId => workerSessionId.Value, StringComparer.OrdinalIgnoreCase))
+            {
+                selectedDependencyParticipants.Add(currentParticipants.FirstOrDefault(participant =>
+                    string.Equals(
+                        participant.WorkerSessionId.Value,
+                        workerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase)));
+            }
+        }
+
+        var dependencyGate = DadDependencyGateRules.EvaluateCrew(
+            liveCoordinatorTruth,
+            selectedDependencyParticipants,
+            DateTime.UtcNow,
+            TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds)));
+        if (!dependencyGate.Ready)
+        {
+            log.Information("[dad][Dependencies] Rejected new run {RequestId}: {Summary}", request.RequestId, dependencyGate.Summary);
+            return DadRunResult.Rejected(request, DadDependencyRules.DependencyBlocker);
         }
 
         activePlan = plan;
@@ -3102,6 +3137,7 @@ public sealed class DadCoordinatorService
         target.IsAvailable = source.IsAvailable;
         target.IsEligibleForRun = source.IsEligibleForRun;
         target.PostArReady = source.PostArReady;
+        target.Dependencies = source.Dependencies.Clone();
         target.LastHeartbeatUtc = source.LastHeartbeatUtc;
         target.ManagedAccountKey = source.ManagedAccountKey;
         target.ManagedAccountAlias = source.ManagedAccountAlias;

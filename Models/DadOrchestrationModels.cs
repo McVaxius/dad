@@ -225,6 +225,8 @@ public sealed class DadRosterIntent
 
 public sealed class DadParticipantSnapshot
 {
+    private DadDependencySnapshot dependencies = DadDependencySnapshot.CreateChecking();
+
     public string ClientInstanceId { get; set; } = string.Empty;
     public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
     public string MachineName { get; set; } = string.Empty;
@@ -251,6 +253,11 @@ public sealed class DadParticipantSnapshot
     public string ExternalAutomationActivity { get; set; } = string.Empty;
     public string ExternalAutomationState { get; set; } = string.Empty;
     public string ExternalAutomationSummary { get; set; } = string.Empty;
+    public DadDependencySnapshot Dependencies
+    {
+        get => dependencies;
+        set => dependencies = DadDependencyRules.NormalizePeerSnapshot(value, dependencies);
+    }
     public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
     public DadAccountKey ManagedAccountKey { get; set; } = new(string.Empty);
     public string ManagedAccountAlias { get; set; } = string.Empty;
@@ -295,6 +302,7 @@ public sealed class DadParticipantSnapshot
         ExternalAutomationActivity = ExternalAutomationActivity,
         ExternalAutomationState = ExternalAutomationState,
         ExternalAutomationSummary = ExternalAutomationSummary,
+        Dependencies = Dependencies.Clone(),
         LastHeartbeatUtc = LastHeartbeatUtc,
         ManagedAccountKey = ManagedAccountKey,
         ManagedAccountAlias = ManagedAccountAlias,

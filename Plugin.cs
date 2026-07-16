@@ -41,6 +41,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; }
     public ConfigManager ConfigManager { get; }
+    public DadDependencyService DependencyService { get; }
     public DadExternalPluginCapabilityService ExternalPluginCapabilityService { get; }
     public DadXadbClient XadbClient { get; }
     internal InfoProxyPartyInviteGateway PartyInviteGateway { get; }
@@ -86,6 +87,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly SetupWizardWindow setupWizardWindow;
     private readonly DadMiniStatusWindow miniStatusWindow;
     private readonly DadClientReconnectWindow clientReconnectWindow;
+    private readonly DadDependenciesWindow dependenciesWindow;
     private readonly DadIpcService dadIpcService;
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly CancellationTokenSource backgroundCancellation = new();
@@ -121,6 +123,7 @@ public sealed class Plugin : IDalamudPlugin
     private double plannerUiCacheMaxRebuildMilliseconds;
     private DateTime plannerUiCacheLastRebuiltAtUtc = DateTime.MinValue;
     private string plannerUiCacheLastRebuildReason = "cold";
+    private DadPlannerValidationFeedback? plannerValidationFeedback;
     private readonly DadRosterKnowledgeLearningCursor rosterKnowledgeLearningCursor = new();
     private readonly Dictionary<string, DebouncedUiWrite> debouncedUiWrites = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
@@ -144,6 +147,7 @@ public sealed class Plugin : IDalamudPlugin
         EnsureClientAccountId();
         ConfigManager = new ConfigManager(PluginInterface, Log);
         ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
+        DependencyService = new DadDependencyService(PluginInterface, Log);
         ExternalPluginCapabilityService = new DadExternalPluginCapabilityService();
         XadbClient = new DadXadbClient(PluginInterface, Log);
         VermaxionIpcService = new DadVermaxionIpcService(PluginInterface, Log);
@@ -163,6 +167,7 @@ public sealed class Plugin : IDalamudPlugin
             requestedJobPreparationGate,
             classJobGearsetGateway,
             Log);
+        PresenceService.ConfigureDependencySnapshotProvider(() => DependencyService.Snapshot);
         WakeTakeoverService = new DadWakeTakeoverService(
             new DadWakeTakeoverTarget(
                 Configuration,
@@ -272,11 +277,13 @@ public sealed class Plugin : IDalamudPlugin
         setupWizardWindow = new SetupWizardWindow(this);
         miniStatusWindow = new DadMiniStatusWindow(this);
         clientReconnectWindow = new DadClientReconnectWindow(this);
+        dependenciesWindow = new DadDependenciesWindow(this);
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(setupWizardWindow);
         WindowSystem.AddWindow(miniStatusWindow);
         WindowSystem.AddWindow(clientReconnectWindow);
+        WindowSystem.AddWindow(dependenciesWindow);
         OpenSetupWizardOnce();
 
         var plannerLaneCount = PresetProviderService.GetPlannerLaneDefinitions().Count();
@@ -285,7 +292,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test launch-profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -335,6 +342,7 @@ public sealed class Plugin : IDalamudPlugin
         // Close/cancel transport work first, without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
         TransportService.Dispose();
+        DependencyService.Dispose();
         FlushDebouncedUiWrites(force: true);
         WindowSystem.RemoveAllWindows();
         QuestionableBridge.Dispose();
@@ -1193,7 +1201,12 @@ public sealed class Plugin : IDalamudPlugin
         var sourcePool = CharacterIntelligenceService.CurrentPool;
         var schedulerRevision = SchedulerService.GetPlannerUiRevision();
         var runRevisionToken = BuildPlannerRunRevisionToken(runState);
-        var cacheKey = BuildPlannerUiCacheKey(sourcePool, schedulerRevision.LaunchProfilesToken, runRevisionToken);
+        var dependencyRevisionToken = BuildDependencyRevisionToken();
+        var cacheKey = BuildPlannerUiCacheKey(
+            sourcePool,
+            schedulerRevision.LaunchProfilesToken,
+            runRevisionToken,
+            dependencyRevisionToken);
         Stopwatch? stopwatch = null;
         var rebuildReason = string.Empty;
 
@@ -1256,7 +1269,8 @@ public sealed class Plugin : IDalamudPlugin
             RosterCatalogService.CatalogVersion,
             schedulerRevision.SchedulerToken,
             schedulerRevision.LaunchProfilesToken,
-            runRevisionToken);
+            runRevisionToken,
+            dependencyRevisionToken);
         if (cachedPlannerSchedulerPreview == null || cachedPlannerSchedulerCacheKey != schedulerCacheKey)
         {
             plannerSchedulerCacheMissCount++;
@@ -1289,7 +1303,8 @@ public sealed class Plugin : IDalamudPlugin
     private DadPlannerUiCacheKey BuildPlannerUiCacheKey(
         DadCharacterPool pool,
         int launchProfilesToken,
-        int runRevisionToken)
+        int runRevisionToken,
+        int dependencyRevisionToken)
         => new(
             plannerUiCacheGeneration,
             Configuration.DebugUiEnabled,
@@ -1304,7 +1319,30 @@ public sealed class Plugin : IDalamudPlugin
             pool.PeerTransport.LastResponses.Count,
             pool.XadbStatus.SnapshotUtc?.Ticks ?? 0,
             launchProfilesToken,
-            runRevisionToken);
+            runRevisionToken,
+            dependencyRevisionToken);
+
+    private int BuildDependencyRevisionToken()
+    {
+        var hash = new HashCode();
+        AddDependencyRevision(ref hash, PresenceService.BuildSnapshotCopy());
+        foreach (var participant in TransportService.CurrentTransport.KnownParticipants
+                     .OrderBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase))
+        {
+            AddDependencyRevision(ref hash, participant);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private static void AddDependencyRevision(ref HashCode hash, DadParticipantSnapshot participant)
+    {
+        hash.Add(participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase);
+        hash.Add(participant.Dependencies.SchemaVersion);
+        hash.Add(participant.Dependencies.Revision);
+        hash.Add(participant.Dependencies.AggregateState);
+        hash.Add(participant.Dependencies.IsReady);
+    }
 
     private static int BuildPlannerRunRevisionToken(DadVisibleRunState runState)
     {
@@ -1421,6 +1459,7 @@ public sealed class Plugin : IDalamudPlugin
         cachedPlannerUiCacheKey = null;
         cachedPlannerSchedulerPreview = null;
         cachedPlannerSchedulerCacheKey = null;
+        plannerValidationFeedback = null;
         InvalidatePlannerPreviewIdentity();
     }
 
@@ -1813,6 +1852,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public string ValidateSelectedPlannerPresetReadOnly()
     {
+        InvalidatePlannerPreviewCache("manual readiness recheck");
+        DependencyService.ForceInspect(Configuration.PluginEnabled);
         var selectedGroup = GetSelectedPlannerGroup();
         if (selectedGroup == null)
         {
@@ -1821,9 +1862,9 @@ public sealed class Plugin : IDalamudPlugin
             return missing;
         }
 
-        var pool = BuildPlannerPool();
-        var requestPreview = BuildPlannerGroupRunRequestPreview(pool, selectedGroup.GroupId, null);
-        var schedulerPreview = SchedulerService.BuildPreview(selectedGroup, requestPreview);
+        var snapshot = GetPlannerUiSnapshot(GetVisibleRunState());
+        var requestPreview = snapshot.RequestPreview;
+        var schedulerPreview = snapshot.SchedulerPreview;
         var schedulerStatus = schedulerPreview.CanStart
             ? schedulerPreview.ReadyToStart
                 ? $"ready: {schedulerPreview.StatusSummary}"
@@ -1835,9 +1876,23 @@ public sealed class Plugin : IDalamudPlugin
                 ? $"schedulable: {requestPreview.ReadinessSummary}"
                 : $"blocked: {requestPreview.BlockedReason}";
         var status = $"Validation for preset '{selectedGroup.DisplayName}' (read-only) | Planner {plannerStatus} | Scheduler {schedulerStatus}";
+        plannerValidationFeedback = new DadPlannerValidationFeedback(
+            snapshot.Generation,
+            selectedGroup.GroupId,
+            status,
+            plannerStatus,
+            schedulerStatus,
+            DateTime.UtcNow);
         PrintStatus(status);
         return status;
     }
+
+    internal DadPlannerValidationFeedback? GetPlannerValidationFeedback(long generation, string groupId)
+        => plannerValidationFeedback is { } feedback &&
+           feedback.Generation == generation &&
+           string.Equals(feedback.GroupId, groupId, StringComparison.OrdinalIgnoreCase)
+            ? feedback
+            : null;
 
     private bool CanAdvanceSchedulerQueue()
         => Configuration.RunAsServerDad &&
@@ -3424,13 +3479,17 @@ public sealed class Plugin : IDalamudPlugin
 
     public void SetPluginEnabled(bool enabled, bool printStatus = true)
     {
-        if (!enabled && Configuration.PluginEnabled)
+        var wasEnabled = Configuration.PluginEnabled;
+        if (!enabled && wasEnabled)
             WakeTakeoverService.StopAll("DAD disabled by operator.");
         Configuration.PluginEnabled = enabled;
+        if (enabled && !wasEnabled)
+            DependencyService.MarkDirty("DAD was enabled; checking required plugins.");
         Configuration.Save();
         TransportService.SetPluginEnabled(enabled);
         InvalidatePlannerPreviewCache("plugin enabled state changed");
         UpdateDtrBar();
+        dependenciesWindow.Sync();
 
         if (printStatus)
             PrintStatus(enabled ? "dad enabled." : "dad disabled.");
@@ -3440,6 +3499,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration.DebugUiEnabled = enabled;
         Configuration.Save();
+        setupWizardWindow.OnDebugUiChanged();
         InvalidatePlannerPreviewCache("debug UI changed");
         PrintStatus(enabled
             ? "dad debug UI enabled. Verbose planner/runtime diagnostics are visible."
@@ -3456,6 +3516,7 @@ public sealed class Plugin : IDalamudPlugin
         setupWizardWindow.ResetToOrigin();
         miniStatusWindow.ResetToOrigin();
         clientReconnectWindow.ResetToOrigin();
+        dependenciesWindow.ResetToOrigin();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
@@ -3472,6 +3533,7 @@ public sealed class Plugin : IDalamudPlugin
         setupWizardWindow.QueueRandomVisibleJump();
         miniStatusWindow.QueueRandomVisibleJump();
         clientReconnectWindow.QueueRandomVisibleJump();
+        dependenciesWindow.QueueRandomVisibleJump();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
@@ -3841,7 +3903,10 @@ public sealed class Plugin : IDalamudPlugin
 
         if (trimmed.Equals("test launch-profiles", StringComparison.OrdinalIgnoreCase))
         {
-            RunLaunchProfileDiagnosticsFromShell();
+            if (!DadDebugUiRules.CanRunLaunchProfileDiagnostics(Configuration.DebugUiEnabled))
+                PrintStatus("Launch-profile diagnostics are hidden. Enable them with /dad debug, then run /dad test launch-profiles again.");
+            else
+                RunLaunchProfileDiagnosticsFromShell();
             return;
         }
 
@@ -4247,7 +4312,8 @@ public sealed class Plugin : IDalamudPlugin
                 $"- PluginEnabled={Configuration.PluginEnabled} ServerDad={Configuration.RunAsServerDad} LocalOnly={Configuration.LocalOnlyModeEnabled} Advanced={Configuration.AdvancedModeEnabled} PartyValidationOverride={Configuration.PartyValidationOverrideEnabled} AllowRemoteCmd={Configuration.AllowRemoteCommandExecution}",
                 $"- CombatRotationMode={Configuration.CombatRotationMode} DtrBarEnabled={Configuration.DtrBarEnabled}",
                 $"- Transport role={(Configuration.RunAsServerDad ? "server" : "client")} listen={Configuration.ServerListenHost}:{Configuration.ServerListenPort} server={Configuration.ServerDadHost}:{Configuration.ServerDadPort} protocol={DadHubProtocol.CurrentVersion} sharedSecretConfigured={!string.IsNullOrWhiteSpace(Configuration.TransportSharedSecret)}",
-                $"- RunHistory={Configuration.RunHistory?.Count ?? 0} PlannerGroups={Configuration.PlannerGroups?.Count ?? 0} LaunchProfiles={Configuration.LaunchProfiles?.Count ?? 0}",
+                $"- RunHistory={Configuration.RunHistory?.Count ?? 0} PlannerGroups={Configuration.PlannerGroups?.Count ?? 0}" +
+                (Configuration.DebugUiEnabled ? $" LaunchProfiles={Configuration.LaunchProfiles?.Count ?? 0}" : string.Empty),
                 string.Empty,
                 "## Transport",
                 "```json",
@@ -4371,6 +4437,8 @@ public sealed class Plugin : IDalamudPlugin
             }
         });
 
+        RunFrameworkStep("Dependencies", () => DependencyService.Update(Configuration.PluginEnabled));
+        RunFrameworkStep("DependencyWindow", dependenciesWindow.Sync);
         RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
         RunFrameworkStep("VermaxionReservation", VermaxionIpcService.Update);
         RunFrameworkStep("Presence", () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint));
@@ -4488,7 +4556,8 @@ internal readonly record struct DadPlannerUiCacheKey(
     int PeerResponseCount,
     long XadbSnapshotTicks,
     int LaunchProfilesToken,
-    int RunRevisionToken);
+    int RunRevisionToken,
+    int DependencyRevisionToken);
 
 internal readonly record struct DadPlannerSchedulerCacheKey(
     long Generation,
@@ -4496,4 +4565,13 @@ internal readonly record struct DadPlannerSchedulerCacheKey(
     long CatalogVersion,
     int SchedulerToken,
     int LaunchProfilesToken,
-    int RunRevisionToken);
+    int RunRevisionToken,
+    int DependencyRevisionToken);
+
+internal sealed record DadPlannerValidationFeedback(
+    long Generation,
+    string GroupId,
+    string Summary,
+    string PlannerStatus,
+    string SchedulerStatus,
+    DateTime CheckedAtUtc);

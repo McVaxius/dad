@@ -31,6 +31,7 @@ internal sealed class DadPresetCrewEditor
         string idPrefix)
     {
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
+        var showProfile = plugin.Configuration.DebugUiEnabled;
 
         var style = ImGui.GetStyle();
         var slotWidth = FixedTextWidth("Slot56");
@@ -39,13 +40,13 @@ internal sealed class DadPresetCrewEditor
         var roleWidth = FixedFrameWidth("PhysicalRanged");
         var lootWidth = FixedFrameWidth("NoChange");
         var levelWidth = FixedFrameWidth("999");
-        var wakeWidth = MathF.Max(FixedFrameWidth("Online"), MathF.Max(FixedFrameWidth("Launch"), FixedFrameWidth("Load*")));
+        var wakeWidth = MathF.Max(FixedFrameWidth("Online"), FixedFrameWidth("Wake/relog"));
         var actionWidth = ButtonWidth("+ Sub") + style.ItemSpacing.X + ButtonWidth("Remove");
 
         ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(2f, 2f));
         var tableOpen = ImGui.BeginTable(
             $"{idPrefix}-crew-rows",
-            11,
+            DadDebugUiRules.PresetCrewColumnCount(showProfile),
             ImGuiTableFlags.Borders |
             ImGuiTableFlags.RowBg |
             ImGuiTableFlags.Resizable |
@@ -66,9 +67,10 @@ internal sealed class DadPresetCrewEditor
         ImGui.TableSetupColumn("Loot", ImGuiTableColumnFlags.WidthFixed, lootWidth);
         ImGui.TableSetupColumn("Lv.", ImGuiTableColumnFlags.WidthFixed, levelWidth);
         ImGui.TableSetupColumn("Wake", ImGuiTableColumnFlags.WidthFixed, wakeWidth);
-        ImGui.TableSetupColumn("Profile", ImGuiTableColumnFlags.WidthStretch, 0.9f);
+        if (showProfile)
+            ImGui.TableSetupColumn("Profile", ImGuiTableColumnFlags.WidthStretch, 0.9f);
         ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, actionWidth);
-        DrawHeaders();
+        DrawHeaders(showProfile);
 
         for (var index = 0; index < group.Slots.Count; index++)
         {
@@ -109,8 +111,11 @@ internal sealed class DadPresetCrewEditor
             ImGui.TableNextColumn();
             DrawWake(group, slot, index, idPrefix, changed);
 
-            ImGui.TableNextColumn();
-            DrawLaunchProfile(plannerSnapshot.LaunchProfiles, group, slot, index, idPrefix, changed);
+            if (showProfile)
+            {
+                ImGui.TableNextColumn();
+                DrawLaunchProfile(plannerSnapshot.LaunchProfiles, group, slot, index, idPrefix, changed);
+            }
 
             ImGui.TableNextColumn();
             if (!slot.IsSubstitute)
@@ -149,10 +154,13 @@ internal sealed class DadPresetCrewEditor
         ImGui.PopStyleVar();
     }
 
-    private static void DrawHeaders()
+    private static void DrawHeaders(bool showProfile)
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
-        foreach (var header in new[] { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv.", "Wake", "Profile", "Actions" })
+        var headers = showProfile
+            ? new[] { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv.", "Wake", "Profile", "Actions" }
+            : new[] { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv.", "Wake", "Actions" };
+        foreach (var header in headers)
         {
             ImGui.TableNextColumn();
             ImGui.TableHeader(header);
@@ -611,7 +619,7 @@ internal sealed class DadPresetCrewEditor
             ImGui.SetTooltip("Blank disables Level seek. A preset is skipped only when every targeted exact row has a known level at or above its target.");
     }
 
-    private static void DrawWake(
+    private void DrawWake(
         DadPlannerGroup group,
         DadPlannerGroupSlot slot,
         int index,
@@ -619,7 +627,7 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         ImGui.SetNextItemWidth(-1f);
-        var open = ImGui.BeginCombo($"##{idPrefix}-wake-{index}", CompactWakeLabel(slot.WakePolicy));
+        var open = ImGui.BeginCombo($"##{idPrefix}-wake-{index}", CompactWakeLabel(slot.WakePolicy, plugin.Configuration.DebugUiEnabled));
         var hovered = ImGui.IsItemHovered();
         if (open)
         {
@@ -628,7 +636,7 @@ internal sealed class DadPresetCrewEditor
                 var selected = policy == slot.WakePolicy;
                 var disabledStub = policy == DadSchedulerWakePolicy.LoadCharacterIfOnline && !selected;
                 ImGui.BeginDisabled(disabledStub);
-                if (ImGui.Selectable(FullWakeLabel(policy), selected))
+                if (ImGui.Selectable(FullWakeLabel(policy, plugin.Configuration.DebugUiEnabled), selected))
                 {
                     slot.WakePolicy = policy;
                     changed(group);
@@ -846,26 +854,26 @@ internal sealed class DadPresetCrewEditor
         return value.Length <= 14 ? value : value[..14];
     }
 
-    private static string CompactWakeLabel(DadSchedulerWakePolicy policy)
+    private static string CompactWakeLabel(DadSchedulerWakePolicy policy, bool debugUiEnabled)
         => policy switch
         {
-            DadSchedulerWakePolicy.LaunchIfOffline => "Launch",
-            DadSchedulerWakePolicy.LoadCharacterIfOnline => "Load*",
+            DadSchedulerWakePolicy.LaunchIfOffline => debugUiEnabled ? "Launch" : "Wake/relog",
+            DadSchedulerWakePolicy.LoadCharacterIfOnline => debugUiEnabled ? "Load*" : "Legacy wait",
             _ => "Online",
         };
 
-    private static string FullWakeLabel(DadSchedulerWakePolicy policy)
+    private static string FullWakeLabel(DadSchedulerWakePolicy policy, bool debugUiEnabled)
         => policy switch
         {
-            DadSchedulerWakePolicy.LaunchIfOffline => "Launch if offline",
-            DadSchedulerWakePolicy.LoadCharacterIfOnline => "Load character if online (compatibility stub)",
+            DadSchedulerWakePolicy.LaunchIfOffline => debugUiEnabled ? "LaunchIfOffline (Wake/relog)" : "Wake/relog",
+            DadSchedulerWakePolicy.LoadCharacterIfOnline => debugUiEnabled ? "Load character if online (compatibility stub)" : "Legacy wait (no commands)",
             _ => "Already online",
         };
 
     private static string WakeDescription(DadSchedulerWakePolicy policy)
         => policy switch
         {
-            DadSchedulerWakePolicy.LaunchIfOffline => "Launch: start the mapped client when it is offline, then wait for the exact character.",
+            DadSchedulerWakePolicy.LaunchIfOffline => "Wake/relog: DAD waits for the same-account client and can coordinate takeover or relog. It does not start a missing game process.",
             DadSchedulerWakePolicy.LoadCharacterIfOnline => "Load*: compatibility stub only. New selections are disabled and the scheduler sends no commands for this policy.",
             _ => "Online: require the participant to already be online; do not launch or relog it.",
         };

@@ -24,6 +24,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private DadGuideFlow flow = DadGuideFlow.Landing;
     private int stepIndex;
     private int furthestStep;
+    private string currentStepId = string.Empty;
     private string validationMessage = string.Empty;
     private string roleRestrictionMessage = string.Empty;
 
@@ -62,7 +63,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         string Why,
         string Success,
         bool Ready,
-        string Blocker);
+        string Blocker,
+        string Id = "");
 
     public SetupWizardWindow(Plugin plugin)
         : base($"{PluginInfo.DisplayName} Guide###SetupWizard", ImGuiWindowFlags.None)
@@ -86,6 +88,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         flow = DadGuideFlow.Landing;
         stepIndex = 0;
         furthestStep = 0;
+        currentStepId = string.Empty;
         validationMessage = string.Empty;
         roleRestrictionMessage = string.Empty;
         IsOpen = true;
@@ -110,6 +113,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         flow = requestedFlow;
         stepIndex = 0;
         furthestStep = 0;
+        currentStepId = string.Empty;
         validationMessage = string.Empty;
         roleRestrictionMessage = string.Empty;
         InitializeDrafts();
@@ -130,6 +134,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
             minY + ((float)Random.Shared.NextDouble() * MathF.Max(1f, maxY - minY))));
     }
 
+    public void OnDebugUiChanged()
+    {
+        if (flow != DadGuideFlow.Crew)
+            return;
+        currentStepId = DadDebugUiRules.ResolveVisibleCrewStep(currentStepId, plugin.Configuration.DebugUiEnabled);
+    }
+
     public override void Draw()
     {
         ApplyPendingPositionChange();
@@ -146,7 +157,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             return;
         }
 
-        stepIndex = Math.Clamp(stepIndex, 0, steps.Count - 1);
+        SynchronizeStepSelection(steps);
         furthestStep = Math.Clamp(furthestStep, stepIndex, steps.Count - 1);
 
         DadUi.Heading(FlowTitle(flow), "Save each step with Next. Back keeps completed work; closing drops only this step's unsaved draft.");
@@ -179,7 +190,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private void DrawLanding()
     {
         DadUi.Heading("DAD GUIDE", "Choose the job you are trying to finish. Each guide edits the real DAD setup and reports live readiness.");
-        ImGui.TextWrapped("DAD coordinates characters, saved presets, client wake/relog, party assembly, and scheduled runs. Start with Coordinator or Client setup, then build the crew, a preset, and a schedule.");
+        ImGui.TextWrapped("DAD coordinates characters, saved presets, connected-client wake/relog, party assembly, and scheduled runs. It waits for a missing game client to be started manually.");
         if (!string.IsNullOrWhiteSpace(roleRestrictionMessage))
         {
             DadUi.Badge("Connection role is already configured", DadUiTone.Warning);
@@ -259,6 +270,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 if (ImGui.SmallButton($"Open##dad-guide-step-{index}"))
                 {
                     stepIndex = index;
+                    currentStepId = steps[index].Id;
                     validationMessage = string.Empty;
                 }
             }
@@ -268,6 +280,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private void DrawStep(GuideStep step)
     {
+        var steps = BuildSteps();
         DadUi.Heading($"{stepIndex + 1}. {step.Title}", step.Controls);
         if (DadUi.BeginCard("dad-guide-explanation", 138f))
         {
@@ -295,6 +308,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             if (DadUi.Button("Back"))
             {
                 stepIndex--;
+                currentStepId = steps[stepIndex].Id;
                 validationMessage = string.Empty;
             }
         }
@@ -304,7 +318,6 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        var steps = BuildSteps();
         var final = stepIndex >= steps.Count - 1;
         if (DadUi.Button(final ? "Finish" : "Save and Next", DadUiTone.Accent))
             TryAdvance(steps.Count);
@@ -341,6 +354,30 @@ public sealed class SetupWizardWindow : Window, IDisposable
             _ => [],
         };
 
+    private void SynchronizeStepSelection(IReadOnlyList<GuideStep> steps)
+    {
+        stepIndex = Math.Clamp(stepIndex, 0, steps.Count - 1);
+        if (flow != DadGuideFlow.Crew)
+            return;
+
+        if (string.IsNullOrWhiteSpace(currentStepId))
+            currentStepId = steps[stepIndex].Id;
+        currentStepId = DadDebugUiRules.ResolveVisibleCrewStep(currentStepId, plugin.Configuration.DebugUiEnabled);
+        var resolvedIndex = steps
+            .Select((step, index) => (step, index))
+            .FirstOrDefault(pair => string.Equals(pair.step.Id, currentStepId, StringComparison.Ordinal))
+            .index;
+        if (resolvedIndex >= 0 && resolvedIndex < steps.Count &&
+            string.Equals(steps[resolvedIndex].Id, currentStepId, StringComparison.Ordinal))
+        {
+            stepIndex = resolvedIndex;
+        }
+        else
+        {
+            currentStepId = steps[stepIndex].Id;
+        }
+    }
+
     private IReadOnlyList<GuideStep> BuildConnectionSteps(bool coordinator)
     {
         var configuration = plugin.Configuration;
@@ -372,7 +409,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             new GuideStep(
                 "Account ownership",
                 "Which DAD account owns this client's character profiles and roster rows.",
-                "Preset rows, launch profiles, and connected workers use stable account identity.",
+                "Preset rows and connected workers use stable account identity.",
                 "A saved local account is selected.",
                 !string.IsNullOrWhiteSpace(draftAccountId),
                 "Select a local account. DAD creates one automatically on first use."),
@@ -439,7 +476,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 "Enter a useful name and save the step."),
             new GuideStep(
                 "Assign the crew",
-                "One inline row per primary or substitute character, including job, role, loot, level seek, wake, and launch profile.",
+                plugin.Configuration.DebugUiEnabled
+                    ? "One inline row per primary or substitute character, including job, role, loot, level seek, wake, and optional launch-profile metadata."
+                    : "One inline row per primary or substitute character, including job, role, loot, level seek, and wake/relog policy.",
                 "DAD freezes these exact rows before waking clients, assembling the party, and queueing.",
                 "At least one primary row has an account or exact character assignment.",
                 assignedPrimary,
@@ -454,7 +493,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             new GuideStep(
                 "Validate",
                 "Read-only planner and scheduler readiness for the saved preset.",
-                "Validation catches missing rows, incompatible content, duplicate identities, and terminal scheduler blockers without starting anything.",
+                "DAD checks the crew, selected content, and required plugins without starting the Plan.",
                 "The scheduler preview can start now or wake the configured crew.",
                 selected != null && snapshot.SchedulerPreview.CanStart,
                 FormatText(snapshot.SchedulerPreview.BlockedReason, snapshot.RequestPreview.StatusSummary)),
@@ -472,50 +511,60 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         var catalog = plugin.RosterCatalogService.CurrentCatalog;
         var active = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
-        EnsureLaunchProfileDrafts();
+        if (plugin.Configuration.DebugUiEnabled)
+            EnsureLaunchProfileDrafts();
         var unassigned = active.Count(row =>
             row.AccountKey.IsEmpty &&
             !crewOwnershipAssignments.Contains(DadRosterIdentity.BuildKey(row)));
         var stale = active.Count(static row => row.IsStale || row.NeedsRosterUpdate);
-        var launchReady = launchProfileDrafts.Values.Any(static profile => profile.Enabled && !profile.AccountKey.IsEmpty);
-        return
-        [
+        var steps = new List<GuideStep>
+        {
             new GuideStep(
                 "Refresh the roster",
                 "Collects local runtime/XADB rows and roster catalogs from connected DAD clients.",
                 "DAD cannot assign a character it has never learned.",
                 "At least one roster row is visible.",
                 catalog.Characters.Count > 0,
-                "Refresh local roster, then populate connected roster if this is a multi-client crew."),
+                "Refresh local roster, then populate connected roster if this is a multi-client crew.",
+                DadDebugUiRules.CrewRosterStepId),
             new GuideStep(
                 "Account ownership",
                 "Maps local characters to the stable DAD account that owns their profile.",
-                "Accounts are the durable bridge between roster rows, preset slots, and launch profiles.",
+                "Accounts are the durable bridge between roster rows, preset slots, and connected clients.",
                 "Every Active local row has an account.",
                 active.Count > 0 && unassigned == 0,
-                unassigned == 0 ? "Mark at least one row Active." : $"Assign {unassigned} Active row(s) to this client's account."),
+                unassigned == 0 ? "Mark at least one row Active." : $"Assign {unassigned} Active row(s) to this client's account.",
+                DadDebugUiRules.CrewAccountsStepId),
             new GuideStep(
                 "Resolve stale rows",
                 "Refreshes Active rows marked stale or needing an update.",
                 "The scheduler does not guess from stale ownership or character state.",
                 "No Active row is stale or marked Needs update.",
                 active.Count > 0 && stale == 0,
-                $"Refresh or queue updates for {stale} Active row(s)."),
-            new GuideStep(
-                "Launch profiles",
-                "Imports read-only boot batches, enables the profiles you trust, and maps each one to an account.",
-                "Wake policy Launch needs an explicit safe way to start an offline client.",
-                "At least one enabled launch profile has an account mapping.",
-                launchReady,
-                "Import launch batches, enable the needed profile, and select its account."),
+                $"Refresh or queue updates for {stale} Active row(s).",
+                DadDebugUiRules.CrewCharactersStepId),
+        };
+        if (plugin.Configuration.DebugUiEnabled)
+        {
+            steps.Add(new GuideStep(
+                "Launch profiles (optional debug scaffolding)",
+                "Reviews the stored batch/account metadata that DAD does not currently execute.",
+                "This metadata is retained for compatibility and diagnostics; it is never required for Crew readiness.",
+                "Optional profile drafts may be saved or left unchanged.",
+                true,
+                "Optional; continue without configuring a profile.",
+                DadDebugUiRules.CrewLaunchProfilesStepId));
+        }
+        steps.Add(
             new GuideStep(
                 "Review",
-                "Live account, Active roster, blocker, and launch-profile readiness.",
+                "Live account, Active roster, and current roster blockers.",
                 "This is the crew foundation used by every preset and schedule.",
-                "Roster ownership is current and launch mapping is ready.",
-                catalog.Characters.Count > 0 && active.Count > 0 && unassigned == 0 && stale == 0 && launchReady,
-                DadGuideReadiness.Build(plugin, DadGuideFlow.Crew).NextAction),
-        ];
+                "Roster ownership is current.",
+                catalog.Characters.Count > 0 && active.Count > 0 && unassigned == 0 && stale == 0,
+                DadGuideReadiness.Build(plugin, DadGuideFlow.Crew).NextAction,
+                DadDebugUiRules.CrewReviewStepId));
+        return steps;
     }
 
     private IReadOnlyList<GuideStep> BuildScheduleSteps()
@@ -896,15 +945,29 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("Preset", plugin.GetSelectedPlannerGroup()?.DisplayName ?? "(none)");
         DrawStatusRow("Planner", preview.StatusSummary);
         DrawStatusRow("Scheduler", snapshot.SchedulerPreview.StatusSummary);
-        DrawStatusRow("Startability", snapshot.SchedulerPreview.CanStart
+        var dependencyBlocker = snapshot.SchedulerPreview.Slots
+            .Where(static slot => !slot.DependenciesReady)
+            .Select(static slot => slot.DependencySummary)
+            .FirstOrDefault(static summary => !string.IsNullOrWhiteSpace(summary));
+        DrawStatusRow("Startability", !string.IsNullOrWhiteSpace(dependencyBlocker)
+            ? "Waiting for required plugins"
+            : snapshot.SchedulerPreview.CanStart
             ? snapshot.SchedulerPreview.ReadyToStart ? "Ready now" : "Can wake configured crew"
             : "Blocked");
-        if (!snapshot.SchedulerPreview.CanStart)
-            DrawStatusRow("First blocker", FormatText(snapshot.SchedulerPreview.BlockedReason, preview.ReadinessSummary));
+        if (!string.IsNullOrWhiteSpace(dependencyBlocker) || !snapshot.SchedulerPreview.CanStart)
+            DrawStatusRow("First blocker", FormatText(dependencyBlocker, FormatText(snapshot.SchedulerPreview.BlockedReason, preview.ReadinessSummary)));
         ImGui.BeginDisabled(plugin.GetSelectedPlannerGroup() == null);
-        if (ImGui.Button("Validate preset (does not run)"))
-            plugin.ValidateSelectedPlannerPresetReadOnly();
+        string? justValidated = null;
+        if (ImGui.Button("Recheck readiness (does not run)"))
+            justValidated = plugin.ValidateSelectedPlannerPresetReadOnly();
         ImGui.EndDisabled();
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var feedback = selectedGroup == null
+            ? null
+            : plugin.GetPlannerValidationFeedback(snapshot.Generation, selectedGroup.GroupId);
+        var feedbackText = justValidated ?? feedback?.Summary;
+        if (!string.IsNullOrWhiteSpace(feedbackText))
+            ImGui.TextWrapped(feedbackText);
     }
 
     private void DrawPresetReview()
@@ -922,18 +985,21 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("Crew rows", $"{group.Slots.Count} total | {DadPlannerSlotRules.CountPrimarySlots(group.Slots)} primary");
         DrawStatusRow("Stop", group.StopPolicy.Describe());
         DrawStatusRow("Finish", DadCompletionActionSnapshots.DescribeSource(group.CompletionActions));
-        DrawStatusRow("Readiness", snapshot.SchedulerPreview.CanStart
-            ? snapshot.SchedulerPreview.ReadyToStart ? "Ready now" : "Saved and wakeable"
-            : FormatText(snapshot.SchedulerPreview.BlockedReason, "Blocked"));
+        var dependencyWait = snapshot.SchedulerPreview.Slots.Any(static slot => !slot.DependenciesReady);
+        DrawStatusRow("Readiness", dependencyWait
+            ? "Waiting for required plugins"
+            : snapshot.SchedulerPreview.CanStart
+                ? snapshot.SchedulerPreview.ReadyToStart ? "Ready now" : "Saved and wakeable"
+                : FormatText(snapshot.SchedulerPreview.BlockedReason, "Blocked"));
         ImGui.TextWrapped("Finish closes the guide. It does not enqueue or start this preset.");
     }
 
     private void DrawCrewStep()
     {
         var catalog = plugin.RosterCatalogService.CurrentCatalog;
-        switch (stepIndex)
+        switch (currentStepId)
         {
-            case 0:
+            case DadDebugUiRules.CrewRosterStepId:
                 if (ImGui.Button("Refresh local roster"))
                     plugin.RefreshCharacterPoolFromShell();
                 ImGui.SameLine();
@@ -942,13 +1008,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 DrawStatusRow("Roster", FormatText(catalog.Summary, "Not refreshed"));
                 DrawStatusRow("Rows", $"{catalog.Characters.Count} character(s) | {catalog.Accounts.Count} account(s)");
                 break;
-            case 1:
+            case DadDebugUiRules.CrewAccountsStepId:
                 DrawCrewOwnership(catalog);
                 break;
-            case 2:
+            case DadDebugUiRules.CrewCharactersStepId:
                 DrawCrewStaleRows(catalog);
                 break;
-            case 3:
+            case DadDebugUiRules.CrewLaunchProfilesStepId:
                 DrawCrewLaunchProfiles(catalog);
                 break;
             default:
@@ -957,7 +1023,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 DrawStatusRow("Active roster", active.Count.ToString(CultureInfo.InvariantCulture));
                 DrawStatusRow("Unassigned", active.Count(static row => row.AccountKey.IsEmpty).ToString(CultureInfo.InvariantCulture));
                 DrawStatusRow("Stale / needs update", active.Count(static row => row.IsStale || row.NeedsRosterUpdate).ToString(CultureInfo.InvariantCulture));
-                DrawStatusRow("Launch profiles", $"{plugin.Configuration.LaunchProfiles.Count} imported | {plugin.Configuration.LaunchProfiles.Count(static profile => profile.Enabled)} enabled");
+                if (plugin.Configuration.DebugUiEnabled)
+                    DrawStatusRow("Optional launch-profile scaffolding", $"{plugin.Configuration.LaunchProfiles.Count} stored | {plugin.Configuration.LaunchProfiles.Count(static profile => profile.Enabled)} enabled");
                 break;
         }
     }
@@ -1110,7 +1177,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             .ToList();
         if (profiles.Count == 0)
         {
-            ImGui.TextWrapped("No launch profiles found. Configure the boot directory in Settings if your batches are stored elsewhere, then import again.");
+            ImGui.TextWrapped("No launch-profile metadata was found in the existing configured boot directory. DAD does not execute these batch paths.");
             return;
         }
 
@@ -1433,6 +1500,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
             return;
         }
         stepIndex++;
+        var steps = BuildSteps();
+        if (stepIndex < steps.Count)
+            currentStepId = steps[stepIndex].Id;
         furthestStep = Math.Max(furthestStep, stepIndex);
     }
 
@@ -1591,11 +1661,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         var catalog = plugin.RosterCatalogService.CurrentCatalog;
         var active = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
-        switch (stepIndex)
+        switch (currentStepId)
         {
-            case 0:
+            case DadDebugUiRules.CrewRosterStepId:
                 return catalog.Characters.Count > 0 || Reject("No roster rows are visible yet. Refresh local roster, then populate connected roster if needed.");
-            case 1:
+            case DadDebugUiRules.CrewAccountsStepId:
                 var account = plugin.ConfigManager.GetCurrentAccount();
                 if (crewOwnershipAssignments.Count > 0 && account == null)
                     return Reject("The selected local account is no longer available. Return to connection setup and select an account.");
@@ -1614,7 +1684,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     .Where(static row => row.Visibility == DadRosterVisibility.Active)
                     .ToList();
                 return savedActive.Count > 0 && savedActive.All(static row => !row.AccountKey.IsEmpty) || Reject("Every Active roster row needs account ownership. Connected rows must be assigned on their owning Client.");
-            case 2:
+            case DadDebugUiRules.CrewCharactersStepId:
                 var stagedRows = active
                     .Where(row => crewStagedSkips.Contains(DadRosterIdentity.BuildKey(row)))
                     .ToList();
@@ -1652,10 +1722,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 return remainingActive.Count > 0 &&
                        remainingActive.All(static row => !row.IsStale && !row.NeedsRosterUpdate) ||
                        Reject("A remaining Active row is stale or still needs an update. Queue or refresh it, or stage Skip and save again.");
-            case 3:
+            case DadDebugUiRules.CrewLaunchProfilesStepId:
                 EnsureLaunchProfileDrafts();
-                if (!launchProfileDrafts.Values.Any(static profile => profile.Enabled && !profile.AccountKey.IsEmpty))
-                    return Reject("Enable and map at least one imported launch profile.");
                 foreach (var draft in launchProfileDrafts.Values.ToList())
                 {
                     var saved = plugin.Configuration.LaunchProfiles.FirstOrDefault(profile =>
@@ -1681,7 +1749,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     if (ack.Profile != null)
                         launchProfileDrafts[draft.ProfileId] = ack.Profile.Clone();
                 }
-                return plugin.Configuration.LaunchProfiles.Any(static profile => profile.Enabled && !profile.AccountKey.IsEmpty) || Reject("No enabled launch profile with an account mapping was saved.");
+                return true;
             default:
                 var readiness = DadGuideReadiness.Build(plugin, DadGuideFlow.Crew);
                 return readiness.Ready || Reject(readiness.NextAction);
@@ -2070,7 +2138,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.Coordinator => "Enable the one client that owns plans, schedules, and crew dispatch.",
             DadGuideFlow.Client => "Authenticate a crew client to the Coordinator and verify authority.",
             DadGuideFlow.FirstPreset => "Choose content, assign every inline character field, and validate without running.",
-            DadGuideFlow.Crew => "Refresh ownership, fix stale rows, and map launch profiles.",
+            DadGuideFlow.Crew => "Refresh ownership and fix stale or unassigned roster rows.",
             DadGuideFlow.Schedule => "Order saved presets, set repeats/cadence, and complete a dry-run.",
             _ => string.Empty,
         };

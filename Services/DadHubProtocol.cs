@@ -542,6 +542,10 @@ internal static class DadHubParticipants
 
     private static void MarkStale(DadParticipantSnapshot participant, string reason)
     {
+        participant.Dependencies = DadDependencySnapshot.CreateChecking(
+            participant.Dependencies.Revision,
+            participant.Dependencies,
+            "Dependency truth is stale; waiting for a fresh heartbeat.");
         participant.State = DadParticipantState.Stale;
         participant.ClaimState = DadClaimState.Stale;
         participant.LeaseState = DadParticipantLeaseState.Stale;

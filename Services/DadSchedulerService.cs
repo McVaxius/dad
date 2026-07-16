@@ -29,6 +29,7 @@ public sealed class DadSchedulerService
     private readonly DadImmutableCommandRegistry frozenRequestRegistry = new();
     private DadStrictPlannerRevalidationTracker strictRevalidationTracker = new();
     private DadSchedulerPresetPhase? lastLoggedSchedulerPhase;
+    private bool dependencyGateCommitted;
     private DadModuleId activeSchedulerModuleId = DadModuleId.None;
     private DadSchedulerPresetState currentState = new() { Phase = DadSchedulerPresetPhase.Idle, Summary = "Scheduler idle." };
     private DadScheduledCrewJob? activeJob;
@@ -681,6 +682,7 @@ public sealed class DadSchedulerService
             Phase = DadSchedulerPresetPhase.Idle,
             Summary = "Scheduler account data cleared.",
         };
+        dependencyGateCommitted = false;
         configuration.ActiveScheduleRun = new DadScheduleRunState
         {
             Summary = "Scheduler account data cleared.",
@@ -874,9 +876,17 @@ public sealed class DadSchedulerService
 
         preview.ReadyToStart = preview.Slots.All(static slot => slot.Ready);
         preview.CanStart = true;
-        preview.StatusSummary = preview.ReadyToStart
+        if (!AllSlotDependenciesReady(preview.Slots))
+        {
+            preview.Phase = DadSchedulerPresetPhase.WaitingForDependencies;
+            preview.StatusSummary = $"Scheduler will wait for fresh required-plugin truth from all {preview.Slots.Count} selected slot(s).";
+        }
+        else
+        {
+            preview.StatusSummary = preview.ReadyToStart
             ? $"Scheduler ready: all {preview.Slots.Count} preset slot(s) are online."
             : $"Scheduler can start: {preview.Slots.Count(static slot => slot.Ready)}/{preview.Slots.Count} preset slot(s) ready.";
+        }
         return preview;
     }
 
@@ -931,6 +941,7 @@ public sealed class DadSchedulerService
             ScheduleEntryIndex = activeJob.ScheduleEntryIndex,
             ScheduleRepeatIteration = activeJob.ScheduleRepeatIteration,
         };
+        dependencyGateCommitted = false;
         takeoverDiagnosticStates.Clear();
         slotContradictionTrackers.Clear();
         lastLoggedSchedulerPhase = null;
@@ -1095,13 +1106,6 @@ public sealed class DadSchedulerService
             return;
         }
 
-        var assignmentsAcknowledged = DeliverEarlyJobAssignments(out var assignmentBlocker);
-        if (!string.IsNullOrWhiteSpace(assignmentBlocker))
-        {
-            BlockActive(assignmentBlocker);
-            return;
-        }
-
         var groupPreviewSlots = currentState.Slots;
         var previewSlots = RebuildActiveSlots(groupPreviewSlots);
         currentState.Slots = previewSlots;
@@ -1122,6 +1126,23 @@ public sealed class DadSchedulerService
         if (preMutationSlotBlockers.Count > 0)
         {
             BlockActive(string.Join(" | ", preMutationSlotBlockers));
+            return;
+        }
+
+        if (!DadDependencyMutationBoundaryRules.CanCross(
+                dependencyGateCommitted,
+                currentState.Slots.Select(static slot => slot.DependenciesReady)))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.WaitingForDependencies;
+            currentState.Summary = BuildReadinessWaitSummary(currentState, dependenciesCommitted: false);
+            return;
+        }
+        dependencyGateCommitted = true;
+
+        var assignmentsAcknowledged = DeliverEarlyJobAssignments(out var assignmentBlocker);
+        if (!string.IsNullOrWhiteSpace(assignmentBlocker))
+        {
+            BlockActive(assignmentBlocker);
             return;
         }
 
@@ -1161,8 +1182,8 @@ public sealed class DadSchedulerService
 
         if (!currentState.Slots.All(static slot => slot.Ready))
         {
-            currentState.Phase = ResolveWaitingPhase(currentState.Slots);
-            currentState.Summary = BuildReadinessWaitSummary(currentState);
+            currentState.Phase = ResolveWaitingPhase(currentState.Slots, dependencyGateCommitted);
+            currentState.Summary = BuildReadinessWaitSummary(currentState, dependencyGateCommitted);
             return;
         }
 
@@ -1599,6 +1620,7 @@ public sealed class DadSchedulerService
             DryRun = job.DryRun,
             Summary = BuildMapCrewSummary(job, group, "starting"),
         };
+        dependencyGateCommitted = false;
 
         var unsupported = BuildUnsupportedMapCrewBlocker(job.MapMode);
         if (!string.IsNullOrWhiteSpace(unsupported))
@@ -1680,6 +1702,7 @@ public sealed class DadSchedulerService
             UpdatedAtUtc = DateTime.UtcNow,
             DryRun = job.DryRun,
         };
+        dependencyGateCommitted = false;
 
         if (targets.Count == 0)
         {
@@ -1760,6 +1783,16 @@ public sealed class DadSchedulerService
         currentState.Slots = BuildSlotStates(group, pool, currentState.Slots, allowRosterMaintenanceTarget: true);
         currentState.UpdatedAtUtc = DateTime.UtcNow;
 
+        if (!DadDependencyMutationBoundaryRules.CanCross(
+                dependencyGateCommitted,
+                currentState.Slots.Select(static slot => slot.DependenciesReady)))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.WaitingForDependencies;
+            currentState.Summary = BuildReadinessWaitSummary(currentState, dependenciesCommitted: false);
+            return;
+        }
+        dependencyGateCommitted = true;
+
         if (!AdvanceWakeTakeoverPipelines(currentState.Slots, out var barrierBlocker))
         {
             BlockActive(barrierBlocker);
@@ -1791,7 +1824,7 @@ public sealed class DadSchedulerService
 
         if (!currentState.Slots.All(static slot => slot.Ready))
         {
-            currentState.Phase = ResolveWaitingPhase(currentState.Slots);
+            currentState.Phase = ResolveWaitingPhase(currentState.Slots, dependencyGateCommitted);
             currentState.Summary = $"Roster update waiting: {currentState.Slots.Count(static slot => slot.Ready)}/{currentState.Slots.Count} target(s) ready.";
             return;
         }
@@ -1858,6 +1891,16 @@ public sealed class DadSchedulerService
         currentState.Slots = BuildSlotStates(group, pool, currentState.Slots);
         currentState.UpdatedAtUtc = DateTime.UtcNow;
 
+        if (!DadDependencyMutationBoundaryRules.CanCross(
+                dependencyGateCommitted,
+                currentState.Slots.Select(static slot => slot.DependenciesReady)))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.WaitingForDependencies;
+            currentState.Summary = BuildReadinessWaitSummary(currentState, dependenciesCommitted: false);
+            return;
+        }
+        dependencyGateCommitted = true;
+
         if (!AdvanceWakeTakeoverPipelines(currentState.Slots, out var barrierBlocker))
         {
             BlockActive(barrierBlocker);
@@ -1889,7 +1932,7 @@ public sealed class DadSchedulerService
 
         if (!currentState.Slots.All(static slot => slot.Ready))
         {
-            currentState.Phase = ResolveWaitingPhase(currentState.Slots);
+            currentState.Phase = ResolveWaitingPhase(currentState.Slots, dependencyGateCommitted);
             currentState.Summary = BuildMapCrewSummary(
                 activeJob,
                 group,
@@ -2062,7 +2105,7 @@ public sealed class DadSchedulerService
                 }
             }
 
-            ApplyWakePolicyState(state);
+            ApplyWakePolicyState(state, currentState.IsActive && dependencyGateCommitted);
 
             return state;
         }).ToList();
@@ -2182,6 +2225,15 @@ public sealed class DadSchedulerService
             state.ExternalAutomationSummary = selected.ExternalAutomationSummary;
             state.MatchedWorkerSessionId = selected.WorkerSessionId;
             state.ActiveCharacterKey = selected.ActiveCharacterKey;
+            var dependencyGate = DadDependencyGateRules.EvaluateParticipant(
+                selected,
+                DateTime.UtcNow,
+                TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds)),
+                $"Slot {state.SlotId}");
+            state.DependenciesReady = dependencyGate.Ready;
+            state.DependencyState = dependencyGate.State;
+            state.DependencyRevision = dependencyGate.Revision;
+            state.DependencySummary = dependencyGate.Summary;
             state.Summary = !state.IsOnline
                 ? $"Same-account Dad client connected as worker {selected.WorkerSessionId}; character offline or relogging."
                 : state.CorrectCharacter
@@ -2192,6 +2244,9 @@ public sealed class DadSchedulerService
         }
         else
         {
+            state.DependenciesReady = false;
+            state.DependencyState = DadDependencyState.Checking;
+            state.DependencySummary = $"Slot {state.SlotId} is absent. Start that game client manually so DAD can check its required plugins.";
             state.Summary = $"Slot {state.SlotId} is waiting for the same-account Dad client.";
         }
 
@@ -2215,10 +2270,17 @@ public sealed class DadSchedulerService
         state.LaunchProfileDryRun = profile.DryRun;
     }
 
-    private static void ApplyWakePolicyState(DadSchedulerSlotState state)
+    private static void ApplyWakePolicyState(DadSchedulerSlotState state, bool dependenciesCommitted)
     {
         if (!string.IsNullOrWhiteSpace(state.BlockedReason))
             return;
+
+        if (!dependenciesCommitted && !state.DependenciesReady)
+        {
+            state.Ready = false;
+            state.Summary = state.DependencySummary;
+            return;
+        }
 
         if (state.ExternalAutomationHeld)
         {
@@ -2949,6 +3011,8 @@ public sealed class DadSchedulerService
         reason = string.Empty;
         if (slot.Ready)
             return false;
+        if (!dependencyGateCommitted && !slot.DependenciesReady)
+            return false;
 
         var now = DateTime.UtcNow;
         DadWakeStageTimeoutPolicy.Observe(slot, now);
@@ -2990,8 +3054,13 @@ public sealed class DadSchedulerService
         return true;
     }
 
-    private static DadSchedulerPresetPhase ResolveWaitingPhase(IReadOnlyList<DadSchedulerSlotState> slots)
+    private static DadSchedulerPresetPhase ResolveWaitingPhase(
+        IReadOnlyList<DadSchedulerSlotState> slots,
+        bool dependenciesCommitted = false)
     {
+        if (!dependenciesCommitted && !AllSlotDependenciesReady(slots))
+            return DadSchedulerPresetPhase.WaitingForDependencies;
+
         if (slots.Any(static slot =>
                 !slot.Ready &&
                 slot.TakeoverStage is DadWakeTakeoverStage.RelogIssued
@@ -3006,11 +3075,15 @@ public sealed class DadSchedulerService
         return DadSchedulerPresetPhase.Resolving;
     }
 
-    private static string BuildReadinessWaitSummary(DadSchedulerPresetState state)
+    private static string BuildReadinessWaitSummary(
+        DadSchedulerPresetState state,
+        bool dependenciesCommitted = false)
     {
         var waiting = state.Slots.Where(static slot => !slot.Ready).ToList();
         var detail = waiting
-            .Select(static slot => string.IsNullOrWhiteSpace(slot.Summary)
+            .Select(slot => !dependenciesCommitted && !slot.DependenciesReady && !string.IsNullOrWhiteSpace(slot.DependencySummary)
+                ? $"{slot.SlotId}: {slot.DependencySummary}"
+                : string.IsNullOrWhiteSpace(slot.Summary)
                 ? $"{slot.SlotId}: waiting for {slot.RequiredCharacterKey}"
                 : $"{slot.SlotId}: {slot.Summary}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -3022,6 +3095,9 @@ public sealed class DadSchedulerService
         var reasons = detail.Count == 0 ? string.Empty : $" {string.Join(" | ", detail)}";
         return $"Scheduler waiting: {state.Slots.Count(static slot => slot.Ready)}/{state.Slots.Count} slot(s) ready.{waitPolicy}{reasons}";
     }
+
+    private static bool AllSlotDependenciesReady(IEnumerable<DadSchedulerSlotState> slots)
+        => slots.All(static slot => slot.DependenciesReady);
 
     private static string FormatElapsed(TimeSpan elapsed)
     {

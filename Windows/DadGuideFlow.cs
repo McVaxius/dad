@@ -120,7 +120,6 @@ internal static class DadGuideReadiness
                     (catalog.Characters.Any(static row => row.Visibility == DadRosterVisibility.Active) &&
                      !catalog.Characters.Any(static row => row.Visibility == DadRosterVisibility.Active &&
                          (row.AccountKey.IsEmpty || row.IsStale || row.NeedsRosterUpdate)), "Resolve stale or unassigned Active rows."),
-                    (configuration.LaunchProfiles.Any(static launch => launch.Enabled && !launch.AccountKey.IsEmpty), "Import, enable, and map a launch profile."),
                 ]),
             DadGuideFlow.Schedule => BuildScheduleProgress(plugin),
             _ => new DadGuideProgress(DadGuideFlow.Landing, "DAD Guide", 0, 0, "Choose a guided task."),

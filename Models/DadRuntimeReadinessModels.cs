@@ -51,6 +51,8 @@ public readonly record struct DadRuntimeReadinessSignature
     public string RequestedJobPreparationKey { get; init; }
     public DadRequestedJobPreparationStatus RequestedJobPreparationStatus { get; init; }
     public uint RequestedJobCurrentJobId { get; init; }
+    public long DependencyRevision { get; init; }
+    public DadDependencyState DependencyState { get; init; }
 
     public static DadRuntimeReadinessSignature Create(
         DadParticipantSnapshot? participant,
@@ -91,6 +93,8 @@ public readonly record struct DadRuntimeReadinessSignature
             RequestedJobPreparationKey = BuildRequestedJobPreparationKey(participant.RequestedJobPreparation),
             RequestedJobPreparationStatus = participant.RequestedJobPreparation?.Status ?? DadRequestedJobPreparationStatus.NotRequested,
             RequestedJobCurrentJobId = participant.Character.CurrentJobId.GetValueOrDefault(),
+            DependencyRevision = participant.Dependencies.Revision,
+            DependencyState = participant.Dependencies.AggregateState,
         };
     }
 

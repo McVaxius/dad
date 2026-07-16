@@ -16,6 +16,7 @@ public sealed class DadPresenceService
     private readonly IDadClassJobGearsetGateway classJobGearsetGateway;
     private readonly IPluginLog log;
     private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
+    private Func<DadDependencySnapshot> dependencySnapshotProvider = static () => DadDependencySnapshot.CreateChecking();
     private string currentRunId = string.Empty;
     private DadWorkerSessionId currentAuthorityWorkerSessionId = new(string.Empty);
     private DadAuthorityMode currentAuthorityMode = DadAuthorityMode.ServerDad;
@@ -82,6 +83,9 @@ public sealed class DadPresenceService
     public void ConfigureParticipantResolver(Func<DadWorkerSessionId, DadParticipantSnapshot?> resolver)
         => participantResolver = resolver ?? (static _ => null);
 
+    public void ConfigureDependencySnapshotProvider(Func<DadDependencySnapshot> provider)
+        => dependencySnapshotProvider = provider ?? (static () => DadDependencySnapshot.CreateChecking());
+
     public void ConfigureOceTravelCapacityProofProvider(Func<DadAccountKey, DadOceTravelCapacityProof> provider)
         => oceTravelCapacityProofProvider = provider ?? oceTravelCapacityProofProvider;
 
@@ -140,6 +144,7 @@ public sealed class DadPresenceService
             ExternalAutomationActivity = vermaxionStatus.Activity,
             ExternalAutomationState = vermaxionStatus.State,
             ExternalAutomationSummary = vermaxionStatus.Summary,
+            Dependencies = dependencySnapshotProvider(),
             LastHeartbeatUtc = nowUtc,
             ManagedAccountKey = managedAccountKey,
             ManagedAccountAlias = managedAccountAlias,
@@ -560,7 +565,12 @@ public sealed class DadPresenceService
         CurrentParticipant.Warnings.Clear();
     }
 
-    public DadParticipantSnapshot BuildSnapshotCopy() => CurrentParticipant.Clone();
+    public DadParticipantSnapshot BuildSnapshotCopy()
+    {
+        var snapshot = CurrentParticipant.Clone();
+        snapshot.Dependencies = dependencySnapshotProvider();
+        return snapshot;
+    }
 
     /// <summary>
     /// Builds a fail-closed, non-publishing safety projection directly from Dalamud's current
@@ -570,6 +580,7 @@ public sealed class DadPresenceService
     public DadParticipantSnapshot BuildLiveSafetySnapshot()
     {
         var snapshot = CurrentParticipant.Clone();
+        snapshot.Dependencies = dependencySnapshotProvider();
         var managedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
         snapshot.ClientInstanceId = ClientInstanceId;
         snapshot.WorkerSessionId = WorkerSessionId;

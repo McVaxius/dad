@@ -106,7 +106,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Accounts & Launch"))
+            if (ImGui.BeginTabItem("Accounts"))
             {
                 DrawSchedulerTab(configuration);
                 ImGui.EndTabItem();
@@ -609,54 +609,57 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSchedulerTab(Configuration configuration)
     {
-        configuration.CharacterLoadInstruction ??= new DadCharacterLoadInstruction();
-        configuration.CharacterLoadInstruction.Normalize();
-
-        DadUi.Heading("ACCOUNTS & LAUNCH", "Teach DAD how to recognize the crew and bring the right character online.");
+        DadUi.Heading("ACCOUNTS", "Teach DAD how to recognize the crew and keep account ownership clear.");
         if (DadUi.Button("Guide: Build the Crew", DadUiTone.Accent))
             plugin.OpenSetupWizard(DadGuideFlow.Crew);
         ImGui.SameLine();
-        ImGui.TextDisabled("Refresh ownership and import/map launch profiles step by step.");
-        ImGui.TextWrapped("Character and launch-profile mapping lives in the main window under Crew -> Character Profiles and Launch Profiles.");
-        DrawSectionHeader("Character launch command");
-        var instruction = configuration.CharacterLoadInstruction;
-        var loadEnabled = instruction.Enabled;
-        if (ImGui.Checkbox("Enable character launch command", ref loadEnabled))
-        {
-            instruction.Enabled = loadEnabled;
-            configuration.Save();
-        }
+        ImGui.TextDisabled("Refresh ownership and review account mappings step by step.");
+        ImGui.TextWrapped("Character permissions and account tools live in the main window under Crew.");
 
-        var loadDryRun = instruction.DryRun;
-        if (ImGui.Checkbox("Simulate character launch (dry run)", ref loadDryRun))
+        if (configuration.DebugUiEnabled)
         {
-            instruction.DryRun = loadDryRun;
-            configuration.Save();
-        }
+            configuration.CharacterLoadInstruction ??= new DadCharacterLoadInstruction();
+            configuration.CharacterLoadInstruction.Normalize();
+            DrawSectionHeader("Character launch command (debug scaffolding)");
+            var instruction = configuration.CharacterLoadInstruction;
+            var loadEnabled = instruction.Enabled;
+            if (ImGui.Checkbox("Enable character launch command", ref loadEnabled))
+            {
+                instruction.Enabled = loadEnabled;
+                configuration.Save();
+            }
 
-        var commandTemplate = instruction.CommandTemplate;
-        if (ImGui.InputText("Launch command", ref commandTemplate, 256))
-        {
-            var committedSignature = BuildCharacterLoadSignature(instruction);
-            instruction.CommandTemplate = commandTemplate;
-            plugin.QueueDebouncedConfigurationSave(
-                "character-load",
-                committedSignature,
-                () => BuildCharacterLoadSignature(instruction));
-        }
+            var loadDryRun = instruction.DryRun;
+            if (ImGui.Checkbox("Simulate character launch (dry run)", ref loadDryRun))
+            {
+                instruction.DryRun = loadDryRun;
+                configuration.Save();
+            }
 
-        var loadTimeout = instruction.TimeoutSeconds;
-        if (ImGui.InputInt("Character launch timeout (s)", ref loadTimeout))
-        {
-            var committedSignature = BuildCharacterLoadSignature(instruction);
-            instruction.TimeoutSeconds = Math.Clamp(loadTimeout, 30, 1800);
-            plugin.QueueDebouncedConfigurationSave(
-                "character-load",
-                committedSignature,
-                () => BuildCharacterLoadSignature(instruction));
-        }
+            var commandTemplate = instruction.CommandTemplate;
+            if (ImGui.InputText("Launch command", ref commandTemplate, 256))
+            {
+                var committedSignature = BuildCharacterLoadSignature(instruction);
+                instruction.CommandTemplate = commandTemplate;
+                plugin.QueueDebouncedConfigurationSave(
+                    "character-load",
+                    committedSignature,
+                    () => BuildCharacterLoadSignature(instruction));
+            }
 
-        DrawStatusRow("Placeholders", "{Character}, {CharacterName}, {World}, {Account}");
+            var loadTimeout = instruction.TimeoutSeconds;
+            if (ImGui.InputInt("Character launch timeout (s)", ref loadTimeout))
+            {
+                var committedSignature = BuildCharacterLoadSignature(instruction);
+                instruction.TimeoutSeconds = Math.Clamp(loadTimeout, 30, 1800);
+                plugin.QueueDebouncedConfigurationSave(
+                    "character-load",
+                    committedSignature,
+                    () => BuildCharacterLoadSignature(instruction));
+            }
+
+            DrawStatusRow("Placeholders", "{Character}, {CharacterName}, {World}, {Account}");
+        }
         DrawStatusRow("Scheduler state", plugin.SchedulerService.CurrentState.Summary);
 
         DrawSectionHeader("Crew roster");
@@ -884,6 +887,7 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         DadUi.Heading("COMBAT HANDOFF", "Choose who takes over combat after DAD confirms duty entry.");
         ImGui.TextWrapped("DAD always owns crew setup and queueing; this decides what happens once the duty begins.");
+        ImGui.TextWrapped("Fren Rider and AI Duty Solver are required whenever DAD is enabled, regardless of the combat handoff selected below.");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
         ImGui.Separator();
@@ -911,7 +915,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 DrawForceCommandsModeStatus();
                 break;
             case DadCombatRotationMode.DoNothing:
-                ImGui.TextWrapped("Dad queues duty operations only. It does not send FrenRider, ADS, or rotation commands; user-owned play and leave behavior is expected.");
+                ImGui.TextWrapped("Dad does not send FrenRider, ADS, or rotation commands in this mode; both plugins remain unconditional DAD readiness requirements. User-owned play and leave behavior is expected.");
                 break;
         }
     }
@@ -940,8 +944,8 @@ public sealed class ConfigWindow : Window, IDisposable
         var statusText = frenRiderState switch
         {
             DadFrenRiderPluginState.Loaded => "FrenRider installed and loaded. Dad will send /fr on after confirmed duty entry.",
-            DadFrenRiderPluginState.InstalledNotLoaded => "FrenRider installed but not loaded. Dad will block Use FrenRider duty operations until it is loaded.",
-            _ => "FrenRider not installed or not found. Dad will block Use FrenRider duty operations until it is installed and loaded.",
+            DadFrenRiderPluginState.InstalledNotLoaded => "FrenRider installed but not loaded. DAD blocks all new work until it is loaded.",
+            _ => "FrenRider not installed or not found. DAD blocks all new work until it is installed and loaded.",
         };
         ImGui.TextColored(
             color,
@@ -973,11 +977,13 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.OpenSetupWizard();
 
         DadUi.Section("What DAD does");
-        ImGui.TextWrapped("DAD coordinates your FFXIV characters across clients: it can wake or relog the right crew, assemble the party, queue a saved duty plan, and track the run through cleanup.");
+        ImGui.TextWrapped("DAD coordinates connected FFXIV clients: it can coordinate same-account takeover or relog, assemble the party, queue a saved duty plan, and track cleanup. A missing game process must be started manually.");
 
         DadUi.Section("A typical run", "Most players only need this four-step loop.");
         ImGui.BulletText("Connect each Client to one Coordinator under Core & Connection.");
-        ImGui.BulletText("Name accounts and configure character launch profiles under Accounts & Launch.");
+        ImGui.BulletText("Name accounts and review character ownership under Accounts.");
+        if (plugin.Configuration.DebugUiEnabled)
+            ImGui.BulletText("Optional launch-profile scaffolding is visible while /dad debug is enabled.");
         ImGui.BulletText("Build a preset in Plan, including duty, crew slots, stop rules, and finish actions.");
         ImGui.BulletText("Run it now or add it to a Schedule; use /dad mini for cached status and guarded Stop all.");
 

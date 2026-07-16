@@ -21,6 +21,7 @@ public sealed class DadWorkerExecutionService
     private readonly DadStableContradictionTracker mutationContradictionTracker = new();
     private readonly Dictionary<string, DadWorkerExecutionStatus> commandStatuses = new(StringComparer.Ordinal);
     private readonly HashSet<string> pendingCommandIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> dependencyApprovedRuns = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRunCancellationLedger cancelledRuns = new(StringComparer.OrdinalIgnoreCase);
 
     private DadWorkerExecutionCommand? activeCommand;
@@ -56,6 +57,11 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            if (!DadDependencyMutationBoundaryRules.CanCross(
+                    dependencyApprovedRuns.Contains(command.RunId),
+                    [presenceService.BuildSnapshotCopy().Dependencies.IsReady]))
+                return BuildAck(false, command, DadDependencyRules.DependencyBlocker);
+
             var payload = DadIpcJson.Serialize(command);
             var registration = immutableCommandRegistry.Register(
                 command.CommandId,
@@ -114,6 +120,7 @@ public sealed class DadWorkerExecutionService
             if (pendingCommandIds.Contains(command.CommandId))
                 return BuildAck(true, command, "Worker assignment is already pending execution.");
 
+            dependencyApprovedRuns.Add(command.RunId);
             var frozenCommand = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(payload) ?? command;
             pendingCommands.Enqueue(frozenCommand);
             pendingCommandIds.Add(command.CommandId);

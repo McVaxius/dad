@@ -28,6 +28,7 @@ internal static class DadRemoteParticipantMutationRules
         target.ExternalAutomationActivity = source.ExternalAutomationActivity;
         target.ExternalAutomationState = source.ExternalAutomationState;
         target.ExternalAutomationSummary = source.ExternalAutomationSummary;
+        target.Dependencies = source.Dependencies.Clone();
         target.LastHeartbeatUtc = source.LastHeartbeatUtc;
         target.Character.CurrentJobId = source.Character.CurrentJobId;
         target.Character.CurrentJobAbbrev = source.Character.CurrentJobAbbrev;

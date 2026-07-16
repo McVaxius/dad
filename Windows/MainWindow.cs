@@ -514,7 +514,7 @@ public sealed class MainWindow : Window, IDisposable
         DrawHomeActionCard(
             "dad-home-crew",
             "Crew",
-            "Review roster health, character permissions, and launch profiles.",
+            "Review roster health, account ownership, and character permissions.",
             "Manage Crew",
             () => NavigateWithinMain(DadMainWindowTab.Crew));
         DrawHomeActionCard(
@@ -1163,15 +1163,18 @@ public sealed class MainWindow : Window, IDisposable
         var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
         var activeRows = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
         var blockerCount = activeRows.Count(static row => row.AccountKey.IsEmpty || row.IsStale || row.NeedsRosterUpdate);
-        DadUi.Heading("CREW", "Manage the characters DAD can use and how offline clients are launched.");
+        DadUi.Heading("CREW", "Manage the accounts and characters DAD can use.");
         if (DadUi.Button("Guide: Build the Crew", DadUiTone.Accent))
             plugin.OpenSetupWizard(DadGuideFlow.Crew);
         ImGui.SameLine();
         DadUi.Badge(blockerCount == 0 && activeRows.Count > 0 ? "Roster ready" : $"{blockerCount} roster blocker(s)",
             blockerCount == 0 && activeRows.Count > 0 ? DadUiTone.Success : DadUiTone.Warning);
-        ImGui.SameLine();
-        DadUi.Badge($"{launchProfiles.Count(static profile => profile.Enabled)} launch profile(s) enabled",
-            launchProfiles.Any(static profile => profile.Enabled) ? DadUiTone.Info : DadUiTone.Neutral);
+        if (plugin.Configuration.DebugUiEnabled)
+        {
+            ImGui.SameLine();
+            DadUi.Badge($"{launchProfiles.Count(static profile => profile.Enabled)} launch profile(s) enabled",
+                launchProfiles.Any(static profile => profile.Enabled) ? DadUiTone.Info : DadUiTone.Neutral);
+        }
 
         if (!ImGui.BeginTabBar("dad-crew-tabs"))
             return;
@@ -1188,7 +1191,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndTabItem();
         }
 
-        if (ImGui.BeginTabItem("Launch Profiles"))
+        if (plugin.Configuration.DebugUiEnabled && ImGui.BeginTabItem("Launch Profiles"))
         {
             DrawLaunchProfileEditor(launchProfiles);
             ImGui.EndTabItem();
@@ -1222,7 +1225,7 @@ public sealed class MainWindow : Window, IDisposable
         DadVisibleRunState runState)
     {
         var launchProfiles = plugin.GetPlannerUiSnapshot(runState).LaunchProfiles;
-        if (ImGui.CollapsingHeader("Launch profiles", ImGuiTreeNodeFlags.DefaultOpen))
+        if (plugin.Configuration.DebugUiEnabled && ImGui.CollapsingHeader("Launch profiles", ImGuiTreeNodeFlags.DefaultOpen))
             DrawLaunchProfileEditor(launchProfiles);
 
         if (ImGui.CollapsingHeader("Account profile tree", ImGuiTreeNodeFlags.DefaultOpen))
@@ -1243,7 +1246,7 @@ public sealed class MainWindow : Window, IDisposable
 
         if (profiles.Count == 0)
         {
-            ImGui.TextWrapped("No launch profiles are imported. Launch profiles tell DAD how to bring an offline client online; imported batch files remain read-only and start disabled/dry-run.");
+            ImGui.TextWrapped("No launch-profile metadata is imported. This debug scaffolding stores batch/account metadata, but DAD does not execute batch paths or start a missing game process.");
             if (DadUi.Button("Guide: import and map launch profiles"))
                 plugin.OpenSetupWizard(DadGuideFlow.Crew);
             return;
@@ -1379,7 +1382,8 @@ public sealed class MainWindow : Window, IDisposable
                         character.Revision);
                 }
 
-                DrawPrimaryLaunchProfileEditor(catalog, account, launchProfiles);
+                if (plugin.Configuration.DebugUiEnabled)
+                    DrawPrimaryLaunchProfileEditor(catalog, account, launchProfiles);
                 ImGui.TreePop();
             }
 
@@ -2549,7 +2553,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(FormatOperatorCharacterKey(slot.ActiveCharacterKey.Value, "(offline)"));
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted($"{slot.WakePolicy} / {slot.RosterVisibility}{(slot.NeedsRosterUpdate ? " / needs update" : string.Empty)}");
+            ImGui.TextUnformatted($"{DadDebugUiRules.FormatWakePolicy(slot.WakePolicy, plugin.Configuration.DebugUiEnabled)} / {slot.RosterVisibility}{(slot.NeedsRosterUpdate ? " / needs update" : string.Empty)}");
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline
                 ? slot.TakeoverStage == DadWakeTakeoverStage.Ready && !slot.Ready
@@ -3952,7 +3956,7 @@ public sealed class MainWindow : Window, IDisposable
         if (DadUi.BeginCard("dad-plan-review-card"))
         {
             DadUi.Heading("REVIEW & RUN", "Check the first blocker, validate, then deliberately start or cancel.");
-            DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked);
+            DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked, plannerSnapshot.Generation);
             DadUi.EndCard();
         }
 
@@ -4222,10 +4226,15 @@ public sealed class MainWindow : Window, IDisposable
         DadPlannerRunRequestPreview requestPreview,
         DadSchedulerPreview schedulerPreview,
         DadVisibleRunState runState,
-        bool plannerLocked)
+        bool plannerLocked,
+        long snapshotGeneration)
     {
         var blockers = BuildPlannerBlockerList(requestPreview);
-        var firstBlocker = blockers.FirstOrDefault() ??
+        var dependencyBlocker = schedulerPreview.Slots
+            .Where(static slot => !slot.DependenciesReady)
+            .Select(static slot => slot.DependencySummary)
+            .FirstOrDefault(static summary => !string.IsNullOrWhiteSpace(summary));
+        var firstBlocker = dependencyBlocker ?? blockers.FirstOrDefault() ??
                            (schedulerPreview.CanStart ? string.Empty : schedulerPreview.BlockedReason);
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         var queue = plugin.SchedulerService.GetQueueSnapshot();
@@ -4249,18 +4258,25 @@ public sealed class MainWindow : Window, IDisposable
         var runEnabled = selectedGroup != null && schedulerPreview.CanStart && existingSchedulerJob == null;
         var runButtonWidth = -1f;
 
-        DrawStatusRow("Readiness", schedulerPreview.CanStart
+        DrawStatusRow("Readiness", !string.IsNullOrWhiteSpace(dependencyBlocker)
+            ? "Waiting for required plugins"
+            : schedulerPreview.CanStart
             ? schedulerPreview.ReadyToStart ? "Ready now" : "Ready to wake and prepare the saved crew"
             : "Blocked");
         DrawStatusRow("First blocker", FormatText(firstBlocker, "None"));
 
         ImGui.BeginDisabled(selectedGroup == null);
-        if (ImGui.SmallButton("Validate preset"))
-            plugin.ValidateSelectedPlannerPresetReadOnly();
+        string? justValidated = null;
+        if (ImGui.SmallButton("Recheck readiness (does not run)"))
+            justValidated = plugin.ValidateSelectedPlannerPresetReadOnly();
         var validateHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
         if (validateHovered && selectedGroup == null)
             ImGui.SetTooltip("Select a saved preset before validating it.");
+        var feedback = selectedGroup == null
+            ? null
+            : plugin.GetPlannerValidationFeedback(snapshotGeneration, selectedGroup.GroupId);
+        var feedbackText = justValidated ?? feedback?.Summary;
         ImGui.SameLine();
 
         ImGui.BeginDisabled(!runEnabled);
@@ -4279,6 +4295,8 @@ public sealed class MainWindow : Window, IDisposable
                         : schedulerPreview.BlockedReason;
             ImGui.SetTooltip(FormatText(runTooltip, "Scheduler preview is blocked."));
         }
+        if (!string.IsNullOrWhiteSpace(feedbackText))
+            ImGui.TextWrapped(feedbackText);
         if (existingSchedulerJob != null)
         {
             var phase = cancellationCleanupPending

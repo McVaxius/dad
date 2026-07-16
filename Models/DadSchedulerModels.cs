@@ -11,19 +11,20 @@ public enum DadSchedulerWakePolicy
 
 public enum DadSchedulerPresetPhase
 {
-    Idle,
-    Resolving,
-    LaunchingClients,
-    WaitingForHeartbeat,
-    LoadingCharacters,
-    ReadyToStart,
-    StartingPlanner,
-    StartedPlanner,
-    Completed,
-    Blocked,
-    TimedOut,
-    Cancelled,
-    Skipped,
+    Idle = 0,
+    Resolving = 1,
+    LaunchingClients = 2,
+    WaitingForHeartbeat = 3,
+    LoadingCharacters = 4,
+    ReadyToStart = 5,
+    StartingPlanner = 6,
+    StartedPlanner = 7,
+    Completed = 8,
+    Blocked = 9,
+    TimedOut = 10,
+    Cancelled = 11,
+    Skipped = 12,
+    WaitingForDependencies = 13,
 }
 
 public sealed class DadLaunchProfile
@@ -194,6 +195,10 @@ public sealed class DadSchedulerSlotState
     public bool ClientConnected { get; set; }
     public bool IsOnline { get; set; }
     public bool CorrectCharacter { get; set; }
+    public bool DependenciesReady { get; set; }
+    public DadDependencyState DependencyState { get; set; } = DadDependencyState.Checking;
+    public long DependencyRevision { get; set; }
+    public string DependencySummary { get; set; } = "Checking required plugins.";
     public bool Ready { get; set; }
     public DadRosterVisibility RosterVisibility { get; set; } = DadRosterVisibility.Active;
     public bool NeedsRosterUpdate { get; set; }
@@ -260,6 +265,10 @@ public sealed class DadSchedulerSlotState
             ClientConnected = ClientConnected,
             IsOnline = IsOnline,
             CorrectCharacter = CorrectCharacter,
+            DependenciesReady = DependenciesReady,
+            DependencyState = DependencyState,
+            DependencyRevision = DependencyRevision,
+            DependencySummary = DependencySummary,
             Ready = Ready,
             RosterVisibility = RosterVisibility,
             NeedsRosterUpdate = NeedsRosterUpdate,
@@ -316,6 +325,7 @@ public sealed class DadSchedulerPresetState
         or DadSchedulerPresetPhase.LaunchingClients
         or DadSchedulerPresetPhase.WaitingForHeartbeat
         or DadSchedulerPresetPhase.LoadingCharacters
+        or DadSchedulerPresetPhase.WaitingForDependencies
         or DadSchedulerPresetPhase.ReadyToStart
         or DadSchedulerPresetPhase.StartingPlanner;
 

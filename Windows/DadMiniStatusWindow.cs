@@ -337,7 +337,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
 
     private static MiniState StateForScheduler(DadSchedulerPresetPhase phase)
         => phase is DadSchedulerPresetPhase.Blocked or DadSchedulerPresetPhase.TimedOut ? MiniState.Bad
-            : phase is DadSchedulerPresetPhase.Resolving or DadSchedulerPresetPhase.LaunchingClients or DadSchedulerPresetPhase.WaitingForHeartbeat or DadSchedulerPresetPhase.LoadingCharacters or DadSchedulerPresetPhase.ReadyToStart or DadSchedulerPresetPhase.StartingPlanner
+            : phase is DadSchedulerPresetPhase.Resolving or DadSchedulerPresetPhase.LaunchingClients or DadSchedulerPresetPhase.WaitingForHeartbeat or DadSchedulerPresetPhase.LoadingCharacters or DadSchedulerPresetPhase.WaitingForDependencies or DadSchedulerPresetPhase.ReadyToStart or DadSchedulerPresetPhase.StartingPlanner
                 ? MiniState.Good
                 : MiniState.Neutral;
 

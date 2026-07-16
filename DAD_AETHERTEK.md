@@ -4,7 +4,7 @@
 
 DAD is the control room for repeatable FFXIV duty runs. It works with one character, but it is especially useful when several game clients need to become the right party without manually checking every window.
 
-Create a reusable preset that says who should run, which job each character should use, what content to queue, and when the run should stop. DAD checks the live roster, readies the selected characters, assembles and verifies the party, starts a supported queue, and keeps progress and blockers visible from start to finish.
+Create a reusable preset that says who should run, which job each character should use, what content to queue, and when the run should stop. DAD checks the live roster and required plugins across the selected crew, readies the selected characters, assembles and verifies the party, starts a supported queue, and keeps progress and blockers visible from start to finish.
 
 ## What DAD Solves
 
@@ -14,7 +14,7 @@ DAD turns that setup into a validated run:
 
 - save a crew once and reuse it;
 - choose exact characters, jobs, roles, and substitutes;
-- wake or relog clients when the preset allows it;
+- coordinate wake or relog for an already connected same-account client when the preset allows it;
 - wait for unsafe or busy client state instead of fighting it;
 - build and verify the party before queueing;
 - run presets immediately or place them in an ordered schedule;
@@ -27,7 +27,7 @@ A DAD preset combines the activity with the characters who should perform it. Ea
 - an account and exact character;
 - a requested combat job or role requirement;
 - explicit substitute rows for unavailable characters;
-- a launch profile and wake policy;
+- a wake/relog policy;
 - an ADS loot preference: no change, Need, Greed, or Pass;
 - an optional Level seek target.
 
@@ -37,7 +37,7 @@ Templates can keep the party roles without binding permanent characters. Instant
 
 ## Supported Today
 
-These lanes have guarded live execution in the current plugin. "Guarded" means DAD validates the selected content, roster, client state, and queue ownership before it changes game state.
+These lanes have guarded live execution in the current plugin. "Guarded" means DAD validates the selected content, roster, required-plugin truth, client state, and queue ownership before it changes game state.
 
 | Run type | What DAD handles |
 | --- | --- |
@@ -65,6 +65,7 @@ Local-only runs stay on one DAD instance. Multibox runs use one **Coordinator Da
 
 - the Coordinator owns the run, selected roster, party plan, and queue decision;
 - each Client Dad proves its current account, character, job, and readiness;
+- the Coordinator and every selected Client Dad publish fresh required-plugin truth on their heartbeat;
 - non-leader participants become ready before the queue leader is released;
 - the frozen run roster prevents a late or mismatched client from silently replacing the selected character.
 
@@ -72,36 +73,50 @@ Clients on the same machine can use loopback transport. LAN setups require the s
 
 ## How A Run Works
 
-1. You select a saved preset and ask DAD to validate it.
-2. DAD freezes the intended crew so the run cannot drift underneath you.
-3. Offline or wrong-character clients follow their configured launch or relog policy.
-4. Requested jobs are prepared through valid saved gearsets and rechecked against live game state.
-5. DAD waits for AutoRetainer, VERMAXION, world loading, queue state, and other safety gates to become clear.
-6. Every selected worker proves its identity and required readiness.
-7. DAD assembles the party and starts the supported queue through the correct leader.
-8. During and after the duty, DAD reports progress, completion, blockers, and recovery state.
-9. At the final party boundary, DAD verifies leadership and membership before disbanding.
+1. You select a saved preset and choose **Recheck readiness (does not run)**.
+2. DAD rebuilds one current planner/scheduler snapshot and checks crew, content, and required plugins without starting the Plan.
+3. DAD freezes the intended crew so the run cannot drift underneath you.
+4. A missing game process must be started manually. A connected same-account client can follow its wake/relog takeover policy.
+5. Requested jobs are prepared through valid saved gearsets and rechecked against live game state.
+6. DAD waits for AutoRetainer, VERMAXION, world loading, queue state, and other safety gates to become clear.
+7. Every selected worker proves its identity and required readiness.
+8. DAD assembles the party and starts the supported queue through the correct leader.
+9. During and after the duty, DAD reports progress, completion, blockers, and recovery state.
+10. At the final party boundary, DAD verifies leadership and membership before disbanding.
 
 ## Integrations
 
-DAD coordinates a plugin stack; it does not try to replace every part of it.
+DAD coordinates a plugin stack; it does not try to replace every part of it. Whenever DAD is enabled, every participating client must have these dependencies loaded:
+
+| Required plugin | Readiness rule |
+| --- | --- |
+| Fren Rider | `FrenRider` must be loaded. |
+| AI Duty Solver | `ADS` must be loaded. |
+| vnavmesh | `vnavmesh` must be loaded. |
+| XA Database | `XADatabase` must be loaded at `0.0.0.39` or newer. |
+| XA Slave | `XASlave` must be loaded. |
+| BossMod | Either `BossModReborn` or `BossMod` must be loaded. |
+
+The **DAD Dependencies** window stays open while local DAD is enabled and any requirement is missing, disabled, outdated, stale, or still being checked. It offers filtered Plugin Installer searches and closes automatically when truth is ready. Disabling DAD suppresses the window. No plugin is enabled silently.
 
 - **XA Database** can provide stored roster and job-level truth. Local runtime and connected DAD snapshots also contribute current roster state.
 - **AutoRetainer** is observed so DAD does not relog or take over while retainer work is still active.
 - **VERMAXION** provides reservation and handoff safety around post-processing, and can launch a selected DAD preset or schedule through DAD's public IPC.
 - **Lifestream** supports configured character relog handling.
-- **FrenRider** is the default in-duty owner for movement, combat coordination, and exit behavior when that mode is selected.
-- **ADS** supports the force-command Duty Support flow and applies the selected loot configuration to exact workers before multiplayer queue mutation.
+- **Fren Rider** is an unconditional DAD dependency and is the default in-duty owner for movement, combat coordination, and exit behavior when that mode is selected.
+- **AI Duty Solver (ADS)** is an unconditional DAD dependency and applies the selected loot configuration to exact workers before multiplayer queue mutation.
 - **MOGTOME** owns its supported farming run after DAD performs the helper handoff.
 - **Questionable** compatibility is available through DAD's guarded bridge when enabled.
 
-Requirements vary by lane and combat mode. DAD shows a blocker when a required integration is missing, unavailable, stale, or rejects the handoff.
+Other integrations can still vary by lane. The six dependencies above do not vary by lane or combat mode. New work waits until the Coordinator and every frozen selected client report fresh ready truth; unselected clients do not block a Plan.
 
 ## What DAD Does Not Do
 
 DAD is not a standalone combat bot. It owns planning, readiness, party formation, queueing, schedules, status, cancellation, and recovery. Once inside a duty, combat, movement, and leave behavior belong to the player or the configured FrenRider/ADS workflow.
 
 DAD also does not treat missing proof as success. Depending on context, an unknown job level stays visible as a blocker or keeps a Level-seek entry runnable; stale characters, ambiguous Duty Finder rows, mismatched workers, unavailable helpers, and unsafe world state remain blocked until trustworthy state is available.
+
+DAD does not start a missing FFXIV process and does not execute stored `.bat` paths. Launch-profile/account metadata remains compatibility scaffolding visible only with `/dad debug`; it is optional, is never required to finish Build the Crew, and is preserved when hidden. Everyday **Wake/relog** waits for the same-account client and can coordinate takeover or relog after that client exists.
 
 ## Planner-Visible, Not Live Yet
 
@@ -118,6 +133,8 @@ The proposed in-plugin DAD Hub/community integration is also future design work.
 
 - Exact account, character, Content ID, worker, requested-job, and party evidence protect live mutations.
 - Readiness and queue blockers are shown before the start action instead of being hidden in logs.
+- Required-plugin truth is fail-closed across the frozen crew: missing, disabled, outdated, malformed, legacy, null, or stale truth waits safely.
+- Dependency loss opens the local dependency window but never cancels, rewrites, or revalidates work that already crossed its start gate.
 - Client Dad reconnect uses capped backoff while DAD remains enabled in Client, non-local mode; it stops when the route returns or that operating mode changes.
 - Per-run, per-job, and per-schedule cancellation targets only the selected work.
 - **Stop All** uses a confirmation step and drains DAD-owned work across the currently routable clients without broadly stopping unrelated AutoRetainer or VERMAXION work.
@@ -127,13 +144,13 @@ The proposed in-plugin DAD Hub/community integration is also future design work.
 
 ## Quick Start
 
-1. Install the same DAD version on every participating game client.
-2. Open DAD with `/dad`, turn on **DAD enabled**, and enable **Allow DAD to automate this character**.
+1. Install the same DAD version and every required plugin listed above on each participating game client.
+2. Open DAD with `/dad`, turn on **DAD enabled**, and enable **Allow DAD to automate this character**. Resolve the persistent dependency window on each client.
 3. For multibox use, choose one Coordinator Dad and configure the remaining instances as Client Dads. Apply the same LAN shared secret when using a non-loopback endpoint.
-4. Refresh the roster and confirm the intended accounts, characters, jobs, and freshness are visible.
-5. Import launch profiles if DAD should start offline clients.
+4. Start every game client that the Plan needs; DAD waits rather than launching a missing process.
+5. Refresh the roster and confirm the intended accounts, characters, jobs, and freshness are visible.
 6. Create or select a preset, choose a supported run type, assign the crew, and set requested jobs, substitutes, loot modes, or Level-seek targets as needed.
-7. Validate the preset and resolve the first visible blocker.
+7. Choose **Recheck readiness (does not run)** and resolve the first visible crew, content, or plugin blocker.
 8. Start the preset and watch the main status surface or `/dad mini`.
 9. When the preset is proven, add it to a manual or daily schedule if desired.
 
@@ -150,5 +167,6 @@ The proposed in-plugin DAD Hub/community integration is also future design work.
 | `/dad report` | Write an anonymized diagnostic report for support. |
 | `/dad ws` | Reset DAD windows to position 1,1. |
 | `/dad j` | Move DAD windows to a random visible position. |
+| `/dad debug` | Reveal or hide verbose diagnostics and optional launch-profile scaffolding without changing stored profile data. |
 
 Most normal runs should be created, validated, and started from the DAD interface so the full crew and blocker summary is visible before execution.

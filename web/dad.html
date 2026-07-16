@@ -166,13 +166,13 @@
                     <div class="bg-gray-800 bg-opacity-50 backdrop-filter backdrop-blur-lg rounded-xl p-6 border border-gray-700">
                         <h2 class="text-2xl font-bold mb-4 text-purple-400">Overview</h2>
                         <p class="text-gray-300 leading-relaxed mb-4">
-                            DAD turns repeatable duty work into reusable Plans. Choose the activity, crew, requested jobs, wake behavior, loot rules, stop condition, and finish actions once, then review the same explicit contract before every run.
+                            DAD turns repeatable duty work into reusable Plans. Choose the activity, crew, requested jobs, wake/relog behavior, loot rules, stop condition, and finish actions once, then review the same explicit contract before every run.
                         </p>
                         <p class="text-gray-300 leading-relaxed mb-4">
-                            Five guided workflows cover Coordinator setup, Client setup, a first Plan, crew and launch profiles, and a first Schedule. Expert Plan, Crew, Clients, Schedules, and Status views remain available whenever you want direct control.
+                            Five guided workflows cover Coordinator setup, Client setup, a first Plan, the crew, and a first Schedule. Existing launch-profile metadata is optional debug-only scaffolding; DAD does not execute its batch paths or start a missing game process.
                         </p>
                         <p class="text-gray-300 leading-relaxed">
-                            Every live start uses the scheduler-backed path. DAD prepares the selected characters, verifies Coordinator and Client readiness, assembles the intended party, and keeps the first blocker and next action visible instead of hiding incomplete work.
+                            Every live start uses the scheduler-backed path. DAD checks the Coordinator and every selected Client for Fren Rider, AI Duty Solver, vnavmesh, XA Database 0.0.0.39+, XA Slave, and either BossModReborn or BossMod before new work can mutate the crew or queue. A persistent dependency window explains anything missing, disabled, outdated, or still being checked.
                         </p>
                     </div>
                 </div>
@@ -225,7 +225,7 @@
                                 <i class="fas fa-users text-amber-400 mt-1 mr-3"></i>
                                 <div>
                                     <h3 class="font-semibold text-white mb-1">Prepared, Verified Parties</h3>
-                                    <p class="text-gray-400 text-sm">Wake or relog the right clients, prepare their jobs, assemble the saved crew, and verify the party before a supported queue starts.</p>
+                                    <p class="text-gray-400 text-sm">Coordinate takeover or relog for an already connected same-account client, prepare jobs, assemble the saved crew, and verify the party. A fully absent client must be started manually.</p>
                                 </div>
                             </div>
                             <div class="flex items-start">

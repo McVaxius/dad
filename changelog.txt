@@ -1,5 +1,25 @@
 # dad — changelog
 
+## 2026-07-15 — P1189 dependency gate, readiness refresh, and debug-only launch profiles
+- Added versioned dependency truth for Fren Rider, AI Duty Solver, vnavmesh, XA Database 0.0.0.39+, XA Slave,
+  and either BossModReborn or BossMod. A persistent non-modal DAD Dependencies window provides filtered installer
+  searches while DAD is enabled and closes automatically when every requirement is loaded and current.
+- Published dependency revision/status on every participant heartbeat and fail closed for missing, legacy, null,
+  malformed, failed, or stale truth. Coordinator, selected frozen workers, scheduler jobs, direct IPC, worker
+  acceptance, roster updates, map crews, party/queue mutation, and duty starts now cross the same pre-mutation gate.
+- Dependency loss blocks only new work. Runs that already crossed the dependency gate continue unchanged; schedule
+  preparation may wait indefinitely for a manually started missing client, and cancellation/disable controls remain
+  available.
+- Reworked manual validation as **Recheck readiness (does not run)**: it invalidates planner caches, inspects local
+  dependency truth, rebuilds one generation-bound planner/scheduler snapshot, and renders the same inline result
+  immediately in Guide and Plan.
+- Hid launch-profile paths, badges, editors, mappings, preset columns, guide steps, boot controls, help/report copy,
+  and diagnostics unless existing `/dad debug` mode is enabled. Stored launch-profile data and IPC remain unchanged;
+  the scaffolding is optional and DAD still does not execute `.bat` paths or start a missing game process.
+- Renamed the normal settings surface to **Accounts** and presents `LaunchIfOffline` as **Wake/relog**, with explicit
+  same-account takeover/relog wording. Fren Rider and ADS are now described as unconditional DAD requirements.
+- Kept plugin/manifest version 0.3.1.4 and all release artifacts unchanged.
+
 ## 2026-07-14 — P1183 planner priority and Aethertek web pages
 - Moved the existing REVIEW & RUN card directly below the Plan heading and active-run lock notice, before all
   disabled editing controls. Validate, Run, Cancel, Open Status, and their locked/unlocked behavior still use the
