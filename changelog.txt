@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-07-17 — P1197 worker acknowledgement race and Schedule resume
+- Remote execution now waits for the worker's real exact-command acknowledgement before status polling. Older-run or
+  older-command replies are discarded and polled again; current-command role, module, worker, and identity conflicts
+  still fail closed through the existing strict validator.
+- Added the operator-only **Resume from failed entry** path for coordinator/plugin reload abandonment. It creates a new
+  run at the exact persisted cursor, retains history, excludes active work, never replays automatically, and leaves
+  Cancel terminal and non-resumable.
+- Coalesced unchanged successful XA Database roster INFO logs while preserving the 12-second refresh, IPC/catalog data,
+  diagnostics, and warning/error behavior. No IPC, wire, persistence/configuration schema, manifest, or version changed.
+
 ## 2026-07-17 — P1195 transient unsafe-state takeover recovery
 - Treat a parsed VERMAXION v2 `Released` response returned directly from `Reserve` as a retryable reservation
   outcome. DAD releases any temporary state, reports the fresh-reservation retry and existing five-second cadence,

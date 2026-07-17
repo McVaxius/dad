@@ -59,6 +59,8 @@ A schedule chains saved presets in an exact order. Each entry can repeat from 1 
 
 DAD validates each entry before it starts. A satisfied Level-seek entry is recorded as skipped and the schedule moves on. Successful party entries tear down at the appropriate boundary so the next preset can form a fresh verified party. Dry-run validation is available before relying on a live schedule.
 
+If an ordinary entry failure or a coordinator/plugin reload blocks a schedule, the Coordinator operator can use **Resume from failed entry**. DAD starts a new run at the exact persisted entry and repeat cursor, keeps the earlier run in history, and requires every client plus DAD and scheduler work to be idle. It never resumes or replays automatically. A cancelled schedule is terminal and cannot be resumed.
+
 ## Solo And Multibox Use
 
 Local-only runs stay on one DAD instance. Multibox runs use one **Coordinator Dad** and one or more **Client Dads**:

@@ -20,7 +20,8 @@
   <!-- Review H9: link the real (Dalamud-free) Models plus the pure, runtime-independent services so any
        such unit is testable, instead of hand-maintaining a 2-file allow-list + stub model copies. -->
   <ItemGroup>
-    <Compile Include="..\Models\**\*.cs" LinkBase="Models" />
+    <Compile Remove="backups\**\*.cs" />
+    <Compile Include="..\Models\**\*.cs" Exclude="..\Models\backups\**\*.cs" LinkBase="Models" />
     <Compile Include="..\Services\DadRosterCharacterMerge.cs" Link="DadRosterCharacterMerge.cs" />
     <Compile Include="..\Services\DadCharacterXadbMergeRules.cs" Link="DadCharacterXadbMergeRules.cs" />
     <Compile Include="..\Services\DadRosterKnownCharacterLedger.cs" Link="DadRosterKnownCharacterLedger.cs" />

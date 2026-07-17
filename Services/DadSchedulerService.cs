@@ -506,16 +506,18 @@ public sealed class DadSchedulerService
         result.FailureKind = failed.FailureKind;
         if (!DadScheduleRules.IsRetryableFailure(failed.FailureKind))
         {
-            result.Summary = $"Schedule failure kind {failed.FailureKind} is not retryable.";
+            result.Summary = $"Schedule failure kind {failed.FailureKind} cannot be resumed.";
             return result;
         }
-        if ((configuration.ActiveScheduleRun?.IsActive ?? false) ||
-            currentState.IsActive ||
-            dadWorkActive ||
-            configuration.SchedulerQueue.Count > 0 ||
-            HasPendingCleanup)
+        if (!DadScheduleRules.TryValidateRetryAvailability(
+                configuration.ActiveScheduleRun?.IsActive ?? false,
+                currentState.IsActive,
+                dadWorkActive,
+                configuration.SchedulerQueue.Count,
+                HasPendingCleanup,
+                out var activityBlocker))
         {
-            result.Summary = "Retry is unavailable while DAD, the scheduler, queued jobs, or cancellation cleanup still owns active work.";
+            result.Summary = activityBlocker;
             return result;
         }
 
@@ -538,7 +540,7 @@ public sealed class DadSchedulerService
         }
 
         result.Eligible = true;
-        result.Summary = $"Failed entry {retryState.CurrentEntryIndex + 1}, repeat {retryState.RepeatIteration} can be retried without changing prior history.";
+        result.Summary = $"Failed entry {retryState.CurrentEntryIndex + 1}, repeat {retryState.RepeatIteration} can be resumed without changing prior history.";
         if (!startRetry)
             return result;
 
@@ -3925,7 +3927,7 @@ public sealed class DadSchedulerService
             string.Equals(job.ScheduleRunId, active.RunId, StringComparison.OrdinalIgnoreCase));
         configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(
             active,
-            "Schedule run abandoned by coordinator/plugin reload; explicit retry is not permitted.",
+            "Schedule run abandoned by coordinator/plugin reload; it can resume only from the persisted cursor through an explicit operator action and never replays automatically.",
             DateTime.UtcNow,
             DadScheduleFailureKind.CoordinatorReloadAbandonment);
         FinalizeScheduleRun(configuration.ActiveScheduleRun);

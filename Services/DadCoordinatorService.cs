@@ -1383,9 +1383,40 @@ public sealed class DadCoordinatorService
             DadWorkerExecutionAck? ack = participant.IsLocalClient
                 ? workerExecutionService.Accept(command)
                 : transportService.SendWorkerExecutionCommand(participant, command);
-            if (ack == null || !ack.Accepted)
+            if (ack == null)
             {
-                var failure = ack?.Summary ?? $"Worker command acknowledgement pending from {participant.ActiveCharacterKey}.";
+                var workerKey = participant.WorkerSessionId.Value;
+                missingWorkerSinceUtc.TryAdd(workerKey, DateTime.UtcNow);
+                var decision = DadDroppedPeerContinuationRules.EvaluateMissingPeer(
+                    participant,
+                    command,
+                    cachedStatus: null,
+                    leaderCommand: null,
+                    leaderStatus: null,
+                    missingSinceUtc: missingWorkerSinceUtc[workerKey],
+                    nowUtc: DateTime.UtcNow,
+                    participantReadyTimeout: activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout());
+                var summary = DadWorkerPrequeueBarrierRules.AttributeFailure(
+                    participant,
+                    $"Worker command acknowledgement pending. {decision.Summary}");
+                if (decision.Action == DadDroppedPeerContinuationAction.Fail)
+                {
+                    CurrentResult.ScheduleFailureKind = decision.FailureKind;
+                    failures.Add(summary);
+                    LogWorkerCommandTransition(activePlan, module, participant, "acknowledgement-timeout", summary);
+                }
+                else
+                {
+                    pending.Add(summary);
+                    LogWorkerCommandTransition(activePlan, module, participant, "acknowledgement-pending", summary);
+                }
+                continue;
+            }
+
+            missingWorkerSinceUtc.Remove(participant.WorkerSessionId.Value);
+            if (!ack.Accepted)
+            {
+                var failure = ack.Summary;
                 var attributedFailure = DadWorkerPrequeueBarrierRules.AttributeFailure(participant, failure);
                 if (!persistentStartup ||
                     role == DadWorkerExecutionRole.QueueLeader && barrierRequired ||
@@ -1397,6 +1428,19 @@ public sealed class DadCoordinatorService
                 else
                     pending.Add(attributedFailure);
                 LogWorkerCommandTransition(activePlan, module, participant, "rejected-or-missing", attributedFailure);
+                continue;
+            }
+
+            if (!DadWorkerStatusPollingRules.MatchesExactAcknowledgement(participant, command, ack))
+            {
+                CurrentResult.ScheduleFailureKind = command.Role == DadWorkerExecutionRole.QueueLeader || participant.IsAuthority
+                    ? DadScheduleFailureKind.MissingOrUnknownLeaderState
+                    : DadScheduleFailureKind.EntryTerminalFailure;
+                var failure = DadWorkerPrequeueBarrierRules.AttributeFailure(
+                    participant,
+                    "Worker returned contradictory run/module/command/role/identity acknowledgement.");
+                failures.Add(failure);
+                LogWorkerCommandTransition(activePlan, module, participant, "contradictory-acknowledgement", failure);
                 continue;
             }
 
@@ -1486,10 +1530,19 @@ public sealed class DadCoordinatorService
         foreach (var participant in dispatchedParticipants)
         {
             var workerKey = participant.WorkerSessionId.Value;
+            if (!workerCommands.TryGetValue(workerKey, out var exactCommand))
+            {
+                CurrentResult.ScheduleFailureKind = DadScheduleFailureKind.EntryTerminalFailure;
+                failures.Add(DadWorkerPrequeueBarrierRules.AttributeFailure(
+                    participant,
+                    "Worker status has no exact cached command provenance."));
+                continue;
+            }
+
             workerStatuses.TryGetValue(workerKey, out var freshestCachedStatus);
             DadWorkerExecutionStatus? workerStatus = participant.IsLocalClient
                 ? workerExecutionService.GetStatus()
-                : transportService.GetWorkerExecutionStatus(participant, freshestCachedStatus);
+                : transportService.GetWorkerExecutionStatus(participant, exactCommand, freshestCachedStatus);
             if (workerStatus == null)
             {
                 missingWorkerSinceUtc.TryAdd(workerKey, DateTime.UtcNow);
@@ -1503,15 +1556,6 @@ public sealed class DadCoordinatorService
                     continue;
                 }
 
-                if (!workerCommands.TryGetValue(workerKey, out var missingCommand))
-                {
-                    CurrentResult.ScheduleFailureKind = DadScheduleFailureKind.EntryTerminalFailure;
-                    failures.Add(DadWorkerPrequeueBarrierRules.AttributeFailure(
-                        participant,
-                        "Missing peer has no exact cached worker command provenance."));
-                    continue;
-                }
-
                 DadWorkerExecutionCommand? leaderCommand = null;
                 DadWorkerExecutionStatus? cachedLeaderStatus = null;
                 if (queueLeader != null)
@@ -1521,7 +1565,7 @@ public sealed class DadCoordinatorService
                 }
                 var decision = DadDroppedPeerContinuationRules.EvaluateMissingPeer(
                     participant,
-                    missingCommand,
+                    exactCommand,
                     cachedStatus,
                     leaderCommand,
                     cachedLeaderStatus,
@@ -1564,10 +1608,9 @@ public sealed class DadCoordinatorService
                 continue;
             }
 
-            if (!workerCommands.TryGetValue(workerKey, out var exactCommand) ||
-                !DadDroppedPeerContinuationRules.MatchesExactCommand(participant, exactCommand, workerStatus))
+            if (!DadDroppedPeerContinuationRules.MatchesExactCommand(participant, exactCommand, workerStatus))
             {
-                CurrentResult.ScheduleFailureKind = exactCommand?.Role == DadWorkerExecutionRole.QueueLeader || participant.IsAuthority
+                CurrentResult.ScheduleFailureKind = exactCommand.Role == DadWorkerExecutionRole.QueueLeader || participant.IsAuthority
                     ? DadScheduleFailureKind.MissingOrUnknownLeaderState
                     : DadScheduleFailureKind.EntryTerminalFailure;
                 failures.Add(DadWorkerPrequeueBarrierRules.AttributeFailure(

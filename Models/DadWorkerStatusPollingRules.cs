@@ -2,59 +2,69 @@ namespace dad.Models;
 
 public static class DadWorkerStatusPollingRules
 {
-    public static DadWorkerExecutionAck BuildQueuedAcknowledgement(
-        DadWorkerExecutionCommand command,
-        DadWorkerSessionId workerSessionId,
-        DateTime updatedAtUtc)
+    internal static DadWorkerExecutionAck? SelectCommandAcknowledgement(
+        DadWorkerExecutionAck? acknowledgement,
+        DadWorkerExecutionCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
-
-        var status = new DadWorkerExecutionStatus
+        if (acknowledgement == null ||
+            !Same(acknowledgement.CommandId, command.CommandId) ||
+            !Same(acknowledgement.RunId, command.RunId))
         {
-            CommandId = command.CommandId,
-            RunId = command.RunId,
-            WorkerSessionId = workerSessionId,
-            Role = command.Role,
-            ModuleId = ResolveModuleId(command),
-            State = DadWorkerExecutionState.Accepted,
-            UpdatedAtUtc = EnsureUtc(updatedAtUtc),
-            Summary = "Awaiting Client Dad acknowledgement.",
-        };
+            return null;
+        }
 
-        return new DadWorkerExecutionAck
-        {
-            CommandId = command.CommandId,
-            RunId = command.RunId,
-            WorkerSessionId = workerSessionId,
-            Accepted = true,
-            Summary = "Worker command queued through Dad Coordinator hub.",
-            Status = status,
-        };
+        // A rejected acknowledgement is still an exact command response and must
+        // retain its fail-closed behavior. Accepted replies must also carry the
+        // current command/run in their status; an older response is discarded so
+        // the immutable command can be polled again.
+        return !acknowledgement.Accepted || HasExactRunAndCommand(acknowledgement.Status, command)
+            ? acknowledgement
+            : null;
+    }
+
+    internal static bool MatchesExactAcknowledgement(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command,
+        DadWorkerExecutionAck acknowledgement)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(acknowledgement);
+        return acknowledgement.Accepted &&
+               Same(acknowledgement.CommandId, command.CommandId) &&
+               Same(acknowledgement.RunId, command.RunId) &&
+               Same(acknowledgement.WorkerSessionId.Value, participant.WorkerSessionId.Value) &&
+               DadDroppedPeerContinuationRules.MatchesExactCommand(
+                   participant,
+                   command,
+                   acknowledgement.Status);
     }
 
     public static DadWorkerExecutionStatus? SelectRemoteStatus(
         DadWorkerExecutionStatus? liveStatus,
         DadWorkerExecutionStatus? cachedStatus,
+        DadWorkerExecutionCommand command,
         bool exactRequestPending,
         bool authenticatedRouteRoutable)
     {
+        ArgumentNullException.ThrowIfNull(command);
         if (liveStatus != null)
-            return liveStatus;
+            return HasExactRunAndCommand(liveStatus, command) ? liveStatus : null;
 
-        return exactRequestPending && authenticatedRouteRoutable
+        return exactRequestPending &&
+               authenticatedRouteRoutable &&
+               cachedStatus != null &&
+               HasExactRunAndCommand(cachedStatus, command)
             ? cachedStatus?.Clone()
             : null;
     }
 
-    private static DadModuleId ResolveModuleId(DadWorkerExecutionCommand command)
-        => command.Plan?.Modules != null &&
-           command.ModuleIndex >= 0 &&
-           command.ModuleIndex < command.Plan.Modules.Count
-            ? command.Plan.Modules[command.ModuleIndex].ModuleId
-            : DadModuleId.None;
+    private static bool HasExactRunAndCommand(
+        DadWorkerExecutionStatus status,
+        DadWorkerExecutionCommand command)
+        => Same(status.CommandId, command.CommandId) && Same(status.RunId, command.RunId);
 
-    private static DateTime EnsureUtc(DateTime value)
-        => value.Kind == DateTimeKind.Utc
-            ? value
-            : value.ToUniversalTime();
+    private static bool Same(string? left, string? right)
+        => string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
 }

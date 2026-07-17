@@ -333,6 +333,7 @@ public sealed class DadScheduleRulesTests
     [Theory]
     [InlineData(DadScheduleFailureKind.PreStartRejected)]
     [InlineData(DadScheduleFailureKind.EntryTerminalFailure)]
+    [InlineData(DadScheduleFailureKind.CoordinatorReloadAbandonment)]
     public void RetryCreatesNewRunAtExactCursorAndPreservesAuditProgress(DadScheduleFailureKind failureKind)
     {
         var now = new DateTime(2026, 7, 15, 18, 0, 0, DateTimeKind.Utc);
@@ -364,12 +365,12 @@ public sealed class DadScheduleRulesTests
         Assert.Empty(retry.ActivePlannerRequestId);
         Assert.Equal(DadScheduleRunStatus.Running, retry.Status);
         Assert.Equal(DadScheduleRunPhase.StartingEntry, retry.Phase);
+        Assert.StartsWith("Resuming failed schedule entry", retry.Summary, StringComparison.Ordinal);
         Assert.Equal(failureKind, failed.FailureKind);
         Assert.Equal("failed-run", failed.RunId);
     }
 
     [Theory]
-    [InlineData(DadScheduleFailureKind.CoordinatorReloadAbandonment)]
     [InlineData(DadScheduleFailureKind.MissingOrUnknownLeaderState)]
     [InlineData(DadScheduleFailureKind.SchedulerStateDisappeared)]
     [InlineData(DadScheduleFailureKind.Cancellation)]
@@ -383,7 +384,43 @@ public sealed class DadScheduleRulesTests
 
         Assert.False(DadScheduleRules.TryCreateRetryState(
             failed, schedule, "operator", DateTime.UtcNow, out _, out var blocker));
-        Assert.Contains("not retryable", blocker, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot be resumed", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(true, false, false, 0, false)]
+    [InlineData(false, true, false, 0, false)]
+    [InlineData(false, false, true, 0, false)]
+    [InlineData(false, false, false, 1, false)]
+    [InlineData(false, false, false, 0, true)]
+    public void ResumeRejectsEveryActiveWorkOwner(
+        bool scheduleRunActive,
+        bool schedulerActive,
+        bool dadWorkActive,
+        int queuedJobCount,
+        bool pendingCleanup)
+    {
+        Assert.False(DadScheduleRules.TryValidateRetryAvailability(
+            scheduleRunActive,
+            schedulerActive,
+            dadWorkActive,
+            queuedJobCount,
+            pendingCleanup,
+            out var blocker));
+        Assert.Contains("active work", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CancellationRemainsTerminalAndNonResumable()
+    {
+        Assert.False(DadScheduleRules.IsRetryableFailure(DadScheduleFailureKind.Cancellation));
+        Assert.True(DadScheduleRules.TryValidateRetryAvailability(
+            scheduleRunActive: false,
+            schedulerActive: false,
+            dadWorkActive: false,
+            queuedJobCount: 0,
+            pendingCleanup: false,
+            out var blocker), blocker);
     }
 
     [Fact]

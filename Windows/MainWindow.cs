@@ -1858,7 +1858,7 @@ public sealed class MainWindow : Window, IDisposable
             string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
             result.Status == DadScheduleRunStatus.Blocked);
         var retryEligibility = latestFailedRun == null
-            ? new DadScheduleRetryResult { Summary = "No failed schedule entry is available to retry." }
+            ? new DadScheduleRetryResult { Summary = "No failed schedule entry is available to resume." }
             : plugin.SchedulerService.EvaluateFailedEntryRetry(
                 new DadScheduleRetryRequest
                 {
@@ -1938,7 +1938,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.SmallButton("Open Status"))
                 NavigateToStatus(activeScheduleLocked ? DadStatusWindowTab.CurrentActivity : DadStatusWindowTab.QueueHistory);
             ImGui.BeginDisabled(latestFailedRun == null || !retryEligibility.Eligible);
-            if (ImGui.SmallButton("Retry failed entry") && latestFailedRun != null)
+            if (ImGui.SmallButton("Resume from failed entry") && latestFailedRun != null)
             {
                 pendingRetryScheduleRunId = latestFailedRun.RunId;
                 ImGui.OpenPopup("Confirm retry failed schedule entry##dad-schedule-retry-confirm");
@@ -1970,12 +1970,12 @@ public sealed class MainWindow : Window, IDisposable
         var eligibility = plugin.SchedulerService.EvaluateFailedEntryRetry(
             request,
             Plugin.IsBusy(runState.VisibleRun));
-        ImGui.TextWrapped("Retry this failed Schedule entry from the same entry and repeat cursor?");
-        ImGui.TextWrapped("The original failure remains in history. A new Schedule run ID is created, and nothing is replayed automatically after a coordinator or leader crash.");
+        ImGui.TextWrapped("Resume this failed Schedule entry from its persisted entry and repeat cursor?");
+        ImGui.TextWrapped("This creates a new Schedule run at the persisted cursor, retains prior history, requires every client and DAD/scheduler lane to be idle, and never replays automatically.");
         DrawStatusRow("Eligibility", eligibility.Summary);
 
         ImGui.BeginDisabled(!eligibility.Eligible);
-        if (ImGui.Button("Retry failed entry"))
+        if (ImGui.Button("Resume from failed entry"))
         {
             var retried = plugin.SchedulerService.RetryFailedEntry(
                 request,

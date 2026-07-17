@@ -23,6 +23,7 @@ public sealed class DadXadbClient
     private readonly ICallGateSubscriber<string> summarySubscriber;
     private readonly ICallGateSubscriber<string> accountCharacterListSubscriber;
     private readonly IPluginLog log;
+    private readonly DadXadbRosterSuccessLogTracker rosterSuccessLogTracker = new();
 
     public DadXadbClient(IDalamudPluginInterface pluginInterface, IPluginLog log)
     {
@@ -85,6 +86,7 @@ public sealed class DadXadbClient
 
         if (!status.IsReady)
         {
+            rosterSuccessLogTracker.RecordFailure();
             catalog.Warnings.AddRange(status.Warnings.Count == 0 ? [status.LastStatus] : status.Warnings);
             return catalog;
         }
@@ -94,6 +96,7 @@ public sealed class DadXadbClient
             var json = accountCharacterListSubscriber.InvokeFunc();
             if (string.IsNullOrWhiteSpace(json))
             {
+                rosterSuccessLogTracker.RecordFailure();
                 catalog.Warnings.Add("XADB account roster IPC returned empty JSON.");
                 catalog.Summary = "XADB account roster empty.";
                 return catalog;
@@ -106,17 +109,26 @@ public sealed class DadXadbClient
                 : catalog.Characters.Count > 0
                     ? $"XADB account roster JSON did not advertise full roster support: {catalog.XadbPayloadRowCount} row(s), roster v{catalog.Version}, contract v{FormatNullableInt(catalog.XadbContractVersion)}."
                     : "XADB account roster JSON contained no characters.";
-            log.Information(
-                "[dad] XADB roster IPC {Channel} succeeded: {RowCount} row(s), roster v{RosterVersion}, contract v{ContractVersion}, full roster {FullRoster}.",
-                AccountCharacterListChannel,
+            var logTransition = rosterSuccessLogTracker.RecordSuccess(new DadXadbRosterSuccessSignature(
                 catalog.XadbPayloadRowCount,
                 catalog.Version,
-                FormatNullableInt(catalog.XadbContractVersion),
-                catalog.IsFullRosterAvailable);
+                catalog.XadbContractVersion,
+                catalog.IsFullRosterAvailable));
+            if (DadXadbRosterSuccessLogTracker.ShouldWriteInformation(logTransition))
+            {
+                log.Information(
+                    "[dad] XADB roster IPC {Channel} succeeded: {RowCount} row(s), roster v{RosterVersion}, contract v{ContractVersion}, full roster {FullRoster}.",
+                    AccountCharacterListChannel,
+                    catalog.XadbPayloadRowCount,
+                    catalog.Version,
+                    FormatNullableInt(catalog.XadbContractVersion),
+                    catalog.IsFullRosterAvailable);
+            }
             return catalog;
         }
         catch (Exception ex)
         {
+            rosterSuccessLogTracker.RecordFailure();
             catalog.Warnings.Add(RosterIpcMissingWarning);
             catalog.Summary = RosterIpcMissingWarning;
             log.Warning(ex, "[dad] XADB roster IPC failed on {Channel}; XADB 0.0.0.39+ contract v6 roster IPC required.", AccountCharacterListChannel);

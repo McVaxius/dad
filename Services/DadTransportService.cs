@@ -62,7 +62,6 @@ public sealed class DadTransportService : IDisposable
     private readonly ConcurrentDictionary<string, DadPeerRosterCatalogResponse> rosterCatalogs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DadProfileCatalogResponse> profileCatalogs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> profileCatalogOfflineSinceUtc = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, DadWorkerExecutionAck> workerCommandAcks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStopAllStatus> stopAllOperations = new(StringComparer.OrdinalIgnoreCase);
     private readonly object stopAllGate = new();
     private readonly ConcurrentDictionary<string, DateTime> nextRosterRefreshUtc = new(StringComparer.OrdinalIgnoreCase);
@@ -222,7 +221,6 @@ public sealed class DadTransportService : IDisposable
             profileCatalogs.Clear();
             profileCatalogOfflineSinceUtc.Clear();
             completedOperations.Clear();
-            workerCommandAcks.Clear();
             lastHubRosterPublish = null;
             lastPushedCatalogRows = [];
             transportRosterSignature = string.Empty;
@@ -793,54 +791,29 @@ public sealed class DadTransportService : IDisposable
         DadWorkerExecutionCommand command)
     {
         var operationKey = $"worker-command:{participant.WorkerSessionId.Value}:{command.CommandId}";
-        var result = TryTakeCompleted<DadWorkerExecutionAck>(operationKey);
-        if (result == null && !operations.ContainsKey(operationKey))
-        {
-            QueueOperation<DadWorkerExecutionCommand, DadWorkerExecutionAck>(
-                operationKey,
-                participant.WorkerSessionId,
-                MessageWorkerExecutionCommand,
-                command,
-                ack => workerCommandAcks[BuildWorkerRunKey(participant.WorkerSessionId, command.RunId)] = ack);
-        }
-
-        if (result != null)
-            workerCommandAcks[BuildWorkerRunKey(participant.WorkerSessionId, command.RunId)] = result;
-
-        return result ?? DadWorkerStatusPollingRules.BuildQueuedAcknowledgement(
-            command,
+        var acknowledgement = TryRequest<DadWorkerExecutionCommand, DadWorkerExecutionAck>(
             participant.WorkerSessionId,
-            DateTime.UtcNow);
+            MessageWorkerExecutionCommand,
+            command,
+            operationKey);
+        return DadWorkerStatusPollingRules.SelectCommandAcknowledgement(acknowledgement, command);
     }
 
     public DadWorkerExecutionStatus? GetWorkerExecutionStatus(
         DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command,
         DadWorkerExecutionStatus? cachedStatus)
     {
-        var runKey = BuildWorkerRunKey(participant.WorkerSessionId, participant.RunId);
-        if (workerCommandAcks.TryGetValue(runKey, out var ack) && !ack.Accepted)
-        {
-            var failed = ack.Status.Clone();
-            failed.RunId = participant.RunId;
-            failed.WorkerSessionId = participant.WorkerSessionId;
-            failed.State = DadWorkerExecutionState.Failed;
-            failed.IsTerminal = true;
-            failed.Success = false;
-            failed.FailureReason = ack.Summary;
-            failed.Summary = ack.Summary;
-            failed.UpdatedAtUtc = DateTime.UtcNow;
-            return failed;
-        }
-
-        var operationKey = $"worker-status:{participant.WorkerSessionId.Value}:{participant.RunId}";
+        var operationKey = $"worker-status:{participant.WorkerSessionId.Value}:{command.CommandId}";
         var liveStatus = TryRequest<string, DadWorkerExecutionStatus>(
             participant.WorkerSessionId,
             MessageWorkerExecutionStatus,
-            participant.RunId,
+            command.RunId,
             operationKey);
         return DadWorkerStatusPollingRules.SelectRemoteStatus(
             liveStatus,
             cachedStatus,
+            command,
             operations.ContainsKey(operationKey),
             ResolveConnection(participant.WorkerSessionId) is { IsRoutable: true });
     }
@@ -4322,9 +4295,6 @@ public sealed class DadTransportService : IDisposable
 
     private static string GetBuildVersion()
         => typeof(DadTransportService).Assembly.GetName().Version?.ToString() ?? "unknown";
-
-    private static string BuildWorkerRunKey(DadWorkerSessionId workerSessionId, string runId)
-        => $"{workerSessionId.Value}|{runId}";
 
     private sealed class DadHubConnection
     {

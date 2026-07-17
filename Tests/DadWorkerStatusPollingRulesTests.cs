@@ -5,65 +5,111 @@ namespace dad.Tests;
 
 public sealed class DadWorkerStatusPollingRulesTests
 {
-    private static readonly DateTime Now = new(2026, 7, 16, 14, 0, 0, DateTimeKind.Utc);
-
     [Fact]
-    public void ExactQueuedAcceptedStatusWaitsWithCompleteProvenance()
+    public void MissingAcknowledgementRemainsPendingWithoutSubstitute()
     {
         var participant = Participant();
-        var command = Command(participant, moduleIndex: 0);
+        var command = Command(participant);
 
-        var acknowledgement = DadWorkerStatusPollingRules.BuildQueuedAcknowledgement(
-            command,
-            participant.WorkerSessionId,
-            Now);
-
-        Assert.True(acknowledgement.Accepted);
-        Assert.Equal(command.CommandId, acknowledgement.CommandId);
-        Assert.Equal(command.RunId, acknowledgement.RunId);
-        Assert.Equal(participant.WorkerSessionId, acknowledgement.WorkerSessionId);
-        Assert.Equal(command.CommandId, acknowledgement.Status.CommandId);
-        Assert.Equal(command.RunId, acknowledgement.Status.RunId);
-        Assert.Equal(participant.WorkerSessionId, acknowledgement.Status.WorkerSessionId);
-        Assert.Equal(command.Role, acknowledgement.Status.Role);
-        Assert.Equal(DadModuleId.PremadeDuty, acknowledgement.Status.ModuleId);
-        Assert.Equal(DadWorkerExecutionState.Accepted, acknowledgement.Status.State);
-        Assert.False(acknowledgement.Status.IsTerminal);
-        Assert.True(DadDroppedPeerContinuationRules.MatchesExactCommand(
-            participant,
-            command,
-            acknowledgement.Status));
-    }
-
-    [Theory]
-    [InlineData(-1)]
-    [InlineData(1)]
-    public void InvalidModuleIndexStaysNoneAndFailsClosed(int moduleIndex)
-    {
-        var participant = Participant();
-        var command = Command(participant, moduleIndex);
-
-        var acknowledgement = DadWorkerStatusPollingRules.BuildQueuedAcknowledgement(
-            command,
-            participant.WorkerSessionId,
-            Now);
-
-        Assert.Equal(DadModuleId.None, acknowledgement.Status.ModuleId);
-        Assert.False(DadDroppedPeerContinuationRules.MatchesExactCommand(
-            participant,
-            command,
-            acknowledgement.Status));
+        Assert.Null(DadWorkerStatusPollingRules.SelectCommandAcknowledgement(null, command));
     }
 
     [Fact]
-    public void LiveStatusAlwaysWinsOverPendingCache()
+    public void ExactCurrentCommandAcknowledgementAuthorizesStatusPolling()
     {
-        var live = Status("live", DadWorkerExecutionState.WaitingForQueue);
-        var cached = Status("cached", DadWorkerExecutionState.Accepted);
+        var participant = Participant();
+        var command = Command(participant);
+        var acknowledgement = Acknowledgement(participant, command);
+
+        var selected = DadWorkerStatusPollingRules.SelectCommandAcknowledgement(
+            acknowledgement,
+            command);
+
+        Assert.Same(acknowledgement, selected);
+        Assert.True(DadWorkerStatusPollingRules.MatchesExactAcknowledgement(
+            participant,
+            command,
+            acknowledgement));
+    }
+
+    [Fact]
+    public void AcknowledgementFromEarlierModuleOfSameRunIsDiscarded()
+    {
+        var participant = Participant();
+        var current = Command(participant, moduleIndex: 1, commandId: "command-b");
+        var earlier = Command(participant, moduleIndex: 0, commandId: "command-a");
+
+        Assert.Equal(current.RunId, earlier.RunId);
+        Assert.Null(DadWorkerStatusPollingRules.SelectCommandAcknowledgement(
+            Acknowledgement(participant, earlier),
+            current));
+    }
+
+    [Fact]
+    public void CurrentCommandAcknowledgementContradictionFailsExactMatch()
+    {
+        var participant = Participant();
+        var command = Command(participant);
+        var acknowledgement = Acknowledgement(participant, command);
+        acknowledgement.Status.Role = DadWorkerExecutionRole.QueueLeader;
+
+        var selected = DadWorkerStatusPollingRules.SelectCommandAcknowledgement(
+            acknowledgement,
+            command);
+
+        Assert.Same(acknowledgement, selected);
+        Assert.False(DadWorkerStatusPollingRules.MatchesExactAcknowledgement(
+            participant,
+            command,
+            acknowledgement));
+    }
+
+    [Fact]
+    public void StalePriorRunLiveStatusIsDiscardedWithoutCacheFallback()
+    {
+        var participant = Participant();
+        var command = Command(participant, runId: "run-current", commandId: "command-current");
+        var cached = Status(participant, command, DadWorkerExecutionState.Accepted);
+        var priorCommand = Command(participant, runId: "run-prior", commandId: "command-prior");
+        var stale = Status(participant, priorCommand, DadWorkerExecutionState.Completed);
+
+        var selected = DadWorkerStatusPollingRules.SelectRemoteStatus(
+            stale,
+            cached,
+            command,
+            exactRequestPending: false,
+            authenticatedRouteRoutable: true);
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
+    public void EarlierCommandOfSameRunLiveStatusIsDiscarded()
+    {
+        var participant = Participant();
+        var current = Command(participant, moduleIndex: 1, commandId: "command-b");
+        var earlier = Command(participant, moduleIndex: 0, commandId: "command-a");
+
+        Assert.Null(DadWorkerStatusPollingRules.SelectRemoteStatus(
+            Status(participant, earlier, DadWorkerExecutionState.Completed),
+            Status(participant, current, DadWorkerExecutionState.Accepted),
+            current,
+            exactRequestPending: false,
+            authenticatedRouteRoutable: true));
+    }
+
+    [Fact]
+    public void ExactLiveStatusProgressionReplacesPendingCache()
+    {
+        var participant = Participant();
+        var command = Command(participant);
+        var live = Status(participant, command, DadWorkerExecutionState.WaitingForQueue, "live");
+        var cached = Status(participant, command, DadWorkerExecutionState.Accepted, "cached");
 
         var selected = DadWorkerStatusPollingRules.SelectRemoteStatus(
             live,
             cached,
+            command,
             exactRequestPending: true,
             authenticatedRouteRoutable: true);
 
@@ -71,14 +117,17 @@ public sealed class DadWorkerStatusPollingRulesTests
     }
 
     [Fact]
-    public void PendingRoutableRequestReturnsIsolatedCacheClone()
+    public void PendingRoutableRequestReturnsIsolatedExactCacheClone()
     {
-        var cached = Status("cached", DadWorkerExecutionState.WaitingForQueue);
+        var participant = Participant();
+        var command = Command(participant);
+        var cached = Status(participant, command, DadWorkerExecutionState.WaitingForQueue, "cached");
         cached.StepResult.Summary = "original step";
 
         var selected = DadWorkerStatusPollingRules.SelectRemoteStatus(
             liveStatus: null,
-            cached,
+            cachedStatus: cached,
+            command: command,
             exactRequestPending: true,
             authenticatedRouteRoutable: true);
 
@@ -95,15 +144,59 @@ public sealed class DadWorkerStatusPollingRulesTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(false, false)]
-    public void DisconnectedOrNonPendingRequestReturnsNull(bool pending, bool routable)
+    public void MissingOrDisconnectedStatusRequestReturnsNull(bool pending, bool routable)
     {
+        var participant = Participant();
+        var command = Command(participant);
+
         var selected = DadWorkerStatusPollingRules.SelectRemoteStatus(
             liveStatus: null,
-            Status("cached", DadWorkerExecutionState.Accepted),
+            cachedStatus: Status(participant, command, DadWorkerExecutionState.Accepted),
+            command: command,
             exactRequestPending: pending,
             authenticatedRouteRoutable: routable);
 
         Assert.Null(selected);
+    }
+
+    [Theory]
+    [InlineData("role")]
+    [InlineData("module")]
+    [InlineData("worker")]
+    [InlineData("identity")]
+    public void CurrentCommandContradictionsReachStrictValidator(string contradiction)
+    {
+        var participant = Participant();
+        var command = Command(participant);
+        var live = Status(participant, command, DadWorkerExecutionState.WaitingForQueue);
+        switch (contradiction)
+        {
+            case "role":
+                live.Role = DadWorkerExecutionRole.QueueLeader;
+                break;
+            case "module":
+                live.ModuleId = DadModuleId.PremadeDuty;
+                break;
+            case "worker":
+                live.WorkerSessionId = new DadWorkerSessionId("worker-other");
+                break;
+            case "identity":
+                participant.ActiveCharacterKey = new DadCharacterKey("Different@World");
+                break;
+        }
+
+        var selected = DadWorkerStatusPollingRules.SelectRemoteStatus(
+            liveStatus: live,
+            cachedStatus: null,
+            command: command,
+            exactRequestPending: false,
+            authenticatedRouteRoutable: true);
+
+        Assert.Same(live, selected);
+        Assert.False(DadDroppedPeerContinuationRules.MatchesExactCommand(
+            participant,
+            command,
+            selected!));
     }
 
     private static DadParticipantSnapshot Participant()
@@ -122,29 +215,54 @@ public sealed class DadWorkerStatusPollingRulesTests
             IsLocalClient = true,
         };
 
-    private static DadWorkerExecutionCommand Command(DadParticipantSnapshot participant, int moduleIndex)
+    private static DadWorkerExecutionCommand Command(
+        DadParticipantSnapshot participant,
+        int moduleIndex = 0,
+        string commandId = "command-x",
+        string runId = "run-x")
         => new()
         {
-            CommandId = "command-x",
-            RunId = "run-x",
+            CommandId = commandId,
+            RunId = runId,
             ModuleIndex = moduleIndex,
             Role = DadWorkerExecutionRole.Participant,
             Plan = new DadRunPlan
             {
-                Request = new DadRunRequest { RequestId = "run-x" },
-                Modules = [new DadPlannedModuleExecution { ModuleId = DadModuleId.PremadeDuty }],
+                Request = new DadRunRequest { RequestId = runId },
+                Modules =
+                [
+                    new DadPlannedModuleExecution { ModuleId = DadModuleId.DailyMsq },
+                    new DadPlannedModuleExecution { ModuleId = DadModuleId.PremadeDuty },
+                ],
             },
             Participants = [participant.Clone()],
         };
 
-    private static DadWorkerExecutionStatus Status(string summary, DadWorkerExecutionState state)
+    private static DadWorkerExecutionAck Acknowledgement(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command)
         => new()
         {
-            CommandId = "command-x",
-            RunId = "run-x",
-            WorkerSessionId = new DadWorkerSessionId("worker-x"),
-            Role = DadWorkerExecutionRole.Participant,
-            ModuleId = DadModuleId.PremadeDuty,
+            CommandId = command.CommandId,
+            RunId = command.RunId,
+            WorkerSessionId = participant.WorkerSessionId,
+            Accepted = true,
+            Summary = "accepted",
+            Status = Status(participant, command, DadWorkerExecutionState.Accepted),
+        };
+
+    private static DadWorkerExecutionStatus Status(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command,
+        DadWorkerExecutionState state,
+        string summary = "status")
+        => new()
+        {
+            CommandId = command.CommandId,
+            RunId = command.RunId,
+            WorkerSessionId = participant.WorkerSessionId,
+            Role = command.Role,
+            ModuleId = command.Plan.Modules[command.ModuleIndex].ModuleId,
             State = state,
             Summary = summary,
         };

@@ -704,7 +704,31 @@ public static class DadScheduleRules
         => $"Schedule '{state.ScheduleName}' entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}: {state.CurrentPresetName}.";
 
     public static bool IsRetryableFailure(DadScheduleFailureKind failureKind)
-        => failureKind is DadScheduleFailureKind.PreStartRejected or DadScheduleFailureKind.EntryTerminalFailure;
+        => failureKind is DadScheduleFailureKind.PreStartRejected
+            or DadScheduleFailureKind.EntryTerminalFailure
+            or DadScheduleFailureKind.CoordinatorReloadAbandonment;
+
+    internal static bool TryValidateRetryAvailability(
+        bool scheduleRunActive,
+        bool schedulerActive,
+        bool dadWorkActive,
+        int queuedJobCount,
+        bool pendingCleanup,
+        out string blocker)
+    {
+        if (scheduleRunActive ||
+            schedulerActive ||
+            dadWorkActive ||
+            queuedJobCount > 0 ||
+            pendingCleanup)
+        {
+            blocker = "Resume is unavailable while DAD, the scheduler, queued jobs, or cancellation cleanup still owns active work.";
+            return false;
+        }
+
+        blocker = string.Empty;
+        return true;
+    }
 
     public static bool TryCreateRetryState(
         DadScheduleRunResult failed,
@@ -721,12 +745,12 @@ public static class DadScheduleRules
         schedule.Normalize();
         if (failed.Status != DadScheduleRunStatus.Blocked || !IsRetryableFailure(failed.FailureKind))
         {
-            blocker = $"Schedule failure kind {failed.FailureKind} is not retryable.";
+            blocker = $"Schedule failure kind {failed.FailureKind} cannot be resumed.";
             return false;
         }
         if (failed.ScheduleRevisionAtStart <= 0 || schedule.Revision != failed.ScheduleRevisionAtStart)
         {
-            blocker = "Schedule revision changed after the failed entry; retry requires the exact original revision.";
+            blocker = "Schedule revision changed after the failed entry; resume requires the exact original revision.";
             return false;
         }
         if (failed.CurrentEntryIndex < 0 || failed.CurrentEntryIndex >= schedule.Entries.Count)
@@ -739,7 +763,7 @@ public static class DadScheduleRules
         if (!string.Equals(entry.EntryId, failed.CurrentEntryId, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(entry.GroupId, failed.CurrentGroupId, StringComparison.OrdinalIgnoreCase))
         {
-            blocker = "The failed schedule entry identity changed; retry is not permitted.";
+            blocker = "The failed schedule entry identity changed; resume is not permitted.";
             return false;
         }
         if (failed.RepeatIteration < MinRepeatCount || failed.RepeatIteration > entry.RepeatCount)
@@ -776,7 +800,7 @@ public static class DadScheduleRules
             ScheduleRevisionAtStart = failed.ScheduleRevisionAtStart,
             RetriedFromRunId = failed.RunId,
         };
-        state.Summary = $"Retrying failed schedule entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}: {state.CurrentPresetName}.";
+        state.Summary = $"Resuming failed schedule entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}: {state.CurrentPresetName}.";
         return true;
     }
 
