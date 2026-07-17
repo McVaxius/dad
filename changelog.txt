@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-07-17 — P1195 transient unsafe-state takeover recovery
+- Treat a parsed VERMAXION v2 `Released` response returned directly from `Reserve` as a retryable reservation
+  outcome. DAD releases any temporary state, reports the fresh-reservation retry and existing five-second cadence,
+  and retries without arming the AutoRetainer character-postprocess fallback.
+- Preserved fail-closed unsafe-world behavior: DAD suppression and VERMAXION ownership are released immediately,
+  with no `/ays d`, `/ays reset`, or relog command until a replacement grant is verified.
+- Added an end-to-end wake regression covering initial grant and `Prepared`, transient world unsafety, cleanup with
+  zero commands, a pre-fix-style direct `Released` reserve response, the next successful grant, and exactly-once
+  reset execution. No IPC, DTO, enum, configuration, manifest, plugin version, or release artifact changed.
+
 ## 2026-07-16 — P1192 worker-status regression and Schedule cursor
 - Corrected the Coordinator's temporary remote worker acknowledgement to carry the exact command, run, worker,
   role, and guarded module provenance. Invalid module indexes remain `None` and continue to fail closed under the

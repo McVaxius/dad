@@ -68,7 +68,11 @@ dotnet test .\Tests\dad.Tests.csproj
   and mini-window snapshots affect status freshness only, not local ownership timing.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD
   also accepts the legacy VERMAXION numeric values `0` through `4` in that order. Unknown/malformed states fail
-  closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses.
+  closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses. If
+  `Reserve` directly returns a parsed v2 `Released` response, DAD cleans up, enters its existing five-second next
+  epoch, and requests a fresh reservation without arming the AutoRetainer callback fallback. A transient unsafe
+  world state still releases DAD suppression and VERMAXION ownership immediately, and no disable, reset, or relog
+  command is sent until a replacement grant is verified.
 
 ## Deployment notes
 

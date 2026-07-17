@@ -344,6 +344,13 @@ public sealed class DadWakeTakeoverService : IDisposable
         snapshot = Capture(operation, forceExternalRefresh: true);
         if (reservation?.IsRejected == true)
             return BeginNextEpoch(operation, reservation.Summary);
+        if (IsRetryableReleasedReserveResponse(reservation))
+        {
+            var detail = string.IsNullOrWhiteSpace(reservation!.Summary)
+                ? "VERMAXION returned Released directly from the v2 Reserve request."
+                : $"VERMAXION returned Released directly from the v2 Reserve request: {reservation.Summary}";
+            return BeginNextEpoch(operation, detail);
+        }
         if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot))
             return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         if (snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None)
@@ -1120,12 +1127,19 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.StableWrongCharacterSinceUtc = null;
         operation.HomeWorldReturnGate = new DadHomeWorldReturnGate();
         operation.HomeWorldReturnStarted = false;
-        operation.Summary = $"Takeover epoch {operation.Epoch} queued after retryable outcome: {reason}";
+        operation.Summary = $"Takeover epoch {operation.Epoch} queued for a fresh reservation after retryable outcome: {reason} Next reserve attempt begins after the five-second cadence.";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
             $"request={operation.Request.SchedulerRunId} slot={operation.Request.SlotId} account={operation.Request.AccountKey} character={operation.Request.CharacterKey} epoch={operation.Epoch} reason={reason}");
         return BuildResult(operation);
     }
+
+    private static bool IsRetryableReleasedReserveResponse(DadVermaxionReservationStatus? reservation)
+        => reservation is
+        {
+            Version: DadVermaxionHandoffContract.Version,
+            State: DadVermaxionReservationState.Released,
+        } && reservation.WireFormat != DadVermaxionReservationWireFormat.Unavailable;
 
     private bool CanContinueCommittedReset(
         OperationState operation,

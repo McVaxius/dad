@@ -948,6 +948,67 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
+    public void TransientUnsafeStateRetriesReleasedReserveWithoutArFallbackAndResetsOnce()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.UtcNow = clock.UtcNow;
+        target.Snapshot.MultiModeEnabled = false;
+        Grant(target);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(Request()).Phase);
+        Assert.Equal(1, target.ReserveCount);
+        Assert.Equal(1, target.Actions.Count(static action => action == "AcquireSuppression"));
+
+        target.Snapshot.Participant.WorldReadyStable = false;
+        service.Update();
+
+        var unsafeWait = service.GetActiveStatus();
+        Assert.NotNull(unsafeWait);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, unsafeWait.Phase);
+        Assert.Contains("ReleaseSuppression", target.Actions);
+        Assert.Contains("ReleaseReservation", target.Actions);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        target.Reservation.Version = DadVermaxionHandoffContract.Version;
+        target.Reservation.WireFormat = DadVermaxionReservationWireFormat.CanonicalString;
+        target.Reservation.Summary = "Prior reservation is terminally released.";
+        target.ReservationStateOnReserve = DadVermaxionReservationState.Released;
+        target.Snapshot.Participant.WorldReadyStable = true;
+        service.Update();
+
+        var retry = service.GetActiveStatus();
+        Assert.NotNull(retry);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, retry.Phase);
+        Assert.Contains("fresh reservation", retry.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("five-second cadence", retry.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, target.ReserveCount);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        target.ReservationStateOnReserve = DadVermaxionReservationState.Granted;
+        target.Reservation.Summary = "Fresh VERMAXION grant.";
+        target.Reservation.VermaxionActivity = "DadHandoff";
+        target.Reservation.VermaxionState = "Granted";
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.GetActiveStatus()!.Phase);
+        Assert.Equal(3, target.ReserveCount);
+        Assert.Equal(2, target.Actions.Count(static action => action == "AcquireSuppression"));
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+
+        Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainer"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "ResetAutoRetainer"));
+        Assert.DoesNotContain("RelogCharacter", target.Actions);
+    }
+
+    [Fact]
     public void UnavailableV2WithCompleteIdleProofPreparesWithoutCharacterCallback()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);
