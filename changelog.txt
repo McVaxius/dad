@@ -1,5 +1,21 @@
 # dad — changelog
 
+## 2026-07-17 — P1199 planner persistence and Leveling activation
+- Replaced direct shared-configuration writes with a thread-safe end-of-framework persistence coordinator. Same-frame
+  changes coalesce after 250 quiet milliseconds with a one-second maximum delay; ordinary failures receive three
+  five-second retries, native invalid-handle failures latch immediately, and no storage exception reaches window Draw.
+  The main window reports memory-only changes with an explicit end-of-frame retry, successful writes clear the fault,
+  and shutdown forces one final write after pending UI and roster changes.
+- Compact durable history snapshots now retain the 50-entry wire shape, visible status/timing/task data, stop progress,
+  step results, warnings, and scheduler failure evidence while removing full requests, participants, leases, executor
+  state, client/session identifiers, and authority endpoints. Startup compacts legacy history idempotently and saves
+  only when it changed; current runs and issue-report inputs remain full fidelity.
+- Leveling Mode activation now validates the visible planner draft. Supported Leveling/NPC Duty Support or Trust and
+  Duty Finder/Premade selections atomically update the selected preset through the established planner-field rules,
+  preserve crew and Leveling settings, and enable immediately. Unsupported drafts remain disabled with exact guidance;
+  Run Family and Submode are locked while enabled, and disabling changes only the enabled flag.
+- Public IPC, sharing, manifests, configuration schema, plugin version, and release artifacts are unchanged.
+
 ## 2026-07-17 — I41–I43 Leveling Mode job, duty, and loop controller
 - Added a default-off saved-preset Leveling Mode for Duty Support, Trust, and Premade Duty lanes with one plan goal,
   deterministic lowest-first or highest-below-goal job order, and an ordered minimum-level/duty threshold table.

@@ -25,16 +25,25 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             """;
         var configuration = JsonSerializer.Deserialize<Configuration>(json);
         Assert.NotNull(configuration);
-        Plugin.PluginInterface.Reset();
+        var now = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+        var saveCount = 0;
+        var persistence = new DadConfigurationPersistenceCoordinator(
+            () => saveCount++,
+            () => now);
+        configuration!.AttachPersistenceCoordinator(persistence);
 
-        if (configuration!.MigrateTransportSettings())
+        if (configuration.MigrateTransportSettings())
             configuration.Save();
 
         Assert.Equal(4, configuration.Version);
-        Assert.Equal(1, Plugin.PluginInterface.SaveCount);
+        Assert.Equal(0, saveCount);
+        now = now.AddMilliseconds(250);
+        Assert.True(persistence.Update());
+        Assert.Equal(1, saveCount);
         Assert.DoesNotContain("ProfileCatalogCache", JsonSerializer.Serialize(configuration), StringComparison.Ordinal);
         Assert.False(configuration.MigrateTransportSettings());
-        Assert.Equal(1, Plugin.PluginInterface.SaveCount);
+        Assert.False(persistence.Update());
+        Assert.Equal(1, saveCount);
     }
 
     [Fact]

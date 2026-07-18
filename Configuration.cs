@@ -1,5 +1,6 @@
 using Dalamud.Configuration;
 using dad.Models;
+using dad.Services;
 
 namespace dad;
 
@@ -13,6 +14,9 @@ public enum DadCombatRotationMode
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
+    [NonSerialized]
+    private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
+
     public int Version { get; set; } = 4;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
@@ -176,5 +180,9 @@ public sealed class Configuration : IPluginConfiguration
         return Math.Max(minimum, value <= 0 ? defaultValue : value);
     }
 
-    public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
+    internal void AttachPersistenceCoordinator(DadConfigurationPersistenceCoordinator coordinator)
+        => persistenceCoordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
+
+    public void Save()
+        => persistenceCoordinator?.MarkDirty();
 }

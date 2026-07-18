@@ -39,6 +39,12 @@ dotnet test .\Tests\dad.Tests.csproj
 - Configuration schema v4 no longer serializes remote profile catalogs. Online remote catalogs are session-only and
   reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
   Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached.
+- Shared configuration changes are coalesced at the end of the framework update after a 250 ms quiet period, with a
+  one-second maximum delay. Storage failures stay outside window drawing, retry on a bounded cadence, and surface a
+  memory-only warning with an explicit **Retry save** action; disposal makes one final write attempt.
+- Durable run history keeps at most 50 compact completion snapshots. Status, timing, task/stop progress, step results,
+  warnings, and scheduler failure evidence remain visible while requests, participants, leases, executor state, client
+  and session IDs, and authority endpoints are removed from saved history.
 
 ## Operator status and cancellation
 
@@ -69,6 +75,9 @@ dotnet test .\Tests\dad.Tests.csproj
   refreshes exact job truth before compiling the next child, while failure, timeout, or cancellation ends the outer
   operation without replay. Completed characters remain compatible fillers, parties are not retained between children,
   and fixed job/duty, LevelSeek, and ordinary stop settings are preserved but overridden only while the mode is enabled.
+  The checkbox validates the currently visible Run Family/Submode draft and saves that lane into the selected preset in
+  the same action, so a valid Leveling/NPC or Duty Finder/Premade selection does not require a separate preset update.
+  Run Family and Submode remain locked until Leveling Mode is disabled.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.

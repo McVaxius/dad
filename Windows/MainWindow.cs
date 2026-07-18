@@ -211,6 +211,7 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawShellHeader(configuration, profile, runState, characterPool, version);
+        DrawConfigurationPersistenceWarning();
         DrawActiveRunBanner(runState);
         ImGui.Spacing();
 
@@ -358,6 +359,28 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextWrapped(keyStatus);
             DadUi.EndCard();
         }
+    }
+
+    private void DrawConfigurationPersistenceWarning()
+    {
+        var state = plugin.GetConfigurationPersistenceState();
+        if (!state.HasFault)
+            return;
+
+        ImGui.Spacing();
+        if (!DadUi.BeginCard("dad-configuration-persistence-warning"))
+            return;
+
+        ImGui.PushStyleColor(ImGuiCol.Text, DadUi.Warning);
+        ImGui.TextWrapped("Configuration save failed. Changes are memory-only until a save succeeds.");
+        ImGui.PopStyleColor();
+        if (!string.IsNullOrWhiteSpace(state.FailureSummary))
+            ImGui.TextDisabled(state.FailureSummary);
+        if (state.NextRetryAtUtc.HasValue && !state.IsLatched)
+            ImGui.TextDisabled($"Automatic retry scheduled for {state.NextRetryAtUtc.Value.ToLocalTime():T}.");
+        if (DadUi.Button("Retry save", DadUiTone.Warning))
+            plugin.QueueConfigurationPersistenceRetry();
+        DadUi.EndCard();
     }
 
     private void DrawOverviewTab(DadVisibleRunState runState, CharacterConfig profile)
@@ -3983,10 +4006,14 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawSectionHeader("Activity and content", "Choose the activity, submode, duty, and required modifiers.");
         var activityFieldsShareRow = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 36f;
+        ImGui.BeginDisabled(levelingEnabled);
         DrawPlannerRunFamilySelector(plannerOptions);
         if (activityFieldsShareRow)
             ImGui.SameLine();
         DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
+        ImGui.EndDisabled();
+        if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Disable Leveling Mode before changing Run family or Submode.");
         ImGui.BeginDisabled(levelingEnabled);
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi: false);
         ImGui.EndDisabled();
@@ -4123,9 +4150,13 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawSectionHeader("2. Choose activity, submode, and duty", "These inputs select the runtime contract and compatible content.");
         ImGui.Spacing();
+        ImGui.BeginDisabled(levelingEnabled);
         DrawPlannerRunFamilySelector(plannerOptions);
         ImGui.SameLine();
         DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
+        ImGui.EndDisabled();
+        if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Disable Leveling Mode before changing Run family or Submode.");
         ImGui.Spacing();
         DrawPlannerQueueAuthoritySelector(plannerOptions);
         ImGui.Spacing();
@@ -6883,13 +6914,13 @@ public sealed class MainWindow : Window, IDisposable
         if (group == null)
             return;
 
-        group.LevelingMode ??= new DadLevelingModeOptions();
-        var options = group.LevelingMode;
-        var supported = DadLevelingModeCompiler.TryNormalizeLane(
-            group.ActivityMode,
-            out var childLane,
+        var options = group.LevelingMode ?? new DadLevelingModeOptions();
+        var plannerOptions = plugin.PlannerOptions;
+        var supported = DadLevelingModeActivationRules.TryNormalizeSupportedDraft(
+            plannerOptions.RunFamily,
+            plannerOptions.ActivityMode,
             out _,
-            out _);
+            out var childLane);
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -6898,15 +6929,17 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.BeginDisabled(!supported && !enabled);
         if (ImGui.Checkbox("Enable Leveling Mode##dad-leveling-mode", ref enabled))
         {
-            options.Enabled = enabled;
-            plugin.TouchPlannerGroup(group);
+            var result = plugin.SetPlannerGroupLevelingMode(group, enabled);
+            if (!result.Accepted)
+                plugin.PrintStatus(result.Summary);
+            options = group.LevelingMode ?? options;
         }
         ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
             ImGui.SetTooltip(supported
                 ? "Loops immutable one-run children, rotating eligible jobs and selecting duty from the ordered threshold table."
-                : "Leveling Mode supports Duty Support, Trust, and Premade Duty lanes only.");
+                : DadLevelingModeActivationRules.ValidLaneSummary);
         }
 
         if (!options.Enabled)

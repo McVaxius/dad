@@ -93,6 +93,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadDependenciesWindow dependenciesWindow;
     private readonly DadIpcService dadIpcService;
     private readonly DadBackgroundTaskObserver backgroundTasks;
+    private readonly DadConfigurationPersistenceCoordinator configurationPersistence;
     private readonly CancellationTokenSource backgroundCancellation = new();
     private readonly object authorityCacheGate = new();
     private IDtrBarEntry? dtrEntry;
@@ -148,7 +149,16 @@ public sealed class Plugin : IDalamudPlugin
     {
         backgroundTasks = new DadBackgroundTaskObserver(Log, "plugin");
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        configurationPersistence = new DadConfigurationPersistenceCoordinator(
+            () => PluginInterface.SavePluginConfig(Configuration),
+            onFailure: OnConfigurationPersistenceFailure);
+        Configuration.AttachPersistenceCoordinator(configurationPersistence);
         if (Configuration.MigrateTransportSettings())
+            Configuration.Save();
+        var historyChanged = Configuration.RunHistory == null;
+        Configuration.RunHistory ??= [];
+        historyChanged |= DadRunHistoryPersistenceRules.CompactLegacyHistory(Configuration.RunHistory);
+        if (historyChanged)
             Configuration.Save();
         EnsureClientAccountId();
         ConfigManager = new ConfigManager(PluginInterface, Log);
@@ -359,6 +369,8 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(PluginInfo.Command);
         FlushDebouncedUiWrites(force: true);
         RosterCatalogService.FlushPendingPersistence();
+        Configuration.Save();
+        configurationPersistence.ForceFlush();
         // After persistence is forced, close/cancel transport work without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
         TransportService.Dispose();
@@ -407,6 +419,37 @@ public sealed class Plugin : IDalamudPlugin
         => mainWindow.OpenTab(tab, presetsTab);
 
     public void PrintStatus(string message) => ChatGui.Print($"[{PluginInfo.DisplayName}] {message}");
+
+    internal DadConfigurationPersistenceState GetConfigurationPersistenceState()
+        => configurationPersistence.GetState();
+
+    internal void QueueConfigurationPersistenceRetry()
+        => configurationPersistence.QueueManualRetry();
+
+    private static void OnConfigurationPersistenceFailure(DadConfigurationPersistenceFailure failure)
+    {
+        if (failure.IsInvalidHandle)
+        {
+            Log.Error(
+                failure.Exception,
+                "[dad] Configuration persistence latched after native error 6 (invalid handle). Changes are memory-only until Retry save succeeds.");
+            return;
+        }
+
+        if (failure.WillRetry)
+        {
+            Log.Warning(
+                failure.Exception,
+                "[dad] Configuration persistence attempt {Attempt} failed; retry scheduled for {NextRetryAtUtc}.",
+                failure.ConsecutiveFailureCount,
+                failure.NextRetryAtUtc?.ToString("O", CultureInfo.InvariantCulture) ?? "(unknown)");
+            return;
+        }
+
+        Log.Error(
+            failure.Exception,
+            "[dad] Configuration persistence exhausted automatic retries. Changes are memory-only until Retry save succeeds.");
+    }
 
     public void QueueDebouncedUiWrite<T>(
         string key,
@@ -1853,6 +1896,25 @@ public sealed class Plugin : IDalamudPlugin
         group.UpdatedAtUtc = DateTime.UtcNow;
         Configuration.Save();
         InvalidatePlannerPreviewCache("planner group touched");
+    }
+
+    internal DadLevelingModeActivationResult SetPlannerGroupLevelingMode(
+        DadPlannerGroup group,
+        bool enabled)
+    {
+        var draft = BuildPlannerGroupFromCurrentPlanner(
+            group.DisplayName,
+            localNpcRunner: null,
+            includeSlots: false);
+        var result = DadLevelingModeActivationRules.Apply(group, draft, enabled, DateTime.UtcNow);
+        if (!result.Accepted)
+            return result;
+
+        Configuration.Save();
+        InvalidatePlannerPreviewCache(enabled
+            ? "Leveling Mode enabled from planner draft"
+            : "Leveling Mode disabled");
+        return result;
     }
 
     public void ReplaceSelectedPlannerGroupSlotsFromCurrentPreview()
@@ -4750,6 +4812,9 @@ public sealed class Plugin : IDalamudPlugin
         RunFrameworkStep("CompletionActions", () => DadCompletionActionRunner.Update(Configuration, Log));
         RunFrameworkStep("DutyIpc", () => DutyIpcService.Update());
         RunFrameworkStep("DutyIpcRegister", () => DutyIpcService.EnsureRegistered());
+        // The persistence coordinator is intentionally last: every same-frame mutation above is captured
+        // before one quiet/max-delay/retry decision is made, and storage exceptions stay inside this step.
+        RunFrameworkStep("ConfigurationPersistence", () => configurationPersistence.Update());
     }
 
     private void OnLogin()

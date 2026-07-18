@@ -2888,9 +2888,7 @@ public sealed class DadCoordinatorService
         CurrentResult.CompletedTaskCount = stepResults.Count(static step => step.Success);
 
         configuration.RunHistory ??= [];
-        configuration.RunHistory.Insert(0, CurrentResult.Clone());
-        if (configuration.RunHistory.Count > 50)
-            configuration.RunHistory = configuration.RunHistory.Take(50).ToList();
+        DadRunHistoryPersistenceRules.InsertSnapshot(configuration.RunHistory, CurrentResult);
         configuration.PersistedActiveRun = null;
         configuration.Save();
 
@@ -3125,9 +3123,7 @@ public sealed class DadCoordinatorService
         recovered.CompletedAtUtc = DateTime.UtcNow;
         recovered.Leases = [];
         recovered.CurrentExecutorStatus = new DadModuleExecutionStatusDto();
-        configuration.RunHistory.Insert(0, recovered);
-        if (configuration.RunHistory.Count > 50)
-            configuration.RunHistory = configuration.RunHistory.Take(50).ToList();
+        DadRunHistoryPersistenceRules.InsertSnapshot(configuration.RunHistory, recovered);
         configuration.PersistedActiveRun = null;
         configuration.Save();
         CurrentResult = recovered;
