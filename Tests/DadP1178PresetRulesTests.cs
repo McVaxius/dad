@@ -123,6 +123,78 @@ public sealed class DadP1178PresetRulesTests
         Assert.False(DadLevelSeekEvaluator.Evaluate(group, Pool(known)).ShouldSkip);
     }
 
+    [Fact]
+    public void LevelSeekDisplayIndicatesOnlyAProvenSkipAndIncludesRowEvidence()
+    {
+        var group = Group(1);
+        group.Slots[0].LevelSeekTarget = 90;
+        group.Slots[0].RequiredJobId = 19;
+        var evaluation = DadLevelSeekEvaluator.Evaluate(group, Pool(Character("one", 90, 19)));
+
+        var display = DadLevelSeekDisplayRules.Build(evaluation);
+
+        Assert.True(display.IsSkipIndicated);
+        Assert.Contains("All 1 targeted preset row", display.Tooltip);
+        Assert.Contains("Slot1 job 19 is level 90, meeting target 90", display.Tooltip);
+    }
+
+    [Fact]
+    public void LevelSeekDisplayKeepsBelowTargetUnknownAndMissingPresetsNormal()
+    {
+        var group = Group(2);
+        group.Slots.ForEach(slot => slot.LevelSeekTarget = 90);
+        var belowAndUnknown = DadLevelSeekEvaluator.Evaluate(
+            group,
+            Pool(Character("one", 89, 19), Character("two", null, null)));
+
+        var display = DadLevelSeekDisplayRules.Build(belowAndUnknown);
+
+        Assert.False(display.IsSkipIndicated);
+        Assert.Contains("below target 90", display.Tooltip);
+        Assert.Contains("unknown", display.Tooltip, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadLevelSeekDisplayState.None, DadLevelSeekDisplayRules.Build(null));
+    }
+
+    [Fact]
+    public void LevelSeekDisplayUsesSubstituteBoundSettingsAndRefreshesWithLiveLevels()
+    {
+        var group = Group(1);
+        group.Slots[0].LevelSeekTarget = 80;
+        group.Slots.Add(new DadPlannerGroupSlot
+        {
+            SlotId = "Slot1",
+            IsSubstitute = true,
+            RequiredAccountKey = new DadAccountKey("account"),
+            RequiredCharacterKey = new DadCharacterKey("sub"),
+            RequiredJobId = 21,
+            LevelSeekTarget = 99,
+        });
+        var effective = DadEffectivePlannerGroupProjection.BindResolvedSchedulerSlots(group,
+        [
+            new DadPresetCharacterSlot
+            {
+                SlotId = "Slot1",
+                RequiredAccountKey = new DadAccountKey("account"),
+                RequiredCharacterKey = new DadCharacterKey("sub"),
+                CharacterKey = "sub",
+                IsSubstitution = true,
+                RequiredJobId = 21,
+                LevelSeekTarget = 99,
+            },
+        ]);
+        var character = Character("sub", 30, 19);
+        character.AccountId = "account";
+        character.JobLevels[21] = 98;
+
+        var below = DadLevelSeekDisplayRules.Build(DadLevelSeekEvaluator.Evaluate(effective, Pool(character)));
+        character.JobLevels[21] = 99;
+        var satisfied = DadLevelSeekDisplayRules.Build(DadLevelSeekEvaluator.Evaluate(effective, Pool(character)));
+
+        Assert.False(below.IsSkipIndicated);
+        Assert.True(satisfied.IsSkipIndicated);
+        Assert.Contains("target 99", satisfied.Tooltip);
+    }
+
     [Theory]
     [InlineData(DadAdsLootMode.NoChange, false)]
     [InlineData(DadAdsLootMode.Need, true)]

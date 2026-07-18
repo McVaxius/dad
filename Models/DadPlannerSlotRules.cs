@@ -205,6 +205,7 @@ public static class DadPlannerSlotRules
             RequiredJobId = source.RequiredJobId,
             AdsLootMode = source.AdsLootMode,
             LevelSeekTarget = source.LevelSeekTarget is > 0 ? source.LevelSeekTarget : null,
+            SkipIfDailyRouletteRewardReceived = source.SkipIfDailyRouletteRewardReceived,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),

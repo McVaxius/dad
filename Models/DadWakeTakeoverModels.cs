@@ -74,6 +74,7 @@ public enum DadWakeTakeoverCommand
     DisableAutoRetainer = 0,
     ResetAutoRetainer = 1,
     RelogCharacter = 2,
+    DisableAutoRetainerMultiMode = 3,
 }
 
 public sealed class DadWakeTakeoverRequestDto
@@ -164,9 +165,15 @@ public sealed class DadWakeTakeoverTargetSnapshot
 {
     public bool DadEnabled { get; set; }
     public bool RemoteMutationAllowed { get; set; }
+    public bool ClientRouteConnected { get; set; }
     public bool AccountMatches { get; set; }
     public bool CharacterKnownToAccount { get; set; }
     public bool CorrectCharacter { get; set; }
+    public bool TitleMenuEvidenceFresh { get; set; }
+    public bool TitleMenuReady { get; set; }
+    public bool TitleNavigationOverlayVisible { get; set; }
+    public bool TitleConnectionOverlayVisible { get; set; }
+    public bool TitleErrorOverlayVisible { get; set; }
     public bool PostArReady { get; set; }
     public bool AutoRetainerAvailable { get; set; }
     public bool AutoRetainerBusy { get; set; }

@@ -37,6 +37,11 @@ public sealed class DadSchedulerService
     private DateTime suppressAutomaticEnqueueUntilUtc = DateTime.MinValue;
     private DadRunRequest? frozenPlannerRequest;
     private List<FrozenEarlyAssignment> frozenEarlyAssignments = [];
+    private List<DadSchedulerSlotState> frozenOrdinarySlots = [];
+    private DailyRewardPreflightSession? dailyRewardPreflight;
+    private Func<DadPlannerGroup, int, DadLevelingChildBuild>? levelingChildBuilder;
+    private Action? cancelActiveLevelingChild;
+    private LevelingOperationSession? levelingOperation;
 
     private sealed class PendingTakeoverCancellation
     {
@@ -57,6 +62,38 @@ public sealed class DadSchedulerService
         public HashSet<string> AttemptedWorkerSessionIds { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> AcknowledgedWorkerSessionIds { get; } = new(StringComparer.OrdinalIgnoreCase);
         public string LastDiagnosticState { get; set; } = string.Empty;
+    }
+
+    private sealed class DailyRewardPreflightSession
+    {
+        public DadQueueTarget Target { get; init; } = new() { Kind = DadQueueTargetKind.Roulette };
+        public int CheckedSlotCount { get; init; }
+        public int CurrentSlotIndex { get; set; }
+        public int ReceivedSlotCount { get; set; }
+        public DateTime SlotDeadlineUtc { get; set; }
+        public DadRouletteRewardProbeRequestDto? ActiveRequest { get; set; }
+        public List<string> Evidence { get; } = [];
+    }
+
+    private sealed class LevelingOperationSession
+    {
+        public DadPlannerGroup SourceGroup { get; init; } = new();
+        public DadScheduledCrewJob OuterJob { get; init; } = new();
+        public DadSchedulerPresetState OuterState { get; init; } = new();
+        public DadLevelingChildBuild ChildBuild { get; set; } = new();
+        public int Iteration { get; set; } = 1;
+        public bool RefreshingRoster { get; set; }
+        public DateTime RefreshDeadlineUtc { get; set; }
+        public List<LevelingRosterRefreshRow> RefreshRows { get; set; } = [];
+        public HashSet<string> IssuedIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class LevelingRosterRefreshRow
+    {
+        public DadLevelingSlotSelection Selection { get; init; } = new();
+        public DadParticipantSnapshot Participant { get; init; } = new();
+        public DadRosterRefreshCommandDto Command { get; init; } = new();
+        public bool Completed { get; set; }
     }
 
     private sealed class PendingEarlyAssignmentCancellation
@@ -93,7 +130,17 @@ public sealed class DadSchedulerService
         RecoverAbandonedScheduleRun();
     }
 
-    public DadSchedulerPresetState CurrentState => currentState.Clone();
+    public DadSchedulerPresetState CurrentState => BuildVisibleState();
+
+    private bool IsSchedulerActive => levelingOperation != null || currentState.IsActive;
+
+    public void ConfigureLevelingMode(
+        Func<DadPlannerGroup, int, DadLevelingChildBuild> childBuilder,
+        Action cancelActiveChild)
+    {
+        levelingChildBuilder = childBuilder ?? throw new ArgumentNullException(nameof(childBuilder));
+        cancelActiveLevelingChild = cancelActiveChild ?? throw new ArgumentNullException(nameof(cancelActiveChild));
+    }
 
     internal DadSchedulerUiRevision GetPlannerUiRevision()
     {
@@ -104,6 +151,8 @@ public sealed class DadSchedulerService
         schedulerHash.Add(currentState.UpdatedAtUtc.Ticks);
         schedulerHash.Add(currentState.CompletedAtUtc?.Ticks ?? 0);
         schedulerHash.Add(currentState.PlannerStarted);
+        schedulerHash.Add(currentState.ScheduleCadence);
+        schedulerHash.Add(currentState.SkipKind);
         schedulerHash.Add(currentState.Slots.Count);
         foreach (var slot in currentState.Slots)
         {
@@ -154,6 +203,7 @@ public sealed class DadSchedulerService
             schedulerHash.Add(job.ScheduleRunId, StringComparer.Ordinal);
             schedulerHash.Add(job.ScheduleEntryId, StringComparer.Ordinal);
             schedulerHash.Add(job.ScheduleRepeatIteration);
+            schedulerHash.Add(job.ScheduleCadence);
         }
 
         schedulerHash.Add(configuration.Schedules?.Count ?? 0);
@@ -215,12 +265,14 @@ public sealed class DadSchedulerService
     {
         NormalizeQueue();
         NormalizeHistory();
-        var activeJobClone = currentState.IsActive ? activeJob?.Clone() : null;
+        var visibleState = BuildVisibleState();
+        var activeJobClone = levelingOperation?.OuterJob.Clone()
+                             ?? (currentState.IsActive ? activeJob?.Clone() : null);
         return new DadSchedulerQueueSnapshot
         {
             GeneratedAtUtc = DateTime.UtcNow,
             ActiveJob = activeJobClone,
-            ActiveState = currentState.Clone(),
+            ActiveState = visibleState,
             ActiveQueueOwner = activeJobClone?.RequestedBy ?? currentState.RequestedBy,
             PendingJobs = configuration.SchedulerQueue
                 .OrderBy(static job => job.NextEligibleTimeUtc ?? DateTime.MinValue)
@@ -234,8 +286,8 @@ public sealed class DadSchedulerService
                 .Take(MaxSchedulerHistory)
                 .Select(static result => result.Clone())
                 .ToList(),
-            Summary = currentState.IsActive
-                ? $"Active {currentState.JobType}: {currentState.Summary}"
+            Summary = IsSchedulerActive
+                ? $"Active {visibleState.JobType}: {visibleState.Summary}"
                 : HasPendingCleanup
                     ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s) and {pendingEarlyAssignmentCancellations.Count} early assignment route(s)."
                 : configuration.SchedulerQueue.Count == 0
@@ -362,7 +414,7 @@ public sealed class DadSchedulerService
         bool dadMutationLocked)
     {
         NormalizeSchedules();
-        if (dadMutationLocked || currentState.IsActive || configuration.ActiveScheduleRun?.IsActive == true)
+        if (dadMutationLocked || IsSchedulerActive || configuration.ActiveScheduleRun?.IsActive == true)
         {
             return new DadScheduleAttachmentResult
             {
@@ -511,7 +563,7 @@ public sealed class DadSchedulerService
         }
         if (!DadScheduleRules.TryValidateRetryAvailability(
                 configuration.ActiveScheduleRun?.IsActive ?? false,
-                currentState.IsActive,
+                IsSchedulerActive,
                 dadWorkActive,
                 configuration.SchedulerQueue.Count,
                 HasPendingCleanup,
@@ -565,8 +617,8 @@ public sealed class DadSchedulerService
         NormalizeQueue();
         var duplicate = DadSchedulerSubmissionRules.FindDuplicate(
             group.GroupId,
-            activeJob,
-            currentState.IsActive,
+            levelingOperation?.OuterJob ?? activeJob,
+            IsSchedulerActive,
             configuration.SchedulerQueue,
             PendingCleanupJobs());
         if (duplicate != null)
@@ -653,6 +705,14 @@ public sealed class DadSchedulerService
             return true;
         }
 
+        if (levelingOperation != null &&
+            (string.Equals(levelingOperation.OuterJob.JobId, jobId, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(currentState.JobId, jobId, StringComparison.OrdinalIgnoreCase)))
+        {
+            CancelLevelingOperation(string.IsNullOrWhiteSpace(reason) ? $"Leveling Mode job {jobId} cancelled." : reason);
+            return true;
+        }
+
         if (activeJob != null &&
             string.Equals(activeJob.JobId, jobId, StringComparison.OrdinalIgnoreCase) &&
             currentState.IsActive)
@@ -675,10 +735,17 @@ public sealed class DadSchedulerService
     public int ClearAccountData()
     {
         NormalizeQueue();
+        if (levelingOperation != null)
+            CancelLevelingOperation("Scheduler account data cleared.");
         CancelNonTerminalTakeovers("Scheduler account data cleared.");
         var clearedJobs = configuration.SchedulerQueue.Count;
         configuration.SchedulerQueue.Clear();
         activeJob = null;
+        levelingOperation = null;
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
         currentState = new DadSchedulerPresetState
         {
             Phase = DadSchedulerPresetPhase.Idle,
@@ -898,9 +965,23 @@ public sealed class DadSchedulerService
         bool dryRun,
         DadScheduledCrewJob? job = null)
     {
+        if (group.LevelingMode?.Enabled == true)
+            return StartLevelingOperation(group, dryRun, job);
+
+        return StartOrdinaryPreset(group, plannerRequestPreview, dryRun, job);
+    }
+
+    private DadSchedulerPresetState StartOrdinaryPreset(
+        DadPlannerGroup group,
+        DadPlannerRunRequestPreview plannerRequestPreview,
+        bool dryRun,
+        DadScheduledCrewJob? job = null)
+    {
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
         var preview = BuildPreview(group, plannerRequestPreview);
+        var levelSeek = EvaluateLevelSeek(group, plannerRequestPreview);
         var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
-        var levelSeek = DadLevelSeekEvaluator.Evaluate(effectiveGroup, characterIntelligenceService.CurrentPool);
         activeJob = job?.Clone() ?? new DadScheduledCrewJob
         {
             JobType = DadSchedulerJobType.ScheduledPreset,
@@ -942,6 +1023,7 @@ public sealed class DadSchedulerService
             ScheduleEntryId = activeJob.ScheduleEntryId,
             ScheduleEntryIndex = activeJob.ScheduleEntryIndex,
             ScheduleRepeatIteration = activeJob.ScheduleRepeatIteration,
+            ScheduleCadence = activeJob.ScheduleCadence,
         };
         dependencyGateCommitted = false;
         takeoverDiagnosticStates.Clear();
@@ -955,6 +1037,7 @@ public sealed class DadSchedulerService
         if (levelSeek.ShouldSkip)
         {
             currentState.Phase = DadSchedulerPresetPhase.Skipped;
+            currentState.SkipKind = DadSchedulerSkipKind.LevelSeek;
             currentState.Summary = $"Skipped preset '{group.DisplayName}': {levelSeek.Summary}";
             currentState.CompletedAtUtc = DateTime.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
@@ -1025,6 +1108,41 @@ public sealed class DadSchedulerService
             return CurrentState;
         }
 
+        var rouletteTarget = frozenPlannerRequest?.DailyMsq?.QueueTarget;
+        var checkedRows = effectiveGroup.Slots
+            .Where(static slot => slot.SkipIfDailyRouletteRewardReceived)
+            .ToList();
+        if (DadDailyRewardPreflightRules.IsEligible(
+                effectiveGroup.ActivityMode,
+                activeJob.ScheduleCadence,
+                activeJob.ScheduleId,
+                activeJob.ScheduleRunId,
+                activeJob.ScheduleEntryId,
+                rouletteTarget,
+                checkedRows.Count))
+        {
+            var checkedSlotIds = checkedRows
+                .Select(static slot => slot.SlotId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            frozenOrdinarySlots = currentState.Slots.Select(static slot => slot.Clone()).ToList();
+            currentState.Slots = currentState.Slots
+                .Where(slot => checkedSlotIds.Contains(slot.SlotId))
+                .Select(static slot => slot.Clone())
+                .ToList();
+            dailyRewardPreflight = new DailyRewardPreflightSession
+            {
+                Target = rouletteTarget!.Clone(),
+                CheckedSlotCount = currentState.Slots.Count,
+                SlotDeadlineUtc = DateTime.UtcNow + ResolveDailyRewardPreflightTimeout(),
+            };
+            InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
+            currentState.Phase = DadSchedulerPresetPhase.DailyRewardPreflight;
+            currentState.Summary = $"DailyReset reward preflight will inspect {currentState.Slots.Count} checked effective row(s) before ordinary execution.";
+            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            LogSchedulerPhaseTransition();
+            return CurrentState;
+        }
+
         var transientRuntimeReadiness = !plannerRequestPreview.CanStart && plannerRequestPreview.CanSchedule;
         currentState.Phase = DadSchedulerRuntimeWakeRules.ResolveInitialPhase(
             plannerRequestPreview.CanStart,
@@ -1035,6 +1153,184 @@ public sealed class DadSchedulerService
             : preview.StatusSummary;
         LogSchedulerPhaseTransition();
         return CurrentState;
+    }
+
+    private DadSchedulerPresetState StartLevelingOperation(
+        DadPlannerGroup group,
+        bool dryRun,
+        DadScheduledCrewJob? job)
+    {
+        var outerJob = job?.Clone() ?? new DadScheduledCrewJob
+        {
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            DryRun = dryRun,
+            RequestedBy = "scheduler",
+        };
+        outerJob.JobType = DadSchedulerJobType.LevelingOperation;
+        outerJob.GroupId = group.GroupId;
+        outerJob.PresetName = group.DisplayName;
+        outerJob.DryRun = dryRun;
+
+        var outerState = new DadSchedulerPresetState
+        {
+            SchedulerRunId = Guid.NewGuid().ToString("N"),
+            JobId = outerJob.JobId,
+            JobType = DadSchedulerJobType.LevelingOperation,
+            RequestedBy = outerJob.RequestedBy,
+            GroupId = group.GroupId,
+            PresetName = group.DisplayName,
+            Phase = DadSchedulerPresetPhase.LevelingBetweenChildren,
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            DryRun = dryRun,
+            Summary = $"Leveling Mode '{group.DisplayName}' is compiling child 1.",
+            ScheduleId = outerJob.ScheduleId,
+            ScheduleRunId = outerJob.ScheduleRunId,
+            ScheduleEntryId = outerJob.ScheduleEntryId,
+            ScheduleEntryIndex = outerJob.ScheduleEntryIndex,
+            ScheduleRepeatIteration = outerJob.ScheduleRepeatIteration,
+            ScheduleCadence = outerJob.ScheduleCadence,
+        };
+        activeJob = outerJob.Clone();
+        levelingOperation = new LevelingOperationSession
+        {
+            SourceGroup = DadSchedulerGroupCloneRules.CloneWithSlots(group, group.Slots ?? []),
+            OuterJob = outerJob,
+            OuterState = outerState,
+        };
+        levelingOperation.IssuedIds.Add(outerJob.JobId);
+        return StartNextLevelingChild();
+    }
+
+    private DadSchedulerPresetState StartNextLevelingChild()
+    {
+        var operation = levelingOperation;
+        if (operation == null)
+            return CurrentState;
+        if (levelingChildBuilder == null)
+            return FinishLevelingOperation(DadSchedulerPresetPhase.Blocked, "Leveling Mode compiler is unavailable.");
+
+        DadLevelingChildBuild build;
+        try
+        {
+            build = levelingChildBuilder(operation.SourceGroup, operation.Iteration) ?? new DadLevelingChildBuild();
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "[dad] Leveling Mode child compiler failed for preset {PresetName} iteration {Iteration}.", operation.SourceGroup.DisplayName, operation.Iteration);
+            return FinishLevelingOperation(DadSchedulerPresetPhase.Blocked, $"Leveling Mode child {operation.Iteration} could not compile: {ex.Message}");
+        }
+
+        operation.ChildBuild = build;
+        var compilation = build.Compilation ?? new DadLevelingCompilation();
+        if (compilation.Status == DadLevelingCompilationStatus.Complete)
+        {
+            return FinishLevelingOperation(
+                DadSchedulerPresetPhase.Completed,
+                $"Leveling Mode '{operation.SourceGroup.DisplayName}' completed after {Math.Max(0, operation.Iteration - 1)} child run(s): {compilation.Summary}");
+        }
+        if (compilation.Status != DadLevelingCompilationStatus.Ready || !compilation.CanStartChild)
+        {
+            return FinishLevelingOperation(
+                DadSchedulerPresetPhase.Blocked,
+                $"Leveling Mode '{operation.SourceGroup.DisplayName}' blocked before child {operation.Iteration}: {compilation.Summary}");
+        }
+        if (build.PlannerPreview?.Request == null)
+            return FinishLevelingOperation(DadSchedulerPresetPhase.Blocked, $"Leveling Mode child {operation.Iteration} did not produce an ordinary planner request.");
+        if (!string.Equals(build.PlannerPreview.Request.RequestId, compilation.ChildRequestId, StringComparison.Ordinal))
+            return FinishLevelingOperation(DadSchedulerPresetPhase.Blocked, $"Leveling Mode child {operation.Iteration} request identity did not match its frozen compilation.");
+        if (!operation.IssuedIds.Add(compilation.ChildJobId) ||
+            !operation.IssuedIds.Add(compilation.ChildRequestId))
+        {
+            return FinishLevelingOperation(DadSchedulerPresetPhase.Blocked, $"Leveling Mode child {operation.Iteration} reused a prior job or request identity.");
+        }
+
+        var childJob = operation.OuterJob.Clone();
+        childJob.JobId = compilation.ChildJobId;
+        childJob.JobType = DadSchedulerJobType.LevelingChild;
+        childJob.ParentOperationJobId = operation.OuterJob.JobId;
+        childJob.LevelingIteration = operation.Iteration;
+        childJob.CreatedAtUtc = DateTime.UtcNow;
+        childJob.ScheduleId = string.Empty;
+        childJob.ScheduleRunId = string.Empty;
+        childJob.ScheduleEntryId = string.Empty;
+        childJob.ScheduleEntryIndex = -1;
+        childJob.ScheduleRepeatIteration = 0;
+        childJob.ScheduleCadence = DadScheduleCadence.Manual;
+
+        operation.RefreshingRoster = false;
+        operation.RefreshRows = [];
+        operation.RefreshDeadlineUtc = default;
+        operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration}: {compilation.Summary}";
+        operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+        StartOrdinaryPreset(compilation.ChildGroup!, build.PlannerPreview, operation.OuterJob.DryRun, childJob);
+        currentState.ParentOperationJobId = operation.OuterJob.JobId;
+        currentState.LevelingIteration = operation.Iteration;
+        return CurrentState;
+    }
+
+    private DadSchedulerPresetState FinishLevelingOperation(DadSchedulerPresetPhase phase, string summary)
+    {
+        var operation = levelingOperation;
+        if (operation == null)
+            return CurrentState;
+
+        var outer = operation.OuterState;
+        outer.Phase = phase;
+        outer.Summary = summary;
+        outer.BlockedReason = phase is DadSchedulerPresetPhase.Blocked or DadSchedulerPresetPhase.TimedOut or DadSchedulerPresetPhase.Cancelled
+            ? summary
+            : string.Empty;
+        outer.CompletedAtUtc = DateTime.UtcNow;
+        outer.UpdatedAtUtc = outer.CompletedAtUtc.Value;
+        outer.PlannerStarted = operation.Iteration > 1 || currentState.PlannerStarted;
+        outer.PlannerRequestId = string.Empty;
+        outer.Slots = currentState.Slots.Select(static slot => slot.Clone()).ToList();
+
+        activeJob = operation.OuterJob.Clone();
+        levelingOperation = null;
+        currentState = outer;
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
+        dependencyGateCommitted = false;
+        activeSchedulerModuleId = DadModuleId.None;
+        RecordTerminalResult(currentState);
+        return CurrentState;
+    }
+
+    private DadSchedulerPresetState BuildVisibleState()
+    {
+        var operation = levelingOperation;
+        if (operation == null)
+            return currentState.Clone();
+
+        var visible = operation.OuterState.Clone();
+        visible.Phase = DadSchedulerPresetPhase.LevelingBetweenChildren;
+        visible.CompletedAtUtc = null;
+        visible.PlannerStarted = currentState.PlannerStarted;
+        visible.PlannerRequestId = currentState.PlannerRequestId;
+        visible.Slots = currentState.Slots.Select(static slot => slot.Clone()).ToList();
+        visible.UpdatedAtUtc = currentState.UpdatedAtUtc;
+        visible.Summary = operation.RefreshingRoster
+            ? $"Leveling Mode child {operation.Iteration} completed; refreshing exact job ledgers ({operation.RefreshRows.Count(static row => row.Completed)}/{operation.RefreshRows.Count})."
+            : currentState.Phase == DadSchedulerPresetPhase.StartedPlanner
+                ? $"Leveling Mode child {operation.Iteration} is running request {currentState.PlannerRequestId}; jobs and duty remain frozen until it ends."
+                : $"Leveling Mode child {operation.Iteration}: {currentState.Summary}";
+        return visible;
+    }
+
+    public DadLevelSeekEvaluation EvaluateLevelSeek(
+        DadPlannerGroup group,
+        DadPlannerRunRequestPreview plannerRequestPreview)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        ArgumentNullException.ThrowIfNull(plannerRequestPreview);
+
+        var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
+        return DadLevelSeekEvaluator.Evaluate(effectiveGroup, characterIntelligenceService.CurrentPool);
     }
 
     public void WakeForRuntimeReadiness(DadWorkerSessionId workerSessionId)
@@ -1074,7 +1370,17 @@ public sealed class DadSchedulerService
 
         var visibleRun = visibleRunProvider?.Invoke() ?? DadRunResult.Idle();
         UpdateCompletedPlannerAssignmentCleanup(visibleRun);
-        UpdateActiveScheduleRun(visibleRun);
+        if (levelingOperation != null)
+        {
+            var allowOrdinaryChildAdvance = UpdateLevelingOperation(visibleRun);
+            UpdateActiveScheduleRun(visibleRun);
+            if (levelingOperation == null || !allowOrdinaryChildAdvance)
+                return;
+        }
+        else
+        {
+            UpdateActiveScheduleRun(visibleRun);
+        }
 
         if (!currentState.IsActive)
         {
@@ -1099,6 +1405,12 @@ public sealed class DadSchedulerService
         if (currentState.JobType == DadSchedulerJobType.MapCrew)
         {
             UpdateMapCrewJob(groupResolver);
+            return;
+        }
+
+        if (currentState.Phase == DadSchedulerPresetPhase.DailyRewardPreflight)
+        {
+            UpdateDailyRewardPreflight();
             return;
         }
 
@@ -1219,6 +1531,211 @@ public sealed class DadSchedulerService
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         RecordTerminalResult(currentState);
+    }
+
+    private bool UpdateLevelingOperation(DadRunResult visibleRun)
+    {
+        var operation = levelingOperation;
+        if (operation == null)
+            return false;
+
+        if (operation.RefreshingRoster)
+        {
+            UpdateLevelingRosterRefresh();
+            return false;
+        }
+
+        DadRunResult? childRun = null;
+        if (currentState.Phase == DadSchedulerPresetPhase.StartedPlanner)
+            childRun = ResolveScheduleDadRunResult(currentState.PlannerRequestId, visibleRun);
+        var disposition = DadLevelingOperationRules.ClassifyChild(
+            currentState.Phase,
+            childRun?.Status,
+            operation.OuterJob.DryRun);
+
+        switch (disposition)
+        {
+            case DadLevelingChildDisposition.Waiting:
+                operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+                operation.OuterState.Summary = currentState.Phase == DadSchedulerPresetPhase.StartedPlanner
+                    ? $"Leveling Mode child {operation.Iteration} is waiting for exact run {currentState.PlannerRequestId} to finish."
+                    : $"Leveling Mode child {operation.Iteration}: {currentState.Summary}";
+                return currentState.IsActive;
+
+            case DadLevelingChildDisposition.CompleteDryRun:
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Completed,
+                    $"Leveling Mode dry run compiled one immutable child successfully: {operation.ChildBuild.Compilation.Summary}");
+                return false;
+
+            case DadLevelingChildDisposition.Cancel:
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Cancelled,
+                    $"Leveling Mode stopped because child {operation.Iteration} was cancelled: {FirstNonEmpty(childRun?.Summary ?? string.Empty, currentState.Summary)}");
+                return false;
+
+            case DadLevelingChildDisposition.Fail:
+                if (childRun == null)
+                    CancelNonTerminalTakeovers($"Leveling Mode child {operation.Iteration} ended before planner completion.");
+                var failedPhase = currentState.Phase == DadSchedulerPresetPhase.TimedOut || childRun?.Status == DadRunStatus.TimedOut
+                    ? DadSchedulerPresetPhase.TimedOut
+                    : DadSchedulerPresetPhase.Blocked;
+                FinishLevelingOperation(
+                    failedPhase,
+                    $"Leveling Mode stopped without replay after child {operation.Iteration} failed: {FirstNonEmpty(childRun?.FailureReason ?? string.Empty, childRun?.BlockedReason ?? string.Empty, childRun?.Summary ?? string.Empty, currentState.BlockedReason, currentState.Summary)}");
+                return false;
+
+            case DadLevelingChildDisposition.RefreshAndContinue:
+                if (HasPendingCleanup)
+                {
+                    operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration} completed; waiting for ordinary child cleanup before roster refresh.";
+                    operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+                    return false;
+                }
+                if (operation.RefreshDeadlineUtc == default)
+                    operation.RefreshDeadlineUtc = DateTime.UtcNow + TimeSpan.FromMinutes(2);
+                if (DateTime.UtcNow >= operation.RefreshDeadlineUtc)
+                {
+                    FinishLevelingOperation(
+                        DadSchedulerPresetPhase.TimedOut,
+                        $"Leveling Mode stopped after child {operation.Iteration}: exact roster refresh route did not become ready; the child will not replay.");
+                    return false;
+                }
+                BeginLevelingRosterRefresh();
+                UpdateLevelingRosterRefresh();
+                return false;
+
+            default:
+                return false;
+        }
+    }
+
+    private void BeginLevelingRosterRefresh()
+    {
+        var operation = levelingOperation;
+        if (operation == null || operation.RefreshingRoster)
+            return;
+
+        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        var rows = new List<LevelingRosterRefreshRow>();
+        foreach (var selection in operation.ChildBuild.Compilation.Slots)
+        {
+            var exact = participants
+                .Where(participant => DadRosterIdentity.SameAccount(participant.ManagedAccountKey, selection.AccountKey))
+                .Where(participant => string.Equals(participant.ActiveCharacterKey.Value, selection.CharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+                .Where(participant => string.Equals(participant.Character.CharacterKey, selection.CharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+                .Where(participant => selection.ContentId == 0 || participant.Character.ContentId == selection.ContentId)
+                .ToList();
+            if (exact.Count != 1)
+            {
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Blocked,
+                    $"Leveling Mode stopped after child {operation.Iteration}: exact world-ready refresh route for {selection.SlotId} {selection.CharacterKey.Value} was {(exact.Count == 0 ? "unavailable" : "ambiguous")}.");
+                return;
+            }
+            if (!exact[0].IsLocalClient && !transportService.IsWorkerOnline(exact[0].WorkerSessionId))
+            {
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Blocked,
+                    $"Leveling Mode stopped after child {operation.Iteration}: exact refresh route for {selection.SlotId} disconnected; the child will not replay.");
+                return;
+            }
+            if (!exact[0].WorldReadyStable)
+            {
+                operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration} completed; waiting for {selection.SlotId} to regain stable world readiness before exact roster refresh.";
+                operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            rows.Add(new LevelingRosterRefreshRow
+            {
+                Selection = selection,
+                Participant = exact[0].Clone(),
+                Command = new DadRosterRefreshCommandDto
+                {
+                    CommandId = Guid.NewGuid().ToString("N"),
+                    RequestedAtUtc = DateTime.UtcNow,
+                    AccountKey = selection.AccountKey,
+                    CharacterKey = selection.CharacterKey,
+                    ContentId = selection.ContentId,
+                    SaveAfterRefresh = true,
+                    DryRun = false,
+                },
+            });
+        }
+
+        operation.RefreshRows = rows;
+        operation.RefreshingRoster = true;
+        operation.RefreshDeadlineUtc = operation.RefreshDeadlineUtc == default
+            ? DateTime.UtcNow + TimeSpan.FromMinutes(2)
+            : operation.RefreshDeadlineUtc;
+        operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration} completed; refreshing exact job ledgers for {rows.Count} slot(s).";
+        operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private void UpdateLevelingRosterRefresh()
+    {
+        var operation = levelingOperation;
+        if (operation == null || !operation.RefreshingRoster)
+            return;
+        if (DateTime.UtcNow >= operation.RefreshDeadlineUtc)
+        {
+            FinishLevelingOperation(
+                DadSchedulerPresetPhase.TimedOut,
+                $"Leveling Mode stopped after child {operation.Iteration}: exact roster refresh timed out; the child will not replay.");
+            return;
+        }
+
+        foreach (var row in operation.RefreshRows.Where(static row => !row.Completed))
+        {
+            if (!row.Participant.IsLocalClient && !transportService.IsWorkerOnline(row.Participant.WorkerSessionId))
+            {
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Blocked,
+                    $"Leveling Mode stopped after child {operation.Iteration}: refresh route for {row.Selection.SlotId} disconnected; the child will not replay.");
+                return;
+            }
+
+            DadRosterRefreshResultDto? result;
+            try
+            {
+                result = row.Participant.IsLocalClient
+                    ? rosterCatalogService.RefreshLocalRosterCharacter(row.Command, presenceService.BuildSnapshotCopy())
+                    : transportService.SendRosterRefreshCommand(row.Participant, row.Command);
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, "[dad] Leveling Mode exact roster refresh failed for {SlotId} {CharacterKey}.", row.Selection.SlotId, row.Selection.CharacterKey.Value);
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Blocked,
+                    $"Leveling Mode stopped after child {operation.Iteration}: refresh for {row.Selection.SlotId} failed: {ex.Message}");
+                return;
+            }
+
+            if (result == null)
+                continue;
+            if (!DadLevelingOperationRules.TryValidateExactRosterRefresh(row.Command, result, out var blocker))
+            {
+                FinishLevelingOperation(
+                    DadSchedulerPresetPhase.Blocked,
+                    $"Leveling Mode stopped after child {operation.Iteration}: {blocker} The child will not replay.");
+                return;
+            }
+
+            if (!row.Participant.IsLocalClient)
+                rosterCatalogService.RecordRefreshResult(result);
+            rosterCatalogService.ApplyExactRefreshTruth(result, row.Participant);
+            row.Completed = true;
+        }
+
+        if (!operation.RefreshRows.All(static row => row.Completed))
+            return;
+
+        characterIntelligenceService.RequestPeerSnapshots();
+        operation.RefreshingRoster = false;
+        operation.RefreshRows = [];
+        operation.Iteration++;
+        StartNextLevelingChild();
     }
 
     public void UpdatePendingTakeoverCancellations()
@@ -1491,6 +2008,11 @@ public sealed class DadSchedulerService
 
     public void Cancel(string reason)
     {
+        if (levelingOperation != null)
+        {
+            CancelLevelingOperation(string.IsNullOrWhiteSpace(reason) ? "Leveling Mode cancelled." : reason);
+            return;
+        }
         if (!currentState.IsActive)
             return;
 
@@ -1501,6 +2023,8 @@ public sealed class DadSchedulerService
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
         RecordTerminalResult(currentState);
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
     }
 
     public DadSchedulerStopAllResult StopAll(string reason, TimeSpan automaticEnqueueSuppression)
@@ -1521,7 +2045,12 @@ public sealed class DadSchedulerService
             result.ActiveScheduleCancelled = true;
         }
 
-        if (currentState.IsActive)
+        if (levelingOperation != null)
+        {
+            CancelLevelingOperation(reason);
+            result.ActiveJobCancelled = true;
+        }
+        else if (currentState.IsActive)
         {
             CancelNonTerminalTakeovers(reason);
             currentState.Phase = DadSchedulerPresetPhase.Cancelled;
@@ -1540,6 +2069,10 @@ public sealed class DadSchedulerService
         }
         configuration.SchedulerQueue.Clear();
         activeJob = null;
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
         takeoverDiagnosticStates.Clear();
         nextRefreshUtc = DateTime.MinValue;
         suppressAutomaticEnqueueUntilUtc = DateTime.UtcNow +
@@ -1547,6 +2080,31 @@ public sealed class DadSchedulerService
         configuration.Save();
         result.Summary = $"Cancelled schedule={result.ActiveScheduleCancelled}, active job={result.ActiveJobCancelled}, pending jobs={result.PendingJobsCancelled}.";
         return result;
+    }
+
+    private void CancelLevelingOperation(string reason)
+    {
+        if (levelingOperation == null)
+            return;
+
+        reason = string.IsNullOrWhiteSpace(reason) ? "Leveling Mode cancelled." : reason.Trim();
+        if (currentState.Phase == DadSchedulerPresetPhase.StartedPlanner)
+        {
+            try
+            {
+                cancelActiveLevelingChild?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                log.Warning(ex, "[dad] Leveling Mode active child cancellation request failed.");
+            }
+        }
+        else if (currentState.IsActive)
+        {
+            CancelNonTerminalTakeovers(reason);
+        }
+
+        FinishLevelingOperation(DadSchedulerPresetPhase.Cancelled, reason);
     }
 
     private bool TryStartNextQueuedJob(
@@ -1970,6 +2528,7 @@ public sealed class DadSchedulerService
             ScheduleEntryId = job.ScheduleEntryId,
             ScheduleEntryIndex = job.ScheduleEntryIndex,
             ScheduleRepeatIteration = job.ScheduleRepeatIteration,
+            ScheduleCadence = job.ScheduleCadence,
         };
 
     private static IReadOnlyList<DadRosterCharacter> ResolveRosterUpdateTargets(
@@ -2049,6 +2608,210 @@ public sealed class DadSchedulerService
 
         return rebuilt;
     }
+
+    private void UpdateDailyRewardPreflight()
+    {
+        var active = dailyRewardPreflight;
+        if (active == null || active.CheckedSlotCount <= 0 || currentState.Slots.Count != active.CheckedSlotCount)
+        {
+            ContinueAfterDailyRewardPreflight("Daily reward preflight state was unavailable; running the preset normally.");
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now >= active.SlotDeadlineUtc)
+        {
+            ContinueAfterDailyRewardPreflight("Daily reward preflight timed out; running the preset normally.");
+            return;
+        }
+
+        currentState.Slots = RebuildActiveSlots(currentState.Slots);
+        currentState.UpdatedAtUtc = now;
+        if (active.CurrentSlotIndex < 0 || active.CurrentSlotIndex >= currentState.Slots.Count)
+        {
+            ContinueAfterDailyRewardPreflight("Daily reward preflight cursor was invalid; running the preset normally.");
+            return;
+        }
+
+        var slot = currentState.Slots[active.CurrentSlotIndex];
+        if (!string.IsNullOrWhiteSpace(slot.BlockedReason))
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight could not prove {slot.SlotId}: {slot.BlockedReason} Running the preset normally.");
+            return;
+        }
+
+        if (!AdvanceWakeTakeoverPipelines([slot], out var takeoverBlocker))
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight wake was uncertain for {slot.SlotId}: {takeoverBlocker} Running the preset normally.");
+            return;
+        }
+
+        if (!slot.Ready)
+        {
+            currentState.Summary = $"DailyReset reward preflight is waking checked row {active.CurrentSlotIndex + 1}/{active.CheckedSlotCount} ({slot.SlotId}) without touching unchecked rows.";
+            return;
+        }
+
+        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        var participant = participants.FirstOrDefault(candidate =>
+            !slot.MatchedWorkerSessionId.IsEmpty &&
+            string.Equals(candidate.WorkerSessionId.Value, slot.MatchedWorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+            (candidate.IsLocalClient || transportService.IsWorkerOnline(candidate.WorkerSessionId)));
+        if (participant == null ||
+            !participant.WorldReadyStable ||
+            !participant.IsAvailable ||
+            !DadRosterIdentity.SameAccount(participant.ManagedAccountKey, slot.RequiredAccountKey) ||
+            !string.Equals(participant.ActiveCharacterKey.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(participant.Character.CharacterKey, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight lost the exact world-ready route for {slot.SlotId}; running the preset normally.");
+            return;
+        }
+
+        if (active.ActiveRequest == null)
+        {
+            var contentId = ResolveFrozenSlotContentId(slot);
+            if (contentId == 0 || participant.Character.ContentId != contentId)
+            {
+                ContinueAfterDailyRewardPreflight($"Daily reward preflight could not prove the exact Content ID for {slot.SlotId}; running the preset normally.");
+                return;
+            }
+
+            active.ActiveRequest = new DadRouletteRewardProbeRequestDto
+            {
+                OperationId = Guid.NewGuid().ToString("N"),
+                Operation = DadRouletteRewardProbeOperation.Inspect,
+                SchedulerRunId = currentState.SchedulerRunId,
+                ScheduleId = currentState.ScheduleId,
+                ScheduleRunId = currentState.ScheduleRunId,
+                ScheduleEntryId = currentState.ScheduleEntryId,
+                SlotId = slot.SlotId,
+                RouteWorkerSessionId = participant.WorkerSessionId,
+                AccountKey = slot.RequiredAccountKey,
+                CharacterKey = slot.RequiredCharacterKey,
+                CharacterContentId = contentId,
+                RouletteId = active.Target.RouletteId,
+                RouletteKey = active.Target.Key,
+                RequestedAtUtc = now,
+            };
+            active.SlotDeadlineUtc = now + ResolveDailyRewardPreflightTimeout();
+        }
+
+        var request = active.ActiveRequest;
+        if (!string.Equals(request.RouteWorkerSessionId.Value, participant.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ||
+            !transportService.IsWorkerOnline(participant.WorkerSessionId))
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight route changed for {slot.SlotId}; running the preset normally.");
+            return;
+        }
+
+        var response = transportService.SendRouletteRewardProbe(participant, request);
+        if (response == null)
+        {
+            currentState.Summary = $"DailyReset reward preflight is waiting for exact reward truth from {slot.SlotId} ({active.CurrentSlotIndex + 1}/{active.CheckedSlotCount}).";
+            return;
+        }
+
+        if (!DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, response, now, out var responseFailure))
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight discarded a stale or contradictory reply for {slot.SlotId}: {responseFailure} Running the preset normally.");
+            return;
+        }
+
+        if (response.Outcome == DadRouletteRewardProbeOutcome.Pending)
+        {
+            currentState.Summary = $"DailyReset reward preflight is waiting for stable exact roulette identity and reward counts from {slot.SlotId}.";
+            return;
+        }
+
+        var receivedCount = active.ReceivedSlotCount +
+                            (response.Outcome == DadRouletteRewardProbeOutcome.Received ? 1 : 0);
+        var disposition = DadDailyRewardPreflightRules.Resolve(
+            active.CheckedSlotCount,
+            receivedCount,
+            routeAvailable: true,
+            timedOut: false,
+            response.Outcome);
+        if (disposition == DadDailyRewardPreflightDisposition.RunNormally)
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight for {slot.SlotId} returned {response.Outcome}: {response.Summary} Running the preset normally.");
+            return;
+        }
+
+        if (disposition == DadDailyRewardPreflightDisposition.SkipEntry)
+        {
+            active.ReceivedSlotCount = receivedCount;
+            active.Evidence.Add($"{slot.SlotId} {response.ReceivedRewardCount}/{response.MaxRewardCount}");
+            SkipForDailyReward(active);
+            return;
+        }
+
+        if (disposition == DadDailyRewardPreflightDisposition.ContinueToNextCheckedSlot)
+        {
+            active.ReceivedSlotCount = receivedCount;
+            active.Evidence.Add($"{slot.SlotId} {response.ReceivedRewardCount}/{response.MaxRewardCount}");
+            active.CurrentSlotIndex++;
+            active.ActiveRequest = null;
+            active.SlotDeadlineUtc = now + ResolveDailyRewardPreflightTimeout();
+            currentState.Summary = $"DailyReset reward preflight proved {active.ReceivedSlotCount}/{active.CheckedSlotCount} checked row(s) received; advancing to the next checked row.";
+        }
+    }
+
+    private void ContinueAfterDailyRewardPreflight(string reason)
+    {
+        CancelActiveDailyRewardProbe();
+        dailyRewardPreflight = null;
+        currentState.Slots = frozenOrdinarySlots.Select(static slot => slot.Clone()).ToList();
+        frozenOrdinarySlots = [];
+        InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
+        dependencyGateCommitted = false;
+        currentState.Phase = DadSchedulerPresetPhase.Resolving;
+        currentState.Summary = reason;
+        currentState.BlockedReason = string.Empty;
+        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        nextRefreshUtc = DateTime.MinValue;
+        LogSchedulerPhaseTransition();
+    }
+
+    private void SkipForDailyReward(DailyRewardPreflightSession active)
+    {
+        const string cleanupReason = "DailyReset entry skipped after exact received roulette reward preflight.";
+        CancelNonTerminalTakeovers(cleanupReason);
+        currentState.Phase = DadSchedulerPresetPhase.Skipped;
+        currentState.SkipKind = DadSchedulerSkipKind.DailyRouletteReward;
+        currentState.Summary = $"Skipped preset '{currentState.PresetName}': every checked effective row has received Daily Roulette #{active.Target.RouletteId} reward ({string.Join(", ", active.Evidence)}).";
+        currentState.BlockedReason = string.Empty;
+        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
+        RecordTerminalResult(currentState);
+    }
+
+    private void CancelActiveDailyRewardProbe()
+    {
+        var request = dailyRewardPreflight?.ActiveRequest;
+        if (request == null)
+            return;
+
+        var cancel = request.Clone();
+        cancel.Operation = DadRouletteRewardProbeOperation.Cancel;
+        var participant = new DadParticipantSnapshot
+        {
+            WorkerSessionId = cancel.RouteWorkerSessionId,
+        };
+        _ = transportService.SendRouletteRewardProbe(participant, cancel);
+    }
+
+    private TimeSpan ResolveDailyRewardPreflightTimeout()
+        => TimeSpan.FromSeconds(Math.Clamp(
+            configuration.ParticipantReadyTimeoutSeconds <= 0
+                ? 300
+                : configuration.ParticipantReadyTimeoutSeconds,
+            30,
+            1800));
 
     private static DadPlannerGroup BuildEffectiveSchedulerGroup(
         DadPlannerGroup group,
@@ -3140,6 +3903,8 @@ public sealed class DadSchedulerService
     private void BlockActive(string reason)
     {
         CancelNonTerminalTakeovers(reason);
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
         currentState.Phase = DadSchedulerPresetPhase.Blocked;
         currentState.Summary = string.IsNullOrWhiteSpace(reason) ? "Scheduler blocked." : reason;
         currentState.BlockedReason = currentState.Summary;
@@ -3150,6 +3915,7 @@ public sealed class DadSchedulerService
 
     private void CancelNonTerminalTakeovers(string reason)
     {
+        CancelActiveDailyRewardProbe();
         if (string.IsNullOrWhiteSpace(currentState.SchedulerRunId))
             return;
 
@@ -3243,8 +4009,8 @@ public sealed class DadSchedulerService
 
         return DadSchedulerSubmissionRules.FindDuplicate(
             groupId,
-            activeJob,
-            currentState.IsActive,
+            levelingOperation?.OuterJob ?? activeJob,
+            IsSchedulerActive,
             configuration.SchedulerQueue,
             PendingCleanupJobs())
             ?.Job;
@@ -3570,9 +4336,28 @@ public sealed class DadSchedulerService
                     state,
                     schedule.Entries,
                     entrySucceeded: true,
-                    terminalSummary: $"Schedule entry '{state.CurrentPresetName}' was skipped because every targeted row already met its level target.",
+                    terminalSummary: result.SkipKind == DadSchedulerSkipKind.DailyRouletteReward
+                        ? $"Schedule entry '{state.CurrentPresetName}' was skipped because every checked effective row already received the selected Daily Roulette reward."
+                        : $"Schedule entry '{state.CurrentPresetName}' was skipped because every targeted row already met its level target.",
                     now,
                     entrySkipped: true);
+                configuration.ActiveScheduleRun = advanced;
+                if (advanced.Status == DadScheduleRunStatus.Completed)
+                    FinalizeScheduleRun(advanced);
+                else
+                    configuration.Save();
+                return;
+            }
+
+            if (result.JobType == DadSchedulerJobType.LevelingOperation &&
+                result.FinalPhase == DadSchedulerPresetPhase.Completed)
+            {
+                var advanced = DadScheduleRules.AdvanceAfterEntry(
+                    state,
+                    schedule.Entries,
+                    entrySucceeded: true,
+                    terminalSummary: $"Schedule Leveling Mode entry '{state.CurrentPresetName}' completed its full job-rotation plan.",
+                    now);
                 configuration.ActiveScheduleRun = advanced;
                 if (advanced.Status == DadScheduleRunStatus.Completed)
                     FinalizeScheduleRun(advanced);
@@ -3601,6 +4386,17 @@ public sealed class DadSchedulerService
             configuration.ActiveScheduleRun = state;
             configuration.Save();
             TryProcessWaitingDadRun(schedule, visibleRun, now);
+            return;
+        }
+
+        if (levelingOperation != null &&
+            string.Equals(levelingOperation.OuterJob.JobId, state.ActiveSchedulerJobId, StringComparison.OrdinalIgnoreCase))
+        {
+            var visible = BuildVisibleState();
+            state.Phase = DadScheduleRunPhase.WaitingForScheduler;
+            state.Summary = $"Schedule '{state.ScheduleName}' waiting for Leveling Mode: {visible.Summary}";
+            state.UpdatedAtUtc = now;
+            configuration.ActiveScheduleRun = state;
             return;
         }
 
@@ -3696,6 +4492,7 @@ public sealed class DadSchedulerService
             ScheduleEntryId = entry.EntryId,
             ScheduleEntryIndex = state.CurrentEntryIndex,
             ScheduleRepeatIteration = state.RepeatIteration,
+            ScheduleCadence = schedule.Cadence,
         };
         job.StatusSummary = $"Queued schedule '{schedule.DisplayName}' entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}/{entry.RepeatCount}: '{group.DisplayName}'.";
         configuration.SchedulerQueue.Add(job);
@@ -3868,6 +4665,9 @@ public sealed class DadSchedulerService
             ScheduleEntryId = job.ScheduleEntryId,
             ScheduleEntryIndex = job.ScheduleEntryIndex,
             ScheduleRepeatIteration = job.ScheduleRepeatIteration,
+            ScheduleCadence = job.ScheduleCadence,
+            ParentOperationJobId = job.ParentOperationJobId,
+            LevelingIteration = job.LevelingIteration,
         });
     }
 
@@ -3896,6 +4696,10 @@ public sealed class DadSchedulerService
             ScheduleEntryId = state.ScheduleEntryId,
             ScheduleEntryIndex = state.ScheduleEntryIndex,
             ScheduleRepeatIteration = state.ScheduleRepeatIteration,
+            ScheduleCadence = state.ScheduleCadence,
+            SkipKind = state.SkipKind,
+            ParentOperationJobId = state.ParentOperationJobId,
+            LevelingIteration = state.LevelingIteration,
         });
     }
 
@@ -4025,6 +4829,10 @@ public sealed class DadSchedulerService
             result.ScheduleId = result.ScheduleId?.Trim() ?? string.Empty;
             result.ScheduleRunId = result.ScheduleRunId?.Trim() ?? string.Empty;
             result.ScheduleEntryId = result.ScheduleEntryId?.Trim() ?? string.Empty;
+            if (!Enum.IsDefined(result.ScheduleCadence))
+                result.ScheduleCadence = DadScheduleCadence.Manual;
+            if (!Enum.IsDefined(result.SkipKind))
+                result.SkipKind = DadSchedulerSkipKind.None;
         }
 
         TrimSchedulerHistory();
@@ -4066,6 +4874,8 @@ public sealed class DadSchedulerService
             job.ScheduleId = job.ScheduleId?.Trim() ?? string.Empty;
             job.ScheduleRunId = job.ScheduleRunId?.Trim() ?? string.Empty;
             job.ScheduleEntryId = job.ScheduleEntryId?.Trim() ?? string.Empty;
+            if (!Enum.IsDefined(job.ScheduleCadence))
+                job.ScheduleCadence = DadScheduleCadence.Manual;
             job.TargetCharacters ??= [];
             job.TargetCharacterKeys ??= [];
             job.TargetAccountKeys ??= [];

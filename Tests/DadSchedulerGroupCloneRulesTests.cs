@@ -52,12 +52,28 @@ public sealed class DadSchedulerGroupCloneRulesTests
             DutyExpectedPartySize = 4,
             RouletteTarget = target,
             StopPolicy = new DadRunStopPolicy { AfterRuns = 2 },
+            LevelingMode = new DadLevelingModeOptions
+            {
+                Enabled = true,
+                GoalLevel = 90,
+                JobOrder = DadLevelingJobOrder.HighestBelowGoal,
+                DutyThresholds =
+                [
+                    new DadLevelingDutyThreshold
+                    {
+                        MinimumLevel = 50,
+                        ContentFinderConditionId = 777,
+                        DutyDisplayName = "Deep Dungeon",
+                    },
+                ],
+            },
             Slots =
             [
                 new DadPlannerGroupSlot
                 {
                     SlotId = "Slot1",
                     RequiredCharacterKey = new DadCharacterKey("Leader@Alpha"),
+                    SkipIfDailyRouletteRewardReceived = true,
                     CharacterLoadInstruction = new DadCharacterLoadInstruction { CommandTemplate = "/load leader" },
                 },
             ],
@@ -78,12 +94,21 @@ public sealed class DadSchedulerGroupCloneRulesTests
         Assert.Equal("ContentRoulette:1", clone.RouletteTarget.Key);
         Assert.Equal("Leveling", clone.RouletteTarget.DisplayName);
         Assert.NotSame(source.StopPolicy, clone.StopPolicy);
+        Assert.NotSame(source.LevelingMode, clone.LevelingMode);
+        Assert.NotSame(source.LevelingMode.DutyThresholds[0], clone.LevelingMode.DutyThresholds[0]);
+        Assert.True(clone.LevelingMode.Enabled);
+        Assert.Equal(90, clone.LevelingMode.GoalLevel);
+        Assert.Equal(DadLevelingJobOrder.HighestBelowGoal, clone.LevelingMode.JobOrder);
+        Assert.Equal((uint)777, Assert.Single(clone.LevelingMode.DutyThresholds).ContentFinderConditionId);
         Assert.NotSame(source.Slots[0], clone.Slots[0]);
         Assert.NotSame(source.Slots[0].CharacterLoadInstruction, clone.Slots[0].CharacterLoadInstruction);
+        Assert.True(clone.Slots[0].SkipIfDailyRouletteRewardReceived);
 
         target.RouletteId = 3;
         source.Slots[0].CharacterLoadInstruction.CommandTemplate = "/mutated";
+        source.LevelingMode.DutyThresholds[0].DutyDisplayName = "mutated";
         Assert.Equal((uint)1, clone.RouletteTarget.RouletteId);
         Assert.Equal("/load leader", clone.Slots[0].CharacterLoadInstruction.CommandTemplate);
+        Assert.Equal("Deep Dungeon", clone.LevelingMode.DutyThresholds[0].DutyDisplayName);
     }
 }

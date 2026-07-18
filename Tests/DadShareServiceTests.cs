@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using dad.Models;
 using dad.Services;
 using Xunit;
@@ -35,7 +36,14 @@ public sealed class DadShareServiceTests
         Assert.Equal(source.RunFamily, transfer.RunFamily);
         Assert.Equal(source.RouletteTarget.RouletteId, transfer.RouletteTarget.RouletteId);
         Assert.Equal(source.StopPolicy.Mode, transfer.StopPolicy.Mode);
+        Assert.True(transfer.LevelingMode.Enabled);
+        Assert.Equal(source.LevelingMode.GoalLevel, transfer.LevelingMode.GoalLevel);
+        Assert.Equal(source.LevelingMode.JobOrder, transfer.LevelingMode.JobOrder);
+        Assert.Equal(
+            source.LevelingMode.DutyThresholds.Select(static row => (row.MinimumLevel, row.ContentFinderConditionId)),
+            transfer.LevelingMode.DutyThresholds.Select(static row => (row.MinimumLevel, row.ContentFinderConditionId)));
         Assert.Equal(source.MapMode, transfer.MapMode);
+        Assert.Equal(source.Slots.Select(static slot => slot.SkipIfDailyRouletteRewardReceived), transfer.Slots.Select(static slot => slot.SkipIfDailyRouletteRewardReceived));
         Assert.Equal(commands, transfer.CompletionActions!.Commands);
         Assert.Equal(source.CompletionActions.Utilities.GrandCompanyHandInCommand, transfer.CompletionActions.Utilities.GrandCompanyHandInCommand);
         Assert.DoesNotContain("Alice Example", transfer.DisplayName, StringComparison.OrdinalIgnoreCase);
@@ -75,6 +83,36 @@ public sealed class DadShareServiceTests
             Assert.False(slot.CharacterLoadInstruction.Enabled);
         });
         Assert.True(DadSharedPlanRules.HasUnresolvedPlaceholders(imported));
+        Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
+        Assert.False(imported.Slots[1].SkipIfDailyRouletteRewardReceived);
+        Assert.True(imported.LevelingMode.Enabled);
+        Assert.Equal(DadLevelingJobOrder.HighestBelowGoal, imported.LevelingMode.JobOrder);
+        Assert.Equal((uint)777, Assert.Single(imported.LevelingMode.DutyThresholds).ContentFinderConditionId);
+    }
+
+    [Fact]
+    public void SchemaTwoExportsRewardOptInWhileSchemaOneWithoutFieldImportsUnchecked()
+    {
+        var service = CreateService();
+        var source = BuildPlan(PlanA, "Plan");
+        Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
+        Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var current, out error), error);
+        Assert.Equal(2, current!.Schema);
+        Assert.True(current.Plan!.Slots[0].SkipIfDailyRouletteRewardReceived);
+
+        var legacy = JsonNode.Parse(DecodeJson(encoded))!.AsObject();
+        legacy["schema"] = 1;
+        foreach (var slot in legacy["plan"]!["slots"]!.AsArray())
+            slot!.AsObject().Remove("skipIfDailyRouletteRewardReceived");
+        legacy["plan"]!.AsObject().Remove("levelingMode");
+        var legacyEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(legacy.ToJsonString()));
+
+        Assert.True(service.TryDecode(legacyEncoded, DadShareConstants.PlanKind, out var decoded, out error), error);
+        var imported = Assert.Single(service.Apply(decoded!, [], []).PlannerGroups);
+        Assert.All(imported.Slots, static slot => Assert.False(slot.SkipIfDailyRouletteRewardReceived));
+        Assert.False(imported.LevelingMode.Enabled);
+        Assert.Equal(DadLevelingJobOrder.LowestFirst, imported.LevelingMode.JobOrder);
+        Assert.Empty(imported.LevelingMode.DutyThresholds);
     }
 
     [Fact]
@@ -498,6 +536,21 @@ public sealed class DadShareServiceTests
                 TargetCharacterLabel = "Alice Example",
                 SafetyCap = 20,
             },
+            LevelingMode = new DadLevelingModeOptions
+            {
+                Enabled = true,
+                GoalLevel = 90,
+                JobOrder = DadLevelingJobOrder.HighestBelowGoal,
+                DutyThresholds =
+                [
+                    new DadLevelingDutyThreshold
+                    {
+                        MinimumLevel = 50,
+                        ContentFinderConditionId = 777,
+                        DutyDisplayName = "Alice Example leveling duty",
+                    },
+                ],
+            },
             CompletionActions = new DadCompletionActions
             {
                 PlaySound = true,
@@ -532,6 +585,7 @@ public sealed class DadShareServiceTests
             RequiredJobId = job,
             AdsLootMode = DadAdsLootMode.Greed,
             LevelSeekTarget = 100,
+            SkipIfDailyRouletteRewardReceived = id == "Slot1",
             WakePolicy = DadSchedulerWakePolicy.LoadCharacterIfOnline,
             LaunchProfileId = $"profile-{id}",
             CharacterLoadInstruction = new DadCharacterLoadInstruction

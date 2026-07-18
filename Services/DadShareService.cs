@@ -212,7 +212,7 @@ public sealed class DadShareService
             return Fail("Share payload is empty.", out error);
         if (!string.Equals(envelope.Format, DadShareConstants.Format, StringComparison.Ordinal))
             return Fail($"Unknown share format '{envelope.Format}'.", out error);
-        if (envelope.Schema != DadShareConstants.Schema)
+        if (envelope.Schema is < DadShareConstants.MinimumSupportedSchema or > DadShareConstants.Schema)
             return Fail($"Unsupported share schema {envelope.Schema}.", out error);
         if (envelope.Kind is not DadShareConstants.PlanKind and not DadShareConstants.ScheduleKind)
             return Fail($"Unknown share kind '{envelope.Kind}'.", out error);
@@ -576,6 +576,21 @@ public sealed class DadShareService
                 StopItemId = stop.StopItemId,
                 StopItemTargetCount = stop.StopItemTargetCount,
             },
+            LevelingMode = new DadShareLevelingModeDto
+            {
+                Enabled = source.LevelingMode?.Enabled ?? false,
+                GoalLevel = source.LevelingMode?.GoalLevel ?? DadRunStopPolicy.DefaultTargetLevel,
+                JobOrder = source.LevelingMode?.JobOrder ?? DadLevelingJobOrder.LowestFirst,
+                DutyThresholds = (source.LevelingMode?.DutyThresholds ?? [])
+                    .Where(static threshold => threshold != null)
+                    .Select(threshold => new DadShareLevelingDutyThresholdDto
+                    {
+                        MinimumLevel = threshold.MinimumLevel,
+                        ContentFinderConditionId = threshold.ContentFinderConditionId,
+                        DutyDisplayName = privacy.Sanitize(threshold.DutyDisplayName),
+                    })
+                    .ToList(),
+            },
             CompletionActions = BuildCompletionActionsDto(source.CompletionActions ?? completionFallback),
             Slots = slots,
             IsTemplate = source.IsTemplate,
@@ -642,6 +657,7 @@ public sealed class DadShareService
             RequiredJobId = source.RequiredJobId,
             AdsLootMode = source.AdsLootMode,
             LevelSeekTarget = source.LevelSeekTarget,
+            SkipIfDailyRouletteRewardReceived = source.SkipIfDailyRouletteRewardReceived,
             WakePolicy = source.WakePolicy,
             AllowSubstitution = source.AllowSubstitution,
         };
@@ -706,6 +722,21 @@ public sealed class DadShareService
                 StopItemId = source.StopPolicy.StopItemId,
                 StopItemTargetCount = source.StopPolicy.StopItemTargetCount,
             }.Normalize(),
+            LevelingMode = new DadLevelingModeOptions
+            {
+                Enabled = source.LevelingMode?.Enabled ?? false,
+                GoalLevel = source.LevelingMode?.GoalLevel ?? DadRunStopPolicy.DefaultTargetLevel,
+                JobOrder = source.LevelingMode?.JobOrder ?? DadLevelingJobOrder.LowestFirst,
+                DutyThresholds = (source.LevelingMode?.DutyThresholds ?? [])
+                    .Where(static threshold => threshold != null)
+                    .Select(static threshold => new DadLevelingDutyThreshold
+                    {
+                        MinimumLevel = threshold.MinimumLevel,
+                        ContentFinderConditionId = threshold.ContentFinderConditionId,
+                        DutyDisplayName = threshold.DutyDisplayName,
+                    })
+                    .ToList(),
+            }.Normalize(),
             SharedStopTargetIdentityToken = source.StopPolicy.TargetCharacterToken,
             CompletionActions = MaterializeCompletionActions(source.CompletionActions),
             Slots = source.Slots.Select(slot => new DadPlannerGroupSlot
@@ -718,6 +749,7 @@ public sealed class DadShareService
                 RequiredJobId = slot.RequiredJobId,
                 AdsLootMode = slot.AdsLootMode,
                 LevelSeekTarget = slot.LevelSeekTarget,
+                SkipIfDailyRouletteRewardReceived = slot.SkipIfDailyRouletteRewardReceived,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = string.Empty,
                 CharacterLoadInstruction = new DadCharacterLoadInstruction(),
@@ -874,6 +906,19 @@ public sealed class DadShareService
             !ValidateText(plan.StopPolicy.TargetCharacterLabel, "Stop target label", 192, true, out error))
         {
             return false;
+        }
+        if (plan.LevelingMode == null || !IsDefined(plan.LevelingMode.JobOrder))
+            return Fail("Plan Leveling Mode settings are invalid.", out error);
+        if (plan.LevelingMode.GoalLevel is < 1 or > 999)
+            return Fail("Plan Leveling Mode goal is invalid.", out error);
+        if (plan.LevelingMode.DutyThresholds == null || plan.LevelingMode.DutyThresholds.Count > 256)
+            return Fail("Plan contains too many Leveling Mode duty thresholds.", out error);
+        foreach (var threshold in plan.LevelingMode.DutyThresholds)
+        {
+            if (threshold == null || threshold.MinimumLevel is < 1 or > 999 || threshold.ContentFinderConditionId == 0)
+                return Fail("Plan contains an invalid Leveling Mode duty threshold.", out error);
+            if (!ValidateText(threshold.DutyDisplayName, "Leveling Mode duty name", MaxTextLength, true, out error))
+                return false;
         }
         if (plan.Slots == null || plan.Slots.Count > DadShareConstants.MaxSlotsPerPlan)
             return Fail("Plan contains too many crew rows.", out error);

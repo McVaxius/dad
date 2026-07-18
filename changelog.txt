@@ -1,5 +1,54 @@
 # dad — changelog
 
+## 2026-07-17 — I41–I43 Leveling Mode job, duty, and loop controller
+- Added a default-off saved-preset Leveling Mode for Duty Support, Trust, and Premade Duty lanes with one plan goal,
+  deterministic lowest-first or highest-below-goal job order, and an ordered minimum-level/duty threshold table.
+  Plan/share schema v2 preserves the nested settings and legacy shares/configurations remain disabled by default.
+- Added strict compilation from fixed account/character rows and complete XADB ledgers. Eligible jobs are unlocked full
+  combat jobs matching each row's role (`Any` spans roles); base classes, limited jobs, missing jobs, partial/unknown
+  ledgers, invalid/out-of-order thresholds, unavailable or lane-incompatible duties, party-size mismatches, and missing
+  applicable thresholds block without choosing a fallback. Completed rows retain a compatible current job or use their
+  highest compatible job as fillers, and the plan completes only when every active row is complete.
+- Added a runtime-only outer controller that freezes a unique ordinary one-run child with the selected jobs, synced duty,
+  and existing lane executor. Successful children refresh exact XADB truth before recompilation; child failure, timeout,
+  route loss, or cancellation terminates without replay. Existing child reconnect behavior is retained, parties are not
+  retained between children, and no Leveling-specific reload persistence, resume cursor, runner, IPC, or deployment path
+  was added.
+- Added planner controls and live compiler evidence. While enabled, fixed job, fixed duty, LevelSeek, and ordinary stop
+  controls are visibly disabled without deleting their saved values. Plugin/manifest versions and release artifacts are
+  unchanged.
+
+## 2026-07-17 — I47 Daily-reset roulette reward preflight
+- Added a default-off **Daily** checkbox per Daily Roulette planner row and preserved it through normalization,
+  substitutes, effective-slot projection, clone/save, and schema-v2 Plan/Schedule sharing; schema-v1 shares import it
+  unchecked. It activates only for a Daily Roulette preset materialized by a `DailyReset` Schedule.
+- LevelSeek remains the first skip decision. The reward preflight wakes only checked effective rows, one at a time,
+  and uses an internal typed request with exact schedule, run, entry, slot, worker route, account, character, Content ID,
+  roulette ID/key, operation ID, and timestamp echoes. Stale, contradictory, disconnected, timed-out, unknown, and
+  not-received outcomes all fail open to ordinary preset execution.
+- A worker navigates Duty Finder only when it proved the window was closed, reads a pre-existing window only when it
+  already shows the exact roulette, requires two stable exact identity/reward observations, and closes only a window
+  DAD opened. The Schedule entry skips only when every checked row returns received, records a distinct reward skip
+  kind/summary through the existing skipped-entry counter, and reuses existing wake cancellation cleanup.
+- Existing public IPC, protocol version, ordinary worker commands, queue executors, non-DailyReset execution,
+  manifests, plugin version, and release artifacts are unchanged.
+
+## 2026-07-17 — I38 AutoRetainer-owned title-idle login
+- Added an isolated logged-out wake branch that requires the exact connected stable-account route and configured
+  catalog character, fresh ready `_TitleMenu` evidence with no navigation/connection/error overlay, readable idle
+  AutoRetainer IPC, Multi Mode ownership, and no conflicting suppression or automation hold.
+- The branch sends `/ays m d` once, verifies Multi Mode is disabled, then sends the existing exact-character relog
+  once and waits without replay for world readiness. Generic/manual title screens, unknown or contradictory state,
+  route loss, and cancellation issue no later command; DAD never launches a closed process.
+- The existing in-world VERMAXION/AutoRetainer reservation, reset, relog, home-world, cleanup, IPC, configuration,
+  manifest, and version behavior is unchanged.
+
+## 2026-07-17 — I39 LevelSeek Schedule indication
+- Schedule preset rows now turn orange only when the scheduler's current substitute-bound LevelSeek evaluation proves
+  every targeted row is satisfied. Hovering the preset shows the evaluator summary and exact per-slot evidence.
+- Below-target, unknown, absent, untargeted, and missing-preset rows retain normal coloring. The indication is transient;
+  scheduler execution, skip history, persisted Schedule data, public IPC, manifests, and versions are unchanged.
+
 ## 2026-07-17 — P1197 worker acknowledgement race and Schedule resume
 - Remote execution now waits for the worker's real exact-command acknowledgement before status polling. Older-run or
   older-command replies are discarded and polled again; current-command role, module, worker, and identity conflicts

@@ -3,7 +3,8 @@ namespace dad.Models;
 public static class DadShareConstants
 {
     public const string Format = "dad-share";
-    public const int Schema = 1;
+    public const int MinimumSupportedSchema = 1;
+    public const int Schema = 2;
     public const string PlanKind = "plan";
     public const string ScheduleKind = "schedule";
     public const int MaxEncodedCharacters = 1_048_576;
@@ -81,11 +82,27 @@ public sealed class DadSharePlanDto
     public string MogtomeDutyPolicy { get; set; } = string.Empty;
     public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadShareStopPolicyDto StopPolicy { get; set; } = new();
+    public DadShareLevelingModeDto LevelingMode { get; set; } = new();
     public DadShareCompletionActionsDto? CompletionActions { get; set; }
     public List<DadSharePlanSlotDto> Slots { get; set; } = [];
     public bool IsTemplate { get; set; }
     public string MapRunTemplate { get; set; } = string.Empty;
     public DadMapCrewJobMode MapMode { get; set; } = DadMapCrewJobMode.ManualMapReady;
+}
+
+public sealed class DadShareLevelingModeDto
+{
+    public bool Enabled { get; set; }
+    public int GoalLevel { get; set; } = DadRunStopPolicy.DefaultTargetLevel;
+    public DadLevelingJobOrder JobOrder { get; set; } = DadLevelingJobOrder.LowestFirst;
+    public List<DadShareLevelingDutyThresholdDto> DutyThresholds { get; set; } = [];
+}
+
+public sealed class DadShareLevelingDutyThresholdDto
+{
+    public int MinimumLevel { get; set; }
+    public uint ContentFinderConditionId { get; set; }
+    public string DutyDisplayName { get; set; } = string.Empty;
 }
 
 public sealed class DadSharePlanSlotDto
@@ -99,6 +116,7 @@ public sealed class DadSharePlanSlotDto
     public uint? RequiredJobId { get; set; }
     public DadAdsLootMode AdsLootMode { get; set; } = DadAdsLootMode.NoChange;
     public int? LevelSeekTarget { get; set; }
+    public bool SkipIfDailyRouletteRewardReceived { get; set; }
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public bool AllowSubstitution { get; set; }
 }

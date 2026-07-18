@@ -33,6 +33,8 @@ internal sealed class DadPresetCrewEditor
     {
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
         var showProfile = plugin.Configuration.DebugUiEnabled;
+        var showDailyReward = group.ActivityMode == DadPlannerActivityMode.DailyRoulette;
+        var levelingMode = group.LevelingMode?.Enabled == true;
 
         var style = ImGui.GetStyle();
         var slotWidth = FixedTextWidth("Slot56");
@@ -41,13 +43,14 @@ internal sealed class DadPresetCrewEditor
         var roleWidth = FixedFrameWidth("PhysicalRanged");
         var lootWidth = FixedFrameWidth("NoChange");
         var levelWidth = FixedFrameWidth("999");
+        var rewardWidth = FixedFrameWidth("Daily");
         var wakeWidth = MathF.Max(FixedFrameWidth("Online"), FixedFrameWidth("Wake/relog"));
         var actionWidth = ButtonWidth("+ Sub") + style.ItemSpacing.X + ButtonWidth("Remove");
 
         ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(2f, 2f));
         var tableOpen = ImGui.BeginTable(
             $"{idPrefix}-crew-rows",
-            DadDebugUiRules.PresetCrewColumnCount(showProfile),
+            DadDebugUiRules.PresetCrewColumnCount(showProfile, showDailyReward),
             ImGuiTableFlags.Borders |
             ImGuiTableFlags.RowBg |
             ImGuiTableFlags.Resizable |
@@ -67,11 +70,13 @@ internal sealed class DadPresetCrewEditor
         ImGui.TableSetupColumn("Job", ImGuiTableColumnFlags.WidthFixed, jobWidth);
         ImGui.TableSetupColumn("Loot", ImGuiTableColumnFlags.WidthFixed, lootWidth);
         ImGui.TableSetupColumn("Lv.", ImGuiTableColumnFlags.WidthFixed, levelWidth);
+        if (showDailyReward)
+            ImGui.TableSetupColumn("Daily", ImGuiTableColumnFlags.WidthFixed, rewardWidth);
         ImGui.TableSetupColumn("Wake", ImGuiTableColumnFlags.WidthFixed, wakeWidth);
         if (showProfile)
             ImGui.TableSetupColumn("Profile", ImGuiTableColumnFlags.WidthStretch, 0.9f);
         ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, actionWidth);
-        DrawHeaders(showProfile);
+        DrawHeaders(showProfile, showDailyReward);
 
         for (var index = 0; index < group.Slots.Count; index++)
         {
@@ -101,13 +106,27 @@ internal sealed class DadPresetCrewEditor
             DrawRole(plannerSnapshot, group, slot, index, idPrefix, changed);
 
             ImGui.TableNextColumn();
+            ImGui.BeginDisabled(levelingMode);
             DrawJob(plannerSnapshot, group, slot, index, idPrefix, changed);
+            ImGui.EndDisabled();
+            if (levelingMode && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Leveling Mode selects and freezes the next eligible job from the exact XADB ledger. The saved fixed job is preserved for ordinary runs.");
 
             ImGui.TableNextColumn();
             DrawLoot(group, slot, index, idPrefix, changed);
 
             ImGui.TableNextColumn();
+            ImGui.BeginDisabled(levelingMode);
             DrawLevelSeek(group, slot, index, idPrefix, changed);
+            ImGui.EndDisabled();
+            if (levelingMode && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Leveling Mode overrides Level seek. This saved target is preserved and becomes active again when Leveling Mode is disabled.");
+
+            if (showDailyReward)
+            {
+                ImGui.TableNextColumn();
+                DrawDailyRewardPreflight(group, slot, index, idPrefix, changed);
+            }
 
             ImGui.TableNextColumn();
             DrawWake(group, slot, index, idPrefix, changed);
@@ -130,6 +149,7 @@ internal sealed class DadPresetCrewEditor
                         RequiredRole = slot.RequiredRole,
                         AdsLootMode = slot.AdsLootMode,
                         LevelSeekTarget = slot.LevelSeekTarget,
+                        SkipIfDailyRouletteRewardReceived = slot.SkipIfDailyRouletteRewardReceived,
                         WakePolicy = slot.WakePolicy,
                         AllowSubstitution = false,
                     });
@@ -155,12 +175,16 @@ internal sealed class DadPresetCrewEditor
         ImGui.PopStyleVar();
     }
 
-    private static void DrawHeaders(bool showProfile)
+    private static void DrawHeaders(bool showProfile, bool showDailyReward)
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
-        var headers = showProfile
-            ? new[] { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv.", "Wake", "Profile", "Actions" }
-            : new[] { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv.", "Wake", "Actions" };
+        var headers = new List<string> { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv." };
+        if (showDailyReward)
+            headers.Add("Daily");
+        headers.Add("Wake");
+        if (showProfile)
+            headers.Add("Profile");
+        headers.Add("Actions");
         foreach (var header in headers)
         {
             ImGui.TableNextColumn();
@@ -168,6 +192,10 @@ internal sealed class DadPresetCrewEditor
             if (header == "Lv." && ImGui.IsItemHovered())
             {
                 ImGui.SetTooltip("Level seek target. Leave blank to disable it. The scheduler skips a preset only when every targeted exact row has a known level at or above its target.");
+            }
+            else if (header == "Daily" && ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("Per-row opt-in: on a DailyReset Schedule only, inspect this effective character and skip the entry only when every checked row already received the selected roulette reward.");
             }
         }
     }
@@ -613,6 +641,25 @@ internal sealed class DadPresetCrewEditor
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Blank disables Level seek. A preset is skipped only when every targeted exact row has a known level at or above its target.");
+    }
+
+    private static void DrawDailyRewardPreflight(
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index,
+        string idPrefix,
+        Action<DadPlannerGroup> changed)
+    {
+        var enabled = slot.SkipIfDailyRouletteRewardReceived;
+        if (ImGui.Checkbox($"##{idPrefix}-daily-reward-{index}", ref enabled))
+        {
+            slot.SkipIfDailyRouletteRewardReceived = enabled;
+            changed(group);
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Default off. Used only by a Daily Roulette preset running through a DailyReset Schedule. Uncertain reward truth runs the preset normally.");
+        }
     }
 
     private void DrawWake(

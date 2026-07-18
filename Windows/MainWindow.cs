@@ -1885,7 +1885,11 @@ public sealed class MainWindow : Window, IDisposable
         if (DadUi.BeginCard("dad-schedule-ordered-card"))
         {
             DadUi.Heading("ORDERED PRESETS", "Set the exact order and repeat count for each saved preset.");
-            DrawScheduleEntryEditor(schedule, groups, activeScheduleLocked);
+            DrawScheduleEntryEditor(
+                schedule,
+                groups,
+                activeScheduleLocked,
+                plugin.GetPlannerUiSnapshot(runState));
             DadUi.EndCard();
         }
 
@@ -2213,7 +2217,8 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawScheduleEntryEditor(
         DadScheduleDefinition schedule,
         IReadOnlyList<DadPlannerGroup> groups,
-        bool activeScheduleLocked)
+        bool activeScheduleLocked,
+        DadPlannerUiSnapshot plannerSnapshot)
     {
         if (groups.Count == 0)
         {
@@ -2270,7 +2275,14 @@ public sealed class MainWindow : Window, IDisposable
             var entry = schedule.Entries[index];
             var group = groups.FirstOrDefault(candidate =>
                 string.Equals(candidate.GroupId, entry.GroupId, StringComparison.OrdinalIgnoreCase));
+            var levelSeekDisplay = plugin.BuildScheduleLevelSeekDisplay(group, plannerSnapshot);
             ImGui.TableNextRow();
+            if (levelSeekDisplay.IsSkipIndicated)
+            {
+                ImGui.TableSetBgColor(
+                    ImGuiTableBgTarget.RowBg0,
+                    ImGui.GetColorU32(DadUi.WithAlpha(DadUi.Warning, 0.12f)));
+            }
             ImGui.TableNextColumn();
             ImGui.TextUnformatted((index + 1).ToString(CultureInfo.InvariantCulture));
 
@@ -2283,7 +2295,21 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TextWrapped($"Missing preset: {FormatText(entry.PresetName, entry.GroupId)}");
                 ImGui.PopStyleColor();
             }
-            if (DrawSchedulePresetCombo($"##schedule-entry-preset-{entry.EntryId}", ref entryGroupId, groups, entry.EntryId))
+            if (levelSeekDisplay.IsSkipIndicated)
+                ImGui.PushStyleColor(ImGuiCol.Text, DadUi.Warning);
+            var presetChanged = DrawSchedulePresetCombo(
+                $"##schedule-entry-preset-{entry.EntryId}",
+                ref entryGroupId,
+                groups,
+                entry.EntryId);
+            if (levelSeekDisplay.IsSkipIndicated)
+                ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) &&
+                !string.IsNullOrWhiteSpace(levelSeekDisplay.Tooltip))
+            {
+                ImGui.SetTooltip(levelSeekDisplay.Tooltip);
+            }
+            if (presetChanged)
             {
                 var selected = groups.FirstOrDefault(candidate =>
                     string.Equals(candidate.GroupId, entryGroupId, StringComparison.OrdinalIgnoreCase));
@@ -3935,6 +3961,8 @@ public sealed class MainWindow : Window, IDisposable
         var requestPreview = plannerSnapshot.RequestPreview;
         var plannerPreview = requestPreview.PlannerPreview;
         var plannerLocked = IsPlannerLocked(runState);
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var levelingEnabled = selectedGroup?.LevelingMode?.Enabled == true;
 
         if (plannerLocked)
             DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
@@ -3959,7 +3987,12 @@ public sealed class MainWindow : Window, IDisposable
         if (activityFieldsShareRow)
             ImGui.SameLine();
         DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
+        ImGui.BeginDisabled(levelingEnabled);
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi: false);
+        ImGui.EndDisabled();
+        if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Leveling Mode selects duty from its ordered threshold table. The saved fixed duty and sync settings are preserved.");
+        DrawLevelingModeControls(plannerSnapshot, selectedGroup);
 
         DrawSectionHeader("Crew", "Every primary and substitute stays on one full-width row.");
         DrawPlannerGroupCrewControls(plannerSnapshot, plannerPreview, debugUi: false);
@@ -3974,7 +4007,11 @@ public sealed class MainWindow : Window, IDisposable
             if (DadUi.BeginCard("dad-plan-stop-card"))
             {
                 DadUi.Heading("STOP", "Bound the run with one explicit stopping rule.");
+                ImGui.BeginDisabled(levelingEnabled);
                 DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
+                ImGui.EndDisabled();
+                if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip("Leveling Mode owns the plan goal and runs one frozen child at a time. The saved ordinary stop policy is preserved.");
                 DadUi.EndCard();
             }
 
@@ -3988,7 +4025,6 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndTable();
         }
 
-        var selectedGroup = plugin.GetSelectedPlannerGroup();
         if (selectedGroup != null && DadUi.Button("Save activity and rules to selected preset", DadUiTone.Accent))
         {
             var saved = plugin.SaveCurrentPlannerGroup(
@@ -4081,6 +4117,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         DrawSectionHeader("1. Select, create, and name the preset", "Choose the saved identity before configuring what it will do.");
         ImGui.BeginDisabled(plannerLocked);
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var levelingEnabled = selectedGroup?.LevelingMode?.Enabled == true;
         DrawPlannerGroupIdentityControls(plannerSnapshot, plannerPreview, plannerLocked);
 
         DrawSectionHeader("2. Choose activity, submode, and duty", "These inputs select the runtime contract and compatible content.");
@@ -4125,17 +4163,21 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.Spacing();
         }
 
+        ImGui.BeginDisabled(levelingEnabled);
         DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi);
+        ImGui.EndDisabled();
+        DrawLevelingModeControls(plannerSnapshot, selectedGroup);
 
         DrawSectionHeader("3. Assign the crew", "Every primary and substitute character stays on one inline row with all operational fields visible.");
         DrawPlannerGroupCrewControls(plannerSnapshot, plannerPreview, debugUi);
 
         DrawSectionHeader("4. Configure stop and finish rules", "Bound the run, then choose the safe actions taken after successful completion.");
         ImGui.Spacing();
+        ImGui.BeginDisabled(levelingEnabled);
         DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
+        ImGui.EndDisabled();
         ImGui.Spacing();
         DrawPlannerCompletionActionsControls(plannerOptions, requestPreview);
-        var selectedGroup = plugin.GetSelectedPlannerGroup();
         if (selectedGroup != null)
         {
             ImGui.Spacing();
@@ -6832,6 +6874,227 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TreePop();
             }
         }
+    }
+
+    private void DrawLevelingModeControls(
+        DadPlannerUiSnapshot plannerSnapshot,
+        DadPlannerGroup? group)
+    {
+        if (group == null)
+            return;
+
+        group.LevelingMode ??= new DadLevelingModeOptions();
+        var options = group.LevelingMode;
+        var supported = DadLevelingModeCompiler.TryNormalizeLane(
+            group.ActivityMode,
+            out var childLane,
+            out _,
+            out _);
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextUnformatted("Leveling Mode");
+        var enabled = options.Enabled;
+        ImGui.BeginDisabled(!supported && !enabled);
+        if (ImGui.Checkbox("Enable Leveling Mode##dad-leveling-mode", ref enabled))
+        {
+            options.Enabled = enabled;
+            plugin.TouchPlannerGroup(group);
+        }
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(supported
+                ? "Loops immutable one-run children, rotating eligible jobs and selecting duty from the ordered threshold table."
+                : "Leveling Mode supports Duty Support, Trust, and Premade Duty lanes only.");
+        }
+
+        if (!options.Enabled)
+        {
+            ImGui.TextDisabled("Disabled. Fixed job, fixed duty, Level seek, and ordinary stop policy remain unchanged.");
+            return;
+        }
+
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.72f, 0.25f, 1f));
+        ImGui.TextWrapped("Leveling Mode overrides fixed jobs, fixed duty, Level seek, and ordinary stop policy while enabled; their saved values are not deleted.");
+        ImGui.PopStyleColor();
+
+        var goal = options.GoalLevel;
+        ImGui.SetNextItemWidth(130f);
+        if (ImGui.InputInt("Plan goal", ref goal))
+        {
+            options.GoalLevel = Math.Clamp(goal, 1, 999);
+            plugin.TouchPlannerGroup(group);
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("A slot is complete only when every unlocked eligible full combat job for its selected role reaches this level.");
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(190f);
+        var orderLabel = options.JobOrder == DadLevelingJobOrder.HighestBelowGoal
+            ? "Highest below goal"
+            : "Lowest first";
+        if (ImGui.BeginCombo("Job order", orderLabel))
+        {
+            foreach (var order in Enum.GetValues<DadLevelingJobOrder>())
+            {
+                var label = order == DadLevelingJobOrder.HighestBelowGoal
+                    ? "Highest below goal"
+                    : "Lowest first";
+                var selected = options.JobOrder == order;
+                if (ImGui.Selectable(label, selected))
+                {
+                    options.JobOrder = order;
+                    plugin.TouchPlannerGroup(group);
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+
+        var dutyOptions = supported
+            ? plugin.PresetProviderService.SearchPlannerDutyOptions(childLane, string.Empty, 4096)
+            : [];
+        var removeIndex = -1;
+        var moveFrom = -1;
+        var moveTo = -1;
+        if (ImGui.BeginTable(
+                "dad-leveling-thresholds",
+                4,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoSavedSettings))
+        {
+            ImGui.TableSetupColumn("Minimum level", ImGuiTableColumnFlags.WidthFixed, 115f);
+            ImGui.TableSetupColumn("Duty", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn("Requirement", ImGuiTableColumnFlags.WidthFixed, 100f);
+            ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 150f);
+            ImGui.TableHeadersRow();
+
+            for (var index = 0; index < options.DutyThresholds.Count; index++)
+            {
+                var threshold = options.DutyThresholds[index];
+                if (threshold == null)
+                    continue;
+                ImGui.PushID($"dad-leveling-threshold-{index}");
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                var minimum = threshold.MinimumLevel;
+                ImGui.SetNextItemWidth(-1f);
+                if (ImGui.InputInt("##minimum", ref minimum))
+                {
+                    threshold.MinimumLevel = Math.Clamp(minimum, 1, 999);
+                    plugin.TouchPlannerGroup(group);
+                }
+
+                ImGui.TableNextColumn();
+                var selectedDuty = plugin.PresetProviderService.GetPlannerDutyOption(threshold.ContentFinderConditionId);
+                var dutyLabel = selectedDuty?.SelectionLabel
+                                ?? (threshold.ContentFinderConditionId == 0
+                                    ? "Select duty"
+                                    : $"Unavailable #{threshold.ContentFinderConditionId}");
+                ImGui.SetNextItemWidth(-1f);
+                if (ImGui.BeginCombo("##duty", dutyLabel))
+                {
+                    foreach (var duty in dutyOptions)
+                    {
+                        var selected = duty.ContentFinderConditionId == threshold.ContentFinderConditionId;
+                        if (ImGui.Selectable(duty.SelectionLabel, selected))
+                        {
+                            threshold.ContentFinderConditionId = duty.ContentFinderConditionId;
+                            threshold.DutyDisplayName = duty.DutyDisplayName;
+                            plugin.TouchPlannerGroup(group);
+                        }
+                        if (selected)
+                            ImGui.SetItemDefaultFocus();
+                    }
+                    ImGui.EndCombo();
+                }
+                if (ImGui.IsItemHovered() && selectedDuty != null)
+                    ImGui.SetTooltip(selectedDuty.MetadataSummary);
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(selectedDuty == null
+                    ? "unknown"
+                    : $"Lv. {selectedDuty.JobLevelRequired}");
+
+                ImGui.TableNextColumn();
+                ImGui.BeginDisabled(index == 0);
+                if (ImGui.SmallButton("Up"))
+                {
+                    moveFrom = index;
+                    moveTo = index - 1;
+                }
+                ImGui.EndDisabled();
+                ImGui.SameLine();
+                ImGui.BeginDisabled(index >= options.DutyThresholds.Count - 1);
+                if (ImGui.SmallButton("Down"))
+                {
+                    moveFrom = index;
+                    moveTo = index + 1;
+                }
+                ImGui.EndDisabled();
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Remove"))
+                    removeIndex = index;
+                ImGui.PopID();
+            }
+
+            ImGui.EndTable();
+        }
+
+        if (moveFrom >= 0 && moveTo >= 0)
+        {
+            (options.DutyThresholds[moveFrom], options.DutyThresholds[moveTo]) =
+                (options.DutyThresholds[moveTo], options.DutyThresholds[moveFrom]);
+            plugin.TouchPlannerGroup(group);
+        }
+        if (removeIndex >= 0)
+        {
+            options.DutyThresholds.RemoveAt(removeIndex);
+            plugin.TouchPlannerGroup(group);
+        }
+
+        if (ImGui.SmallButton("Add duty threshold"))
+        {
+            var defaultDuty = options.DutyThresholds.Count == 0
+                ? dutyOptions
+                    .OrderBy(static duty => duty.JobLevelRequired)
+                    .ThenBy(static duty => duty.ContentFinderConditionId)
+                    .FirstOrDefault()
+                : null;
+            var minimum = options.DutyThresholds.Count == 0
+                ? Math.Max(1, defaultDuty?.JobLevelRequired ?? 1)
+                : Math.Clamp(options.DutyThresholds[^1].MinimumLevel + 1, 1, 999);
+            defaultDuty ??= dutyOptions
+                .Where(duty => duty.JobLevelRequired <= minimum)
+                .OrderByDescending(static duty => duty.JobLevelRequired)
+                .ThenBy(static duty => duty.ContentFinderConditionId)
+                .FirstOrDefault();
+            options.DutyThresholds.Add(new DadLevelingDutyThreshold
+            {
+                MinimumLevel = minimum,
+                ContentFinderConditionId = defaultDuty?.ContentFinderConditionId ?? 0,
+                DutyDisplayName = defaultDuty?.DutyDisplayName ?? string.Empty,
+            });
+            plugin.TouchPlannerGroup(group);
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("Each row remains active until the next threshold; rows must be strictly increasing.");
+
+        var compilation = plugin.BuildLevelingModeCompilation(group, plannerSnapshot.CuratedPool);
+        var color = compilation.Status switch
+        {
+            DadLevelingCompilationStatus.Ready => new Vector4(0.42f, 0.88f, 0.5f, 1f),
+            DadLevelingCompilationStatus.Complete => new Vector4(0.42f, 0.78f, 1f, 1f),
+            _ => new Vector4(1f, 0.45f, 0.35f, 1f),
+        };
+        ImGui.PushStyleColor(ImGuiCol.Text, color);
+        ImGui.TextWrapped(compilation.Summary);
+        ImGui.PopStyleColor();
+        if (compilation.SelectedDuty != null)
+            ImGui.TextDisabled($"Selected threshold: party minimum {compilation.PartyMinimumLevel} -> {compilation.SelectedDuty.DutyDisplayName} #{compilation.SelectedDuty.ContentFinderConditionId} (synced).");
+        foreach (var slot in compilation.Slots)
+            ImGui.BulletText(slot.Summary);
     }
 
     private static void DrawPlannerGroupSlotCapacityNotice(

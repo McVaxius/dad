@@ -26,6 +26,26 @@ public sealed class DadLevelSeekEvaluation
     public string Summary { get; init; } = string.Empty;
 }
 
+public sealed record DadLevelSeekDisplayState(bool IsSkipIndicated, string Tooltip)
+{
+    public static DadLevelSeekDisplayState None { get; } = new(false, string.Empty);
+}
+
+public static class DadLevelSeekDisplayRules
+{
+    public static DadLevelSeekDisplayState Build(DadLevelSeekEvaluation? evaluation)
+    {
+        if (evaluation == null)
+            return DadLevelSeekDisplayState.None;
+
+        var evidence = evaluation.Rows
+            .Select(static row => row.Summary)
+            .Where(static summary => !string.IsNullOrWhiteSpace(summary));
+        var tooltip = string.Join(Environment.NewLine, new[] { evaluation.Summary }.Concat(evidence));
+        return new DadLevelSeekDisplayState(evaluation.ShouldSkip, tooltip);
+    }
+}
+
 /// <summary>
 /// Pure evaluation of the exact, substitute-bound preset rows. The caller freezes this
 /// result before any scheduler wake, launch, relog, or early requested-job assignment.

@@ -408,6 +408,7 @@ public sealed class DadPlannerGroup
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
+    public DadLevelingModeOptions LevelingMode { get; set; } = new();
     // Dalamud configuration uses Newtonsoft.Json, while DAD IPC uses System.Text.Json.
     // Keep the unresolved share marker in the main config without changing IPC JSON.
     [System.Text.Json.Serialization.JsonIgnore]
@@ -438,6 +439,7 @@ public sealed class DadPlannerGroupSlot
     public uint? RequiredJobId { get; set; }
     public DadAdsLootMode AdsLootMode { get; set; } = DadAdsLootMode.NoChange;
     public int? LevelSeekTarget { get; set; }
+    public bool SkipIfDailyRouletteRewardReceived { get; set; }
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public string LaunchProfileId { get; set; } = string.Empty;
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();

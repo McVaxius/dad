@@ -1020,6 +1020,64 @@ public sealed class DadRosterCatalogService
         SaveImmediately();
     }
 
+    public void ApplyExactRefreshTruth(
+        DadRosterRefreshResultDto result,
+        DadParticipantSnapshot participant)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(participant);
+        if (!result.Success || !result.Accepted || result.DryRun || !result.XadbStatus.IsReady ||
+            result.AccountKey.IsEmpty || result.CharacterKey.IsEmpty || result.ContentId == 0)
+        {
+            return;
+        }
+
+        var existing = currentCatalog.Characters.FirstOrDefault(character =>
+            DadRosterIdentity.SameAccount(character.AccountKey, result.AccountKey) &&
+            DadRosterIdentity.SameCharacter(character.CharacterKey, character.ContentId, result.CharacterKey, result.ContentId));
+        var refreshed = existing?.Clone() ?? new DadRosterCharacter();
+        var snapshot = result.Snapshot?.Character;
+        var xadb = result.XadbStatus;
+        refreshed.AccountKey = result.AccountKey;
+        refreshed.AccountAlias = string.IsNullOrWhiteSpace(participant.ManagedAccountAlias)
+            ? refreshed.AccountAlias
+            : participant.ManagedAccountAlias.Trim();
+        refreshed.CharacterKey = result.CharacterKey;
+        refreshed.ContentId = result.ContentId;
+        refreshed.CharacterName = FirstNonEmpty(xadb.CharacterName, snapshot?.CharacterName, refreshed.CharacterName);
+        refreshed.WorldId = xadb.WorldId ?? snapshot?.WorldId ?? refreshed.WorldId;
+        refreshed.WorldName = FirstNonEmpty(xadb.WorldName, snapshot?.WorldName, refreshed.WorldName);
+        refreshed.DataCenterId = xadb.DataCenterId ?? snapshot?.DataCenterId ?? refreshed.DataCenterId;
+        refreshed.DataCenterName = FirstNonEmpty(xadb.DataCenterName, snapshot?.DataCenterName, refreshed.DataCenterName);
+        refreshed.LastSnapshotUtc = xadb.SnapshotUtc ?? xadb.LastSaveUtc ?? result.RefreshedAtUtc;
+        refreshed.LastRuntimeSeenUtc = participant.LastHeartbeatUtc;
+        refreshed.LastRosterRefreshUtc = result.RefreshedAtUtc;
+        refreshed.JobLevels = new Dictionary<uint, int>(xadb.JobLevels ?? []);
+        refreshed.CurrentJobId = xadb.CurrentJobId ?? snapshot?.CurrentJobId;
+        refreshed.CurrentJobAbbrev = FirstNonEmpty(xadb.CurrentJobAbbrev, snapshot?.CurrentJobAbbrev);
+        refreshed.CurrentLevel = xadb.CurrentLevel ?? snapshot?.CurrentLevel;
+        refreshed.SnapshotQuality = xadb.SnapshotQuality?.Trim() ?? string.Empty;
+        refreshed.SnapshotVersion = xadb.SnapshotVersion;
+        refreshed.XadbReady = true;
+        refreshed.IsCurrent = true;
+        refreshed.IsStale = false;
+        refreshed.NeedsRosterUpdate = false;
+        refreshed.Source = participant.IsLocalClient ? DadCharacterSource.LocalRuntime : DadCharacterSource.PeerRuntime;
+        refreshed.SourceClientInstanceId = participant.ClientInstanceId;
+        refreshed.SourceWorkerSessionId = participant.WorkerSessionId;
+
+        currentCatalog.Characters.RemoveAll(character =>
+            DadRosterIdentity.SameAccount(character.AccountKey, result.AccountKey) &&
+            DadRosterIdentity.SameCharacter(character.CharacterKey, character.ContentId, result.CharacterKey, result.ContentId));
+        currentCatalog.Characters.Add(refreshed.Clone());
+        currentCatalog.GeneratedAtUtc = DateTime.UtcNow;
+        currentCatalog.Summary = $"Exact Leveling Mode roster truth refreshed for {result.CharacterKey.Value}.";
+        cachedLocalCatalog = null;
+        if (UpsertKnownCharacter(refreshed, xadbAuthoritative: true))
+            SaveImmediately();
+        catalogVersion++;
+    }
+
     public DadRosterCharacter? FindCharacter(DadCharacterKey characterKey)
     {
         var catalog = CurrentCatalog;
@@ -2401,6 +2459,9 @@ public sealed class DadRosterCatalogService
         var stale = catalog.Characters.Count(static character => character.IsStale);
         return $"{active} active, {hidden} hidden, {ignored} ignored, {needsUpdate} need update, {stale} stale.";
     }
+
+    private static string FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
 }
 
 public sealed class DadPlannerRosterSnapshot

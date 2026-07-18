@@ -55,6 +55,7 @@ public static class DadPlannerGroupUpdateRules
                 result.RequiredJobId = prior.RequiredJobId;
                 result.AdsLootMode = prior.AdsLootMode;
                 result.LevelSeekTarget = prior.LevelSeekTarget;
+                result.SkipIfDailyRouletteRewardReceived = prior.SkipIfDailyRouletteRewardReceived;
                 result.WakePolicy = prior.WakePolicy;
                 result.LaunchProfileId = prior.LaunchProfileId;
                 result.CharacterLoadInstruction = prior.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction();
@@ -104,6 +105,7 @@ public static class DadPlannerGroupUpdateRules
             RequiredJobId = source.RequiredJobId,
             AdsLootMode = source.AdsLootMode,
             LevelSeekTarget = source.LevelSeekTarget,
+            SkipIfDailyRouletteRewardReceived = source.SkipIfDailyRouletteRewardReceived,
             WakePolicy = source.WakePolicy,
             LaunchProfileId = source.LaunchProfileId?.Trim() ?? string.Empty,
             CharacterLoadInstruction = source.CharacterLoadInstruction?.Clone() ?? new DadCharacterLoadInstruction(),

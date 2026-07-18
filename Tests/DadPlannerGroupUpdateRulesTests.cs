@@ -36,6 +36,15 @@ public sealed class DadPlannerGroupUpdateRulesTests
         {
             GroupId = "saved",
             DisplayName = "Before",
+            LevelingMode = new DadLevelingModeOptions
+            {
+                Enabled = true,
+                GoalLevel = 90,
+                DutyThresholds =
+                [
+                    new DadLevelingDutyThreshold { MinimumLevel = 1, ContentFinderConditionId = 4 },
+                ],
+            },
             Slots =
             [
                 new DadPlannerGroupSlot
@@ -76,6 +85,9 @@ public sealed class DadPlannerGroupUpdateRulesTests
         Assert.Equal("legacy-profile", slot.LaunchProfileId);
         Assert.Equal("/legacy {CharacterKey}", slot.CharacterLoadInstruction.CommandTemplate);
         Assert.Same(originalInstruction, slot.CharacterLoadInstruction);
+        Assert.True(target.LevelingMode.Enabled);
+        Assert.Equal(90, target.LevelingMode.GoalLevel);
+        Assert.Equal((uint)4, Assert.Single(target.LevelingMode.DutyThresholds).ContentFinderConditionId);
     }
 
     [Fact]
@@ -144,6 +156,7 @@ public sealed class DadPlannerGroupUpdateRulesTests
                 RequiredAccountKey = new DadAccountKey("account-a"),
                 RequiredCharacterKey = new DadCharacterKey("Saved Character@World"),
                 RequiredJobId = 21,
+                SkipIfDailyRouletteRewardReceived = true,
                 WakePolicy = DadSchedulerWakePolicy.AlreadyOnlineOnly,
                 LaunchProfileId = "saved-profile",
                 CharacterLoadInstruction = new DadCharacterLoadInstruction
@@ -181,11 +194,13 @@ public sealed class DadPlannerGroupUpdateRulesTests
         Assert.Equal("account-a", merged[0].RequiredAccountKey.Value);
         Assert.Equal("Saved Character@World", merged[0].RequiredCharacterKey.Value);
         Assert.Equal((uint?)21, merged[0].RequiredJobId);
+        Assert.True(merged[0].SkipIfDailyRouletteRewardReceived);
         Assert.Equal(DadSchedulerWakePolicy.AlreadyOnlineOnly, merged[0].WakePolicy);
         Assert.Equal("saved-profile", merged[0].LaunchProfileId);
         Assert.Equal("/saved", merged[0].CharacterLoadInstruction.CommandTemplate);
         Assert.Equal("New Character@World", merged[1].RequiredCharacterKey.Value);
         Assert.Null(merged[1].RequiredJobId);
+        Assert.False(merged[1].SkipIfDailyRouletteRewardReceived);
         Assert.Equal(DadSchedulerWakePolicy.LaunchIfOffline, merged[1].WakePolicy);
     }
 

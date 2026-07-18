@@ -52,6 +52,23 @@ dotnet test .\Tests\dad.Tests.csproj
   through the operator's **Resume from failed entry** action. DAD creates a new run at the exact persisted cursor,
   retains prior history, requires all clients and DAD/scheduler work to be idle, and never replays automatically.
   Cancelled runs remain terminal and cannot be resumed.
+- Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
+  targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
+  evidence used by execution; missing characters, unknown levels, missing presets, and untargeted rows stay normal.
+- Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It is consulted only when that
+  preset runs as a `DailyReset` Schedule entry and only after LevelSeek declines to skip. DAD wakes and inspects checked
+  effective characters one at a time, never wakes unchecked rows for inspection, and skips only when stable exact
+  Duty Finder evidence says every checked character already received the selected roulette reward. Any missing route,
+  identity mismatch, timeout, stale or contradictory reply, unknown state, or not-received result runs the preset
+  normally. DAD closes Duty Finder only when this inspection opened it.
+- Saved Duty Support, Trust, and Premade Duty presets can enable **Leveling Mode** with one plan goal, deterministic
+  `Lowest first` or `Highest below goal` job rotation, and an ordered minimum-level-to-duty table. DAD requires exact
+  fixed account/character identities and complete XADB job ledgers, excludes base classes and limited jobs, selects
+  the threshold at or below the lowest selected party job, and never falls back when configuration or roster truth is
+  uncertain. Each iteration is a new immutable, synced ordinary child run through the existing lane executor; success
+  refreshes exact job truth before compiling the next child, while failure, timeout, or cancellation ends the outer
+  operation without replay. Completed characters remain compatible fillers, parties are not retained between children,
+  and fixed job/duty, LevelSeek, and ordinary stop settings are preserved but overridden only while the mode is enabled.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.
@@ -70,6 +87,13 @@ dotnet test .\Tests\dad.Tests.csproj
   compatibility evidence. It revalidates the evidence before reset; final readiness still requires the exact
   target character and the post-AR gate. Logical wake orders do not expire. The five-second coordinator cadence
   and mini-window snapshots affect status freshness only, not local ownership timing.
+- A connected Client Dad that is logged out can enter one separate title-idle login path only while AutoRetainer
+  Multi Mode demonstrably owns the state: the stable account route and requested catalog character must match,
+  AutoRetainer IPC and ownership state must be readable and idle, and a fresh ready `_TitleMenu` must have no title
+  navigation, connection, or error/dialog overlay. DAD sends `/ays m d` at most once, verifies Multi Mode is off,
+  then sends the existing exact `/ays relog Name@World` command at most once and waits for world readiness. A generic
+  title screen, stale/unknown evidence, route loss, busy AutoRetainer, or another automation owner remains wait-only;
+  this path never starts a closed game process and does not alter the established in-world takeover sequence.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD
   also accepts the legacy VERMAXION numeric values `0` through `4` in that order. Unknown/malformed states fail
   closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses. If

@@ -11,6 +11,7 @@ public sealed class DadTransportService : IDisposable
     private const string MessageSnapshotRequest = "snapshot-request";
     private const string MessageWakeRequest = "wake-request";
     private const string MessageWakeTakeoverRequest = "wake-takeover-request";
+    private const string MessageRouletteRewardProbe = "roulette-reward-probe";
     private const string MessageClaimRequest = "claim-request";
     private const string MessageAssemblyInstruction = "assembly-instruction";
     private const string MessageCharacterLoadCommand = "character-load-command";
@@ -50,6 +51,7 @@ public sealed class DadTransportService : IDisposable
     private readonly DadPresenceService presenceService;
     private readonly DadClaimService claimService;
     private readonly DadWakeTakeoverService wakeTakeoverService;
+    private readonly DadRouletteRewardProbeService rouletteRewardProbeService;
     private readonly IPluginLog log;
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly object roleGate = new();
@@ -121,12 +123,14 @@ public sealed class DadTransportService : IDisposable
         DadPresenceService presenceService,
         DadClaimService claimService,
         DadWakeTakeoverService wakeTakeoverService,
+        DadRouletteRewardProbeService rouletteRewardProbeService,
         IPluginLog log)
     {
         this.configuration = configuration;
         this.presenceService = presenceService;
         this.claimService = claimService;
         this.wakeTakeoverService = wakeTakeoverService;
+        this.rouletteRewardProbeService = rouletteRewardProbeService;
         this.log = log;
         backgroundTasks = new DadBackgroundTaskObserver(log, "transport");
         localParticipant = presenceService.BuildSnapshotCopy();
@@ -451,6 +455,32 @@ public sealed class DadTransportService : IDisposable
             MessageWakeTakeoverRequest,
             request,
             $"wake-takeover:{participant.WorkerSessionId.Value}:{DadWakePolicyRules.BuildOperationKey(request)}");
+
+    public DadRouletteRewardProbeResultDto? SendRouletteRewardProbe(
+        DadParticipantSnapshot participant,
+        DadRouletteRewardProbeRequestDto request)
+    {
+        RefreshLocalMutationState();
+        if (string.Equals(
+                participant.WorkerSessionId.Value,
+                presenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return remoteMutationsAllowed
+                ? rouletteRewardProbeService.Handle(request)
+                : DadRouletteRewardProbeResultDto.FromRequest(
+                    request,
+                    DadRouletteRewardProbeOutcome.Unknown,
+                    BuildRemoteMutationRejectedReason("roulette reward probe"),
+                    DateTime.UtcNow);
+        }
+
+        return TryRequest<DadRouletteRewardProbeRequestDto, DadRouletteRewardProbeResultDto>(
+            participant.WorkerSessionId,
+            MessageRouletteRewardProbe,
+            request,
+            $"roulette-reward:{participant.WorkerSessionId.Value}:{request.OperationId}:{request.Operation}");
+    }
 
     public DadClaimDecisionDto? RequestClaim(DadParticipantSnapshot participant, DadClaimRequestDto request)
         => TryRequest<DadClaimRequestDto, DadClaimDecisionDto>(
@@ -1543,6 +1573,7 @@ public sealed class DadTransportService : IDisposable
             MessageSnapshotRequest => DadIpcJson.Serialize(HandleSnapshotRequest(payloadJson)),
             MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(payloadJson)),
             MessageWakeTakeoverRequest => DadIpcJson.Serialize(HandleWakeTakeoverRequest(payloadJson)),
+            MessageRouletteRewardProbe => DadIpcJson.Serialize(HandleRouletteRewardProbe(payloadJson)),
             MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(payloadJson)),
             MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(payloadJson)),
             MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(payloadJson)),
@@ -1585,6 +1616,22 @@ public sealed class DadTransportService : IDisposable
         DadStopAllStatusRules.FinalizeFromWorkers(response, DateTime.UtcNow);
         RecordStopAllStatus(response, preserveCoordinatorMatrix: true);
         return response;
+    }
+
+    private DadRouletteRewardProbeResultDto HandleRouletteRewardProbe(string payloadJson)
+    {
+        var request = DadIpcJson.Deserialize<DadRouletteRewardProbeRequestDto>(payloadJson)
+                      ?? new DadRouletteRewardProbeRequestDto();
+        if (!remoteMutationsAllowed)
+        {
+            return DadRouletteRewardProbeResultDto.FromRequest(
+                request,
+                DadRouletteRewardProbeOutcome.Unknown,
+                BuildRemoteMutationRejectedReason("roulette reward probe"),
+                DateTime.UtcNow);
+        }
+
+        return rouletteRewardProbeService.Handle(request);
     }
 
     private void RefreshLocalMutationState()

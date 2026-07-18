@@ -10,6 +10,15 @@ public sealed class DadEffectivePlannerGroupProjectionTests
     public void FourSavedMsqRowsProjectToOneLogicalSlotWithoutMutatingSource()
     {
         var group = BuildGroup(5);
+        group.LevelingMode = new DadLevelingModeOptions
+        {
+            Enabled = true,
+            GoalLevel = 91,
+            DutyThresholds =
+            [
+                new DadLevelingDutyThreshold { MinimumLevel = 1, ContentFinderConditionId = 777 },
+            ],
+        };
         group.Slots.Insert(1, Slot(1, "Msq Backup", substitute: true));
         group.Slots.Insert(4, Slot(3, "Discarded Backup", substitute: true));
         var originalRows = group.Slots
@@ -24,6 +33,10 @@ public sealed class DadEffectivePlannerGroupProjectionTests
         Assert.Contains(projected.Slots, static slot => slot.IsSubstitute && slot.RequiredCharacterKey.Value == "Msq Backup@World");
         Assert.Equal(originalRows, group.Slots.Select(static slot => (slot.SlotId, slot.IsSubstitute, slot.RequiredCharacterKey.Value)).ToList());
         Assert.NotSame(group.Slots[0], projected.Slots[0]);
+        Assert.True(projected.LevelingMode.Enabled);
+        Assert.Equal(91, projected.LevelingMode.GoalLevel);
+        Assert.NotSame(group.LevelingMode, projected.LevelingMode);
+        Assert.NotSame(group.LevelingMode.DutyThresholds[0], projected.LevelingMode.DutyThresholds[0]);
     }
 
     [Fact]
@@ -47,6 +60,8 @@ public sealed class DadEffectivePlannerGroupProjectionTests
     {
         var group = BuildGroup(4);
         group.Slots.Insert(2, Slot(2, "Slot2 Backup", substitute: true));
+        group.Slots[1].SkipIfDailyRouletteRewardReceived = false;
+        group.Slots[2].SkipIfDailyRouletteRewardReceived = true;
         var projected = DadEffectivePlannerGroupProjection.Project(group, DadPlannerActivityMode.DailyRoulette, 4);
 
         var bound = DadEffectivePlannerGroupProjection.BindResolvedSchedulerSlots(
@@ -68,6 +83,7 @@ public sealed class DadEffectivePlannerGroupProjectionTests
         Assert.Equal("Character 1@World", bound.Slots[0].RequiredCharacterKey.Value);
         Assert.Equal("Slot2 Backup@World", bound.Slots[1].RequiredCharacterKey.Value);
         Assert.Equal((uint)32, bound.Slots[1].RequiredJobId);
+        Assert.True(bound.Slots[1].SkipIfDailyRouletteRewardReceived);
         Assert.Equal("Character 3@World", bound.Slots[2].RequiredCharacterKey.Value);
         Assert.Equal("Character 4@World", bound.Slots[3].RequiredCharacterKey.Value);
     }

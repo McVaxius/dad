@@ -10,6 +10,7 @@ using Dalamud.IoC;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using ClassJob = Lumina.Excel.Sheets.ClassJob;
 using dad.Models;
 using dad.Services;
 using dad.Windows;
@@ -50,7 +51,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadVermaxionIpcService VermaxionIpcService { get; }
     public DadAutoRetainerIpcService AutoRetainerIpcService { get; }
     public DadLifestreamIpcService LifestreamIpcService { get; }
+    public DadTitleMenuReadinessService TitleMenuReadinessService { get; }
     public DadWakeTakeoverService WakeTakeoverService { get; }
+    public DadRouletteRewardProbeService RouletteRewardProbeService { get; }
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
@@ -112,6 +115,8 @@ public sealed class Plugin : IDalamudPlugin
     private DadPlannerUiCacheKey? cachedPlannerUiCacheKey;
     private DadPlannerSchedulerCacheKey? cachedPlannerSchedulerCacheKey;
     private DadSchedulerPreview? cachedPlannerSchedulerPreview;
+    private readonly Dictionary<string, DadLevelSeekDisplayState> cachedScheduleLevelSeekDisplays = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime cachedScheduleLevelSeekSnapshotUtc = DateTime.MinValue;
     private long plannerUiCacheGeneration;
     private string plannerUiCacheInvalidationReason = "cold";
     private DateTime lastSlowPlannerUiCacheLogUtc = DateTime.MinValue;
@@ -129,6 +134,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRuntimeReadinessTracker localRuntimeReadinessTracker = new();
+    private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
 
     private sealed class DebouncedUiWrite
     {
@@ -153,6 +159,7 @@ public sealed class Plugin : IDalamudPlugin
         VermaxionIpcService = new DadVermaxionIpcService(PluginInterface, Log);
         AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
         LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
+        TitleMenuReadinessService = new DadTitleMenuReadinessService(Framework);
         PartyInviteGateway = new InfoProxyPartyInviteGateway(Framework, PlayerState, PartyList, Log);
         PartyTeardownService = new DadPartyTeardownService(PartyList, PlayerState, Condition, Log);
         var requestedJobPreparationGate = new DadRequestedJobPreparationGate();
@@ -176,6 +183,7 @@ public sealed class Plugin : IDalamudPlugin
                 AutoRetainerIpcService,
                 LifestreamIpcService,
                 VermaxionIpcService,
+                TitleMenuReadinessService,
                 CommandManager,
                 Log),
             preCommitBudget: TimeSpan.FromSeconds(Configuration.AutoRetainerBusyTimeoutSeconds),
@@ -183,7 +191,14 @@ public sealed class Plugin : IDalamudPlugin
         VermaxionIpcService.ReservationGranted += WakeTakeoverService.OnVermaxionReservationGranted;
         AutoRetainerIpcService.CharacterPostprocessReady += WakeTakeoverService.OnCharacterPostprocessReady;
         ClaimService = new DadClaimService();
-        TransportService = new DadTransportService(Configuration, PresenceService, ClaimService, WakeTakeoverService, Log);
+        RouletteRewardProbeService = new DadRouletteRewardProbeService(Framework, PresenceService, Log);
+        TransportService = new DadTransportService(
+            Configuration,
+            PresenceService,
+            ClaimService,
+            WakeTakeoverService,
+            RouletteRewardProbeService,
+            Log);
         PresenceService.ConfigureParticipantResolver(workerSessionId =>
             TransportService.CurrentTransport.KnownParticipants
                 .SingleOrDefault(participant => string.Equals(
@@ -249,6 +264,9 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService,
             PlannerService,
             Log);
+        SchedulerService.ConfigureLevelingMode(
+            BuildLevelingChild,
+            () => RunCoordinatorService.CancelActiveRun());
         TransportService.ConfigureAuthorityHandlers(
             () => RunCoordinatorService.GetLocalResult(),
             request => RunCoordinatorService.StartTasks(request),
@@ -344,6 +362,7 @@ public sealed class Plugin : IDalamudPlugin
         // After persistence is forced, close/cancel transport work without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
         TransportService.Dispose();
+        RouletteRewardProbeService.Dispose();
         DependencyService.Dispose();
         WindowSystem.RemoveAllWindows();
         QuestionableBridge.Dispose();
@@ -354,6 +373,7 @@ public sealed class Plugin : IDalamudPlugin
         NpcDutyQueueService.Dispose();
         AutoRetainerIpcService.CharacterPostprocessReady -= WakeTakeoverService.OnCharacterPostprocessReady;
         VermaxionIpcService.ReservationGranted -= WakeTakeoverService.OnVermaxionReservationGranted;
+        TitleMenuReadinessService.Dispose();
         WakeTakeoverService.Dispose();
         AutoRetainerIpcService.Dispose();
         VermaxionIpcService.Dispose();
@@ -1002,6 +1022,9 @@ public sealed class Plugin : IDalamudPlugin
         DadPlannerGroup? selectedGroup,
         bool useStableIdentity)
     {
+        if (selectedGroup?.LevelingMode?.Enabled == true)
+            return BuildLevelingPlannerPreview(BuildLevelingChild(selectedGroup, pool, iteration: 1));
+
         string? requestId = null;
         DateTime? requestedAtUtc = null;
         if (useStableIdentity)
@@ -1315,10 +1338,36 @@ public sealed class Plugin : IDalamudPlugin
                 rebuildReason = "scheduler inputs changed";
 
             var selectedGroup = GetSelectedPlannerGroup();
-            var schedulerRequestPreview = selectedGroup == null
-                ? cachedPlannerUiSnapshot.RequestPreview
-                : BuildPlannerGroupRunRequestPreview(cachedPlannerUiSnapshot.CuratedPool, selectedGroup.GroupId, null);
-            cachedPlannerSchedulerPreview = SchedulerService.BuildPreview(selectedGroup, schedulerRequestPreview);
+            if (selectedGroup?.LevelingMode?.Enabled == true)
+            {
+                var build = BuildLevelingChild(selectedGroup, cachedPlannerUiSnapshot.CuratedPool, iteration: 1);
+                if (build.Compilation.CanStartChild && build.Compilation.ChildGroup != null && build.PlannerPreview != null)
+                {
+                    cachedPlannerSchedulerPreview = SchedulerService.BuildPreview(build.Compilation.ChildGroup, build.PlannerPreview);
+                }
+                else
+                {
+                    var complete = build.Compilation.Status == DadLevelingCompilationStatus.Complete;
+                    cachedPlannerSchedulerPreview = new DadSchedulerPreview
+                    {
+                        GroupId = selectedGroup.GroupId,
+                        PresetName = selectedGroup.DisplayName,
+                        Phase = complete ? DadSchedulerPresetPhase.Completed : DadSchedulerPresetPhase.Blocked,
+                        CanStart = complete,
+                        ReadyToStart = complete,
+                        StatusSummary = build.Compilation.Summary,
+                        BlockedReason = complete ? string.Empty : build.Compilation.Summary,
+                        PlannerRequestPreview = BuildLevelingPlannerPreview(build),
+                    };
+                }
+            }
+            else
+            {
+                var schedulerRequestPreview = selectedGroup == null
+                    ? cachedPlannerUiSnapshot.RequestPreview
+                    : BuildPlannerGroupRunRequestPreview(cachedPlannerUiSnapshot.CuratedPool, selectedGroup.GroupId, null);
+                cachedPlannerSchedulerPreview = SchedulerService.BuildPreview(selectedGroup, schedulerRequestPreview);
+            }
             cachedPlannerSchedulerCacheKey = schedulerCacheKey;
         }
         else
@@ -1495,6 +1544,8 @@ public sealed class Plugin : IDalamudPlugin
         cachedPlannerUiCacheKey = null;
         cachedPlannerSchedulerPreview = null;
         cachedPlannerSchedulerCacheKey = null;
+        cachedScheduleLevelSeekDisplays.Clear();
+        cachedScheduleLevelSeekSnapshotUtc = DateTime.MinValue;
         plannerValidationFeedback = null;
         InvalidatePlannerPreviewIdentity();
     }
@@ -1845,6 +1896,19 @@ public sealed class Plugin : IDalamudPlugin
             startRequest = new DadPlannerGroupStartRequest { GroupId = fallbackId };
         }
 
+        if (TryResolvePlannerGroupForIpc(startRequest.GroupId, out var levelingGroup, out _) &&
+            levelingGroup?.LevelingMode?.Enabled == true)
+        {
+            return StartSchedulerPresetFromJson(DadIpcJson.Serialize(new DadSchedulerStartRequest
+            {
+                GroupId = levelingGroup.GroupId,
+                DryRun = startRequest.DryRun,
+                RequestedBy = string.IsNullOrWhiteSpace(startRequest.RequestedBy)
+                    ? "leveling-mode"
+                    : startRequest.RequestedBy.Trim(),
+            }));
+        }
+
         var preview = BuildPlannerGroupRunRequestPreview(startRequest.GroupId, startRequest);
         if (preview.Request != null && !string.IsNullOrWhiteSpace(startRequest.RequestedBy))
             preview.Request.RequestedBy = startRequest.RequestedBy.Trim();
@@ -1880,10 +1944,57 @@ public sealed class Plugin : IDalamudPlugin
     public DadSchedulerPreview BuildSchedulerPreview()
     {
         var selectedGroup = GetSelectedPlannerGroup();
+        if (selectedGroup?.LevelingMode?.Enabled == true)
+        {
+            var build = BuildLevelingChild(selectedGroup, iteration: 1);
+            if (build.Compilation.CanStartChild && build.Compilation.ChildGroup != null && build.PlannerPreview != null)
+                return SchedulerService.BuildPreview(build.Compilation.ChildGroup, build.PlannerPreview);
+
+            var complete = build.Compilation.Status == DadLevelingCompilationStatus.Complete;
+            return new DadSchedulerPreview
+            {
+                GroupId = selectedGroup.GroupId,
+                PresetName = selectedGroup.DisplayName,
+                Phase = complete ? DadSchedulerPresetPhase.Completed : DadSchedulerPresetPhase.Blocked,
+                CanStart = complete,
+                ReadyToStart = complete,
+                StatusSummary = build.Compilation.Summary,
+                BlockedReason = complete ? string.Empty : build.Compilation.Summary,
+                PlannerRequestPreview = BuildLevelingPlannerPreview(build),
+            };
+        }
+
         var requestPreview = selectedGroup == null
             ? BuildPlannerRunRequestPreview()
             : BuildPlannerGroupRunRequestPreview(selectedGroup.GroupId, null);
         return SchedulerService.BuildPreview(selectedGroup, requestPreview);
+    }
+
+    internal DadLevelSeekDisplayState BuildScheduleLevelSeekDisplay(
+        DadPlannerGroup? group,
+        DadPlannerUiSnapshot plannerSnapshot)
+    {
+        if (group == null)
+            return DadLevelSeekDisplayState.None;
+        if (group.LevelingMode?.Enabled == true)
+            return DadLevelSeekDisplayState.None;
+
+        if (cachedScheduleLevelSeekSnapshotUtc != plannerSnapshot.RebuiltAtUtc)
+        {
+            cachedScheduleLevelSeekDisplays.Clear();
+            cachedScheduleLevelSeekSnapshotUtc = plannerSnapshot.RebuiltAtUtc;
+        }
+
+        if (cachedScheduleLevelSeekDisplays.TryGetValue(group.GroupId, out var cached))
+            return cached;
+
+        var requestPreview = BuildPlannerGroupRunRequestPreview(
+            plannerSnapshot.CuratedPool,
+            group.GroupId,
+            null);
+        var display = DadLevelSeekDisplayRules.Build(SchedulerService.EvaluateLevelSeek(group, requestPreview));
+        cachedScheduleLevelSeekDisplays[group.GroupId] = display;
+        return display;
     }
 
     public string ValidateSelectedPlannerPresetReadOnly()
@@ -2240,6 +2351,9 @@ public sealed class Plugin : IDalamudPlugin
             return BuildBlockedPlannerGroupPreview(rejectionReason);
         }
 
+        if (group.LevelingMode?.Enabled == true)
+            return BuildLevelingPlannerPreview(BuildLevelingChild(group, pool, iteration: 1));
+
         var options = BuildPlannerOptionsForGroup(group, startRequest);
         var preview = PresetProviderService.BuildPlannerPreview(pool, options, group);
         return ApplyPlannerRuntimeTruth(PresetProviderService.BuildPlannerRunRequestPreview(
@@ -2502,6 +2616,7 @@ public sealed class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
+            LevelingMode = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions(),
             SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,
             CompletionActions = source.CompletionActions?.Clone(),
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
@@ -2514,6 +2629,7 @@ public sealed class Plugin : IDalamudPlugin
                 RequiredJobId = slot.RequiredJobId,
                 AdsLootMode = slot.AdsLootMode,
                 LevelSeekTarget = slot.LevelSeekTarget,
+                SkipIfDailyRouletteRewardReceived = slot.SkipIfDailyRouletteRewardReceived,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
                 CharacterLoadInstruction = slot.CharacterLoadInstruction.Clone(),
@@ -2565,6 +2681,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         group.InviteAuthority = DadInviteAuthority.PresetLeader;
         group.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
+        group.LevelingMode ??= new DadLevelingModeOptions();
+        group.LevelingMode.Normalize();
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
     }
 
@@ -2618,6 +2736,118 @@ public sealed class Plugin : IDalamudPlugin
     {
         var group = ResolvePlannerGroup(groupId);
         return group == null ? null : BuildPlannerGroupRunRequestPreview(group.GroupId, null);
+    }
+
+    private DadLevelingChildBuild BuildLevelingChild(DadPlannerGroup source, int iteration)
+        => BuildLevelingChild(source, BuildPlannerPool(), iteration);
+
+    internal DadLevelingCompilation BuildLevelingModeCompilation(
+        DadPlannerGroup source,
+        DadCharacterPool pool)
+        => CompileLevelingMode(source, pool, iteration: 1);
+
+    private DadLevelingChildBuild BuildLevelingChild(
+        DadPlannerGroup source,
+        DadCharacterPool pool,
+        int iteration)
+    {
+        var compilation = CompileLevelingMode(source, pool, iteration);
+        var build = new DadLevelingChildBuild { Compilation = compilation };
+        if (!compilation.CanStartChild || compilation.ChildGroup == null)
+            return build;
+
+        var child = compilation.ChildGroup;
+        var options = BuildPlannerOptionsForGroup(child, null);
+        var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, options, child);
+        build.PlannerPreview = ApplyPlannerRuntimeTruth(
+            PresetProviderService.BuildPlannerRunRequestPreview(
+                pool,
+                options,
+                requestId: compilation.ChildRequestId,
+                requestedAtUtc: DateTime.UtcNow,
+                plannerPreviewOverride: plannerPreview,
+                selectedGroup: child,
+                completionFallback: Configuration.CompletionActions),
+            pool,
+            child);
+        return build;
+    }
+
+    private DadLevelingCompilation CompileLevelingMode(
+        DadPlannerGroup source,
+        DadCharacterPool pool,
+        int iteration)
+    {
+        var dutyCatalog = (source.LevelingMode?.DutyThresholds ?? [])
+            .Where(static threshold => threshold != null && threshold.ContentFinderConditionId > 0)
+            .Select(threshold => PresetProviderService.GetPlannerDutyOption(threshold.ContentFinderConditionId))
+            .Where(static duty => duty != null)
+            .Select(static duty => duty!)
+            .DistinctBy(static duty => duty.ContentFinderConditionId)
+            .ToList();
+        return DadLevelingModeCompiler.Compile(
+            source,
+            pool,
+            GetLevelingJobCatalog(),
+            dutyCatalog,
+            iteration);
+    }
+
+    private IReadOnlyList<DadLevelingJobDescriptor> GetLevelingJobCatalog()
+    {
+        if (levelingJobCatalog != null)
+            return levelingJobCatalog;
+
+        levelingJobCatalog = DataManager.GetExcelSheet<ClassJob>()
+            .Where(static row => row.RowId > 0)
+            .Select(static row =>
+            {
+                var jobType = (int)row.JobType;
+                return new DadLevelingJobDescriptor
+                {
+                    JobId = row.RowId,
+                    Abbreviation = row.Abbreviation.ToString().Trim(),
+                    Role = jobType switch
+                    {
+                        1 => DadPartyRole.Tank,
+                        2 or 6 => DadPartyRole.Healer,
+                        3 => DadPartyRole.Melee,
+                        4 => DadPartyRole.PhysicalRanged,
+                        5 => DadPartyRole.Caster,
+                        _ => DadPartyRole.Any,
+                    },
+                    IsFullCombatJob = row.CanQueueForDuty && row.JobIndex > 0 && jobType is >= 1 and <= 6,
+                    IsLimitedJob = row.IsLimitedJob,
+                };
+            })
+            .ToList();
+        return levelingJobCatalog;
+    }
+
+    private static DadPlannerRunRequestPreview BuildLevelingPlannerPreview(DadLevelingChildBuild build)
+    {
+        if (build.PlannerPreview != null)
+            return build.PlannerPreview;
+
+        var compilation = build.Compilation ?? new DadLevelingCompilation();
+        if (compilation.Status != DadLevelingCompilationStatus.Complete)
+            return BuildBlockedPlannerGroupPreview(compilation.Summary);
+
+        var contract = new DadPlannerRequestContractPreview
+        {
+            Startability = "Complete",
+            CanStart = true,
+            CanSchedule = true,
+        };
+        return new DadPlannerRunRequestPreview
+        {
+            CanStart = true,
+            CanSchedule = true,
+            StatusSummary = compilation.Summary,
+            ReadinessSummary = compilation.Summary,
+            ContractPreview = contract,
+            ContractPreviewJson = DadIpcJson.Serialize(contract),
+        };
     }
 
     private DadRunResult StartScheduledPlannerRequest(

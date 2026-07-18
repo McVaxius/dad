@@ -456,7 +456,8 @@ public static class DadDebugUiRules
 
     public static bool ShowLaunchProfiles(bool debugUiEnabled) => debugUiEnabled;
 
-    public static int PresetCrewColumnCount(bool debugUiEnabled) => debugUiEnabled ? 11 : 10;
+    public static int PresetCrewColumnCount(bool debugUiEnabled, bool showDailyReward = false)
+        => (debugUiEnabled ? 11 : 10) + (showDailyReward ? 1 : 0);
 
     public static bool CanRunLaunchProfileDiagnostics(bool debugUiEnabled) => debugUiEnabled;
 

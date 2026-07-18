@@ -279,6 +279,7 @@ public sealed class DadDependencyRulesTests
         Assert.Equal("update", clone.DependencySummary);
         Assert.Equal(12, (int)DadSchedulerPresetPhase.Skipped);
         Assert.Equal(13, (int)DadSchedulerPresetPhase.WaitingForDependencies);
+        Assert.Equal(14, (int)DadSchedulerPresetPhase.DailyRewardPreflight);
     }
 
     [Fact]
@@ -290,6 +291,8 @@ public sealed class DadDependencyRulesTests
         Assert.True(DadDebugUiRules.ShowLaunchProfiles(true));
         Assert.Equal(10, DadDebugUiRules.PresetCrewColumnCount(false));
         Assert.Equal(11, DadDebugUiRules.PresetCrewColumnCount(true));
+        Assert.Equal(11, DadDebugUiRules.PresetCrewColumnCount(false, showDailyReward: true));
+        Assert.Equal(12, DadDebugUiRules.PresetCrewColumnCount(true, showDailyReward: true));
         Assert.Equal(
             DadDebugUiRules.CrewReviewStepId,
             DadDebugUiRules.ResolveVisibleCrewStep(DadDebugUiRules.CrewLaunchProfilesStepId, false));

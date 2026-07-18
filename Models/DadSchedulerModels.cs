@@ -25,6 +25,15 @@ public enum DadSchedulerPresetPhase
     Cancelled = 11,
     Skipped = 12,
     WaitingForDependencies = 13,
+    DailyRewardPreflight = 14,
+    LevelingBetweenChildren = 15,
+}
+
+public enum DadSchedulerSkipKind
+{
+    None = 0,
+    LevelSeek = 1,
+    DailyRouletteReward = 2,
 }
 
 public sealed class DadLaunchProfile
@@ -320,14 +329,20 @@ public sealed class DadSchedulerPresetState
     public string ScheduleEntryId { get; set; } = string.Empty;
     public int ScheduleEntryIndex { get; set; } = -1;
     public int ScheduleRepeatIteration { get; set; }
+    public DadScheduleCadence ScheduleCadence { get; set; } = DadScheduleCadence.Manual;
+    public DadSchedulerSkipKind SkipKind { get; set; }
+    public string ParentOperationJobId { get; set; } = string.Empty;
+    public int LevelingIteration { get; set; }
 
     public bool IsActive => Phase is DadSchedulerPresetPhase.Resolving
         or DadSchedulerPresetPhase.LaunchingClients
         or DadSchedulerPresetPhase.WaitingForHeartbeat
         or DadSchedulerPresetPhase.LoadingCharacters
+        or DadSchedulerPresetPhase.DailyRewardPreflight
         or DadSchedulerPresetPhase.WaitingForDependencies
         or DadSchedulerPresetPhase.ReadyToStart
-        or DadSchedulerPresetPhase.StartingPlanner;
+        or DadSchedulerPresetPhase.StartingPlanner
+        or DadSchedulerPresetPhase.LevelingBetweenChildren;
 
     public DadSchedulerPresetState Clone()
         => new()
@@ -355,6 +370,10 @@ public sealed class DadSchedulerPresetState
             ScheduleEntryId = ScheduleEntryId,
             ScheduleEntryIndex = ScheduleEntryIndex,
             ScheduleRepeatIteration = ScheduleRepeatIteration,
+            ScheduleCadence = ScheduleCadence,
+            SkipKind = SkipKind,
+            ParentOperationJobId = ParentOperationJobId,
+            LevelingIteration = LevelingIteration,
         };
 
     public DadRunResult ToRunResult(DadRunRequest? request = null)

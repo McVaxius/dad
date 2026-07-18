@@ -12,6 +12,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
     private readonly DadAutoRetainerIpcService autoRetainer;
     private readonly DadLifestreamIpcService lifestream;
     private readonly DadVermaxionIpcService vermaxion;
+    private readonly DadTitleMenuReadinessService titleMenuReadiness;
     private readonly ICommandManager commandManager;
     private readonly IPluginLog log;
     private int loggedCanonicalV2Authority;
@@ -25,6 +26,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
         DadAutoRetainerIpcService autoRetainer,
         DadLifestreamIpcService lifestream,
         DadVermaxionIpcService vermaxion,
+        DadTitleMenuReadinessService titleMenuReadiness,
         ICommandManager commandManager,
         IPluginLog log)
     {
@@ -34,6 +36,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
         this.autoRetainer = autoRetainer;
         this.lifestream = lifestream;
         this.vermaxion = vermaxion;
+        this.titleMenuReadiness = titleMenuReadiness;
         this.commandManager = commandManager;
         this.log = log;
     }
@@ -57,6 +60,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
         var lifestreamState = lifestream.Inspect();
         var external = vermaxion.Inspect(forceExternalRefresh);
         var reservation = vermaxion.Reservation;
+        var title = titleMenuReadiness.Current;
         var compatibilityEvidence = DadVermaxionCompatibilityEvidence.Evaluate(
             external,
             ar.Available,
@@ -79,12 +83,18 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
             // boundary (non-local-only mode) is sufficient; the legacy arbitrary-command opt-in remains
             // scoped to the compatibility character-load transport.
             RemoteMutationAllowed = !configuration.LocalOnlyModeEnabled,
+            ClientRouteConnected = true,
             AccountMatches = identity.AccountMatches,
             CharacterKnownToAccount = identity.CharacterKnownToAccount,
             CorrectCharacter = string.Equals(
                 participant.ActiveCharacterKey.Value,
                 request.CharacterKey.Value,
                 StringComparison.OrdinalIgnoreCase),
+            TitleMenuEvidenceFresh = title.IsFresh(DateTime.UtcNow),
+            TitleMenuReady = title.TitleMenuReady,
+            TitleNavigationOverlayVisible = title.NavigationOverlayVisible,
+            TitleConnectionOverlayVisible = title.ConnectionOverlayVisible,
+            TitleErrorOverlayVisible = title.ErrorOverlayVisible,
             PostArReady = participant.WorldReadyStable && !authority.Held,
             ExternalAutomationHeld = authority.Held,
             VermaxionReservationAuthoritative = authority.Authoritative,
@@ -186,6 +196,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
         {
             DadWakeTakeoverCommand.DisableAutoRetainer => "/ays d",
             DadWakeTakeoverCommand.ResetAutoRetainer => "/ays reset",
+            DadWakeTakeoverCommand.DisableAutoRetainerMultiMode => "/ays m d",
             DadWakeTakeoverCommand.RelogCharacter when DadWakePolicyRules.IsValidCharacterKey(request.CharacterKey)
                 => $"/ays relog {request.CharacterKey.Value.Trim()}",
             _ => string.Empty,

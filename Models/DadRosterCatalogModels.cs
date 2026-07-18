@@ -13,6 +13,8 @@ public enum DadSchedulerJobType
     ScheduledPreset,
     RosterUpdate,
     MapCrew,
+    LevelingOperation,
+    LevelingChild,
 }
 
 public enum DadMapCrewJobMode
@@ -564,6 +566,9 @@ public sealed class DadScheduledCrewJob
     public string ScheduleEntryId { get; set; } = string.Empty;
     public int ScheduleEntryIndex { get; set; } = -1;
     public int ScheduleRepeatIteration { get; set; }
+    public DadScheduleCadence ScheduleCadence { get; set; } = DadScheduleCadence.Manual;
+    public string ParentOperationJobId { get; set; } = string.Empty;
+    public int LevelingIteration { get; set; }
 
     public DadScheduledCrewJob Clone()
         => new()
@@ -591,6 +596,9 @@ public sealed class DadScheduledCrewJob
             ScheduleEntryId = ScheduleEntryId,
             ScheduleEntryIndex = ScheduleEntryIndex,
             ScheduleRepeatIteration = ScheduleRepeatIteration,
+            ScheduleCadence = ScheduleCadence,
+            ParentOperationJobId = ParentOperationJobId,
+            LevelingIteration = LevelingIteration,
         };
 }
 
@@ -612,6 +620,10 @@ public sealed class DadScheduledCrewJobResult
     public string ScheduleEntryId { get; set; } = string.Empty;
     public int ScheduleEntryIndex { get; set; } = -1;
     public int ScheduleRepeatIteration { get; set; }
+    public DadScheduleCadence ScheduleCadence { get; set; } = DadScheduleCadence.Manual;
+    public DadSchedulerSkipKind SkipKind { get; set; }
+    public string ParentOperationJobId { get; set; } = string.Empty;
+    public int LevelingIteration { get; set; }
 
     public DadScheduledCrewJobResult Clone()
         => new()
@@ -632,6 +644,10 @@ public sealed class DadScheduledCrewJobResult
             ScheduleEntryId = ScheduleEntryId,
             ScheduleEntryIndex = ScheduleEntryIndex,
             ScheduleRepeatIteration = ScheduleRepeatIteration,
+            ScheduleCadence = ScheduleCadence,
+            SkipKind = SkipKind,
+            ParentOperationJobId = ParentOperationJobId,
+            LevelingIteration = LevelingIteration,
         };
 }
 

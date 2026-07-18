@@ -315,6 +315,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         var blocker = ValidateCoreTarget(snapshot, operation.Request);
         if (!string.IsNullOrWhiteSpace(blocker))
             return Block(operation, blocker, cleanup: true);
+        var titleIdleResult = PrepareAutoRetainerTitleIdleLogin(operation, snapshot);
+        if (titleIdleResult != null)
+            return titleIdleResult;
         if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot))
         {
             return ReturnToReadinessWait(
@@ -413,6 +416,105 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.Phase = DadWakeTakeoverPhase.Prepared;
         operation.Summary = "AR handoff acquired — waiting for crew with no timeout; cancel to stop.";
         operation.Acknowledgement = DadWakeAcknowledgementState.Accepted;
+        operation.UpdatedAtUtc = utcNow();
+        return BuildResult(operation, snapshot);
+    }
+
+    private DadWakeTakeoverResultDto? PrepareAutoRetainerTitleIdleLogin(
+        OperationState operation,
+        DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (!operation.TitleIdleOwnershipProven)
+        {
+            if (!DadTitleIdleLoginRules.CanProveAutoRetainerOwnership(snapshot))
+                return null;
+            operation.TitleIdleOwnershipProven = true;
+        }
+
+        if (!operation.CoordinatorAvailable)
+        {
+            operation.Summary = "AutoRetainer title login is paused because the coordinator route is unavailable; no command was issued.";
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
+        if (!DadTitleIdleLoginRules.HasExactStableRoute(snapshot))
+        {
+            // Route loss revokes the one-shot ownership proof. Since Multi Mode may already be
+            // disabled, the same operation cannot later reinterpret a generic title screen as AR-owned.
+            operation.TitleIdleOwnershipProven = false;
+            operation.Summary = DadTitleIdleLoginRules.BuildWaitSummary(snapshot);
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
+        if (!DadTitleIdleLoginRules.CanContinueOwnedAttempt(snapshot))
+        {
+            operation.Summary = DadTitleIdleLoginRules.BuildWaitSummary(snapshot);
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
+        if (!operation.TitleIdleMultiModeDisableAttempted)
+        {
+            // Mark before invoking so rejection, reentrancy, or a lost reply can never repeat /ays m d.
+            operation.TitleIdleMultiModeDisableAttempted = true;
+            var disable = Invoke(
+                () => target.ExecuteCommand(DadWakeTakeoverCommand.DisableAutoRetainerMultiMode, operation.Request),
+                "send /ays m d for the AutoRetainer-owned title login");
+            if (!disable.Success)
+                return Block(operation, disable.Error, cleanup: true);
+
+            operation.Summary = "AutoRetainer-owned title idle was proven; /ays m d was issued once and DAD is verifying Multi Mode is off.";
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
+        if (snapshot.MultiModeEnabled)
+        {
+            operation.Summary = "AutoRetainer-owned title login is waiting for fresh verification that Multi Mode is disabled; /ays m d will not repeat.";
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
+        // Nothing may intervene between this forced title/identity/ownership read and the exact relog command.
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        var blocker = ValidateCoreTarget(snapshot, operation.Request);
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return Block(operation, blocker, cleanup: true);
+        if (!operation.CoordinatorAvailable ||
+            !DadTitleIdleLoginRules.HasExactStableRoute(snapshot) ||
+            !DadTitleIdleLoginRules.CanContinueOwnedAttempt(snapshot) ||
+            snapshot.MultiModeEnabled)
+        {
+            if (!DadTitleIdleLoginRules.HasExactStableRoute(snapshot))
+                operation.TitleIdleOwnershipProven = false;
+            operation.Summary = DadTitleIdleLoginRules.BuildWaitSummary(snapshot);
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
+        if (!operation.TitleIdleRelogCommandAttempted)
+        {
+            // Mark before invoking so the exact-character relog is at-most-once for this title proof.
+            operation.TitleIdleRelogCommandAttempted = true;
+            operation.RelogCommandAttempted = true;
+            var relog = Invoke(
+                () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.Request),
+                $"send /ays relog {operation.Request.CharacterKey} from the AutoRetainer-owned title screen");
+            if (!relog.Success)
+                return Block(operation, relog.Error, cleanup: true);
+
+            var issuedAt = utcNow();
+            operation.RelogIssuedUtc = issuedAt;
+            operation.RelogAcceptedAtUtc = issuedAt;
+            operation.RelogTransitionObserved = true;
+        }
+
+        operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
+        operation.CommitKind = DadWakeCommitKind.Relog;
+        operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
+        operation.Summary = $"AutoRetainer-owned title login issued the exact relog for {operation.Request.CharacterKey}; waiting for world readiness without replay.";
         operation.UpdatedAtUtc = utcNow();
         return BuildResult(operation, snapshot);
     }
@@ -816,6 +918,17 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (!snapshot.CorrectCharacter)
         {
+            if (operation.TitleIdleRelogCommandAttempted)
+            {
+                operation.Summary = !snapshot.Participant.IsAvailable
+                    ? "AutoRetainer title relog started a login transition; waiting for a local character without timeout."
+                    : !snapshot.Participant.WorldReadyStable
+                        ? "AutoRetainer title relog is waiting for world/login stability without timeout."
+                        : $"AutoRetainer title relog settled on {snapshot.Participant.ActiveCharacterKey} instead of {operation.Request.CharacterKey}; waiting without replay or another command.";
+                operation.UpdatedAtUtc = utcNow();
+                return;
+            }
+
             var now = utcNow();
             var activeCharacter = snapshot.Participant.ActiveCharacterKey;
             if (!snapshot.Participant.IsAvailable || !snapshot.Participant.WorldReadyStable)
@@ -1127,6 +1240,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.StableWrongCharacterSinceUtc = null;
         operation.HomeWorldReturnGate = new DadHomeWorldReturnGate();
         operation.HomeWorldReturnStarted = false;
+        operation.TitleIdleOwnershipProven = false;
+        operation.TitleIdleMultiModeDisableAttempted = false;
+        operation.TitleIdleRelogCommandAttempted = false;
         operation.Summary = $"Takeover epoch {operation.Epoch} queued for a fresh reservation after retryable outcome: {reason} Next reserve attempt begins after the five-second cadence.";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
@@ -1440,6 +1556,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (phase != DadWakeTakeoverPhase.AwaitingArHook)
             return ToStage(phase);
+        if (operation.TitleIdleOwnershipProven)
+            return DadWakeTakeoverStage.DisablingMultiMode;
         if (!snapshot.Participant.IsAvailable)
             return DadWakeTakeoverStage.WaitingForClient;
         if (!snapshot.Participant.WorldReadyStable)
@@ -1569,5 +1687,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         public DateTime? StableWrongCharacterSinceUtc { get; set; }
         public DadHomeWorldReturnGate HomeWorldReturnGate { get; set; } = new();
         public bool HomeWorldReturnStarted { get; set; }
+        public bool TitleIdleOwnershipProven { get; set; }
+        public bool TitleIdleMultiModeDisableAttempted { get; set; }
+        public bool TitleIdleRelogCommandAttempted { get; set; }
     }
 }
