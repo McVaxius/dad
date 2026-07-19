@@ -27,6 +27,27 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Configure AutoParty NuGet source
+        shell: pwsh
+        run: |
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
+          $package = Join-Path $packageDir "Dad.AutoParty.Protocol.0.1.0-preview.2.nupkg"
+          $expectedHash = "475964fad1a400125b0a80a3ac4ab28e45150d5390d97e992fcf6dfb8dd09ac5"
+
+          if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
+            throw "Vendored AutoParty package is missing: $package"
+          }
+
+          $actualHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Vendored AutoParty package hash mismatch. Expected $expectedHash, got $actualHash."
+          }
+
+          dotnet nuget add source $packageDir --name autoparty-local
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to register the vendored AutoParty NuGet source."
+          }
+
       - name: Download Dalamud
         run: |
           Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/api15/latest.zip -OutFile latest.zip
