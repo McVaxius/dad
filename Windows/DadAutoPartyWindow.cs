@@ -7,10 +7,8 @@ namespace dad.Windows;
 
 public sealed class DadAutoPartyWindow : Window
 {
-    private const string PilotInputRoot = @"D:\AutoParty-LiveGate\pilot-input";
-    private const string PilotReceiptRoot = @"D:\AutoParty-LiveGate\pilot-receipts";
-    private const string PilotFixturePath = @"D:\AutoParty-LiveGate\pilot-fixture.json";
     private readonly Plugin plugin;
+    private string pilotExchangeRoot = DadAutoPartyConfiguration.DefaultPilotExchangeRoot;
     private string endpointAlias = string.Empty;
     private string enrollmentReceiptPath = string.Empty;
     private string status = "AutoParty transport, pairing, and execution are disabled.";
@@ -32,6 +30,7 @@ public sealed class DadAutoPartyWindow : Window
 
     public override void OnOpen()
     {
+        pilotExchangeRoot = plugin.Configuration.AutoParty.PilotExchangeRoot;
         endpointAlias = plugin.Configuration.AutoParty.EndpointAlias;
         enrollmentReceiptPath = BuildReceiptPath();
     }
@@ -44,18 +43,34 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.TextWrapped("This pilot uses only outbound file courier transport. It never opens an inbound listening socket. Owner Stop, DAD disable, expiry, revocation, requested-job mismatch, and local safety override all remote input.");
         ImGui.Separator();
 
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.InputText("Pilot exchange root", ref pilotExchangeRoot, 512);
+        if (ImGui.Button("Apply pilot exchange root"))
+        {
+            var applied = plugin.AutoPartyService.ApplyPilotExchangeRoot(pilotExchangeRoot);
+            status = applied.SafeCode;
+            if (applied.Allowed)
+            {
+                pilotExchangeRoot = configuration.PilotExchangeRoot;
+                enrollmentReceiptPath = BuildReceiptPath();
+            }
+        }
+        ImGui.TextDisabled("Apply is available only while transport, pairing, and typed execution are disabled.");
+        ImGui.TextWrapped($"Input: {configuration.GetPilotInputRoot()} | Receipts: {configuration.GetPilotReceiptRoot()} | Courier: {configuration.GetPilotCourierRoot()}");
+        ImGui.Separator();
+
         ImGui.SetNextItemWidth(280f);
         ImGui.InputText("Island alias", ref endpointAlias, 48);
         if (ImGui.Button("Generate endpoint identity"))
             Start(plugin.AutoPartyService.IdentityPackages.GenerateAsync(endpointAlias).AsTask());
         ImGui.SameLine();
         if (ImGui.Button("Export public pilot identity"))
-            Start(plugin.AutoPartyService.IdentityPackages.ExportPublicAsync(PilotInputRoot).AsTask());
+            Start(plugin.AutoPartyService.IdentityPackages.ExportPublicAsync(configuration.GetPilotInputRoot()).AsTask());
 
         ImGui.TextDisabled(string.IsNullOrWhiteSpace(configuration.RegistrationFingerprint)
             ? "No endpoint fingerprint yet."
             : $"Endpoint fingerprint: {configuration.RegistrationFingerprint[..Math.Min(16, configuration.RegistrationFingerprint.Length)]}…");
-        ImGui.TextWrapped($"Public exports are written to {PilotInputRoot}. Private signing and encryption keys remain CurrentUser-DPAPI protected in the DAD configuration directory.");
+        ImGui.TextWrapped($"Public exports are written to {configuration.GetPilotInputRoot()}. Private signing and encryption keys remain CurrentUser-DPAPI protected in the DAD configuration directory.");
 
         ImGui.Separator();
         ImGui.SetNextItemWidth(-1f);
@@ -81,8 +96,8 @@ public sealed class DadAutoPartyWindow : Window
             status = plugin.AutoPartyService.ConfirmEnrollmentPairings().SafeCode;
 
         if (ImGui.Button("Import formation-only pilot fixture"))
-            Start(plugin.AutoPartyPilotFixtureService.ImportAsync(PilotFixturePath).AsTask());
-        ImGui.TextDisabled($"Fixture: {PilotFixturePath}");
+            Start(plugin.AutoPartyPilotFixtureService.ImportAsync(configuration.GetPilotFixturePath()).AsTask());
+        ImGui.TextDisabled($"Fixture: {configuration.GetPilotFixturePath()}");
 
         if (ImGui.Button("Send pilot courier probe"))
             Start(plugin.AutoPartyService.SendPilotCourierProbeAsync().AsTask());
@@ -110,7 +125,7 @@ public sealed class DadAutoPartyWindow : Window
             status = plugin.AutoPartyService.IdentityPackages.Rotate().SafeCode;
         ImGui.SameLine();
         if (ImGui.Button("Export pilot status receipt"))
-            Start(plugin.AutoPartyService.IdentityPackages.ExportPilotStatusAsync(PilotReceiptRoot).AsTask());
+            Start(plugin.AutoPartyService.IdentityPackages.ExportPilotStatusAsync(configuration.GetPilotReceiptRoot()).AsTask());
 
         ImGui.Separator();
         ImGui.TextWrapped($"Status: {status}");
@@ -152,8 +167,9 @@ public sealed class DadAutoPartyWindow : Window
     private string BuildReceiptPath()
     {
         var alias = plugin.Configuration.AutoParty.EndpointAlias;
+        var inputRoot = plugin.Configuration.AutoParty.GetPilotInputRoot();
         return string.IsNullOrWhiteSpace(alias)
-            ? Path.Combine(PilotInputRoot, "endpoint.apregistration")
-            : Path.Combine(PilotInputRoot, alias + ".apregistration");
+            ? Path.Combine(inputRoot, "endpoint.apregistration")
+            : Path.Combine(inputRoot, alias + ".apregistration");
     }
 }

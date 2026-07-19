@@ -4,6 +4,8 @@ namespace dad.Models;
 
 public sealed class DadAutoPartyConfiguration
 {
+    public const string DefaultPilotExchangeRoot = @"Z:\autopartypilot";
+
     public bool Enabled { get; set; }
     public bool PairingEnabled { get; set; }
     public bool ExecutionEnabled { get; set; }
@@ -17,7 +19,8 @@ public sealed class DadAutoPartyConfiguration
     public string EnrollmentReceiptId { get; set; } = string.Empty;
     public string PilotArtifactSha256 { get; set; } = string.Empty;
     public bool OwnerAcceptanceConfirmed { get; set; }
-    public string CourierRootPath { get; set; } = @"D:\AutoParty-LiveGate\pilot-courier";
+    public string PilotExchangeRoot { get; set; } = DefaultPilotExchangeRoot;
+    public string CourierRootPath { get; set; } = @"Z:\autopartypilot\pilot-courier";
     public string PilotPlannerGroupId { get; set; } = string.Empty;
     public string PilotQueueAuthorityFingerprint { get; set; } = string.Empty;
     public bool PilotCourierProbeVerified { get; set; }
@@ -41,7 +44,8 @@ public sealed class DadAutoPartyConfiguration
             ? receiptId.ToString("D")
             : string.Empty;
         PilotArtifactSha256 = NormalizeSha256(PilotArtifactSha256);
-        CourierRootPath = NormalizeCourierRoot(CourierRootPath);
+        PilotExchangeRoot = NormalizePilotExchangeRoot(PilotExchangeRoot);
+        CourierRootPath = Path.Combine(PilotExchangeRoot, "pilot-courier");
         PilotPlannerGroupId = NormalizeIdentifier(PilotPlannerGroupId);
         PilotQueueAuthorityFingerprint = NormalizeFingerprint(PilotQueueAuthorityFingerprint);
         StateGeneration = Math.Max(1, StateGeneration);
@@ -97,6 +101,7 @@ public sealed class DadAutoPartyConfiguration
             EnrollmentReceiptId = EnrollmentReceiptId,
             PilotArtifactSha256 = PilotArtifactSha256,
             OwnerAcceptanceConfirmed = OwnerAcceptanceConfirmed,
+            PilotExchangeRoot = PilotExchangeRoot,
             CourierRootPath = CourierRootPath,
             PilotPlannerGroupId = PilotPlannerGroupId,
             PilotQueueAuthorityFingerprint = PilotQueueAuthorityFingerprint,
@@ -160,20 +165,47 @@ public sealed class DadAutoPartyConfiguration
             : string.Empty;
     }
 
-    private static string NormalizeCourierRoot(string? value)
+    public string GetPilotInputRoot() => Path.Combine(PilotExchangeRoot, "pilot-input");
+
+    public string GetPilotReceiptRoot() => Path.Combine(PilotExchangeRoot, "pilot-receipts");
+
+    public string GetPilotFixturePath() => Path.Combine(GetPilotInputRoot(), "pilot-fixture.json");
+
+    public string GetPilotCourierRoot() => Path.Combine(PilotExchangeRoot, "pilot-courier");
+
+    public string GetPilotPluginRoot() => Path.Combine(PilotExchangeRoot, "plugin");
+
+    public static bool TryNormalizePilotExchangeRoot(string? value, out string normalized)
     {
         var candidate = (value ?? string.Empty).Trim();
+        normalized = string.Empty;
         if (string.IsNullOrWhiteSpace(candidate) || !Path.IsPathFullyQualified(candidate))
-            return @"D:\AutoParty-LiveGate\pilot-courier";
+            return false;
         try
         {
-            return Path.GetFullPath(candidate);
+            var fullPath = Path.GetFullPath(candidate).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+            var pathRoot = Path.GetPathRoot(fullPath)?.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+            if (string.IsNullOrWhiteSpace(fullPath) ||
+                string.IsNullOrWhiteSpace(pathRoot) ||
+                string.Equals(fullPath, pathRoot, StringComparison.OrdinalIgnoreCase))
+                return false;
+            normalized = fullPath;
+            return true;
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return @"D:\AutoParty-LiveGate\pilot-courier";
+            return false;
         }
     }
+
+    private static string NormalizePilotExchangeRoot(string? value)
+        => TryNormalizePilotExchangeRoot(value, out var normalized)
+            ? normalized
+            : DefaultPilotExchangeRoot;
 }
 
 public sealed class DadAutoPartyRemoteBinding

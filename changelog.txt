@@ -1,5 +1,10 @@
 # dad — changelog
 
+## 2026-07-19 — P1203 shared pilot exchange root (local-only, unpublished)
+- Added persisted **Pilot exchange root** support to `/dad autoparty`, defaulting new and legacy schema-5 configurations to `Z:\autopartypilot`. Apply is allowed only while transport, pairing, and execution are disabled; it validates and probes a fully qualified non-root drive or UNC path, creates `pilot-input`, `pilot-receipts`, `pilot-courier`, and `plugin`, and reports safe failure codes.
+- Identity/registration exports and `pilot-fixture.json` now use `pilot-input`, status receipts use `pilot-receipts`, and the courier dynamically resolves `pilot-courier` for every operation. A successful root change therefore applies immediately without reloading DAD.
+- Fresh locked x64 Debug/Release builds pass with zero warnings/errors, focused formatter verification is clean, 33/33 focused tests pass, and the complete suite passes 1,070/1,070. Version `0.4.1.0`, configuration schema 5, IPC v1, LAN behavior, Fleet TSV, and release artifacts are unchanged; this work remains one local commit and is not pushed, tagged, packaged as a release, or published.
+
 ## 2026-07-19 — I51–I53 successor batch wizard and acknowledged title login (local-only, unpublished)
 - Added `/dad batch` and a Plans-page entry for a standalone session-draft Batch Preset Wizard. Explicit rotating
   accounts/characters are zipped by stable pool-local order, exact anchors are mapped per named non-overlapping DC

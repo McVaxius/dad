@@ -110,6 +110,54 @@ public sealed class DadAutoPartyService : IDisposable
         return Decision(true, enabled ? "dad-execution-enabled" : "dad-execution-disabled");
     }
 
+    public DadAutoPartyPolicyDecision ApplyPilotExchangeRoot(string? requestedRoot)
+    {
+        ThrowIfDisposed();
+        if (configuration.Enabled || configuration.PairingEnabled || configuration.ExecutionEnabled)
+            return Decision(false, "dad-pilot-exchange-root-gates-enabled");
+        if (!DadAutoPartyConfiguration.TryNormalizePilotExchangeRoot(requestedRoot, out var normalizedRoot))
+            return Decision(false, "dad-pilot-exchange-root-invalid");
+
+        var probePath = Path.Combine(normalizedRoot, $".dad-write-probe-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(normalizedRoot);
+            foreach (var managedFolder in new[] { "pilot-input", "pilot-receipts", "pilot-courier", "plugin" })
+                Directory.CreateDirectory(Path.Combine(normalizedRoot, managedFolder));
+            File.WriteAllBytes(probePath, []);
+            File.Delete(probePath);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Decision(false, "dad-pilot-exchange-root-unwritable");
+        }
+        catch (System.Security.SecurityException)
+        {
+            return Decision(false, "dad-pilot-exchange-root-unwritable");
+        }
+        catch (Exception exception) when (exception is IOException or ArgumentException or NotSupportedException)
+        {
+            return Decision(false, "dad-pilot-exchange-root-unavailable");
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(probePath))
+                    File.Delete(probePath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+            }
+        }
+
+        configuration.PilotExchangeRoot = normalizedRoot;
+        configuration.CourierRootPath = Path.Combine(normalizedRoot, "pilot-courier");
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, "dad-pilot-exchange-root-applied");
+    }
+
     public DadAutoPartyPolicyDecision ConfirmEnrollmentPairings()
     {
         ThrowIfDisposed();

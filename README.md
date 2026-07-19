@@ -52,8 +52,12 @@ dotnet test .\Tests\dad.Tests.csproj
 - AutoParty is an unreleased, disabled-by-default integration. `/dad autoparty` exposes explicit endpoint generation,
   public pilot export, enrollment import, local pairing, formation-only fixture import, transport, execution, status-receipt, rotation, and Owner Stop
   controls. Loading or migration does not generate an identity or enable any of the three local gates.
+- **Pilot exchange root** defaults to `Z:\autopartypilot` and may be changed to a fully qualified, writable, non-root
+  drive or UNC path only while transport, pairing, and execution are disabled. Applying it immediately derives and
+  creates `pilot-input`, `pilot-receipts`, `pilot-courier`, and `plugin` without requiring a DAD reload. Existing schema-5
+  configurations migrate to the shared default; schema number, LAN behavior, IPC v1, and Fleet TSV stay unchanged.
 - The AutoParty courier connector is separate from the existing LAN `DadTransportService`. It uses a bounded outbound-only
-  file spool beneath the isolated pilot root and opens no inbound listener. LAN behavior and public DAD IPC remain unchanged.
+  file spool beneath `<PilotExchangeRoot>\pilot-courier` and opens no inbound listener. LAN behavior and public DAD IPC remain unchanged.
   DAD consumes the versioned `Dad.AutoParty.Protocol` package instead of an absolute project path.
 - Local grants are immutable and intersect exact owner, island, opaque character, requested job, activity, permission,
   expiry, replay, reservation, preflight, lease, and revocation truth. Owner Stop, DAD disable, local safety, expiry, and

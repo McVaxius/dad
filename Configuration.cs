@@ -137,7 +137,17 @@ public sealed class Configuration : IPluginConfiguration
             AutoParty = new DadAutoPartyConfiguration();
             changed = true;
         }
+        var priorPilotExchangeRoot = AutoParty.PilotExchangeRoot;
+        var priorCourierRootPath = AutoParty.CourierRootPath;
         AutoParty.Normalize();
+        changed |= !string.Equals(
+                       priorPilotExchangeRoot,
+                       AutoParty.PilotExchangeRoot,
+                       StringComparison.Ordinal) ||
+                   !string.Equals(
+                       priorCourierRootPath,
+                       AutoParty.CourierRootPath,
+                       StringComparison.Ordinal);
 
         if (AutoPartyFleet == null)
         {

@@ -17,6 +17,12 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         Assert.Equal(string.Empty, configuration.AutoParty.EndpointIdentityReference);
         Assert.Equal(string.Empty, configuration.AutoParty.RegisteredOwnerId);
         Assert.Equal(string.Empty, configuration.AutoParty.RegisteredIslandId);
+        Assert.Equal(@"Z:\autopartypilot", configuration.AutoParty.PilotExchangeRoot);
+        Assert.Equal(@"Z:\autopartypilot\pilot-input", configuration.AutoParty.GetPilotInputRoot());
+        Assert.Equal(@"Z:\autopartypilot\pilot-receipts", configuration.AutoParty.GetPilotReceiptRoot());
+        Assert.Equal(@"Z:\autopartypilot\pilot-input\pilot-fixture.json", configuration.AutoParty.GetPilotFixturePath());
+        Assert.Equal(@"Z:\autopartypilot\pilot-courier", configuration.AutoParty.GetPilotCourierRoot());
+        Assert.Equal(@"Z:\autopartypilot\plugin", configuration.AutoParty.GetPilotPluginRoot());
         Assert.Empty(configuration.AutoParty.Pairings);
         Assert.Empty(configuration.AutoParty.Grants);
         Assert.Empty(configuration.AutoParty.Listings);
@@ -73,6 +79,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 "Enabled": false,
                 "PairingEnabled": false,
                 "ExecutionEnabled": false,
+                "CourierRootPath": "D:\\AutoParty-LiveGate\\pilot-courier",
                 "EndpointIdentityReference": "identity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "RegisteredOwnerId": "owner-public",
                 "RegisteredIslandId": "island-public",
@@ -82,12 +89,35 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             """;
         var configuration = JsonSerializer.Deserialize<Configuration>(json)!;
 
-        Assert.False(configuration.MigrateTransportSettings());
+        Assert.True(configuration.MigrateTransportSettings());
         Assert.False(configuration.AutoParty.Enabled);
         Assert.False(configuration.AutoParty.PairingEnabled);
         Assert.False(configuration.AutoParty.ExecutionEnabled);
         Assert.Equal("identity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", configuration.AutoParty.EndpointIdentityReference);
         Assert.Equal("owner-public", configuration.AutoParty.RegisteredOwnerId);
         Assert.Equal("island-public", configuration.AutoParty.RegisteredIslandId);
+        Assert.Equal(@"Z:\autopartypilot", configuration.AutoParty.PilotExchangeRoot);
+        Assert.Equal(@"Z:\autopartypilot\pilot-courier", configuration.AutoParty.CourierRootPath);
+        Assert.False(configuration.MigrateTransportSettings());
+    }
+
+    [Fact]
+    public void SchemaFivePreservesNormalizedCustomPilotExchangeRoot()
+    {
+        const string json = """
+            {
+              "Version": 5,
+              "AutoParty": {
+                "PilotExchangeRoot": "C:\\shared\\pilot-root\\",
+                "CourierRootPath": "C:\\stale-courier"
+              }
+            }
+            """;
+        var configuration = JsonSerializer.Deserialize<Configuration>(json)!;
+
+        Assert.True(configuration.MigrateTransportSettings());
+        Assert.Equal(@"C:\shared\pilot-root", configuration.AutoParty.PilotExchangeRoot);
+        Assert.Equal(@"C:\shared\pilot-root\pilot-courier", configuration.AutoParty.CourierRootPath);
+        Assert.False(configuration.MigrateTransportSettings());
     }
 }

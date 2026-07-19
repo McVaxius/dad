@@ -509,6 +509,100 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
+    public void PilotExchangeRootApplyRequiresAllThreeGatesDisabled()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-root-gate", Guid.NewGuid().ToString("N"));
+        var configuration = new DadAutoPartyConfiguration { Enabled = true };
+        using var service = Service(configuration, new FakeIdentityStore());
+
+        var enabled = service.ApplyPilotExchangeRoot(root);
+        configuration.Enabled = false;
+        configuration.PairingEnabled = true;
+        var pairing = service.ApplyPilotExchangeRoot(root);
+        configuration.PairingEnabled = false;
+        configuration.ExecutionEnabled = true;
+        var execution = service.ApplyPilotExchangeRoot(root);
+
+        Assert.All([enabled, pairing, execution], decision =>
+        {
+            Assert.False(decision.Allowed);
+            Assert.Equal("dad-pilot-exchange-root-gates-enabled", decision.SafeCode);
+        });
+        Assert.False(Directory.Exists(root));
+    }
+
+    [Fact]
+    public void PilotExchangeRootApplyCreatesManagedFoldersAndUpdatesDerivedPathsImmediately()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-root-apply", Guid.NewGuid().ToString("N"));
+        var configuration = new DadAutoPartyConfiguration();
+        var saved = 0;
+        using var service = new DadAutoPartyService(
+            configuration,
+            new FakeIdentityStore(),
+            static () => true,
+            () => saved++,
+            static () => true);
+        try
+        {
+            var result = service.ApplyPilotExchangeRoot(root + Path.DirectorySeparatorChar);
+
+            Assert.True(result.Allowed, result.SafeCode);
+            Assert.Equal("dad-pilot-exchange-root-applied", result.SafeCode);
+            Assert.Equal(Path.GetFullPath(root), configuration.PilotExchangeRoot);
+            Assert.Equal(Path.Combine(root, "pilot-courier"), configuration.CourierRootPath);
+            Assert.Equal(Path.Combine(root, "pilot-input"), configuration.GetPilotInputRoot());
+            Assert.Equal(Path.Combine(root, "pilot-receipts"), configuration.GetPilotReceiptRoot());
+            Assert.Equal(Path.Combine(root, "pilot-input", "pilot-fixture.json"), configuration.GetPilotFixturePath());
+            Assert.Equal(1, saved);
+            Assert.All(new[] { "pilot-input", "pilot-receipts", "pilot-courier", "plugin" },
+                folder => Assert.True(Directory.Exists(Path.Combine(root, folder))));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void PilotExchangeRootApplyFailsWithSafeCodeWhenTargetIsUnavailable()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"dad-autoparty-root-file-{Guid.NewGuid():N}");
+        File.WriteAllText(file, "not-a-directory");
+        try
+        {
+            var configuration = new DadAutoPartyConfiguration();
+            using var service = Service(configuration, new FakeIdentityStore());
+
+            var result = service.ApplyPilotExchangeRoot(Path.Combine(file, "share"));
+
+            Assert.False(result.Allowed);
+            Assert.Equal("dad-pilot-exchange-root-unavailable", result.SafeCode);
+            Assert.DoesNotContain(file, result.SafeCode, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(DadAutoPartyConfiguration.DefaultPilotExchangeRoot, configuration.PilotExchangeRoot);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Theory]
+    [InlineData("relative\\pilot")]
+    [InlineData("C:\\")]
+    public void PilotExchangeRootApplyRejectsRelativeAndDriveRootPaths(string root)
+    {
+        var configuration = new DadAutoPartyConfiguration();
+        using var service = Service(configuration, new FakeIdentityStore());
+
+        var result = service.ApplyPilotExchangeRoot(root);
+
+        Assert.False(result.Allowed);
+        Assert.Equal("dad-pilot-exchange-root-invalid", result.SafeCode);
+    }
+
+    [Fact]
     public async Task PublicIdentityExportContainsNoPrivateKeyAndReceiptIsArtifactBound()
     {
         var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-tests", Guid.NewGuid().ToString("N"));
@@ -562,7 +656,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
     public async Task FileCourierIsOutboundOnlyBoundedAndIdempotent()
     {
         var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-courier", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(Path.Combine(root, "pilot-courier"));
         try
         {
             var configuration = new DadAutoPartyConfiguration
@@ -571,7 +665,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
                 RegisteredIslandId = LocalIsland,
                 OwnerAcceptanceConfirmed = true,
                 EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-                CourierRootPath = root,
+                PilotExchangeRoot = root,
             };
             using var courier = new DadAutoPartyFileCourierAdapter(configuration);
             var envelope = OpaqueEnvelope.Create(
@@ -603,10 +697,58 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
+    public async Task ExistingFileCourierUsesAppliedRootWithoutPluginReload()
+    {
+        var firstRoot = Path.Combine(Path.GetTempPath(), "dad-autoparty-dynamic-a", Guid.NewGuid().ToString("N"));
+        var secondRoot = Path.Combine(Path.GetTempPath(), "dad-autoparty-dynamic-b", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(firstRoot, "pilot-courier"));
+        try
+        {
+            var configuration = new DadAutoPartyConfiguration
+            {
+                PilotExchangeRoot = firstRoot,
+                RegisteredIslandId = LocalIsland,
+                OwnerAcceptanceConfirmed = true,
+                EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
+            };
+            using var courier = new DadAutoPartyFileCourierAdapter(configuration);
+            using var service = Service(configuration, new FakeIdentityStore());
+
+            var applied = service.ApplyPilotExchangeRoot(secondRoot);
+            configuration.Enabled = true;
+            var health = await courier.GetHealthAsync();
+            var delivery = OpaqueEnvelope.Create(
+                AutoPartyProtocol.CurrentVersion,
+                Guid.NewGuid(),
+                new IslandId(LocalIsland),
+                new IslandId(SenderIsland),
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                1,
+                "test",
+                [1, 2, 3]);
+            var sent = await courier.SendAsync(delivery);
+
+            Assert.True(applied.Allowed, applied.SafeCode);
+            Assert.Equal(AutoPartyTransportHealthState.Ready, health.State);
+            Assert.True(sent.Accepted, sent.SafeCode);
+            Assert.Empty(Directory.GetFiles(firstRoot, "*.apout", SearchOption.AllDirectories));
+            Assert.Single(Directory.GetFiles(secondRoot, "*.apout", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            if (Directory.Exists(firstRoot))
+                Directory.Delete(firstRoot, true);
+            if (Directory.Exists(secondRoot))
+                Directory.Delete(secondRoot, true);
+        }
+    }
+
+    [Fact]
     public async Task PilotCourierProbeIsAcknowledgedOnlyFromAnActivelyPairedIsland()
     {
         var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-probe", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(Path.Combine(root, "pilot-courier"));
         try
         {
             var sender = ProbeConfiguration(SenderIsland, LocalIsland, root);
@@ -620,7 +762,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
             Assert.False(receiverService.SetExecutionEnabled(true).Allowed);
             var outbox = Assert.Single(Directory.GetFiles(root, "*.apout", SearchOption.AllDirectories));
             var envelopeId = Path.GetFileNameWithoutExtension(outbox);
-            var inbox = Path.Combine(root, "inbox", IslandFolder(LocalIsland));
+            var inbox = Path.Combine(root, "pilot-courier", "inbox", IslandFolder(LocalIsland));
             Directory.CreateDirectory(inbox);
             File.Copy(outbox, Path.Combine(inbox, envelopeId + ".apin"));
 
@@ -778,7 +920,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
             RegisteredIslandId = localIsland,
             OwnerAcceptanceConfirmed = true,
             EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-            CourierRootPath = root,
+            PilotExchangeRoot = root,
             PilotPlannerGroupId = "pilot-group",
             PilotQueueAuthorityFingerprint = new string('C', 64),
         };

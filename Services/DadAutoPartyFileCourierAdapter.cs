@@ -14,17 +14,16 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
     private const int MaximumFileBytes = AutoPartyProtocol.PreallocationDefensiveCeilingBytes;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly DadAutoPartyConfiguration configuration;
-    private readonly string rootPath;
     private readonly Dictionary<Guid, string> receivedFiles = [];
     private bool disposed;
 
     public DadAutoPartyFileCourierAdapter(DadAutoPartyConfiguration configuration)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-        if (string.IsNullOrWhiteSpace(configuration.CourierRootPath) ||
-            !Path.IsPathFullyQualified(configuration.CourierRootPath))
+        if (!DadAutoPartyConfiguration.TryNormalizePilotExchangeRoot(
+                configuration.PilotExchangeRoot,
+                out _))
             throw new ArgumentException("The AutoParty courier root must be absolute.", nameof(configuration));
-        rootPath = Path.GetFullPath(configuration.CourierRootPath);
     }
 
     public ValueTask<AutoPartyTransportHealth> GetHealthAsync(
@@ -37,6 +36,7 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
             !configuration.OwnerAcceptanceConfirmed ||
             string.IsNullOrWhiteSpace(configuration.EnrollmentReceiptId))
             return ValueTask.FromResult(Health(AutoPartyTransportHealthState.NotReady, "dad-file-courier-registration-pending"));
+        var rootPath = GetRootPath();
         if (!Directory.Exists(rootPath))
             return ValueTask.FromResult(Health(AutoPartyTransportHealthState.NotReady, "dad-file-courier-root-missing"));
         try
@@ -57,7 +57,8 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
     {
         if (disposed || !configuration.Enabled || string.IsNullOrWhiteSpace(configuration.RegisteredIslandId))
             yield break;
-        var inbox = GetIslandFolder("inbox", configuration.RegisteredIslandId);
+        var rootPath = GetRootPath();
+        var inbox = GetIslandFolder(rootPath, "inbox", configuration.RegisteredIslandId);
         if (!Directory.Exists(inbox))
             yield break;
 
@@ -75,7 +76,7 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or FormatException or InvalidDataException)
             {
-                MoveToQuarantine(path);
+                MoveToQuarantine(rootPath, path);
                 continue;
             }
 
@@ -83,7 +84,7 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
                 !string.Equals(envelope.RecipientIslandId.Value, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
                 envelope.ExpiresAt <= DateTimeOffset.UtcNow)
             {
-                MoveToQuarantine(path);
+                MoveToQuarantine(rootPath, path);
                 continue;
             }
 
@@ -102,7 +103,8 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
         if (!IsBounded(delivery) || delivery.ExpiresAt <= DateTimeOffset.UtcNow ||
             !string.Equals(delivery.SenderIslandId.Value, configuration.RegisteredIslandId, StringComparison.Ordinal))
             return Denied(delivery.EnvelopeId, "dad-file-courier-envelope-invalid");
-        var outbox = GetIslandFolder("outbox", delivery.SenderIslandId.Value);
+        var rootPath = GetRootPath();
+        var outbox = GetIslandFolder(rootPath, "outbox", delivery.SenderIslandId.Value);
         Directory.CreateDirectory(outbox);
         if (Directory.EnumerateFiles(outbox, "*.apout", SearchOption.TopDirectoryOnly).Take(MaximumSpoolFiles + 1).Count() >= MaximumSpoolFiles)
             return Denied(delivery.EnvelopeId, "dad-file-courier-spool-full");
@@ -140,7 +142,10 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
             return;
         if (File.Exists(inboxPath))
             File.Delete(inboxPath);
-        var acknowledgementFolder = GetIslandFolder("acknowledgements", configuration.RegisteredIslandId);
+        var acknowledgementFolder = GetIslandFolder(
+            GetRootPath(),
+            "acknowledgements",
+            configuration.RegisteredIslandId);
         Directory.CreateDirectory(acknowledgementFolder);
         var path = Path.Combine(acknowledgementFolder, $"{acknowledgement.EnvelopeId:N}.apack");
         var payload = Encoding.UTF8.GetBytes(acknowledgement.SafeCode + "\n");
@@ -180,7 +185,7 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
             Convert.FromBase64String(payload.Ciphertext ?? string.Empty));
     }
 
-    private void MoveToQuarantine(string path)
+    private static void MoveToQuarantine(string rootPath, string path)
     {
         try
         {
@@ -194,7 +199,7 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
         }
     }
 
-    private string GetIslandFolder(string kind, string islandId)
+    private static string GetIslandFolder(string rootPath, string kind, string islandId)
     {
         var islandKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(islandId)))[..32].ToLowerInvariant();
         var path = Path.GetFullPath(Path.Combine(rootPath, kind, islandKey));
@@ -202,6 +207,15 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
         if (!path.StartsWith(expected, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("dad-file-courier-path-escaped");
         return path;
+    }
+
+    private string GetRootPath()
+    {
+        if (!DadAutoPartyConfiguration.TryNormalizePilotExchangeRoot(
+                configuration.PilotExchangeRoot,
+                out var exchangeRoot))
+            throw new InvalidOperationException("dad-file-courier-root-invalid");
+        return Path.Combine(exchangeRoot, "pilot-courier");
     }
 
     private static EnvelopePayload ToPayload(OpaqueEnvelope delivery) => new(
