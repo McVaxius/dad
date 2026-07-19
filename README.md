@@ -137,9 +137,12 @@ dotnet test .\Tests\dad.Tests.csproj
   disconnected, and timed-out workers.
 - Stop-all never broadly stops unrelated AutoRetainer or VERMAXION work. A takeover at or beyond the existing
   reset/relog commit boundary is preserved and reported as a partial result.
-- Client Dad registers one renewable VERMAXION v2 reservation per wake operation. VERMAXION finishes owned work,
-  disables/drains AutoRetainer, and emits a local grant; DAD can then prepare immediately with verified AR-off
-  suppression. If v2 is unavailable while loaded VERMAXION v1 explicitly reports idle, AutoRetainer is readable
+- Client Dad preserves one coordinator-visible wake identity, but assigns every actual VERMAXION v2 reservation epoch
+  a fresh internal opaque token. Renewals, authority snapshots, grant matching, and exact cleanup keep that epoch token
+  until release is verified; a retry allocates its next token only after cleanup completes. VERMAXION finishes owned
+  work, disables/drains AutoRetainer, and emits a matching local grant; stale grants from an earlier epoch are ignored,
+  and DAD can then prepare immediately with verified AR-off suppression. If v2 is unavailable while loaded VERMAXION
+  v1 explicitly reports idle, AutoRetainer is readable
   and idle with Multi Mode off, and suppression is clear or DAD-owned, DAD may prepare from that verified-idle
   compatibility evidence. It revalidates the evidence before reset; final readiness still requires the exact
   target character and the post-AR gate. Logical wake orders do not expire. The five-second coordinator cadence

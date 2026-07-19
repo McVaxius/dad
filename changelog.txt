@@ -1,5 +1,17 @@
 # dad — changelog
 
+## 2026-07-19 — P1204 mixed VERMAXION reservation-client recovery (local-only, unpublished)
+- Preserved the coordinator/scheduler wake `OperationToken` while assigning each actual VERMAXION reservation epoch a
+  fresh internal opaque token. Reservation authority snapshots, the initial reserve, automatic renewal, exact-token
+  cleanup, and grant-event matching now share only the active epoch token.
+- Retains an epoch token through failed cleanup and allocates the next token only after verified release. Stale grants
+  from prior attempts are ignored, so a pre-v0.3.0.1 provider's terminal same-token `Released` behavior cannot trap a
+  logical wake that retries against a mixed client fleet.
+- Added deterministic regressions for the legacy `Released` trap, stable logical identity, renewal/retry token
+  lifecycle, failed cleanup, stale/current grants, zero pre-grant mutation, and existing exactly-once reset/relog
+  boundaries. VERMAXION, public IPC/DTO/configuration/manifest shapes, version `0.4.1.0`, release artifacts, client
+  folders, AR fallback, home-world return, and publication state are unchanged.
+
 ## 2026-07-19 — P1203 shared pilot exchange root (local-only, unpublished)
 - Added persisted **Pilot exchange root** support to `/dad autoparty`, defaulting new and legacy schema-5 configurations to `Z:\autopartypilot`. Apply is allowed only while transport, pairing, and execution are disabled; it validates and probes a fully qualified non-root drive or UNC path, creates `pilot-input`, `pilot-receipts`, `pilot-courier`, and `plugin`, and reports safe failure codes.
 - Identity/registration exports and `pilot-fixture.json` now use `pilot-input`, status receipts use `pilot-receipts`, and the courier dynamically resolves `pilot-courier` for every operation. A successful root change therefore applies immediately without reloading DAD.

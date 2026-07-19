@@ -21,6 +21,7 @@ public sealed class DadWakeTakeoverService : IDisposable
 {
     private static readonly TimeSpan OperationRetention = TimeSpan.FromHours(1);
     private readonly IDadWakeTakeoverTarget target;
+    private readonly Func<string> reservationTokenFactory;
     private readonly Func<DateTime> utcNow;
     private readonly Action<string>? diagnostic;
     private readonly object gate = new();
@@ -33,8 +34,24 @@ public sealed class DadWakeTakeoverService : IDisposable
         Func<DateTime>? utcNow = null,
         TimeSpan? preCommitBudget = null,
         Action<string>? diagnostic = null)
+        : this(
+            target,
+            static () => Guid.NewGuid().ToString("N"),
+            utcNow,
+            preCommitBudget,
+            diagnostic)
+    {
+    }
+
+    internal DadWakeTakeoverService(
+        IDadWakeTakeoverTarget target,
+        Func<string> reservationTokenFactory,
+        Func<DateTime>? utcNow = null,
+        TimeSpan? preCommitBudget = null,
+        Action<string>? diagnostic = null)
     {
         this.target = target;
+        this.reservationTokenFactory = reservationTokenFactory ?? throw new ArgumentNullException(nameof(reservationTokenFactory));
         this.utcNow = utcNow ?? (() => DateTime.UtcNow);
         this.diagnostic = diagnostic;
         _ = preCommitBudget; // Retained for constructor compatibility; readiness waits are intentionally unbounded.
@@ -175,7 +192,9 @@ public sealed class DadWakeTakeoverService : IDisposable
                 return;
             var operation = operations.Values.FirstOrDefault(candidate =>
                 !IsTerminal(candidate.Phase) &&
-                string.Equals(candidate.Request.OperationToken, grant.OperationToken, StringComparison.OrdinalIgnoreCase));
+                candidate.ReservationRequested &&
+                !string.IsNullOrWhiteSpace(candidate.ReservationAttemptToken) &&
+                string.Equals(candidate.ReservationAttemptToken, grant.OperationToken, StringComparison.OrdinalIgnoreCase));
             if (operation == null || !operation.CoordinatorAvailable || operation.Phase > DadWakeTakeoverPhase.Prepared)
                 return;
 
@@ -342,8 +361,10 @@ public sealed class DadWakeTakeoverService : IDisposable
         DadVermaxionReservationStatus? reservation = null;
         if (!operation.ReservationRequested)
         {
+            if (!TryAllocateReservationAttemptToken(operation, out var tokenError))
+                return Block(operation, tokenError, cleanup: true);
             operation.ReservationRequested = true;
-            reservation = target.ReserveVermaxion(operation.Request);
+            reservation = target.ReserveVermaxion(BuildReservationScopedRequest(operation));
         }
         snapshot = Capture(operation, forceExternalRefresh: true);
         if (reservation?.IsRejected == true)
@@ -1019,12 +1040,11 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         if (operation.ReservationRequested)
         {
-            if (!target.ReleaseVermaxion(operation.Request.OperationToken))
+            if (!TryReleaseVermaxion(operation))
             {
                 operation.Summary = "Destination verified; waiting for DAD VERMAXION reservation release verification.";
                 return;
             }
-            operation.ReservationRequested = false;
         }
 
         if (operation.SuppressionAcquired || snapshot.DadOwnsSuppression)
@@ -1176,19 +1196,30 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         var reservationReleased = true;
         if (releaseReservation && operation.ReservationRequested)
-        {
-            reservationReleased = target.ReleaseVermaxion(operation.Request.OperationToken);
-            if (reservationReleased)
-                operation.ReservationRequested = false;
-        }
+            reservationReleased = TryReleaseVermaxion(operation);
         return postprocessFinished && suppressionReleased && reservationReleased;
+    }
+
+    private bool TryReleaseVermaxion(OperationState operation)
+    {
+        if (string.IsNullOrWhiteSpace(operation.ReservationAttemptToken))
+            return false;
+        if (!target.ReleaseVermaxion(operation.ReservationAttemptToken))
+            return false;
+
+        operation.ReservationRequested = false;
+        operation.ReservationAttemptToken = string.Empty;
+        return true;
     }
 
     private DadWakeTakeoverTargetSnapshot Capture(OperationState operation, bool forceExternalRefresh = false)
     {
         try
         {
-            operation.LastSnapshot = target.Capture(operation.Request, forceExternalRefresh) ?? new DadWakeTakeoverTargetSnapshot();
+            operation.LastSnapshot = target.Capture(
+                                         BuildReservationScopedRequest(operation),
+                                         forceExternalRefresh) ??
+                                     new DadWakeTakeoverTargetSnapshot();
         }
         catch (Exception ex)
         {
@@ -1198,6 +1229,38 @@ public sealed class DadWakeTakeoverService : IDisposable
             };
         }
         return operation.LastSnapshot;
+    }
+
+    private bool TryAllocateReservationAttemptToken(OperationState operation, out string error)
+    {
+        string token;
+        try
+        {
+            token = reservationTokenFactory()?.Trim() ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            error = $"DAD could not allocate a VERMAXION reservation attempt token: {ex.Message}";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            error = "DAD could not allocate a VERMAXION reservation attempt token.";
+            return false;
+        }
+        operation.ReservationAttemptToken = token;
+        error = string.Empty;
+        return true;
+    }
+
+    private static DadWakeTakeoverRequestDto BuildReservationScopedRequest(OperationState operation)
+    {
+        var request = CloneRequest(operation.Request);
+        request.OperationToken = operation.ReservationRequested
+            ? operation.ReservationAttemptToken
+            : string.Empty;
+        return request;
     }
 
     private void ReturnToReservationWait(
@@ -1707,6 +1770,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         public DadVermaxionMutationAuthorization VermaxionMutationAuthorization { get; set; }
         public bool CoordinatorAvailable { get; set; } = true;
         public bool ReservationRequested { get; set; }
+        public string ReservationAttemptToken { get; set; } = string.Empty;
         public bool CharacterPostprocessArmed { get; set; }
         public bool SuppressionAcquired { get; set; }
         public bool MultiModeDisableAttempted { get; set; }

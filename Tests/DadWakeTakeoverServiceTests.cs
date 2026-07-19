@@ -426,7 +426,7 @@ public sealed class DadWakeTakeoverServiceTests
         service.Handle(Request());
         target.Snapshot.DadOwnsCharacterPostprocess = true;
         target.Reservation.State = DadVermaxionReservationState.Pending;
-        target.Reservation.OperationToken = "scheduler-run";
+        target.Reservation.OperationToken = target.ReserveTokens.Single();
         target.Reservation.VermaxionActivity = "CharacterPostprocessPending";
 
         service.OnCharacterPostprocessReady();
@@ -1147,6 +1147,100 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
+    public void FreshAttemptTokenBypassesPreV0301SameTokenReleasedTrapWithoutChangingLogicalIdentity()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.Snapshot.MultiModeEnabled = false;
+        target.Reservation.State = DadVermaxionReservationState.Released;
+        target.Reservation.OperationToken = "scheduler-run";
+        target.ReservationStateOnReserve = DadVermaxionReservationState.Granted;
+        target.EmulatePreV0301SameTokenReleasedTrap = true;
+        target.ReleasedReservationTokens.Add("scheduler-run");
+        var attemptTokens = new Queue<string>(["attempt-a"]);
+        var service = new DadWakeTakeoverService(target, attemptTokens.Dequeue);
+
+        var result = service.Handle(Request());
+
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, result.Phase);
+        Assert.Equal("scheduler-run", result.OperationToken);
+        Assert.Equal(["attempt-a"], target.ReserveTokens);
+        Assert.DoesNotContain("scheduler-run", target.ReserveTokens);
+        Assert.Contains("attempt-a", target.CaptureOperationTokens);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Fact]
+    public void FailedCleanupRetainsOldAttemptTokenBeforeNextEpochAllocatesFreshToken()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.Snapshot.MultiModeEnabled = false;
+        target.ReservationStatesOnReserve.Enqueue(DadVermaxionReservationState.Rejected);
+        target.ReservationStatesOnReserve.Enqueue(DadVermaxionReservationState.Granted);
+        target.ReservationReleaseResults.Enqueue(false);
+        target.ReservationReleaseResults.Enqueue(true);
+        var attemptTokens = new Queue<string>(["attempt-a", "attempt-b"]);
+        var service = new DadWakeTakeoverService(target, attemptTokens.Dequeue, clock.UtcNow);
+
+        var retry = service.Handle(Request());
+
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, retry.Phase);
+        Assert.Equal(["attempt-a"], target.ReserveTokens);
+        Assert.Equal(["attempt-a"], target.ReleaseTokens);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        service.Update();
+
+        Assert.Equal(["attempt-a"], target.ReserveTokens);
+        Assert.Equal(["attempt-a", "attempt-a"], target.ReleaseTokens);
+
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+
+        var prepared = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, prepared.Phase);
+        Assert.Equal("scheduler-run", prepared.OperationToken);
+        Assert.Equal(["attempt-a", "attempt-b"], target.ReserveTokens);
+        Assert.Equal(2, target.ReserveTokens.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Fact]
+    public void StaleGrantIsIgnoredUntilCurrentAttemptGrantPreparesWithoutMutation()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.Snapshot.MultiModeEnabled = false;
+        target.Reservation.State = DadVermaxionReservationState.Pending;
+        var attemptTokens = new Queue<string>(["attempt-a"]);
+        var service = new DadWakeTakeoverService(target, attemptTokens.Dequeue);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, service.Handle(Request()).Phase);
+
+        var staleGrant = target.Reservation.Clone();
+        staleGrant.OperationToken = "stale-attempt";
+        staleGrant.State = DadVermaxionReservationState.Granted;
+        service.OnVermaxionReservationGranted(staleGrant);
+
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain("AcquireSuppression", target.Actions);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        Grant(target);
+        service.OnVermaxionReservationGranted(target.Reservation);
+
+        var prepared = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, prepared.Phase);
+        Assert.Equal("scheduler-run", prepared.OperationToken);
+        Assert.Equal(["attempt-a"], target.ReserveTokens);
+        Assert.Equal(1, target.Actions.Count(static action => action == "AcquireSuppression"));
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Fact]
     public void TransientUnsafeStateRetriesReleasedReserveWithoutArFallbackAndResetsOnce()
     {
         var clock = new TestClock();
@@ -1154,11 +1248,17 @@ public sealed class DadWakeTakeoverServiceTests
         target.UtcNow = clock.UtcNow;
         target.Snapshot.MultiModeEnabled = false;
         Grant(target);
-        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        var attemptTokens = new Queue<string>(["attempt-a", "attempt-b", "attempt-c"]);
+        var service = new DadWakeTakeoverService(target, attemptTokens.Dequeue, clock.UtcNow);
 
         Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(Request()).Phase);
         Assert.Equal(1, target.ReserveCount);
         Assert.Equal(1, target.Actions.Count(static action => action == "AcquireSuppression"));
+        service.Update();
+        Assert.Equal(["attempt-a"], target.ReserveTokens);
+        Assert.All(
+            target.CaptureOperationTokens.Where(static token => !string.IsNullOrWhiteSpace(token)),
+            static token => Assert.Equal("attempt-a", token));
 
         target.Snapshot.Participant.WorldReadyStable = false;
         service.Update();
@@ -1196,6 +1296,8 @@ public sealed class DadWakeTakeoverServiceTests
 
         Assert.Equal(DadWakeTakeoverPhase.Prepared, service.GetActiveStatus()!.Phase);
         Assert.Equal(3, target.ReserveCount);
+        Assert.Equal(["attempt-a", "attempt-b", "attempt-c"], target.ReserveTokens);
+        Assert.Equal(3, target.ReserveTokens.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.Equal(2, target.Actions.Count(static action => action == "AcquireSuppression"));
         Assert.DoesNotContain("Arm", target.Actions);
         Assert.DoesNotContain(target.Actions, IsMutation);
@@ -1672,8 +1774,15 @@ public sealed class DadWakeTakeoverServiceTests
         };
         public DadVermaxionReadinessStatus LegacyStatus { get; set; } = Legacy(DadVermaxionReadinessKind.Idle);
         public List<string> Actions { get; } = [];
+        public List<string> CaptureOperationTokens { get; } = [];
+        public List<string> ReserveTokens { get; } = [];
+        public List<string> ReleaseTokens { get; } = [];
+        public List<string> ArmOperationTokens { get; } = [];
+        public HashSet<string> ReleasedReservationTokens { get; } = new(StringComparer.OrdinalIgnoreCase);
         public int ReserveCount { get; private set; }
         public DadVermaxionReservationState ReservationStateOnReserve { get; set; } = DadVermaxionReservationState.NotLoaded;
+        public Queue<DadVermaxionReservationState> ReservationStatesOnReserve { get; } = new();
+        public bool EmulatePreV0301SameTokenReleasedTrap { get; set; }
         public Action? OnSuppressionAcquired { get; set; }
         public Action<DadWakeTakeoverCommand>? OnCommandExecuted { get; set; }
         public Queue<bool> FinishResults { get; } = new();
@@ -1736,6 +1845,7 @@ public sealed class DadWakeTakeoverServiceTests
             bool forceExternalRefresh = false)
         {
             CaptureForceFlags.Add(forceExternalRefresh);
+            CaptureOperationTokens.Add(request.OperationToken);
             OnCapture?.Invoke(forceExternalRefresh);
             if (UtcNow != null && Snapshot.Participant.CurrentLocation != null)
                 Snapshot.Participant.CurrentLocation.ObservedAtUtc = UtcNow();
@@ -1746,7 +1856,16 @@ public sealed class DadWakeTakeoverServiceTests
         public DadVermaxionReservationStatus ReserveVermaxion(DadWakeTakeoverRequestDto request)
         {
             ReserveCount++;
-            if (Reservation.State == DadVermaxionReservationState.Released)
+            ReserveTokens.Add(request.OperationToken);
+            if (ReservationStatesOnReserve.Count > 0)
+                Reservation.State = ReservationStatesOnReserve.Dequeue();
+            else if (EmulatePreV0301SameTokenReleasedTrap)
+            {
+                Reservation.State = ReleasedReservationTokens.Contains(request.OperationToken)
+                    ? DadVermaxionReservationState.Released
+                    : ReservationStateOnReserve;
+            }
+            else if (Reservation.State == DadVermaxionReservationState.Released)
                 Reservation.State = ReservationStateOnReserve;
             if (Reservation.State != DadVermaxionReservationState.NotLoaded)
                 Reservation.OperationToken = request.OperationToken;
@@ -1786,8 +1905,10 @@ public sealed class DadWakeTakeoverServiceTests
             if (string.IsNullOrWhiteSpace(operationToken))
                 return true;
             Actions.Add("ReleaseReservation");
+            ReleaseTokens.Add(operationToken);
             if (!NextResult(ReservationReleaseResults))
                 return false;
+            ReleasedReservationTokens.Add(operationToken);
             Reservation.State = DadVermaxionReservationState.Released;
             return true;
         }
@@ -1795,6 +1916,7 @@ public sealed class DadWakeTakeoverServiceTests
         public DadWakeTakeoverActionResult ArmCharacterPostprocess(string operationToken)
         {
             Actions.Add("Arm");
+            ArmOperationTokens.Add(operationToken);
             return DadWakeTakeoverActionResult.Accepted();
         }
 
