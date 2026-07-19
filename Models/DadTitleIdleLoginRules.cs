@@ -6,6 +6,7 @@ public static class DadTitleIdleLoginRules
         => HasExactStableRoute(snapshot) &&
            HasReadyIdleTitle(snapshot) &&
            HasReadableIdleAutoRetainer(snapshot) &&
+           HasReadyLifestreamLogin(snapshot) &&
            snapshot.MultiModeEnabled &&
            HasNoConflictingOwnership(snapshot);
 
@@ -13,6 +14,7 @@ public static class DadTitleIdleLoginRules
         => HasExactStableRoute(snapshot) &&
            HasReadyIdleTitle(snapshot) &&
            HasReadableIdleAutoRetainer(snapshot) &&
+           HasReadyLifestreamLogin(snapshot) &&
            HasNoConflictingOwnership(snapshot);
 
     public static bool HasExactStableRoute(DadWakeTakeoverTargetSnapshot snapshot)
@@ -44,6 +46,12 @@ public static class DadTitleIdleLoginRules
             return "AutoRetainer title login is waiting for AutoRetainer to become idle; no command was issued.";
         if (!snapshot.SuppressionReadable)
             return "AutoRetainer title login is waiting for readable ownership state; no command was issued.";
+        if (!snapshot.LifestreamAvailable)
+            return "AutoRetainer title login is waiting for readable Lifestream IPC; no command was issued.";
+        if (snapshot.LifestreamBusy)
+            return "AutoRetainer title login is waiting for Lifestream to become idle; no command was issued.";
+        if (!snapshot.LifestreamCanAutoLogin)
+            return "AutoRetainer title login is waiting for fresh Lifestream CanAutoLogin proof; no command was issued.";
         if (snapshot.ExternalAutomationHeld || snapshot.AutoRetainerSuppressed ||
             snapshot.DadOwnsSuppression || snapshot.DadOwnsCharacterPostprocess)
         {
@@ -64,6 +72,11 @@ public static class DadTitleIdleLoginRules
         => snapshot.AutoRetainerAvailable &&
            !snapshot.AutoRetainerBusy &&
            snapshot.SuppressionReadable;
+
+    private static bool HasReadyLifestreamLogin(DadWakeTakeoverTargetSnapshot snapshot)
+        => snapshot.LifestreamAvailable &&
+           !snapshot.LifestreamBusy &&
+           snapshot.LifestreamCanAutoLogin;
 
     private static bool HasNoConflictingOwnership(DadWakeTakeoverTargetSnapshot snapshot)
         => !snapshot.ExternalAutomationHeld &&

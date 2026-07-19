@@ -45,7 +45,7 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void AutoRetainerOwnedTitleIdleDisablesMultiModeOnceThenRelogsExactCharacterOnce()
+    public void AutoRetainerOwnedTitleIdleDisablesMultiModeOnceThenUsesAcknowledgedLoginOnce()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);
         ConfigureTitleIdle(target);
@@ -63,7 +63,7 @@ public sealed class DadWakeTakeoverServiceTests
         service.Handle(Request());
 
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
         Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
         Assert.Equal(0, target.ReserveCount);
 
@@ -72,7 +72,7 @@ public sealed class DadWakeTakeoverServiceTests
 
         Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
         Assert.DoesNotContain("SetMultiMode:False", target.Actions);
         Assert.DoesNotContain("DisableAutoRetainer", target.Actions);
         Assert.DoesNotContain("ResetAutoRetainer", target.Actions);
@@ -91,14 +91,14 @@ public sealed class DadWakeTakeoverServiceTests
         service.Handle(Request());
 
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
-        Assert.DoesNotContain("RelogCharacter", target.Actions);
+        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
         Assert.Contains("verif", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
 
         target.Snapshot.MultiModeEnabled = false;
         service.Update();
 
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
     }
 
     [Theory]
@@ -113,6 +113,9 @@ public sealed class DadWakeTakeoverServiceTests
     [InlineData(TitleIdleFailure.AutoRetainerUnavailable)]
     [InlineData(TitleIdleFailure.AutoRetainerBusy)]
     [InlineData(TitleIdleFailure.SuppressionUnreadable)]
+    [InlineData(TitleIdleFailure.LifestreamUnavailable)]
+    [InlineData(TitleIdleFailure.LifestreamBusy)]
+    [InlineData(TitleIdleFailure.CannotAutoLogin)]
     [InlineData(TitleIdleFailure.ExternalSuppression)]
     [InlineData(TitleIdleFailure.ExternalAutomationHold)]
     [InlineData(TitleIdleFailure.GenericTitleWithMultiModeOff)]
@@ -147,7 +150,7 @@ public sealed class DadWakeTakeoverServiceTests
         service.Handle(Request());
 
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
-        Assert.DoesNotContain("RelogCharacter", target.Actions);
+        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
         Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, service.Handle(StatusRequest()).Phase);
     }
 
@@ -169,7 +172,7 @@ public sealed class DadWakeTakeoverServiceTests
 
         Assert.Equal(DadWakeTakeoverPhase.Cancelled, cancelled.Phase);
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
-        Assert.DoesNotContain("RelogCharacter", target.Actions);
+        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -190,8 +193,53 @@ public sealed class DadWakeTakeoverServiceTests
         var waiting = service.Handle(StatusRequest());
         Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waiting.Phase);
         Assert.Contains("without replay", waiting.Summary, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
         Assert.Equal(1, target.Actions.Count(static action => action == "DisableAutoRetainerMultiMode"));
+    }
+
+    [Fact]
+    public void ExplicitFalseTitleLoginRetriesOnlyAfterCadenceAndFreshProof()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.ExplicitFalse);
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Accepted);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+
+        service.Handle(Request());
+        service.Update();
+
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
+        Assert.Contains("five-second", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
+
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
+
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+
+        Assert.Equal(2, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
+        Assert.True(target.CaptureForceFlags.Count(static forced => forced) >= 4);
+    }
+
+    [Fact]
+    public void UncertainTitleLoginFailsClosedAndNeverReplays()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Uncertain);
+        var service = new DadWakeTakeoverService(target);
+
+        service.Handle(Request());
+        service.Update();
+        service.Update();
+        var result = service.Handle(StatusRequest());
+
+        Assert.Equal(DadWakeTakeoverPhase.Blocked, result.Phase);
+        Assert.Contains("will not replay", result.BlockedReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
     }
 
     [Theory]
@@ -1413,6 +1461,7 @@ public sealed class DadWakeTakeoverServiceTests
     private static bool IsMutation(string action)
         => action is "DisableAutoRetainer" or "ResetAutoRetainer" or "RelogCharacter" or
                "DisableAutoRetainerMultiMode" ||
+           action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal) ||
            action.StartsWith("SetMultiMode", StringComparison.Ordinal);
 
     private static void ConfigureTitleIdle(FakeTarget target)
@@ -1436,8 +1485,9 @@ public sealed class DadWakeTakeoverServiceTests
         target.Snapshot.DadOwnsSuppression = false;
         target.Snapshot.DadOwnsCharacterPostprocess = false;
         target.Snapshot.ExternalAutomationHeld = false;
-        target.Snapshot.LifestreamAvailable = false;
-        target.Snapshot.LifestreamBusy = true;
+        target.Snapshot.LifestreamAvailable = true;
+        target.Snapshot.LifestreamBusy = false;
+        target.Snapshot.LifestreamCanAutoLogin = true;
     }
 
     private static void ActivateTargetCharacter(FakeTarget target)
@@ -1489,6 +1539,15 @@ public sealed class DadWakeTakeoverServiceTests
                 break;
             case TitleIdleFailure.SuppressionUnreadable:
                 target.Snapshot.SuppressionReadable = false;
+                break;
+            case TitleIdleFailure.LifestreamUnavailable:
+                target.Snapshot.LifestreamAvailable = false;
+                break;
+            case TitleIdleFailure.LifestreamBusy:
+                target.Snapshot.LifestreamBusy = true;
+                break;
+            case TitleIdleFailure.CannotAutoLogin:
+                target.Snapshot.LifestreamCanAutoLogin = false;
                 break;
             case TitleIdleFailure.ExternalSuppression:
                 target.Snapshot.AutoRetainerSuppressed = true;
@@ -1620,6 +1679,7 @@ public sealed class DadWakeTakeoverServiceTests
         public Queue<bool> FinishResults { get; } = new();
         public Queue<bool> SuppressionReleaseResults { get; } = new();
         public Queue<bool> ReservationReleaseResults { get; } = new();
+        public Queue<DadLifestreamLoginOutcome> TitleLoginOutcomes { get; } = new();
         public List<bool> CaptureForceFlags { get; } = [];
         public Action<bool>? OnCapture { get; set; }
         public Action? OnSuppressionReleased { get; set; }
@@ -1640,6 +1700,7 @@ public sealed class DadWakeTakeoverServiceTests
             target.Snapshot.AutoRetainerBusy = false;
             target.Snapshot.LifestreamAvailable = true;
             target.Snapshot.LifestreamBusy = false;
+            target.Snapshot.LifestreamCanAutoLogin = true;
             target.Snapshot.MultiModeEnabled = true;
             target.Snapshot.SuppressionReadable = true;
             target.Snapshot.Participant = new DadParticipantSnapshot
@@ -1783,6 +1844,15 @@ public sealed class DadWakeTakeoverServiceTests
                 $"Accepted {worldName}.");
         }
 
+        public DadLifestreamLoginResult ConnectAndLogin(DadWakeTakeoverRequestDto request)
+        {
+            Actions.Add($"ConnectAndLogin:{request.CharacterKey.Value}");
+            var outcome = TitleLoginOutcomes.Count == 0
+                ? DadLifestreamLoginOutcome.Accepted
+                : TitleLoginOutcomes.Dequeue();
+            return new DadLifestreamLoginResult(outcome, $"Title login {outcome}.");
+        }
+
         public DadWakeTakeoverActionResult ExecuteCommand(DadWakeTakeoverCommand command, DadWakeTakeoverRequestDto request)
         {
             Actions.Add(command.ToString());
@@ -1828,6 +1898,9 @@ public sealed class DadWakeTakeoverServiceTests
         AutoRetainerUnavailable,
         AutoRetainerBusy,
         SuppressionUnreadable,
+        LifestreamUnavailable,
+        LifestreamBusy,
+        CannotAutoLogin,
         ExternalSuppression,
         ExternalAutomationHold,
         GenericTitleWithMultiModeOff,

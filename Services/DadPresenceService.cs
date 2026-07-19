@@ -991,7 +991,7 @@ public sealed class DadPresenceService
         }
 
         var lifestreamStatus = CurrentLocationMatchesTarget(CurrentParticipant.CurrentLocation, target)
-            ? new DadLifestreamState(true, false, "Lifestream travel not required.")
+            ? new DadLifestreamState(true, false, false, "Lifestream travel not required.")
             : lifestream.Inspect();
         var decision = clientTravelGate.Evaluate(
             new DadClientTravelContext

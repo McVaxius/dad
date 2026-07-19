@@ -179,6 +179,7 @@ public sealed class DadWakeTakeoverTargetSnapshot
     public bool AutoRetainerBusy { get; set; }
     public bool LifestreamAvailable { get; set; }
     public bool LifestreamBusy { get; set; }
+    public bool LifestreamCanAutoLogin { get; set; }
     public string LifestreamStatus { get; set; } = string.Empty;
     public bool SuppressionReadable { get; set; }
     public bool AutoRetainerSuppressed { get; set; }
@@ -213,3 +214,14 @@ public readonly record struct DadWakeTakeoverActionResult(bool Success, string E
     public static DadWakeTakeoverActionResult Rejected(string error)
         => new(false, string.IsNullOrWhiteSpace(error) ? "Wake takeover action was rejected." : error.Trim());
 }
+
+public enum DadLifestreamLoginOutcome
+{
+    Accepted,
+    ExplicitFalse,
+    Uncertain,
+}
+
+public readonly record struct DadLifestreamLoginResult(
+    DadLifestreamLoginOutcome Outcome,
+    string Summary);

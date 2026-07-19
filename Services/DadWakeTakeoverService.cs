@@ -13,6 +13,7 @@ public interface IDadWakeTakeoverTarget
     bool ReleaseSuppressionIfOwned(bool force = false);
     DadWakeTakeoverActionResult SetMultiModeEnabled(bool enabled);
     DadLifestreamChangeWorldResult ChangeWorld(string worldName);
+    DadLifestreamLoginResult ConnectAndLogin(DadWakeTakeoverRequestDto request);
     DadWakeTakeoverActionResult ExecuteCommand(DadWakeTakeoverCommand command, DadWakeTakeoverRequestDto request);
 }
 
@@ -494,27 +495,59 @@ public sealed class DadWakeTakeoverService : IDisposable
             return BuildResult(operation, snapshot);
         }
 
+        if (operation.TitleIdleNextLoginAttemptUtc.HasValue && utcNow() < operation.TitleIdleNextLoginAttemptUtc.Value)
+        {
+            operation.Summary = $"Lifestream explicitly rejected the prior title login; waiting for the five-second retry cadence and fresh CanAutoLogin proof before attempt {operation.TitleIdleLoginAttemptCount + 1}.";
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
         if (!operation.TitleIdleRelogCommandAttempted)
         {
-            // Mark before invoking so the exact-character relog is at-most-once for this title proof.
+            // Mark before invoking: an exception is uncertain and must never replay. Only an
+            // explicit false proves that Lifestream did not enqueue the login and permits retry.
             operation.TitleIdleRelogCommandAttempted = true;
             operation.RelogCommandAttempted = true;
-            var relog = Invoke(
-                () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.Request),
-                $"send /ays relog {operation.Request.CharacterKey} from the AutoRetainer-owned title screen");
-            if (!relog.Success)
-                return Block(operation, relog.Error, cleanup: true);
+            operation.TitleIdleLoginAttemptCount++;
+            DadLifestreamLoginResult login;
+            try
+            {
+                login = target.ConnectAndLogin(operation.Request);
+            }
+            catch (Exception exception)
+            {
+                login = new DadLifestreamLoginResult(
+                    DadLifestreamLoginOutcome.Uncertain,
+                    $"Lifestream title-login invocation threw {exception.GetType().Name}.");
+            }
+            if (login.Outcome == DadLifestreamLoginOutcome.ExplicitFalse)
+            {
+                operation.TitleIdleRelogCommandAttempted = false;
+                operation.RelogCommandAttempted = false;
+                operation.TitleIdleNextLoginAttemptUtc = utcNow() + TimeSpan.FromSeconds(5);
+                operation.Summary = $"{login.Summary} DAD will retry only after the five-second cadence and a fresh exact title/route/CanAutoLogin proof.";
+                operation.UpdatedAtUtc = utcNow();
+                return BuildResult(operation, snapshot);
+            }
+            if (login.Outcome == DadLifestreamLoginOutcome.Uncertain)
+            {
+                return Block(
+                    operation,
+                    $"{login.Summary} The title login will not replay because the IPC outcome is uncertain.",
+                    cleanup: true);
+            }
 
             var issuedAt = utcNow();
             operation.RelogIssuedUtc = issuedAt;
             operation.RelogAcceptedAtUtc = issuedAt;
             operation.RelogTransitionObserved = true;
+            operation.TitleIdleNextLoginAttemptUtc = null;
         }
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
         operation.CommitKind = DadWakeCommitKind.Relog;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
-        operation.Summary = $"AutoRetainer-owned title login issued the exact relog for {operation.Request.CharacterKey}; waiting for world readiness without replay.";
+        operation.Summary = $"Lifestream accepted the exact title login for {operation.Request.CharacterKey}; waiting for world readiness without replay.";
         operation.UpdatedAtUtc = utcNow();
         return BuildResult(operation, snapshot);
     }
@@ -921,10 +954,10 @@ public sealed class DadWakeTakeoverService : IDisposable
             if (operation.TitleIdleRelogCommandAttempted)
             {
                 operation.Summary = !snapshot.Participant.IsAvailable
-                    ? "AutoRetainer title relog started a login transition; waiting for a local character without timeout."
+                    ? "AutoRetainer title login started a transition; waiting for a local character without timeout."
                     : !snapshot.Participant.WorldReadyStable
-                        ? "AutoRetainer title relog is waiting for world/login stability without timeout."
-                        : $"AutoRetainer title relog settled on {snapshot.Participant.ActiveCharacterKey} instead of {operation.Request.CharacterKey}; waiting without replay or another command.";
+                        ? "AutoRetainer title login is waiting for world/login stability without timeout."
+                        : $"AutoRetainer title login settled on {snapshot.Participant.ActiveCharacterKey} instead of {operation.Request.CharacterKey}; waiting without replay or another command.";
                 operation.UpdatedAtUtc = utcNow();
                 return;
             }
@@ -1243,6 +1276,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.TitleIdleOwnershipProven = false;
         operation.TitleIdleMultiModeDisableAttempted = false;
         operation.TitleIdleRelogCommandAttempted = false;
+        operation.TitleIdleLoginAttemptCount = 0;
+        operation.TitleIdleNextLoginAttemptUtc = null;
         operation.Summary = $"Takeover epoch {operation.Epoch} queued for a fresh reservation after retryable outcome: {reason} Next reserve attempt begins after the five-second cadence.";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
@@ -1690,5 +1725,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool TitleIdleOwnershipProven { get; set; }
         public bool TitleIdleMultiModeDisableAttempted { get; set; }
         public bool TitleIdleRelogCommandAttempted { get; set; }
+        public int TitleIdleLoginAttemptCount { get; set; }
+        public DateTime? TitleIdleNextLoginAttemptUtc { get; set; }
     }
 }

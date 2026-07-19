@@ -1,5 +1,26 @@
 # dad — changelog
 
+## 2026-07-19 — I51–I53 successor batch wizard and acknowledged title login (local-only, unpublished)
+- Added `/dad batch` and a Plans-page entry for a standalone session-draft Batch Preset Wizard. Explicit rotating
+  accounts/characters are zipped by stable pool-local order, exact anchors are mapped per named non-overlapping DC
+  pool, and selected ordinary Plan templates generate deterministic append-only Plans, per-template Schedules, and an
+  optional pool/crew/template-interleaved combined Schedule. Source templates remain unchanged; output is bounded at
+  512 Plans/entries and collisions, shortages, invalid lanes, substitutes, and AutoParty proposal templates block.
+- Preview reports unused rotating rows and visible non-blocking out-of-pool anchor reuse. Apply requires unchanged
+  Plan/Schedule source state and uses one in-memory transaction; the one session-only Undo requires the exact unchanged
+  post-apply fingerprint and refuses drift. No wizard draft, management IDs, or undo snapshot enters configuration.
+- A DailyReset template can set the existing per-primary **Daily** flag for all generated rows; leaving that option
+  off preserves the source template flags. The roulette reward probe, checked-row routing, unanimous-received skip
+  rule, and fail-open ordinary execution semantics are unchanged.
+- The isolated AutoRetainer-owned `_TitleMenu` path now requires readable idle Lifestream and fresh `CanAutoLogin`
+  proof before its one-time `/ays m d`. After Multi Mode is proven off it uses acknowledged
+  `Lifestream.ConnectAndLogin(name, homeWorld)`: accepted proceeds without replay, explicit false retries only after a
+  five-second cadence and fresh proof, and IPC uncertainty blocks without replay. Existing in-world `/ays relog`,
+  home-world return, reservation, reset, cleanup, public IPC/share/configuration schema, version `0.4.0.1`, packaging,
+  release artifacts, AutoParty/Fleet, Leveling Mode, and publication state are unchanged.
+- Fresh Debug x64 verification passed 188/188 focused compatibility tests and 1,063/1,063 complete tests; the isolated
+  plugin build completed with zero warnings and zero errors.
+
 ## 2026-07-18 — P1203 AutoParty pilot runtime (local-only, unpublished)
 - Added `/dad autoparty` with explicit endpoint generation, public identity export, enrollment receipt import, independent transport/pairing/execution controls, local pairing confirmation, pilot status export, key rotation/revocation, and Owner Stop. All gates remain disabled by default.
 - Added CurrentUser-DPAPI Ed25519/X25519 endpoint private-key custody. Public `.apidentity`, `.apregistration`, and `.apreceipt` packages are bounded, validate fingerprints and the exact pilot artifact SHA-256, and contain no player names, CIDs, account IDs, webhook credentials, or private keys.

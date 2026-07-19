@@ -59,6 +59,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadAutoPartyService AutoPartyService { get; }
     public DadAutoPartyPilotFixtureService AutoPartyPilotFixtureService { get; }
     public DadAutoPartyFleetMatrixService AutoPartyFleetMatrixService { get; }
+    public DadPresetBatchWizardService PresetBatchWizardService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
     public DadRosterCatalogService RosterCatalogService { get; }
     public DadProfileDirectoryService ProfileDirectoryService { get; }
@@ -95,6 +96,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadClientReconnectWindow clientReconnectWindow;
     private readonly DadDependenciesWindow dependenciesWindow;
     private readonly DadAutoPartyFleetMatrixWindow autoPartyFleetMatrixWindow;
+    private readonly DadPresetBatchWizardWindow presetBatchWizardWindow;
     private readonly DadAutoPartyWindow autoPartyWindow;
     private readonly DadIpcService dadIpcService;
     private readonly DadBackgroundTaskObserver backgroundTasks;
@@ -280,6 +282,10 @@ public sealed class Plugin : IDalamudPlugin
             Configuration,
             GetShareMutationBlocker,
             Configuration.Save);
+        PresetBatchWizardService = new DadPresetBatchWizardService(
+            Configuration,
+            GetShareMutationBlocker,
+            Configuration.Save);
         TransportService.ConfigureRuntimeReadinessHandler(OnRemoteRuntimeReadinessChanged);
         RunCoordinatorService = new DadCoordinatorService(
             Configuration,
@@ -337,6 +343,7 @@ public sealed class Plugin : IDalamudPlugin
         clientReconnectWindow = new DadClientReconnectWindow(this);
         dependenciesWindow = new DadDependenciesWindow(this);
         autoPartyFleetMatrixWindow = new DadAutoPartyFleetMatrixWindow(this);
+        presetBatchWizardWindow = new DadPresetBatchWizardWindow(this);
         autoPartyWindow = new DadAutoPartyWindow(this);
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
@@ -345,6 +352,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(clientReconnectWindow);
         WindowSystem.AddWindow(dependenciesWindow);
         WindowSystem.AddWindow(autoPartyFleetMatrixWindow);
+        WindowSystem.AddWindow(presetBatchWizardWindow);
         WindowSystem.AddWindow(autoPartyWindow);
         OpenSetupWizardOnce();
 
@@ -354,7 +362,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -447,6 +455,8 @@ public sealed class Plugin : IDalamudPlugin
     public void OpenConfigUi() => configWindow.IsOpen = true;
 
     public void ToggleAutoPartyFleetMatrixUi() => autoPartyFleetMatrixWindow.Toggle();
+
+    public void TogglePresetBatchWizardUi() => presetBatchWizardWindow.Toggle();
 
     public void ToggleAutoPartyUi() => autoPartyWindow.Toggle();
 
@@ -3888,6 +3898,7 @@ public sealed class Plugin : IDalamudPlugin
         miniStatusWindow.ResetToOrigin();
         clientReconnectWindow.ResetToOrigin();
         dependenciesWindow.ResetToOrigin();
+        presetBatchWizardWindow.ResetToOrigin();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
@@ -4112,6 +4123,12 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("mini", StringComparison.OrdinalIgnoreCase))
         {
             ToggleMiniStatusUi();
+            return;
+        }
+
+        if (trimmed.Equals("batch", StringComparison.OrdinalIgnoreCase))
+        {
+            TogglePresetBatchWizardUi();
             return;
         }
 

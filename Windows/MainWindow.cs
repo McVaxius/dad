@@ -3979,6 +3979,10 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         DadUi.Heading("PLAN", "Choose a saved preset, configure the run, resolve blockers, then start through the scheduler-backed path.");
+        if (DadUi.Button("Open Batch Preset Wizard", DadUiTone.Accent))
+            plugin.TogglePresetBatchWizardUi();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Build a non-mutating rotating-account/anchor preview, then append generated Plans and Schedules atomically.");
         var plannerOptions = plugin.PlannerOptions;
         var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
         var requestPreview = plannerSnapshot.RequestPreview;

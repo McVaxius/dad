@@ -57,10 +57,13 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
             currentAccountKey,
             participant.ManagedAccountKey);
         var ar = autoRetainer.Inspect();
-        var lifestreamState = lifestream.Inspect();
+        var title = titleMenuReadiness.Current;
+        var lifestreamState = lifestream.Inspect(
+            includeAutoLogin: !participant.IsAvailable &&
+                              title.TitleMenuReady &&
+                              title.IsFresh(DateTime.UtcNow));
         var external = vermaxion.Inspect(forceExternalRefresh);
         var reservation = vermaxion.Reservation;
-        var title = titleMenuReadiness.Current;
         var compatibilityEvidence = DadVermaxionCompatibilityEvidence.Evaluate(
             external,
             ar.Available,
@@ -115,6 +118,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
             AutoRetainerBusy = ar.IsBusy,
             LifestreamAvailable = lifestreamState.Available,
             LifestreamBusy = lifestreamState.IsBusy,
+            LifestreamCanAutoLogin = lifestreamState.CanAutoLogin,
             LifestreamStatus = lifestreamState.Summary,
             SuppressionReadable = ar.SuppressionReadable,
             AutoRetainerSuppressed = ar.IsSuppressed,
@@ -187,6 +191,20 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
 
     public DadLifestreamChangeWorldResult ChangeWorld(string worldName)
         => lifestream.ChangeWorld(worldName);
+
+    public DadLifestreamLoginResult ConnectAndLogin(DadWakeTakeoverRequestDto request)
+    {
+        var characterKey = request.CharacterKey.Value?.Trim() ?? string.Empty;
+        var separator = characterKey.LastIndexOf('@');
+        if (separator <= 0 || separator >= characterKey.Length - 1)
+        {
+            return new DadLifestreamLoginResult(
+                DadLifestreamLoginOutcome.Uncertain,
+                "The frozen title-login character key is invalid.");
+        }
+
+        return lifestream.ConnectAndLogin(characterKey[..separator], characterKey[(separator + 1)..]);
+    }
 
     public DadWakeTakeoverActionResult ExecuteCommand(
         DadWakeTakeoverCommand command,

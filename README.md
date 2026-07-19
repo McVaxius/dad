@@ -73,6 +73,18 @@ dotnet test .\Tests\dad.Tests.csproj
   generate deterministic ordinary DAD Plans and manual or daily-reset Schedules through a non-mutating preview.
   Applying is separately disabled by default, refuses active DAD/Scheduler/Schedule work and unowned ID collisions, keeps
   queue authority local, updates Plans and Schedules as one revision, and stores one durable exact-undo snapshot.
+- `/dad batch` (also **Open Batch Preset Wizard** on Plans) opens a separate session-draft generator for ordinary
+  local Plans and Schedules. Choose ordered rotating account lanes and exact Active characters, ordered anchor
+  account lanes with one exact character per named DC pool, non-overlapping DC groups and crew counts, then one or
+  more existing Plan templates. Preview deterministically zips the same crew index across rotating lanes, appends
+  anchors, reports shortages/unused rows and out-of-pool anchor warnings, blocks duplicate names/IDs and output above
+  512, and never mutates the source templates. Apply appends the frozen preview as one configuration mutation only
+  while DAD/Scheduler/Schedule mutation is safe. One session-only exact Undo is available until any Plan or Schedule
+  changes; drift refuses Undo instead of overwriting newer work. Per-template Schedules are pool-major; the optional
+  combined Schedule is pool, crew, then template order. A `DailyReset` template may set **Daily** on every generated
+  primary row; leaving that option off preserves the template's existing row flags. The existing reward probe remains
+  unchanged, so no checked rows means no probe and any
+  unchecked, unknown, not-received, stale, contradictory, or unproven result still runs the ordinary preset.
 
 ## Operator status and cancellation
 
@@ -131,10 +143,13 @@ dotnet test .\Tests\dad.Tests.csproj
 - A connected Client Dad that is logged out can enter one separate title-idle login path only while AutoRetainer
   Multi Mode demonstrably owns the state: the stable account route and requested catalog character must match,
   AutoRetainer IPC and ownership state must be readable and idle, and a fresh ready `_TitleMenu` must have no title
-  navigation, connection, or error/dialog overlay. DAD sends `/ays m d` at most once, verifies Multi Mode is off,
-  then sends the existing exact `/ays relog Name@World` command at most once and waits for world readiness. A generic
-  title screen, stale/unknown evidence, route loss, busy AutoRetainer, or another automation owner remains wait-only;
-  this path never starts a closed game process and does not alter the established in-world takeover sequence.
+  navigation, connection, or error/dialog overlay. Lifestream must also be readable, idle, and freshly prove
+  `CanAutoLogin` before DAD sends `/ays m d` at most once. After Multi Mode is proven off, DAD calls the acknowledged
+  `Lifestream.ConnectAndLogin(Name, HomeWorld)` IPC. `true` advances to the existing world-readiness wait; explicit
+  `false` may retry only after five seconds and a complete fresh proof; an exception is uncertain and blocks without
+  replay. A generic title screen, stale/unknown evidence, route loss, busy AutoRetainer/Lifestream, or another
+  automation owner remains wait-only. This path never starts a closed game process and does not alter the established
+  in-world `/ays relog`, home-world return, or takeover sequence.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD
   also accepts the legacy VERMAXION numeric values `0` through `4` in that order. Unknown/malformed states fail
   closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses. If

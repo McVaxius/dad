@@ -72,6 +72,7 @@
     <Compile Include="..\Services\DadLevelingModeCompiler.cs" Link="DadLevelingModeCompiler.cs" />
     <Compile Include="..\Services\DadLevelingOperationRules.cs" Link="DadLevelingOperationRules.cs" />
     <Compile Include="..\Services\DadLevelingModeActivationRules.cs" Link="DadLevelingModeActivationRules.cs" />
+    <Compile Include="..\Services\DadPresetBatchWizardService.cs" Link="DadPresetBatchWizardService.cs" />
     <Compile Include="..\Services\DadConfigurationPersistenceCoordinator.cs" Link="DadConfigurationPersistenceCoordinator.cs" />
     <Compile Include="..\Services\DadRunHistoryPersistenceRules.cs" Link="DadRunHistoryPersistenceRules.cs" />
     <Compile Include="..\Services\DadAdsConfigurationPatchRules.cs" Link="DadAdsConfigurationPatchRules.cs" />
