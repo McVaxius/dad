@@ -148,6 +148,7 @@ public enum DadRunPhase
     RequeueOrComplete,
     Finalizing,
     TearingDownParty,
+    GroupReady,
 }
 
 public enum DadModuleBlockerSeverity
@@ -213,6 +214,8 @@ public sealed class DadOrchestrationIntent
     public List<DadCharacterKey> RequiredCharacterKeys { get; set; } = [];
     public DadRunWaitPolicy WaitPolicy { get; set; } = new();
     public string ExecutionConstraintSummary { get; set; } = string.Empty;
+    public string AutoPartyProposalId { get; set; } = string.Empty;
+    public bool AutoPartyFormationOnly { get; set; }
 }
 
 public sealed class DadRosterIntent
@@ -307,7 +310,7 @@ public sealed class DadParticipantSnapshot
         ManagedAccountKey = ManagedAccountKey,
         ManagedAccountAlias = ManagedAccountAlias,
         ActiveCharacterKey = ActiveCharacterKey,
-        AvailableCharacterKeys = [..AvailableCharacterKeys],
+        AvailableCharacterKeys = [.. AvailableCharacterKeys],
         Character = Character.Clone(),
         CurrentLocation = CurrentLocation?.Clone(),
         AssignedSlotId = AssignedSlotId,
@@ -316,7 +319,7 @@ public sealed class DadParticipantSnapshot
         LeaseIssuedUtc = LeaseIssuedUtc,
         LeaseRenewedUtc = LeaseRenewedUtc,
         LeaseExpiresUtc = LeaseExpiresUtc,
-        Warnings = [..Warnings],
+        Warnings = [.. Warnings],
         StatusText = StatusText,
     };
 }

@@ -2,6 +2,16 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
+      "Dad.AutoParty.Protocol": {
+        "type": "Direct",
+        "requested": "[0.1.0-preview.2, 0.1.0-preview.2]",
+        "resolved": "0.1.0-preview.2",
+        "contentHash": "FBkjoKCb7AoNC9ALAjTepRJeNT+p51BMhG6nebiym71ROHHC0xdl5LIlhqxxNPnWyAUECyZQo/LH35JIohuLlQ==",
+        "dependencies": {
+          "BouncyCastle.Cryptography": "[2.6.2]",
+          "System.Formats.Cbor": "[10.0.9]"
+        }
+      },
       "DalamudPackager": {
         "type": "Direct",
         "requested": "[15.0.0, )",
@@ -13,6 +23,22 @@
         "requested": "[1.2.39, )",
         "resolved": "1.2.39",
         "contentHash": "fcFN01tDTIQqDuTwr1jUQK/geofiwjG5DycJQOnC72i1SsLAk1ELe+apBOuZ11UMQG8YKFZG1FgvjZPbqHyatg=="
+      },
+      "System.Security.Cryptography.ProtectedData": {
+        "type": "Direct",
+        "requested": "[10.0.10, 10.0.10]",
+        "resolved": "10.0.10",
+        "contentHash": "BKt0SQgq2lq3ESE68jkeLwv95ypANrPDtkTOIFGcnhg2aRUeUUBDrQlkVDZctrg1WenVcvn5P5XZnuYI7q6rFQ=="
+      },
+      "BouncyCastle.Cryptography": {
+        "type": "Transitive",
+        "resolved": "2.6.2",
+        "contentHash": "7oWOcvnntmMKNzDLsdxAYqApt+AjpRpP2CShjMfIa3umZ42UQMvH0tl1qAliYPNYO6vTdcGMqnRrCPmsfzTI1w=="
+      },
+      "System.Formats.Cbor": {
+        "type": "Transitive",
+        "resolved": "10.0.9",
+        "contentHash": "1iRjljxTMvQ1EtArg6kkj+9PV5LthrtlH//GM+MLez5L9jmZFDXGoH9lNiUpOeYY3sB60CgFVRnGctcmHEKqRw=="
       }
     }
   }

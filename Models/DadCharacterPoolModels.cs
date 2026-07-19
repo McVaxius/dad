@@ -413,6 +413,10 @@ public sealed class DadPlannerGroup
     // Keep the unresolved share marker in the main config without changing IPC JSON.
     [System.Text.Json.Serialization.JsonIgnore]
     public string SharedStopTargetIdentityToken { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string AutoPartyProposalId { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AutoPartyFormationOnly { get; set; }
     public DadCompletionActions? CompletionActions { get; set; }
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
     // Feature batch B (dadfeatures20260620b line 56): a template is a reusable group whose slots are NOT

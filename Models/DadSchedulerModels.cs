@@ -27,6 +27,7 @@ public enum DadSchedulerPresetPhase
     WaitingForDependencies = 13,
     DailyRewardPreflight = 14,
     LevelingBetweenChildren = 15,
+    WaitingForAutoPartyAuthorization = 16,
 }
 
 public enum DadSchedulerSkipKind
@@ -75,7 +76,7 @@ public sealed class DadLaunchProfile
             DisplayName = DisplayName,
             BatchPath = BatchPath,
             AccountKey = AccountKey,
-            ExpectedCharacterKeys = [..ExpectedCharacterKeys],
+            ExpectedCharacterKeys = [.. ExpectedCharacterKeys],
             Enabled = Enabled,
             AllowAutoStart = AllowAutoStart,
             TimeoutSeconds = TimeoutSeconds,
@@ -285,7 +286,7 @@ public sealed class DadSchedulerSlotState
             ActiveCharacterKey = ActiveCharacterKey,
             Summary = Summary,
             BlockedReason = BlockedReason,
-            Warnings = [..Warnings],
+            Warnings = [.. Warnings],
         };
 }
 
@@ -342,7 +343,8 @@ public sealed class DadSchedulerPresetState
         or DadSchedulerPresetPhase.WaitingForDependencies
         or DadSchedulerPresetPhase.ReadyToStart
         or DadSchedulerPresetPhase.StartingPlanner
-        or DadSchedulerPresetPhase.LevelingBetweenChildren;
+        or DadSchedulerPresetPhase.LevelingBetweenChildren
+        or DadSchedulerPresetPhase.WaitingForAutoPartyAuthorization;
 
     public DadSchedulerPresetState Clone()
         => new()

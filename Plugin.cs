@@ -56,6 +56,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadRouletteRewardProbeService RouletteRewardProbeService { get; }
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
+    public DadAutoPartyService AutoPartyService { get; }
+    public DadAutoPartyPilotFixtureService AutoPartyPilotFixtureService { get; }
+    public DadAutoPartyFleetMatrixService AutoPartyFleetMatrixService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
     public DadRosterCatalogService RosterCatalogService { get; }
     public DadProfileDirectoryService ProfileDirectoryService { get; }
@@ -91,6 +94,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadMiniStatusWindow miniStatusWindow;
     private readonly DadClientReconnectWindow clientReconnectWindow;
     private readonly DadDependenciesWindow dependenciesWindow;
+    private readonly DadAutoPartyFleetMatrixWindow autoPartyFleetMatrixWindow;
+    private readonly DadAutoPartyWindow autoPartyWindow;
     private readonly DadIpcService dadIpcService;
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly DadConfigurationPersistenceCoordinator configurationPersistence;
@@ -209,6 +214,18 @@ public sealed class Plugin : IDalamudPlugin
             WakeTakeoverService,
             RouletteRewardProbeService,
             Log);
+        AutoPartyService = new DadAutoPartyService(
+            Configuration.AutoParty,
+            new DadAutoPartyDpapiEndpointIdentityStore(
+                Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity")),
+            () => Configuration.PluginEnabled,
+            Configuration.Save,
+            () => Configuration.PluginEnabled);
+        AutoPartyService.AttachVerifiedCourier(
+            new DadAutoPartyFileCourierAdapter(Configuration.AutoParty));
+        AutoPartyPilotFixtureService = new DadAutoPartyPilotFixtureService(
+            Configuration,
+            Configuration.Save);
         PresenceService.ConfigureParticipantResolver(workerSessionId =>
             TransportService.CurrentTransport.KnownParticipants
                 .SingleOrDefault(participant => string.Equals(
@@ -259,6 +276,10 @@ public sealed class Plugin : IDalamudPlugin
             WakeTakeoverService,
             RosterCatalogService,
             Log);
+        AutoPartyFleetMatrixService = new DadAutoPartyFleetMatrixService(
+            Configuration,
+            GetShareMutationBlocker,
+            Configuration.Save);
         TransportService.ConfigureRuntimeReadinessHandler(OnRemoteRuntimeReadinessChanged);
         RunCoordinatorService = new DadCoordinatorService(
             Configuration,
@@ -274,9 +295,18 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService,
             PlannerService,
             Log);
+        AutoPartyService.ConfigureExecutionFacade(
+            new DadAutoPartyCoordinatorExecutionFacade(
+                AutoPartyService.Execution,
+                RunCoordinatorService.IsActiveAutoPartyProposal,
+                RunCoordinatorService.GetLocalResult,
+                RunCoordinatorService.CancelActiveRun));
+        AutoPartyService.ConfigureOwnerStop(_ => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureLevelingMode(
             BuildLevelingChild,
             () => RunCoordinatorService.CancelActiveRun());
+        SchedulerService.ConfigureAutoPartyAuthorizationGate(
+            AutoPartyService.EvaluateSchedulerAuthorization);
         TransportService.ConfigureAuthorityHandlers(
             () => RunCoordinatorService.GetLocalResult(),
             request => RunCoordinatorService.StartTasks(request),
@@ -306,12 +336,16 @@ public sealed class Plugin : IDalamudPlugin
         miniStatusWindow = new DadMiniStatusWindow(this);
         clientReconnectWindow = new DadClientReconnectWindow(this);
         dependenciesWindow = new DadDependenciesWindow(this);
+        autoPartyFleetMatrixWindow = new DadAutoPartyFleetMatrixWindow(this);
+        autoPartyWindow = new DadAutoPartyWindow(this);
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(setupWizardWindow);
         WindowSystem.AddWindow(miniStatusWindow);
         WindowSystem.AddWindow(clientReconnectWindow);
         WindowSystem.AddWindow(dependenciesWindow);
+        WindowSystem.AddWindow(autoPartyFleetMatrixWindow);
+        WindowSystem.AddWindow(autoPartyWindow);
         OpenSetupWizardOnce();
 
         var plannerLaneCount = PresetProviderService.GetPlannerLaneDefinitions().Count();
@@ -320,7 +354,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -373,6 +407,7 @@ public sealed class Plugin : IDalamudPlugin
         configurationPersistence.ForceFlush();
         // After persistence is forced, close/cancel transport work without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
+        AutoPartyService.Dispose();
         TransportService.Dispose();
         RouletteRewardProbeService.Dispose();
         DependencyService.Dispose();
@@ -410,6 +445,10 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleConfigUi() => configWindow.Toggle();
 
     public void OpenConfigUi() => configWindow.IsOpen = true;
+
+    public void ToggleAutoPartyFleetMatrixUi() => autoPartyFleetMatrixWindow.Toggle();
+
+    public void ToggleAutoPartyUi() => autoPartyWindow.Toggle();
 
     public void OpenSetupWizard() => setupWizardWindow.OpenLanding();
 
@@ -3355,6 +3394,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
                 var scheduler = SchedulerService.StopAll(reason, suppression);
+                AutoPartyService.StopAll(reason);
                 RunCoordinatorService.CancelAllLocal(reason);
                 wake = WakeTakeoverService.StopAll(reason);
                 ClaimService.ReleaseAllClaims();
@@ -3809,7 +3849,10 @@ public sealed class Plugin : IDalamudPlugin
     {
         var wasEnabled = Configuration.PluginEnabled;
         if (!enabled && wasEnabled)
+        {
             WakeTakeoverService.StopAll("DAD disabled by operator.");
+            AutoPartyService.StopAll("DAD disabled by operator.");
+        }
         Configuration.PluginEnabled = enabled;
         if (enabled && !wasEnabled)
             DependencyService.MarkDirty("DAD was enabled; checking required plugins.");
@@ -4069,6 +4112,19 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("mini", StringComparison.OrdinalIgnoreCase))
         {
             ToggleMiniStatusUi();
+            return;
+        }
+
+        if (trimmed.Equals("fleet", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("matrix", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleAutoPartyFleetMatrixUi();
+            return;
+        }
+
+        if (trimmed.Equals("autoparty", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleAutoPartyUi();
             return;
         }
 
@@ -4782,6 +4838,7 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
+        RunFrameworkStep("AutoParty", () => AutoPartyService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
         RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);
         RunFrameworkStep("RetainedRosterKnowledge", LearnRetainedTransportRosterKnowledge);

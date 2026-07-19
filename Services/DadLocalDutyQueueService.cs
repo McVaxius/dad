@@ -90,6 +90,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private readonly DadRouletteTerritoryEvidenceGate rouletteTerritoryGate = new();
     private readonly DadRouletteTerritoryEvidenceGate participantRouletteTerritoryGate = new();
     private readonly DadDutyFinderStableMappingGate liveEntryMappingGate = new();
+    private readonly DadRegularDutyInterfaceProofGate regularInterfaceProofGate = new();
     private bool dutySelectionCleared;
     private bool dutyListHydrated;
     private ulong hydratedDutyFinderCharacterContentId;
@@ -735,7 +736,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
                 FireAddonIntCallback(addonBase, 3, resolved.UiRow.CallbackOrdinal);
                 lastSelectionToken = resolved.SelectionToken;
-                nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
+                var selectionUtc = DateTime.UtcNow;
+                regularInterfaceProofGate.Begin(selectionUtc);
+                nextSelectAttemptUtc = selectionUtc + SelectThrottle;
                 log.Information(
                     "[dad] Selecting mapped regular Duty Finder target {ContentFinderConditionId} for character {CharacterContentId} at live position {ObservedPosition}, tree index {TreeIndex}, callback ordinal {CallbackOrdinal}.",
                     content.ContentFinderConditionId,
@@ -751,7 +754,30 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             var interfaceSelectedId = agent->InterfaceSub.SelectedDutyId >= 0
                 ? (uint)agent->InterfaceSub.SelectedDutyId
                 : 0;
-            if (!DadDutyFinderMappedMutationRules.CanJoinRegularAfterSelection(
+            if (!DadDutyFinderMappedMutationRules.HasExactRegularSelectionProof(
+                    mapping,
+                    lastSelectionToken,
+                    selectedType,
+                    selectedId,
+                    target))
+            {
+                return RestartRegularSelectionAttempt(
+                    content,
+                    $"Exact regular-duty mapping or agent proof failed for {target.ContentType}:{target.RowId}; selected={selectedType}:{selectedId}. Restarting with a fresh tab hydration.");
+            }
+
+            var interfaceDecision = regularInterfaceProofGate.Observe(
+                DateTime.UtcNow,
+                interfaceSelectedId == target.RowId);
+            if (interfaceDecision == DadRegularDutyInterfaceProofDecision.Waiting)
+            {
+                return MappingWait(
+                    content,
+                    $"Waiting for stable exact interface-selected duty proof for {target.ContentType}:{target.RowId}; observed interfaceId={agent->InterfaceSub.SelectedDutyId}.");
+            }
+
+            if (interfaceDecision == DadRegularDutyInterfaceProofDecision.TimedOut ||
+                !DadDutyFinderMappedMutationRules.CanJoinRegularAfterSelection(
                     mapping,
                     lastSelectionToken,
                     selectedType,
@@ -761,7 +787,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             {
                 return RestartRegularSelectionAttempt(
                     content,
-                    $"Exact regular-duty proof failed for {target.ContentType}:{target.RowId}; selected={selectedType}:{selectedId}, interfaceId={agent->InterfaceSub.SelectedDutyId}. Restarting with a fresh tab hydration.");
+                    $"Exact interface-selected duty proof timed out or changed for {target.ContentType}:{target.RowId}; observed interfaceId={agent->InterfaceSub.SelectedDutyId}. Restarting with a fresh tab hydration.");
             }
 
             if (DateTime.UtcNow < nextRegisterAttemptUtc)
@@ -1428,6 +1454,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private void ResetLiveEntryMapping()
     {
         liveEntryMappingGate.Reset();
+        regularInterfaceProofGate.Reset();
         lastSelectionToken = null;
         lastMappingTransition = string.Empty;
     }

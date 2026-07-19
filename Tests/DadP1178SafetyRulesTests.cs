@@ -62,6 +62,35 @@ public sealed class DadP1178SafetyRulesTests
     }
 
     [Fact]
+    public void LateInterfaceSelectedDutyWaitsForTwoSpacedExactObservationsWithinBound()
+    {
+        var now = DateTime.UtcNow;
+        var gate = new DadRegularDutyInterfaceProofGate();
+        gate.Begin(now);
+
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddSeconds(1), isExact: false));
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddSeconds(5), isExact: true));
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddMilliseconds(5200), isExact: true));
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Ready, gate.Observe(now.AddMilliseconds(5300), isExact: true));
+    }
+
+    [Fact]
+    public void InterfaceSelectedDutyProofIsBoundedAndMismatchResetsStability()
+    {
+        var now = DateTime.UtcNow;
+        var gate = new DadRegularDutyInterfaceProofGate();
+        gate.Begin(now);
+
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddSeconds(1), isExact: true));
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddMilliseconds(1100), isExact: false));
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddMilliseconds(1200), isExact: true));
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.TimedOut, gate.Observe(now.AddSeconds(6), isExact: true));
+
+        gate.Reset();
+        Assert.Equal(DadRegularDutyInterfaceProofDecision.Waiting, gate.Observe(now.AddSeconds(7), isExact: true));
+    }
+
+    [Fact]
     public void TeardownRequiresExactLeaderRosterAndFreshPostCommandPrompt()
     {
         var now = DateTime.UtcNow;

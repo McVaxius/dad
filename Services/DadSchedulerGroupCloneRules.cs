@@ -42,6 +42,8 @@ public static class DadSchedulerGroupCloneRules
             StopPolicy = source.StopPolicy.Clone(),
             LevelingMode = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions(),
             SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,
+            AutoPartyProposalId = source.AutoPartyProposalId,
+            AutoPartyFormationOnly = source.AutoPartyFormationOnly,
             CompletionActions = source.CompletionActions?.Clone(),
             Slots = slots.Select(CloneSlot).ToList(),
             IsTemplate = source.IsTemplate,

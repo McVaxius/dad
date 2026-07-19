@@ -128,6 +128,10 @@ public sealed class DadCoordinatorService
             case DadRunPhase.AssemblingParty:
                 UpdateAssembly();
                 break;
+            case DadRunPhase.GroupReady:
+                // Formation-only AutoParty runs deliberately hold until a local veto,
+                // owner Stop, disable, expiry, or revocation cancels the run.
+                break;
             case DadRunPhase.RoutingModules:
             case DadRunPhase.QueuePreparing:
             case DadRunPhase.QueueStarting:
@@ -148,6 +152,12 @@ public sealed class DadCoordinatorService
 
     public DadRunResult GetLocalResult()
         => BuildPublishedResult();
+
+    public bool IsActiveAutoPartyProposal(Guid proposalId)
+        => proposalId != Guid.Empty &&
+           activePlan != null &&
+           Guid.TryParse(activePlan.Request.Orchestration.AutoPartyProposalId, out var activeProposalId) &&
+           activeProposalId == proposalId;
 
     public DadRunResult GetAuthorityAwareResult()
     {
@@ -1011,7 +1021,7 @@ public sealed class DadCoordinatorService
         if (!partyInviteGateway.ConfirmRunPartyMembership(activePlan.Request.RequestId))
             return;
 
-        Transition(DadRunPhase.QueuePreparing, DadRunStatus.Running, "Dad party assembly confirmed; preparing queue executor.");
+        TransitionAfterAssembly(activePlan, "Dad party assembly confirmed; preparing queue executor.");
     }
 
     private DadParticipantSnapshot? ResolveParticipantForInstruction(DadAssemblyInstructionDto instruction)
@@ -2698,13 +2708,26 @@ public sealed class DadCoordinatorService
             loggedSingleWorkerAssemblyConfirmed = true;
         }
 
-        Transition(
-            DadRunPhase.QueuePreparing,
-            DadRunStatus.Running,
+        TransitionAfterAssembly(
+            plan,
             plan.Orchestration.LocalOnlyOverride
                 ? "Local-only assembly confirmed; preparing queue executor."
                 : "Single-worker assembly confirmed; preparing queue executor.");
         return true;
+    }
+
+    private void TransitionAfterAssembly(DadRunPlan plan, string queueSummary)
+    {
+        if (plan.Orchestration.AutoPartyFormationOnly)
+        {
+            Transition(
+                DadRunPhase.GroupReady,
+                DadRunStatus.Running,
+                "AutoParty formation-only group is ready; queue execution remains locally disabled.");
+            return;
+        }
+
+        Transition(DadRunPhase.QueuePreparing, DadRunStatus.Running, queueSummary);
     }
 
     private string ResolveSingleWorkerAssemblyBlocker(DadRunPlan plan, DadParticipantSnapshot participant)

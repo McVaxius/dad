@@ -516,6 +516,20 @@ internal static class DadDutyFinderMappedMutationRules
         uint selectedAgentId,
         uint interfaceSelectedId,
         DadDutyFinderLiveTarget target)
+        => HasExactRegularSelectionProof(
+               mapping,
+               selectionToken,
+               selectedAgentType,
+               selectedAgentId,
+               target) &&
+           interfaceSelectedId == target.RowId;
+
+    public static bool HasExactRegularSelectionProof(
+        DadDutyFinderMappingResult mapping,
+        DadDutyFinderSelectionToken? selectionToken,
+        DadDutyFinderLiveContentType selectedAgentType,
+        uint selectedAgentId,
+        DadDutyFinderLiveTarget target)
     {
         if (!mapping.IsReady || selectionToken == null)
             return false;
@@ -529,5 +543,72 @@ internal static class DadDutyFinderMappedMutationRules
                fresh.CallbackOrdinal == selected.CallbackOrdinal &&
                selectedAgentType == target.ContentType &&
                selectedAgentId == target.RowId;
+    }
+}
+
+internal enum DadRegularDutyInterfaceProofDecision
+{
+    Waiting,
+    Ready,
+    TimedOut,
+}
+
+internal sealed class DadRegularDutyInterfaceProofGate
+{
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan DefaultStableInterval = TimeSpan.FromMilliseconds(250);
+
+    private readonly TimeSpan timeout;
+    private readonly TimeSpan stableInterval;
+    private DateTime? startedUtc;
+    private DateTime? firstExactObservationUtc;
+
+    public DadRegularDutyInterfaceProofGate(
+        TimeSpan? timeout = null,
+        TimeSpan? stableInterval = null)
+    {
+        this.timeout = timeout ?? DefaultTimeout;
+        this.stableInterval = stableInterval ?? DefaultStableInterval;
+        if (this.timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        if (this.stableInterval <= TimeSpan.Zero || this.stableInterval >= this.timeout)
+            throw new ArgumentOutOfRangeException(nameof(stableInterval));
+    }
+
+    public void Begin(DateTime nowUtc)
+    {
+        startedUtc = nowUtc;
+        firstExactObservationUtc = null;
+    }
+
+    public DadRegularDutyInterfaceProofDecision Observe(DateTime nowUtc, bool isExact)
+    {
+        if (startedUtc == null || nowUtc < startedUtc.Value)
+            Begin(nowUtc);
+
+        if (nowUtc - startedUtc!.Value >= timeout)
+            return DadRegularDutyInterfaceProofDecision.TimedOut;
+
+        if (!isExact)
+        {
+            firstExactObservationUtc = null;
+            return DadRegularDutyInterfaceProofDecision.Waiting;
+        }
+
+        if (firstExactObservationUtc == null)
+        {
+            firstExactObservationUtc = nowUtc;
+            return DadRegularDutyInterfaceProofDecision.Waiting;
+        }
+
+        return nowUtc - firstExactObservationUtc.Value >= stableInterval
+            ? DadRegularDutyInterfaceProofDecision.Ready
+            : DadRegularDutyInterfaceProofDecision.Waiting;
+    }
+
+    public void Reset()
+    {
+        startedUtc = null;
+        firstExactObservationUtc = null;
     }
 }

@@ -41,6 +41,7 @@ public sealed class DadSchedulerService
     private DailyRewardPreflightSession? dailyRewardPreflight;
     private Func<DadPlannerGroup, int, DadLevelingChildBuild>? levelingChildBuilder;
     private Action? cancelActiveLevelingChild;
+    private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
     private LevelingOperationSession? levelingOperation;
 
     private sealed class PendingTakeoverCancellation
@@ -141,6 +142,10 @@ public sealed class DadSchedulerService
         levelingChildBuilder = childBuilder ?? throw new ArgumentNullException(nameof(childBuilder));
         cancelActiveLevelingChild = cancelActiveChild ?? throw new ArgumentNullException(nameof(cancelActiveChild));
     }
+
+    public void ConfigureAutoPartyAuthorizationGate(
+        Func<DadRunRequest, DadAutoPartyAuthorizationDecision> authorizationGate)
+        => autoPartyAuthorizationGate = authorizationGate ?? throw new ArgumentNullException(nameof(authorizationGate));
 
     internal DadSchedulerUiRevision GetPlannerUiRevision()
     {
@@ -639,7 +644,7 @@ public sealed class DadSchedulerService
             MapMode = request.MapMode,
             MapRunTemplate = request.MapRunTemplate?.Trim() ?? string.Empty,
             TargetCharacters = request.TargetCharacters?.Select(static target => target.Clone()).ToList() ?? [],
-            TargetCharacterKeys = request.TargetCharacterKeys == null ? [] : [..request.TargetCharacterKeys],
+            TargetCharacterKeys = request.TargetCharacterKeys == null ? [] : [.. request.TargetCharacterKeys],
         };
         job.StatusSummary = BuildQueuedJobSummary(job);
 
@@ -1506,6 +1511,24 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Resolving;
             currentState.Summary = "All characters are ready; waiting for every exact requested-job assignment acknowledgement.";
             currentState.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        var autoPartyAuthorization = autoPartyAuthorizationGate?.Invoke(frozenPlannerRequest)
+            ?? new DadAutoPartyAuthorizationDecision(
+                DadAutoPartyAuthorizationState.NotRequired,
+                "dad-autoparty-not-configured",
+                Guid.Empty);
+        if (autoPartyAuthorization.State == DadAutoPartyAuthorizationState.Waiting)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.WaitingForAutoPartyAuthorization;
+            currentState.Summary = $"All local readiness gates passed; waiting inside DAD for AutoParty authorization ({autoPartyAuthorization.SafeCode}).";
+            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+        if (autoPartyAuthorization.State == DadAutoPartyAuthorizationState.Denied)
+        {
+            BlockActive($"AutoParty authorization denied ({autoPartyAuthorization.SafeCode}).");
             return;
         }
 

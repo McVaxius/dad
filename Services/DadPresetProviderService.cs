@@ -2427,6 +2427,8 @@ public sealed class DadPresetProviderService
                 RequireExactCharacters = selectedGroup != null || !previewOnly,
             },
             ExecutionConstraintSummary = BuildPlannerExecutionConstraint(options),
+            AutoPartyProposalId = selectedGroup?.AutoPartyProposalId ?? string.Empty,
+            AutoPartyFormationOnly = selectedGroup?.AutoPartyFormationOnly ?? false,
         };
     }
 

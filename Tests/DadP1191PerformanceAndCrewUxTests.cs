@@ -35,7 +35,16 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         if (configuration.MigrateTransportSettings())
             configuration.Save();
 
-        Assert.Equal(4, configuration.Version);
+        Assert.Equal(5, configuration.Version);
+        Assert.False(configuration.AutoParty.Enabled);
+        Assert.False(configuration.AutoParty.PairingEnabled);
+        Assert.False(configuration.AutoParty.ExecutionEnabled);
+        Assert.Equal(string.Empty, configuration.AutoParty.EndpointIdentityReference);
+        Assert.Equal(string.Empty, configuration.AutoParty.RegisteredOwnerId);
+        Assert.Equal(string.Empty, configuration.AutoParty.RegisteredIslandId);
+        Assert.Empty(configuration.AutoParty.Pairings);
+        Assert.Empty(configuration.AutoParty.Grants);
+        Assert.Empty(configuration.AutoParty.Listings);
         Assert.Equal(0, saveCount);
         now = now.AddMilliseconds(250);
         Assert.True(persistence.Update());

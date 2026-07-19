@@ -180,6 +180,7 @@ public sealed class DadRunRequest
         Orchestration.RequiredCharacterKeys ??= [];
         Orchestration.PreferredInviterCharacterKey = new DadCharacterKey((Orchestration.PreferredInviterCharacterKey.Value ?? string.Empty).Trim());
         Orchestration.PreferredLeaderCharacterKey = new DadCharacterKey((Orchestration.PreferredLeaderCharacterKey.Value ?? string.Empty).Trim());
+        Orchestration.AutoPartyProposalId = (Orchestration.AutoPartyProposalId ?? string.Empty).Trim();
 
         if (Orchestration.ModuleTarget == DadModuleId.None)
         {

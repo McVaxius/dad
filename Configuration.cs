@@ -17,7 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     [NonSerialized]
     private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
 
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -73,6 +73,8 @@ public sealed class Configuration : IPluginConfiguration
     public List<DadScheduleDefinition> Schedules { get; set; } = [];
     public DadScheduleRunState ActiveScheduleRun { get; set; } = new();
     public List<DadScheduleRunResult> ScheduleHistory { get; set; } = [];
+    public DadAutoPartyConfiguration AutoParty { get; set; } = new();
+    public DadAutoPartyFleetConfiguration AutoPartyFleet { get; set; } = new();
 
     // Review L3: was a machine-specific hardcoded const in DadSchedulerService; now operator-configurable.
     public string ClientBootDirectory { get; set; } = @"Z:\!ff14clientboot";
@@ -120,6 +122,29 @@ public sealed class Configuration : IPluginConfiguration
             Version = 4;
             changed = true;
         }
+
+        // Version 5 introduces AutoParty as an explicitly inert feature. Existing users receive no
+        // endpoint identity, pairing, secret lookup, transport initialization, or execution authority.
+        if (Version < 5)
+        {
+            AutoParty = new DadAutoPartyConfiguration();
+            Version = 5;
+            changed = true;
+        }
+
+        if (AutoParty == null)
+        {
+            AutoParty = new DadAutoPartyConfiguration();
+            changed = true;
+        }
+        AutoParty.Normalize();
+
+        if (AutoPartyFleet == null)
+        {
+            AutoPartyFleet = new DadAutoPartyFleetConfiguration();
+            changed = true;
+        }
+        AutoPartyFleet.Normalize();
 
         var serverListen = NormalizeEndpoint(ServerListenHost, ServerListenPort);
         ServerListenHost = serverListen.Host;

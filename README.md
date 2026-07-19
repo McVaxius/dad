@@ -36,15 +36,43 @@ dotnet test .\Tests\dad.Tests.csproj
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v4 no longer serializes remote profile catalogs. Online remote catalogs are session-only and
+- Configuration schema v5 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
   reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
-  Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached.
+  Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-4 users
+  migrate to an empty, disabled AutoParty configuration without generating an identity or initializing a network route.
 - Shared configuration changes are coalesced at the end of the framework update after a 250 ms quiet period, with a
   one-second maximum delay. Storage failures stay outside window drawing, retry on a bounded cadence, and surface a
   memory-only warning with an explicit **Retry save** action; disposal makes one final write attempt.
 - Durable run history keeps at most 50 compact completion snapshots. Status, timing, task/stop progress, step results,
   warnings, and scheduler failure evidence remain visible while requests, participants, leases, executor state, client
   and session IDs, and authority endpoints are removed from saved history.
+
+## AutoParty development boundary
+
+- AutoParty is an unreleased, disabled-by-default integration. `/dad autoparty` exposes explicit endpoint generation,
+  public pilot export, enrollment import, local pairing, formation-only fixture import, transport, execution, status-receipt, rotation, and Owner Stop
+  controls. Loading or migration does not generate an identity or enable any of the three local gates.
+- The AutoParty courier connector is separate from the existing LAN `DadTransportService`. It uses a bounded outbound-only
+  file spool beneath the isolated pilot root and opens no inbound listener. LAN behavior and public DAD IPC remain unchanged.
+  DAD consumes the versioned `Dad.AutoParty.Protocol` package instead of an absolute project path.
+- Local grants are immutable and intersect exact owner, island, opaque character, requested job, activity, permission,
+  expiry, replay, reservation, preflight, lease, and revocation truth. Owner Stop, DAD disable, local safety, expiry, and
+  revocation override remote traffic. Execution exposes typed Prepare, Reserve, Form, Queue, Cancel, Settle, and Restore
+  operations only; there is no string-command or arbitrary-JSON execution route.
+- A Schedule request with an explicit AutoParty proposal ID waits inside DAD until local authorization is active. Requests
+  without that ID—including existing local and LAN presets—keep their established route. Formation-only execution ends at
+  the appended `GroupReady` phase, preserves the party, and denies queue and settle behavior.
+- Endpoint signing and encryption private keys are generated only after the operator presses **Generate endpoint identity**
+  and are stored through CurrentUser DPAPI under DAD's configuration root. Public `.apidentity` exports contain no private
+  keys or FFXIV identifiers. Pairing requires an artifact-bound owner-acceptance receipt plus **Confirm pilot pairings
+  locally**. **Import formation-only pilot fixture** then validates the same artifact hash, exact enrolled fingerprints,
+  one consented queue authority, numeric requested jobs, and a safe duty before creating a local `GroupReady` plan;
+  execution cannot enable until transport, receipt, pairing, fixture, and an end-to-end paired courier probe are healthy.
+- `/dad fleet` opens the local Fleet/Crew Matrix. Its exact-schema TSV inventory is capped at 160 rows and protects
+  spreadsheet formula prefixes; ordered Crew Sets are capped at 40 parties with eight members each. Reusable blueprints
+  generate deterministic ordinary DAD Plans and manual or daily-reset Schedules through a non-mutating preview.
+  Applying is separately disabled by default, refuses active DAD/Scheduler/Schedule work and unowned ID collisions, keeps
+  queue authority local, updates Plans and Schedules as one revision, and stores one durable exact-undo snapshot.
 
 ## Operator status and cancellation
 
@@ -58,6 +86,10 @@ dotnet test .\Tests\dad.Tests.csproj
   through the operator's **Resume from failed entry** action. DAD creates a new run at the exact persisted cursor,
   retains prior history, requires all clients and DAD/scheduler work to be idle, and never replays automatically.
   Cancelled runs remain terminal and cannot be resumed.
+- Regular Duty Finder starts from either a direct preset or a Schedule use the same exact-selection executor. Before
+  Join, DAD requires the stable mapped row and character, callback ordinal, selected agent type/id, and interface-selected
+  duty ID to agree. If API15 publishes the interface value late, DAD waits at most six seconds for two exact observations
+  at least 250 milliseconds apart; contradiction or timeout restarts the full safe selection cycle.
 - Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
   targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
   evidence used by execution; missing characters, unknown levels, missing presets, and untargeted rows stay normal.

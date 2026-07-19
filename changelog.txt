@@ -1,5 +1,57 @@
 # dad — changelog
 
+## 2026-07-18 — P1203 AutoParty pilot runtime (local-only, unpublished)
+- Added `/dad autoparty` with explicit endpoint generation, public identity export, enrollment receipt import, independent transport/pairing/execution controls, local pairing confirmation, pilot status export, key rotation/revocation, and Owner Stop. All gates remain disabled by default.
+- Added CurrentUser-DPAPI Ed25519/X25519 endpoint private-key custody. Public `.apidentity`, `.apregistration`, and `.apreceipt` packages are bounded, validate fingerprints and the exact pilot artifact SHA-256, and contain no player names, CIDs, account IDs, webhook credentials, or private keys.
+- Attached a real bounded outbound-only file courier beneath the isolated pilot runtime. It uses atomic, exact-recipient envelope files, acknowledgement cleanup, hostile-file quarantine, and bounded spools without changing LAN transport or opening an inbound listener.
+- Wired typed AutoParty execution through the existing DAD coordinator projection. AutoParty proposal IDs and formation-only state remain local configuration fields excluded from public IPC JSON; complete and single-client formation paths hold at `GroupReady` until local Stop/disable/expiry/revocation.
+- Added the fixed-root formation-only pilot fixture importer. It requires the verified pilot artifact SHA-256, completed local pairing, exact enrolled public fingerprints, one consented queue authority, a bounded numeric requested job for every island, and a safe Content Finder condition before adding its isolated planner group and separate remote bindings.
+- Kept Fleet TSV at exactly nine columns and stored consented remote bindings separately. Existing LAN behavior, IPC v1, configuration schema 5, public/plugin/file/assembly version `0.4.0.1`, and release artifacts remain unchanged. These source changes are intentionally unstaged, uncommitted, and unpublished.
+- Fresh locked x64 Debug/Release plugin and test builds complete with zero warnings, and the unfiltered suite passes 1,047/1,047. No DAD file is staged or published.
+
+## 2026-07-18 — P1184 transactional Fleet/Crew Matrix
+- Added a separately disabled local Fleet/Crew Matrix window at `/dad fleet`: a bounded 160-row inventory, 40 ordered
+  Crew Sets of up to eight members, and reusable duty blueprints that deterministically generate canonical DAD Plans and
+  manual or daily-reset Schedules. The 160-row/40-party fixture is covered without introducing a second execution model.
+- Added exact-schema bounded TSV import/export with control-character, duplicate, partial-assignment, size, and spreadsheet
+  formula-prefix defenses. Import changes only the local Matrix draft; non-mutating preview reports stable generated IDs,
+  local queue authority, Plan/Schedule counts, and blocking validation before any apply.
+- Matrix apply is off by default, rejects active DAD/Scheduler/Schedule work and unowned deterministic-ID collisions, and
+  replaces only previously Matrix-managed assets as one configuration revision. A durable one-level snapshot restores the
+  exact prior Plan and Schedule collections; rejected persistence rolls the entire in-memory transaction back.
+- AutoParty transport, pairing, execution, endpoint identity, and network initialization remain disabled. Existing LAN,
+  public IPC v1, direct Plan/Schedule behavior, public version `0.4.0.1`, and publication state remain unchanged.
+- Fresh-cache locked restore, x64 Debug/Release warnings-as-errors builds, targeted formatting, and the complete unfiltered
+  1,040/1,040-test suite pass with zero skipped tests.
+
+## 2026-07-18 — P1184 disabled AutoParty integration boundary
+- Advanced only persistent configuration to schema v5. Every pre-v5 migration receives a new disabled AutoParty object
+  with no identity, registration, pairing, grant, listing, secret access, connector attachment, or network initialization;
+  DAD's public plugin/file/assembly version remains `0.4.0.1`.
+- Added the portable `Dad.AutoParty.Protocol` `0.1.0-preview.2` package boundary, a separate disabled Discord courier
+  connector, CurrentUser-DPAPI endpoint identity references, explicit registration replacement confirmation, review-gated
+  fingerprint/code pairing, immutable listings/grants, unpair/privacy purge, and independent transport/policy/execution
+  status. Existing LAN `DadTransportService` and public DAD IPC are unchanged.
+- Added local policy gates for identity, replay, exact grant intersection, one active session per island, reservation,
+  preflight, lease, strict requested-job lending, revocation, and owner veto. Stop, DAD disable, local safety, expiry, and
+  revocation take precedence over remote operations.
+- Added typed Prepare, Reserve, Form, Queue, Cancel, Settle, and Restore boundaries backed only by a fake execution facade.
+  Ephemeral invite locators, observed-party receipts, and integration-profile capture/apply/verify/restore are bounded and
+  redacted. The appended `GroupReady` phase ends formation-only work while denying queue and settle behavior.
+- Added a scheduler-only authorization wait for requests carrying an explicit AutoParty proposal ID. Empty IDs preserve
+  existing direct preset, Schedule, local, LAN, VERMAXION, and IPC behavior. AutoParty remains disabled and unpublished;
+  no live Discord operation, production identity, service installation, or FFXIV execution is enabled by this change.
+
+## 2026-07-18 — P1184 prerequisite P1178 selected-duty proof repair
+- Restored the regular Duty Finder join requirement that `AgentContentsFinder.InterfaceSub.SelectedDutyId` exactly match
+  the requested Content Finder condition alongside the stable mapped row, character, callback ordinal, and selected
+  agent type/id. A contradictory interface selection can no longer authorize Join.
+- Added a bounded API15-lag gate after the exact row callback: DAD waits at most six seconds and requires two exact
+  interface-selected-duty observations at least 250 milliseconds apart. Timeout, drift, or any mapping/agent conflict
+  restarts the full clear/hydrate/select safety cycle instead of weakening the proof.
+- The shared regular-duty executor covers direct preset and Schedule starts. Public IPC, LAN transport, configuration,
+  manifests, plugin version `0.4.0.1`, and release artifacts are unchanged.
+
 ## 2026-07-17 — P1199 planner persistence and Leveling activation
 - Replaced direct shared-configuration writes with a thread-safe end-of-framework persistence coordinator. Same-frame
   changes coalesce after 250 quiet milliseconds with a one-second maximum delay; ordinary failures receive three

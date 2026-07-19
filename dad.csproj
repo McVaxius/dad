@@ -28,6 +28,10 @@
     <None Include="dad.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.1.0-preview.2]" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
+  </ItemGroup>
 
   <Target Name="CopyPluginArtifacts" AfterTargets="DefaultDalamudPackagerDebug;DefaultDalamudPackagerRelease">
     <PropertyGroup>
