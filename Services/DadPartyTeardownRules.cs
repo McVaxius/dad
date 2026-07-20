@@ -36,9 +36,9 @@ public sealed class DadPartyTeardownController
     public const int PartyMenuLeaveCallbackOperation = 2;
     public const int PartyMenuLeaveCallbackArgument = 3;
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
-    public static readonly TimeSpan AttemptThrottle = TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan AttemptThrottle = TimeSpan.FromSeconds(8);
     public static readonly TimeSpan SoloConfirmationInterval = TimeSpan.FromSeconds(1);
-    public const int MaximumAttempts = 3;
+    public const int MaximumAttempts = 7;
 
     private readonly HashSet<ulong> expectedMembers;
     private readonly ulong expectedLeaderContentId;
@@ -47,7 +47,7 @@ public sealed class DadPartyTeardownController
     private int commandAttempts;
     private bool lastPromptVisible;
     private bool commandSent;
-    private bool approvalSent;
+    private int approvedCommandAttempt;
     private int partyMenuCallbackAttempts;
     private DateTime? soloConfirmedSinceUtc;
 
@@ -86,53 +86,6 @@ public sealed class DadPartyTeardownController
         if (observation.IsInDuty || observation.IsQueued)
             return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "Waiting for out-of-duty, not-queued teardown state.");
 
-        if (observation.PromptVisible)
-        {
-            if (!commandSent || !promptJustAppeared || approvalSent)
-            {
-                return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "A pre-existing or already-handled confirmation is visible; it will not be approved.");
-            }
-
-            approvalSent = true;
-            return new DadPartyTeardownDecision(DadPartyTeardownAction.ApprovePrompt, "Approving the newly appeared breakup confirmation associated with this command.");
-        }
-
-        if (approvalSent)
-        {
-            if (!partyStateConfirmsSolo)
-            {
-                soloConfirmedSinceUtc = null;
-                return new DadPartyTeardownDecision(
-                    DadPartyTeardownAction.None,
-                    observation.IsCrossRealmParty
-                        ? "Waiting for InfoProxyCrossRealm to confirm the cross-world party has disbanded."
-                        : "Waiting for PartyList to confirm the party has disbanded.");
-            }
-
-            soloConfirmedSinceUtc ??= observation.NowUtc;
-            if (observation.NowUtc - soloConfirmedSinceUtc.Value < SoloConfirmationInterval)
-            {
-                return new DadPartyTeardownDecision(
-                    DadPartyTeardownAction.None,
-                    "Party absence observed; waiting for sustained cross-world-safe solo confirmation.");
-            }
-
-            return new DadPartyTeardownDecision(
-                DadPartyTeardownAction.Complete,
-                "Party teardown complete; cross-world party state is inactive and PartyList remained solo after prompt approval.");
-        }
-
-        if (observation.IsCrossRealmParty &&
-            observation.PartyMenuVisible &&
-            commandSent &&
-            partyMenuCallbackAttempts < commandAttempts)
-        {
-            partyMenuCallbackAttempts++;
-            return new DadPartyTeardownDecision(
-                DadPartyTeardownAction.InvokePartyMenuLeave,
-                $"Invoking PartyMemberList callback {PartyMenuLeaveCallbackOperation}, {PartyMenuLeaveCallbackArgument} for cross-world leave attempt {partyMenuCallbackAttempts}/{MaximumAttempts}.");
-        }
-
         var unexpectedMembers = actualMembers.Where(member => !expectedMembers.Contains(member)).ToArray();
         if (!partyStateConfirmsSolo && unexpectedMembers.Length > 0)
         {
@@ -147,6 +100,47 @@ public sealed class DadPartyTeardownController
             (!partyStateConfirmsSolo && observation.PartyLeaderContentId != expectedLeaderContentId))
         {
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "The local frozen leader is no longer proven by the authoritative party source; refusing teardown mutation.");
+        }
+
+        if (observation.PromptVisible)
+        {
+            if (!commandSent || !promptJustAppeared || approvedCommandAttempt == commandAttempts)
+            {
+                return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "A pre-existing or already-handled confirmation is visible; it will not be approved.");
+            }
+
+            approvedCommandAttempt = commandAttempts;
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.ApprovePrompt,
+                $"Approving the newly appeared breakup confirmation associated with command attempt {commandAttempts}/{MaximumAttempts}.");
+        }
+
+        if (approvedCommandAttempt > 0 && partyStateConfirmsSolo)
+        {
+            soloConfirmedSinceUtc ??= observation.NowUtc;
+            if (observation.NowUtc - soloConfirmedSinceUtc.Value < SoloConfirmationInterval)
+            {
+                return new DadPartyTeardownDecision(
+                    DadPartyTeardownAction.None,
+                    "Party absence observed; waiting for sustained cross-world-safe solo confirmation.");
+            }
+
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.Complete,
+                "Party teardown complete; cross-world party state is inactive and PartyList remained solo after prompt approval.");
+        }
+
+        soloConfirmedSinceUtc = null;
+
+        if (observation.IsCrossRealmParty &&
+            observation.PartyMenuVisible &&
+            commandSent &&
+            partyMenuCallbackAttempts < commandAttempts)
+        {
+            partyMenuCallbackAttempts++;
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.InvokePartyMenuLeave,
+                $"Invoking PartyMemberList callback {PartyMenuLeaveCallbackOperation}, {PartyMenuLeaveCallbackArgument} for cross-world leave attempt {partyMenuCallbackAttempts}/{MaximumAttempts}.");
         }
 
         if (observation.NowUtc < nextAttemptUtc || commandAttempts >= MaximumAttempts)

@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-07-20 — I60 seven guarded party-teardown attempts (local-only, unpublished)
+- Raised the bounded successful-run teardown window from three attempts at ten-second intervals to seven attempts at
+  eight-second intervals, retaining the existing 60-second timeout and all party, leader, duty, queue, and prompt guards.
+- Replaced the one-time approval latch with the approved command-attempt number, so an approved but ineffective breakup
+  can retry only after its throttle and a later attempt can approve only its own newly appeared confirmation. Each
+  cross-world command attempt remains limited to one PartyMemberList leave callback, and no eighth command is sent.
+- Added focused regressions for the 0/8/16/24/32/40/48 cadence, fresh callback/prompt handling after an ineffective
+  approval, sustained solo completion, guarded retry blocking, and timeout reporting. Services, coordinator,
+  configuration, IPC/DTOs, manifests, README, website, version `0.4.1.1`, and publication state are unchanged.
+
 ## 2026-07-19 — P1204 mixed VERMAXION reservation-client recovery (local-only, unpublished)
 - Preserved the coordinator/scheduler wake `OperationToken` while assigning each actual VERMAXION reservation epoch a
   fresh internal opaque token. Reservation authority snapshots, the initial reserve, automatic renewal, exact-token

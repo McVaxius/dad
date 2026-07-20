@@ -81,13 +81,83 @@ public sealed class DadPartyTeardownRulesTests
         var now = DateTime.UtcNow;
         var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
 
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now)).Action);
-        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(9))).Action);
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(10))).Action);
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(20))).Action);
-        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(30))).Action);
-        Assert.Equal(DadPartyTeardownAction.Fail, controller.Pulse(Observation(now.AddSeconds(60))).Action);
+        Assert.Equal(TimeSpan.FromSeconds(8), DadPartyTeardownController.AttemptThrottle);
+        Assert.Equal(7, DadPartyTeardownController.MaximumAttempts);
+        foreach (var attemptSecond in new[] { 0, 8, 16, 24, 32, 40, 48 })
+        {
+            Assert.Equal(
+                DadPartyTeardownAction.SendBreakup,
+                controller.Pulse(Observation(now.AddSeconds(attemptSecond))).Action);
+        }
+
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(56))).Action);
+        var timeout = controller.Pulse(Observation(now.AddSeconds(60)));
+        Assert.Equal(DadPartyTeardownAction.Fail, timeout.Action);
+        Assert.Contains("7 breakup command attempt(s)", timeout.Summary, StringComparison.Ordinal);
         Assert.Equal(DadPartyTeardownController.MaximumAttempts, controller.CommandAttempts);
+    }
+
+    [Fact]
+    public void ApprovedButIneffectiveAttemptCanRetryWithFreshCallbackAndPrompt()
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
+
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, crossRealm: true)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.InvokePartyMenuLeave,
+            controller.Pulse(Observation(now.AddMilliseconds(100), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.ApprovePrompt,
+            controller.Pulse(Observation(now.AddSeconds(1), crossRealm: true, prompt: true, identity: "attempt-1")).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(2), crossRealm: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(7.9), crossRealm: true)).Action);
+
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(8), crossRealm: true)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.InvokePartyMenuLeave,
+            controller.Pulse(Observation(now.AddSeconds(8.1), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.None,
+            controller.Pulse(Observation(now.AddSeconds(8.2), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.ApprovePrompt,
+            controller.Pulse(Observation(now.AddSeconds(9), crossRealm: true, prompt: true, identity: "attempt-2")).Action);
+
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(10), members: [1UL])).Action);
+        Assert.Equal(DadPartyTeardownAction.Complete, controller.Pulse(Observation(now.AddSeconds(11), members: [1UL])).Action);
+        Assert.Equal(2, controller.CommandAttempts);
+    }
+
+    [Fact]
+    public void UnsafeOrUnresolvedStatePreventsTheNextMutationAfterApproval()
+    {
+        var now = DateTime.UtcNow;
+
+        var lingeringPrompt = ApprovedAttemptOne(now);
+        Assert.Equal(
+            DadPartyTeardownAction.None,
+            lingeringPrompt.Pulse(Observation(now.AddSeconds(8), prompt: true, identity: "attempt-1")).Action);
+        Assert.Equal(1, lingeringPrompt.CommandAttempts);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, lingeringPrompt.Pulse(Observation(now.AddSeconds(9))).Action);
+
+        var dutyOrQueue = ApprovedAttemptOne(now);
+        Assert.Equal(DadPartyTeardownAction.None, dutyOrQueue.Pulse(Observation(now.AddSeconds(8), inDuty: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.None, dutyOrQueue.Pulse(Observation(now.AddSeconds(9), queued: true)).Action);
+        Assert.Equal(1, dutyOrQueue.CommandAttempts);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, dutyOrQueue.Pulse(Observation(now.AddSeconds(10))).Action);
+
+        var unexpectedMember = ApprovedAttemptOne(now);
+        Assert.Equal(
+            DadPartyTeardownAction.Fail,
+            unexpectedMember.Pulse(Observation(now.AddSeconds(8), members: [1UL, 3UL], crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(1, unexpectedMember.CommandAttempts);
+
+        var lostLeadership = ApprovedAttemptOne(now);
+        Assert.Equal(
+            DadPartyTeardownAction.Fail,
+            lostLeadership.Pulse(Observation(now.AddSeconds(8), leader: 2, crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(1, lostLeadership.CommandAttempts);
     }
 
     [Fact]
@@ -129,27 +199,40 @@ public sealed class DadPartyTeardownRulesTests
         Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, crossRealm: true)).Action);
         Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, controller.Pulse(Observation(now.AddMilliseconds(100), crossRealm: true, partyMenu: true)).Action);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddMilliseconds(200), crossRealm: true, partyMenu: true)).Action);
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(10), crossRealm: true, partyMenu: true)).Action);
-        Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, controller.Pulse(Observation(now.AddSeconds(10.1), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(8), crossRealm: true, partyMenu: true)).Action);
+        Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, controller.Pulse(Observation(now.AddSeconds(8.1), crossRealm: true, partyMenu: true)).Action);
+    }
+
+    private static DadPartyTeardownController ApprovedAttemptOne(DateTime now)
+    {
+        var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.ApprovePrompt,
+            controller.Pulse(Observation(now.AddSeconds(1), prompt: true, identity: "attempt-1")).Action);
+        return controller;
     }
 
     private static DadPartyTeardownObservation Observation(
         DateTime now,
         IReadOnlyCollection<ulong>? members = null,
+        ulong leader = 1,
         bool crossRealm = false,
         bool partyMenu = false,
         bool prompt = false,
         string identity = "",
         string text = "",
-        bool worldStable = true)
+        bool worldStable = true,
+        bool inDuty = false,
+        bool queued = false)
         => new(
             now,
             LocalContentId: 1,
-            PartyLeaderContentId: 1,
+            PartyLeaderContentId: leader,
             PartyMemberContentIds: members ?? [1UL, 2UL],
             IsCrossRealmParty: crossRealm,
-            IsInDuty: false,
-            IsQueued: false,
+            IsInDuty: inDuty,
+            IsQueued: queued,
             IsWorldStable: worldStable,
             PartyMenuVisible: partyMenu,
             PromptVisible: prompt,

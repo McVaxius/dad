@@ -118,16 +118,21 @@ public sealed class DadP1178SafetyRulesTests
     }
 
     [Fact]
-    public void TeardownSendsAtMostThreeThrottledCommands()
+    public void TeardownSendsAtMostSevenEightSecondCommands()
     {
         var now = DateTime.UtcNow;
         var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
         Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now)).Action);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(5))).Action);
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(10))).Action);
-        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now.AddSeconds(20))).Action);
-        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(30))).Action);
-        Assert.Equal(3, controller.CommandAttempts);
+        foreach (var attemptSecond in new[] { 8, 16, 24, 32, 40, 48 })
+        {
+            Assert.Equal(
+                DadPartyTeardownAction.SendBreakup,
+                controller.Pulse(Observation(now.AddSeconds(attemptSecond))).Action);
+        }
+
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(56))).Action);
+        Assert.Equal(7, controller.CommandAttempts);
     }
 
     private static DadDutyFinderMappingResult Ready(DadDutyFinderLiveTarget target, ulong character, string fingerprint, int tree, int ordinal)
