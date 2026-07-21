@@ -10,11 +10,8 @@ public sealed class DadAutoPartyService : IDisposable
     private readonly IDadAutoPartyEndpointIdentityStore identityStore;
     private readonly Action saveConfiguration;
     private readonly Dictionary<Guid, DadAutoPartyPairingChallenge> pairingChallenges = [];
-    private readonly CancellationTokenSource courierPumpCancellation = new();
     private Action<string>? ownerStop;
     private DateTime nextMaintenanceUtc = DateTime.MinValue;
-    private DateTime nextCourierPumpUtc = DateTime.MinValue;
-    private Task<bool>? courierPumpTask;
     private bool disposed;
 
     public DadAutoPartyService(
@@ -181,7 +178,6 @@ public sealed class DadAutoPartyService : IDisposable
         ThrowIfDisposed();
         if (!dadPluginEnabled || !configuration.Enabled)
             return;
-        ObserveCourierPump();
         var now = DateTime.UtcNow;
         if (now < nextMaintenanceUtc)
             return;
@@ -206,32 +202,9 @@ public sealed class DadAutoPartyService : IDisposable
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        var peer = configuration.Pairings.FirstOrDefault(pairing => pairing.RevokedAtUtc == null);
-        if (!configuration.Enabled || !configuration.PairingEnabled ||
-            string.IsNullOrWhiteSpace(configuration.RegisteredIslandId) || peer == null)
-            return new(false, "dad-pilot-courier-probe-not-ready");
-
-        var payload = RandomNumberGenerator.GetBytes(32);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            var envelope = OpaqueEnvelope.Create(
-                AutoPartyProtocol.CurrentVersion,
-                Guid.NewGuid(),
-                new IslandId(configuration.RegisteredIslandId),
-                new IslandId(peer.IslandId),
-                now,
-                now.AddMinutes(10),
-                Math.Max(1, configuration.StateGeneration),
-                "dad.pilot.probe/v1",
-                payload);
-            var result = await Connector.SendAsync(envelope, cancellationToken).ConfigureAwait(false);
-            return new(result.Accepted, result.SafeCode);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(payload);
-        }
+        await Task.CompletedTask;
+        cancellationToken.ThrowIfCancellationRequested();
+        return new(false, "dad-file-courier-retired");
     }
 
     public async ValueTask<DadAutoPartyPolicyDecision> ImportRegistrationAsync(
@@ -500,15 +473,6 @@ public sealed class DadAutoPartyService : IDisposable
         if (disposed)
             return;
         StopAll("dad-autoparty-disposed");
-        courierPumpCancellation.Cancel();
-        try
-        {
-            courierPumpTask?.GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        courierPumpCancellation.Dispose();
         Connector.DisposeAsync().AsTask().GetAwaiter().GetResult();
         disposed = true;
     }
@@ -522,56 +486,6 @@ public sealed class DadAutoPartyService : IDisposable
         clone.ConfirmedAtUtc = DateTime.UtcNow;
         clone.RevokedAtUtc = null;
         return clone;
-    }
-
-    private void ObserveCourierPump()
-    {
-        if (courierPumpTask is { IsCompleted: true })
-        {
-            if (courierPumpTask.IsCompletedSuccessfully && courierPumpTask.Result &&
-                !configuration.PilotCourierProbeVerified)
-            {
-                configuration.PilotCourierProbeVerified = true;
-                configuration.StateGeneration++;
-                saveConfiguration();
-            }
-            else if (courierPumpTask.IsFaulted)
-            {
-                _ = courierPumpTask.Exception;
-            }
-
-            courierPumpTask = null;
-        }
-
-        var now = DateTime.UtcNow;
-        if (courierPumpTask == null && now >= nextCourierPumpUtc)
-        {
-            nextCourierPumpUtc = now + TimeSpan.FromSeconds(1);
-            courierPumpTask = ReceivePilotCourierProbesAsync(courierPumpCancellation.Token);
-        }
-    }
-
-    private async Task<bool> ReceivePilotCourierProbesAsync(CancellationToken cancellationToken)
-    {
-        await foreach (var envelope in Connector.ReceiveAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (!string.Equals(envelope.PayloadType, "dad.pilot.probe/v1", StringComparison.Ordinal) ||
-                !string.Equals(
-                    envelope.RecipientIslandId.Value,
-                    configuration.RegisteredIslandId,
-                    StringComparison.Ordinal) ||
-                !configuration.Pairings.Any(pairing =>
-                    pairing.RevokedAtUtc == null &&
-                    string.Equals(pairing.IslandId, envelope.SenderIslandId.Value, StringComparison.Ordinal)))
-                continue;
-
-            await Connector.AcknowledgeAsync(
-                new AutoPartyTransportAcknowledgement(envelope.EnvelopeId, "dad-pilot-probe-accepted"),
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        return false;
     }
 
     private void ThrowIfDisposed()

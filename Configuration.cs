@@ -17,7 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     [NonSerialized]
     private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
 
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 6;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -129,6 +129,16 @@ public sealed class Configuration : IPluginConfiguration
         {
             AutoParty = new DadAutoPartyConfiguration();
             Version = 5;
+            changed = true;
+        }
+
+        // Version 6 moves discovery and pairing into DAD itself. The Discord connection is deliberately
+        // disabled on migration; existing AutoParty identity and historical courier fields are retained.
+        if (Version < 6)
+        {
+            AutoParty ??= new DadAutoPartyConfiguration();
+            AutoParty.DiscordEnabled = false;
+            Version = 6;
             changed = true;
         }
 

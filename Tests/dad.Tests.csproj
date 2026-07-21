@@ -90,6 +90,11 @@
     <Compile Include="..\Services\DadAutoPartyPilotFixtureService.cs" Link="DadAutoPartyPilotFixtureService.cs" />
     <Compile Include="..\Services\DadAutoPartySchedulerAuthorizationRules.cs" Link="DadAutoPartySchedulerAuthorizationRules.cs" />
     <Compile Include="..\Services\DadAutoPartyService.cs" Link="DadAutoPartyService.cs" />
+    <Compile Include="..\Services\DadAutoPartyDiscordTokenStore.cs" Link="DadAutoPartyDiscordTokenStore.cs" />
+    <Compile Include="..\Services\DadAutoPartySigningService.cs" Link="DadAutoPartySigningService.cs" />
+    <Compile Include="..\Services\DadAutoPartyPairingProtocol.cs" Link="DadAutoPartyPairingProtocol.cs" />
+    <Compile Include="..\Services\DadDiscordReconnectBackoff.cs" Link="DadDiscordReconnectBackoff.cs" />
+    <Compile Include="..\Services\DadMeasuredPilotService.cs" Link="DadMeasuredPilotService.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetTsv.cs" Link="DadAutoPartyFleetTsv.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetMatrixService.cs" Link="DadAutoPartyFleetMatrixService.cs" />
   </ItemGroup>

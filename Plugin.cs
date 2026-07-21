@@ -57,6 +57,8 @@ public sealed class Plugin : IDalamudPlugin
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
     public DadAutoPartyService AutoPartyService { get; }
+    public DadAutoPartyDiscordService AutoPartyDiscordService { get; }
+    public DadMeasuredPilotService MeasuredPilotService { get; }
     public DadAutoPartyPilotFixtureService AutoPartyPilotFixtureService { get; }
     public DadAutoPartyFleetMatrixService AutoPartyFleetMatrixService { get; }
     public DadPresetBatchWizardService PresetBatchWizardService { get; }
@@ -216,15 +218,25 @@ public sealed class Plugin : IDalamudPlugin
             WakeTakeoverService,
             RouletteRewardProbeService,
             Log);
+        var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(
+            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity"));
+        var autoPartySigning = new DadAutoPartySigningService(Configuration.AutoParty, autoPartyIdentityStore);
         AutoPartyService = new DadAutoPartyService(
             Configuration.AutoParty,
-            new DadAutoPartyDpapiEndpointIdentityStore(
-                Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity")),
+            autoPartyIdentityStore,
             () => Configuration.PluginEnabled,
             Configuration.Save,
             () => Configuration.PluginEnabled);
-        AutoPartyService.AttachVerifiedCourier(
-            new DadAutoPartyFileCourierAdapter(Configuration.AutoParty));
+        AutoPartyDiscordService = new DadAutoPartyDiscordService(
+            Configuration.AutoParty,
+            new DadAutoPartyDpapiDiscordTokenStore(
+                Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "discord")),
+            new DadAutoPartyPairingProtocol(),
+            autoPartySigning,
+            () => Configuration.RunAsServerDad,
+            Configuration.Save,
+            safeCode => Log.Warning("[dad] AutoParty Discord transition {SafeCode}.", safeCode));
+        PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyDiscordService.GetLanPresence);
         AutoPartyPilotFixtureService = new DadAutoPartyPilotFixtureService(
             Configuration,
             Configuration.Save);
@@ -301,6 +313,13 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService,
             PlannerService,
             Log);
+        MeasuredPilotService = new DadMeasuredPilotService(
+            Configuration.AutoParty,
+            autoPartySigning,
+            () => Configuration.RunAsServerDad,
+            Configuration.Save);
+        AutoPartyDiscordService.PairingRevoked += MeasuredPilotService.ObservePairingRevoked;
+        AutoPartyDiscordService.PairingRestored += MeasuredPilotService.ObservePairingRestored;
         AutoPartyService.ConfigureExecutionFacade(
             new DadAutoPartyCoordinatorExecutionFacade(
                 AutoPartyService.Execution,
@@ -315,7 +334,13 @@ public sealed class Plugin : IDalamudPlugin
             AutoPartyService.EvaluateSchedulerAuthorization);
         TransportService.ConfigureAuthorityHandlers(
             () => RunCoordinatorService.GetLocalResult(),
-            request => RunCoordinatorService.StartTasks(request),
+            request =>
+            {
+                var result = RunCoordinatorService.StartTasks(request);
+                if (result.Status != DadRunStatus.Rejected)
+                    MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Unknown);
+                return result;
+            },
             _ => RunCoordinatorService.CancelActiveRun());
         TransportService.ConfigureRosterHandlers(
             () => RosterCatalogService.BuildLocalTransportCatalog(
@@ -415,6 +440,9 @@ public sealed class Plugin : IDalamudPlugin
         configurationPersistence.ForceFlush();
         // After persistence is forced, close/cancel transport work without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
+        AutoPartyDiscordService.PairingRevoked -= MeasuredPilotService.ObservePairingRevoked;
+        AutoPartyDiscordService.PairingRestored -= MeasuredPilotService.ObservePairingRestored;
+        AutoPartyDiscordService.Dispose();
         AutoPartyService.Dispose();
         TransportService.Dispose();
         RouletteRewardProbeService.Dispose();
@@ -2046,7 +2074,10 @@ public sealed class Plugin : IDalamudPlugin
         if (!preview.CanStart)
             return DadIpcJson.Serialize(DadRunResult.Rejected(preview.Request, preview.BlockedReason));
 
-        return DadIpcJson.Serialize(RunCoordinatorService.StartTasks(preview.Request));
+        var result = RunCoordinatorService.StartTasks(preview.Request);
+        if (result.Status != DadRunStatus.Rejected)
+            MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Plans);
+        return DadIpcJson.Serialize(result);
     }
 
     public string GetSchedulerPreviewJson()
@@ -2838,7 +2869,10 @@ public sealed class Plugin : IDalamudPlugin
 
         var startResult = StartDemoRunFromShell("Planner run", requestPreview.Request);
         if (startResult.Status != DadRunStatus.Rejected)
+        {
+            MeasuredPilotService.RegisterRun(startResult.RequestId, DadMeasuredPilotOrigin.Plans);
             InvalidatePlannerPreviewCache("planner run started");
+        }
 
         return startResult;
     }
@@ -2966,6 +3000,8 @@ public sealed class Plugin : IDalamudPlugin
         DadScheduleRepeatBoundary repeatBoundary)
     {
         var result = RunCoordinatorService.StartScheduledTasks(request, repeatBoundary);
+        if (result.Status != DadRunStatus.Rejected)
+            MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Schedules);
         PrimeAuthorityCacheFromRun(request, result);
         if (result.Status != DadRunStatus.Rejected)
             InvalidatePlannerPreviewCache("scheduled planner started");
@@ -4855,6 +4891,7 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
+        RunFrameworkStep("AutoPartyDiscord", () => AutoPartyDiscordService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("AutoParty", () => AutoPartyService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
         RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);
@@ -4883,6 +4920,30 @@ public sealed class Plugin : IDalamudPlugin
             }
         });
         RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
+        RunFrameworkStep("MeasuredPilot", () =>
+        {
+            var run = RunCoordinatorService.GetLocalResult();
+            var scheduler = SchedulerService.GetQueueSnapshot();
+            var schedulerClear = scheduler.ActiveState.PlannerRequestId.Length == 0 ||
+                                 !string.Equals(scheduler.ActiveState.PlannerRequestId, run.RequestId, StringComparison.Ordinal);
+            var healthyApplications = run.Participants
+                .Where(static participant => participant.AutoPartyPairingHealth == DadAutoPartyPairingHealth.Healthy)
+                .Select(static participant => participant.DiscordApplicationId)
+                .Where(static applicationId => applicationId != 0)
+                .Distinct()
+                .ToList();
+            MeasuredPilotService.ObserveRun(
+                run,
+                !ClaimService.HasClaimsForRun(run.RequestId),
+                schedulerClear,
+                healthyApplications);
+            MeasuredPilotService.ObserveStopAll(
+                TransportService.LatestStopAllStatus,
+                TransportService.CurrentTransport.KnownParticipants.Count(static participant =>
+                    participant.State != DadParticipantState.Stale));
+            MeasuredPilotService.ObserveDiscordHealth(AutoPartyDiscordService.Health);
+            MeasuredPilotService.Update();
+        });
         RunFrameworkStep("CompletionActions", () => DadCompletionActionRunner.Update(Configuration, Log));
         RunFrameworkStep("DutyIpc", () => DutyIpcService.Update());
         RunFrameworkStep("DutyIpcRegister", () => DutyIpcService.EnsureRegistered());

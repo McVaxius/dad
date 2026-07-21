@@ -130,6 +130,15 @@ public sealed class DadClaimService
         }
     }
 
+    public bool HasClaimsForRun(string runId)
+    {
+        lock (gate)
+        {
+            return activeLeasesBySlot.Values.Any(lease => string.Equals(lease.RunId, runId, StringComparison.Ordinal)) ||
+                   localAcceptedLeasesByCharacter.Values.Any(lease => string.Equals(lease.RunId, runId, StringComparison.Ordinal));
+        }
+    }
+
     public IReadOnlyList<DadParticipantLeaseRecord> SweepExpiredLeases(DateTime utcNow)
     {
         lock (gate)

@@ -745,38 +745,23 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
-    public async Task PilotCourierProbeIsAcknowledgedOnlyFromAnActivelyPairedIsland()
+    public async Task HistoricalPilotCourierProbeIsRetiredFromActiveRuntime()
     {
         var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-probe", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(root, "pilot-courier"));
         try
         {
             var sender = ProbeConfiguration(SenderIsland, LocalIsland, root);
-            var receiver = ProbeConfiguration(LocalIsland, SenderIsland, root);
             using var senderService = Service(sender, new FakeIdentityStore());
-            using var receiverService = Service(receiver, new FakeIdentityStore());
             senderService.AttachVerifiedCourier(new DadAutoPartyFileCourierAdapter(sender));
-            receiverService.AttachVerifiedCourier(new DadAutoPartyFileCourierAdapter(receiver));
 
             var sent = await senderService.SendPilotCourierProbeAsync();
-            Assert.False(receiverService.SetExecutionEnabled(true).Allowed);
-            var outbox = Assert.Single(Directory.GetFiles(root, "*.apout", SearchOption.AllDirectories));
-            var envelopeId = Path.GetFileNameWithoutExtension(outbox);
-            var inbox = Path.Combine(root, "pilot-courier", "inbox", IslandFolder(LocalIsland));
-            Directory.CreateDirectory(inbox);
-            File.Copy(outbox, Path.Combine(inbox, envelopeId + ".apin"));
+            senderService.Update(dadPluginEnabled: true);
 
-            for (var attempt = 0; attempt < 40 && !receiver.PilotCourierProbeVerified; attempt++)
-            {
-                receiverService.Update(dadPluginEnabled: true);
-                await Task.Delay(25);
-            }
-
-            Assert.True(sent.Succeeded, sent.SafeCode);
-            Assert.True(receiver.PilotCourierProbeVerified);
-            Assert.True(receiverService.SetExecutionEnabled(true).Allowed);
-            Assert.Single(Directory.GetFiles(root, "*.apack", SearchOption.AllDirectories));
-            Assert.Empty(Directory.GetFiles(root, "*.apin", SearchOption.AllDirectories));
+            Assert.False(sent.Succeeded);
+            Assert.Equal("dad-file-courier-retired", sent.SafeCode);
+            Assert.Empty(Directory.GetFiles(root, "*.apout", SearchOption.AllDirectories));
+            Assert.Empty(Directory.GetFiles(root, "*.apack", SearchOption.AllDirectories));
         }
         finally
         {

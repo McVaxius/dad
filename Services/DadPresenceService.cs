@@ -17,6 +17,7 @@ public sealed class DadPresenceService
     private readonly IPluginLog log;
     private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
     private Func<DadDependencySnapshot> dependencySnapshotProvider = static () => DadDependencySnapshot.CreateChecking();
+    private Func<DadAutoPartyLanPresence> autoPartyPresenceProvider = static () => new();
     private string currentRunId = string.Empty;
     private DadWorkerSessionId currentAuthorityWorkerSessionId = new(string.Empty);
     private DadAuthorityMode currentAuthorityMode = DadAuthorityMode.ServerDad;
@@ -86,6 +87,9 @@ public sealed class DadPresenceService
     public void ConfigureDependencySnapshotProvider(Func<DadDependencySnapshot> provider)
         => dependencySnapshotProvider = provider ?? (static () => DadDependencySnapshot.CreateChecking());
 
+    public void ConfigureAutoPartyPresenceProvider(Func<DadAutoPartyLanPresence> provider)
+        => autoPartyPresenceProvider = provider ?? (static () => new DadAutoPartyLanPresence());
+
     public void ConfigureOceTravelCapacityProofProvider(Func<DadAccountKey, DadOceTravelCapacityProof> provider)
         => oceTravelCapacityProofProvider = provider ?? oceTravelCapacityProofProvider;
 
@@ -115,6 +119,7 @@ public sealed class DadPresenceService
                           !autoRetainerStatus.IsSuppressed;
         var workerRole = GetConfiguredWorkerRole();
         var nextState = ResolveParticipantState(localCharacter, postArReady);
+        var autoPartyPresence = autoPartyPresenceProvider();
 
         CurrentParticipant = new DadParticipantSnapshot
         {
@@ -123,6 +128,9 @@ public sealed class DadPresenceService
             MachineName = Environment.MachineName,
             ProcessId = Environment.ProcessId,
             Endpoint = endpoint,
+            DiscordApplicationId = autoPartyPresence.ApplicationId,
+            AutoPartyEndpointFingerprint = autoPartyPresence.EndpointFingerprint,
+            AutoPartyPairingHealth = autoPartyPresence.PairingHealth,
             RunId = currentRunId,
             AuthorityMode = currentAuthorityMode,
             Role = CurrentParticipant.Role,

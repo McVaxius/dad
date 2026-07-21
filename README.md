@@ -36,7 +36,7 @@ dotnet test .\Tests\dad.Tests.csproj
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v5 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
+- Configuration schema v6 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
   reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
   Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-4 users
   migrate to an empty, disabled AutoParty configuration without generating an identity or initializing a network route.
@@ -47,31 +47,28 @@ dotnet test .\Tests\dad.Tests.csproj
   warnings, and scheduler failure evidence remain visible while requests, participants, leases, executor state, client
   and session IDs, and authority endpoints are removed from saved history.
 
-## AutoParty development boundary
+## AutoParty Discord pairing and measured pilot
 
-- AutoParty is an unreleased, disabled-by-default integration. `/dad autoparty` exposes explicit endpoint generation,
-  public pilot export, enrollment import, local pairing, formation-only fixture import, transport, execution, status-receipt, rotation, and Owner Stop
-  controls. Loading or migration does not generate an identity or enable any of the three local gates.
-- **Pilot exchange root** defaults to `Z:\autopartypilot` and may be changed to a fully qualified, writable, non-root
-  drive or UNC path only while transport, pairing, and execution are disabled. Applying it immediately derives and
-  creates `pilot-input`, `pilot-receipts`, `pilot-courier`, and `plugin` without requiring a DAD reload. Existing schema-5
-  configurations migrate to the shared default; schema number, LAN behavior, IPC v1, and Fleet TSV stay unchanged.
-- The AutoParty courier connector is separate from the existing LAN `DadTransportService`. It uses a bounded outbound-only
-  file spool beneath `<PilotExchangeRoot>\pilot-courier` and opens no inbound listener. LAN behavior and public DAD IPC remain unchanged.
-  DAD consumes the versioned `Dad.AutoParty.Protocol` package instead of an absolute project path.
-- Local grants are immutable and intersect exact owner, island, opaque character, requested job, activity, permission,
-  expiry, replay, reservation, preflight, lease, and revocation truth. Owner Stop, DAD disable, local safety, expiry, and
-  revocation override remote traffic. Execution exposes typed Prepare, Reserve, Form, Queue, Cancel, Settle, and Restore
-  operations only; there is no string-command or arbitrary-JSON execution route.
-- A Schedule request with an explicit AutoParty proposal ID waits inside DAD until local authorization is active. Requests
-  without that ID—including existing local and LAN presets—keep their established route. Formation-only execution ends at
-  the appended `GroupReady` phase, preserves the party, and denies queue and settle behavior.
-- Endpoint signing and encryption private keys are generated only after the operator presses **Generate endpoint identity**
-  and are stored through CurrentUser DPAPI under DAD's configuration root. Public `.apidentity` exports contain no private
-  keys or FFXIV identifiers. Pairing requires an artifact-bound owner-acceptance receipt plus **Confirm pilot pairings
-  locally**. **Import formation-only pilot fixture** then validates the same artifact hash, exact enrolled fingerprints,
-  one consented queue authority, numeric requested jobs, and a safe duty before creating a local `GroupReady` plan;
-  execution cannot enable until transport, receipt, pairing, fixture, and an end-to-end paired courier probe are healthy.
+- AutoParty remains disabled by default. Configuration schema 6 preserves historical courier fields but does not attach,
+  poll, or send through the file courier at runtime. Every installation connects its own bot directly from the plugin with
+  pinned `Discord.Net.WebSocket` 3.20.1.
+- In `/dad autoparty`, generate the immutable DAD endpoint identity, enter only that bot's token plus the shared Guild and
+  private `#dad-pairing` Channel IDs, then use **Save & Connect**. The token is masked and stored only through Windows
+  CurrentUser DPAPI; configuration contains an opaque token reference and authenticated Application/Bot User IDs.
+- Invite each bot with zero server-wide permissions. In the private channel grant only View Channel, Send Messages, and
+  Read Message History. Enable Message Content Intent; leave Presence and Server Members intents disabled.
+- `dad.pairing/v1` messages contain bounded signed public endpoint metadata only. They never contain bot tokens, FFXIV
+  identifiers, plans, schedules, requested jobs, Stop, or execution commands. Pairing uses a Coordinator-to-Client star;
+  clients do not need to pair with each other. Presence refreshes about every 60 seconds and is stale after three minutes.
+- Discord handles discovery, presence, and pairing only. DAD LAN hub protocol 3 carries the authenticated public Application
+  ID, endpoint fingerprint, and pairing health and rejects mixed pilot builds. Existing typed plans, schedules, Stop, claims,
+  leases, queues, and execution remain entirely on the LAN coordinator path.
+- The Coordinator exposes **Start measured pilot**, **Stop & Evaluate**, and **Resume pilot**. Evidence persists across reloads,
+  counts unique terminal non-dry-run plan IDs, retains ordinary failures, hard-fails safety violations, and continues recording
+  beyond minimum coverage until evaluation. Profile restoration is `not-applicable` for ordinary LAN plans.
+- DAD continuously writes an atomic Ed25519-signed `dad.pilot-evidence/v1` receipt beneath
+  `<PilotExchangeRoot>\pilot-receipts`, bound to the immutable Coordinator identity and exact `dad.dll` SHA-256. The legacy
+  wizard consumes this receipt; Guild/Channel IDs and tokens never enter the wizard.
 - `/dad fleet` opens the local Fleet/Crew Matrix. Its exact-schema TSV inventory is capped at 160 rows and protects
   spreadsheet formula prefixes; ordered Crew Sets are capped at 40 parties with eight members each. Reusable blueprints
   generate deterministic ordinary DAD Plans and manual or daily-reset Schedules through a non-mutating preview.

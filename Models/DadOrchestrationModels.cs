@@ -235,6 +235,9 @@ public sealed class DadParticipantSnapshot
     public string MachineName { get; set; } = string.Empty;
     public int ProcessId { get; set; }
     public string Endpoint { get; set; } = string.Empty;
+    public ulong DiscordApplicationId { get; set; }
+    public string AutoPartyEndpointFingerprint { get; set; } = string.Empty;
+    public DadAutoPartyPairingHealth AutoPartyPairingHealth { get; set; }
     public string RunId { get; set; } = string.Empty;
     public DadAuthorityMode AuthorityMode { get; set; } = DadAuthorityMode.ServerDad;
     public DadOrchestrationRole Role { get; set; } = DadOrchestrationRole.None;
@@ -284,6 +287,9 @@ public sealed class DadParticipantSnapshot
         MachineName = MachineName,
         ProcessId = ProcessId,
         Endpoint = Endpoint,
+        DiscordApplicationId = DiscordApplicationId,
+        AutoPartyEndpointFingerprint = AutoPartyEndpointFingerprint,
+        AutoPartyPairingHealth = AutoPartyPairingHealth,
         RunId = RunId,
         AuthorityMode = AuthorityMode,
         Role = Role,

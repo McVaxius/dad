@@ -187,7 +187,12 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
             {
                 state = RestoreState(state);
                 sessions[operation.ProposalId] = state;
-                return Completed(operation, DadRunPhase.Finalizing, "dad-profile-restored", state, state.ObservedParty);
+                return Completed(
+                    operation,
+                    DadRunPhase.Finalizing,
+                    state.ProfileRestored ? "dad-profile-restored" : "dad-profile-restoration-not-applicable",
+                    state,
+                    state.ObservedParty);
             });
 
     public void StopAll(string safeReason)

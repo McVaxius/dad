@@ -169,9 +169,9 @@ internal sealed class DadHubProtocolException : IOException
 
 internal static class DadHubProtocol
 {
-    // B5: bumped 1 -> 2 for the replay-resistant envelope (signed nonce + timestamp). Mixed-version peers
-    // are rejected cleanly by the ValidateFrame version check instead of failing the HMAC ambiguously.
-    public const int CurrentVersion = 2;
+    // Version 3 includes public Discord Application ID, endpoint fingerprint, and pairing health in
+    // participant presence. Mixed builds are rejected before any plan can be coordinated.
+    public const int CurrentVersion = 3;
     public const int MaxFrameBytes = 256 * 1024;
     private const int HeaderBytes = sizeof(int);
 

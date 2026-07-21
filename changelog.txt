@@ -1,5 +1,21 @@
 # dad — changelog
 
+## 2026-07-20 — v0.4.1.3 in-plugin Discord pairing and measured DAD pilot (local-only, unpublished)
+- Migrated AutoParty configuration from schema 5 to 6, disabled by default, with CurrentUser-DPAPI bot-token references,
+  authenticated Discord Application/Bot User IDs, channel binding, coordinator-star pairings, and persistent measured-pilot evidence.
+- Added pinned `Discord.Net.WebSocket` 3.20.1 inside every DAD instance. Signed bounded `dad.pairing/v1` presence and pairing
+  envelopes reject wrong authors/channels, stale messages, replays, identity/fingerprint drift, and Application-ID reuse.
+  Reconnect uses bounded backoff and one editable presence message; Discord has no plan, schedule, Stop, or execution route.
+- Retired the file courier from active runtime while retaining its historical source/config fields. Raised the DAD LAN hub
+  protocol to 3 so presence includes public Discord Application ID, endpoint fingerprint, and pairing health.
+- Added Coordinator controls for Start measured pilot, Stop & Evaluate, and Resume. Typed run, requested-job, Stop-all,
+  cleanup, LAN-participant, Discord-health, revoke, and re-pair evidence produces an atomic Ed25519-signed
+  `dad.pilot-evidence/v1` receipt bound to the Coordinator identity and exact assembly SHA-256. Ordinary LAN profile
+  restoration now reports `not-applicable` unless a real profile was captured and restored.
+- Bumped the local pilot package to `0.4.1.3` and included Discord.Net runtime dependencies plus a separately named
+  .NET Framework BouncyCastle verifier used only by the Windows PowerShell 5.1 receipt evaluator. No tag, release,
+  publication, or push is part of this change.
+
 ## 2026-07-20 — I60 seven guarded party-teardown attempts (local-only, unpublished)
 - Raised the bounded successful-run teardown window from three attempts at ten-second intervals to seven attempts at
   eight-second intervals, retaining the existing 60-second timeout and all party, leader, duty, queue, and prompt guards.
