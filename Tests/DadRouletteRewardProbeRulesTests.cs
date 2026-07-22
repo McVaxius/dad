@@ -155,6 +155,49 @@ public sealed class DadRouletteRewardProbeRulesTests
         Assert.Contains("identity", reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(true, DadRouletteRewardObservationStatus.Received)]
+    [InlineData(false, DadRouletteRewardObservationStatus.NotReceived)]
+    public void DirectNativeTruthRequiresTwoStableReadsOfFrozenRoulette(
+        bool isComplete,
+        DadRouletteRewardObservationStatus expected)
+    {
+        var gate = new DadDirectRouletteRewardObservationGate();
+        var at = new DateTime(2026, 7, 22, 12, 0, 0, DateTimeKind.Utc);
+        var first = new DadDirectRouletteRewardObservation(123, 3, isComplete, at);
+
+        Assert.Equal(DadRouletteRewardObservationStatus.Waiting, gate.Observe(first, 123, 3, out _));
+        Assert.Equal(
+            DadRouletteRewardObservationStatus.Waiting,
+            gate.Observe(first with { CapturedAtUtc = at.AddMilliseconds(249) }, 123, 3, out _));
+        Assert.Equal(
+            expected,
+            gate.Observe(first with { CapturedAtUtc = at.AddMilliseconds(250) }, 123, 3, out var reason));
+        Assert.Contains("direct native", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DirectNativeTruthRejectsIdentityDriftAndRestabilizesChangedResult()
+    {
+        var gate = new DadDirectRouletteRewardObservationGate();
+        var at = DateTime.UtcNow;
+
+        Assert.Equal(
+            DadRouletteRewardObservationStatus.Invalid,
+            gate.Observe(new DadDirectRouletteRewardObservation(999, 3, true, at), 123, 3, out var identityReason));
+        Assert.Contains("identity", identityReason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            DadRouletteRewardObservationStatus.Waiting,
+            gate.Observe(new DadDirectRouletteRewardObservation(123, 3, true, at.AddSeconds(1)), 123, 3, out _));
+        Assert.Equal(
+            DadRouletteRewardObservationStatus.Waiting,
+            gate.Observe(new DadDirectRouletteRewardObservation(123, 3, false, at.AddSeconds(2)), 123, 3, out _));
+        Assert.Equal(
+            DadRouletteRewardObservationStatus.NotReceived,
+            gate.Observe(new DadDirectRouletteRewardObservation(123, 3, false, at.AddSeconds(3)), 123, 3, out _));
+    }
+
     [Fact]
     public void DutyFinderOwnershipForbidsNavigationAndCloseOfPreexistingUi()
     {

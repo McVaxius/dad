@@ -77,6 +77,7 @@
     <Compile Include="..\Services\DadRunHistoryPersistenceRules.cs" Link="DadRunHistoryPersistenceRules.cs" />
     <Compile Include="..\Services\DadAdsConfigurationPatchRules.cs" Link="DadAdsConfigurationPatchRules.cs" />
     <Compile Include="..\Services\DadPartyTeardownRules.cs" Link="DadPartyTeardownRules.cs" />
+    <Compile Include="..\Services\DadParticipantPartyDepartureRules.cs" Link="DadParticipantPartyDepartureRules.cs" />
     <Compile Include="..\Services\DadShareService.cs" Link="DadShareService.cs" />
     <Compile Include="..\Services\DadDeferredSaveGate.cs" Link="DadDeferredSaveGate.cs" />
     <Compile Include="..\Services\DadOnlineProfileCatalogCache.cs" Link="DadOnlineProfileCatalogCache.cs" />

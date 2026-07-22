@@ -1,5 +1,26 @@
 # dad — changelog
 
+## 2026-07-22 — I69/I70/I73/I74 reward and party-assembly recovery (local-only, unpublished)
+- Replaced the Daily Reward probe's Duty Finder open/select/close path with two stable framework-thread reads of
+  API15 `InstanceContent.IsRouletteComplete` for the frozen roulette. DailyReset-only eligibility, LevelSeek priority,
+  checked-row waking, unanimous-received skipping, exact response identity, and fail-open not-received/unknown behavior
+  remain unchanged.
+- Added a participant-only wrong-party departure controller before invitation acceptance. Authoritative PartyList or
+  InfoProxyCrossRealm state permits no mutation when solo or already with the expected inviter; otherwise the guarded
+  `/partycmd leave` path, cross-world PartyMemberList `2,3` callback, fresh confirmation ownership, seven attempts at
+  eight-second intervals, 60-second ceiling, and sustained-solo proof run independently of successful-run teardown.
+- Exact fresh hidden invites now restore `SelectYesno` through `_Notification` with `updateState=true` and integer
+  arguments `0,16`, then revalidate the unchanged pending invite. Native `RespondToInvitation` remains primary; direct
+  Yes is allowed only for the newly surfaced DAD-owned prompt or one proving the exact inviter, so pre-existing and
+  unrelated prompts remain untouched.
+- The first actual native invite starts the configured assembly window. At expiry, a persistent run warning reports
+  that the participant has not accepted and DAD remains reachable, while five-second restore/accept retries continue
+  without failing the entry, closing a client, or advancing the Schedule. Public DTO/IPC, configuration and share
+  schemas, wake/relog behavior, version `0.4.1.4`, release artifacts, W19/P1204, and publication state are unchanged.
+- Fresh Debug x64 verification passes 92/92 focused reward/invite/departure/assembly/I60/I71 tests and 1,103/1,103
+  complete tests; a no-incremental isolated plugin build succeeds with zero warnings and zero errors. Controlled live
+  multi-client acceptance was not run and remains explicitly unmet.
+
 ## 2026-07-21 — I64 skipped Schedule row badges (local-only, unpublished)
 - Added read-only `SKIPPED` / `SKIPPED ×N` badges inside the selected Schedule's ordered Preset cells. The internal
   projection uses only the active non-dry run or latest non-dry run, available exact retry lineage, exact

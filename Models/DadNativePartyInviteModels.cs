@@ -237,6 +237,59 @@ public readonly record struct DadPendingPartyInvitation(
     public bool IsPresent => InviteTime != 0 && !string.IsNullOrEmpty(InviterName);
 }
 
+internal readonly record struct DadSelectYesnoPromptSnapshot(
+    bool Visible,
+    string Identity,
+    string Text);
+
+internal static class DadPartyInvitePromptOwnershipRules
+{
+    public static bool ShouldRestoreHiddenPrompt(
+        DadPendingPartyInvitation invitation,
+        DadExpectedPartyInviter expected,
+        DadSelectYesnoPromptSnapshot prompt)
+        => IsExactPendingInvitation(invitation, expected) && !prompt.Visible;
+
+    public static bool CanUseDirectYes(
+        DadPendingPartyInvitation beforeInvitation,
+        DadPendingPartyInvitation afterInvitation,
+        DadExpectedPartyInviter expected,
+        DadSelectYesnoPromptSnapshot runBaselinePrompt,
+        DadSelectYesnoPromptSnapshot beforePrompt,
+        DadSelectYesnoPromptSnapshot afterPrompt,
+        bool restoreDispatched)
+    {
+        if (!afterPrompt.Visible ||
+            beforeInvitation != afterInvitation ||
+            !IsExactPendingInvitation(afterInvitation, expected))
+        {
+            return false;
+        }
+
+        if (runBaselinePrompt.Visible &&
+            string.Equals(runBaselinePrompt.Identity, afterPrompt.Identity, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var newlySurfacedByDad = restoreDispatched && !beforePrompt.Visible && afterPrompt.Visible;
+        return newlySurfacedByDad || PromptProvesExpectedInviter(afterPrompt.Text, expected.CharacterName);
+    }
+
+    public static bool IsExactPendingInvitation(
+        DadPendingPartyInvitation invitation,
+        DadExpectedPartyInviter expected)
+        => invitation.IsPresent &&
+           string.Equals(invitation.InviterName, expected.CharacterName, StringComparison.Ordinal) &&
+           invitation.InviterWorldId == expected.WorldId;
+
+    private static bool PromptProvesExpectedInviter(string promptText, string exactInviterName)
+        => !string.IsNullOrWhiteSpace(promptText) &&
+           !string.IsNullOrWhiteSpace(exactInviterName) &&
+           promptText.Contains(exactInviterName, StringComparison.Ordinal) &&
+           promptText.Contains("party", StringComparison.OrdinalIgnoreCase);
+}
+
 public sealed class DadExpectedPartyInviter
 {
     public string RunId { get; init; } = string.Empty;
@@ -257,6 +310,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
     private DadPendingPartyInvitation lastAttemptedInvitation;
     private DadExpectedPartyInviter? expectedInviter;
     private DateTime nextAttemptAtUtc = DateTime.MinValue;
+    private DateTime? firstRealAttemptAtUtc;
     private bool partyConfirmed;
 
     public DadExpectedPartyInviter? ExpectedInviter => expectedInviter;
@@ -272,6 +326,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         lastAttemptedInvitation = default;
         expectedInviter = null;
         nextAttemptAtUtc = DateTime.MinValue;
+        firstRealAttemptAtUtc = null;
         partyConfirmed = false;
     }
 
@@ -326,8 +381,22 @@ public sealed class DadPartyInvitationAcceptanceTracker
 
     public void RecordAttempt(DadPendingPartyInvitation invitation, DateTime attemptedAtUtc)
     {
+        firstRealAttemptAtUtc ??= EnsureUtc(attemptedAtUtc);
         lastAttemptedInvitation = invitation;
         nextAttemptAtUtc = EnsureUtc(attemptedAtUtc) + RetryInterval;
+    }
+
+    internal string BuildRetryStatus(DateTime nowUtc, TimeSpan assemblyWindow)
+    {
+        if (expectedInviter == null)
+            return string.Empty;
+
+        nowUtc = EnsureUtc(nowUtc);
+        var window = assemblyWindow <= TimeSpan.Zero ? TimeSpan.FromSeconds(120) : assemblyWindow;
+        if (firstRealAttemptAtUtc.HasValue && nowUtc - firstRealAttemptAtUtc.Value >= window)
+            return DadPartyInvitationRetryRules.BuildWarning(expectedInviter);
+
+        return DadPartyInvitationRetryRules.BuildActive(expectedInviter);
     }
 
     public bool ConfirmPartyMembership()
@@ -346,10 +415,11 @@ public sealed class DadPartyInvitationAcceptanceTracker
         lastAttemptedInvitation = default;
         expectedInviter = null;
         nextAttemptAtUtc = DateTime.MinValue;
+        firstRealAttemptAtUtc = null;
         partyConfirmed = false;
     }
 
-    private static string Validate(DadExpectedPartyInviter inviter)
+    internal static string Validate(DadExpectedPartyInviter inviter)
     {
         if (string.IsNullOrWhiteSpace(inviter.RunId) || inviter.WorkerSessionId.IsEmpty)
             return "Party invitation acceptance requires a run and inviter worker session.";
@@ -360,7 +430,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         return string.Empty;
     }
 
-    private static bool SameExpectedInviter(DadExpectedPartyInviter left, DadExpectedPartyInviter right)
+    internal static bool SameExpectedInviter(DadExpectedPartyInviter left, DadExpectedPartyInviter right)
         => Same(left.RunId, right.RunId) &&
            Same(left.WorkerSessionId.Value, right.WorkerSessionId.Value) &&
            Same(left.AccountKey.Value, right.AccountKey.Value) &&
@@ -379,4 +449,35 @@ public sealed class DadPartyInvitationAcceptanceTracker
         => value.Kind == DateTimeKind.Utc
             ? value
             : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+}
+
+internal static class DadPartyInvitationRetryRules
+{
+    private const string ActivePrefix = "Party invitation retry active:";
+    private const string WarningPrefix = "Party invitation warning:";
+
+    public static string BuildActive(DadExpectedPartyInviter expected)
+        => $"{ActivePrefix} waiting for a fresh exact invite from {expected.CharacterKey}; Dad remains reachable and restore/Yes retries continue every five seconds.";
+
+    public static string BuildWarning(DadExpectedPartyInviter expected)
+        => $"{WarningPrefix} this participant has not accepted the exact invite from {expected.CharacterKey}; Dad remains reachable and restore/Yes retries continue every five seconds.";
+
+    public static string BuildWarning(DadCharacterKey participant, DadCharacterKey expectedInviter)
+        => $"{WarningPrefix} participant {participant} has not accepted the exact invite from {expectedInviter}; Dad remains reachable and restore/Yes retries continue every five seconds.";
+
+    public static bool IsContinuingRetry(string? value)
+        => !string.IsNullOrWhiteSpace(value) &&
+           (value.StartsWith(ActivePrefix, StringComparison.Ordinal) ||
+            value.StartsWith(WarningPrefix, StringComparison.Ordinal));
+
+    public static bool IsPersistentWarning(string? value)
+        => !string.IsNullOrWhiteSpace(value) && value.StartsWith(WarningPrefix, StringComparison.Ordinal);
+
+    public static bool ShouldApplyAssemblyTimeout(
+        bool persistentStartup,
+        bool timedOut,
+        IEnumerable<string> blockers)
+        => !persistentStartup &&
+           timedOut &&
+           !blockers.Any(IsContinuingRetry);
 }

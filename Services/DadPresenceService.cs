@@ -969,10 +969,14 @@ public sealed class DadPresenceService
             WorldId = (ushort)inviter.Character.WorldId,
         };
         if (!partyInviteGateway.TryArmAcceptance(expected, out var blocker))
+        {
+            if (DadPartyInvitationRetryRules.IsPersistentWarning(blocker))
+                AddWarning(blocker);
             return (false, blocker);
+        }
 
         return (true,
-            $"Native party invitation acceptance armed for exact inviter {expected.CharacterKey}; waiting for fresh invitation and PartyList confirmation.");
+            $"Authoritative party state confirms the exact inviter {expected.CharacterKey} after guarded invitation acceptance.");
     }
 
     private void AdvanceCoordinatorTravel(

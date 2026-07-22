@@ -289,6 +289,64 @@ public sealed class DadRouletteRewardObservationGate
            right.CapturedAtUtc >= left.CapturedAtUtc;
 }
 
+internal readonly record struct DadDirectRouletteRewardObservation(
+    ulong CharacterContentId,
+    uint RouletteId,
+    bool IsComplete,
+    DateTime CapturedAtUtc);
+
+internal sealed class DadDirectRouletteRewardObservationGate
+{
+    public static readonly TimeSpan MinimumStableInterval = TimeSpan.FromMilliseconds(250);
+    private DadDirectRouletteRewardObservation? previous;
+
+    public DadRouletteRewardObservationStatus Observe(
+        DadDirectRouletteRewardObservation observation,
+        ulong expectedCharacterContentId,
+        uint expectedRouletteId,
+        out string reason)
+    {
+        if (observation.CharacterContentId == 0 ||
+            observation.CharacterContentId != expectedCharacterContentId ||
+            observation.RouletteId == 0 ||
+            observation.RouletteId != expectedRouletteId ||
+            observation.CapturedAtUtc == default)
+        {
+            previous = null;
+            reason = "Direct roulette reward identity is invalid.";
+            return DadRouletteRewardObservationStatus.Invalid;
+        }
+
+        if (!previous.HasValue || !Same(previous.Value, observation))
+        {
+            previous = observation;
+            reason = "Waiting for a second stable direct native roulette reward read.";
+            return DadRouletteRewardObservationStatus.Waiting;
+        }
+
+        if (observation.CapturedAtUtc - previous.Value.CapturedAtUtc < MinimumStableInterval)
+        {
+            reason = "Waiting for a second stable direct native roulette reward read.";
+            return DadRouletteRewardObservationStatus.Waiting;
+        }
+
+        reason = observation.IsComplete
+            ? "Two stable direct native reads report the frozen roulette reward received."
+            : "Two stable direct native reads report the frozen roulette reward not received.";
+        return observation.IsComplete
+            ? DadRouletteRewardObservationStatus.Received
+            : DadRouletteRewardObservationStatus.NotReceived;
+    }
+
+    private static bool Same(
+        DadDirectRouletteRewardObservation left,
+        DadDirectRouletteRewardObservation right)
+        => left.CharacterContentId == right.CharacterContentId &&
+           left.RouletteId == right.RouletteId &&
+           left.IsComplete == right.IsComplete &&
+           right.CapturedAtUtc >= left.CapturedAtUtc;
+}
+
 public static class DadRouletteRewardProbeUiOwnershipRules
 {
     public static bool CanNavigate(bool dutyFinderWasAlreadyOpen) => !dutyFinderWasAlreadyOpen;

@@ -45,10 +45,12 @@ public sealed class DadCoordinatorService
     private readonly Dictionary<string, string> partyTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> workerCommandTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> coordinatorProvenanceTransitions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<ulong, DateTime> firstPartyInviteAttemptUtcByContentId = [];
     private readonly DadRemoteAssignmentTracker remoteAssignmentTracker = new();
     private DateTime nextWorkerStatusPollUtc = DateTime.MinValue;
     private DadRunPhase? lastLoggedCoordinatorPhase;
     private string firstPartyInviteBoundaryRunId = string.Empty;
+    private string inviteRetryContinuationRunId = string.Empty;
     private bool persistentStartup;
     private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
     private readonly DadStableContradictionTracker coordinatorContradictionTracker = new();
@@ -367,7 +369,9 @@ public sealed class DadCoordinatorService
         partyTransitions.Clear();
         workerCommandTransitions.Clear();
         coordinatorProvenanceTransitions.Clear();
+        firstPartyInviteAttemptUtcByContentId.Clear();
         firstPartyInviteBoundaryRunId = string.Empty;
+        inviteRetryContinuationRunId = string.Empty;
         remoteAssignmentTracker.BeginAttempt(plan.Request.RequestId);
         lastLoggedCoordinatorPhase = null;
         claimService.ReleaseClaims(plan.Request.RequestId);
@@ -961,14 +965,31 @@ public sealed class DadCoordinatorService
             participant.State = result.Success ? DadParticipantState.AssemblyConfirmed : DadParticipantState.AssemblyPending;
             participant.StatusText = result.Summary;
             if (!result.Success && !string.IsNullOrWhiteSpace(result.BlockedReason))
+            {
                 blockers.Add(result.BlockedReason);
+                if (DadPartyInvitationRetryRules.IsPersistentWarning(result.BlockedReason) &&
+                    !participant.Warnings.Any(existing => string.Equals(existing, result.BlockedReason, StringComparison.Ordinal)))
+                {
+                    participant.Warnings.Add(result.BlockedReason);
+                }
+            }
             LogPartyTransition(activePlan, participant, "join-dispatched", result.Summary);
         }
 
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
         if (blockers.Count > 0)
         {
-            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            if (blockers.Any(DadPartyInvitationRetryRules.IsContinuingRetry))
+            {
+                inviteRetryContinuationRunId = activePlan.Request.RequestId;
+                PromoteInviteAttemptWarnings(activePlan);
+            }
+            PromotePersistentPartyInviteWarnings();
+
+            if (DadPartyInvitationRetryRules.ShouldApplyAssemblyTimeout(
+                    persistentStartup,
+                    HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()),
+                    blockers))
             {
                 FinalizeRun(
                     DadRunStatus.TimedOut,
@@ -997,7 +1018,16 @@ public sealed class DadCoordinatorService
         if (!string.IsNullOrWhiteSpace(partySnapshotBlocker) || membership.Disposition != DadPartyMembershipDisposition.Ready)
         {
             var blockerSummary = string.IsNullOrWhiteSpace(partySnapshotBlocker) ? membership.Summary : partySnapshotBlocker;
-            if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
+            var inviteRetryContinues = string.Equals(
+                inviteRetryContinuationRunId,
+                activePlan.Request.RequestId,
+                StringComparison.Ordinal);
+            if (inviteRetryContinues)
+                PromoteInviteAttemptWarnings(activePlan);
+            PromotePersistentPartyInviteWarnings();
+            if (!inviteRetryContinues &&
+                !persistentStartup &&
+                HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
             {
                 FinalizeRun(DadRunStatus.TimedOut, "Dad run timed out during party assembly.", blockerSummary);
                 return;
@@ -1021,7 +1051,22 @@ public sealed class DadCoordinatorService
         if (!partyInviteGateway.ConfirmRunPartyMembership(activePlan.Request.RequestId))
             return;
 
+        inviteRetryContinuationRunId = string.Empty;
         TransitionAfterAssembly(activePlan, "Dad party assembly confirmed; preparing queue executor.");
+    }
+
+    private void PromotePersistentPartyInviteWarnings()
+    {
+        foreach (var warning in activeParticipants
+                     .SelectMany(static participant => participant.Warnings)
+                     .Where(DadPartyInvitationRetryRules.IsPersistentWarning))
+        {
+            if (CurrentResult.Warnings.Any(DadPartyInvitationRetryRules.IsPersistentWarning))
+                continue;
+
+            CurrentResult.Warnings.Add(warning);
+            log.Warning("[dad] {Warning}", warning);
+        }
     }
 
     private DadParticipantSnapshot? ResolveParticipantForInstruction(DadAssemblyInstructionDto instruction)
@@ -1187,6 +1232,8 @@ public sealed class DadCoordinatorService
             if (attempt == null)
                 continue;
 
+            firstPartyInviteAttemptUtcByContentId.TryAdd(frozenSlot.ContentId, attempt.AttemptedAtUtc);
+
             log.Information(
                 "[dad] Native party invite request={RequestId} module={ModuleId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} world={WorldId} worker={WorkerSessionId} inviteType={InviteType} attempt={AttemptNumber} dispatch={DispatchResult} partyList={PartyListResult} partyCount={PartyCount} expectedCount={ExpectedCount}.",
                 plan.Request.RequestId,
@@ -1211,6 +1258,30 @@ public sealed class DadCoordinatorService
             if (!attempt.DispatchResult)
                 blockers.Add(participant.StatusText);
         }
+    }
+
+    private void PromoteInviteAttemptWarnings(DadRunPlan plan)
+    {
+        if (CurrentResult.Warnings.Any(DadPartyInvitationRetryRules.IsPersistentWarning))
+            return;
+
+        var participant = activeParticipants.FirstOrDefault(candidate =>
+            candidate.Character.ContentId != 0 &&
+            firstPartyInviteAttemptUtcByContentId.TryGetValue(candidate.Character.ContentId, out var firstAttemptUtc) &&
+            DateTime.UtcNow - firstAttemptUtc >= plan.Orchestration.WaitPolicy.GetAssemblyTimeout());
+        if (participant == null)
+        {
+            return;
+        }
+
+        var warning = DadPartyInvitationRetryRules.BuildWarning(
+            participant.ActiveCharacterKey,
+            plan.InviterCharacterKey);
+        if (!participant.Warnings.Any(existing => string.Equals(existing, warning, StringComparison.Ordinal)))
+            participant.Warnings.Add(warning);
+
+        CurrentResult.Warnings.Add(warning);
+        log.Warning("[dad] {Warning}", warning);
     }
 
     private bool TryResolveLocalPartyInviter(
@@ -2939,7 +3010,9 @@ public sealed class DadCoordinatorService
         partyTransitions.Clear();
         workerCommandTransitions.Clear();
         coordinatorProvenanceTransitions.Clear();
+        firstPartyInviteAttemptUtcByContentId.Clear();
         firstPartyInviteBoundaryRunId = string.Empty;
+        inviteRetryContinuationRunId = string.Empty;
         persistentStartup = false;
         activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
         coordinatorContradictionTracker.Reset();

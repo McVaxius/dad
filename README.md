@@ -110,10 +110,16 @@ dotnet test .\Tests\dad.Tests.csproj
   aggregate repeated skips, explain them on hover, and disclose when bounded history retains fewer row details than the run's total skip count.
 - Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It is consulted only when that
   preset runs as a `DailyReset` Schedule entry and only after LevelSeek declines to skip. DAD wakes and inspects checked
-  effective characters one at a time, never wakes unchecked rows for inspection, and skips only when stable exact
-  Duty Finder evidence says every checked character already received the selected roulette reward. Any missing route,
-  identity mismatch, timeout, stale or contradictory reply, unknown state, or not-received result runs the preset
-  normally. DAD closes Duty Finder only when this inspection opened it.
+  effective characters one at a time, never wakes unchecked rows for inspection, and skips only when two stable direct
+  native reads say every checked character already received the frozen roulette reward. The probe never opens, selects,
+  or closes Duty Finder. Any missing native state or route, identity drift, timeout, stale or contradictory reply,
+  unknown state, or not-received result runs the preset normally.
+- Before a participant arms exact-inviter acceptance, DAD leaves an unrelated same- or cross-world party through a
+  separate guarded recovery path and requires sustained authoritative solo state. Exact fresh invites keep their
+  five-second retry cadence; a hidden invite prompt is restored from the notification list, and direct Yes is limited
+  to the newly restored DAD-owned prompt or a prompt that proves the exact inviter. After the configured assembly
+  window, DAD publishes a persistent warning but remains reachable and continues restore/accept retries without
+  failing the entry, closing a client, or advancing the Schedule.
 - Saved Duty Support, Trust, and Premade Duty presets can enable **Leveling Mode** with one plan goal, deterministic
   `Lowest first` or `Highest below goal` job rotation, and an ordered minimum-level-to-duty table. DAD requires exact
   fixed account/character identities and complete XADB job ledgers, excludes base classes and limited jobs, selects

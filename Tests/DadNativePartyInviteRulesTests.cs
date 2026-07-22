@@ -206,6 +206,85 @@ public sealed class DadNativePartyInviteRulesTests
         Assert.Contains("changed", blocker, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void HiddenPromptRestorationRequiresFreshExactPendingInvitation()
+    {
+        var expected = ExpectedInviter();
+        var exact = new DadPendingPartyInvitation(43, expected.CharacterName, expected.WorldId);
+        var hidden = new DadSelectYesnoPromptSnapshot(false, string.Empty, string.Empty);
+
+        Assert.True(DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(exact, expected, hidden));
+        Assert.False(DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(
+            new DadPendingPartyInvitation(44, "Wrong Inviter", expected.WorldId),
+            expected,
+            hidden));
+        Assert.False(DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(
+            exact,
+            expected,
+            new DadSelectYesnoPromptSnapshot(true, "existing", "Unrelated confirmation")));
+    }
+
+    [Fact]
+    public void DirectYesRequiresDadOwnedSurfaceOrExactInviterPrompt()
+    {
+        var expected = ExpectedInviter();
+        var exact = new DadPendingPartyInvitation(43, expected.CharacterName, expected.WorldId);
+        var hidden = new DadSelectYesnoPromptSnapshot(false, string.Empty, string.Empty);
+        var surfaced = new DadSelectYesnoPromptSnapshot(true, "surface", "Join the party?");
+        var exactPrompt = new DadSelectYesnoPromptSnapshot(true, "exact", $"Join {expected.CharacterName}'s party?");
+        var unrelated = new DadSelectYesnoPromptSnapshot(true, "unrelated", "Discard this item?");
+
+        Assert.True(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
+            exact, exact, expected, hidden, hidden, surfaced, restoreDispatched: true));
+        Assert.True(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
+            exact, exact, expected, hidden, unrelated, exactPrompt, restoreDispatched: false));
+        Assert.False(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
+            exact, exact, expected, hidden, unrelated, unrelated, restoreDispatched: false));
+        Assert.False(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
+            exact, exact, expected, exactPrompt, exactPrompt, exactPrompt, restoreDispatched: false));
+        Assert.False(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
+            exact,
+            new DadPendingPartyInvitation(44, expected.CharacterName, expected.WorldId),
+            expected,
+            hidden,
+            hidden,
+            surfaced,
+            restoreDispatched: true));
+    }
+
+    [Fact]
+    public void AssemblyWindowPublishesWarningWithoutTerminatingInviteRetries()
+    {
+        var tracker = new DadPartyInvitationAcceptanceTracker();
+        var expected = ExpectedInviter();
+        var invitation = new DadPendingPartyInvitation(43, expected.CharacterName, expected.WorldId);
+        tracker.BeginRun("run", default);
+        Assert.True(tracker.TryArm(expected, out _));
+        Assert.True(tracker.ShouldAccept(invitation, false, Start));
+        tracker.RecordAttempt(invitation, Start);
+
+        var active = tracker.BuildRetryStatus(Start.AddSeconds(119.999), TimeSpan.FromSeconds(120));
+        var warning = tracker.BuildRetryStatus(Start.AddSeconds(120), TimeSpan.FromSeconds(120));
+        var coordinatorWarning = DadPartyInvitationRetryRules.BuildWarning(
+            new DadCharacterKey("Participant@World"),
+            expected.CharacterKey);
+
+        Assert.True(DadPartyInvitationRetryRules.IsContinuingRetry(active));
+        Assert.False(DadPartyInvitationRetryRules.IsPersistentWarning(active));
+        Assert.True(DadPartyInvitationRetryRules.IsPersistentWarning(warning));
+        Assert.Contains("has not accepted", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("remains reachable", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("retries continue", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Participant@World", coordinatorWarning, StringComparison.Ordinal);
+        Assert.True(DadPartyInvitationRetryRules.IsPersistentWarning(coordinatorWarning));
+        Assert.False(DadPartyInvitationRetryRules.ShouldApplyAssemblyTimeout(false, true, [active]));
+        Assert.False(DadPartyInvitationRetryRules.ShouldApplyAssemblyTimeout(false, true, [warning]));
+        Assert.True(DadPartyInvitationRetryRules.ShouldApplyAssemblyTimeout(false, true, ["Unrelated assembly blocker"]));
+        Assert.False(DadPartyInvitationRetryRules.ShouldApplyAssemblyTimeout(true, true, ["Unrelated assembly blocker"]));
+
+        Assert.True(tracker.ShouldAccept(invitation, false, Start.AddSeconds(120)));
+    }
+
     private static DadNativePartyInviteTarget Target(
         uint localCurrentWorldId,
         ushort targetWorldId,
