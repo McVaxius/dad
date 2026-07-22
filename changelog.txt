@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-07-21 — I64 skipped Schedule row badges (local-only, unpublished)
+- Added read-only `SKIPPED` / `SKIPPED ×N` badges inside the selected Schedule's ordered Preset cells. The internal
+  projection uses only the active non-dry run or latest non-dry run, available exact retry lineage, exact
+  Schedule/run/entry IDs, and terminal scheduler `Skipped` results; repeated iterations aggregate and duplicate
+  iterations are suppressed while existing result summaries provide the hover detail.
+- When bounded scheduler history no longer retains every row detail, the existing run aggregate shows a compact total
+  versus retained-detail notice without inventing badges. The orange would-be-skipped LevelSeek preview, editing,
+  locks, ordering, repeats, execution, persistence, configuration, IPC/retries/public types, versions, website,
+  Aethertek page, W19/P1204, I63, AutoParty commit, packaging, and publication remain unchanged.
+
 ## 2026-07-20 — v0.4.1.3 in-plugin Discord pairing and measured DAD pilot (local-only, unpublished)
 - Migrated AutoParty configuration from schema 5 to 6, disabled by default, with CurrentUser-DPAPI bot-token references,
   authenticated Discord Application/Bot User IDs, channel binding, coordinator-star pairings, and persistent measured-pilot evidence.

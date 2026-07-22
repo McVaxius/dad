@@ -106,6 +106,8 @@ dotnet test .\Tests\dad.Tests.csproj
 - Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
   targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
   evidence used by execution; missing characters, unknown levels, missing presets, and untargeted rows stay normal.
+- The selected Schedule's ordered preset rows show `SKIPPED` badges for exact skips in its active or latest non-dry run,
+  aggregate repeated skips, explain them on hover, and disclose when bounded history retains fewer row details than the run's total skip count.
 - Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It is consulted only when that
   preset runs as a `DailyReset` Schedule entry and only after LevelSeek declines to skip. DAD wakes and inspects checked
   effective characters one at a time, never wakes unchecked rows for inspection, and skips only when stable exact

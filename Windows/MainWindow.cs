@@ -1890,6 +1890,11 @@ public sealed class MainWindow : Window, IDisposable
                 },
                 Plugin.IsBusy(runState.VisibleRun));
         var useColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 66f;
+        var skipBadges = DadScheduleSkipBadgeProjection.Build(
+            schedule,
+            activeRun,
+            snapshot.RecentResults,
+            plugin.SchedulerService.GetQueueSnapshot().RecentResults);
         if (!ImGui.BeginTable(
                 "dad-schedule-workspace",
                 useColumns ? 2 : 1,
@@ -1912,7 +1917,8 @@ public sealed class MainWindow : Window, IDisposable
                 schedule,
                 groups,
                 activeScheduleLocked,
-                plugin.GetPlannerUiSnapshot(runState));
+                plugin.GetPlannerUiSnapshot(runState),
+                skipBadges);
             DadUi.EndCard();
         }
 
@@ -2241,7 +2247,8 @@ public sealed class MainWindow : Window, IDisposable
         DadScheduleDefinition schedule,
         IReadOnlyList<DadPlannerGroup> groups,
         bool activeScheduleLocked,
-        DadPlannerUiSnapshot plannerSnapshot)
+        DadPlannerUiSnapshot plannerSnapshot,
+        DadScheduleSkipBadgeProjectionResult skipBadges)
     {
         if (groups.Count == 0)
         {
@@ -2283,6 +2290,9 @@ public sealed class MainWindow : Window, IDisposable
             DrawMutedNotice("No presets in this schedule.");
             return;
         }
+
+        if (!string.IsNullOrWhiteSpace(skipBadges.HistoryNotice))
+            DadUi.Badge(skipBadges.HistoryNotice, DadUiTone.Neutral);
 
         if (!ImGui.BeginTable("dad-schedule-entries", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
@@ -2345,6 +2355,12 @@ public sealed class MainWindow : Window, IDisposable
                 }
             }
             ImGui.EndDisabled();
+            if (skipBadges.Badges.TryGetValue(entry.EntryId, out var skipBadge))
+            {
+                DadUi.Badge(skipBadge.Label, DadUiTone.Warning);
+                if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(skipBadge.Tooltip))
+                    ImGui.SetTooltip(skipBadge.Tooltip);
+            }
 
             ImGui.TableNextColumn();
             var repeat = entry.RepeatCount;
