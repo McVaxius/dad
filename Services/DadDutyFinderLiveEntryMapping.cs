@@ -152,6 +152,178 @@ internal sealed record DadDutyFinderMappingResult(
     public bool IsReady => Status == DadDutyFinderMappingStatus.Ready && Entry != null;
 }
 
+internal sealed record DadRouletteRewardDiagnosticLiveRow(
+    uint RouletteId,
+    string LocalizedName);
+
+internal sealed record DadRouletteRewardDiagnosticFrozenRows(
+    ulong CharacterContentId,
+    string RowSetFingerprint,
+    IReadOnlyList<DadRouletteRewardDiagnosticLiveRow> Rows);
+
+internal enum DadRouletteRewardDiagnosticFreezeStatus
+{
+    Waiting,
+    Ready,
+    Invalid,
+}
+
+internal sealed class DadRouletteRewardDiagnosticFreezeGate
+{
+    private string previousSnapshotFingerprint = string.Empty;
+
+    public DadRouletteRewardDiagnosticFreezeStatus Observe(
+        DadDutyFinderListSnapshot snapshot,
+        out DadRouletteRewardDiagnosticFrozenRows? frozen,
+        out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        frozen = null;
+
+        if (snapshot.ListChanged)
+        {
+            Reset();
+            reason = "Duty Finder list generation changed; waiting for two fresh identical snapshots.";
+            return DadRouletteRewardDiagnosticFreezeStatus.Waiting;
+        }
+
+        if (snapshot.CharacterContentId == 0 ||
+            snapshot.AddonIdentity == 0 ||
+            snapshot.AgentIdentity == 0 ||
+            snapshot.DutyListIdentity == 0)
+        {
+            Reset();
+            reason = "Current character or Duty Finder identity is unavailable.";
+            return DadRouletteRewardDiagnosticFreezeStatus.Invalid;
+        }
+
+        if (!DadRouletteRewardDiagnosticLiveRowRules.TryBuildRows(
+                snapshot,
+                out var rows,
+                out var rowSetFingerprint,
+                out reason))
+        {
+            Reset();
+            return DadRouletteRewardDiagnosticFreezeStatus.Invalid;
+        }
+
+        var snapshotFingerprint = snapshot.BuildFingerprint();
+        if (!string.Equals(previousSnapshotFingerprint, snapshotFingerprint, StringComparison.Ordinal))
+        {
+            previousSnapshotFingerprint = snapshotFingerprint;
+            reason = "Waiting for a second identical live Duty Roulette list snapshot.";
+            return DadRouletteRewardDiagnosticFreezeStatus.Waiting;
+        }
+
+        frozen = new DadRouletteRewardDiagnosticFrozenRows(
+            snapshot.CharacterContentId,
+            rowSetFingerprint,
+            rows);
+        reason = string.Empty;
+        return DadRouletteRewardDiagnosticFreezeStatus.Ready;
+    }
+
+    public void Reset() => previousSnapshotFingerprint = string.Empty;
+}
+
+internal static class DadRouletteRewardDiagnosticLiveRowRules
+{
+    public static bool TryBuildRows(
+        DadDutyFinderListSnapshot snapshot,
+        out IReadOnlyList<DadRouletteRewardDiagnosticLiveRow> rows,
+        out string rowSetFingerprint,
+        out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var liveRows = snapshot.ContentEntries
+            .Where(static entry => entry.ContentType == DadDutyFinderLiveContentType.Roulette)
+            .Select(static entry => new DadRouletteRewardDiagnosticLiveRow(
+                entry.RowId,
+                entry.LocalizedName.Trim()))
+            .ToList();
+
+        if (liveRows.Count == 0)
+        {
+            rows = [];
+            rowSetFingerprint = string.Empty;
+            reason = "The hydrated Duty Finder list contains no live Duty Roulette rows.";
+            return false;
+        }
+
+        var invalid = liveRows.FirstOrDefault(static row =>
+            row.RouletteId is 0 or > byte.MaxValue ||
+            string.IsNullOrWhiteSpace(row.LocalizedName));
+        if (invalid != null)
+        {
+            rows = [];
+            rowSetFingerprint = string.Empty;
+            reason = "A live Duty Roulette row has no valid roulette ID or localized name.";
+            return false;
+        }
+
+        var duplicate = liveRows
+            .GroupBy(static row => row.RouletteId)
+            .FirstOrDefault(static group => group.Count() > 1);
+        if (duplicate != null)
+        {
+            rows = [];
+            rowSetFingerprint = string.Empty;
+            reason = $"Live Duty Roulette ID {duplicate.Key} appears more than once.";
+            return false;
+        }
+
+        rows = liveRows;
+        rowSetFingerprint = BuildRowSetFingerprint(snapshot.CharacterContentId, liveRows);
+        reason = string.Empty;
+        return true;
+    }
+
+    public static bool MatchesFrozen(
+        DadDutyFinderListSnapshot snapshot,
+        DadRouletteRewardDiagnosticFrozenRows frozen,
+        out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(frozen);
+        if (snapshot.ListChanged ||
+            snapshot.CharacterContentId == 0 ||
+            snapshot.CharacterContentId != frozen.CharacterContentId)
+        {
+            reason = "The current character or live Duty Roulette list generation drifted after rows were frozen.";
+            return false;
+        }
+
+        if (!TryBuildRows(snapshot, out _, out var fingerprint, out reason))
+            return false;
+        if (!string.Equals(fingerprint, frozen.RowSetFingerprint, StringComparison.Ordinal))
+        {
+            reason = "The live Duty Roulette row set drifted after rows were frozen.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private static string BuildRowSetFingerprint(
+        ulong characterContentId,
+        IReadOnlyList<DadRouletteRewardDiagnosticLiveRow> rows)
+    {
+        var builder = new StringBuilder();
+        builder.Append(characterContentId.ToString(CultureInfo.InvariantCulture)).Append('|');
+        foreach (var row in rows)
+        {
+            builder
+                .Append(row.RouletteId.ToString(CultureInfo.InvariantCulture))
+                .Append(':')
+                .Append(DadDutyFinderLiveEntryMapping.NormalizeLocalizedName(row.LocalizedName))
+                .Append('|');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
+    }
+}
+
 internal static class DadDutyFinderLiveEntryMapping
 {
     public static DadDutyFinderMappingResult Resolve(
@@ -416,6 +588,34 @@ internal static class DadDutyFinderLiveEntryMapping
 
         public static DadDutyFinderEntryCorrelation Mismatch(string reason)
             => new(DadDutyFinderMappingStatus.Mismatch, reason, []);
+    }
+}
+
+internal static class DadRouletteRewardExactSelectionRules
+{
+    public static bool CanReadNativeRewardState(
+        DadDutyFinderMappingResult mapping,
+        ulong expectedCharacterContentId,
+        uint expectedRouletteId,
+        bool hasRouletteSelected,
+        DadDutyFinderLiveContentType selectedContentType,
+        uint selectedRowId)
+    {
+        if (!mapping.IsReady ||
+            expectedCharacterContentId == 0 ||
+            expectedRouletteId is 0 or > byte.MaxValue ||
+            !hasRouletteSelected ||
+            selectedContentType != DadDutyFinderLiveContentType.Roulette ||
+            selectedRowId != expectedRouletteId)
+        {
+            return false;
+        }
+
+        var token = mapping.Entry!.SelectionToken;
+        return token.CharacterContentId == expectedCharacterContentId &&
+               token.Target == new DadDutyFinderLiveTarget(
+                   DadDutyFinderLiveContentType.Roulette,
+                   expectedRouletteId);
     }
 }
 

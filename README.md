@@ -110,10 +110,13 @@ dotnet test .\Tests\dad.Tests.csproj
   aggregate repeated skips, explain them on hover, and disclose when bounded history retains fewer row details than the run's total skip count.
 - Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It is consulted only when that
   preset runs as a `DailyReset` Schedule entry and only after LevelSeek declines to skip. DAD wakes and inspects checked
-  effective characters one at a time, never wakes unchecked rows for inspection, and skips only when two stable direct
-  native reads say every checked character already received the frozen roulette reward. The probe never opens, selects,
-  or closes Duty Finder. Any missing native state or route, identity drift, timeout, stale or contradictory reply,
-  unknown state, or not-received result runs the preset normally.
+  effective characters one at a time, never wakes unchecked rows for inspection, and skips only when every checked
+  character has two matching native reads at least 250 milliseconds apart after Duty Finder proves the exact live
+  roulette selection. DAD opens and hydrates Duty Finder when it owns a closed window, then closes only that owned
+  window; a pre-existing window is preserved and is read only when it is already on the exact roulette. Any missing
+  native state or route, identity or live-list drift, UI failure, timeout, stale or contradictory reply, unknown state,
+  or not-received result runs the preset normally. With `/dad debug` enabled, Status > Readiness also offers
+  **Log Duty Roulette reward states**, which uses the same owned-UI path and logs every current live roulette row.
 - Before a participant arms exact-inviter acceptance, DAD leaves an unrelated same- or cross-world party through a
   separate guarded recovery path and requires sustained authoritative solo state. Exact fresh invites keep their
   five-second retry cadence; a hidden invite prompt is restored from the notification list, and direct Yes is limited

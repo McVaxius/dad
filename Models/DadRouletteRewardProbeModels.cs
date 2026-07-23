@@ -289,69 +289,157 @@ public sealed class DadRouletteRewardObservationGate
            right.CapturedAtUtc >= left.CapturedAtUtc;
 }
 
-internal readonly record struct DadDirectRouletteRewardObservation(
-    ulong CharacterContentId,
-    uint RouletteId,
-    bool IsComplete,
-    DateTime CapturedAtUtc);
-
-internal sealed class DadDirectRouletteRewardObservationGate
-{
-    public static readonly TimeSpan MinimumStableInterval = TimeSpan.FromMilliseconds(250);
-    private DadDirectRouletteRewardObservation? previous;
-
-    public DadRouletteRewardObservationStatus Observe(
-        DadDirectRouletteRewardObservation observation,
-        ulong expectedCharacterContentId,
-        uint expectedRouletteId,
-        out string reason)
-    {
-        if (observation.CharacterContentId == 0 ||
-            observation.CharacterContentId != expectedCharacterContentId ||
-            observation.RouletteId == 0 ||
-            observation.RouletteId != expectedRouletteId ||
-            observation.CapturedAtUtc == default)
-        {
-            previous = null;
-            reason = "Direct roulette reward identity is invalid.";
-            return DadRouletteRewardObservationStatus.Invalid;
-        }
-
-        if (!previous.HasValue || !Same(previous.Value, observation))
-        {
-            previous = observation;
-            reason = "Waiting for a second stable direct native roulette reward read.";
-            return DadRouletteRewardObservationStatus.Waiting;
-        }
-
-        if (observation.CapturedAtUtc - previous.Value.CapturedAtUtc < MinimumStableInterval)
-        {
-            reason = "Waiting for a second stable direct native roulette reward read.";
-            return DadRouletteRewardObservationStatus.Waiting;
-        }
-
-        reason = observation.IsComplete
-            ? "Two stable direct native reads report the frozen roulette reward received."
-            : "Two stable direct native reads report the frozen roulette reward not received.";
-        return observation.IsComplete
-            ? DadRouletteRewardObservationStatus.Received
-            : DadRouletteRewardObservationStatus.NotReceived;
-    }
-
-    private static bool Same(
-        DadDirectRouletteRewardObservation left,
-        DadDirectRouletteRewardObservation right)
-        => left.CharacterContentId == right.CharacterContentId &&
-           left.RouletteId == right.RouletteId &&
-           left.IsComplete == right.IsComplete &&
-           right.CapturedAtUtc >= left.CapturedAtUtc;
-}
-
 public static class DadRouletteRewardProbeUiOwnershipRules
 {
     public static bool CanNavigate(bool dutyFinderWasAlreadyOpen) => !dutyFinderWasAlreadyOpen;
 
     public static bool ShouldClose(bool dutyFinderOpenedByDad) => dutyFinderOpenedByDad;
+}
+
+internal enum DadRouletteRewardDiagnosticRunState
+{
+    NeverRun,
+    Pending,
+    Completed,
+    Failed,
+}
+
+internal sealed record DadRouletteRewardDiagnosticStatus(
+    DadRouletteRewardDiagnosticRunState State,
+    string Summary,
+    DateTime? StartedAtUtc = null,
+    DateTime? CompletedAtUtc = null,
+    int TotalRows = 0,
+    int InspectedRows = 0,
+    int ReceivedRows = 0,
+    int UnclaimedRows = 0,
+    int FailedRows = 0)
+{
+    public bool IsPending => State == DadRouletteRewardDiagnosticRunState.Pending;
+
+    public static DadRouletteRewardDiagnosticStatus NeverRun { get; } =
+        new(DadRouletteRewardDiagnosticRunState.NeverRun, "Not run yet.");
+}
+
+internal sealed record DadRouletteRewardDiagnosticRowResult(
+    uint RouletteId,
+    string RouletteName,
+    bool? FirstRawIsComplete,
+    bool? SecondRawIsComplete,
+    DadRouletteRewardProbeOutcome Outcome,
+    string Failure)
+{
+    public bool Failed =>
+        Outcome is DadRouletteRewardProbeOutcome.Unknown or DadRouletteRewardProbeOutcome.Pending ||
+        !string.IsNullOrWhiteSpace(Failure);
+}
+
+internal sealed class DadRouletteRewardDiagnosticProgress
+{
+    private readonly List<DadRouletteRewardDiagnosticRowResult> results = [];
+
+    public DadRouletteRewardDiagnosticProgress(int totalRows)
+    {
+        if (totalRows <= 0)
+            throw new ArgumentOutOfRangeException(nameof(totalRows));
+
+        TotalRows = totalRows;
+    }
+
+    public int TotalRows { get; }
+    public int NextRowIndex => results.Count;
+    public bool HasNext => results.Count < TotalRows;
+    public IReadOnlyList<DadRouletteRewardDiagnosticRowResult> Results => results;
+
+    public void Add(DadRouletteRewardDiagnosticRowResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (!HasNext)
+            throw new InvalidOperationException("All frozen Duty Roulette rows already have a diagnostic result.");
+
+        results.Add(result);
+    }
+
+    public DadRouletteRewardDiagnosticStatus BuildStatus(
+        DadRouletteRewardDiagnosticRunState state,
+        DateTime startedAtUtc,
+        DateTime? completedAtUtc,
+        string? summary = null)
+    {
+        var received = results.Count(static result =>
+            !result.Failed && result.Outcome == DadRouletteRewardProbeOutcome.Received);
+        var unclaimed = results.Count(static result =>
+            !result.Failed && result.Outcome == DadRouletteRewardProbeOutcome.NotReceived);
+        var failed = results.Count(static result => result.Failed);
+        var text = string.IsNullOrWhiteSpace(summary)
+            ? DadRouletteRewardDiagnosticFormatting.BuildTotals(
+                state,
+                TotalRows,
+                results.Count,
+                received,
+                unclaimed,
+                failed)
+            : summary.Trim();
+
+        return new DadRouletteRewardDiagnosticStatus(
+            state,
+            text,
+            startedAtUtc,
+            completedAtUtc,
+            TotalRows,
+            results.Count,
+            received,
+            unclaimed,
+            failed);
+    }
+}
+
+internal static class DadRouletteRewardDiagnosticFormatting
+{
+    public static string Interpret(DadRouletteRewardProbeOutcome outcome)
+        => outcome switch
+        {
+            DadRouletteRewardProbeOutcome.Received => "Reward already received",
+            DadRouletteRewardProbeOutcome.NotReceived => "Reward Unclaimed",
+            _ => "Unknown",
+        };
+
+    public static string BuildRowLog(DadRouletteRewardDiagnosticRowResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var failure = string.IsNullOrWhiteSpace(result.Failure)
+            ? "(none)"
+            : Sanitize(result.Failure);
+        return $"[dad] Duty Roulette reward state roulette={result.RouletteId} " +
+               $"name=\"{Sanitize(result.RouletteName)}\" " +
+               $"raw IsRouletteComplete={FormatRaw(result.FirstRawIsComplete)}/{FormatRaw(result.SecondRawIsComplete)} " +
+               $"interpreted=\"{Interpret(result.Outcome)}\" failure=\"{failure}\"";
+    }
+
+    public static string BuildTotals(
+        DadRouletteRewardDiagnosticRunState state,
+        int total,
+        int inspected,
+        int received,
+        int unclaimed,
+        int failed)
+        => $"{state}: {inspected}/{total} live roulette row(s) inspected; " +
+           $"{received} reward received, {unclaimed} unclaimed, {failed} failed.";
+
+    private static string FormatRaw(bool? value)
+        => value.HasValue ? value.Value ? "true" : "false" : "n/a";
+
+    private static string Sanitize(string? value)
+    {
+        var compact = string.Join(
+            " ",
+            (value ?? string.Empty)
+                .Replace('"', '\'')
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (compact.Length > 160)
+            compact = compact[..160];
+        return compact;
+    }
 }
 
 public enum DadDailyRewardPreflightDisposition

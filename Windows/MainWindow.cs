@@ -1123,6 +1123,19 @@ public sealed class MainWindow : Window, IDisposable
         DrawDemoButton("Run Daily Roulette demo", canStartRemoteDemo, plugin.StartDailyMsqDemoRunFromShell);
         ImGui.SameLine();
         DrawDemoButton("Run commend demo", canStartRemoteDemo, plugin.StartCommendationDemoRunFromShell);
+        var rouletteDiagnostic = plugin.RouletteRewardProbeService.GetDiagnosticStatus();
+        var dadOtherwiseIdle =
+            !IsPlannerLocked(runState) &&
+            !plugin.SchedulerService.CurrentState.IsActive;
+        ImGui.BeginDisabled(!dadOtherwiseIdle || rouletteDiagnostic.IsPending);
+        if (DadUi.Button("Log Duty Roulette reward states"))
+        {
+            if (!plugin.RouletteRewardProbeService.TryStartDiagnostic(dadOtherwiseIdle, out var diagnosticFailure))
+                plugin.PrintStatus(diagnosticFailure);
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.TextDisabled(rouletteDiagnostic.Summary);
         var dutyIpc = plugin.DutyIpcService.GetStatus();
         var bridge = plugin.QuestionableBridge.GetStatus();
         DrawStatusRow("Name privacy", plugin.KrangleService.BuildStatus(characterPool));

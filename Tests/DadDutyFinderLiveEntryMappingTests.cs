@@ -438,6 +438,75 @@ public sealed class DadDutyFinderLiveEntryMappingTests
         Assert.Equal("MAIN SCENARIO", DadDutyFinderLiveEntryMapping.NormalizeLocalizedName("  Main\tScenario  "));
     }
 
+    [Fact]
+    public void DiagnosticFreezesOnlyLiveDutyRouletteContentRows()
+    {
+        var snapshot = Snapshot(
+            Entries(
+                (DadDutyFinderLiveContentType.Regular, 777u, "Unrelated Duty"),
+                (DadDutyFinderLiveContentType.Roulette, 1u, "Leveling"),
+                (DadDutyFinderLiveContentType.Roulette, 3u, "Main Scenario")),
+            [Leaf("Unrelated Duty"), Leaf("Leveling"), Leaf("Main Scenario")]);
+
+        Assert.True(DadRouletteRewardDiagnosticLiveRowRules.TryBuildRows(
+            snapshot,
+            out var rows,
+            out var fingerprint,
+            out var reason), reason);
+        Assert.Equal([1u, 3u], rows.Select(static row => row.RouletteId));
+        Assert.Equal(["Leveling", "Main Scenario"], rows.Select(static row => row.LocalizedName));
+        Assert.NotEmpty(fingerprint);
+    }
+
+    [Fact]
+    public void DiagnosticFreezeRequiresTwoStableSnapshotsAndRejectsIdentityOrRowDrift()
+    {
+        var snapshot = Snapshot(
+            Entries(
+                (DadDutyFinderLiveContentType.Roulette, 1u, "Leveling"),
+                (DadDutyFinderLiveContentType.Roulette, 3u, "Main Scenario")),
+            [Leaf("Leveling"), Leaf("Main Scenario")]);
+        var gate = new DadRouletteRewardDiagnosticFreezeGate();
+
+        Assert.Equal(
+            DadRouletteRewardDiagnosticFreezeStatus.Waiting,
+            gate.Observe(snapshot, out _, out _));
+        Assert.Equal(
+            DadRouletteRewardDiagnosticFreezeStatus.Ready,
+            gate.Observe(snapshot, out var frozen, out var readyReason));
+        Assert.NotNull(frozen);
+        Assert.Empty(readyReason);
+
+        var identityDrift = Snapshot(
+            snapshot.ContentEntries,
+            snapshot.TreeItems,
+            characterContentId: 909);
+        Assert.False(DadRouletteRewardDiagnosticLiveRowRules.MatchesFrozen(
+            identityDrift,
+            frozen!,
+            out var identityReason));
+        Assert.Contains("drifted", identityReason, StringComparison.OrdinalIgnoreCase);
+
+        var rowDrift = Snapshot(
+            Entries(
+                (DadDutyFinderLiveContentType.Roulette, 1u, "Leveling"),
+                (DadDutyFinderLiveContentType.Roulette, 8u, "High-level Dungeons")),
+            [Leaf("Leveling"), Leaf("High-level Dungeons")]);
+        Assert.False(DadRouletteRewardDiagnosticLiveRowRules.MatchesFrozen(
+            rowDrift,
+            frozen!,
+            out var rowReason));
+        Assert.Contains("row set drifted", rowReason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            DadRouletteRewardDiagnosticFreezeStatus.Waiting,
+            gate.Observe(
+                Snapshot(snapshot.ContentEntries, snapshot.TreeItems, listChanged: true),
+                out _,
+                out var listReason));
+        Assert.Contains("generation changed", listReason, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static DadDutyFinderMappingResult Stabilize(
         DadDutyFinderListSnapshot snapshot,
         DadDutyFinderLiveTarget target)

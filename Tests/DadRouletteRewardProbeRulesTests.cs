@@ -155,47 +155,98 @@ public sealed class DadRouletteRewardProbeRulesTests
         Assert.Contains("identity", reason, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
-    [InlineData(true, DadRouletteRewardObservationStatus.Received)]
-    [InlineData(false, DadRouletteRewardObservationStatus.NotReceived)]
-    public void DirectNativeTruthRequiresTwoStableReadsOfFrozenRoulette(
-        bool isComplete,
-        DadRouletteRewardObservationStatus expected)
+    [Fact]
+    public void NativeReadRequiresStableMappedExactRouletteSelection()
     {
-        var gate = new DadDirectRouletteRewardObservationGate();
-        var at = new DateTime(2026, 7, 22, 12, 0, 0, DateTimeKind.Utc);
-        var first = new DadDirectRouletteRewardObservation(123, 3, isComplete, at);
+        var target = new DadDutyFinderLiveTarget(DadDutyFinderLiveContentType.Roulette, 3);
+        var token = new DadDutyFinderSelectionToken(target, 123, "stable:G1", 4, 2);
+        var mapping = new DadDutyFinderMappingResult(
+            DadDutyFinderMappingStatus.Ready,
+            string.Empty,
+            new DadDutyFinderResolvedEntry(
+                new DadDutyFinderContentEntry(0, DadDutyFinderLiveContentType.Roulette, 3, "Main Scenario"),
+                new DadDutyFinderUiRow(4, 2, true, "Main Scenario", string.Empty),
+                token));
 
-        Assert.Equal(DadRouletteRewardObservationStatus.Waiting, gate.Observe(first, 123, 3, out _));
-        Assert.Equal(
-            DadRouletteRewardObservationStatus.Waiting,
-            gate.Observe(first with { CapturedAtUtc = at.AddMilliseconds(249) }, 123, 3, out _));
-        Assert.Equal(
-            expected,
-            gate.Observe(first with { CapturedAtUtc = at.AddMilliseconds(250) }, 123, 3, out var reason));
-        Assert.Contains("direct native", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.True(DadRouletteRewardExactSelectionRules.CanReadNativeRewardState(
+            mapping,
+            123,
+            3,
+            hasRouletteSelected: true,
+            DadDutyFinderLiveContentType.Roulette,
+            selectedRowId: 3));
+        Assert.False(DadRouletteRewardExactSelectionRules.CanReadNativeRewardState(
+            mapping,
+            123,
+            3,
+            hasRouletteSelected: true,
+            DadDutyFinderLiveContentType.Roulette,
+            selectedRowId: 8));
+        Assert.False(DadRouletteRewardExactSelectionRules.CanReadNativeRewardState(
+            mapping,
+            999,
+            3,
+            hasRouletteSelected: true,
+            DadDutyFinderLiveContentType.Roulette,
+            selectedRowId: 3));
     }
 
     [Fact]
-    public void DirectNativeTruthRejectsIdentityDriftAndRestabilizesChangedResult()
+    public void DiagnosticContinuesAfterRowFailureAndCountsTerminalRows()
     {
-        var gate = new DadDirectRouletteRewardObservationGate();
-        var at = DateTime.UtcNow;
+        var progress = new DadRouletteRewardDiagnosticProgress(totalRows: 2);
+        progress.Add(new DadRouletteRewardDiagnosticRowResult(
+            1,
+            "Leveling",
+            null,
+            null,
+            DadRouletteRewardProbeOutcome.Unknown,
+            "selection failed"));
 
-        Assert.Equal(
-            DadRouletteRewardObservationStatus.Invalid,
-            gate.Observe(new DadDirectRouletteRewardObservation(999, 3, true, at), 123, 3, out var identityReason));
-        Assert.Contains("identity", identityReason, StringComparison.OrdinalIgnoreCase);
+        Assert.True(progress.HasNext);
+        Assert.Equal(1, progress.NextRowIndex);
 
-        Assert.Equal(
-            DadRouletteRewardObservationStatus.Waiting,
-            gate.Observe(new DadDirectRouletteRewardObservation(123, 3, true, at.AddSeconds(1)), 123, 3, out _));
-        Assert.Equal(
-            DadRouletteRewardObservationStatus.Waiting,
-            gate.Observe(new DadDirectRouletteRewardObservation(123, 3, false, at.AddSeconds(2)), 123, 3, out _));
-        Assert.Equal(
-            DadRouletteRewardObservationStatus.NotReceived,
-            gate.Observe(new DadDirectRouletteRewardObservation(123, 3, false, at.AddSeconds(3)), 123, 3, out _));
+        progress.Add(new DadRouletteRewardDiagnosticRowResult(
+            3,
+            "Main Scenario",
+            false,
+            false,
+            DadRouletteRewardProbeOutcome.NotReceived,
+            string.Empty));
+        var status = progress.BuildStatus(
+            DadRouletteRewardDiagnosticRunState.Completed,
+            DateTime.UtcNow.AddSeconds(-1),
+            DateTime.UtcNow);
+
+        Assert.False(progress.HasNext);
+        Assert.Equal(2, status.InspectedRows);
+        Assert.Equal(1, status.UnclaimedRows);
+        Assert.Equal(1, status.FailedRows);
+    }
+
+    [Theory]
+    [InlineData(DadRouletteRewardProbeOutcome.Received, "Reward already received", "true/true")]
+    [InlineData(DadRouletteRewardProbeOutcome.NotReceived, "Reward Unclaimed", "false/false")]
+    public void DiagnosticLogInterpretsStableRawStateWithoutIdentityData(
+        DadRouletteRewardProbeOutcome outcome,
+        string interpretation,
+        string raw)
+    {
+        var isComplete = outcome == DadRouletteRewardProbeOutcome.Received;
+        var line = DadRouletteRewardDiagnosticFormatting.BuildRowLog(
+            new DadRouletteRewardDiagnosticRowResult(
+                3,
+                "Main Scenario",
+                isComplete,
+                isComplete,
+                outcome,
+                string.Empty));
+
+        Assert.Contains(interpretation, line, StringComparison.Ordinal);
+        Assert.Contains(raw, line, StringComparison.Ordinal);
+        Assert.Contains("roulette=3", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("Character@World", line, StringComparison.Ordinal);
+        Assert.DoesNotContain('\n', line);
     }
 
     [Fact]

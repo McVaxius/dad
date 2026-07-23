@@ -1,5 +1,21 @@
 # dad — changelog
 
+## 2026-07-23 — I78 UI-hydrated roulette reward checks (local-only, unpublished)
+- Restored the Daily Reward probe's owned Duty Finder inspection path. A closed window is opened by DAD, hydrated to
+  the exact live roulette, mapped and selected through the existing stable live-entry authority, and read twice through
+  `InstanceContent.IsRouletteComplete` at least 250 milliseconds apart. DAD closes only its owned window; a pre-existing
+  window is preserved and returns unknown unless it is already on the exact roulette and can be read without navigation.
+- Added the `/dad debug` Status diagnostic **Log Duty Roulette reward states**. It requires otherwise-idle DAD, freezes
+  exactly the current character's live Duty Roulette `AgentContentsFinder.ContentList` rows, inspects every row through
+  the production path, continues after row-specific failures, logs privacy-safe raw/interpreted state per row plus
+  totals, and reports the latest pending/completed/failed summary beside the button.
+- Unanimous-received skipping and fail-open unclaimed/unknown/timeout/identity/UI behavior remain unchanged. Party
+  assembly and retry behavior, I60 teardown, I71 exact failed-entry resume, W19/P1204, public DTO/IPC/config/share
+  schemas, version `0.4.2.0`, packaging, publication, and deployment are unchanged.
+- Fresh Debug x64 verification passes 140/140 focused reward/mapping/scheduler/party/I60/I71 tests and 1,106/1,106
+  complete tests; the isolated no-incremental build succeeds with zero warnings and zero errors. The required live
+  Main Scenario button check was not run, so W29 remains in verification.
+
 ## 2026-07-22 — I69/I70/I73/I74 reward and party-assembly recovery (local-only, unpublished)
 - Replaced the Daily Reward probe's Duty Finder open/select/close path with two stable framework-thread reads of
   API15 `InstanceContent.IsRouletteComplete` for the frozen roulette. DailyReset-only eligibility, LevelSeek priority,
