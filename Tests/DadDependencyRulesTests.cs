@@ -289,10 +289,10 @@ public sealed class DadDependencyRulesTests
 
         Assert.False(DadDebugUiRules.ShowLaunchProfiles(false));
         Assert.True(DadDebugUiRules.ShowLaunchProfiles(true));
-        Assert.Equal(10, DadDebugUiRules.PresetCrewColumnCount(false));
-        Assert.Equal(11, DadDebugUiRules.PresetCrewColumnCount(true));
-        Assert.Equal(11, DadDebugUiRules.PresetCrewColumnCount(false, showDailyReward: true));
-        Assert.Equal(12, DadDebugUiRules.PresetCrewColumnCount(true, showDailyReward: true));
+        Assert.Equal(11, DadDebugUiRules.PresetCrewColumnCount(false));
+        Assert.Equal(12, DadDebugUiRules.PresetCrewColumnCount(true));
+        Assert.Equal(12, DadDebugUiRules.PresetCrewColumnCount(false, showDailyReward: true));
+        Assert.Equal(13, DadDebugUiRules.PresetCrewColumnCount(true, showDailyReward: true));
         Assert.Equal(
             DadDebugUiRules.CrewReviewStepId,
             DadDebugUiRules.ResolveVisibleCrewStep(DadDebugUiRules.CrewLaunchProfilesStepId, false));

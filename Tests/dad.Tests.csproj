@@ -98,6 +98,10 @@
     <Compile Include="..\Services\DadMeasuredPilotService.cs" Link="DadMeasuredPilotService.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetTsv.cs" Link="DadAutoPartyFleetTsv.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetMatrixService.cs" Link="DadAutoPartyFleetMatrixService.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderRules.cs" Link="DadAlliancePartyFinderRules.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderCreateFlow.cs" Link="DadAlliancePartyFinderCreateFlow.cs" />
+    <Compile Include="..\Services\DadAllianceDiscordProtocol.cs" Link="DadAllianceDiscordProtocol.cs" />
+    <Compile Include="..\Services\DadAlliancePfAuditLog.cs" Link="DadAlliancePfAuditLog.cs" />
   </ItemGroup>
 
   <ItemGroup>

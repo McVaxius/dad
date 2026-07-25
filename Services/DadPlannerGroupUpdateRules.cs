@@ -99,6 +99,7 @@ public static class DadPlannerGroupUpdateRules
         {
             SlotId = source.SlotId,
             IsSubstitute = source.IsSubstitute,
+            AllianceAssignment = source.AllianceAssignment,
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,

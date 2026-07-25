@@ -53,6 +53,9 @@ public sealed class DadAutoPartyFleetMatrixTests
         Assert.All(preview.PlannerGroups, static group =>
         {
             Assert.Equal(4, group.Slots.Count);
+            Assert.Equal(
+                [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.C, DadAllianceAssignment.C],
+                group.Slots.Select(static slot => slot.AllianceAssignment).ToArray());
             Assert.Equal(DadQueueAuthority.LocalOnly, group.QueueAuthority);
             Assert.Equal(DadTransportOwner.DadDirect, group.TransportOwner);
             Assert.All(group.Slots, static slot =>
@@ -295,6 +298,12 @@ public sealed class DadAutoPartyFleetMatrixTests
                     OpaqueCharacterId = $"opaque-{rowIndex:D3}",
                     AccountKey = $"account-{rowIndex:D3}",
                     CharacterKey = $"character-{rowIndex:D3}",
+                    AllianceAssignment = memberIndex switch
+                    {
+                        0 => DadAllianceAssignment.A,
+                        1 => DadAllianceAssignment.B,
+                        _ => DadAllianceAssignment.C,
+                    },
                     Role = memberIndex switch
                     {
                         0 => DadPartyRole.Tank,

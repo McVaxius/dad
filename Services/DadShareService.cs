@@ -650,6 +650,7 @@ public sealed class DadShareService
         {
             SlotId = source.SlotId?.Trim() ?? string.Empty,
             IsSubstitute = source.IsSubstitute,
+            AllianceAssignment = source.AllianceAssignment,
             RequiredRole = source.RequiredRole,
             AccountToken = accountToken,
             CharacterToken = characterToken,
@@ -743,6 +744,7 @@ public sealed class DadShareService
             {
                 SlotId = slot.SlotId,
                 IsSubstitute = slot.IsSubstitute,
+                AllianceAssignment = slot.AllianceAssignment,
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = new DadAccountKey(string.Empty),
                 RequiredCharacterKey = new DadCharacterKey(string.Empty),

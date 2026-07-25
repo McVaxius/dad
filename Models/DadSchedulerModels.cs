@@ -151,6 +151,7 @@ public sealed class DadCharacterLoadResultDto
 public sealed class DadSchedulerSlotState
 {
     public string SlotId { get; set; } = string.Empty;
+    public DadAllianceAssignment AllianceAssignment { get; set; } = DadAllianceAssignment.None;
     public DadSchedulerWakePolicy WakePolicy { get; set; } = DadSchedulerWakePolicy.LaunchIfOffline;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
@@ -222,6 +223,7 @@ public sealed class DadSchedulerSlotState
         => new()
         {
             SlotId = SlotId,
+            AllianceAssignment = AllianceAssignment,
             WakePolicy = WakePolicy,
             RequiredAccountKey = RequiredAccountKey,
             RequiredCharacterKey = RequiredCharacterKey,

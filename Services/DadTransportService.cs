@@ -14,6 +14,9 @@ public sealed class DadTransportService : IDisposable
     private const string MessageRouletteRewardProbe = "roulette-reward-probe";
     private const string MessageClaimRequest = "claim-request";
     private const string MessageAssemblyInstruction = "assembly-instruction";
+    private const string MessageAllianceRecruitmentInstruction = "alliance-recruitment-instruction";
+    private const string MessageAllianceRecruitmentCancellation = "alliance-recruitment-cancellation";
+    private const string MessageAllianceUiSnapshot = "alliance-ui-snapshot";
     private const string MessageCharacterLoadCommand = "character-load-command";
     private const string MessageCancelRun = "cancel-run";
     private const string MessageCancelCommand = "cancel-command";
@@ -115,6 +118,9 @@ public sealed class DadTransportService : IDisposable
     private Func<DadWorkerExecutionStatus>? workerStatusProvider;
     private Func<DadWorkerExecutionCancel, DadWorkerExecutionAck>? workerCancelHandler;
     private Func<DadStopAllRequest, DadStopAllWorkerResult>? stopAllHandler;
+    private Func<DadAllianceRecruitmentInstructionDto, DadAllianceRecruitmentResultDto>? allianceRecruitmentHandler;
+    private Func<DadAllianceRecruitmentCancellationDto, DadAllianceRecruitmentResultDto>? allianceCancellationHandler;
+    private Func<DadAlliancePfUiSnapshotDto>? allianceUiSnapshotProvider;
     private Action<DadWorkerSessionId, long>? runtimeReadinessHandler;
     private DadStopAllStatus? latestStopAllStatus;
 
@@ -309,6 +315,16 @@ public sealed class DadTransportService : IDisposable
     public void ConfigureStopAllHandler(Func<DadStopAllRequest, DadStopAllWorkerResult> stopAllHandler)
         => this.stopAllHandler = stopAllHandler;
 
+    public void ConfigureAlliancePartyFinderHandlers(
+        Func<DadAllianceRecruitmentInstructionDto, DadAllianceRecruitmentResultDto> recruitmentHandler,
+        Func<DadAllianceRecruitmentCancellationDto, DadAllianceRecruitmentResultDto> cancellationHandler,
+        Func<DadAlliancePfUiSnapshotDto> uiSnapshotProvider)
+    {
+        allianceRecruitmentHandler = recruitmentHandler;
+        allianceCancellationHandler = cancellationHandler;
+        allianceUiSnapshotProvider = uiSnapshotProvider;
+    }
+
     public void ConfigureRuntimeReadinessHandler(Action<DadWorkerSessionId, long> handler)
         => runtimeReadinessHandler = handler;
 
@@ -497,6 +513,88 @@ public sealed class DadTransportService : IDisposable
             MessageAssemblyInstruction,
             instruction,
             $"assembly:{instruction.RunId}:{participant.WorkerSessionId.Value}:{instruction.SlotId}:{instruction.InstructionKind}");
+
+    public async Task<DadAllianceRecruitmentResultDto> SendAllianceRecruitmentInstructionAsync(
+        DadParticipantSnapshot participant,
+        DadAllianceRecruitmentInstructionDto instruction,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(
+                participant.WorkerSessionId.Value,
+                presenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return HandleAllianceRecruitmentInstruction(DadIpcJson.Serialize(instruction));
+        }
+
+        var response = await SendRequestAsync(
+                participant.WorkerSessionId,
+                MessageAllianceRecruitmentInstruction,
+                DadIpcJson.Serialize(instruction),
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (response.Kind == DadHubFrameKind.Error)
+            throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+        return DadIpcJson.Deserialize<DadAllianceRecruitmentResultDto>(response.PayloadJson)
+               ?? BuildRejectedAllianceResult(instruction, "Dad hub returned no alliance recruitment result.");
+    }
+
+    public async Task<DadAllianceRecruitmentResultDto> SendAllianceRecruitmentCancellationAsync(
+        DadParticipantSnapshot participant,
+        DadAllianceRecruitmentCancellationDto cancellation,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(
+                participant.WorkerSessionId.Value,
+                presenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return HandleAllianceRecruitmentCancellation(DadIpcJson.Serialize(cancellation));
+        }
+
+        var response = await SendRequestAsync(
+                participant.WorkerSessionId,
+                MessageAllianceRecruitmentCancellation,
+                DadIpcJson.Serialize(cancellation),
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (response.Kind == DadHubFrameKind.Error)
+            throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+        return DadIpcJson.Deserialize<DadAllianceRecruitmentResultDto>(response.PayloadJson)
+               ?? new DadAllianceRecruitmentResultDto
+               {
+                   RecruitmentId = cancellation.RecruitmentId,
+                   WorkerSessionId = participant.WorkerSessionId,
+                   TargetCharacterKey = cancellation.TargetCharacterKey,
+                   State = DadAllianceRecruitmentState.Blocked,
+                   ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+                   StopGeneration = cancellation.StopGeneration,
+                   Summary = "Dad hub returned no alliance cancellation result.",
+               };
+    }
+
+    public async Task<DadAlliancePfUiSnapshotDto?> RequestAllianceUiSnapshotAsync(
+        DadParticipantSnapshot participant,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(
+                participant.WorkerSessionId.Value,
+                presenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return allianceUiSnapshotProvider?.Invoke();
+        }
+
+        var response = await SendRequestAsync(
+                participant.WorkerSessionId,
+                MessageAllianceUiSnapshot,
+                DadIpcJson.Serialize(string.Empty),
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (response.Kind == DadHubFrameKind.Error)
+            throw new DadHubProtocolException(response.ErrorCode, response.ErrorMessage);
+        return DadIpcJson.Deserialize<DadAlliancePfUiSnapshotDto>(response.PayloadJson);
+    }
 
     public DadCharacterLoadResultDto? SendCharacterLoadCommand(
         DadParticipantSnapshot participant,
@@ -1576,6 +1674,9 @@ public sealed class DadTransportService : IDisposable
             MessageRouletteRewardProbe => DadIpcJson.Serialize(HandleRouletteRewardProbe(payloadJson)),
             MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(payloadJson)),
             MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(payloadJson)),
+            MessageAllianceRecruitmentInstruction => DadIpcJson.Serialize(HandleAllianceRecruitmentInstruction(payloadJson)),
+            MessageAllianceRecruitmentCancellation => DadIpcJson.Serialize(HandleAllianceRecruitmentCancellation(payloadJson)),
+            MessageAllianceUiSnapshot => DadIpcJson.Serialize(HandleAllianceUiSnapshot()),
             MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(payloadJson)),
             MessageCancelRun => DadIpcJson.Serialize(HandleCancelRun(payloadJson)),
             MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(payloadJson)),
@@ -1699,6 +1800,112 @@ public sealed class DadTransportService : IDisposable
                 instruction,
                 BuildRemoteMutationRejectedReason("remote assembly instruction"));
     }
+
+    private DadAllianceRecruitmentResultDto HandleAllianceRecruitmentInstruction(string payloadJson)
+    {
+        var instruction = DadIpcJson.Deserialize<DadAllianceRecruitmentInstructionDto>(payloadJson)
+                          ?? new DadAllianceRecruitmentInstructionDto();
+        if (!IsAuthoritativeAllianceCoordinator(instruction.CoordinatorWorkerSessionId))
+        {
+            return BuildRejectedAllianceResult(
+                instruction,
+                "Alliance PF instruction did not come from the active Dad Coordinator identity.");
+        }
+        if (!remoteMutationsAllowed)
+        {
+            return BuildRejectedAllianceResult(
+                instruction,
+                BuildRemoteMutationRejectedReason("alliance PF instruction"));
+        }
+
+        return allianceRecruitmentHandler?.Invoke(instruction)
+               ?? BuildRejectedAllianceResult(instruction, "Alliance PF receiver is unavailable.");
+    }
+
+    private DadAllianceRecruitmentResultDto HandleAllianceRecruitmentCancellation(string payloadJson)
+    {
+        var cancellation = DadIpcJson.Deserialize<DadAllianceRecruitmentCancellationDto>(payloadJson)
+                           ?? new DadAllianceRecruitmentCancellationDto();
+        if (!IsAuthoritativeAllianceCoordinator(cancellation.CoordinatorWorkerSessionId))
+        {
+            return new DadAllianceRecruitmentResultDto
+            {
+                RecruitmentId = cancellation.RecruitmentId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                TargetCharacterKey = cancellation.TargetCharacterKey,
+                State = DadAllianceRecruitmentState.Blocked,
+                ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+                StopGeneration = cancellation.StopGeneration,
+                Summary = "Alliance PF cancellation did not come from the active Dad Coordinator identity.",
+            };
+        }
+        if (!remoteMutationsAllowed)
+        {
+            return new DadAllianceRecruitmentResultDto
+            {
+                RecruitmentId = cancellation.RecruitmentId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                TargetCharacterKey = cancellation.TargetCharacterKey,
+                State = DadAllianceRecruitmentState.Blocked,
+                ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+                StopGeneration = cancellation.StopGeneration,
+                Summary = BuildRemoteMutationRejectedReason("alliance PF cancellation"),
+            };
+        }
+
+        return allianceCancellationHandler?.Invoke(cancellation)
+               ?? new DadAllianceRecruitmentResultDto
+               {
+                   RecruitmentId = cancellation.RecruitmentId,
+                   WorkerSessionId = presenceService.WorkerSessionId,
+                   TargetCharacterKey = cancellation.TargetCharacterKey,
+                   State = DadAllianceRecruitmentState.Blocked,
+                   ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+                   StopGeneration = cancellation.StopGeneration,
+                   Summary = "Alliance PF cancellation receiver is unavailable.",
+               };
+    }
+
+    private bool IsAuthoritativeAllianceCoordinator(DadWorkerSessionId workerSessionId)
+    {
+        var expected = configuration.RunAsServerDad
+            ? presenceService.WorkerSessionId
+            : serverParticipant?.WorkerSessionId ?? new DadWorkerSessionId(string.Empty);
+        return !expected.IsEmpty &&
+               !workerSessionId.IsEmpty &&
+               string.Equals(
+                   expected.Value,
+                   workerSessionId.Value,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private DadAlliancePfUiSnapshotDto HandleAllianceUiSnapshot()
+        => allianceUiSnapshotProvider?.Invoke() ?? new DadAlliancePfUiSnapshotDto
+        {
+            WorkerSessionId = presenceService.WorkerSessionId,
+            State = DadAllianceRecruitmentState.Idle,
+            SafeStatusCode = "dad-alliance-receiver-unavailable",
+        };
+
+    private DadAllianceRecruitmentResultDto BuildRejectedAllianceResult(
+        DadAllianceRecruitmentInstructionDto instruction,
+        string summary)
+        => new()
+        {
+            RecruitmentId = instruction.RecruitmentId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            TargetCharacterKey = instruction.TargetCharacterKey,
+            TargetCharacterName = instruction.TargetCharacterName,
+            TargetCharacterWorld = instruction.TargetCharacterWorld,
+            TargetContentId = instruction.TargetContentId,
+            ExpectedAlliance = instruction.AssignedAlliance,
+            Attempt = instruction.Attempt,
+            State = DadAllianceRecruitmentState.Blocked,
+            ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+            Retryable = false,
+            StopGeneration = instruction.StopGeneration,
+            Summary = summary,
+        };
 
     private DadCharacterLoadResultDto HandleCharacterLoadCommand(string payloadJson)
     {

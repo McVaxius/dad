@@ -11,8 +11,10 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     private readonly DadAutoPartyConfiguration configuration;
     private readonly IDadAutoPartyDiscordTokenStore tokenStore;
     private readonly DadAutoPartyPairingProtocol protocol;
+    private readonly DadAllianceDiscordProtocol allianceProtocol;
     private readonly DadAutoPartySigningService signing;
     private readonly Func<bool> isCoordinator;
+    private readonly Func<DadCharacterKey> localCharacterKey;
     private readonly Action saveConfiguration;
     private readonly Action<string> diagnostic;
     private readonly DadDiscordReconnectBackoff reconnectBackoff = new();
@@ -38,16 +40,20 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         DadAutoPartyConfiguration configuration,
         IDadAutoPartyDiscordTokenStore tokenStore,
         DadAutoPartyPairingProtocol protocol,
+        DadAllianceDiscordProtocol allianceProtocol,
         DadAutoPartySigningService signing,
         Func<bool> isCoordinator,
+        Func<DadCharacterKey> localCharacterKey,
         Action saveConfiguration,
         Action<string>? diagnostic = null)
     {
         this.configuration = configuration;
         this.tokenStore = tokenStore;
         this.protocol = protocol;
+        this.allianceProtocol = allianceProtocol;
         this.signing = signing;
         this.isCoordinator = isCoordinator;
+        this.localCharacterKey = localCharacterKey;
         this.saveConfiguration = saveConfiguration;
         this.diagnostic = diagnostic ?? (_ => { });
     }
@@ -55,6 +61,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     public DadAutoPartyDiscordHealth Health => health;
     public event Action<ulong>? PairingRevoked;
     public event Action<ulong>? PairingRestored;
+    public event Action<DadAllianceRecruitmentInstructionDto>? AllianceRecruitmentReceived;
 
     public IReadOnlyList<DadAutoPartyDiscoveredClient> GetDiscoveredClients()
     {
@@ -246,6 +253,76 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             : await SendEnvelopeAsync(DadAutoPartyPairingMessageKind.Revoke, peer, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<(bool Sent, ulong MessageId, string SafeCode)> SendAllianceInstructionAsync(
+        DadAllianceRecruitmentInstructionDto instruction,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        if (!isCoordinator())
+            return (false, 0, "dad-alliance-discord-coordinator-required");
+        if (health.State != DadAutoPartyDiscordConnectionState.Ready || !health.PermissionsValid)
+            return (false, 0, "dad-alliance-discord-not-ready");
+        var pairing = configuration.Pairings.FirstOrDefault(candidate =>
+            candidate.ApplicationId == instruction.TargetApplicationId);
+        if (pairing == null || !IsActiveVerifiedPairing(pairing) || pairing.Role != DadAutoPartyRole.Client)
+            return (false, 0, "dad-alliance-discord-target-not-paired");
+
+        var socket = client;
+        var channel = socket?.GetGuild(configuration.DiscordGuildId)?.GetTextChannel(configuration.DiscordChannelId);
+        if (socket == null || channel == null || socket.ConnectionState != ConnectionState.Connected)
+            return (false, 0, "dad-alliance-discord-not-ready");
+
+        try
+        {
+            var envelope = await allianceProtocol.CreateAsync(
+                instruction,
+                configuration,
+                signing,
+                cancellationToken).ConfigureAwait(false);
+            var message = await channel.SendMessageAsync(
+                    DadAllianceDiscordProtocol.Serialize(envelope))
+                .ConfigureAwait(false);
+            return (true, message.Id, "dad-alliance-discord-instruction-sent");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return (false, 0, "dad-alliance-discord-cancelled");
+        }
+        catch (Exception)
+        {
+            diagnostic("dad-alliance-discord-send-failed");
+            return (false, 0, "dad-alliance-discord-send-failed");
+        }
+    }
+
+    public async Task DeleteAllianceMessagesBestEffortAsync(
+        IEnumerable<ulong> messageIds,
+        CancellationToken cancellationToken = default)
+    {
+        var socket = client;
+        var channel = socket?.GetGuild(configuration.DiscordGuildId)?.GetTextChannel(configuration.DiscordChannelId);
+        if (channel == null)
+            return;
+
+        foreach (var messageId in messageIds.Where(static id => id != 0).Distinct())
+        {
+            try
+            {
+                var message = await channel.GetMessageAsync(messageId).ConfigureAwait(false);
+                if (message?.Author.Id == configuration.DiscordBotUserId)
+                    await message.DeleteAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception)
+            {
+                diagnostic("dad-alliance-discord-delete-failed");
+            }
+        }
+    }
+
     private async Task RestartNowAsync(CancellationToken cancellationToken)
     {
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -352,6 +429,48 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         if (message.Channel.Id != configuration.DiscordChannelId || message.Author.Id == 0 || !message.Author.IsBot ||
             message.Channel is not SocketGuildChannel guildChannel || guildChannel.Guild.Id != configuration.DiscordGuildId)
             return;
+
+        var allianceEnvelope = DadAllianceDiscordProtocol.Deserialize(message.Content);
+        if (allianceEnvelope != null &&
+            string.Equals(allianceEnvelope.Schema, DadAllianceDiscordProtocol.Schema, StringComparison.Ordinal))
+        {
+            var coordinatorPairing = configuration.Pairings.FirstOrDefault(pairing =>
+                pairing.ApplicationId == allianceEnvelope.ApplicationId);
+            var allianceDecision = allianceProtocol.Validate(
+                allianceEnvelope,
+                new DadAllianceDiscordValidationContext(
+                    message.Author.Id,
+                    configuration.DiscordApplicationId,
+                    localCharacterKey(),
+                    coordinatorPairing,
+                    DateTime.UtcNow));
+            if (allianceDecision.Allowed)
+            {
+                AllianceRecruitmentReceived?.Invoke(new DadAllianceRecruitmentInstructionDto
+                {
+                    RecruitmentId = allianceEnvelope.RecruitmentId,
+                    CoordinatorWorkerSessionId = allianceEnvelope.CoordinatorWorkerSessionId,
+                    CoordinatorIdentity = allianceEnvelope.CoordinatorIdentity,
+                    LeaderName = allianceEnvelope.LeaderName,
+                    LeaderWorld = allianceEnvelope.LeaderWorld,
+                    TargetWorkerSessionId = allianceEnvelope.TargetWorkerSessionId,
+                    TargetApplicationId = allianceEnvelope.TargetApplicationId,
+                    TargetCharacterKey = allianceEnvelope.TargetCharacterKey,
+                    TargetCharacterName = allianceEnvelope.TargetCharacterName,
+                    TargetCharacterWorld = allianceEnvelope.TargetCharacterWorld,
+                    TargetContentId = allianceEnvelope.TargetContentId,
+                    AssignedAlliance = allianceEnvelope.AssignedAlliance,
+                    Passcode = allianceEnvelope.Passcode,
+                    Attempt = allianceEnvelope.Attempt,
+                    State = allianceEnvelope.State,
+                    StopGeneration = allianceEnvelope.StopGeneration,
+                    IssuedAtUtc = DateTimeOffset.FromUnixTimeMilliseconds(
+                        allianceEnvelope.TimestampUnixMs).UtcDateTime,
+                });
+            }
+            return;
+        }
+
         var envelope = DadAutoPartyPairingProtocol.Deserialize(message.Content);
         var decision = protocol.Validate(
             envelope,

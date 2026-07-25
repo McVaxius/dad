@@ -74,6 +74,7 @@ public sealed class DadAutoPartyFleetRow
     public string OpaqueCharacterId { get; set; } = string.Empty;
     public string AccountKey { get; set; } = string.Empty;
     public string CharacterKey { get; set; } = string.Empty;
+    public DadAllianceAssignment AllianceAssignment { get; set; } = DadAllianceAssignment.None;
     public DadPartyRole Role { get; set; } = DadPartyRole.Any;
     public uint JobId { get; set; }
     public bool IsRemote { get; set; }
@@ -85,6 +86,8 @@ public sealed class DadAutoPartyFleetRow
         OpaqueCharacterId = DadAutoPartyFleetConfiguration.NormalizeIdentifier(OpaqueCharacterId);
         AccountKey = DadAutoPartyFleetConfiguration.NormalizeIdentifier(AccountKey);
         CharacterKey = DadAutoPartyFleetConfiguration.NormalizeIdentifier(CharacterKey);
+        if (!Enum.IsDefined(AllianceAssignment))
+            AllianceAssignment = DadAllianceAssignment.None;
         if (!Enum.IsDefined(Role))
             Role = DadPartyRole.Any;
         return this;
@@ -97,6 +100,7 @@ public sealed class DadAutoPartyFleetRow
             OpaqueCharacterId = OpaqueCharacterId,
             AccountKey = AccountKey,
             CharacterKey = CharacterKey,
+            AllianceAssignment = AllianceAssignment,
             Role = Role,
             JobId = JobId,
             IsRemote = IsRemote,

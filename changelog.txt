@@ -1,5 +1,50 @@
 # dad — changelog
 
+## 2026-07-25 — I63 ECommons Party Finder creation repair (local-only, unpublished)
+- Replaced blind Party Finder button events and immediate stage advancement with a mockable acknowledgement-driven create
+  flow. It clean-starts `/pfinder`, polls addon/control readiness every 250 ms, retries unacknowledged actions and captured
+  PF errors at the existing 2/4/8/15-second capped cadence until Stop, and exposes local stage, attempt, retry, elapsed, and
+  last-error diagnostics.
+- Pinned ECommons 3.2.1.15 and included `ECommons.dll` in plugin/dev output. DAD uses only its stateless addon-ready,
+  `LookingForGroup`, `LookingForGroupCondition`, and UI-input helpers; it does not initialize ECommons' global services or
+  use signature-dependent paths.
+- Party creation now selects Alliance through the maintained wrapper, maps the Raids `0x20` flag to bit index 5, resolves
+  The Labyrinth of the Ancients uniquely from `ContentFinderCondition`, selects the exact enabled dropdown entry, and
+  configures Alliance A, private passcode, cross-world recruitment, three groups, eight slots per group, empty comment,
+  unrestricted jobs, and no one-player-per-job restriction through real controls. Success requires a nonzero
+  `OwnListingId` and exact stored settings.
+- Added create-stage/action/acknowledgement/readiness/category/duty/toast/retry/exception/Stop/success audit details without
+  adding them to the hub-safe snapshot, plus pure regression tests for the live main-window stall, no blind advancement,
+  exact settings, duty resolution, capped idempotent resend, error toasts, Stop, and listing acknowledgement.
+- Fresh verification passes 145 focused alliance/migration/share/dependency/fleet/batch tests and all 1,169 Debug x64
+  tests. The isolated no-incremental API-15 build succeeds with zero warnings/errors, and the packaged `ECommons.dll`
+  exactly matches the restored 3.2.1.15 dependency.
+
+## 2026-07-24 — I63 preset-driven alliance Party Finder formation (local-only, unpublished)
+- Added explicit Alliance A/B/C assignments to primary preset rows; substitutes inherit the primary assignment. Configuration
+  schema 7 and sharing schema 3 leave older/imported rows unassigned until reviewed and preserve the field through planner,
+  scheduler, template, batch, fleet, IPC, and sharing materialization. The crew editor reports subgroup counts and prevents a
+  ninth primary assignment.
+- Added the debug-only Status > Readiness **Alliance Party Finder** flow. A concrete selected preset must resolve three to
+  24 exact online hub characters with one to eight in each subgroup and the solo world-ready creator in Alliance A.
+  **Create party** owns one private cross-world three-group The Labyrinth of the Ancients recruitment; **Grab dads** sends
+  only unresolved exact targets concurrently, matches the exact leader/home world without comment dependence, selects only
+  the configured subgroup, retries transient failures indefinitely at 2/4/8/15-second capped backoff, and uses guarded
+  leave/rejoin for a proven wrong subgroup.
+- Raised the authenticated DAD hub protocol to 4 for typed alliance instruction, cancellation, result, and sanitized status
+  messages. Optional exact-recipient `dad.alliance-pf/v1` Discord copies are separately Ed25519-signed and reject stale,
+  replayed, wrong-target, wrong-role, changed/revoked-pairing, invalid-signature, and oversized messages. Discord delivery
+  failure is a warning; the hub remains authoritative, and bot messages are deleted best-effort after completion or Stop.
+- Added append-only daily JSONL evidence beneath the plugin configuration directory with exact local names/worlds, raw
+  four-digit passcode, session/listing/recruitment IDs, transport attempts, expected/observed groups, corrections, errors,
+  completion, and Stop events. Tokens, private signing keys, and hub secrets have no audit fields.
+- Completion requires every effective target in its exact configured subgroup, then ends only DAD-owned Labyrinth
+  recruitment without disbanding. The selected preset duty is unchanged and no duty is queued automatically. Focused
+  alliance/migration/share/batch/fleet/security tests pass 114/114, the complete Debug x64 suite passes 1,138/1,138 with
+  no skips, and the isolated no-incremental plugin build succeeds with zero warnings/errors. Controlled live-client
+  acceptance remains explicitly not run; no version bump, commit, push, package, release, publication, or deployment is
+  part of this change.
+
 ## 2026-07-23 — I78 UI-hydrated roulette reward checks (local-only, unpublished)
 - Restored the Daily Reward probe's owned Duty Finder inspection path. A closed window is opened by DAD, hydrated to
   the exact live roulette, mapped and selected through the existing stable live-entry authority, and read twice through

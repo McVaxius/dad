@@ -10,7 +10,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     {
         var configuration = new Configuration();
 
-        Assert.Equal(6, configuration.Version);
+        Assert.Equal(7, configuration.Version);
         Assert.False(configuration.AutoParty.Enabled);
         Assert.False(configuration.AutoParty.PairingEnabled);
         Assert.False(configuration.AutoParty.ExecutionEnabled);
@@ -59,7 +59,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         var configuration = JsonSerializer.Deserialize<Configuration>(json)!;
 
         Assert.True(configuration.MigrateTransportSettings());
-        Assert.Equal(6, configuration.Version);
+        Assert.Equal(7, configuration.Version);
         Assert.True(configuration.PluginEnabled);
         Assert.False(configuration.AutoParty.Enabled);
         Assert.False(configuration.AutoParty.PairingEnabled);
@@ -93,7 +93,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         var configuration = JsonSerializer.Deserialize<Configuration>(json)!;
 
         Assert.True(configuration.MigrateTransportSettings());
-        Assert.Equal(6, configuration.Version);
+        Assert.Equal(7, configuration.Version);
         Assert.False(configuration.AutoParty.DiscordEnabled);
         Assert.False(configuration.AutoParty.Enabled);
         Assert.False(configuration.AutoParty.PairingEnabled);
@@ -121,7 +121,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         var configuration = JsonSerializer.Deserialize<Configuration>(json)!;
 
         Assert.True(configuration.MigrateTransportSettings());
-        Assert.Equal(6, configuration.Version);
+        Assert.Equal(7, configuration.Version);
         Assert.Equal(@"C:\shared\pilot-root", configuration.AutoParty.PilotExchangeRoot);
         Assert.Equal(@"C:\shared\pilot-root\pilot-courier", configuration.AutoParty.CourierRootPath);
         Assert.False(configuration.MigrateTransportSettings());

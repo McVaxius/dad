@@ -35,6 +35,11 @@ public sealed class DadPresetBatchWizardServiceTests
             static slot => Assert.True(slot.SkipIfDailyRouletteRewardReceived));
         Assert.All(levelingPlans.SelectMany(static plan => DadPlannerSlotRules.GetPrimaryRows(plan.Slots)),
             static slot => Assert.False(slot.SkipIfDailyRouletteRewardReceived));
+        Assert.All(preview.PlannerGroups, static plan => Assert.Equal(
+            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.C, DadAllianceAssignment.C],
+            DadPlannerSlotRules.GetPrimaryRows(plan.Slots)
+                .Select(static slot => slot.AllianceAssignment)
+                .ToArray()));
         Assert.Equal(DadScheduleCadence.DailyReset, preview.Schedules[0].Cadence);
         Assert.Equal(DadScheduleCadence.Manual, preview.Schedules[1].Cadence);
         Assert.Equal(DadScheduleCadence.DailyReset, preview.Schedules[2].Cadence);
@@ -302,6 +307,12 @@ public sealed class DadPresetBatchWizardServiceTests
             Slots = Enumerable.Range(1, 4).Select(index => new DadPlannerGroupSlot
             {
                 SlotId = DadPlannerSlotRules.FormatSlotId(index),
+                AllianceAssignment = index switch
+                {
+                    1 => DadAllianceAssignment.A,
+                    2 => DadAllianceAssignment.B,
+                    _ => DadAllianceAssignment.C,
+                },
                 RequiredRole = DadPartyRole.Any,
                 RequiredAccountKey = new DadAccountKey(string.Empty),
                 RequiredCharacterKey = new DadCharacterKey(string.Empty),

@@ -169,9 +169,9 @@ internal sealed class DadHubProtocolException : IOException
 
 internal static class DadHubProtocol
 {
-    // Version 3 includes public Discord Application ID, endpoint fingerprint, and pairing health in
-    // participant presence. Mixed builds are rejected before any plan can be coordinated.
-    public const int CurrentVersion = 3;
+    // Version 4 adds typed alliance-PF instruction, cancellation, result, and sanitized UI snapshot
+    // messages. Mixed builds are rejected before any alliance recruitment can be coordinated.
+    public const int CurrentVersion = 4;
     public const int MaxFrameBytes = 256 * 1024;
     private const int HeaderBytes = sizeof(int);
 

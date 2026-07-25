@@ -4,7 +4,7 @@ public static class DadShareConstants
 {
     public const string Format = "dad-share";
     public const int MinimumSupportedSchema = 1;
-    public const int Schema = 2;
+    public const int Schema = 3;
     public const string PlanKind = "plan";
     public const string ScheduleKind = "schedule";
     public const int MaxEncodedCharacters = 1_048_576;
@@ -109,6 +109,7 @@ public sealed class DadSharePlanSlotDto
 {
     public string SlotId { get; set; } = string.Empty;
     public bool IsSubstitute { get; set; }
+    public DadAllianceAssignment AllianceAssignment { get; set; } = DadAllianceAssignment.None;
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public string AccountToken { get; set; } = string.Empty;
     public string CharacterToken { get; set; } = string.Empty;

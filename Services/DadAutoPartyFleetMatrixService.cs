@@ -459,6 +459,7 @@ public sealed class DadAutoPartyFleetMatrixService
             return new DadPlannerGroupSlot
             {
                 SlotId = DadPlannerSlotRules.FormatSlotId(index + 1),
+                AllianceAssignment = row.AllianceAssignment,
                 RequiredRole = row.Role,
                 RequiredAccountKey = new DadAccountKey(row.IsRemote ? string.Empty : row.AccountKey),
                 RequiredCharacterKey = new DadCharacterKey(row.IsRemote ? string.Empty : row.CharacterKey),
@@ -545,7 +546,7 @@ public sealed class DadAutoPartyFleetMatrixService
         Append(builder, matrix.Revision.ToString(CultureInfo.InvariantCulture));
         foreach (var row in matrix.Rows.OrderBy(static row => row.RowId, StringComparer.OrdinalIgnoreCase))
         {
-            Append(builder, row.RowId, row.OpaqueCharacterId, row.AccountKey, row.CharacterKey, row.Role.ToString(),
+            Append(builder, row.RowId, row.OpaqueCharacterId, row.AccountKey, row.CharacterKey, row.AllianceAssignment.ToString(), row.Role.ToString(),
                 row.JobId.ToString(CultureInfo.InvariantCulture), row.IsRemote.ToString(), row.Enabled.ToString());
         }
         foreach (var crew in matrix.CrewSets.OrderBy(static crew => crew.CrewSetId, StringComparer.OrdinalIgnoreCase))

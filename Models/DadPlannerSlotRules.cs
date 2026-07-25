@@ -93,10 +93,19 @@ public static class DadPlannerSlotRules
         {
             var slotId = FormatSlotId(groupIndex + 1);
             var group = orderedGroups[groupIndex];
-            normalized.Add(CloneSlotForNormalization(group.Primary.Slot, slotId, isSubstitute: false));
+            var assignment = group.Primary.Slot.AllianceAssignment;
+            normalized.Add(CloneSlotForNormalization(
+                group.Primary.Slot,
+                slotId,
+                isSubstitute: false,
+                assignment));
             normalized.AddRange(group.Substitutes
                 .OrderBy(static pending => pending.OriginalIndex)
-                .Select(pending => CloneSlotForNormalization(pending.Slot, slotId, isSubstitute: true)));
+                .Select(pending => CloneSlotForNormalization(
+                    pending.Slot,
+                    slotId,
+                    isSubstitute: true,
+                    assignment)));
         }
 
         return normalized;
@@ -194,11 +203,13 @@ public static class DadPlannerSlotRules
     private static DadPlannerGroupSlot CloneSlotForNormalization(
         DadPlannerGroupSlot source,
         string slotId,
-        bool isSubstitute)
+        bool isSubstitute,
+        DadAllianceAssignment allianceAssignment)
         => new()
         {
             SlotId = slotId,
             IsSubstitute = isSubstitute,
+            AllianceAssignment = allianceAssignment,
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,

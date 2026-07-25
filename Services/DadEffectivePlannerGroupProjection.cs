@@ -59,6 +59,7 @@ public static class DadEffectivePlannerGroupProjection
             slot.IsSubstitute = false;
             if (resolved != null)
             {
+                slot.AllianceAssignment = resolved.AllianceAssignment;
                 if (!string.IsNullOrWhiteSpace(resolved.CharacterKey))
                     slot.RequiredCharacterKey = new DadCharacterKey(resolved.CharacterKey.Trim());
                 if (!resolved.RequiredAccountKey.IsEmpty)

@@ -41,6 +41,12 @@
         "resolved": "1.2.39",
         "contentHash": "fcFN01tDTIQqDuTwr1jUQK/geofiwjG5DycJQOnC72i1SsLAk1ELe+apBOuZ11UMQG8YKFZG1FgvjZPbqHyatg=="
       },
+      "ECommons": {
+        "type": "Direct",
+        "requested": "[3.2.1.15, 3.2.1.15]",
+        "resolved": "3.2.1.15",
+        "contentHash": "2BowPSMoVC1v8E/jivCnbqbDLaNMN2uy2lih/hrEIANoh2B7PfydUb7zT/EOl86fEK6Hw88k1Vzvmoe/cHb3EA=="
+      },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Direct",
         "requested": "[10.0.10, 10.0.10]",

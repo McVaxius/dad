@@ -82,6 +82,9 @@ public sealed class DadShareServiceTests
             Assert.Equal(string.Empty, slot.LaunchProfileId);
             Assert.False(slot.CharacterLoadInstruction.Enabled);
         });
+        Assert.Equal(
+            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.C],
+            imported.Slots.Select(static slot => slot.AllianceAssignment).ToArray());
         Assert.True(DadSharedPlanRules.HasUnresolvedPlaceholders(imported));
         Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
         Assert.False(imported.Slots[1].SkipIfDailyRouletteRewardReceived);
@@ -91,28 +94,33 @@ public sealed class DadShareServiceTests
     }
 
     [Fact]
-    public void SchemaTwoExportsRewardOptInWhileSchemaOneWithoutFieldImportsUnchecked()
+    public void SchemaThreeExportsAllianceAssignmentsWhileOlderSchemasDefaultToNone()
     {
         var service = CreateService();
         var source = BuildPlan(PlanA, "Plan");
         Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
         Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var current, out error), error);
-        Assert.Equal(2, current!.Schema);
+        Assert.Equal(3, current!.Schema);
         Assert.True(current.Plan!.Slots[0].SkipIfDailyRouletteRewardReceived);
+        Assert.Equal(DadAllianceAssignment.A, current.Plan.Slots[0].AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.B, current.Plan.Slots[1].AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.C, current.Plan.Slots[2].AllianceAssignment);
 
         var legacy = JsonNode.Parse(DecodeJson(encoded))!.AsObject();
-        legacy["schema"] = 1;
+        legacy["schema"] = 2;
         foreach (var slot in legacy["plan"]!["slots"]!.AsArray())
-            slot!.AsObject().Remove("skipIfDailyRouletteRewardReceived");
-        legacy["plan"]!.AsObject().Remove("levelingMode");
+            slot!.AsObject().Remove("allianceAssignment");
         var legacyEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(legacy.ToJsonString()));
 
         Assert.True(service.TryDecode(legacyEncoded, DadShareConstants.PlanKind, out var decoded, out error), error);
         var imported = Assert.Single(service.Apply(decoded!, [], []).PlannerGroups);
-        Assert.All(imported.Slots, static slot => Assert.False(slot.SkipIfDailyRouletteRewardReceived));
-        Assert.False(imported.LevelingMode.Enabled);
-        Assert.Equal(DadLevelingJobOrder.LowestFirst, imported.LevelingMode.JobOrder);
-        Assert.Empty(imported.LevelingMode.DutyThresholds);
+        Assert.All(imported.Slots, static slot => Assert.Equal(DadAllianceAssignment.None, slot.AllianceAssignment));
+        Assert.False(DadAlliancePartyFinderRules.ValidateSavedRows(imported.Slots).IsValid);
+        Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
+        Assert.False(imported.Slots[1].SkipIfDailyRouletteRewardReceived);
+        Assert.True(imported.LevelingMode.Enabled);
+        Assert.Equal(DadLevelingJobOrder.HighestBelowGoal, imported.LevelingMode.JobOrder);
+        Assert.Equal((uint)777, Assert.Single(imported.LevelingMode.DutyThresholds).ContentFinderConditionId);
     }
 
     [Fact]
@@ -565,9 +573,9 @@ public sealed class DadShareServiceTests
             },
             Slots =
             [
-                Slot("Slot1", "account-real", "Alice Example@World", 21),
-                Slot("Slot2", "account-real", "Bob Example@World", 24),
-                Slot("Slot3", "account-other", string.Empty, 32),
+                Slot("Slot1", "account-real", "Alice Example@World", 21, DadAllianceAssignment.A),
+                Slot("Slot2", "account-real", "Bob Example@World", 24, DadAllianceAssignment.B),
+                Slot("Slot3", "account-other", string.Empty, 32, DadAllianceAssignment.C),
             ],
             MapRunTemplate = "Alice Example map route",
             MapMode = DadMapCrewJobMode.GatherThenRun,
@@ -576,10 +584,16 @@ public sealed class DadShareServiceTests
             NextEligibleTimeUtc = DateTime.UtcNow.AddHours(1),
         };
 
-    private static DadPlannerGroupSlot Slot(string id, string account, string character, uint job)
+    private static DadPlannerGroupSlot Slot(
+        string id,
+        string account,
+        string character,
+        uint job,
+        DadAllianceAssignment allianceAssignment)
         => new()
         {
             SlotId = id,
+            AllianceAssignment = allianceAssignment,
             RequiredAccountKey = new DadAccountKey(account),
             RequiredCharacterKey = new DadCharacterKey(character),
             RequiredJobId = job,

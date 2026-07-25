@@ -37,6 +37,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
+    [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
@@ -58,6 +59,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadTransportService TransportService { get; }
     public DadAutoPartyService AutoPartyService { get; }
     public DadAutoPartyDiscordService AutoPartyDiscordService { get; }
+    public DadAlliancePartyFinderService AlliancePartyFinderService { get; }
     public DadMeasuredPilotService MeasuredPilotService { get; }
     public DadAutoPartyPilotFixtureService AutoPartyPilotFixtureService { get; }
     public DadAutoPartyFleetMatrixService AutoPartyFleetMatrixService { get; }
@@ -232,8 +234,10 @@ public sealed class Plugin : IDalamudPlugin
             new DadAutoPartyDpapiDiscordTokenStore(
                 Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "discord")),
             new DadAutoPartyPairingProtocol(),
+            new DadAllianceDiscordProtocol(),
             autoPartySigning,
             () => Configuration.RunAsServerDad,
+            () => PresenceService.BuildLiveSafetySnapshot().ActiveCharacterKey,
             Configuration.Save,
             safeCode => Log.Warning("[dad] AutoParty Discord transition {SafeCode}.", safeCode));
         PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyDiscordService.GetLanPresence);
@@ -313,6 +317,27 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService,
             PlannerService,
             Log);
+        AlliancePartyFinderService = new DadAlliancePartyFinderService(
+            PresenceService,
+            TransportService,
+            AutoPartyDiscordService,
+            new DadAlliancePartyFinderNativeGateway(
+                Framework,
+                Condition,
+                PartyList,
+                PresenceService,
+                CommandManager,
+                DataManager,
+                ToastGui,
+                Log),
+            new DadAlliancePfAuditLog(
+                PluginInterface.ConfigDirectory.FullName,
+                exception => Log.Warning(exception, "[dad] Alliance PF audit append failed.")),
+            BuildAlliancePartyFinderConflictBlocker,
+            () => string.IsNullOrWhiteSpace(Configuration.AutoParty.RegisteredIslandId)
+                ? PresenceService.WorkerSessionId.Value
+                : Configuration.AutoParty.RegisteredIslandId,
+            Log);
         MeasuredPilotService = new DadMeasuredPilotService(
             Configuration.AutoParty,
             autoPartySigning,
@@ -355,6 +380,10 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService.GetStatus,
             WorkerExecutionService.Cancel);
         TransportService.ConfigureStopAllHandler(StopAllLocal);
+        TransportService.ConfigureAlliancePartyFinderHandlers(
+            AlliancePartyFinderService.AcceptHubInstruction,
+            AlliancePartyFinderService.AcceptCancellation,
+            AlliancePartyFinderService.BuildUiSnapshot);
 
         if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
             ConfigManager.CurrentAccountId = Configuration.ClientAccountId;
@@ -442,6 +471,7 @@ public sealed class Plugin : IDalamudPlugin
         // Its observer continues consuming late completions with Dalamud logging suppressed.
         AutoPartyDiscordService.PairingRevoked -= MeasuredPilotService.ObservePairingRevoked;
         AutoPartyDiscordService.PairingRestored -= MeasuredPilotService.ObservePairingRestored;
+        AlliancePartyFinderService.Dispose();
         AutoPartyDiscordService.Dispose();
         AutoPartyService.Dispose();
         TransportService.Dispose();
@@ -2608,6 +2638,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             SlotId = source.SlotId,
             IsSubstitute = source.IsSubstitute,
+            AllianceAssignment = source.AllianceAssignment,
             RequiredRole = source.RequiredRole,
             RequiredAccountKey = source.RequiredAccountKey,
             RequiredCharacterKey = source.RequiredCharacterKey,
@@ -2637,6 +2668,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 SlotId = slot.SlotId,
                 IsSubstitute = false,
+                AllianceAssignment = slot.AllianceAssignment,
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = accountKey,
                 RequiredCharacterKey = string.IsNullOrWhiteSpace(slot.CharacterKey)
@@ -2765,6 +2797,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 SlotId = slot.SlotId,
                 IsSubstitute = slot.IsSubstitute,
+                AllianceAssignment = slot.AllianceAssignment,
                 RequiredRole = slot.RequiredRole,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
@@ -3314,7 +3347,7 @@ public sealed class Plugin : IDalamudPlugin
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase));
         var selectedSlots = string.Join(",", plannerPreview.SelectedCharacters.Select(static slot =>
-            $"{slot.SlotId}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.RequiredAccountKey}:{slot.CharacterKey}:{slot.ContentId}:{slot.RequiredJobId?.ToString() ?? "current"}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
+            $"{slot.SlotId}:{slot.AllianceAssignment}:{slot.RequiredRole}:{slot.AssignmentMode}:{slot.RequiredAccountKey}:{slot.CharacterKey}:{slot.ContentId}:{slot.RequiredJobId?.ToString() ?? "current"}:{slot.AllowSubstitution}:{slot.IsSubstitution}"));
         var selectedCharacters = string.Join(",", plannerPreview.SelectedCharacters
             .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
             .Select(static slot => $"{slot.RequiredAccountKey.Value.Trim()}:{slot.CharacterKey.Trim()}:{slot.ContentId}")
@@ -3425,6 +3458,27 @@ public sealed class Plugin : IDalamudPlugin
     public bool CancelSchedulerJobFromMini(string jobId)
         => SchedulerService.CancelScheduledJob(jobId, "Cancelled from DAD mini window.");
 
+    private string BuildAlliancePartyFinderConflictBlocker()
+    {
+        if (!Configuration.DebugUiEnabled)
+            return "Alliance Party Finder is available only while /dad debug is enabled.";
+        if (!Configuration.PluginEnabled)
+            return "Enable DAD before creating an alliance recruitment.";
+        if (!Configuration.RunAsServerDad)
+            return "The alliance PF creator must be the active Dad Coordinator.";
+        if (Configuration.LocalOnlyModeEnabled)
+            return "Alliance PF coordination requires the authenticated DAD hub, not Local Only mode.";
+        if (string.IsNullOrWhiteSpace(Configuration.TransportSharedSecret))
+            return "Configure the DAD hub shared secret before alliance PF coordination.";
+        if (!TransportService.IsReady)
+            return "Wait for the DAD Coordinator hub to become ready.";
+        if (RunCoordinatorService.IsBusy)
+            return "A DAD run is already active.";
+        if (SchedulerService.CurrentState.IsActive)
+            return "A scheduler preset is already active.";
+        return string.Empty;
+    }
+
     private DadStopAllWorkerResult StopAllLocal(DadStopAllRequest request)
     {
         var hasRecordedResult = localStopAllResults.TryGetValue(request.OperationId, out var recorded);
@@ -3441,6 +3495,7 @@ public sealed class Plugin : IDalamudPlugin
                 var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
                 var scheduler = SchedulerService.StopAll(reason, suppression);
                 AutoPartyService.StopAll(reason);
+                AlliancePartyFinderService.Stop(reason);
                 RunCoordinatorService.CancelAllLocal(reason);
                 wake = WakeTakeoverService.StopAll(reason);
                 ClaimService.ReleaseAllClaims();
@@ -3898,6 +3953,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             WakeTakeoverService.StopAll("DAD disabled by operator.");
             AutoPartyService.StopAll("DAD disabled by operator.");
+            AlliancePartyFinderService.Stop("DAD disabled by operator.");
         }
         Configuration.PluginEnabled = enabled;
         if (enabled && !wasEnabled)
@@ -4892,6 +4948,7 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
         RunFrameworkStep("AutoPartyDiscord", () => AutoPartyDiscordService.Update(Configuration.PluginEnabled));
+        RunFrameworkStep("AlliancePartyFinder", AlliancePartyFinderService.Update);
         RunFrameworkStep("AutoParty", () => AutoPartyService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
         RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);

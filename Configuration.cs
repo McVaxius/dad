@@ -17,7 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     [NonSerialized]
     private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
 
-    public int Version { get; set; } = 6;
+    public int Version { get; set; } = 7;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -139,6 +139,15 @@ public sealed class Configuration : IPluginConfiguration
             AutoParty ??= new DadAutoPartyConfiguration();
             AutoParty.DiscordEnabled = false;
             Version = 6;
+            changed = true;
+        }
+
+        // Version 7 adds explicit alliance assignments to preset rows. The enum's default is
+        // deliberately None: old presets must be reviewed by an operator instead of receiving
+        // an invented subgroup assignment during migration.
+        if (Version < 7)
+        {
+            Version = 7;
             changed = true;
         }
 

@@ -1136,6 +1136,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.TextDisabled(rouletteDiagnostic.Summary);
+        DrawAlliancePartyFinderDebug();
         var dutyIpc = plugin.DutyIpcService.GetStatus();
         var bridge = plugin.QuestionableBridge.GetStatus();
         DrawStatusRow("Name privacy", plugin.KrangleService.BuildStatus(characterPool));
@@ -1152,6 +1153,77 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
         DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
         DrawStatusRow("Transport protocol", characterPool.PeerTransport.ProtocolVersion.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private void DrawAlliancePartyFinderDebug()
+    {
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var plannerPreview = plugin.BuildPlannerPreview();
+        var live = plugin.AlliancePartyFinderService.GetStatus();
+        var display = string.IsNullOrWhiteSpace(live.RecruitmentId)
+            ? plugin.AlliancePartyFinderService.Preview(selectedGroup, plannerPreview)
+            : live;
+
+        DrawSectionHeader(
+            "Alliance Party Finder",
+            "Debug-only preset formation through one private Labyrinth listing. Recruitment closes without queueing or disbanding.");
+        DrawStatusRow("Preset", selectedGroup?.DisplayName ?? "(select a concrete preset)");
+        DrawStatusRow(
+            "Assignments",
+            $"A {display.Validation.AllianceACount}/8 | B {display.Validation.AllianceBCount}/8 | " +
+            $"C {display.Validation.AllianceCCount}/8 | total {display.Validation.TotalCount}");
+        DrawStatusRow("Validation", display.Validation.Summary);
+        DrawStatusRow("Host / listing", string.IsNullOrWhiteSpace(display.LeaderName)
+            ? $"{display.State} | listing {(display.ListingId == 0 ? "(none)" : display.ListingId.ToString(CultureInfo.InvariantCulture))}"
+            : $"{display.LeaderName} @ {display.LeaderWorld} | {display.State} | listing {(display.ListingId == 0 ? "(pending)" : display.ListingId.ToString(CultureInfo.InvariantCulture))}");
+        DrawStatusRow("Private passcode", display.Passcode is >= 1000 and <= 9999
+            ? display.Passcode.ToString("0000", CultureInfo.InvariantCulture)
+            : "(generated on Create party)");
+        if (!string.IsNullOrWhiteSpace(display.CreateStage))
+        {
+            DrawStatusRow("Create stage", display.CreateStage);
+            DrawStatusRow("Create attempt", display.CreateAttempt.ToString(CultureInfo.InvariantCulture));
+            DrawStatusRow("Next create retry", display.CreateNextRetryUtc.HasValue
+                ? display.CreateNextRetryUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)
+                : "(none)");
+            DrawStatusRow("Create elapsed", $"{display.CreateElapsedMilliseconds:N0} ms");
+            DrawStatusRow("Last create error", string.IsNullOrWhiteSpace(display.CreateLastError)
+                ? "(none)"
+                : display.CreateLastError);
+        }
+        DrawStatusRow("Recruitment", display.Summary);
+
+        var canCreate = selectedGroup != null &&
+                        display.Validation.IsValid &&
+                        live.State is DadAllianceRecruitmentState.Idle
+                            or DadAllianceRecruitmentState.Complete
+                            or DadAllianceRecruitmentState.Stopped
+                            or DadAllianceRecruitmentState.Blocked;
+        ImGui.BeginDisabled(!canCreate);
+        if (DadUi.Button("Create party", DadUiTone.Accent))
+        {
+            var result = plugin.AlliancePartyFinderService.CreateParty(selectedGroup, plannerPreview);
+            plugin.PrintStatus(result.Summary);
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        var canGrab = live.State == DadAllianceRecruitmentState.ListingOpen && live.ListingId != 0;
+        ImGui.BeginDisabled(!canGrab);
+        if (DadUi.Button("Grab dads", DadUiTone.Accent))
+        {
+            var result = plugin.AlliancePartyFinderService.GrabDads();
+            plugin.PrintStatus(result.Summary);
+        }
+        ImGui.EndDisabled();
+
+        foreach (var result in display.Results
+                     .OrderBy(static result => result.ExpectedAlliance)
+                     .ThenBy(static result => result.TargetCharacterName, StringComparer.OrdinalIgnoreCase))
+        {
+            DrawStatusRow(
+                $"{result.ExpectedAlliance} {FormatText(result.TargetCharacterName, result.TargetCharacterKey.Value)}",
+                $"attempt {result.Attempt} | {result.ResultKind}/{result.State} | observed {result.ObservedAlliance} | {result.Summary}");
+        }
     }
 
     private void DrawStatusPlannerAdvancedInputs(

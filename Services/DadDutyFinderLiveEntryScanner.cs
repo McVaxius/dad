@@ -212,8 +212,8 @@ internal static unsafe class DadDutyFinderLiveEntryScanner
 
             var itemType = item->UIntValues[0];
             var isLeaf = itemType is
-                (uint)AtkComponentTreeListItemType.Leaf or
-                (uint)AtkComponentTreeListItemType.LastLeafInGroup;
+                (uint)TreeListItemType.None or
+                (uint)TreeListItemType.LastItemInGroup;
             var itemLabel = item->StringValues.Count > 0
                 ? ReadSeString(item->StringValues[0].Value)
                 : string.Empty;

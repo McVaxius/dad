@@ -39,6 +39,7 @@ internal sealed class DadPresetCrewEditor
         var style = ImGui.GetStyle();
         var slotWidth = FixedTextWidth("Slot56");
         var typeWidth = FixedTextWidth("Substitute");
+        var allianceWidth = FixedFrameWidth("Alliance");
         var jobWidth = FixedFrameWidth("WHM 100");
         var roleWidth = FixedFrameWidth("PhysicalRanged");
         var lootWidth = FixedFrameWidth("NoChange");
@@ -46,6 +47,11 @@ internal sealed class DadPresetCrewEditor
         var rewardWidth = FixedFrameWidth("Daily");
         var wakeWidth = MathF.Max(FixedFrameWidth("Online"), FixedFrameWidth("Wake/relog"));
         var actionWidth = ButtonWidth("+ Sub") + style.ItemSpacing.X + ButtonWidth("Remove");
+
+        var allianceValidation = DadAlliancePartyFinderRules.ValidateSavedRows(group.Slots);
+        ImGui.TextUnformatted(
+            $"Alliance PF assignments: A {allianceValidation.AllianceACount}/8 | " +
+            $"B {allianceValidation.AllianceBCount}/8 | C {allianceValidation.AllianceCCount}/8");
 
         ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(2f, 2f));
         var tableOpen = ImGui.BeginTable(
@@ -64,6 +70,7 @@ internal sealed class DadPresetCrewEditor
 
         ImGui.TableSetupColumn("Slot", ImGuiTableColumnFlags.WidthFixed, slotWidth);
         ImGui.TableSetupColumn("Type", ImGuiTableColumnFlags.WidthFixed, typeWidth);
+        ImGui.TableSetupColumn("Alliance", ImGuiTableColumnFlags.WidthFixed, allianceWidth);
         ImGui.TableSetupColumn("Account", ImGuiTableColumnFlags.WidthStretch, 1.05f);
         ImGui.TableSetupColumn("Character", ImGuiTableColumnFlags.WidthStretch, 1.25f);
         ImGui.TableSetupColumn("Role", ImGuiTableColumnFlags.WidthFixed, roleWidth);
@@ -95,6 +102,9 @@ internal sealed class DadPresetCrewEditor
                     ? "This fallback is tried only when the primary row for the same slot cannot resolve."
                     : "Primary rows are resolved before substitutes for the same slot.");
             }
+
+            ImGui.TableNextColumn();
+            DrawAlliance(group, slot, index, idPrefix, changed);
 
             ImGui.TableNextColumn();
             DrawAccount(plannerSnapshot.CuratedPool, plannerSnapshot.AccountOptions, group, slot, index, idPrefix, changed, showDetails);
@@ -146,6 +156,7 @@ internal sealed class DadPresetCrewEditor
                     {
                         SlotId = slot.SlotId,
                         IsSubstitute = true,
+                        AllianceAssignment = slot.AllianceAssignment,
                         RequiredRole = slot.RequiredRole,
                         AdsLootMode = slot.AdsLootMode,
                         LevelSeekTarget = slot.LevelSeekTarget,
@@ -178,7 +189,7 @@ internal sealed class DadPresetCrewEditor
     private static void DrawHeaders(bool showProfile, bool showDailyReward)
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
-        var headers = new List<string> { "Slot", "Type", "Account", "Character", "Role", "Job", "Loot", "Lv." };
+        var headers = new List<string> { "Slot", "Type", "Alliance", "Account", "Character", "Role", "Job", "Loot", "Lv." };
         if (showDailyReward)
             headers.Add("Daily");
         headers.Add("Wake");
@@ -197,7 +208,52 @@ internal sealed class DadPresetCrewEditor
             {
                 ImGui.SetTooltip("Per-row opt-in: on a DailyReset Schedule only, inspect this effective character and skip the entry only when every checked row already received the selected roulette reward.");
             }
+            else if (header == "Alliance" && ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("Explicit A/B/C subgroup for the debug-only Alliance Party Finder flow. Substitutes inherit their primary row.");
+            }
         }
+    }
+
+    private static void DrawAlliance(
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index,
+        string idPrefix,
+        Action<DadPlannerGroup> changed)
+    {
+        ImGui.BeginDisabled(slot.IsSubstitute);
+        if (ImGui.BeginCombo(
+                $"##{idPrefix}-alliance-{index}",
+                slot.AllianceAssignment == DadAllianceAssignment.None
+                    ? "None"
+                    : slot.AllianceAssignment.ToString()))
+        {
+            foreach (var assignment in Enum.GetValues<DadAllianceAssignment>())
+            {
+                var selected = assignment == slot.AllianceAssignment;
+                var capped = assignment != DadAllianceAssignment.None &&
+                             !selected &&
+                             !DadAlliancePartyFinderRules.CanAssign(group.Slots, slot.SlotId, assignment);
+                ImGui.BeginDisabled(capped);
+                if (ImGui.Selectable(assignment.ToString(), selected) && !selected && !capped)
+                {
+                    foreach (var row in group.Slots.Where(row =>
+                                 string.Equals(row.SlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        row.AllianceAssignment = assignment;
+                    }
+                    changed(group);
+                }
+                if (capped && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip($"Alliance {assignment} already has eight primary slots.");
+                ImGui.EndDisabled();
+            }
+            ImGui.EndCombo();
+        }
+        ImGui.EndDisabled();
+        if (slot.IsSubstitute && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip($"Substitutes inherit Alliance {slot.AllianceAssignment} from their primary row.");
     }
 
     private void DrawAccount(

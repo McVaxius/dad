@@ -20,6 +20,10 @@ integrations, and everyday commands.
 dotnet build .\dad.csproj -c Debug -p:Platform=x64
 ```
 
+DAD pins [ECommons 3.2.1.15](https://www.nuget.org/packages/ECommons/3.2.1.15) for its stateless Party Finder
+addon-readiness wrappers and UI-input helpers. DAD does not initialize the ECommons global service layer or use its
+signature-dependent paths. ECommons is maintained by NightmareXIV and its contributors.
+
 ## Test
 
 ```powershell
@@ -36,7 +40,7 @@ dotnet test .\Tests\dad.Tests.csproj
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v6 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
+- Configuration schema v7 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
   reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
   Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-4 users
   migrate to an empty, disabled AutoParty configuration without generating an identity or initializing a network route.
@@ -60,9 +64,10 @@ dotnet test .\Tests\dad.Tests.csproj
 - `dad.pairing/v1` messages contain bounded signed public endpoint metadata only. They never contain bot tokens, FFXIV
   identifiers, plans, schedules, requested jobs, Stop, or execution commands. Pairing uses a Coordinator-to-Client star;
   clients do not need to pair with each other. Presence refreshes about every 60 seconds and is stale after three minutes.
-- Discord handles discovery, presence, and pairing only. DAD LAN hub protocol 3 carries the authenticated public Application
-  ID, endpoint fingerprint, and pairing health and rejects mixed pilot builds. Existing typed plans, schedules, Stop, claims,
-  leases, queues, and execution remain entirely on the LAN coordinator path.
+- Discord discovery and pairing remain separate from DAD execution. DAD LAN hub protocol 4 carries the authenticated public
+  Application ID, endpoint fingerprint, pairing health, and typed debug alliance-PF coordination, and rejects mixed builds.
+  Optional `dad.alliance-pf/v1` Discord instructions are separately signed, exact-recipient, replay-bounded copies; the authenticated
+  LAN hub remains authoritative. Existing plans, schedules, Stop, claims, leases, queues, and execution stay on the LAN path.
 - The Coordinator exposes **Start measured pilot**, **Stop & Evaluate**, and **Resume pilot**. Evidence persists across reloads,
   counts unique terminal non-dry-run plan IDs, retains ordinary failures, hard-fails safety violations, and continues recording
   beyond minimum coverage until evaluation. Profile restoration is `not-applicable` for ordinary LAN plans.
@@ -86,6 +91,18 @@ dotnet test .\Tests\dad.Tests.csproj
   primary row; leaving that option off preserves the template's existing row flags. The existing reward probe remains
   unchanged, so no checked rows means no probe and any
   unchecked, unknown, not-received, stale, contradictory, or unproven result still runs the ordinary preset.
+- With `/dad debug` enabled, saved preset rows expose an explicit Alliance `A`, `B`, or `C` assignment. Substitutes inherit
+  their primary row; each subgroup accepts one to eight effective characters and a preset may contain three to 24 total.
+  Status > Readiness > **Alliance Party Finder** validates a concrete selected preset and an Alliance-A local host, then
+  **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
+  dispatches every unresolved exact target concurrently through the authenticated hub. Receivers match the exact leader and
+  home world, ignore listing comments, use only the configured subgroup button, retry transient failures at a capped cadence
+  until Stop, and repair a proven wrong subgroup only through guarded leave/rejoin. Completion verifies every effective
+  character, closes recruitment without disbanding the alliance, and never queues a duty. The preset's actual raid remains
+  unchanged for the operator to queue manually afterward. Detailed local evidence is appended beneath
+  `<plugin-config>\alliance-pf\logs`; Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
+  Party Finder, polls readiness at 250 ms, uses acknowledged ECommons controls for Alliance/Raids/Labyrinth/settings/submit,
+  and does not report success until the game exposes a nonzero owned listing ID with the exact stored settings.
 
 ## Operator status and cancellation
 
@@ -175,7 +192,7 @@ dotnet test .\Tests\dad.Tests.csproj
 
 ## Deployment notes
 
-- **Hub transport protocol is version 2** (raised from 1 on 2026-06-27). Every paired dad — the Coordinator Dad
+- **Hub transport protocol is version 4.** Every paired dad — the Coordinator Dad
   and all Client Dads — should run the **same build**. Incompatible hub protocol versions are rejected with
   `protocol-mismatch`; exact assembly-build equality is not otherwise enforced.
 - Non-loopback (LAN) connections require a matching `TransportSharedSecret` on every peer (HMAC-SHA256). Envelopes

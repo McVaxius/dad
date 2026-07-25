@@ -38,6 +38,14 @@ public enum DadPartyRole
     Limited,
 }
 
+public enum DadAllianceAssignment
+{
+    None,
+    A,
+    B,
+    C,
+}
+
 public enum DadSlotAssignmentMode
 {
     Auto,
@@ -437,6 +445,7 @@ public sealed class DadPlannerGroupSlot
 {
     public string SlotId { get; set; } = string.Empty;
     public bool IsSubstitute { get; set; }
+    public DadAllianceAssignment AllianceAssignment { get; set; } = DadAllianceAssignment.None;
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
@@ -563,6 +572,7 @@ public sealed class DadPlannerRunRequestPreview
 public sealed class DadPresetCharacterSlot
 {
     public string SlotId { get; set; } = string.Empty;
+    public DadAllianceAssignment AllianceAssignment { get; set; } = DadAllianceAssignment.None;
     public DadPartyRole RequiredRole { get; set; } = DadPartyRole.Any;
     public DadAccountKey RequiredAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);

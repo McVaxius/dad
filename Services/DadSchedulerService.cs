@@ -2354,6 +2354,7 @@ public sealed class DadSchedulerService
             Slots = currentState.Slots.Select(static slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
+                AllianceAssignment = slot.AllianceAssignment,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
                 RequiredJobId = slot.RequiredJobId,
@@ -2600,6 +2601,7 @@ public sealed class DadSchedulerService
             Slots = previousSlots.Select(static slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
+                AllianceAssignment = slot.AllianceAssignment,
                 RequiredAccountKey = slot.RequiredAccountKey,
                 RequiredCharacterKey = slot.RequiredCharacterKey,
                 RequiredJobId = slot.RequiredJobId,
@@ -2909,6 +2911,7 @@ public sealed class DadSchedulerService
         var state = new DadSchedulerSlotState
         {
             SlotId = string.IsNullOrWhiteSpace(slot.SlotId) ? "Slot" : slot.SlotId,
+            AllianceAssignment = slot.AllianceAssignment,
             WakePolicy = slot.WakePolicy,
             RequiredAccountKey = slot.RequiredAccountKey,
             RequiredCharacterKey = slot.RequiredCharacterKey,

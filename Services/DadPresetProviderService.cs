@@ -1466,6 +1466,7 @@ public sealed class DadPresetProviderService
             return new DadPresetCharacterSlot
             {
                 SlotId = groupSlot.SlotId,
+                AllianceAssignment = groupSlot.AllianceAssignment,
                 RequiredRole = groupSlot.RequiredRole,
                 RequiredAccountKey = groupSlot.RequiredAccountKey,
                 RequiredCharacterKey = groupSlot.RequiredCharacterKey,
@@ -1502,6 +1503,7 @@ public sealed class DadPresetProviderService
         return new DadPresetCharacterSlot
         {
             SlotId = groupSlot.SlotId,
+            AllianceAssignment = groupSlot.AllianceAssignment,
             RequiredRole = groupSlot.RequiredRole,
             RequiredAccountKey = accountKey,
             RequiredCharacterKey = requiredCharacterKey,
