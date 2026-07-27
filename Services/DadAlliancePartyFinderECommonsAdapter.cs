@@ -61,6 +61,8 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var mainReady = mainVisible && main->AddonLookingForGroupBase.AtkUnitBase.IsReady;
         var conditionReady = conditionVisible && condition->AtkUnitBase.IsReady;
         var activeRecruitment = recruitmentObserver.IsActiveRecruitment;
+        var participatingInCrossWorldPartyOrAlliance =
+            recruitmentObserver.IsParticipatingInCrossWorldPartyOrAlliance;
         var hardBlocker = string.Empty;
 
         if (mainReady && main->RecruitMembersButton == null)
@@ -143,7 +145,6 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var storedContradictory =
             activeRecruitment &&
             !conditionVisible &&
-            ownerHandle != 0 &&
             !storedExact;
         var readiness = BuildReadiness(
             agent != null,
@@ -205,6 +206,8 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             StoredSettingsContradictory = storedContradictory,
             OwnerHandle = ownerHandle,
             ActiveRecruitment = activeRecruitment,
+            ParticipatingInCrossWorldPartyOrAlliance =
+                participatingInCrossWorldPartyOrAlliance,
             ErrorToastSequence = errorToastSequence,
             ErrorToast = errorToast,
             HardBlocker = hardBlocker,
@@ -228,6 +231,8 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
                 nativeActions.Perform(DadAlliancePfNativeAction.SelectAlliance),
             DadAlliancePfCreateAction.ReloadCloseConditions =>
                 nativeActions.Perform(DadAlliancePfNativeAction.CloseConditions),
+            DadAlliancePfCreateAction.ReloadRestoreAllianceTab =>
+                RestoreAllianceGroupTypeTab(),
             DadAlliancePfCreateAction.ReloadMainWindow =>
                 commandDispatcher.TryExecute(
                     "Requested the Party Finder window for the Alliance editor reload."),
@@ -325,6 +330,25 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         return nativeActions.Perform(
             DadAlliancePfNativeAction.SelectDuty,
             targetDutyDropDownIndex);
+    }
+
+    private static DadAlliancePfCreateActionResult
+        RestoreAllianceGroupTypeTab()
+    {
+        var agent = AgentLookingForGroup.Instance();
+        if (agent == null)
+        {
+            return new DadAlliancePfCreateActionResult(
+                false,
+                "The Alliance tab was not restored after typed Cancel.",
+                "Party Finder agent is unavailable.");
+        }
+
+        agent->GroupTypeTab =
+            DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab;
+        return new DadAlliancePfCreateActionResult(
+            true,
+            "Restored Alliance tab 1 once after typed Cancel without resending Alliance or refreshing the preset.");
     }
 
     private DadAlliancePfCreateActionResult CloseStaleWindows()

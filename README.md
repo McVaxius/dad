@@ -106,9 +106,11 @@ dotnet test .\Tests\dad.Tests.csproj
   ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to stateless UI-input helpers. DAD
   dispatches Alliance, Raids, and the exact enabled Labyrinth row once each, requiring a later acknowledgement within five
   seconds after every action. If Alliance changes the stored group tab before the open editor reflects its radio, the same
-  Create request closes conditions once, reuses or reopens the main PF window as needed, reopens conditions once, and
-  requires the Alliance radio before continuing; it never resends Alliance. A ready next action may dispatch on the next
-  250 ms poll. Duty selection lets the game populate the complete API-15 selector, including its opaque discriminator. DAD
+  Create request closes conditions once. When typed Cancel resets `GroupTypeTab`, DAD restores Alliance tab `1` exactly once
+  through its existing adapter and requires a later acknowledgement; this restore neither resends Alliance nor refreshes the
+  preset. DAD then reuses or reopens the main PF window as needed, reopens conditions once, and requires the Alliance radio
+  before continuing. A ready next action may dispatch on the next 250 ms poll. Duty selection lets the game populate the
+  complete API-15 selector, including its opaque discriminator. DAD
   then captures the full current recruitment struct plus group tab and average-item-level state, overlays only the private
   passcode, API-15 cross-world byte `1`, no-duplicate-job setting, empty comment, Alliance A `3x8` membership, cleared stale
   members, and 23 unrestricted open slots, writes the full state once, and invokes one DAD-resolved editor refresh. The
@@ -119,13 +121,18 @@ dotnet test .\Tests\dad.Tests.csproj
   the complete original state. A mutation never advances the state machine by dispatch alone: a later snapshot must
   acknowledge the exact visible and stored editor state. A missing acknowledgement blocks this Create request without
   re-opening, redispatching, rewriting, refreshing, or submitting. The conditions editor's temporary owner handle is never
-  treated as publication. Success still requires
-  one Submit, the editor to close, full stored duty/password/group/slot/comment/open-slot-flag exactness, active local
-  recruitment, and a nonzero opaque PF owner handle.
+  treated as publication authority. Success requires
+  one Submit, the editor to close, full stored duty/password/group/slot/comment/open-slot-flag exactness,
+  `UsingPartyFinder` condition `66`, and `ParticipatingInCrossWorldPartyOrAlliance` condition `84`; the opaque native PF
+  owner handle may remain zero and is shown only as optional diagnostic data. Online-status row `26` is not recruitment
+  authority. Creator solo/mutation safety applies only before
+  Submit; later calls observe publication without another mutation gate. Exact success retains DAD ownership as
+  `ListingOpen` and enables **Grab dads**; blocked, stopped, and unowned states keep Grab disabled.
   **Stop PF** beside Create/Grab uses DAD's existing Stop policy: it closes a pending or blocked editor or ends only DAD's
   owned recruitment through the acknowledged recruitment-only cleanup path; it never disbands or queues.
   Stop and post-formation cleanup open the owned detail window, require a fresh
-  recruitment-only confirmation, and wait for both active status and the owner handle to clear.
+  recruitment-only confirmation, and acknowledge closure when condition `66` clears. Retained DAD ownership—not the
+  diagnostic native owner handle—authorizes that cleanup.
   The local Create readiness row shows the first exact blocker and disables the button on Client Dads or any other failed
   prerequisite; rejected attempts remain visible and are audited.
 

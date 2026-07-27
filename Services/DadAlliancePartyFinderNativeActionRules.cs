@@ -120,4 +120,5 @@ internal interface IDadAlliancePartyFinderNativeActions
 internal interface IDadAllianceRecruitmentObserver
 {
     bool IsActiveRecruitment { get; }
+    bool IsParticipatingInCrossWorldPartyOrAlliance { get; }
 }

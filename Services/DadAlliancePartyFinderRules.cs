@@ -92,13 +92,18 @@ public static class DadAlliancePartyFinderRules
 
     public static bool CanStop(DadAlliancePartyFinderStatus? status)
         => status != null &&
-           ((status.OwnsRecruitment && status.ListingId != 0) ||
+           (status.OwnsRecruitment ||
             (!string.IsNullOrWhiteSpace(status.CreateStage) &&
              status.State is DadAllianceRecruitmentState.Validating
                  or DadAllianceRecruitmentState.CreatingListing
                  or DadAllianceRecruitmentState.WaitingUnsafe
                  or DadAllianceRecruitmentState.RetryWaiting
                  or DadAllianceRecruitmentState.Blocked));
+
+    public static bool CanGrabDads(DadAlliancePartyFinderStatus? status)
+        => status != null &&
+           status.State == DadAllianceRecruitmentState.ListingOpen &&
+           status.OwnsRecruitment;
 
     public static bool IsExactListingMatch(
         string? observedLeaderName,

@@ -9,6 +9,7 @@ internal enum DadAlliancePfCreateStage
     OpenConditions,
     SelectAlliance,
     ReloadCloseConditions,
+    ReloadRestoreAllianceTab,
     ReloadMainWindow,
     ReloadOpenConditions,
     SelectRaids,
@@ -27,6 +28,7 @@ internal enum DadAlliancePfCreateAction
     OpenConditions,
     SelectAlliance,
     ReloadCloseConditions,
+    ReloadRestoreAllianceTab,
     ReloadMainWindow,
     ReloadOpenConditions,
     SelectRaids,
@@ -89,6 +91,7 @@ internal sealed record DadAlliancePfCreateSnapshot
     public bool StoredSettingsContradictory { get; init; }
     public ulong OwnerHandle { get; init; }
     public bool ActiveRecruitment { get; init; }
+    public bool ParticipatingInCrossWorldPartyOrAlliance { get; init; }
     public int ErrorToastSequence { get; init; }
     public string ErrorToast { get; init; } = string.Empty;
     public string HardBlocker { get; init; } = string.Empty;
@@ -120,6 +123,7 @@ internal readonly record struct DadAlliancePfCreateResult(
     ulong ListingId,
     int ElapsedMilliseconds,
     bool ActiveRecruitment,
+    bool ParticipatingInCrossWorldPartyOrAlliance,
     bool EditorVisible,
     bool SubmitDispatched,
     string ConfigurationTarget,
@@ -170,6 +174,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
     public DateTime? NextRetryUtc => nextActionUtc == DateTime.MinValue ? null : nextActionUtc;
     public string LastError => lastError;
     public bool SubmitDispatched => submitDispatched;
+    public bool RequiresMutationSafety => !submitDispatched;
 
     public DadAlliancePfCreateResult Advance(int passcode)
     {
@@ -227,7 +232,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             submitDispatched &&
             !snapshot.ConditionVisible &&
             snapshot.ActiveRecruitment &&
-            snapshot.OwnerHandle != 0;
+            snapshot.ParticipatingInCrossWorldPartyOrAlliance;
         if (publishedTransition)
         {
             if (!presetAcknowledged ||
@@ -246,7 +251,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             return Result(
                 DadAlliancePfCreateResultKind.Succeeded,
                 "success",
-                $"Private cross-world Labyrinth alliance recruitment is active with PF owner handle {snapshot.OwnerHandle}.",
+                $"Private cross-world Labyrinth alliance recruitment is active; PF owner handle {snapshot.OwnerHandle} is diagnostic only.",
                 now,
                 snapshot,
                 shouldAudit: true);
@@ -272,8 +277,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 "Party Finder agent is unavailable; DAD will not dispatch or redispatch this Create request.",
                 snapshot);
         }
-        if ((stage is DadAlliancePfCreateStage.ReloadCloseConditions or
-                DadAlliancePfCreateStage.ReloadMainWindow or
+        if ((stage is DadAlliancePfCreateStage.ReloadMainWindow or
                 DadAlliancePfCreateStage.ReloadOpenConditions) &&
             snapshot.GroupTypeTab !=
                 DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab)
@@ -394,7 +398,18 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 => DadAlliancePfCreateStage.ReloadCloseConditions,
             DadAlliancePfCreateStage.ReloadCloseConditions when
                 actionDispatched &&
+                !snapshot.ConditionVisible &&
+                snapshot.GroupTypeTab ==
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab
+                => DadAlliancePfCreateStage.ReloadMainWindow,
+            DadAlliancePfCreateStage.ReloadCloseConditions when
+                actionDispatched &&
                 !snapshot.ConditionVisible
+                => DadAlliancePfCreateStage.ReloadRestoreAllianceTab,
+            DadAlliancePfCreateStage.ReloadRestoreAllianceTab when
+                actionDispatched &&
+                snapshot.GroupTypeTab ==
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab
                 => DadAlliancePfCreateStage.ReloadMainWindow,
             DadAlliancePfCreateStage.ReloadMainWindow when
                 snapshot.MainReady &&
@@ -482,6 +497,8 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             DadAlliancePfCreateStage.SelectAlliance => DadAlliancePfCreateAction.SelectAlliance,
             DadAlliancePfCreateStage.ReloadCloseConditions =>
                 DadAlliancePfCreateAction.ReloadCloseConditions,
+            DadAlliancePfCreateStage.ReloadRestoreAllianceTab =>
+                DadAlliancePfCreateAction.ReloadRestoreAllianceTab,
             DadAlliancePfCreateStage.ReloadMainWindow =>
                 DadAlliancePfCreateAction.ReloadMainWindow,
             DadAlliancePfCreateStage.ReloadOpenConditions =>
@@ -555,6 +572,10 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             DadAlliancePfCreateStage.ReloadCloseConditions when
                 !snapshot.ConditionReady
                 => "Waiting for the Alliance conditions editor to become ready for its one allowed typed Cancel action.",
+            DadAlliancePfCreateStage.ReloadRestoreAllianceTab when
+                snapshot.GroupTypeTab ==
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab
+                => "Waiting for the restored Alliance tab acknowledgement.",
             DadAlliancePfCreateStage.ReloadMainWindow when
                 snapshot.MainVisible &&
                 (!snapshot.MainReady || !snapshot.MainRecruitUsable)
@@ -606,6 +627,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             snapshot?.OwnerHandle ?? 0,
             checked((int)Math.Clamp((now - startedAtUtc).TotalMilliseconds, 0, int.MaxValue)),
             snapshot?.ActiveRecruitment ?? false,
+            snapshot?.ParticipatingInCrossWorldPartyOrAlliance ?? false,
             snapshot?.ConditionVisible ?? false,
             submitDispatched,
             string.Empty,
@@ -622,6 +644,8 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 "preparing the game-owned Alliance selector",
             DadAlliancePfCreateStage.ReloadCloseConditions =>
                 "closing the stale Alliance conditions editor",
+            DadAlliancePfCreateStage.ReloadRestoreAllianceTab =>
+                "restoring the Alliance tab after typed Cancel",
             DadAlliancePfCreateStage.ReloadMainWindow =>
                 "ensuring Party Finder is open for the Alliance editor reload",
             DadAlliancePfCreateStage.ReloadOpenConditions =>
@@ -710,7 +734,9 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         if (!string.IsNullOrWhiteSpace(prefix))
             prefix += "; ";
         return prefix +
-               $"active-recruitment={snapshot.ActiveRecruitment}; " +
+               $"condition-66-using-party-finder={snapshot.ActiveRecruitment}; " +
+               $"condition-84-participating-cross-world-party-or-alliance=" +
+               $"{snapshot.ParticipatingInCrossWorldPartyOrAlliance}; " +
                $"editor-visible={snapshot.ConditionVisible}; " +
                $"submit-dispatched={submitWasDispatched}; " +
                $"duty-target-index={snapshot.TargetDutyDropDownIndex}; " +
@@ -728,6 +754,9 @@ internal sealed class DadAlliancePartyFinderCreateFlow
 
         return
             $"preset-loader={snapshot.PresetLoaderAvailable}; group-type-tab={snapshot.GroupTypeTab}; " +
+            $"condition-66-using-party-finder={snapshot.ActiveRecruitment}; " +
+            $"condition-84-participating-cross-world-party-or-alliance=" +
+            $"{snapshot.ParticipatingInCrossWorldPartyOrAlliance}; " +
             $"alliance-tab={snapshot.AllianceSelected}; alliance-a={snapshot.AllianceASelected}; " +
             $"private-visible={snapshot.PrivateRecruitment}; private-stored={snapshot.StoredPrivateRecruitment}; " +
             $"passcode-visible={snapshot.Passcode}; passcode-stored={snapshot.StoredPasscode}; " +

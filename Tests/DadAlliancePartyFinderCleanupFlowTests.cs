@@ -55,7 +55,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
     }
 
     [Fact]
-    public void CleanupRequiresOwnedDetailFreshConfirmationAndBothClosureSignals()
+    public void OwnedZeroHandleCleanupRequiresFreshConfirmationAndCondition66Closure()
     {
         var fixture = new Fixture();
 
@@ -102,7 +102,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             ActiveRecruitment = true,
-            OwnerHandle = 0,
+            OwnerHandle = 888,
             ConfirmationVisible = false,
         };
         Assert.Equal(DadAlliancePfCreateResultKind.Waiting, fixture.Tick().Kind);
@@ -110,7 +110,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             ActiveRecruitment = false,
-            OwnerHandle = 0,
+            OwnerHandle = 999,
         };
         var completed = fixture.Tick();
 
@@ -165,14 +165,60 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
     }
 
     [Fact]
-    public void ChangedOwnerHandleBlocksBeforeAnyDestructiveAction()
+    public void NativeOwnerHandleChangesAreDiagnosticDuringOwnedCleanup()
     {
         var fixture = new Fixture();
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with { OwnerHandle = 888 };
 
+        var first = fixture.Tick();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            OwnerHandle = 0,
+            MainVisible = true,
+            MainReady = true,
+            DetailsControlUsable = true,
+        };
+        var second = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Progress, first.Kind);
+        Assert.Equal(DadAlliancePfCleanupStage.OpenDetails, second.Stage);
+        Assert.Equal(
+            [DadAlliancePfNativeAction.ShowOwnedRecruitment],
+            fixture.Ui.Actions);
+    }
+
+    [Fact]
+    public void UnownedCleanupBlocksBeforeAnyAction()
+    {
+        var fixture = new Fixture
+        {
+            DadOwnsRecruitment = false,
+        };
+
         var result = fixture.Tick();
 
         Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.Contains(
+            "retained DAD ownership",
+            result.Summary,
+            StringComparison.Ordinal);
+        Assert.Empty(fixture.Ui.Actions);
+    }
+
+    [Fact]
+    public void Condition66FalseAcknowledgesClosureRegardlessOfOwnerHandle()
+    {
+        var fixture = new Fixture();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            ActiveRecruitment = false,
+            OwnerHandle = 999,
+        };
+
+        var result = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Succeeded, result.Kind);
+        Assert.Equal(DadAlliancePfCleanupStage.Complete, result.Stage);
         Assert.Empty(fixture.Ui.Actions);
     }
 
@@ -226,12 +272,12 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
 
     private sealed class Fixture
     {
-        public const ulong ExpectedOwnerHandle = 777;
         public DateTime Now { get; private set; } =
             new(2026, 7, 25, 20, 0, 0, DateTimeKind.Utc);
         public DateTime LastTickUtc { get; private set; }
         public MockUi Ui { get; } = new();
         public DadAlliancePartyFinderCleanupFlow Flow { get; }
+        public bool DadOwnsRecruitment { get; set; } = true;
 
         public Fixture()
         {
@@ -241,7 +287,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
         public DadAlliancePfCleanupResult Tick()
         {
             LastTickUtc = Now;
-            var result = Flow.Advance(ExpectedOwnerHandle);
+            var result = Flow.Advance(DadOwnsRecruitment);
             Now += DadAlliancePartyFinderCleanupFlow.PollInterval;
             return result;
         }
@@ -280,7 +326,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
         public DadAlliancePfCleanupSnapshot Snapshot { get; set; } = new()
         {
             ActiveRecruitment = true,
-            OwnerHandle = Fixture.ExpectedOwnerHandle,
+            OwnerHandle = 0,
             Readiness = "synthetic cleanup readiness",
         };
 

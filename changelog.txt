@@ -41,10 +41,16 @@
 - Superseded revision 16 after two W Create attempts never dispatched Submit. The first changed stored `GroupTypeTab` to
   Alliance while the open editor kept a stale radio; the second reached preset acknowledgement but exposed reversed
   cross-world storage semantics and a stale convenience-checkbox gate.
+- Superseded revision 17 after the completed W audit showed the first Create still fail and the second register PF without
+  DAD acknowledging ownership. Grab dads remained disabled and no Grab/join instruction was sent.
+- Superseded revision 18 after W recorded typed Submit dispatched, a hidden editor, authoritative conditions `66` and `84`
+  true, and the exact stored preset while `OwnListingId` remained zero. Revision 19 makes those conditions plus the hidden
+  editor and exact acknowledged preset authoritative; the opaque native owner handle is diagnostic only.
 - One Create now acknowledges stored Alliance tab state, continues directly when its radio is visible, or closes conditions
-  once through typed Cancel, reuses or reopens the main PF window only as needed, reopens conditions once, and requires the
-  Alliance radio before continuing. Alliance is never resent. Every close/open remains single-dispatch with its own
-  five-second acknowledgement deadline, and the next ready action may dispatch on the next 250 ms poll.
+  once through typed Cancel. If Cancel resets `GroupTypeTab`, DAD restores Alliance tab `1` once through the existing
+  adapter and requires later acknowledgement before the retained-main or reopened-main branch continues. The restore never
+  resends Alliance or refreshes the preset. Every restore/close/open remains single-dispatch with its own five-second
+  acknowledgement deadline, and the next ready action may dispatch on the next 250 ms poll.
 - Corrected API-15 cross-world storage to write and require `LimitRecruitingToWorld == 1`. Submit still requires visible
   cross-world state and all 23 exact unrestricted stored slot flags; `RemoveRoleRestrictionsCheckBox.IsChecked` remains in
   diagnostics but is no longer recruitment-payload authority.
@@ -60,23 +66,31 @@
 - Every creation mutation is single-dispatch. A later snapshot alone advances Alliance, Raids, Labyrinth, preset, and Submit
   stages. Missing acknowledgement after five seconds blocks that Create request without another callback, event, editor
   opening, preset write, refresh, or Submit; a new explicit Create request is required.
-- Reclassified `OwnListingId` as an opaque PF owner handle. Its temporary editor value no longer blocks Alliance/Raids or
-  proves success. An internal local Online Status 26 observer blocks genuinely pre-existing recruitment; publication now
-  requires Submit dispatch, a hidden editor, active recruitment, a nonzero owner handle, duty `92`, exact password,
-  three groups of eight, empty comment, cross-world/no-duplicate-job flags, and unrestricted open-slot flags.
+- Reclassified `OwnListingId` as an opaque diagnostic PF owner handle. Its value no longer blocks selectors, proves
+  publication, authorizes Grab or Stop, or controls cleanup. Revision 19 keeps authoritative `UsingPartyFinder` condition
+  `66` and `ParticipatingInCrossWorldPartyOrAlliance` condition `84`; online-status row `26` remains non-authoritative.
+  Creator solo/mutation safety applies only before Submit, and post-Submit calls observe without another mutation gate.
+  Publication now requires Submit dispatch, a hidden editor, both condition flags, duty `92`, exact password, three groups
+  of eight, empty comment, cross-world/no-duplicate-job flags, and unrestricted open-slot flags.
 - Rebuilt cleanup as an acknowledged owned-detail sequence: open the typed details control, wait for the detail addon,
-  fire captured End Recruitment callback `[Int 11]`, verify and confirm a fresh recruitment-only prompt, then wait for both
-  active recruitment and the owner handle to clear. No disband, party leave, or duty-queue action is introduced.
+  fire captured End Recruitment callback `[Int 11]`, verify and confirm a fresh recruitment-only prompt, then acknowledge
+  closure when condition `66` clears. Retained DAD ownership authorizes the sequence; changing or zero native owner handles
+  do not. No disband, party leave, or duty-queue action is introduced.
 - Added **Stop PF** beside Create party and Grab dads. It uses the existing Stop path for pending and blocked editors or
   DAD-owned published recruitment only; the control cannot end an unowned listing and introduces no disband or queue path.
+- A successful exact publication now retains DAD ownership and `ListingOpen` even at owner handle zero, enabling
+  **Grab dads** through one shared state-and-ownership gate. Blocked, stopped, and explicitly unowned states keep Grab
+  disabled; changing diagnostic owner values has no effect and Stop never enables Grab.
 - Added create-stage/action/acknowledgement/readiness/category/duty/toast/deadline/exception/Stop/success audit details without
   adding them to the hub-safe snapshot. Local status and JSONL evidence now include active-recruitment, editor, Submit, and
-  PF owner-handle state and every observed visible/stored setting value. Regressions now cover exact preset construction,
+  PF owner-handle state, both condition `66`/`84` values in the existing evidence map, and every observed visible/stored
+  setting value. Regressions now cover exact preset construction,
   full-struct and opaque-byte preservation, local-slot preservation, stale-slot clearing, idempotency, passcode/layout
   validation, complete rollback, lifecycle ownership, native-unavailable preflight, exact later acknowledgement,
-  no-redispatch timeouts at every mutation stage, exceptions/unavailable agents, one Submit, strict publication, cleanup,
-  and Stop across every create stage.
-- Revision-17 verification results are recorded in `I63_DAD_ALLIANCE_PF_STATUS_TESTING.md`; operator-gated live acceptance
+  no-redispatch timeouts at every mutation stage, exceptions/unavailable agents, one Submit, all incomplete authoritative
+  publication combinations across both zero and nonzero diagnostic handles, post-Submit observation-only safety,
+  handle-independent Grab gating, retained-ownership cleanup, and Stop across every create stage.
+- Revision-19 verification results are recorded in `I63_DAD_ALLIANCE_PF_STATUS_TESTING.md`; operator-gated live acceptance
   remains Not Run.
 
 ## 2026-07-24 — I63 preset-driven alliance Party Finder formation (local-only, unpublished)

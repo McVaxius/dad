@@ -99,6 +99,7 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
             fixture.Ui.Actions,
             static action =>
                 action is DadAlliancePfCreateAction.ReloadCloseConditions or
+                    DadAlliancePfCreateAction.ReloadRestoreAllianceTab or
                     DadAlliancePfCreateAction.ReloadMainWindow or
                     DadAlliancePfCreateAction.ReloadOpenConditions);
     }
@@ -150,6 +151,9 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
                 action == DadAlliancePfCreateAction.SelectAlliance);
         Assert.DoesNotContain(
             DadAlliancePfCreateAction.ReloadMainWindow,
+            fixture.Ui.Actions);
+        Assert.DoesNotContain(
+            DadAlliancePfCreateAction.ReloadRestoreAllianceTab,
             fixture.Ui.Actions);
     }
 
@@ -208,10 +212,16 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
             fixture.Ui.Actions,
             static action =>
                 action == DadAlliancePfCreateAction.ReloadMainWindow);
+        Assert.DoesNotContain(
+            DadAlliancePfCreateAction.ReloadRestoreAllianceTab,
+            fixture.Ui.Actions);
     }
 
-    [Fact]
-    public void ReloadPreservesStoredAllianceTabOrBlocksWithoutRedispatch()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void OneCreateRestoresCancelResetTabOnceAndReachesSubmit(
+        bool mainWindowRemainsAvailable)
     {
         var fixture = new Fixture();
         fixture.ReachReloadCloseConditions();
@@ -223,22 +233,103 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
             ConditionVisible = false,
             ConditionReady = false,
             GroupTypeTab = 0,
+            MainVisible = mainWindowRemainsAvailable,
+            MainReady = mainWindowRemainsAvailable,
+            MainRecruitUsable = mainWindowRemainsAvailable,
         };
+        Assert.Equal(
+            DadAlliancePfCreateStage.ReloadRestoreAllianceTab,
+            fixture.Tick().Stage);
+        Assert.Equal(
+            DadAlliancePfCreateAction.ReloadRestoreAllianceTab,
+            fixture.SendCurrentStage());
 
-        var blocked = fixture.Tick();
-        fixture.AdvancePastObservationTimeout();
-        var later = fixture.Tick();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            GroupTypeTab =
+                DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab,
+        };
+        Assert.Equal(
+            DadAlliancePfCreateStage.ReloadMainWindow,
+            fixture.Tick().Stage);
+        if (!mainWindowRemainsAvailable)
+        {
+            Assert.Equal(
+                DadAlliancePfCreateAction.ReloadMainWindow,
+                fixture.SendCurrentStage());
+            fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+            {
+                MainVisible = true,
+                MainReady = true,
+                MainRecruitUsable = true,
+            };
+        }
+        Assert.Equal(
+            DadAlliancePfCreateStage.ReloadOpenConditions,
+            fixture.Tick().Stage);
+        Assert.Equal(
+            DadAlliancePfCreateAction.ReloadOpenConditions,
+            fixture.SendCurrentStage());
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            ConditionVisible = true,
+            ConditionReady = true,
+            AllianceSelected = true,
+        };
+        Assert.Equal(
+            DadAlliancePfCreateStage.SelectRaids,
+            fixture.Tick().Stage);
 
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, blocked.Kind);
-        Assert.Contains("stored Alliance", blocked.Summary);
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, later.Kind);
+        Assert.Equal(
+            DadAlliancePfCreateAction.SelectRaids,
+            fixture.SendCurrentStage());
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            SelectedCategory =
+                DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
+        };
+        Assert.Equal(
+            DadAlliancePfCreateStage.SelectDuty,
+            fixture.Tick().Stage);
+        fixture.Ui.Snapshot = fixture.DutyReadySnapshot();
+        Assert.Equal(
+            DadAlliancePfCreateAction.SelectDuty,
+            fixture.SendCurrentStage());
+        fixture.Ui.Snapshot = fixture.PreparedSelectorSnapshot();
+        Assert.Equal(
+            DadAlliancePfCreateStage.ApplyPreset,
+            fixture.Tick().Stage);
+        Assert.Equal(
+            DadAlliancePfCreateAction.ApplyPreset,
+            fixture.SendCurrentStage());
+        fixture.Ui.Snapshot = fixture.ExactSnapshot();
+        Assert.Equal(
+            DadAlliancePfCreateStage.Submit,
+            fixture.Tick().Stage);
+
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectAlliance);
         Assert.Single(
             fixture.Ui.Actions,
             static action =>
                 action == DadAlliancePfCreateAction.ReloadCloseConditions);
-        Assert.DoesNotContain(
-            DadAlliancePfCreateAction.ReloadOpenConditions,
-            fixture.Ui.Actions);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action ==
+                DadAlliancePfCreateAction.ReloadRestoreAllianceTab);
+        Assert.Equal(
+            mainWindowRemainsAvailable ? 0 : 1,
+            fixture.Ui.Actions.Count(
+                static action =>
+                    action ==
+                    DadAlliancePfCreateAction.ReloadMainWindow));
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.ApplyPreset);
     }
 
     [Fact]
@@ -266,6 +357,7 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
     [InlineData((int)DadAlliancePfCreateStage.OpenConditions)]
     [InlineData((int)DadAlliancePfCreateStage.SelectAlliance)]
     [InlineData((int)DadAlliancePfCreateStage.ReloadCloseConditions)]
+    [InlineData((int)DadAlliancePfCreateStage.ReloadRestoreAllianceTab)]
     [InlineData((int)DadAlliancePfCreateStage.ReloadMainWindow)]
     [InlineData((int)DadAlliancePfCreateStage.ReloadOpenConditions)]
     [InlineData((int)DadAlliancePfCreateStage.SelectRaids)]
@@ -602,7 +694,8 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
             ConditionVisible = false,
             ConditionReady = false,
             ActiveRecruitment = true,
-            OwnerHandle = 123,
+            ParticipatingInCrossWorldPartyOrAlliance = true,
+            OwnerHandle = 0,
         };
         var success = fixture.Tick();
 
@@ -610,20 +703,81 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
         Assert.True(submit.SubmitDispatched);
         Assert.Equal(DadAlliancePfCreateResultKind.Succeeded, success.Kind);
         Assert.Equal(DadAlliancePfCreateStage.Complete, success.Stage);
+        Assert.Equal(0ul, success.ListingId);
+        Assert.Contains(
+            "diagnostic only",
+            success.Summary,
+            StringComparison.Ordinal);
         Assert.Single(
             fixture.Ui.Actions,
             static action => action == DadAlliancePfCreateAction.Submit);
     }
 
     [Theory]
-    [InlineData(false, false, 0ul, true)]
-    [InlineData(true, false, 123ul, true)]
-    [InlineData(false, true, 0ul, true)]
-    [InlineData(false, true, 123ul, false)]
-    public void PublicationRequiresCompleteLaterSnapshot(
-        bool editorVisible,
-        bool active,
-        ulong owner,
+    [InlineData(0ul, 123ul)]
+    [InlineData(123ul, 0ul)]
+    [InlineData(123ul, 456ul)]
+    public void NativeOwnerHandleChangesDoNotAffectPublication(
+        ulong submitOwnerHandle,
+        ulong publishedOwnerHandle)
+    {
+        var fixture = new Fixture();
+        fixture.ReachSubmit();
+        fixture.Ui.Snapshot = fixture.ExactSnapshot() with
+        {
+            OwnerHandle = submitOwnerHandle,
+        };
+        fixture.Tick();
+        fixture.Ui.Snapshot = fixture.ExactSnapshot() with
+        {
+            ConditionVisible = false,
+            ConditionReady = false,
+            ActiveRecruitment = true,
+            ParticipatingInCrossWorldPartyOrAlliance = true,
+            OwnerHandle = publishedOwnerHandle,
+        };
+
+        var success = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Succeeded, success.Kind);
+        Assert.Equal(publishedOwnerHandle, success.ListingId);
+    }
+
+    public static IEnumerable<object[]> IncompletePublicationStates()
+    {
+        for (var mask = 0; mask < 32; mask++)
+        {
+            var editorHidden = (mask & 1) != 0;
+            var usingPartyFinder = (mask & 2) != 0;
+            var participating = (mask & 4) != 0;
+            var ownerNonzero = (mask & 8) != 0;
+            var exact = (mask & 16) != 0;
+            if (editorHidden &&
+                usingPartyFinder &&
+                participating &&
+                exact)
+            {
+                continue;
+            }
+
+            yield return
+            [
+                editorHidden,
+                usingPartyFinder,
+                participating,
+                ownerNonzero,
+                exact,
+            ];
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(IncompletePublicationStates))]
+    public void PublicationRejectsEveryIncompleteAuthoritativeSnapshot(
+        bool editorHidden,
+        bool usingPartyFinder,
+        bool participating,
+        bool ownerNonzero,
         bool exact)
     {
         var fixture = new Fixture();
@@ -631,18 +785,59 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
         fixture.Tick();
         fixture.Ui.Snapshot = fixture.ExactSnapshot() with
         {
-            ConditionVisible = editorVisible,
-            ConditionReady = editorVisible,
-            ActiveRecruitment = active,
-            OwnerHandle = owner,
+            ConditionVisible = !editorHidden,
+            ConditionReady = !editorHidden,
+            ActiveRecruitment = usingPartyFinder,
+            ParticipatingInCrossWorldPartyOrAlliance =
+                participating,
+            OwnerHandle = ownerNonzero ? 123ul : 0ul,
             StoredSettingsExact = exact,
             StoredSettingsContradictory =
-                active && !editorVisible && owner != 0 && !exact,
+                usingPartyFinder &&
+                editorHidden &&
+                !exact,
         };
 
         var result = fixture.Tick();
 
         Assert.NotEqual(DadAlliancePfCreateResultKind.Succeeded, result.Kind);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action => action == DadAlliancePfCreateAction.Submit);
+    }
+
+    [Fact]
+    public void PostSubmitConditionFlagsAreObservationOnly()
+    {
+        var fixture = new Fixture();
+        fixture.ReachSubmit();
+        Assert.True(fixture.Flow.RequiresMutationSafety);
+
+        var submit = fixture.Tick();
+        Assert.True(submit.SubmitDispatched);
+        Assert.False(fixture.Flow.RequiresMutationSafety);
+
+        fixture.Ui.Snapshot = fixture.ExactSnapshot() with
+        {
+            SafeToMutate = false,
+            SafetyBlocker = "The Party Finder creator must be solo.",
+            ConditionVisible = false,
+            ConditionReady = false,
+            ActiveRecruitment = true,
+            ParticipatingInCrossWorldPartyOrAlliance = true,
+            OwnerHandle = 0,
+        };
+        var success = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Succeeded, success.Kind);
+        Assert.Contains(
+            "condition-66-using-party-finder=True",
+            success.Readiness,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "condition-84-participating-cross-world-party-or-alliance=True",
+            success.Readiness,
+            StringComparison.Ordinal);
         Assert.Single(
             fixture.Ui.Actions,
             static action => action == DadAlliancePfCreateAction.Submit);
@@ -854,6 +1049,23 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
                 Tick().Stage);
         }
 
+        public void ReachReloadRestoreAllianceTab()
+        {
+            ReachReloadCloseConditions();
+            Assert.Equal(
+                DadAlliancePfCreateAction.ReloadCloseConditions,
+                SendCurrentStage());
+            Ui.Snapshot = Ui.Snapshot with
+            {
+                ConditionVisible = false,
+                ConditionReady = false,
+                GroupTypeTab = 0,
+            };
+            Assert.Equal(
+                DadAlliancePfCreateStage.ReloadRestoreAllianceTab,
+                Tick().Stage);
+        }
+
         public void ReachReloadOpenConditions()
         {
             ReachReloadMainWindow();
@@ -951,6 +1163,9 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
                     return;
                 case DadAlliancePfCreateStage.ReloadCloseConditions:
                     ReachReloadCloseConditions();
+                    return;
+                case DadAlliancePfCreateStage.ReloadRestoreAllianceTab:
+                    ReachReloadRestoreAllianceTab();
                     return;
                 case DadAlliancePfCreateStage.ReloadMainWindow:
                     ReachReloadMainWindow();

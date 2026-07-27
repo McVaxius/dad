@@ -297,7 +297,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         ThrowIfDisposed();
         lock (statusGate)
         {
-            if (status.State != DadAllianceRecruitmentState.ListingOpen || status.ListingId == 0)
+            if (!DadAlliancePartyFinderRules.CanGrabDads(status))
                 return SetBlocked("Create and verify active DAD-owned Labyrinth recruitment before grabbing dads.", status.Validation);
             grabRequested = true;
             coordinatorNextResendUtc = DateTime.MinValue;
@@ -403,7 +403,6 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         lock (statusGate)
         {
             stopCreate = !status.OwnsRecruitment &&
-                         status.ListingId == 0 &&
                          !string.IsNullOrWhiteSpace(status.CreateStage) &&
                          status.State is not DadAllianceRecruitmentState.Complete
                              and not DadAllianceRecruitmentState.Stopped;
@@ -411,7 +410,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.State = DadAllianceRecruitmentState.Stopped;
             status.UpdatedAtUtc = DateTime.UtcNow;
             status.Summary = string.IsNullOrWhiteSpace(reason) ? "Alliance recruitment stopped." : reason.Trim();
-            cleanupRequested |= status.OwnsRecruitment && status.ListingId != 0;
+            cleanupRequested |= status.OwnsRecruitment;
         }
         if (stopCreate)
             nativeGateway.StopCreate();
@@ -456,7 +455,6 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             current = status.Clone();
 
         if (!current.OwnsRecruitment &&
-            current.ListingId == 0 &&
             !string.IsNullOrWhiteSpace(current.CreateStage) &&
             current.State is DadAllianceRecruitmentState.CreatingListing
                 or DadAllianceRecruitmentState.RetryWaiting
@@ -467,9 +465,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             return;
         }
 
-        if (cleanupRequested && current.ListingId != 0)
+        if (cleanupRequested && current.OwnsRecruitment)
         {
-            var cleanup = nativeGateway.AdvanceEndRecruitment(current.ListingId);
+            var cleanup = nativeGateway.AdvanceEndRecruitment(current.OwnsRecruitment);
             lock (statusGate)
             {
                 status.CreateStage = cleanup.CreateStage;
@@ -1105,7 +1103,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             TimestampUtc = DateTime.UtcNow,
             Event = eventName,
             RecruitmentId = current.RecruitmentId,
-            PfOwnerHandle = step.ListingId != 0 ? step.ListingId : current.ListingId,
+            PfOwnerHandle = step.ListingId,
             SessionId = presenceService.WorkerSessionId.Value,
             HostName = current.LeaderName,
             HostWorld = current.LeaderWorld,
@@ -1129,6 +1127,19 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 ? step.LastError
                 : string.Empty,
             Summary = step.Summary,
+            Evidence = step.CreateStage.StartsWith(
+                "Cleanup:",
+                StringComparison.Ordinal)
+                ? []
+                : new Dictionary<string, string>
+                {
+                    ["condition-66-using-party-finder"] =
+                        step.ActiveRecruitment.ToString().ToLowerInvariant(),
+                    ["condition-84-participating-cross-world-party-or-alliance"] =
+                        step.ParticipatingInCrossWorldPartyOrAlliance
+                            .ToString()
+                            .ToLowerInvariant(),
+                },
         });
     }
 

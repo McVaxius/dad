@@ -14,6 +14,7 @@
     <Compile Include="..\Configuration.cs" Link="Configuration.cs" />
     <Reference Include="FFXIVClientStructs" HintPath="$(DalamudLibPath)FFXIVClientStructs.dll" Private="true" />
     <Reference Include="InteropGenerator.Runtime" HintPath="$(DalamudLibPath)InteropGenerator.Runtime.dll" Private="true" />
+    <Reference Include="Dalamud" HintPath="$(DalamudLibPath)Dalamud.dll" Private="true" Aliases="DalamudApi" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">

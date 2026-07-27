@@ -1,8 +1,13 @@
+extern alias DalamudApi;
+
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Runtime.InteropServices;
 using dad.Services;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using Xunit;
+using ConditionFlag =
+    DalamudApi::Dalamud.Game.ClientState.Conditions.ConditionFlag;
 
 namespace dad.Tests;
 
@@ -126,6 +131,17 @@ public sealed class DadAlliancePartyFinderApi15LayoutTests
             8,
             (byte)AgentLookingForGroup.CompletionStatus
                 .DutyCompleteWeeklyUnclaimed);
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows7.0")]
+    public void PartyFinderConditionValuesArePinned()
+    {
+        Assert.Equal(66, (int)ConditionFlag.UsingPartyFinder);
+        Assert.Equal(
+            84,
+            (int)ConditionFlag
+                .ParticipatingInCrossWorldPartyOrAlliance);
     }
 
     private static void AssertOffset<T>(string field, int expected)

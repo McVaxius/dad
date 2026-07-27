@@ -51,8 +51,8 @@ internal readonly record struct DadAlliancePfCleanupResult(
 
 /// <summary>
 /// Pure recruitment-only cleanup coordinator. Each destructive step is gated by
-/// a later observation and the final acknowledgement requires both local
-/// recruitment status and the opaque PF owner handle to clear.
+/// retained DAD ownership and a later observation. Closure is acknowledged when
+/// authoritative condition 66 reports that recruitment is no longer active.
 /// </summary>
 internal sealed class DadAlliancePartyFinderCleanupFlow
 {
@@ -80,7 +80,7 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
 
     public DadAlliancePfCleanupStage Stage => stage;
 
-    public DadAlliancePfCleanupResult Advance(ulong expectedOwnerHandle)
+    public DadAlliancePfCleanupResult Advance(bool dadOwnsRecruitment)
     {
         var now = EnsureUtc(utcNow());
         if (stopped)
@@ -110,10 +110,10 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
             return Block(snapshot.HardBlocker, snapshot);
         if (!snapshot.AgentAvailable)
             return ScheduleRetry(now, "Party Finder agent is unavailable during cleanup.", snapshot);
-        if (expectedOwnerHandle == 0)
-            return Block("DAD cannot clean up recruitment without its acknowledged PF owner handle.", snapshot);
+        if (!dadOwnsRecruitment)
+            return Block("DAD cannot clean up recruitment without retained DAD ownership.", snapshot);
 
-        if (!snapshot.ActiveRecruitment && snapshot.OwnerHandle == 0)
+        if (!snapshot.ActiveRecruitment)
         {
             stage = DadAlliancePfCleanupStage.Complete;
             nextActionUtc = DateTime.MinValue;
@@ -121,24 +121,6 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
                 DadAlliancePfCreateResultKind.Succeeded,
                 "success",
                 "DAD-owned recruitment ended; the formed alliance was preserved.",
-                snapshot,
-                true);
-        }
-
-        if (snapshot.OwnerHandle != 0 && snapshot.OwnerHandle != expectedOwnerHandle)
-        {
-            return Block(
-                "The active PF owner handle no longer matches DAD's acknowledged owner handle.",
-                snapshot);
-        }
-
-        if (stage != DadAlliancePfCleanupStage.AwaitClosure &&
-            (!snapshot.ActiveRecruitment || snapshot.OwnerHandle == 0))
-        {
-            return Result(
-                DadAlliancePfCreateResultKind.Waiting,
-                "readiness",
-                "Waiting for active owned recruitment before cleanup continues.",
                 snapshot,
                 true);
         }
@@ -153,7 +135,7 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
             DadAlliancePfCleanupStage.AwaitClosure => Result(
                 DadAlliancePfCreateResultKind.Waiting,
                 "readiness",
-                "Waiting for active recruitment status and the PF owner handle to clear.",
+                "Waiting for condition 66 UsingPartyFinder to clear.",
                 snapshot,
                 true),
             _ => Block($"Unsupported Party Finder cleanup stage {stage}.", snapshot),

@@ -1196,7 +1196,7 @@ public sealed class MainWindow : Window, IDisposable
             ? display.State.ToString()
             : $"{display.LeaderName} @ {display.LeaderWorld} | {display.State}");
         DrawStatusRow(
-            "PF owner handle",
+            "PF owner handle (diagnostic)",
             display.ListingId == 0
                 ? "(none)"
                 : display.ListingId.ToString(CultureInfo.InvariantCulture));
@@ -1252,7 +1252,7 @@ public sealed class MainWindow : Window, IDisposable
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
-        var canGrab = live.State == DadAllianceRecruitmentState.ListingOpen && live.ListingId != 0;
+        var canGrab = DadAlliancePartyFinderRules.CanGrabDads(live);
         ImGui.BeginDisabled(!canGrab);
         if (DadUi.Button("Grab dads", DadUiTone.Accent))
         {

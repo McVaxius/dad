@@ -37,6 +37,7 @@ internal readonly record struct DadAllianceNativeStep(
     ushort DutyId = 0,
     int ElapsedMilliseconds = 0,
     bool ActiveRecruitment = false,
+    bool ParticipatingInCrossWorldPartyOrAlliance = false,
     bool EditorVisible = false,
     bool SubmitDispatched = false,
     string ConfigurationTarget = "",
@@ -87,7 +88,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
         this.dataManager = dataManager;
         this.log = log;
         var nativeActions = new DadAlliancePartyFinderTypedNativeActions();
-        var recruitmentObserver = new DadAllianceLocalRecruitmentObserver(objectTable);
+        var recruitmentObserver =
+            new DadAllianceLocalRecruitmentObserver(condition);
         var presetLoader =
             new DadAlliancePartyFinderPresetLoader(gameInteropProvider);
         createUi = new DadAlliancePartyFinderECommonsAdapter(
@@ -107,20 +109,23 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
     public DadAllianceNativeStep AdvanceCreate(int passcode)
     {
         RequireFrameworkThread();
-        var safety = ValidateSafeMutation(requireSolo: true);
-        if (!string.IsNullOrWhiteSpace(safety))
+        if (createFlow.RequiresMutationSafety)
         {
-            return new DadAllianceNativeStep(
-                DadAllianceNativeStepKind.Waiting,
-                DadAllianceRecruitmentState.WaitingUnsafe,
-                safety,
-                CreateStage: createFlow.Stage.ToString(),
-                Attempt: createFlow.Attempt,
-                NextRetryUtc: createFlow.NextRetryUtc,
-                LastError: createFlow.LastError,
-                Readiness: "unsafe",
-                ConfigurationTarget: string.Empty,
-                ShouldAudit: true);
+            var safety = ValidateSafeMutation(requireSolo: true);
+            if (!string.IsNullOrWhiteSpace(safety))
+            {
+                return new DadAllianceNativeStep(
+                    DadAllianceNativeStepKind.Waiting,
+                    DadAllianceRecruitmentState.WaitingUnsafe,
+                    safety,
+                    CreateStage: createFlow.Stage.ToString(),
+                    Attempt: createFlow.Attempt,
+                    NextRetryUtc: createFlow.NextRetryUtc,
+                    LastError: createFlow.LastError,
+                    Readiness: "unsafe",
+                    ConfigurationTarget: string.Empty,
+                    ShouldAudit: true);
+            }
         }
 
         var result = createFlow.Advance(passcode);
@@ -158,6 +163,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
             DutyId: result.DutyId,
             ElapsedMilliseconds: result.ElapsedMilliseconds,
             ActiveRecruitment: result.ActiveRecruitment,
+            ParticipatingInCrossWorldPartyOrAlliance:
+                result.ParticipatingInCrossWorldPartyOrAlliance,
             EditorVisible: result.EditorVisible,
             SubmitDispatched: result.SubmitDispatched,
             ConfigurationTarget: result.ConfigurationTarget,
@@ -311,14 +318,14 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
             observed);
     }
 
-    public DadAllianceNativeStep AdvanceEndRecruitment(ulong expectedOwnerHandle)
+    public DadAllianceNativeStep AdvanceEndRecruitment(bool dadOwnsRecruitment)
     {
         RequireFrameworkThread();
         var safety = ValidateSafeMutation(requireSolo: false, allowParty: true);
         if (!string.IsNullOrWhiteSpace(safety))
             return Waiting(DadAllianceRecruitmentState.WaitingUnsafe, safety);
 
-        var result = cleanupFlow.Advance(expectedOwnerHandle);
+        var result = cleanupFlow.Advance(dadOwnsRecruitment);
         return new DadAllianceNativeStep(
             result.Kind switch
             {

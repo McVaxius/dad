@@ -154,6 +154,7 @@ public sealed class DadAlliancePartyFinderRulesTests
     [Theory]
     [InlineData(DadAllianceRecruitmentState.CreatingListing, false, 0, "ApplyPreset")]
     [InlineData(DadAllianceRecruitmentState.Blocked, false, 0, "Blocked")]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, true, 0, "Complete")]
     [InlineData(DadAllianceRecruitmentState.ListingOpen, true, 777, "Complete")]
     public void StopControlIsAvailableForPendingBlockedAndPublishedOwnedRecruitment(
         DadAllianceRecruitmentState state,
@@ -184,6 +185,32 @@ public sealed class DadAlliancePartyFinderRulesTests
                 OwnsRecruitment = false,
                 CreateStage = "Complete",
             }));
+    }
+
+    [Theory]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, true, 777ul, true)]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, true, 0ul, true)]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, true, ulong.MaxValue, true)]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, false, 0ul, false)]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, false, 777ul, false)]
+    [InlineData(DadAllianceRecruitmentState.Blocked, true, 777ul, false)]
+    [InlineData(DadAllianceRecruitmentState.Stopped, true, 777ul, false)]
+    public void GrabRequiresOwnedListingOpenRegardlessOfDiagnosticOwnerHandle(
+        DadAllianceRecruitmentState state,
+        bool ownsRecruitment,
+        ulong listingId,
+        bool expected)
+    {
+        var status = new DadAlliancePartyFinderStatus
+        {
+            State = state,
+            OwnsRecruitment = ownsRecruitment,
+            ListingId = listingId,
+        };
+
+        Assert.Equal(
+            expected,
+            DadAlliancePartyFinderRules.CanGrabDads(status));
     }
 
     [Fact]
@@ -264,6 +291,12 @@ public sealed class DadAlliancePartyFinderRulesTests
                     "passcode-visible=9752; passcode-stored=9752",
                 Summary =
                     "Loaded the DAD-owned Alliance preset and invoked one refresh.",
+                Evidence = new Dictionary<string, string>
+                {
+                    ["condition-66-using-party-finder"] = "true",
+                    ["condition-84-participating-cross-world-party-or-alliance"] =
+                        "true",
+                },
             };
 
             Assert.True(audit.TryWrite(record));
@@ -283,6 +316,14 @@ public sealed class DadAlliancePartyFinderRulesTests
             Assert.Contains("\"activeRecruitment\":false", lines[0], StringComparison.Ordinal);
             Assert.Contains("\"editorVisible\":true", lines[0], StringComparison.Ordinal);
             Assert.Contains("\"submitDispatched\":false", lines[0], StringComparison.Ordinal);
+            Assert.Contains(
+                "\"condition-66-using-party-finder\":\"true\"",
+                lines[0],
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "\"condition-84-participating-cross-world-party-or-alliance\":\"true\"",
+                lines[0],
+                StringComparison.Ordinal);
             Assert.Contains("\"configurationTarget\":\"\"", lines[0], StringComparison.Ordinal);
             Assert.Contains(
                 "\"observedSettings\":\"alliance-tab=False; alliance-a=False; " +

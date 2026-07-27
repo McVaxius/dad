@@ -1,3 +1,4 @@
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
 using ECommons.Automation.UIInput;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -9,17 +10,19 @@ namespace dad.Services;
 internal sealed class DadAllianceLocalRecruitmentObserver :
     IDadAllianceRecruitmentObserver
 {
-    private const uint RecruitingOnlineStatusId = 26;
-    private readonly IObjectTable objectTable;
+    private readonly ICondition condition;
 
-    public DadAllianceLocalRecruitmentObserver(IObjectTable objectTable)
+    public DadAllianceLocalRecruitmentObserver(ICondition condition)
     {
-        this.objectTable = objectTable;
+        this.condition = condition;
     }
 
     public bool IsActiveRecruitment
-        => objectTable.LocalPlayer?.OnlineStatus.RowId ==
-           RecruitingOnlineStatusId;
+        => condition[ConditionFlag.UsingPartyFinder];
+
+    public bool IsParticipatingInCrossWorldPartyOrAlliance
+        => condition[
+            ConditionFlag.ParticipatingInCrossWorldPartyOrAlliance];
 }
 
 /// <summary>
