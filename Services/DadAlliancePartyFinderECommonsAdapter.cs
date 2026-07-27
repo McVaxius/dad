@@ -117,7 +117,8 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var storedPasscode = stored == null ? 0 : stored->Password;
         var storedCrossWorldRecruitment =
             stored != null &&
-            stored->LimitRecruitingToWorld == 0;
+            DadAlliancePartyFinderPresetRules.IsStoredCrossWorldRecruitment(
+                stored->LimitRecruitingToWorld);
         var storedOnePlayerPerJob =
             stored != null &&
             stored->OnePlayerPerJob != 0;
@@ -225,6 +226,13 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
                 nativeActions.Perform(DadAlliancePfNativeAction.OpenConditions),
             DadAlliancePfCreateAction.SelectAlliance =>
                 nativeActions.Perform(DadAlliancePfNativeAction.SelectAlliance),
+            DadAlliancePfCreateAction.ReloadCloseConditions =>
+                nativeActions.Perform(DadAlliancePfNativeAction.CloseConditions),
+            DadAlliancePfCreateAction.ReloadMainWindow =>
+                commandDispatcher.TryExecute(
+                    "Requested the Party Finder window for the Alliance editor reload."),
+            DadAlliancePfCreateAction.ReloadOpenConditions =>
+                nativeActions.Perform(DadAlliancePfNativeAction.OpenConditions),
             DadAlliancePfCreateAction.SelectRaids =>
                 nativeActions.Perform(DadAlliancePfNativeAction.SelectRaids),
             DadAlliancePfCreateAction.SelectDuty =>
@@ -378,7 +386,8 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
            stored->Password == passcode &&
            stored->NumberOfGroups == 3 &&
            stored->NumberOfSlotsInMainParty == 8 &&
-           stored->LimitRecruitingToWorld == 0 &&
+           DadAlliancePartyFinderPresetRules.IsStoredCrossWorldRecruitment(
+               stored->LimitRecruitingToWorld) &&
            stored->OnePlayerPerJob == 0 &&
            string.IsNullOrEmpty(stored->CommentString) &&
            StoredOpenSlotsUnrestricted(stored);

@@ -38,6 +38,16 @@
   that selector invalid. DAD now dispatches Alliance `[Int 35, UInt 1, Undefined]`, Raids
   `[Int 12, UInt 5, Undefined]`, and the exact enabled Labyrinth row `[Int 13, UInt index, Undefined]` once each, requiring
   a later acknowledgement within five seconds after each action.
+- Superseded revision 16 after two W Create attempts never dispatched Submit. The first changed stored `GroupTypeTab` to
+  Alliance while the open editor kept a stale radio; the second reached preset acknowledgement but exposed reversed
+  cross-world storage semantics and a stale convenience-checkbox gate.
+- One Create now acknowledges stored Alliance tab state, continues directly when its radio is visible, or closes conditions
+  once through typed Cancel, reuses or reopens the main PF window only as needed, reopens conditions once, and requires the
+  Alliance radio before continuing. Alliance is never resent. Every close/open remains single-dispatch with its own
+  five-second acknowledgement deadline, and the next ready action may dispatch on the next 250 ms poll.
+- Corrected API-15 cross-world storage to write and require `LimitRecruitingToWorld == 1`. Submit still requires visible
+  cross-world state and all 23 exact unrestricted stored slot flags; `RemoveRoleRestrictionsCheckBox.IsChecked` remains in
+  diagnostics but is no longer recruitment-payload authority.
 - Ported the complete PartyFinderPresets transaction contract to the installed API-15 structs: capture and restore all
   `0x478` recruitment bytes, `GroupTypeTab`, `AvgItemLvEnabled`, and `AvgItemLv`; preserve the opaque duty selector and the
   current objective, completion, language, loot, and item-level values; then overlay only the exact DAD private Alliance A
@@ -66,7 +76,7 @@
   validation, complete rollback, lifecycle ownership, native-unavailable preflight, exact later acknowledgement,
   no-redispatch timeouts at every mutation stage, exceptions/unavailable agents, one Submit, strict publication, cleanup,
   and Stop across every create stage.
-- Revision-16 verification results are recorded in `I63_DAD_ALLIANCE_PF_STATUS_TESTING.md`; operator-gated live acceptance
+- Revision-17 verification results are recorded in `I63_DAD_ALLIANCE_PF_STATUS_TESTING.md`; operator-gated live acceptance
   remains Not Run.
 
 ## 2026-07-24 — I63 preset-driven alliance Party Finder formation (local-only, unpublished)

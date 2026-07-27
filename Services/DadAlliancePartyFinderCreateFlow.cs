@@ -8,6 +8,9 @@ internal enum DadAlliancePfCreateStage
     OpenMainWindow,
     OpenConditions,
     SelectAlliance,
+    ReloadCloseConditions,
+    ReloadMainWindow,
+    ReloadOpenConditions,
     SelectRaids,
     SelectDuty,
     ApplyPreset,
@@ -23,6 +26,9 @@ internal enum DadAlliancePfCreateAction
     OpenMainWindow,
     OpenConditions,
     SelectAlliance,
+    ReloadCloseConditions,
+    ReloadMainWindow,
+    ReloadOpenConditions,
     SelectRaids,
     SelectDuty,
     ApplyPreset,
@@ -266,6 +272,17 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 "Party Finder agent is unavailable; DAD will not dispatch or redispatch this Create request.",
                 snapshot);
         }
+        if ((stage is DadAlliancePfCreateStage.ReloadCloseConditions or
+                DadAlliancePfCreateStage.ReloadMainWindow or
+                DadAlliancePfCreateStage.ReloadOpenConditions) &&
+            snapshot.GroupTypeTab !=
+                DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab)
+        {
+            return Block(
+                now,
+                "The stored Alliance Party Finder tab changed during the one allowed editor reload.",
+                snapshot);
+        }
         if (stage == DadAlliancePfCreateStage.Submit &&
             !submitDispatched &&
             !HasExactPresetAcknowledgement(snapshot, passcode))
@@ -366,6 +383,25 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 => DadAlliancePfCreateStage.SelectAlliance,
             DadAlliancePfCreateStage.SelectAlliance when
                 actionDispatched &&
+                snapshot.GroupTypeTab ==
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab &&
+                snapshot.AllianceSelected
+                => DadAlliancePfCreateStage.SelectRaids,
+            DadAlliancePfCreateStage.SelectAlliance when
+                actionDispatched &&
+                snapshot.GroupTypeTab ==
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab
+                => DadAlliancePfCreateStage.ReloadCloseConditions,
+            DadAlliancePfCreateStage.ReloadCloseConditions when
+                actionDispatched &&
+                !snapshot.ConditionVisible
+                => DadAlliancePfCreateStage.ReloadMainWindow,
+            DadAlliancePfCreateStage.ReloadMainWindow when
+                snapshot.MainReady &&
+                snapshot.MainRecruitUsable
+                => DadAlliancePfCreateStage.ReloadOpenConditions,
+            DadAlliancePfCreateStage.ReloadOpenConditions when
+                actionDispatched &&
                 snapshot.ConditionReady &&
                 snapshot.GroupTypeTab ==
                     DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab &&
@@ -444,6 +480,12 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             DadAlliancePfCreateStage.OpenMainWindow => DadAlliancePfCreateAction.OpenMainWindow,
             DadAlliancePfCreateStage.OpenConditions => DadAlliancePfCreateAction.OpenConditions,
             DadAlliancePfCreateStage.SelectAlliance => DadAlliancePfCreateAction.SelectAlliance,
+            DadAlliancePfCreateStage.ReloadCloseConditions =>
+                DadAlliancePfCreateAction.ReloadCloseConditions,
+            DadAlliancePfCreateStage.ReloadMainWindow =>
+                DadAlliancePfCreateAction.ReloadMainWindow,
+            DadAlliancePfCreateStage.ReloadOpenConditions =>
+                DadAlliancePfCreateAction.ReloadOpenConditions,
             DadAlliancePfCreateStage.SelectRaids => DadAlliancePfCreateAction.SelectRaids,
             DadAlliancePfCreateStage.SelectDuty => DadAlliancePfCreateAction.SelectDuty,
             DadAlliancePfCreateStage.ApplyPreset => DadAlliancePfCreateAction.ApplyPreset,
@@ -510,6 +552,17 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 DadAlliancePfCreateStage.ApplyPreset
                 when !snapshot.ConditionReady
                 => "Waiting for Party Finder conditions to become ready.",
+            DadAlliancePfCreateStage.ReloadCloseConditions when
+                !snapshot.ConditionReady
+                => "Waiting for the Alliance conditions editor to become ready for its one allowed typed Cancel action.",
+            DadAlliancePfCreateStage.ReloadMainWindow when
+                snapshot.MainVisible &&
+                (!snapshot.MainReady || !snapshot.MainRecruitUsable)
+                => "Waiting for the retained Party Finder window to become fully usable before reopening conditions.",
+            DadAlliancePfCreateStage.ReloadOpenConditions when
+                !snapshot.MainReady ||
+                !snapshot.MainRecruitUsable
+                => "Waiting for the retained or reopened Party Finder window before the one allowed conditions reopen.",
             DadAlliancePfCreateStage.SelectDuty when
                 !snapshot.DutyListLoaded ||
                 snapshot.TargetDutyDropDownMatches != 1 ||
@@ -567,6 +620,12 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             DadAlliancePfCreateStage.OpenConditions => "opening recruitment conditions",
             DadAlliancePfCreateStage.SelectAlliance =>
                 "preparing the game-owned Alliance selector",
+            DadAlliancePfCreateStage.ReloadCloseConditions =>
+                "closing the stale Alliance conditions editor",
+            DadAlliancePfCreateStage.ReloadMainWindow =>
+                "ensuring Party Finder is open for the Alliance editor reload",
+            DadAlliancePfCreateStage.ReloadOpenConditions =>
+                "reopening the Alliance conditions editor",
             DadAlliancePfCreateStage.SelectRaids =>
                 "preparing the game-owned Raids selector",
             DadAlliancePfCreateStage.SelectDuty =>
@@ -602,7 +661,6 @@ internal sealed class DadAlliancePartyFinderCreateFlow
            !snapshot.StoredOnePlayerPerJob &&
            snapshot.EmptyComment &&
            snapshot.StoredEmptyComment &&
-           snapshot.UnrestrictedJobs &&
            snapshot.StoredOpenSlotsUnrestricted &&
            snapshot.StoredStaleMembersCleared &&
            snapshot.NumberOfGroups == 3 &&

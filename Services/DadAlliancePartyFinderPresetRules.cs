@@ -47,6 +47,7 @@ internal sealed record DadAlliancePartyFinderPresetDefinition
     public const ushort LabyrinthDutyId = 92;
     public const byte AllianceGroupCount = 3;
     public const byte SlotsPerAllianceGroup = 8;
+    public const byte CrossWorldRecruitment = 1;
     public const ulong AllJobsOpenSlotFlag = 0xFFFFFFFE;
 }
 
@@ -117,7 +118,8 @@ internal static class DadAlliancePartyFinderPresetRules
             DadAlliancePartyFinderApi15Layout.NumberOfSlotsInMainPartyOffset] =
             DadAlliancePartyFinderPresetDefinition.SlotsPerAllianceGroup;
         recruitmentSub[
-            DadAlliancePartyFinderApi15Layout.LimitRecruitingToWorldOffset] = 0;
+            DadAlliancePartyFinderApi15Layout.LimitRecruitingToWorldOffset] =
+            DadAlliancePartyFinderPresetDefinition.CrossWorldRecruitment;
         recruitmentSub[
             DadAlliancePartyFinderApi15Layout.OnePlayerPerJobOffset] = 0;
         recruitmentSub[
@@ -150,6 +152,11 @@ internal static class DadAlliancePartyFinderPresetRules
 
         return prepared with { RecruitmentSub = recruitmentSub };
     }
+
+    public static bool IsStoredCrossWorldRecruitment(
+        byte limitRecruitingToWorld)
+        => limitRecruitingToWorld ==
+           DadAlliancePartyFinderPresetDefinition.CrossWorldRecruitment;
 
     private static void RequireExactSize(ReadOnlySpan<byte> recruitmentSub)
     {

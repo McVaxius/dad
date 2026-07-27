@@ -105,11 +105,15 @@ dotnet test .\Tests\dad.Tests.csproj
   Party Finder by submitting only the fixed native `/pfinder` chat command and polls readiness at 250 ms. Current typed
   ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to stateless UI-input helpers. DAD
   dispatches Alliance, Raids, and the exact enabled Labyrinth row once each, requiring a later acknowledgement within five
-  seconds after every action. Duty selection therefore lets the game populate the complete API-15 selector, including its
-  opaque discriminator. DAD then captures the full current recruitment struct plus group tab and average-item-level state,
-  overlays only the private passcode, cross-world/no-duplicate-job settings, empty comment, Alliance A `3x8` membership,
-  cleared stale members, and 23 unrestricted open slots, writes the full state once, and invokes one DAD-resolved editor
-  refresh. Objective, completion, language, loot, item-level, and opaque selector values remain game-owned. The
+  seconds after every action. If Alliance changes the stored group tab before the open editor reflects its radio, the same
+  Create request closes conditions once, reuses or reopens the main PF window as needed, reopens conditions once, and
+  requires the Alliance radio before continuing; it never resends Alliance. A ready next action may dispatch on the next
+  250 ms poll. Duty selection lets the game populate the complete API-15 selector, including its opaque discriminator. DAD
+  then captures the full current recruitment struct plus group tab and average-item-level state, overlays only the private
+  passcode, API-15 cross-world byte `1`, no-duplicate-job setting, empty comment, Alliance A `3x8` membership, cleared stale
+  members, and 23 unrestricted open slots, writes the full state once, and invokes one DAD-resolved editor refresh. The
+  exact stored slot flags authorize unrestricted recruitment; the convenience checkbox remains diagnostic only. Objective,
+  completion, language, loot, item-level, and opaque selector values remain game-owned. The
   implementation is source-adapted from PartyFinderPresets but does not discover, load, reflect into, call, or exchange IPC
   with that plugin. An unavailable refresh signature blocks before any agent write; an apply or refresh failure restores
   the complete original state. A mutation never advances the state machine by dispatch alone: a later snapshot must

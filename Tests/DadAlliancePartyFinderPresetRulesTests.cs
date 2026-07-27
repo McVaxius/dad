@@ -50,6 +50,21 @@ public sealed class DadAlliancePartyFinderPresetRulesTests
             DadAlliancePartyFinderPresetDefinition.AllianceGroupCount,
             preset.RecruitmentSub[
                 DadAlliancePartyFinderApi15Layout.NumberOfGroupsOffset]);
+        Assert.Equal(
+            DadAlliancePartyFinderPresetDefinition.CrossWorldRecruitment,
+            preset.RecruitmentSub[
+                DadAlliancePartyFinderApi15Layout.LimitRecruitingToWorldOffset]);
+    }
+
+    [Fact]
+    public void Api15CrossWorldStorageAcceptsRawOneAndRejectsRawZero()
+    {
+        Assert.True(
+            DadAlliancePartyFinderPresetRules
+                .IsStoredCrossWorldRecruitment(1));
+        Assert.False(
+            DadAlliancePartyFinderPresetRules
+                .IsStoredCrossWorldRecruitment(0));
     }
 
     [Fact]
