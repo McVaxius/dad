@@ -5,10 +5,15 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DalamudLibPath Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(appdata)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
+    <DalamudLibPath Condition="$(DALAMUD_HOME) != ''">$(DALAMUD_HOME)/</DalamudLibPath>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="..\Configuration.cs" Link="Configuration.cs" />
+    <Reference Include="FFXIVClientStructs" HintPath="$(DalamudLibPath)FFXIVClientStructs.dll" Private="true" />
+    <Reference Include="InteropGenerator.Runtime" HintPath="$(DalamudLibPath)InteropGenerator.Runtime.dll" Private="true" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
@@ -99,7 +104,12 @@
     <Compile Include="..\Services\DadAutoPartyFleetTsv.cs" Link="DadAutoPartyFleetTsv.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetMatrixService.cs" Link="DadAutoPartyFleetMatrixService.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderRules.cs" Link="DadAlliancePartyFinderRules.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderPresetRules.cs" Link="DadAlliancePartyFinderPresetRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCreateFlow.cs" Link="DadAlliancePartyFinderCreateFlow.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderCleanupFlow.cs" Link="DadAlliancePartyFinderCleanupFlow.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderNativeActionRules.cs" Link="DadAlliancePartyFinderNativeActionRules.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderCreatePreflight.cs" Link="DadAlliancePartyFinderCreatePreflight.cs" />
+    <Compile Include="..\Services\DadGameCommandExecutor.cs" Link="DadGameCommandExecutor.cs" />
     <Compile Include="..\Services\DadAllianceDiscordProtocol.cs" Link="DadAllianceDiscordProtocol.cs" />
     <Compile Include="..\Services\DadAlliancePfAuditLog.cs" Link="DadAlliancePfAuditLog.cs" />
   </ItemGroup>

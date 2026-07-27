@@ -1,8 +1,6 @@
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Memory;
 using Dalamud.Plugin.Services;
-using ECommons.Automation.UIInput;
-using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
@@ -11,15 +9,21 @@ using Lumina.Excel.Sheets;
 namespace dad.Services;
 
 /// <summary>
-/// Framework-thread UI adapter. It intentionally uses only ECommons stateless
-/// addon wrappers and UI-input helpers; ECommons' global service layer is never
-/// initialized.
+/// Framework-thread UI adapter. Current typed ClientStructs own the Party Finder
+/// controls; ECommons is limited to stateless UI-input extensions and its global
+/// service layer is never initialized.
 /// </summary>
 internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
     IDadAlliancePartyFinderCreateUi,
+    IDadAlliancePartyFinderCleanupUi,
     IDisposable
 {
-    private readonly ICommandManager commandManager;
+    private const ushort PasswordDisabled = 10000;
+    private const ulong AllJobsOpenSlotFlag = 0xFFFFFFFE;
+    private readonly DadAlliancePartyFinderCommandDispatcher commandDispatcher;
+    private readonly IDadAlliancePartyFinderNativeActions nativeActions;
+    private readonly IDadAlliancePartyFinderPresetLoader presetLoader;
+    private readonly IDadAllianceRecruitmentObserver recruitmentObserver;
     private readonly IDataManager dataManager;
     private readonly IToastGui toastGui;
     private int errorToastSequence;
@@ -28,11 +32,17 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
     private bool disposed;
 
     public DadAlliancePartyFinderECommonsAdapter(
-        ICommandManager commandManager,
+        IDadGameCommandExecutor gameCommandExecutor,
+        IDadAlliancePartyFinderNativeActions nativeActions,
+        IDadAlliancePartyFinderPresetLoader presetLoader,
+        IDadAllianceRecruitmentObserver recruitmentObserver,
         IDataManager dataManager,
         IToastGui toastGui)
     {
-        this.commandManager = commandManager;
+        commandDispatcher = new DadAlliancePartyFinderCommandDispatcher(gameCommandExecutor);
+        this.nativeActions = nativeActions;
+        this.presetLoader = presetLoader;
+        this.recruitmentObserver = recruitmentObserver;
         this.dataManager = dataManager;
         this.toastGui = toastGui;
         toastGui.ErrorToast += OnErrorToast;
@@ -48,16 +58,17 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
         var mainVisible = main != null && main->AddonLookingForGroupBase.AtkUnitBase.IsVisible;
         var conditionVisible = condition != null && condition->AtkUnitBase.IsVisible;
-        var mainMaster = mainVisible ? new AddonMaster.LookingForGroup(main) : null;
-        var conditionMaster = conditionVisible ? new AddonMaster.LookingForGroupCondition(condition) : null;
-        var mainReady = mainMaster?.IsAddonReady == true;
-        var conditionReady = conditionMaster?.IsAddonReady == true;
+        var mainReady = mainVisible && main->AddonLookingForGroupBase.AtkUnitBase.IsReady;
+        var conditionReady = conditionVisible && condition->AtkUnitBase.IsReady;
+        var activeRecruitment = recruitmentObserver.IsActiveRecruitment;
         var hardBlocker = string.Empty;
 
-        if (mainReady && mainMaster!.RecruitMembersButton == null)
+        if (mainReady && main->RecruitMembersButton == null)
             hardBlocker = "The fully loaded Party Finder window is missing Recruit Members.";
         if (conditionReady && !HasRequiredConditionControls(condition))
             hardBlocker = "The fully loaded Party Finder conditions window is missing required alliance controls.";
+        if (!presetLoader.IsAvailable)
+            hardBlocker = presetLoader.UnavailableReason;
 
         var targetDutyIds = dataManager.GetExcelSheet<ContentFinderCondition>()
             .Where(static row => string.Equals(
@@ -69,11 +80,13 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var targetDutyId = targetDutyIds.Length == 1 ? targetDutyIds[0] : (ushort)0;
         var dropDownMatches = 0;
         var dutyEntryEnabled = false;
+        var selectedDutyDropDownIndex = -1;
         if (conditionReady &&
             condition->DutyDropDown != null &&
             condition->DutyDropDown->List != null)
         {
             var list = condition->DutyDropDown->List;
+            selectedDutyDropDownIndex = list->SelectedItemIndex;
             var count = Math.Max(0, list->GetItemCount());
             for (var index = 0; index < count; index++)
             {
@@ -98,32 +111,65 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var stored = agent == null ? null : &agent->StoredRecruitmentInfo;
         var selectedCategory = stored == null ? 0u : (uint)stored->SelectedCategory;
         var selectedDutyId = stored == null ? (ushort)0 : stored->SelectedDutyId;
+        var storedPrivateRecruitment =
+            stored != null &&
+            stored->Password != PasswordDisabled;
+        var storedPasscode = stored == null ? 0 : stored->Password;
+        var storedCrossWorldRecruitment =
+            stored != null &&
+            stored->LimitRecruitingToWorld == 0;
+        var storedOnePlayerPerJob =
+            stored != null &&
+            stored->OnePlayerPerJob != 0;
+        var storedEmptyComment =
+            stored != null &&
+            string.IsNullOrEmpty(stored->CommentString);
+        var storedOpenSlotsUnrestricted = StoredOpenSlotsUnrestricted(stored);
+        var storedStaleMembersCleared = StoredStaleMembersCleared(stored);
         var allianceSelected = conditionReady &&
                                IsChecked(condition->RecruitmentType, 1);
-        var storedExact = StoredSettingsExact(stored, passcode, targetDutyId);
-        var ownListingId = agent == null ? 0u : agent->OwnListingId;
-        var storedContradictory = ownListingId != 0 && !storedExact;
+        var storedExactBeforeSubmit = StoredSettingsExactBeforeSubmit(
+            agent,
+            stored,
+            passcode,
+            targetDutyId);
+        var storedExact = StoredSettingsExact(
+            agent,
+            stored,
+            passcode,
+            targetDutyId);
+        var ownerHandle = agent == null ? 0u : agent->OwnListingId;
+        var storedContradictory =
+            activeRecruitment &&
+            !conditionVisible &&
+            ownerHandle != 0 &&
+            !storedExact;
         var readiness = BuildReadiness(
             agent != null,
             mainVisible,
             mainReady,
             conditionVisible,
             conditionReady,
-            mainMaster?.RecruitMembersButton != null && IsUsable(mainMaster.RecruitMembersButton),
+            mainReady && IsUsable(main->RecruitMembersButton),
             conditionReady &&
             condition->DutyDropDown != null &&
-            condition->DutyDropDown->List != null);
+            condition->DutyDropDown->List != null,
+            targetDutyDropDownIndex,
+            selectedDutyDropDownIndex,
+            selectedCategory,
+            selectedDutyId);
 
         return new DadAlliancePfCreateSnapshot
         {
             AgentAvailable = agent != null,
             MainVisible = mainVisible,
             MainReady = mainReady,
-            MainRecruitUsable = mainReady &&
-                                mainMaster!.RecruitMembersButton != null &&
-                                IsUsable(mainMaster.RecruitMembersButton),
+            MainRecruitUsable = mainReady && IsUsable(main->RecruitMembersButton),
             ConditionVisible = conditionVisible,
             ConditionReady = conditionReady,
+            PresetLoaderAvailable = presetLoader.IsAvailable,
+            PresetLoaderBlocker = presetLoader.UnavailableReason,
+            GroupTypeTab = agent == null ? (byte)0 : agent->GroupTypeTab,
             AllianceSelected = allianceSelected,
             SelectedCategory = selectedCategory,
             TargetDutyId = targetDutyId,
@@ -133,20 +179,31 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
                              condition->DutyDropDown->List != null,
             TargetDutyDropDownMatches = dropDownMatches,
             TargetDutyEntryEnabled = dutyEntryEnabled,
+            TargetDutyDropDownIndex = targetDutyDropDownIndex,
+            SelectedDutyDropDownIndex = selectedDutyDropDownIndex,
             SelectedDutyId = selectedDutyId,
             AllianceASelected = conditionReady && IsChecked(condition->AllianceSelection, 0),
             PrivateRecruitment = conditionReady && condition->FormPrivatePartyCheckbox->IsChecked,
+            StoredPrivateRecruitment = storedPrivateRecruitment,
             Passcode = conditionReady ? condition->PasswordNumericInput->Value : 0,
+            StoredPasscode = storedPasscode,
             CrossWorldRecruitment = conditionReady && !condition->LimitToWorldServerCheckbox->IsChecked,
+            StoredCrossWorldRecruitment = storedCrossWorldRecruitment,
             OnePlayerPerJob = conditionReady && condition->OnePlayerPerJobCheckbox->IsChecked,
+            StoredOnePlayerPerJob = storedOnePlayerPerJob,
             EmptyComment = conditionReady &&
                            string.IsNullOrEmpty(condition->CommentTextInput->AtkComponentInputBase.RawString.ToString()),
+            StoredEmptyComment = storedEmptyComment,
             UnrestrictedJobs = conditionReady && condition->RemoveRoleRestrictionsCheckBox->IsChecked,
+            StoredOpenSlotsUnrestricted = storedOpenSlotsUnrestricted,
+            StoredStaleMembersCleared = storedStaleMembersCleared,
             NumberOfGroups = stored == null ? 0 : stored->NumberOfGroups,
             SlotsPerGroup = stored == null ? 0 : stored->NumberOfSlotsInMainParty,
+            StoredSettingsExactBeforeSubmit = storedExactBeforeSubmit,
             StoredSettingsExact = storedExact,
             StoredSettingsContradictory = storedContradictory,
-            OwnListingId = ownListingId,
+            OwnerHandle = ownerHandle,
+            ActiveRecruitment = activeRecruitment,
             ErrorToastSequence = errorToastSequence,
             ErrorToast = errorToast,
             HardBlocker = hardBlocker,
@@ -162,15 +219,20 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         return action switch
         {
             DadAlliancePfCreateAction.CloseStaleWindows => CloseStaleWindows(),
-            DadAlliancePfCreateAction.OpenMainWindow => Command(
-                "/pfinder",
+            DadAlliancePfCreateAction.OpenMainWindow => commandDispatcher.TryExecute(
                 "Requested a fresh Party Finder window."),
-            DadAlliancePfCreateAction.OpenConditions => OpenConditions(),
-            DadAlliancePfCreateAction.SelectAlliance => SelectAlliance(),
-            DadAlliancePfCreateAction.SelectRaids => SelectRaids(),
-            DadAlliancePfCreateAction.SelectDuty => SelectDuty(),
-            DadAlliancePfCreateAction.ConfigureNextSetting => ConfigureNextSetting(passcode),
-            DadAlliancePfCreateAction.Submit => Submit(),
+            DadAlliancePfCreateAction.OpenConditions =>
+                nativeActions.Perform(DadAlliancePfNativeAction.OpenConditions),
+            DadAlliancePfCreateAction.SelectAlliance =>
+                nativeActions.Perform(DadAlliancePfNativeAction.SelectAlliance),
+            DadAlliancePfCreateAction.SelectRaids =>
+                nativeActions.Perform(DadAlliancePfNativeAction.SelectRaids),
+            DadAlliancePfCreateAction.SelectDuty =>
+                SelectDuty(),
+            DadAlliancePfCreateAction.ApplyPreset =>
+                presetLoader.Apply(passcode),
+            DadAlliancePfCreateAction.Submit =>
+                nativeActions.Perform(DadAlliancePfNativeAction.Submit),
             _ => new DadAlliancePfCreateActionResult(false, $"Unsupported Party Finder action {action}."),
         };
     }
@@ -182,14 +244,57 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
     }
 
     public void StopCreate()
+        => nativeActions.Perform(DadAlliancePfNativeAction.CloseConditions);
+
+    public DadAlliancePfCleanupSnapshot ReadCleanup()
     {
-        var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
-        if (condition == null)
-            return;
-        var master = new AddonMaster.LookingForGroupCondition(condition);
-        if (master.IsVisible && master.IsAddonReady)
-            master.Cancel();
+        ObjectDisposedException.ThrowIf(disposed, this);
+
+        var agent = AgentLookingForGroup.Instance();
+        var main = GetAddon<AddonLookingForGroup>("LookingForGroup");
+        var detail = GetAddon<AddonLookingForGroupDetail>("LookingForGroupDetail");
+        var confirmation = GetAddon<AddonSelectYesno>("SelectYesno");
+        var mainVisible = main != null && main->AddonLookingForGroupBase.AtkUnitBase.IsVisible;
+        var mainReady = mainVisible && main->AddonLookingForGroupBase.AtkUnitBase.IsReady;
+        var detailVisible = detail != null && detail->AtkUnitBase.IsVisible;
+        var detailReady = detailVisible && detail->AtkUnitBase.IsReady;
+        var confirmationVisible = confirmation != null && confirmation->AtkUnitBase.IsVisible;
+        var confirmationText = confirmationVisible && confirmation->PromptText != null
+            ? confirmation->PromptText->NodeText.ToString().Trim()
+            : string.Empty;
+        var ownerHandle = agent == null ? 0u : agent->OwnListingId;
+        var activeRecruitment = recruitmentObserver.IsActiveRecruitment;
+        var detailsUsable = mainReady && IsUsable(main->RecruitMembersButton);
+        var hardBlocker = mainReady && main->RecruitMembersButton == null
+            ? "The owned Party Finder window is missing its typed details control."
+            : string.Empty;
+
+        return new DadAlliancePfCleanupSnapshot
+        {
+            AgentAvailable = agent != null,
+            ActiveRecruitment = activeRecruitment,
+            OwnerHandle = ownerHandle,
+            MainVisible = mainVisible,
+            MainReady = mainReady,
+            DetailsControlUsable = detailsUsable,
+            DetailVisible = detailVisible,
+            DetailReady = detailReady,
+            ConfirmationVisible = confirmationVisible,
+            ConfirmationIdentity = confirmationVisible
+                ? $"{(nint)confirmation:X}:{confirmationText}"
+                : string.Empty,
+            ConfirmationText = confirmationText,
+            HardBlocker = hardBlocker,
+            Readiness =
+                $"active-recruitment={activeRecruitment}; owner-handle={ownerHandle}; " +
+                $"main-visible={mainVisible}; main-ready={mainReady}; details-usable={detailsUsable}; " +
+                $"detail-visible={detailVisible}; detail-ready={detailReady}; " +
+                $"confirmation-visible={confirmationVisible}",
+        };
     }
+
+    public DadAlliancePfCreateActionResult PerformCleanup(DadAlliancePfNativeAction action)
+        => nativeActions.Perform(action);
 
     public void Dispose()
     {
@@ -197,6 +302,21 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             return;
         disposed = true;
         toastGui.ErrorToast -= OnErrorToast;
+        presetLoader.Dispose();
+    }
+
+    private DadAlliancePfCreateActionResult SelectDuty()
+    {
+        if (targetDutyDropDownIndex < 0)
+        {
+            return new DadAlliancePfCreateActionResult(
+                false,
+                "The exact enabled Labyrinth duty row is unavailable.");
+        }
+
+        return nativeActions.Perform(
+            DadAlliancePfNativeAction.SelectDuty,
+            targetDutyDropDownIndex);
     }
 
     private DadAlliancePfCreateActionResult CloseStaleWindows()
@@ -204,161 +324,103 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
         if (condition != null)
         {
-            var conditionMaster = new AddonMaster.LookingForGroupCondition(condition);
-            if (conditionMaster.IsVisible)
+            var addon = &condition->AtkUnitBase;
+            if (addon->IsVisible)
             {
-                if (!conditionMaster.IsAddonReady)
+                if (!addon->IsReady)
                     return new DadAlliancePfCreateActionResult(false, "Waiting for stale Party Finder conditions to become closable.");
-                return conditionMaster.Cancel()
-                    ? new DadAlliancePfCreateActionResult(true, "Closed stale Party Finder recruitment conditions.")
-                    : new DadAlliancePfCreateActionResult(false, "Stale Party Finder conditions are not closable yet.");
+                return nativeActions.Perform(DadAlliancePfNativeAction.CloseConditions);
             }
         }
 
         var main = GetAddon<AddonLookingForGroup>("LookingForGroup");
         if (main != null && main->AddonLookingForGroupBase.AtkUnitBase.IsVisible)
-            return Command("/pfinder", "Closed the stale Party Finder window.");
+            return commandDispatcher.TryExecute("Closed the stale Party Finder window.");
 
         return new DadAlliancePfCreateActionResult(true, "Party Finder windows are already closed.");
     }
 
-    private DadAlliancePfCreateActionResult OpenConditions()
-    {
-        var main = GetAddon<AddonLookingForGroup>("LookingForGroup");
-        if (main == null)
-            return new DadAlliancePfCreateActionResult(false, "Party Finder is not visible.");
-        var master = new AddonMaster.LookingForGroup(main);
-        return master.IsAddonReady && master.RecruitMembersOrDetails()
-            ? new DadAlliancePfCreateActionResult(true, "Clicked ECommons Recruit Members.")
-            : new DadAlliancePfCreateActionResult(false, "Recruit Members is not usable.");
-    }
-
-    private DadAlliancePfCreateActionResult SelectAlliance()
-    {
-        var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
-        if (condition == null)
-            return new DadAlliancePfCreateActionResult(false, "Party Finder conditions are not visible.");
-        var master = new AddonMaster.LookingForGroupCondition(condition);
-        return master.IsAddonReady && master.Alliance()
-            ? new DadAlliancePfCreateActionResult(true, "Selected Alliance recruitment through ECommons.")
-            : new DadAlliancePfCreateActionResult(false, "Alliance recruitment is not selectable.");
-    }
-
-    private DadAlliancePfCreateActionResult SelectRaids()
-    {
-        var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
-        if (condition == null)
-            return new DadAlliancePfCreateActionResult(false, "Party Finder conditions are not visible.");
-        var master = new AddonMaster.LookingForGroupCondition(condition);
-        if (!master.IsAddonReady)
-            return new DadAlliancePfCreateActionResult(false, "Party Finder conditions are not ready.");
-        master.SelectDutyCategory(DadAlliancePartyFinderCreateFlow.RaidsCategoryBitIndex);
-        return new DadAlliancePfCreateActionResult(
-            true,
-            $"Selected the Raids category through ECommons bit index {DadAlliancePartyFinderCreateFlow.RaidsCategoryBitIndex}.");
-    }
-
-    private DadAlliancePfCreateActionResult SelectDuty()
-    {
-        var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
-        if (condition == null || condition->DutyDropDown == null || targetDutyDropDownIndex < 0)
-            return new DadAlliancePfCreateActionResult(false, "The exact Labyrinth dropdown entry is unavailable.");
-        condition->DutyDropDown->SelectItem(targetDutyDropDownIndex);
-        return new DadAlliancePfCreateActionResult(
-            true,
-            $"Selected the enabled Labyrinth duty dropdown entry {targetDutyDropDownIndex}.");
-    }
-
-    private DadAlliancePfCreateActionResult ConfigureNextSetting(int passcode)
-    {
-        var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
-        if (condition == null || !HasRequiredConditionControls(condition))
-            return new DadAlliancePfCreateActionResult(false, "Party Finder alliance settings are unavailable.");
-        var addon = &condition->AtkUnitBase;
-
-        if (!IsChecked(condition->AllianceSelection, 0))
-            return ClickRadioAsButton(condition->AllianceSelection[0].Value, addon, "Selected Alliance A.");
-        if (!condition->FormPrivatePartyCheckbox->IsChecked)
-            return ClickCheckbox(condition->FormPrivatePartyCheckbox, addon, "Enabled private recruitment.");
-        if (condition->PasswordNumericInput->Value != passcode)
-        {
-            condition->PasswordNumericInput->InnerSetValue(passcode, true, false);
-            return new DadAlliancePfCreateActionResult(true, "Entered the exact four-digit PF passcode.");
-        }
-        if (condition->LimitToWorldServerCheckbox->IsChecked)
-            return ClickCheckbox(condition->LimitToWorldServerCheckbox, addon, "Enabled cross-world recruitment.");
-        if (condition->OnePlayerPerJobCheckbox->IsChecked)
-            return ClickCheckbox(condition->OnePlayerPerJobCheckbox, addon, "Disabled one-player-per-job restrictions.");
-        if (!string.IsNullOrEmpty(condition->CommentTextInput->AtkComponentInputBase.RawString.ToString()))
-        {
-            condition->CommentTextInput->SetText(string.Empty);
-            return new DadAlliancePfCreateActionResult(true, "Cleared the Party Finder comment.");
-        }
-        if (!condition->RemoveRoleRestrictionsCheckBox->IsChecked)
-            return ClickCheckbox(condition->RemoveRoleRestrictionsCheckBox, addon, "Enabled unrestricted jobs for every alliance slot.");
-
-        return new DadAlliancePfCreateActionResult(
-            false,
-            "Visible controls are exact, but the Party Finder agent has not retained three groups with eight slots each.",
-            "Party Finder settings acknowledgement is contradictory.");
-    }
-
-    private DadAlliancePfCreateActionResult Submit()
-    {
-        var condition = GetAddon<AddonLookingForGroupCondition>("LookingForGroupCondition");
-        if (condition == null)
-            return new DadAlliancePfCreateActionResult(false, "Party Finder conditions are not visible.");
-        var master = new AddonMaster.LookingForGroupCondition(condition);
-        return master.IsAddonReady && master.Recruit()
-            ? new DadAlliancePfCreateActionResult(true, "Submitted recruitment through ECommons.")
-            : new DadAlliancePfCreateActionResult(false, "Recruit is not usable.");
-    }
-
-    private DadAlliancePfCreateActionResult Command(string command, string success)
-        => commandManager.ProcessCommand(command)
-            ? new DadAlliancePfCreateActionResult(true, success)
-            : new DadAlliancePfCreateActionResult(false, $"The {command} command was rejected.");
-
-    private static DadAlliancePfCreateActionResult ClickRadioAsButton(
-        AtkComponentRadioButton* radio,
-        AtkUnitBase* addon,
-        string summary)
-    {
-        var button = (AtkComponentButton*)radio;
-        if (button == null || !IsUsable(button))
-            return new DadAlliancePfCreateActionResult(false, summary, "Alliance radio button is not usable.");
-        (*button).ClickAddonButton(addon);
-        return new DadAlliancePfCreateActionResult(true, summary);
-    }
-
-    private static DadAlliancePfCreateActionResult ClickCheckbox(
-        AtkComponentCheckBox* checkbox,
-        AtkUnitBase* addon,
-        string summary)
-    {
-        if (checkbox == null ||
-            !checkbox->IsEnabled ||
-            checkbox->AtkResNode == null ||
-            !checkbox->AtkResNode->IsVisible())
-            return new DadAlliancePfCreateActionResult(false, summary, "Party Finder checkbox is not usable.");
-        (*checkbox).ClickCheckBox(addon);
-        return new DadAlliancePfCreateActionResult(true, summary);
-    }
-
     private static bool StoredSettingsExact(
+        AgentLookingForGroup* agent,
         AgentLookingForGroup.RecruitmentSub* stored,
         int passcode,
         ushort targetDutyId)
-        => stored != null &&
-           targetDutyId != 0 &&
+        => StoredSettingsExactCommon(
+            agent,
+            stored,
+            passcode,
+            targetDutyId);
+
+    private static bool StoredSettingsExactBeforeSubmit(
+        AgentLookingForGroup* agent,
+        AgentLookingForGroup.RecruitmentSub* stored,
+        int passcode,
+        ushort targetDutyId)
+        => StoredSettingsExactCommon(
+               agent,
+               stored,
+               passcode,
+               targetDutyId) &&
+           StoredStaleMembersCleared(stored);
+
+    private static bool StoredSettingsExactCommon(
+        AgentLookingForGroup* agent,
+        AgentLookingForGroup.RecruitmentSub* stored,
+        int passcode,
+        ushort targetDutyId)
+        => agent != null &&
+           agent->GroupTypeTab ==
+               DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab &&
+           stored != null &&
+           targetDutyId == DadAlliancePartyFinderCreateFlow.LabyrinthDutyId &&
            (uint)stored->SelectedCategory == DadAlliancePartyFinderCreateFlow.RaidsCategoryMask &&
-           stored->SelectedDutyId == targetDutyId &&
+           stored->SelectedDutyId == DadAlliancePartyFinderCreateFlow.LabyrinthDutyId &&
            stored->Password == passcode &&
            stored->NumberOfGroups == 3 &&
            stored->NumberOfSlotsInMainParty == 8 &&
            stored->LimitRecruitingToWorld == 0 &&
            stored->OnePlayerPerJob == 0 &&
-           string.IsNullOrEmpty(stored->CommentString);
+           string.IsNullOrEmpty(stored->CommentString) &&
+           StoredOpenSlotsUnrestricted(stored);
+
+    private static bool StoredOpenSlotsUnrestricted(
+        AgentLookingForGroup.RecruitmentSub* stored)
+    {
+        if (stored == null ||
+            stored->NumberOfGroups != 3 ||
+            stored->NumberOfSlotsInMainParty != 8)
+        {
+            return false;
+        }
+
+        for (var index = 1; index < 24; index++)
+        {
+            if (stored->SlotFlags[index] != AllJobsOpenSlotFlag)
+                return false;
+        }
+        for (var index = 24; index < 48; index++)
+        {
+            if (stored->SlotFlags[index] != 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool StoredStaleMembersCleared(
+        AgentLookingForGroup.RecruitmentSub* stored)
+    {
+        if (stored == null)
+            return false;
+
+        for (var index = 1; index < 48; index++)
+        {
+            if (stored->MemberContentIds[index] != 0)
+                return false;
+        }
+
+        return true;
+    }
 
     private static bool HasRequiredConditionControls(AddonLookingForGroupCondition* addon)
     {
@@ -411,10 +473,16 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         bool conditionVisible,
         bool conditionReady,
         bool recruitUsable,
-        bool dutyListLoaded)
+        bool dutyListLoaded,
+        int targetDutyIndex,
+        int visibleDutyIndex,
+        uint category,
+        ushort storedDutyId)
         => $"agent={agent}; main-visible={mainVisible}; main-ready={mainReady}; " +
            $"recruit-usable={recruitUsable}; condition-visible={conditionVisible}; " +
-           $"condition-ready={conditionReady}; duty-list-loaded={dutyListLoaded}";
+           $"condition-ready={conditionReady}; duty-list-loaded={dutyListLoaded}; " +
+           $"duty-target-index={targetDutyIndex}; duty-visible-index={visibleDutyIndex}; " +
+           $"category=0x{category:X}; stored-duty={storedDutyId}";
 
     private void OnErrorToast(ref SeString message, ref bool isHandled)
     {

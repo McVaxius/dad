@@ -36,9 +36,11 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
+    [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     public Configuration Configuration { get; }
@@ -180,7 +182,11 @@ public sealed class Plugin : IDalamudPlugin
         VermaxionIpcService = new DadVermaxionIpcService(PluginInterface, Log);
         AutoRetainerIpcService = new DadAutoRetainerIpcService(PluginInterface, Log);
         LifestreamIpcService = new DadLifestreamIpcService(PluginInterface);
-        TitleMenuReadinessService = new DadTitleMenuReadinessService(Framework);
+        TitleMenuReadinessService = new DadTitleMenuReadinessService(
+            Framework,
+            ClientState,
+            Condition,
+            KeyState);
         PartyInviteGateway = new InfoProxyPartyInviteGateway(Configuration, Framework, PlayerState, PartyList, Condition, Log);
         PartyTeardownService = new DadPartyTeardownService(PartyList, PlayerState, Condition, Log);
         var requestedJobPreparationGate = new DadRequestedJobPreparationGate();
@@ -325,10 +331,12 @@ public sealed class Plugin : IDalamudPlugin
                 Framework,
                 Condition,
                 PartyList,
+                ObjectTable,
                 PresenceService,
-                CommandManager,
+                new DadNativeGameCommandExecutor(),
                 DataManager,
                 ToastGui,
+                GameInteropProvider,
                 Log),
             new DadAlliancePfAuditLog(
                 PluginInterface.ConfigDirectory.FullName,
@@ -3426,18 +3434,25 @@ public sealed class Plugin : IDalamudPlugin
     public DadMiniStatusSnapshot BuildMiniStatusSnapshot()
     {
         var runState = GetVisibleRunState(forceAuthorityRefresh: false);
-        return DadMiniStatusSnapshotBuilder.Build(
+        var schedulerQueue = SchedulerService.GetQueueSnapshot();
+        var schedule = SchedulerService.GetScheduleSnapshot();
+        var activityDisplay = DadActivityDisplaySelector.Select(
+            runState,
+            schedulerQueue.ActiveState,
+            schedule.ActiveRun);
+        return DadMiniStatusSnapshotBuilder.BuildWithActivityDisplay(
             RunCoordinatorService.IsServerDad,
             runState.AuthorityView,
             TransportService.CurrentTransport,
             runState.VisibleRun,
-            SchedulerService.GetQueueSnapshot(),
-            SchedulerService.GetScheduleSnapshot(),
+            schedulerQueue,
+            schedule,
             WorkerExecutionService.GetStatus(),
             PresenceService.BuildSnapshotCopy(),
             TransportService.LatestStopAllStatus,
             Configuration.RunHistory,
-            WakeTakeoverService.GetActiveStatus());
+            WakeTakeoverService.GetActiveStatus(),
+            activityDisplay);
     }
 
     public DadStopAllStatus RequestStopAll()

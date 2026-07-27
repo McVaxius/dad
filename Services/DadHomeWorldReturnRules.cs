@@ -18,7 +18,10 @@ public readonly record struct DadHomeWorldReturnDecision(
 
 public sealed class DadHomeWorldReturnGate
 {
-    private string immutableIdentity = string.Empty;
+    private string frozenIdentity = string.Empty;
+    private string frozenSourceCharacterKey = string.Empty;
+    private string frozenHomeWorldName = string.Empty;
+    private string frozenRelogTargetCharacterKey = string.Empty;
     private bool invocationPending;
     private bool acceptedInvocation;
     private bool terminalFailure;
@@ -29,76 +32,80 @@ public sealed class DadHomeWorldReturnGate
     public int InvocationCount => invocationCount;
     public bool AcceptedInvocation => acceptedInvocation;
     public bool InvocationPending => invocationPending;
+    internal string FrozenSourceCharacterKey => frozenSourceCharacterKey;
+    internal string FrozenHomeWorldName => frozenHomeWorldName;
+    internal string FrozenRelogTargetCharacterKey => frozenRelogTargetCharacterKey;
 
     public DadHomeWorldReturnDecision Evaluate(
         DadParticipantSnapshot participant,
         bool lifestreamAvailable,
         bool lifestreamBusy,
+        DadCharacterKey relogTarget,
         DateTime nowUtc)
     {
         participant ??= new DadParticipantSnapshot();
         if (terminalFailure)
             return Reject(terminalSummary);
-
-        if (acceptedInvocation &&
-            (!participant.IsAvailable ||
-             !participant.WorldReadyStable ||
-             !DadCoordinatorTravelRules.IsFreshComplete(participant.CurrentLocation, nowUtc)))
+        if (string.IsNullOrWhiteSpace(frozenIdentity))
         {
-            return Wait("Lifestream accepted return-home travel; waiting for fresh world-stable home proof.");
+            var freezeError = TryFreezeIdentity(participant, relogTarget);
+            if (!string.IsNullOrWhiteSpace(freezeError))
+                return Fail(freezeError);
+        }
+        else if (!Same(frozenRelogTargetCharacterKey, relogTarget.Value))
+        {
+            return Fail("The frozen relog target changed during return-home preparation.");
         }
 
-        var character = participant.Character ?? new DadAcquiredCharacter();
-        if (participant.ActiveCharacterKey.IsEmpty ||
-            string.IsNullOrWhiteSpace(character.CharacterKey) ||
-            character.ContentId == 0 ||
-            character.WorldId == 0 ||
-            string.IsNullOrWhiteSpace(character.WorldName) ||
-            !Same(participant.ActiveCharacterKey.Value, character.CharacterKey))
+        if (!participant.IsAvailable ||
+            !participant.WorldReadyStable ||
+            !DadCoordinatorTravelRules.IsFreshComplete(participant.CurrentLocation, nowUtc))
         {
-            return Fail("Return-home relog safety requires exact current character, Content ID, and recorded home-world identity.");
+            return Wait(acceptedInvocation
+                ? BuildAcceptedTravelSummary()
+                : BuildBeforeAcceptanceSummary("waiting for fresh source-world proof."));
         }
 
-        var identity = $"{participant.ActiveCharacterKey.Value.Trim()}|{character.ContentId}|{character.WorldId}|{character.WorldName.Trim()}";
-        if (string.IsNullOrWhiteSpace(immutableIdentity))
-            immutableIdentity = identity;
-        else if (!string.Equals(immutableIdentity, identity, StringComparison.OrdinalIgnoreCase))
-            return Fail("Current character or recorded home-world identity changed during return-home preparation.");
+        var identityError = ValidateFrozenIdentity(participant);
+        if (!string.IsNullOrWhiteSpace(identityError))
+            return Fail(identityError);
 
-        if (!participant.IsAvailable || !participant.WorldReadyStable)
-            return Wait("Waiting for fresh world-stable current-character proof before return-home travel.");
-        var current = participant.CurrentLocation;
-        if (current is not { IsComplete: true })
-            return Fail("Return-home relog safety requires exact current-world, data-center, and region identity.");
-        if (!DadCoordinatorTravelRules.IsFreshComplete(current, nowUtc))
-            return Wait("Waiting for fresh current-world proof before return-home travel.");
-
-        var atHome = current.WorldId == character.WorldId && Same(current.WorldName, character.WorldName);
+        var current = participant.CurrentLocation!;
+        var atHome = current.WorldId == participant.Character.WorldId &&
+                     Same(current.WorldName, frozenHomeWorldName);
         if (atHome)
         {
             return lifestreamAvailable && !lifestreamBusy
-                ? Ready($"Current character is world-stable on home world {character.WorldName}, and Lifestream is idle.")
-                : Wait($"Home world {character.WorldName} is proven; waiting for idle readable Lifestream before relog.");
+                ? Ready(
+                    $"{frozenSourceCharacterKey} is world-stable on home world {frozenHomeWorldName}; " +
+                    $"Lifestream is idle before DAD relogs to {frozenRelogTargetCharacterKey}.")
+                : Wait(
+                    $"{frozenSourceCharacterKey} has fresh home-world proof for {frozenHomeWorldName} before DAD relogs to " +
+                    $"{frozenRelogTargetCharacterKey}; waiting for readable idle Lifestream.");
         }
 
         if (acceptedInvocation)
-            return Wait($"Lifestream accepted travel to home world {character.WorldName}; waiting for fresh home-world proof.");
+            return Wait(BuildAcceptedTravelSummary());
         if (!lifestreamAvailable || lifestreamBusy)
-            return Wait("Waiting for Lifestream to be available and idle before return-home travel.");
+            return Wait(BuildBeforeAcceptanceSummary("waiting for readable idle Lifestream."));
         if (invocationPending)
-            return Wait("Lifestream.ChangeWorld result is pending; no duplicate invocation is permitted.");
+            return Wait(BuildBeforeAcceptanceSummary("waiting for the pending ChangeWorld result without a duplicate."));
 
         var now = EnsureUtc(nowUtc);
         if (now < nextAttemptUtc)
-            return Wait($"Waiting until {nextAttemptUtc:O} before retrying an explicit-false return-home result.");
+        {
+            return Wait(BuildBeforeAcceptanceSummary(
+                $"waiting until {nextAttemptUtc:O} after an explicit-false ChangeWorld result."));
+        }
         if (invocationCount >= DadClientTravelGate.MaxChangeWorldAttempts)
             return Fail("Return-home Lifestream.ChangeWorld exhausted three explicit-false attempts.");
 
         invocationPending = true;
         return new DadHomeWorldReturnDecision(
             DadHomeWorldReturnAction.InvokeLifestream,
-            $"Invoke Lifestream.ChangeWorld('{character.WorldName.Trim()}') attempt {invocationCount + 1}/{DadClientTravelGate.MaxChangeWorldAttempts} before relog.",
-            character.WorldName.Trim(),
+            BuildBeforeAcceptanceSummary(
+                $"invoking Lifestream.ChangeWorld('{frozenHomeWorldName}') attempt {invocationCount + 1}/{DadClientTravelGate.MaxChangeWorldAttempts}."),
+            frozenHomeWorldName,
             invocationCount + 1);
     }
 
@@ -130,6 +137,61 @@ public sealed class DadHomeWorldReturnGate
                 break;
         }
     }
+
+    private string TryFreezeIdentity(
+        DadParticipantSnapshot participant,
+        DadCharacterKey relogTarget)
+    {
+        var character = participant.Character ?? new DadAcquiredCharacter();
+        if (participant.ActiveCharacterKey.IsEmpty ||
+            string.IsNullOrWhiteSpace(character.CharacterKey) ||
+            character.ContentId == 0 ||
+            character.WorldId == 0 ||
+            string.IsNullOrWhiteSpace(character.WorldName) ||
+            !Same(participant.ActiveCharacterKey.Value, character.CharacterKey))
+        {
+            return "Return-home relog safety requires exact current character, Content ID, and recorded home-world identity.";
+        }
+        if (!DadWakePolicyRules.IsValidCharacterKey(relogTarget))
+            return "Return-home relog safety requires an exact frozen Name@World relog target.";
+
+        frozenSourceCharacterKey = participant.ActiveCharacterKey.Value.Trim();
+        frozenHomeWorldName = character.WorldName.Trim();
+        frozenRelogTargetCharacterKey = relogTarget.Value.Trim();
+        frozenIdentity =
+            $"{frozenSourceCharacterKey}|{character.ContentId}|{character.WorldId}|{frozenHomeWorldName}";
+        return string.Empty;
+    }
+
+    private string ValidateFrozenIdentity(DadParticipantSnapshot participant)
+    {
+        var character = participant.Character ?? new DadAcquiredCharacter();
+        if (participant.ActiveCharacterKey.IsEmpty ||
+            string.IsNullOrWhiteSpace(character.CharacterKey) ||
+            character.ContentId == 0 ||
+            character.WorldId == 0 ||
+            string.IsNullOrWhiteSpace(character.WorldName) ||
+            !Same(participant.ActiveCharacterKey.Value, character.CharacterKey))
+        {
+            return "Return-home relog safety requires exact current character, Content ID, and recorded home-world identity.";
+        }
+
+        var identity =
+            $"{participant.ActiveCharacterKey.Value.Trim()}|{character.ContentId}|{character.WorldId}|{character.WorldName.Trim()}";
+        if (!string.Equals(frozenIdentity, identity, StringComparison.OrdinalIgnoreCase))
+            return "Current character or recorded home-world identity changed during return-home preparation.";
+        if (participant.CurrentLocation is not { IsComplete: true })
+            return "Return-home relog safety requires exact current-world, data-center, and region identity.";
+        return string.Empty;
+    }
+
+    private string BuildBeforeAcceptanceSummary(string suffix)
+        => $"{frozenSourceCharacterKey} is waiting to start Data Center travel back to home world " +
+           $"{frozenHomeWorldName} before DAD relogs to {frozenRelogTargetCharacterKey}; {suffix}";
+
+    private string BuildAcceptedTravelSummary()
+        => $"{frozenSourceCharacterKey} is Data Center traveling back to home world {frozenHomeWorldName} " +
+           $"before DAD relogs to {frozenRelogTargetCharacterKey}; waiting for fresh home-world proof.";
 
     private DadHomeWorldReturnDecision Fail(string summary)
     {

@@ -189,6 +189,14 @@ public sealed class DadAlliancePartyFinderStatus
     public DateTime? CreateNextRetryUtc { get; set; }
     public string CreateLastError { get; set; } = string.Empty;
     public int CreateElapsedMilliseconds { get; set; }
+    internal bool CreatePreflightReady { get; set; }
+    internal string CreatePreflightBlocker { get; set; } = string.Empty;
+    internal bool CreateRejected { get; set; }
+    internal bool CreateActiveRecruitment { get; set; }
+    internal bool CreateEditorVisible { get; set; }
+    internal bool CreateSubmitDispatched { get; set; }
+    internal string CreateConfigurationTarget { get; set; } = string.Empty;
+    internal string CreateObservedSettings { get; set; } = string.Empty;
     public long StopGeneration { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -213,6 +221,14 @@ public sealed class DadAlliancePartyFinderStatus
             CreateNextRetryUtc = CreateNextRetryUtc,
             CreateLastError = CreateLastError,
             CreateElapsedMilliseconds = CreateElapsedMilliseconds,
+            CreatePreflightReady = CreatePreflightReady,
+            CreatePreflightBlocker = CreatePreflightBlocker,
+            CreateRejected = CreateRejected,
+            CreateActiveRecruitment = CreateActiveRecruitment,
+            CreateEditorVisible = CreateEditorVisible,
+            CreateSubmitDispatched = CreateSubmitDispatched,
+            CreateConfigurationTarget = CreateConfigurationTarget,
+            CreateObservedSettings = CreateObservedSettings,
             StopGeneration = StopGeneration,
             StartedAtUtc = StartedAtUtc,
             UpdatedAtUtc = UpdatedAtUtc,

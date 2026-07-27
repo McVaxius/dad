@@ -169,6 +169,11 @@ public sealed class DadWakeTakeoverTargetSnapshot
     public bool AccountMatches { get; set; }
     public bool CharacterKnownToAccount { get; set; }
     public bool CorrectCharacter { get; set; }
+    internal DadTitleSurface TitleSurface { get; set; }
+    internal bool TitleSurfaceEvidenceFresh { get; set; }
+    internal bool TitleClientLoggedOut { get; set; }
+    internal bool TitleNoActiveConditionFlags { get; set; }
+    internal bool TitleMovieExactReady { get; set; }
     public bool TitleMenuEvidenceFresh { get; set; }
     public bool TitleMenuReady { get; set; }
     public bool TitleNavigationOverlayVisible { get; set; }
@@ -187,6 +192,8 @@ public sealed class DadWakeTakeoverTargetSnapshot
     public bool DadOwnsCharacterPostprocess { get; set; }
     public bool MultiModeEnabled { get; set; }
     public bool ExternalAutomationHeld { get; set; }
+    internal bool VermaxionStatusEvidenceFresh { get; set; }
+    internal DadVermaxionReadinessKind VermaxionStatusKind { get; set; } = DadVermaxionReadinessKind.Unavailable;
     public bool VermaxionReservationAuthoritative { get; set; }
     public DadVermaxionMutationAuthorization VermaxionMutationAuthorization { get; set; }
     public DadVermaxionCompatibilityEvidence VermaxionCompatibilityEvidence { get; set; }

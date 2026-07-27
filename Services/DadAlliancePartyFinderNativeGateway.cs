@@ -2,7 +2,7 @@ using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
 using ECommons.Automation.UIInput;
-using ECommons.UIHelpers.AddonMasterImplementations;
+using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
@@ -36,11 +36,17 @@ internal readonly record struct DadAllianceNativeStep(
     uint Category = 0,
     ushort DutyId = 0,
     int ElapsedMilliseconds = 0,
+    bool ActiveRecruitment = false,
+    bool EditorVisible = false,
+    bool SubmitDispatched = false,
+    string ConfigurationTarget = "",
+    string ObservedSettings = "",
     bool ShouldAudit = false);
 
 /// <summary>
 /// Framework-thread-only API-15 Party Finder gateway. It uses generated
-/// ClientStructs surfaces and addon components; DAD contributes no signatures.
+/// ClientStructs surfaces and addon components plus DAD's fail-closed,
+/// self-contained recruitment-editor refresh adapter.
 /// </summary>
 internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
 {
@@ -54,23 +60,24 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
     private readonly DadAlliancePartyFinderECommonsAdapter createUi;
 
     private DadAlliancePartyFinderCreateFlow createFlow;
+    private DadAlliancePartyFinderCleanupFlow cleanupFlow;
     private ulong pendingListingId;
     private int listingCursor;
     private DateTime nextListingRefreshUtc = DateTime.MinValue;
     private string activeJoinKey = string.Empty;
     private string leavePromptBaseline = string.Empty;
     private bool leaveRequested;
-    private bool endRecruitmentRequested;
-    private string endPromptBaseline = string.Empty;
 
     public DadAlliancePartyFinderNativeGateway(
         IFramework framework,
         ICondition condition,
         IPartyList partyList,
+        IObjectTable objectTable,
         DadPresenceService presenceService,
-        ICommandManager commandManager,
+        IDadGameCommandExecutor gameCommandExecutor,
         IDataManager dataManager,
         IToastGui toastGui,
+        IGameInteropProvider gameInteropProvider,
         IPluginLog log)
     {
         this.framework = framework;
@@ -79,8 +86,19 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
         this.presenceService = presenceService;
         this.dataManager = dataManager;
         this.log = log;
-        createUi = new DadAlliancePartyFinderECommonsAdapter(commandManager, dataManager, toastGui);
+        var nativeActions = new DadAlliancePartyFinderTypedNativeActions();
+        var recruitmentObserver = new DadAllianceLocalRecruitmentObserver(objectTable);
+        var presetLoader =
+            new DadAlliancePartyFinderPresetLoader(gameInteropProvider);
+        createUi = new DadAlliancePartyFinderECommonsAdapter(
+            gameCommandExecutor,
+            nativeActions,
+            presetLoader,
+            recruitmentObserver,
+            dataManager,
+            toastGui);
         createFlow = new DadAlliancePartyFinderCreateFlow(createUi);
+        cleanupFlow = new DadAlliancePartyFinderCleanupFlow(createUi);
     }
 
     public DadParticipantSnapshot BuildLocalSnapshot()
@@ -101,6 +119,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
                 NextRetryUtc: createFlow.NextRetryUtc,
                 LastError: createFlow.LastError,
                 Readiness: "unsafe",
+                ConfigurationTarget: string.Empty,
                 ShouldAudit: true);
         }
 
@@ -138,6 +157,11 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
             Category: result.Category,
             DutyId: result.DutyId,
             ElapsedMilliseconds: result.ElapsedMilliseconds,
+            ActiveRecruitment: result.ActiveRecruitment,
+            EditorVisible: result.EditorVisible,
+            SubmitDispatched: result.SubmitDispatched,
+            ConfigurationTarget: result.ConfigurationTarget,
+            ObservedSettings: result.ObservedSettings,
             ShouldAudit: result.ShouldAudit);
     }
 
@@ -287,54 +311,43 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
             observed);
     }
 
-    public DadAllianceNativeStep AdvanceEndRecruitment(ulong ownedListingId)
+    public DadAllianceNativeStep AdvanceEndRecruitment(ulong expectedOwnerHandle)
     {
         RequireFrameworkThread();
-        var agent = AgentLookingForGroup.Instance();
-        if (agent == null)
-            return Retry(DadAllianceRecruitmentState.ListingOpen, "Party Finder agent is unavailable.");
-        if (agent->OwnListingId == 0)
-        {
-            endRecruitmentRequested = false;
-            return new DadAllianceNativeStep(
-                DadAllianceNativeStepKind.Succeeded,
-                DadAllianceRecruitmentState.Complete,
-                "DAD-owned recruitment ended; the formed alliance was preserved.",
-                ownedListingId);
-        }
-        if (ownedListingId == 0 || agent->OwnListingId != ownedListingId)
-            return Blocked("The active Party Finder listing no longer matches the DAD-owned listing ID.");
-
         var safety = ValidateSafeMutation(requireSolo: false, allowParty: true);
         if (!string.IsNullOrWhiteSpace(safety))
             return Waiting(DadAllianceRecruitmentState.WaitingUnsafe, safety);
 
-        if (!endRecruitmentRequested)
-        {
-            agent->Show();
-            var addon = GetAddon<AddonLookingForGroup>("LookingForGroup");
-            if (addon == null || !addon->AddonLookingForGroupBase.AtkUnitBase.IsVisible)
-                return Waiting(DadAllianceRecruitmentState.ListingOpen, "Waiting for DAD-owned recruitment controls.");
-            endPromptBaseline = ReadYesNoPrompt().Identity;
-            var master = new AddonMaster.LookingForGroup(addon);
-            if (!master.IsAddonReady || !master.RecruitMembersOrDetails())
-                return Retry(DadAllianceRecruitmentState.ListingOpen, "End Recruitment control is unavailable.");
-            endRecruitmentRequested = true;
-            return Progress("Requested end of DAD-owned recruitment.", DadAllianceRecruitmentState.ListingOpen);
-        }
-
-        var prompt = ReadYesNoPrompt();
-        if (!prompt.Visible)
-            return Waiting(DadAllianceRecruitmentState.ListingOpen, "Waiting for the end-recruitment confirmation.");
-        if (string.Equals(prompt.Identity, endPromptBaseline, StringComparison.Ordinal) ||
-            !ContainsRecruitmentLanguage(prompt.Text) ||
-            prompt.Text.Contains("disband", StringComparison.OrdinalIgnoreCase))
-        {
-            return Blocked("A fresh recruitment-only confirmation could not be proven; DAD will not click it.");
-        }
-
-        FireYes(prompt.Addon);
-        return Progress("Confirmed recruitment-only cleanup; waiting for listing closure.", DadAllianceRecruitmentState.ListingOpen);
+        var result = cleanupFlow.Advance(expectedOwnerHandle);
+        return new DadAllianceNativeStep(
+            result.Kind switch
+            {
+                DadAlliancePfCreateResultKind.Progress => DadAllianceNativeStepKind.Progress,
+                DadAlliancePfCreateResultKind.Waiting => DadAllianceNativeStepKind.Waiting,
+                DadAlliancePfCreateResultKind.Retry => DadAllianceNativeStepKind.Retry,
+                DadAlliancePfCreateResultKind.Succeeded => DadAllianceNativeStepKind.Succeeded,
+                DadAlliancePfCreateResultKind.Stopped => DadAllianceNativeStepKind.Stopped,
+                DadAlliancePfCreateResultKind.Blocked => DadAllianceNativeStepKind.Blocked,
+                _ => DadAllianceNativeStepKind.Blocked,
+            },
+            result.Kind == DadAlliancePfCreateResultKind.Succeeded
+                ? DadAllianceRecruitmentState.Complete
+                : result.Kind == DadAlliancePfCreateResultKind.Blocked
+                    ? DadAllianceRecruitmentState.Blocked
+                    : result.Kind == DadAlliancePfCreateResultKind.Retry
+                        ? DadAllianceRecruitmentState.RetryWaiting
+                        : DadAllianceRecruitmentState.ListingOpen,
+            result.Summary,
+            result.OwnerHandle,
+            CreateStage: $"Cleanup:{result.Stage}",
+            CreateEvent: result.Event,
+            Attempt: result.Attempt,
+            NextRetryUtc: result.NextRetryUtc,
+            LastError: result.LastError,
+            Readiness: result.Readiness,
+            ActiveRecruitment: result.ActiveRecruitment,
+            SubmitDispatched: true,
+            ShouldAudit: result.ShouldAudit);
     }
 
     public DadAllianceAssignment ObserveAlliance(ulong contentId)
@@ -354,9 +367,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
         RequireFrameworkThread();
         createUi.ResetErrors();
         createFlow = new DadAlliancePartyFinderCreateFlow(createUi);
+        cleanupFlow = new DadAlliancePartyFinderCleanupFlow(createUi);
         ResetJoinState();
-        endRecruitmentRequested = false;
-        endPromptBaseline = string.Empty;
     }
 
     public void StopCreate()
@@ -375,8 +387,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
         if (!leaveRequested)
         {
             leavePromptBaseline = prompt.Identity;
-            if (!Plugin.CommandManager.ProcessCommand("/leave"))
-                return Retry(DadAllianceRecruitmentState.CorrectingWrongAlliance, "The guarded /leave command was rejected.");
+            if (!TrySubmitGuardedLeaveCommand(out var leaveError))
+                return Retry(DadAllianceRecruitmentState.CorrectingWrongAlliance, leaveError);
             leaveRequested = true;
             return Progress("Requested guarded departure before exact subgroup rejoin.", DadAllianceRecruitmentState.CorrectingWrongAlliance);
         }
@@ -401,6 +413,42 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
 
         FireYes(prompt.Addon);
         return Progress("Confirmed guarded departure.", DadAllianceRecruitmentState.CorrectingWrongAlliance);
+    }
+
+    private static bool TrySubmitGuardedLeaveCommand(out string error)
+    {
+        const string leaveCommand = "/leave";
+        error = string.Empty;
+        Utf8String* entry = null;
+        try
+        {
+            var uiModule = UIModule.Instance();
+            if (uiModule == null)
+            {
+                error = "The native game UI module is unavailable for guarded /leave.";
+                return false;
+            }
+
+            entry = Utf8String.FromString(leaveCommand);
+            if (entry == null)
+            {
+                error = "The guarded /leave chat entry could not be allocated.";
+                return false;
+            }
+
+            uiModule->ProcessChatBoxEntry(entry, nint.Zero);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            error = $"The guarded /leave command failed: {exception.Message}";
+            return false;
+        }
+        finally
+        {
+            if (entry != null)
+                entry->Dtor(true);
+        }
     }
 
     private bool IsInExistingParty()
@@ -521,9 +569,6 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway : IDisposable
         => text.Contains("leave", StringComparison.OrdinalIgnoreCase) &&
            (text.Contains("party", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("alliance", StringComparison.OrdinalIgnoreCase));
-
-    private static bool ContainsRecruitmentLanguage(string text)
-        => text.Contains("recruit", StringComparison.OrdinalIgnoreCase);
 
     private DadAllianceNativeStep Progress(
         string summary,

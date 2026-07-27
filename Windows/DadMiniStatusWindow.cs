@@ -140,7 +140,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     private void DrawRun(DadMiniStatusSnapshot snapshot)
     {
         DadUi.Section("Current activity");
-        var run = snapshot.VisibleRun;
+        var run = snapshot.DisplayRun;
         var module = run.CurrentExecutorStatus.ModuleId != DadModuleId.None ? run.CurrentExecutorStatus.ModuleId : run.ModuleId;
         DadUi.Badge($"{run.Status} | {DadOperatorPhaseText.GetPhaseLabel(run)} | {module}", ToneForRun(run));
         DadUi.KeyValue("Task", $"{Text(run.ActiveTaskName)} | {Text(run.ActiveTaskStatus)}", 92f);
@@ -153,7 +153,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         foreach (var warning in run.Warnings)
             DrawStateText($"Warning: {warning}", MiniState.Warning);
 
-        if (Plugin.IsBusy(run))
+        if (Plugin.IsBusy(snapshot.VisibleRun))
         {
             var label = IsPending("cancel-run") ? "Confirm cancel active run" : "Cancel active run";
             if (DadUi.Button(label, DadUiTone.Warning))

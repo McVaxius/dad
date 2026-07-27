@@ -22,7 +22,8 @@ dotnet build .\dad.csproj -c Debug -p:Platform=x64
 
 DAD pins [ECommons 3.2.1.15](https://www.nuget.org/packages/ECommons/3.2.1.15) for its stateless Party Finder
 addon-readiness wrappers and UI-input helpers. DAD does not initialize the ECommons global service layer or use its
-signature-dependent paths. ECommons is maintained by NightmareXIV and its contributors.
+signature-dependent paths. The separate DAD-owned Party Finder preset loader resolves one fail-closed recruitment-editor
+refresh function through Dalamud's game-interop service. ECommons is maintained by NightmareXIV and its contributors.
 
 ## Test
 
@@ -101,14 +102,37 @@ dotnet test .\Tests\dad.Tests.csproj
   character, closes recruitment without disbanding the alliance, and never queues a duty. The preset's actual raid remains
   unchanged for the operator to queue manually afterward. Detailed local evidence is appended beneath
   `<plugin-config>\alliance-pf\logs`; Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
-  Party Finder, polls readiness at 250 ms, uses acknowledged ECommons controls for Alliance/Raids/Labyrinth/settings/submit,
-  and does not report success until the game exposes a nonzero owned listing ID with the exact stored settings.
+  Party Finder by submitting only the fixed native `/pfinder` chat command and polls readiness at 250 ms. Current typed
+  ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to stateless UI-input helpers. DAD
+  dispatches Alliance, Raids, and the exact enabled Labyrinth row once each, requiring a later acknowledgement within five
+  seconds after every action. Duty selection therefore lets the game populate the complete API-15 selector, including its
+  opaque discriminator. DAD then captures the full current recruitment struct plus group tab and average-item-level state,
+  overlays only the private passcode, cross-world/no-duplicate-job settings, empty comment, Alliance A `3x8` membership,
+  cleared stale members, and 23 unrestricted open slots, writes the full state once, and invokes one DAD-resolved editor
+  refresh. Objective, completion, language, loot, item-level, and opaque selector values remain game-owned. The
+  implementation is source-adapted from PartyFinderPresets but does not discover, load, reflect into, call, or exchange IPC
+  with that plugin. An unavailable refresh signature blocks before any agent write; an apply or refresh failure restores
+  the complete original state. A mutation never advances the state machine by dispatch alone: a later snapshot must
+  acknowledge the exact visible and stored editor state. A missing acknowledgement blocks this Create request without
+  re-opening, redispatching, rewriting, refreshing, or submitting. The conditions editor's temporary owner handle is never
+  treated as publication. Success still requires
+  one Submit, the editor to close, full stored duty/password/group/slot/comment/open-slot-flag exactness, active local
+  recruitment, and a nonzero opaque PF owner handle.
+  **Stop PF** beside Create/Grab uses DAD's existing Stop policy: it closes a pending or blocked editor or ends only DAD's
+  owned recruitment through the acknowledged recruitment-only cleanup path; it never disbands or queues.
+  Stop and post-formation cleanup open the owned detail window, require a fresh
+  recruitment-only confirmation, and wait for both active status and the owner handle to clear.
+  The local Create readiness row shows the first exact blocker and disables the button on Client Dads or any other failed
+  prerequisite; rejected attempts remain visible and are audited.
 
 ## Operator status and cancellation
 
 - `/dad status` keeps its existing behavior and prints the live shell report to chat.
 - `/dad mini` toggles a compact, manually opened status window. It renders cached authority, run, scheduler,
   slot, queue, worker-heartbeat, failure, and Stop-all acknowledgement state without polling peers from Draw.
+- The main activity banner, Status > Current Activity, and mini status project active scheduler work and active
+  schedule/inter-entry work as `Running` when no DAD run is busy. This is display-only: runtime truth, authority,
+  advancement, locking, cancellation, and transport behavior continue to use their existing state.
 - An active Schedule shows the same `Running now` cursor in Status and in Schedules > Cadence & Actions:
   schedule and preset names, current entry/total entries, and current repeat/entry repeats. When the saved
   definition cannot supply a total, DAD omits that denominator instead of guessing.
@@ -172,16 +196,19 @@ dotnet test .\Tests\dad.Tests.csproj
   compatibility evidence. It revalidates the evidence before reset; final readiness still requires the exact
   target character and the post-AR gate. Logical wake orders do not expire. The five-second coordinator cadence
   and mini-window snapshots affect status freshness only, not local ownership timing.
-- A connected Client Dad that is logged out can enter one separate title-idle login path only while AutoRetainer
-  Multi Mode demonstrably owns the state: the stable account route and requested catalog character must match,
-  AutoRetainer IPC and ownership state must be readable and idle, and a fresh ready `_TitleMenu` must have no title
-  navigation, connection, or error/dialog overlay. Lifestream must also be readable, idle, and freshly prove
-  `CanAutoLogin` before DAD sends `/ays m d` at most once. After Multi Mode is proven off, DAD calls the acknowledged
-  `Lifestream.ConnectAndLogin(Name, HomeWorld)` IPC. `true` advances to the existing world-readiness wait; explicit
-  `false` may retry only after five seconds and a complete fresh proof; an exception is uncertain and blocks without
-  replay. A generic title screen, stale/unknown evidence, route loss, busy AutoRetainer/Lifestream, or another
-  automation owner remains wait-only. This path never starts a closed game process and does not alter the established
-  in-world `/ays relog`, home-world return, or takeover sequence.
+- A connected Client Dad that is logged out can enter one separate title-idle login path only from a fresh exclusive
+  ready `_TitleMenu`; Character Select is never eligible. The exact account route and requested catalog character must
+  match, all condition flags must be clear, and title movies, connection/navigation, dialogs, multiple, unknown, or
+  character-select surfaces remain wait-only. AutoRetainer must be readable and idle with clear ownership,
+  VERMAXION must freshly report exactly `Idle`, and Lifestream must be readable, idle, and freshly prove
+  `CanAutoLogin`. If AutoRetainer Multi Mode is on, DAD disables and verifies it once, then recaptures every gate; if
+  already off, it skips that mutation. DAD then calls only the acknowledged
+  `Lifestream.ConnectAndLogin(Name, HomeWorld)` IPC. Accepted calls never replay; explicit `false` may retry only after
+  five seconds and complete fresh proof; an exception or uncertain result blocks without replay. Exact
+  `MovieStaffList` may receive one Escape only while Multi Mode is already off and all three automation owners are
+  readable and idle, and login still waits for a later fresh valid `_TitleMenu`. Busy or unreadable automation keeps
+  waiting without a new timeout. The in-world `/ays relog` sequence remains unchanged, while a visiting source
+  character's frozen identity, home destination, and relog target stay visible throughout Data Center return travel.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD
   also accepts the legacy VERMAXION numeric values `0` through `4` in that order. Unknown/malformed states fail
   closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses. If

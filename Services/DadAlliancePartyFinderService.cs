@@ -41,6 +41,11 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private string lastCreateAuditFingerprint = string.Empty;
     private bool disposed;
 
+    private sealed record DadAlliancePfCreatePreflightEvaluation(
+        DadAlliancePartyFinderStatus Status,
+        DadParticipantSnapshot? Local,
+        List<DadAllianceRecruitmentTarget> Targets);
+
     internal DadAlliancePartyFinderService(
         DadPresenceService presenceService,
         DadTransportService transportService,
@@ -71,79 +76,23 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     public DadAlliancePartyFinderStatus Preview(
         DadPlannerGroup? group,
         DadActivityPreset? preview)
-    {
-        if (group == null || preview == null || !preview.UsingPlannerGroup)
-        {
-            return new DadAlliancePartyFinderStatus
-            {
-                State = DadAllianceRecruitmentState.Blocked,
-                Validation = new DadAlliancePresetValidation
-                {
-                    Blockers = ["Select a concrete saved preset."],
-                    Summary = "Blocked: select a concrete saved preset.",
-                },
-                Summary = "Select a concrete saved preset.",
-            };
-        }
-
-        var local = nativeGateway.BuildLocalSnapshot();
-        var validation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
-            preview.SelectedCharacters,
-            local.ActiveCharacterKey);
-        return new DadAlliancePartyFinderStatus
-        {
-            State = validation.IsValid
-                ? DadAllianceRecruitmentState.Idle
-                : DadAllianceRecruitmentState.Blocked,
-            PresetGroupId = group.GroupId,
-            PresetName = group.DisplayName,
-            Validation = validation,
-            Summary = validation.Summary,
-        };
-    }
+        => EvaluateCreatePreflight(group, preview).Status.Clone();
 
     public DadAlliancePartyFinderStatus CreateParty(
         DadPlannerGroup? group,
         DadActivityPreset? preview)
     {
         ThrowIfDisposed();
-        if (group == null || preview == null || !preview.UsingPlannerGroup ||
-            !string.Equals(group.GroupId, preview.SelectedPlannerGroupId, StringComparison.OrdinalIgnoreCase))
-        {
-            return SetBlocked("Select a concrete saved preset before creating an alliance party.");
-        }
+        var preflight = EvaluateCreatePreflight(group, preview);
+        if (!preflight.Status.CreatePreflightReady)
+            return RejectCreate(preflight.Status);
 
-        lock (statusGate)
-        {
-            if (!string.IsNullOrWhiteSpace(status.RecruitmentId) &&
-                status.State is not DadAllianceRecruitmentState.Complete
-                    and not DadAllianceRecruitmentState.Stopped
-                    and not DadAllianceRecruitmentState.Blocked)
-            {
-                return status.Clone();
-            }
-        }
-
-        var local = nativeGateway.BuildLocalSnapshot();
-        var validation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
-            preview.SelectedCharacters,
-            local.ActiveCharacterKey);
-        if (!validation.IsValid)
-            return SetBlocked(validation.Summary, validation);
-
-        var conflict = conflictBlocker();
-        if (!string.IsNullOrWhiteSpace(conflict))
-            return SetBlocked(conflict, validation);
-
-        if (!TryBuildTargets(preview.SelectedCharacters, local, out var targets, out var targetBlocker))
-            return SetBlocked(targetBlocker, validation);
-
-        var host = targets.Single(target => string.Equals(
-            target.CharacterKey.Value,
-            local.ActiveCharacterKey.Value,
-            StringComparison.OrdinalIgnoreCase));
-        if (host.Assignment != DadAllianceAssignment.A)
-            return SetBlocked("The current PF creator must be the effective Alliance-A host.", validation);
+        var local = preflight.Local ??
+                    throw new InvalidOperationException("Alliance PF Create preflight lost the local participant.");
+        var selectedGroup = group ??
+                            throw new InvalidOperationException("Alliance PF Create preflight lost the selected preset.");
+        var targets = preflight.Targets;
+        var validation = preflight.Status.Validation;
 
         ResetOperation();
         nativeGateway.Reset();
@@ -156,12 +105,14 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         {
             RecruitmentId = Guid.NewGuid().ToString("N"),
             State = DadAllianceRecruitmentState.CreatingListing,
-            PresetGroupId = group.GroupId,
-            PresetName = group.DisplayName,
+            PresetGroupId = selectedGroup.GroupId,
+            PresetName = selectedGroup.DisplayName,
             LeaderName = local.Character.CharacterName,
             LeaderWorld = local.Character.WorldName,
             Passcode = passcode,
             CreateStage = DadAlliancePfCreateStage.CloseStaleWindows.ToString(),
+            CreatePreflightReady = false,
+            CreatePreflightBlocker = DadAlliancePartyFinderCreatePreflight.ActiveRecruitmentBlocker,
             StopGeneration = status.StopGeneration,
             StartedAtUtc = now,
             UpdatedAtUtc = now,
@@ -173,13 +124,181 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         return next.Clone();
     }
 
+    private DadAlliancePfCreatePreflightEvaluation EvaluateCreatePreflight(
+        DadPlannerGroup? group,
+        DadActivityPreset? preview)
+    {
+        var hasConcretePreset =
+            group != null &&
+            preview != null &&
+            preview.UsingPlannerGroup &&
+            string.Equals(
+                group.GroupId,
+                preview.SelectedPlannerGroupId,
+                StringComparison.OrdinalIgnoreCase);
+        if (!hasConcretePreset)
+        {
+            return BuildCreatePreflightEvaluation(
+                group,
+                new DadAlliancePresetValidation
+                {
+                    Blockers = [DadAlliancePartyFinderCreatePreflight.PresetBlocker],
+                    Summary = DadAlliancePartyFinderCreatePreflight.PresetBlocker,
+                },
+                new DadAlliancePfCreatePreflightInput
+                {
+                    HasConcretePreset = false,
+                });
+        }
+
+        var local = nativeGateway.BuildLocalSnapshot();
+        var validation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
+            preview!.SelectedCharacters,
+            local.ActiveCharacterKey);
+        if (!validation.IsValid)
+        {
+            return BuildCreatePreflightEvaluation(
+                group,
+                validation,
+                new DadAlliancePfCreatePreflightInput
+                {
+                    HasConcretePreset = true,
+                    Validation = validation,
+                },
+                local);
+        }
+
+        var recruitmentActive = HasActiveRecruitment();
+        if (recruitmentActive)
+        {
+            return BuildCreatePreflightEvaluation(
+                group,
+                validation,
+                new DadAlliancePfCreatePreflightInput
+                {
+                    HasConcretePreset = true,
+                    Validation = validation,
+                    RecruitmentActive = true,
+                },
+                local);
+        }
+
+        var operationalBlocker = conflictBlocker();
+        if (!string.IsNullOrWhiteSpace(operationalBlocker))
+        {
+            return BuildCreatePreflightEvaluation(
+                group,
+                validation,
+                new DadAlliancePfCreatePreflightInput
+                {
+                    HasConcretePreset = true,
+                    Validation = validation,
+                    OperationalBlocker = operationalBlocker,
+                },
+                local);
+        }
+
+        var targetsResolved = TryBuildTargets(
+            preview.SelectedCharacters,
+            local,
+            out var targets,
+            out var targetBlocker);
+        var host = targetsResolved
+            ? targets.SingleOrDefault(target => string.Equals(
+                target.CharacterKey.Value,
+                local.ActiveCharacterKey.Value,
+                StringComparison.OrdinalIgnoreCase))
+            : null;
+        var input = new DadAlliancePfCreatePreflightInput
+        {
+            HasConcretePreset = true,
+            Validation = validation,
+            TargetsResolved = targetsResolved,
+            TargetBlocker = targetBlocker,
+            HostIsAllianceA = host?.Assignment == DadAllianceAssignment.A,
+        };
+        return BuildCreatePreflightEvaluation(group, validation, input, local, targets);
+    }
+
+    private static DadAlliancePfCreatePreflightEvaluation BuildCreatePreflightEvaluation(
+        DadPlannerGroup? group,
+        DadAlliancePresetValidation validation,
+        DadAlliancePfCreatePreflightInput input,
+        DadParticipantSnapshot? local = null,
+        List<DadAllianceRecruitmentTarget>? targets = null)
+    {
+        var decision = DadAlliancePartyFinderCreatePreflight.Evaluate(input);
+        return new DadAlliancePfCreatePreflightEvaluation(
+            new DadAlliancePartyFinderStatus
+            {
+                State = decision.Ready
+                    ? DadAllianceRecruitmentState.Idle
+                    : DadAllianceRecruitmentState.Blocked,
+                PresetGroupId = group?.GroupId ?? string.Empty,
+                PresetName = group?.DisplayName ?? string.Empty,
+                Validation = validation,
+                CreatePreflightReady = decision.Ready,
+                CreatePreflightBlocker = decision.Blocker,
+                Summary = decision.Ready ? validation.Summary : decision.Blocker,
+            },
+            local,
+            targets ?? []);
+    }
+
+    private bool HasActiveRecruitment()
+    {
+        lock (statusGate)
+        {
+            return !string.IsNullOrWhiteSpace(status.RecruitmentId) &&
+                   status.State is not DadAllianceRecruitmentState.Complete
+                       and not DadAllianceRecruitmentState.Stopped
+                       and not DadAllianceRecruitmentState.Blocked;
+        }
+    }
+
+    private DadAlliancePartyFinderStatus RejectCreate(DadAlliancePartyFinderStatus rejected)
+    {
+        DadAlliancePartyFinderStatus result;
+        lock (statusGate)
+        {
+            if (!string.IsNullOrWhiteSpace(status.RecruitmentId) &&
+                status.State is not DadAllianceRecruitmentState.Complete
+                    and not DadAllianceRecruitmentState.Stopped
+                    and not DadAllianceRecruitmentState.Blocked)
+            {
+                status.CreatePreflightReady = false;
+                status.CreatePreflightBlocker = rejected.CreatePreflightBlocker;
+                status.UpdatedAtUtc = DateTime.UtcNow;
+                result = status.Clone();
+            }
+            else
+            {
+                rejected.State = DadAllianceRecruitmentState.Blocked;
+                rejected.CreateRejected = true;
+                rejected.Summary = rejected.CreatePreflightBlocker;
+                rejected.StopGeneration = status.StopGeneration;
+                rejected.UpdatedAtUtc = DateTime.UtcNow;
+                status = rejected.Clone();
+                result = status.Clone();
+            }
+        }
+
+        Audit(
+            "create-rejected",
+            null,
+            0,
+            rejected.CreatePreflightBlocker,
+            rejected.CreatePreflightBlocker);
+        return result;
+    }
+
     public DadAlliancePartyFinderStatus GrabDads()
     {
         ThrowIfDisposed();
         lock (statusGate)
         {
             if (status.State != DadAllianceRecruitmentState.ListingOpen || status.ListingId == 0)
-                return SetBlocked("Create and verify the DAD-owned Labyrinth listing before grabbing dads.", status.Validation);
+                return SetBlocked("Create and verify active DAD-owned Labyrinth recruitment before grabbing dads.", status.Validation);
             grabRequested = true;
             coordinatorNextResendUtc = DateTime.MinValue;
             status.Summary = "Dispatching unresolved alliance targets concurrently.";
@@ -286,9 +405,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             stopCreate = !status.OwnsRecruitment &&
                          status.ListingId == 0 &&
                          !string.IsNullOrWhiteSpace(status.CreateStage) &&
-                         status.State is DadAllianceRecruitmentState.CreatingListing
-                             or DadAllianceRecruitmentState.RetryWaiting
-                             or DadAllianceRecruitmentState.WaitingUnsafe;
+                         status.State is not DadAllianceRecruitmentState.Complete
+                             and not DadAllianceRecruitmentState.Stopped;
             status.StopGeneration = nextGeneration;
             status.State = DadAllianceRecruitmentState.Stopped;
             status.UpdatedAtUtc = DateTime.UtcNow;
@@ -352,6 +470,32 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         if (cleanupRequested && current.ListingId != 0)
         {
             var cleanup = nativeGateway.AdvanceEndRecruitment(current.ListingId);
+            lock (statusGate)
+            {
+                status.CreateStage = cleanup.CreateStage;
+                status.CreateAttempt = cleanup.Attempt;
+                status.CreateNextRetryUtc = cleanup.NextRetryUtc;
+                status.CreateLastError = cleanup.LastError;
+                status.CreateActiveRecruitment = cleanup.ActiveRecruitment;
+                status.CreateEditorVisible = cleanup.EditorVisible;
+                status.CreateSubmitDispatched = cleanup.SubmitDispatched;
+                status.UpdatedAtUtc = DateTime.UtcNow;
+            }
+            if (cleanup.ShouldAudit)
+            {
+                var eventName = string.IsNullOrWhiteSpace(cleanup.CreateEvent)
+                    ? "cleanup-readiness"
+                    : $"cleanup-{cleanup.CreateEvent}";
+                var fingerprint =
+                    $"{eventName}|{cleanup.CreateStage}|{cleanup.Attempt}|{cleanup.NextRetryUtc:O}|" +
+                    $"{cleanup.LastError}|{cleanup.Readiness}|{cleanup.ListingId}|" +
+                    $"{cleanup.ActiveRecruitment}|{cleanup.Summary}";
+                if (!string.Equals(fingerprint, lastCreateAuditFingerprint, StringComparison.Ordinal))
+                {
+                    lastCreateAuditFingerprint = fingerprint;
+                    AuditCreate(eventName, cleanup);
+                }
+            }
             if (cleanup.Kind == DadAllianceNativeStepKind.Succeeded)
             {
                 cleanupRequested = false;
@@ -501,6 +645,11 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.CreateNextRetryUtc = step.NextRetryUtc;
             status.CreateLastError = step.LastError;
             status.CreateElapsedMilliseconds = step.ElapsedMilliseconds;
+            status.CreateActiveRecruitment = step.ActiveRecruitment;
+            status.CreateEditorVisible = step.EditorVisible;
+            status.CreateSubmitDispatched = step.SubmitDispatched;
+            status.CreateConfigurationTarget = step.ConfigurationTarget;
+            status.CreateObservedSettings = step.ObservedSettings;
             status.UpdatedAtUtc = DateTime.UtcNow;
             if (step.Kind == DadAllianceNativeStepKind.Succeeded)
             {
@@ -525,7 +674,10 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             };
             var fingerprint =
                 $"{eventName}|{step.CreateStage}|{step.Attempt}|{step.NextRetryUtc:O}|" +
-                $"{step.LastError}|{step.Readiness}|{step.Category}|{step.DutyId}|{step.Summary}";
+                $"{step.LastError}|{step.Readiness}|{step.Category}|{step.DutyId}|" +
+                $"{step.ListingId}|{step.ActiveRecruitment}|{step.EditorVisible}|" +
+                $"{step.SubmitDispatched}|{step.ConfigurationTarget}|" +
+                $"{step.ObservedSettings}|{step.Summary}";
             if (!string.Equals(fingerprint, lastCreateAuditFingerprint, StringComparison.Ordinal))
             {
                 lastCreateAuditFingerprint = fingerprint;
@@ -953,7 +1105,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             TimestampUtc = DateTime.UtcNow,
             Event = eventName,
             RecruitmentId = current.RecruitmentId,
-            ListingId = step.ListingId != 0 ? step.ListingId : current.ListingId,
+            PfOwnerHandle = step.ListingId != 0 ? step.ListingId : current.ListingId,
             SessionId = presenceService.WorkerSessionId.Value,
             HostName = current.LeaderName,
             HostWorld = current.LeaderWorld,
@@ -965,6 +1117,11 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             Readiness = step.Readiness,
             Category = step.Category,
             DutyId = step.DutyId,
+            ActiveRecruitment = step.ActiveRecruitment,
+            EditorVisible = step.EditorVisible,
+            SubmitDispatched = step.SubmitDispatched,
+            ConfigurationTarget = step.ConfigurationTarget,
+            ObservedSettings = step.ObservedSettings,
             ElapsedMilliseconds = step.ElapsedMilliseconds,
             StopGeneration = current.StopGeneration,
             State = current.State.ToString(),
@@ -992,7 +1149,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             TimestampUtc = DateTime.UtcNow,
             Event = eventName,
             RecruitmentId = result?.RecruitmentId ?? current.RecruitmentId,
-            ListingId = current.ListingId,
+            PfOwnerHandle = current.ListingId,
             SessionId = presenceService.WorkerSessionId.Value,
             HostName = current.LeaderName,
             HostWorld = current.LeaderWorld,
@@ -1007,6 +1164,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             CreateStage = current.CreateStage,
             NextRetryUtc = current.CreateNextRetryUtc,
             LastError = current.CreateLastError,
+            ActiveRecruitment = current.CreateActiveRecruitment,
+            EditorVisible = current.CreateEditorVisible,
+            SubmitDispatched = current.CreateSubmitDispatched,
             ElapsedMilliseconds = elapsedMilliseconds,
             StopGeneration = result?.StopGeneration ?? current.StopGeneration,
             Transport = eventName.Contains("discord", StringComparison.OrdinalIgnoreCase)

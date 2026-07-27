@@ -9,7 +9,7 @@ public sealed class DadAlliancePfAuditRecord
     public DateTime TimestampUtc { get; set; } = DateTime.UtcNow;
     public string Event { get; set; } = string.Empty;
     public string RecruitmentId { get; set; } = string.Empty;
-    public ulong ListingId { get; set; }
+    public ulong PfOwnerHandle { get; set; }
     public string SessionId { get; set; } = string.Empty;
     public string HostName { get; set; } = string.Empty;
     public string HostWorld { get; set; } = string.Empty;
@@ -27,6 +27,11 @@ public sealed class DadAlliancePfAuditRecord
     public string Readiness { get; set; } = string.Empty;
     public uint Category { get; set; }
     public ushort DutyId { get; set; }
+    public bool ActiveRecruitment { get; set; }
+    public bool EditorVisible { get; set; }
+    public bool SubmitDispatched { get; set; }
+    public string ConfigurationTarget { get; set; } = string.Empty;
+    public string ObservedSettings { get; set; } = string.Empty;
     public int ElapsedMilliseconds { get; set; }
     public long StopGeneration { get; set; }
     public string Transport { get; set; } = string.Empty;

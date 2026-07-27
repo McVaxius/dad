@@ -10,6 +10,8 @@ public sealed class DadMiniStatusSnapshot
     public string TransportStatus { get; set; } = string.Empty;
     public string TransportError { get; set; } = string.Empty;
     public DadRunResult VisibleRun { get; set; } = DadRunResult.Idle();
+    internal DadRunResult DisplayRun { get; set; } = DadRunResult.Idle();
+    internal DadActivityDisplaySource DisplaySource { get; set; }
     public DadSchedulerQueueSnapshot SchedulerQueue { get; set; } = new();
     public DadScheduleSnapshot Schedule { get; set; } = new();
     public DadWorkerExecutionStatus LocalWorker { get; set; } = new();
@@ -34,6 +36,33 @@ public static class DadMiniStatusSnapshotBuilder
         DadStopAllStatus? lastStopAll,
         IEnumerable<DadRunResult>? runHistory = null,
         DadWakeTakeoverResultDto? localTakeover = null)
+        => BuildWithActivityDisplay(
+            isCoordinator,
+            authority,
+            transport,
+            visibleRun,
+            schedulerQueue,
+            schedule,
+            localWorker,
+            localParticipant,
+            lastStopAll,
+            runHistory,
+            localTakeover,
+            new DadActivityDisplaySelection(visibleRun, DadActivityDisplaySource.ExistingDadState));
+
+    internal static DadMiniStatusSnapshot BuildWithActivityDisplay(
+        bool isCoordinator,
+        DadAuthorityViewState authority,
+        DadPeerTransportSnapshot transport,
+        DadRunResult visibleRun,
+        DadSchedulerQueueSnapshot schedulerQueue,
+        DadScheduleSnapshot schedule,
+        DadWorkerExecutionStatus localWorker,
+        DadParticipantSnapshot localParticipant,
+        DadStopAllStatus? lastStopAll,
+        IEnumerable<DadRunResult>? runHistory,
+        DadWakeTakeoverResultDto? localTakeover,
+        DadActivityDisplaySelection activityDisplay)
     {
         var participants = transport.KnownParticipants
             .Where(static participant => participant.State != DadParticipantState.Stale)
@@ -57,6 +86,8 @@ public static class DadMiniStatusSnapshotBuilder
                     ? transport.Availability
                     : string.Empty),
             VisibleRun = visibleRun.Clone(),
+            DisplayRun = activityDisplay.Run.Clone(),
+            DisplaySource = activityDisplay.Source,
             SchedulerQueue = schedulerQueue,
             Schedule = schedule,
             LocalWorker = localWorker.Clone(),

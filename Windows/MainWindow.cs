@@ -197,6 +197,10 @@ public sealed class MainWindow : Window, IDisposable
         var configuration = plugin.Configuration;
         var profile = plugin.ConfigManager.GetActiveConfig();
         var runState = plugin.GetVisibleRunState();
+        var activityDisplay = DadActivityDisplaySelector.Select(
+            runState,
+            plugin.SchedulerService.CurrentState,
+            plugin.Configuration.ActiveScheduleRun ?? new DadScheduleRunState());
         var characterPool = plugin.CharacterIntelligenceService.CurrentPool;
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
 
@@ -212,7 +216,7 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawShellHeader(configuration, profile, runState, characterPool, version);
         DrawConfigurationPersistenceWarning();
-        DrawActiveRunBanner(runState);
+        DrawActiveRunBanner(runState, activityDisplay.Run);
         ImGui.Spacing();
 
         if (ImGui.BeginTabBar("dad-main-tabs"))
@@ -249,7 +253,7 @@ public sealed class MainWindow : Window, IDisposable
 
             if (ImGui.BeginTabItem("Status", BuildMainTabFlags(DadMainWindowTab.Status)))
             {
-                DrawStatusTab(characterPool, runState, profile);
+                DrawStatusTab(characterPool, runState, profile, activityDisplay.Run);
                 ImGui.EndTabItem();
             }
 
@@ -334,9 +338,11 @@ public sealed class MainWindow : Window, IDisposable
 
     }
 
-    private void DrawActiveRunBanner(DadVisibleRunState runState)
+    private void DrawActiveRunBanner(
+        DadVisibleRunState runState,
+        DadRunResult displayRun)
     {
-        var activeRun = GetActiveRun(runState);
+        var activeRun = displayRun;
         var plannerLocked = IsPlannerLocked(runState);
         var phase = DadOperatorPhaseText.FormatPhaseLabel(activeRun);
         var module = activeRun.ModuleId == DadModuleId.None ? "No module" : activeRun.ModuleId.ToString();
@@ -386,9 +392,12 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawOverviewTab(DadVisibleRunState runState, CharacterConfig profile)
         => DrawOverviewCompact(runState, profile);
 
-    private void DrawStatusCurrentActivityDetails(DadVisibleRunState runState, CharacterConfig profile)
+    private void DrawStatusCurrentActivityDetails(
+        DadVisibleRunState runState,
+        CharacterConfig profile,
+        DadRunResult displayRun)
     {
-        var activeRun = GetActiveRun(runState);
+        var activeRun = displayRun;
         var localRun = runState.LocalRun;
         var authorityRun = runState.AuthorityRun;
         var authorityView = runState.AuthorityView;
@@ -473,7 +482,7 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         DrawSectionHeader("Operator Next Action", "Single next step aligned with current authority/runtime truth.");
-        DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile));
+        DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile, displayRun));
         DrawStatusRow("Account", FormatOperatorAccountLabel(plugin.ConfigManager.GetCurrentAccount()?.AccountAlias, plugin.ConfigManager.CurrentAccountId));
         DrawStatusRow("Profile", FormatOperatorCharacterKey(plugin.ConfigManager.SelectedCharacterKey, "(Account default)"));
         DrawStatusRow("Profile notes", FormatOperatorText(profile.TargetNotes, "(none)"));
@@ -968,7 +977,8 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawStatusTab(
         DadCharacterPool characterPool,
         DadVisibleRunState runState,
-        CharacterConfig profile)
+        CharacterConfig profile,
+        DadRunResult displayRun)
     {
         DadUi.Heading("STATUS", "Follow live work, inspect durable history, and resolve detailed readiness in one place.");
         if (!ImGui.BeginTabBar("dad-status-tabs"))
@@ -976,11 +986,11 @@ public sealed class MainWindow : Window, IDisposable
 
         if (ImGui.BeginTabItem("Current Activity", BuildStatusTabFlags(DadStatusWindowTab.CurrentActivity)))
         {
-            DrawCurrentActivitySummary(runState, profile);
+            DrawCurrentActivitySummary(runState, profile, displayRun);
             DrawActiveScheduleStatus(plugin.SchedulerService.GetScheduleSnapshot());
             DrawCrewActiveJobSection();
             if (plugin.Configuration.DebugUiEnabled)
-                DrawStatusCurrentActivityDetails(runState, profile);
+                DrawStatusCurrentActivityDetails(runState, profile, displayRun);
             ImGui.EndTabItem();
         }
 
@@ -1001,9 +1011,12 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndTabBar();
     }
 
-    private void DrawCurrentActivitySummary(DadVisibleRunState runState, CharacterConfig profile)
+    private void DrawCurrentActivitySummary(
+        DadVisibleRunState runState,
+        CharacterConfig profile,
+        DadRunResult displayRun)
     {
-        var activeRun = GetActiveRun(runState);
+        var activeRun = displayRun;
         DrawSectionHeader("Visible DAD run", "Current authority-aligned run state and the first operator action.");
         DrawStatusRow("Operator phase", DadOperatorPhaseText.FormatPhaseLabel(activeRun));
         DrawStatusRow("Run", activeRun.Status == DadRunStatus.Idle
@@ -1014,7 +1027,7 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow("Active task", $"{activeRun.ActiveTaskIndex}/{Math.Max(1, activeRun.TotalTaskCount)} {activeRun.ActiveTaskName} | {FormatText(activeRun.ActiveTaskStatus, activeRun.Summary)}");
         if (DadOperatorPhaseText.HasBlockingFailure(activeRun))
             DrawStatusRow("First blocker", FormatText(activeRun.BlockedReason, activeRun.FailureReason));
-        DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile));
+        DrawStatusRow("Next action", BuildOverviewNextAction(runState, profile, displayRun));
         DrawDutySupportRuntimeSection(activeRun);
     }
 
@@ -1160,9 +1173,8 @@ public sealed class MainWindow : Window, IDisposable
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         var plannerPreview = plugin.BuildPlannerPreview();
         var live = plugin.AlliancePartyFinderService.GetStatus();
-        var display = string.IsNullOrWhiteSpace(live.RecruitmentId)
-            ? plugin.AlliancePartyFinderService.Preview(selectedGroup, plannerPreview)
-            : live;
+        var preflight = plugin.AlliancePartyFinderService.Preview(selectedGroup, plannerPreview);
+        var display = DadAlliancePartyFinderCreatePreflight.SelectLocalDisplay(live, preflight);
 
         DrawSectionHeader(
             "Alliance Party Finder",
@@ -1170,12 +1182,24 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Preset", selectedGroup?.DisplayName ?? "(select a concrete preset)");
         DrawStatusRow(
             "Assignments",
-            $"A {display.Validation.AllianceACount}/8 | B {display.Validation.AllianceBCount}/8 | " +
-            $"C {display.Validation.AllianceCCount}/8 | total {display.Validation.TotalCount}");
-        DrawStatusRow("Validation", display.Validation.Summary);
-        DrawStatusRow("Host / listing", string.IsNullOrWhiteSpace(display.LeaderName)
-            ? $"{display.State} | listing {(display.ListingId == 0 ? "(none)" : display.ListingId.ToString(CultureInfo.InvariantCulture))}"
-            : $"{display.LeaderName} @ {display.LeaderWorld} | {display.State} | listing {(display.ListingId == 0 ? "(pending)" : display.ListingId.ToString(CultureInfo.InvariantCulture))}");
+            $"A {preflight.Validation.AllianceACount}/8 | B {preflight.Validation.AllianceBCount}/8 | " +
+            $"C {preflight.Validation.AllianceCCount}/8 | total {preflight.Validation.TotalCount}");
+        DrawStatusRow("Validation", preflight.Validation.Summary);
+        DrawStatusRow(
+            "Create readiness",
+            preflight.CreatePreflightReady
+                ? "Ready on this Dad Coordinator."
+                : preflight.CreatePreflightBlocker);
+        if (display.CreateRejected)
+            DrawStatusRow("Last Create attempt", $"Rejected: {display.Summary}");
+        DrawStatusRow("Host / state", string.IsNullOrWhiteSpace(display.LeaderName)
+            ? display.State.ToString()
+            : $"{display.LeaderName} @ {display.LeaderWorld} | {display.State}");
+        DrawStatusRow(
+            "PF owner handle",
+            display.ListingId == 0
+                ? "(none)"
+                : display.ListingId.ToString(CultureInfo.InvariantCulture));
         DrawStatusRow("Private passcode", display.Passcode is >= 1000 and <= 9999
             ? display.Passcode.ToString("0000", CultureInfo.InvariantCulture)
             : "(generated on Create party)");
@@ -1183,27 +1207,48 @@ public sealed class MainWindow : Window, IDisposable
         {
             DrawStatusRow("Create stage", display.CreateStage);
             DrawStatusRow("Create attempt", display.CreateAttempt.ToString(CultureInfo.InvariantCulture));
-            DrawStatusRow("Next create retry", display.CreateNextRetryUtc.HasValue
+            DrawStatusRow("Create retry / observation deadline", display.CreateNextRetryUtc.HasValue
                 ? display.CreateNextRetryUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)
                 : "(none)");
             DrawStatusRow("Create elapsed", $"{display.CreateElapsedMilliseconds:N0} ms");
+            DrawStatusRow(
+                "Create publication",
+                $"active status {display.CreateActiveRecruitment} | " +
+                $"editor visible {display.CreateEditorVisible} | " +
+                $"Submit dispatched {display.CreateSubmitDispatched}");
+            DrawStatusRow(
+                "Configuration target",
+                string.IsNullOrWhiteSpace(display.CreateConfigurationTarget)
+                    ? "(none)"
+                    : display.CreateConfigurationTarget);
+            DrawStatusRow(
+                "Observed PF settings",
+                string.IsNullOrWhiteSpace(display.CreateObservedSettings)
+                    ? "(not sampled)"
+                    : display.CreateObservedSettings);
             DrawStatusRow("Last create error", string.IsNullOrWhiteSpace(display.CreateLastError)
                 ? "(none)"
                 : display.CreateLastError);
         }
         DrawStatusRow("Recruitment", display.Summary);
 
-        var canCreate = selectedGroup != null &&
-                        display.Validation.IsValid &&
-                        live.State is DadAllianceRecruitmentState.Idle
-                            or DadAllianceRecruitmentState.Complete
-                            or DadAllianceRecruitmentState.Stopped
-                            or DadAllianceRecruitmentState.Blocked;
+        var canCreate = preflight.CreatePreflightReady;
         ImGui.BeginDisabled(!canCreate);
         if (DadUi.Button("Create party", DadUiTone.Accent))
         {
             var result = plugin.AlliancePartyFinderService.CreateParty(selectedGroup, plannerPreview);
             plugin.PrintStatus(result.Summary);
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        var canStop = DadAlliancePartyFinderRules.CanStop(live);
+        ImGui.BeginDisabled(!canStop);
+        if (DadUi.Button("Stop PF", DadUiTone.Danger))
+        {
+            plugin.AlliancePartyFinderService.Stop(
+                "Stopped from the Alliance Party Finder debug controls.");
+            plugin.PrintStatus(
+                plugin.AlliancePartyFinderService.GetStatus().Summary);
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
@@ -4998,9 +5043,12 @@ public sealed class MainWindow : Window, IDisposable
         };
     }
 
-    private string BuildOverviewNextAction(DadVisibleRunState runState, CharacterConfig profile)
+    private string BuildOverviewNextAction(
+        DadVisibleRunState runState,
+        CharacterConfig profile,
+        DadRunResult? displayRun = null)
     {
-        var activeRun = GetActiveRun(runState);
+        var activeRun = displayRun ?? GetActiveRun(runState);
         if (!plugin.Configuration.PluginEnabled)
             return "Enable Dad plugin before using planner or runtime authority.";
 

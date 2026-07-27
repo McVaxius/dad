@@ -81,6 +81,8 @@ public sealed class DadMiniStatusSnapshotTests
         Assert.Equal(DadAuthorityViewKind.RemoteStale, snapshot.Authority.Kind);
         Assert.Equal("Cached route timed out.", snapshot.TransportError);
         Assert.Equal("run-1", snapshot.VisibleRun.RequestId);
+        Assert.Equal("run-1", snapshot.DisplayRun.RequestId);
+        Assert.Equal(DadActivityDisplaySource.ExistingDadState, snapshot.DisplaySource);
         Assert.Equal("active-job", snapshot.SchedulerQueue.ActiveState.JobId);
         Assert.Equal("Slot2", snapshot.SchedulerQueue.ActiveState.Slots.Single().SlotId);
         Assert.Equal(["first", "second"], snapshot.SchedulerQueue.PendingJobs.Select(static job => job.JobId));
@@ -119,5 +121,44 @@ public sealed class DadMiniStatusSnapshotTests
         Assert.Equal("Latest failure", snapshot.RecentFailure);
         Assert.Equal("stop-1", snapshot.LastStopAll?.OperationId);
         Assert.Equal(DadStopAllWorkerState.TimedOut, snapshot.LastStopAll?.Workers.Single().State);
+    }
+
+    [Fact]
+    public void BuilderUsesDisplayProjectionWithoutChangingRuntimeTruth()
+    {
+        var terminal = new DadRunResult
+        {
+            RequestId = "terminal-run",
+            Status = DadRunStatus.Completed,
+            Summary = "Runtime terminal.",
+        };
+        var display = new DadActivityDisplaySelection(
+            new DadRunResult
+            {
+                RequestId = "scheduler-job",
+                Status = DadRunStatus.Running,
+                Summary = "Scheduler active.",
+            },
+            DadActivityDisplaySource.Scheduler);
+
+        var snapshot = DadMiniStatusSnapshotBuilder.BuildWithActivityDisplay(
+            true,
+            new DadAuthorityViewState(),
+            new DadPeerTransportSnapshot(),
+            terminal,
+            new DadSchedulerQueueSnapshot(),
+            new DadScheduleSnapshot(),
+            new DadWorkerExecutionStatus(),
+            new DadParticipantSnapshot(),
+            null,
+            runHistory: null,
+            localTakeover: null,
+            activityDisplay: display);
+
+        Assert.Equal("terminal-run", snapshot.VisibleRun.RequestId);
+        Assert.Equal(DadRunStatus.Completed, snapshot.VisibleRun.Status);
+        Assert.Equal("scheduler-job", snapshot.DisplayRun.RequestId);
+        Assert.Equal(DadRunStatus.Running, snapshot.DisplayRun.Status);
+        Assert.Equal(DadActivityDisplaySource.Scheduler, snapshot.DisplaySource);
     }
 }

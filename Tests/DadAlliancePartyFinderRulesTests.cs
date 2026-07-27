@@ -151,6 +151,41 @@ public sealed class DadAlliancePartyFinderRulesTests
         Assert.Equal(TimeSpan.FromSeconds(15), DadAlliancePartyFinderRules.GetRetryDelay(1_000_000));
     }
 
+    [Theory]
+    [InlineData(DadAllianceRecruitmentState.CreatingListing, false, 0, "ApplyPreset")]
+    [InlineData(DadAllianceRecruitmentState.Blocked, false, 0, "Blocked")]
+    [InlineData(DadAllianceRecruitmentState.ListingOpen, true, 777, "Complete")]
+    public void StopControlIsAvailableForPendingBlockedAndPublishedOwnedRecruitment(
+        DadAllianceRecruitmentState state,
+        bool ownsRecruitment,
+        ulong listingId,
+        string createStage)
+    {
+        var status = new DadAlliancePartyFinderStatus
+        {
+            State = state,
+            OwnsRecruitment = ownsRecruitment,
+            ListingId = listingId,
+            CreateStage = createStage,
+        };
+
+        Assert.True(DadAlliancePartyFinderRules.CanStop(status));
+    }
+
+    [Fact]
+    public void StopControlRejectsIdleAndUnownedPublishedState()
+    {
+        Assert.False(DadAlliancePartyFinderRules.CanStop(new DadAlliancePartyFinderStatus()));
+        Assert.False(DadAlliancePartyFinderRules.CanStop(
+            new DadAlliancePartyFinderStatus
+            {
+                State = DadAllianceRecruitmentState.ListingOpen,
+                ListingId = 777,
+                OwnsRecruitment = false,
+                CreateStage = "Complete",
+            }));
+    }
+
     [Fact]
     public void HubAndDiscordCopiesDeduplicateByRecruitmentAndTarget()
     {
@@ -219,6 +254,16 @@ public sealed class DadAlliancePartyFinderRulesTests
                 Readiness = "main-ready=true; condition-ready=true",
                 Category = DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
                 DutyId = 174,
+                PfOwnerHandle = 3,
+                ActiveRecruitment = false,
+                EditorVisible = true,
+                SubmitDispatched = false,
+                ConfigurationTarget = string.Empty,
+                ObservedSettings =
+                    "alliance-tab=False; alliance-a=False; " +
+                    "passcode-visible=9752; passcode-stored=9752",
+                Summary =
+                    "Loaded the DAD-owned Alliance preset and invoked one refresh.",
             };
 
             Assert.True(audit.TryWrite(record));
@@ -234,6 +279,20 @@ public sealed class DadAlliancePartyFinderRulesTests
             Assert.Contains("\"lastError\":\"synthetic PF error toast\"", lines[0], StringComparison.Ordinal);
             Assert.Contains("\"category\":32", lines[0], StringComparison.Ordinal);
             Assert.Contains("\"dutyId\":174", lines[0], StringComparison.Ordinal);
+            Assert.Contains("\"pfOwnerHandle\":3", lines[0], StringComparison.Ordinal);
+            Assert.Contains("\"activeRecruitment\":false", lines[0], StringComparison.Ordinal);
+            Assert.Contains("\"editorVisible\":true", lines[0], StringComparison.Ordinal);
+            Assert.Contains("\"submitDispatched\":false", lines[0], StringComparison.Ordinal);
+            Assert.Contains("\"configurationTarget\":\"\"", lines[0], StringComparison.Ordinal);
+            Assert.Contains(
+                "\"observedSettings\":\"alliance-tab=False; alliance-a=False; " +
+                "passcode-visible=9752; passcode-stored=9752\"",
+                lines[0],
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Loaded the DAD-owned Alliance preset and invoked one refresh.",
+                lines[0],
+                StringComparison.Ordinal);
             Assert.EndsWith(
                 Path.Combine("alliance-pf", "logs", "alliance-pf-20260724.jsonl"),
                 path,

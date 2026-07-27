@@ -90,6 +90,16 @@ public static class DadAlliancePartyFinderRules
             _ => DadAllianceAssignment.None,
         };
 
+    public static bool CanStop(DadAlliancePartyFinderStatus? status)
+        => status != null &&
+           ((status.OwnsRecruitment && status.ListingId != 0) ||
+            (!string.IsNullOrWhiteSpace(status.CreateStage) &&
+             status.State is DadAllianceRecruitmentState.Validating
+                 or DadAllianceRecruitmentState.CreatingListing
+                 or DadAllianceRecruitmentState.WaitingUnsafe
+                 or DadAllianceRecruitmentState.RetryWaiting
+                 or DadAllianceRecruitmentState.Blocked));
+
     public static bool IsExactListingMatch(
         string? observedLeaderName,
         string? observedLeaderWorld,

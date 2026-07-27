@@ -10,7 +10,7 @@ internal enum DadAlliancePfCreateStage
     SelectAlliance,
     SelectRaids,
     SelectDuty,
-    Configure,
+    ApplyPreset,
     Submit,
     Complete,
     Stopped,
@@ -25,7 +25,7 @@ internal enum DadAlliancePfCreateAction
     SelectAlliance,
     SelectRaids,
     SelectDuty,
-    ConfigureNextSetting,
+    ApplyPreset,
     Submit,
 }
 
@@ -49,6 +49,9 @@ internal sealed record DadAlliancePfCreateSnapshot
     public bool MainRecruitUsable { get; init; }
     public bool ConditionVisible { get; init; }
     public bool ConditionReady { get; init; }
+    public bool PresetLoaderAvailable { get; init; } = true;
+    public string PresetLoaderBlocker { get; init; } = string.Empty;
+    public byte GroupTypeTab { get; init; }
     public bool AllianceSelected { get; init; }
     public uint SelectedCategory { get; init; }
     public ushort TargetDutyId { get; init; }
@@ -56,19 +59,30 @@ internal sealed record DadAlliancePfCreateSnapshot
     public bool DutyListLoaded { get; init; }
     public int TargetDutyDropDownMatches { get; init; }
     public bool TargetDutyEntryEnabled { get; init; }
+    public int TargetDutyDropDownIndex { get; init; } = -1;
+    public int SelectedDutyDropDownIndex { get; init; } = -1;
     public ushort SelectedDutyId { get; init; }
     public bool AllianceASelected { get; init; }
     public bool PrivateRecruitment { get; init; }
+    public bool StoredPrivateRecruitment { get; init; }
     public int Passcode { get; init; }
+    public int StoredPasscode { get; init; }
     public bool CrossWorldRecruitment { get; init; }
+    public bool StoredCrossWorldRecruitment { get; init; }
     public bool OnePlayerPerJob { get; init; }
+    public bool StoredOnePlayerPerJob { get; init; }
     public bool EmptyComment { get; init; }
+    public bool StoredEmptyComment { get; init; }
     public bool UnrestrictedJobs { get; init; }
+    public bool StoredOpenSlotsUnrestricted { get; init; }
+    public bool StoredStaleMembersCleared { get; init; }
     public int NumberOfGroups { get; init; }
     public int SlotsPerGroup { get; init; }
+    public bool StoredSettingsExactBeforeSubmit { get; init; }
     public bool StoredSettingsExact { get; init; }
     public bool StoredSettingsContradictory { get; init; }
-    public ulong OwnListingId { get; init; }
+    public ulong OwnerHandle { get; init; }
+    public bool ActiveRecruitment { get; init; }
     public int ErrorToastSequence { get; init; }
     public string ErrorToast { get; init; } = string.Empty;
     public string HardBlocker { get; init; } = string.Empty;
@@ -99,6 +113,11 @@ internal readonly record struct DadAlliancePfCreateResult(
     ushort DutyId,
     ulong ListingId,
     int ElapsedMilliseconds,
+    bool ActiveRecruitment,
+    bool EditorVisible,
+    bool SubmitDispatched,
+    string ConfigurationTarget,
+    string ObservedSettings,
     bool ShouldAudit);
 
 /// <summary>
@@ -107,10 +126,15 @@ internal readonly record struct DadAlliancePfCreateResult(
 /// </summary>
 internal sealed class DadAlliancePartyFinderCreateFlow
 {
-    internal const uint RaidsCategoryMask = 0x20;
+    internal const uint RaidsCategoryMask =
+        DadAlliancePartyFinderPresetDefinition.RaidsCategoryMask;
+    internal const ushort LabyrinthDutyId =
+        DadAlliancePartyFinderPresetDefinition.LabyrinthDutyId;
     internal static readonly byte RaidsCategoryBitIndex =
         checked((byte)BitOperations.TrailingZeroCount(RaidsCategoryMask));
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
+    internal static readonly TimeSpan ObservationTimeout =
+        TimeSpan.FromSeconds(5);
 
     private readonly IDadAlliancePartyFinderCreateUi ui;
     private readonly Func<DateTime> utcNow;
@@ -122,7 +146,9 @@ internal sealed class DadAlliancePartyFinderCreateFlow
     private int lastErrorToastSequence;
     private string lastError = string.Empty;
     private bool started;
-    private bool configurationAcknowledged;
+    private bool actionDispatched;
+    private bool presetAcknowledged;
+    private bool submitDispatched;
     private bool stopped;
 
     public DadAlliancePartyFinderCreateFlow(
@@ -137,6 +163,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
     public int Attempt => actionAttempt;
     public DateTime? NextRetryUtc => nextActionUtc == DateTime.MinValue ? null : nextActionUtc;
     public string LastError => lastError;
+    public bool SubmitDispatched => submitDispatched;
 
     public DadAlliancePfCreateResult Advance(int passcode)
     {
@@ -150,7 +177,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         if (stopped)
             return Result(DadAlliancePfCreateResultKind.Stopped, "stop", "Party Finder creation stopped.", now, shouldAudit: false);
         if (stage == DadAlliancePfCreateStage.Complete)
-            return Result(DadAlliancePfCreateResultKind.Succeeded, "success", "Party Finder listing is acknowledged.", now, shouldAudit: false);
+            return Result(DadAlliancePfCreateResultKind.Succeeded, "success", "Party Finder recruitment is acknowledged.", now, shouldAudit: false);
         if (stage == DadAlliancePfCreateStage.Blocked)
             return Result(DadAlliancePfCreateResultKind.Blocked, "block", lastError, now, shouldAudit: false);
         if (now < nextPollUtc)
@@ -164,35 +191,60 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         }
         catch (Exception exception)
         {
-            if (now < nextActionUtc)
-                return Result(DadAlliancePfCreateResultKind.Waiting, "retry-wait", "Waiting to retry the Party Finder readiness check.", now, shouldAudit: false);
-            return ScheduleRetry(
+            return Block(
                 now,
-                "exception",
-                $"Party Finder readiness check failed: {exception.Message}",
-                string.Empty,
-                incrementAttempt: true);
+                $"Party Finder readiness check failed; DAD will not redispatch " +
+                $"{DescribeStage(stage)}: {exception.Message}",
+                null);
         }
 
         if (!string.IsNullOrWhiteSpace(snapshot.HardBlocker))
             return Block(now, snapshot.HardBlocker, snapshot);
-        if (snapshot.OwnListingId != 0)
+        if (!snapshot.PresetLoaderAvailable)
         {
-            if (!configurationAcknowledged || !snapshot.StoredSettingsExact || snapshot.StoredSettingsContradictory)
-                return Block(now, "The active Party Finder listing contradicts the exact acknowledged DAD Labyrinth settings.", snapshot);
+            return Block(
+                now,
+                string.IsNullOrWhiteSpace(snapshot.PresetLoaderBlocker)
+                    ? "The DAD-owned Party Finder preset loader is unavailable."
+                    : snapshot.PresetLoaderBlocker,
+                snapshot);
+        }
+        if (!submitDispatched && snapshot.ActiveRecruitment)
+        {
+            return Block(
+                now,
+                "A Party Finder recruitment is already active; DAD will not replace it.",
+                snapshot);
+        }
+
+        var publishedTransition =
+            submitDispatched &&
+            !snapshot.ConditionVisible &&
+            snapshot.ActiveRecruitment &&
+            snapshot.OwnerHandle != 0;
+        if (publishedTransition)
+        {
+            if (!presetAcknowledged ||
+                !snapshot.StoredSettingsExact ||
+                snapshot.StoredSettingsContradictory)
+            {
+                return Block(
+                    now,
+                    "The published Party Finder recruitment contradicts the exact acknowledged DAD Labyrinth settings.",
+                    snapshot);
+            }
 
             stage = DadAlliancePfCreateStage.Complete;
+            actionDispatched = false;
             nextActionUtc = DateTime.MinValue;
             return Result(
                 DadAlliancePfCreateResultKind.Succeeded,
                 "success",
-                $"Private cross-world Labyrinth alliance recruitment is open as listing {snapshot.OwnListingId}.",
+                $"Private cross-world Labyrinth alliance recruitment is active with PF owner handle {snapshot.OwnerHandle}.",
                 now,
                 snapshot,
                 shouldAudit: true);
         }
-        if (snapshot.StoredSettingsContradictory)
-            return Block(now, "Stored Party Finder settings contradict the DAD Labyrinth recruitment.", snapshot);
 
         if (snapshot.ErrorToastSequence != 0 &&
             snapshot.ErrorToastSequence != lastErrorToastSequence)
@@ -201,7 +253,50 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             var error = string.IsNullOrWhiteSpace(snapshot.ErrorToast)
                 ? "Party Finder reported an error."
                 : snapshot.ErrorToast.Trim();
-            return ScheduleRetry(now, "error-toast", error, snapshot.Readiness, snapshot);
+            return Block(
+                now,
+                $"{error} DAD will not redispatch {DescribeStage(stage)}.",
+                snapshot);
+        }
+
+        if (!snapshot.AgentAvailable)
+        {
+            return Block(
+                now,
+                "Party Finder agent is unavailable; DAD will not dispatch or redispatch this Create request.",
+                snapshot);
+        }
+        if (stage == DadAlliancePfCreateStage.Submit &&
+            !submitDispatched &&
+            !HasExactPresetAcknowledgement(snapshot, passcode))
+        {
+            return Block(
+                now,
+                "Party Finder visible or stored settings changed after the exact DAD-owned preset acknowledgement.",
+                snapshot);
+        }
+
+        var acknowledgement = TryAcknowledge(snapshot, passcode, now);
+        if (acknowledgement is { } acknowledged)
+            return acknowledged;
+
+        if (actionDispatched)
+        {
+            if (now >= nextActionUtc)
+            {
+                return Block(
+                    now,
+                    BuildObservationTimeoutError(snapshot),
+                    snapshot);
+            }
+
+            return Result(
+                DadAlliancePfCreateResultKind.Waiting,
+                "observation",
+                $"Waiting up to five seconds for a later acknowledgement of {DescribeStage(stage)}; DAD will not redispatch it.",
+                now,
+                snapshot,
+                shouldAudit: false);
         }
 
         if (!snapshot.SafeToMutate)
@@ -209,33 +304,14 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             var summary = string.IsNullOrWhiteSpace(snapshot.SafetyBlocker)
                 ? "Waiting for safe Party Finder mutation conditions."
                 : snapshot.SafetyBlocker;
-            return Result(DadAlliancePfCreateResultKind.Waiting, "readiness", summary, now, snapshot, shouldAudit: true);
-        }
-        if (!snapshot.AgentAvailable)
-        {
-            if (now < nextActionUtc)
-                return Result(DadAlliancePfCreateResultKind.Waiting, "retry-wait", "Waiting to retry the Party Finder agent.", now, snapshot, shouldAudit: false);
-            return ScheduleRetry(
-                now,
+            return Result(
+                DadAlliancePfCreateResultKind.Waiting,
                 "readiness",
-                "Party Finder agent is unavailable.",
-                snapshot.Readiness,
+                summary,
+                now,
                 snapshot,
-                incrementAttempt: true);
+                shouldAudit: true);
         }
-        if (stage is DadAlliancePfCreateStage.Configure or DadAlliancePfCreateStage.Submit)
-        {
-            if (snapshot.SelectedCategory != RaidsCategoryMask)
-                return Block(now, "Party Finder no longer retains the exact Raids category.", snapshot);
-            if (snapshot.TargetDutyId == 0 || snapshot.SelectedDutyId != snapshot.TargetDutyId)
-                return Block(now, "Party Finder no longer retains the exact Labyrinth duty ID.", snapshot);
-        }
-        if (stage == DadAlliancePfCreateStage.Submit && !snapshot.StoredSettingsExact)
-            return Block(now, "Party Finder stored settings changed after exact configuration acknowledgement.", snapshot);
-
-        var acknowledgement = TryAcknowledge(snapshot, passcode, now);
-        if (acknowledgement is { } acknowledged)
-            return acknowledged;
 
         var readinessWait = GetReadinessWait(snapshot);
         if (!string.IsNullOrWhiteSpace(readinessWait))
@@ -248,15 +324,6 @@ internal sealed class DadAlliancePartyFinderCreateFlow
                 snapshot,
                 shouldAudit: true);
         }
-
-        if (now < nextActionUtc)
-            return Result(
-                DadAlliancePfCreateResultKind.Waiting,
-                "retry-wait",
-                $"Waiting to retry {DescribeStage(stage)}.",
-                now,
-                snapshot,
-                shouldAudit: false);
 
         return SendAction(snapshot, passcode, now);
     }
@@ -274,6 +341,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
 
         stopped = true;
         stage = DadAlliancePfCreateStage.Stopped;
+        actionDispatched = false;
         nextActionUtc = DateTime.MinValue;
         return Result(DadAlliancePfCreateResultKind.Stopped, "stop", "Party Finder creation stopped.", now, shouldAudit: true);
     }
@@ -287,22 +355,33 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         {
             DadAlliancePfCreateStage.CloseStaleWindows when !snapshot.MainVisible && !snapshot.ConditionVisible
                 => DadAlliancePfCreateStage.OpenMainWindow,
-            DadAlliancePfCreateStage.OpenMainWindow when snapshot.MainReady && snapshot.MainRecruitUsable
+            DadAlliancePfCreateStage.OpenMainWindow when
+                actionDispatched &&
+                snapshot.MainReady &&
+                snapshot.MainRecruitUsable
                 => DadAlliancePfCreateStage.OpenConditions,
-            DadAlliancePfCreateStage.OpenConditions when snapshot.ConditionReady
+            DadAlliancePfCreateStage.OpenConditions when
+                actionDispatched &&
+                snapshot.ConditionReady
                 => DadAlliancePfCreateStage.SelectAlliance,
-            DadAlliancePfCreateStage.SelectAlliance when snapshot.AllianceSelected
+            DadAlliancePfCreateStage.SelectAlliance when
+                actionDispatched &&
+                snapshot.ConditionReady &&
+                snapshot.GroupTypeTab ==
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab &&
+                snapshot.AllianceSelected
                 => DadAlliancePfCreateStage.SelectRaids,
-            DadAlliancePfCreateStage.SelectRaids when snapshot.SelectedCategory == RaidsCategoryMask
+            DadAlliancePfCreateStage.SelectRaids when
+                actionDispatched &&
+                snapshot.SelectedCategory == RaidsCategoryMask
                 => DadAlliancePfCreateStage.SelectDuty,
             DadAlliancePfCreateStage.SelectDuty when
-                snapshot.TargetDutySheetMatches == 1 &&
-                snapshot.TargetDutyDropDownMatches == 1 &&
-                snapshot.TargetDutyEntryEnabled &&
-                snapshot.TargetDutyId != 0 &&
-                snapshot.SelectedDutyId == snapshot.TargetDutyId
-                => DadAlliancePfCreateStage.Configure,
-            DadAlliancePfCreateStage.Configure when HasExactConfiguredSettings(snapshot, passcode)
+                actionDispatched &&
+                HasPreparedGameOwnedSelector(snapshot)
+                => DadAlliancePfCreateStage.ApplyPreset,
+            DadAlliancePfCreateStage.ApplyPreset when
+                actionDispatched &&
+                HasExactPresetAcknowledgement(snapshot, passcode)
                 => DadAlliancePfCreateStage.Submit,
             _ => stage,
         };
@@ -313,10 +392,11 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         var prior = stage;
         stage = next;
         actionAttempt = 0;
+        actionDispatched = false;
         nextActionUtc = DateTime.MinValue;
         lastError = string.Empty;
         if (next == DadAlliancePfCreateStage.Submit)
-            configurationAcknowledged = true;
+            presetAcknowledged = true;
         return Result(
             DadAlliancePfCreateResultKind.Progress,
             "acknowledgement",
@@ -331,14 +411,31 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         int passcode,
         DateTime now)
     {
-        if (stage == DadAlliancePfCreateStage.SelectDuty)
+        if (stage is DadAlliancePfCreateStage.SelectDuty or
+            DadAlliancePfCreateStage.ApplyPreset)
         {
             if (snapshot.TargetDutySheetMatches != 1)
                 return Block(now, $"Expected one ContentFinderCondition match for The Labyrinth of the Ancients; found {snapshot.TargetDutySheetMatches}.", snapshot);
-            if (snapshot.TargetDutyDropDownMatches != 1)
-                return Block(now, $"Expected one enabled Labyrinth duty dropdown entry; found {snapshot.TargetDutyDropDownMatches}.", snapshot);
-            if (!snapshot.TargetDutyEntryEnabled)
-                return Block(now, "The exact Labyrinth duty dropdown entry is disabled.", snapshot);
+            if (snapshot.TargetDutyId != LabyrinthDutyId)
+                return Block(now, $"The Labyrinth of the Ancients resolved to duty ID {snapshot.TargetDutyId} instead of {LabyrinthDutyId}.", snapshot);
+        }
+        if (stage == DadAlliancePfCreateStage.SelectDuty &&
+            (snapshot.TargetDutyDropDownMatches != 1 ||
+             !snapshot.TargetDutyEntryEnabled ||
+             snapshot.TargetDutyDropDownIndex < 0))
+        {
+            return Block(
+                now,
+                "The exact enabled Labyrinth duty row is unavailable; DAD will not dispatch duty selection.",
+                snapshot);
+        }
+        if (stage == DadAlliancePfCreateStage.ApplyPreset &&
+            !HasPreparedGameOwnedSelector(snapshot))
+        {
+            return Block(
+                now,
+                "The game-owned API-15 Alliance/Raids/Labyrinth selector changed before capture.",
+                snapshot);
         }
 
         var action = stage switch
@@ -349,7 +446,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             DadAlliancePfCreateStage.SelectAlliance => DadAlliancePfCreateAction.SelectAlliance,
             DadAlliancePfCreateStage.SelectRaids => DadAlliancePfCreateAction.SelectRaids,
             DadAlliancePfCreateStage.SelectDuty => DadAlliancePfCreateAction.SelectDuty,
-            DadAlliancePfCreateStage.Configure => DadAlliancePfCreateAction.ConfigureNextSetting,
+            DadAlliancePfCreateStage.ApplyPreset => DadAlliancePfCreateAction.ApplyPreset,
             DadAlliancePfCreateStage.Submit => DadAlliancePfCreateAction.Submit,
             _ => throw new InvalidOperationException($"Stage {stage} cannot send a Party Finder action."),
         };
@@ -362,25 +459,28 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         }
         catch (Exception exception)
         {
-            return ScheduleRetry(now, "exception", $"{DescribeStage(stage)} failed: {exception.Message}", snapshot.Readiness, snapshot);
+            return Block(
+                now,
+                $"{DescribeStage(stage)} threw before acknowledgement; DAD will not redispatch it: {exception.Message}",
+                snapshot);
         }
 
-        nextActionUtc = now + DadAlliancePartyFinderRules.GetRetryDelay(actionAttempt - 1);
         if (!actionResult.Sent)
         {
             lastError = string.IsNullOrWhiteSpace(actionResult.Error)
                 ? actionResult.Summary
                 : actionResult.Error;
-            return Result(
-                DadAlliancePfCreateResultKind.Retry,
-                "retry",
-                actionResult.Summary,
+            return Block(
                 now,
-                snapshot,
-                shouldAudit: true);
+                $"{actionResult.Summary} DAD will not redispatch this Create request. {lastError}".Trim(),
+                snapshot);
         }
 
+        actionDispatched = true;
+        nextActionUtc = now + ObservationTimeout;
         lastError = string.Empty;
+        if (stage == DadAlliancePfCreateStage.Submit)
+            submitDispatched = true;
         return Result(
             DadAlliancePfCreateResultKind.Progress,
             "action",
@@ -393,55 +493,40 @@ internal sealed class DadAlliancePartyFinderCreateFlow
     private string GetReadinessWait(DadAlliancePfCreateSnapshot snapshot)
         => stage switch
         {
+            DadAlliancePfCreateStage.CloseStaleWindows when
+                snapshot.ConditionVisible &&
+                !snapshot.ConditionReady
+                => "Waiting for stale Party Finder conditions to become closable before the one allowed close action.",
             DadAlliancePfCreateStage.OpenMainWindow when snapshot.MainVisible &&
                                                          (!snapshot.MainReady || !snapshot.MainRecruitUsable)
                 => "Waiting for the visible Party Finder window and Recruit Members control to become fully usable.",
-            DadAlliancePfCreateStage.OpenConditions when snapshot.ConditionVisible && !snapshot.ConditionReady
-                => "Waiting for the visible Party Finder conditions window to become fully ready.",
+            DadAlliancePfCreateStage.OpenConditions when
+                !snapshot.MainReady ||
+                !snapshot.MainRecruitUsable
+                => "Waiting for the typed Recruit Members control before its one allowed opening action.",
             DadAlliancePfCreateStage.SelectAlliance or
                 DadAlliancePfCreateStage.SelectRaids or
                 DadAlliancePfCreateStage.SelectDuty or
-                DadAlliancePfCreateStage.Configure when !snapshot.ConditionReady &&
-                                                        snapshot.OwnListingId == 0
+                DadAlliancePfCreateStage.ApplyPreset
+                when !snapshot.ConditionReady
                 => "Waiting for Party Finder conditions to become ready.",
             DadAlliancePfCreateStage.SelectDuty when
-                snapshot.TargetDutySheetMatches == 1 &&
-                !snapshot.DutyListLoaded
-                => "Waiting for the Raids duty dropdown to finish loading.",
+                !snapshot.DutyListLoaded ||
+                snapshot.TargetDutyDropDownMatches != 1 ||
+                !snapshot.TargetDutyEntryEnabled ||
+                snapshot.TargetDutyDropDownIndex < 0
+                => "Waiting for one exact enabled Labyrinth duty row before its one allowed selection event.",
             _ => string.Empty,
         };
-
-    private DadAlliancePfCreateResult ScheduleRetry(
-        DateTime now,
-        string eventName,
-        string error,
-        string readiness,
-        DadAlliancePfCreateSnapshot? snapshot = null,
-        bool incrementAttempt = false)
-    {
-        if (incrementAttempt)
-            actionAttempt++;
-        else if (actionAttempt == 0)
-            actionAttempt = 1;
-        lastError = error;
-        nextActionUtc = now + DadAlliancePartyFinderRules.GetRetryDelay(actionAttempt - 1);
-        return Result(
-            DadAlliancePfCreateResultKind.Retry,
-            eventName,
-            error,
-            now,
-            snapshot,
-            readiness,
-            shouldAudit: true);
-    }
 
     private DadAlliancePfCreateResult Block(
         DateTime now,
         string error,
-        DadAlliancePfCreateSnapshot snapshot)
+        DadAlliancePfCreateSnapshot? snapshot)
     {
         lastError = error;
         stage = DadAlliancePfCreateStage.Blocked;
+        actionDispatched = false;
         nextActionUtc = DateTime.MinValue;
         return Result(DadAlliancePfCreateResultKind.Blocked, "block", error, now, snapshot, shouldAudit: true);
     }
@@ -462,11 +547,16 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             actionAttempt,
             nextActionUtc == DateTime.MinValue ? null : nextActionUtc,
             lastError,
-            string.IsNullOrWhiteSpace(readiness) ? snapshot?.Readiness ?? string.Empty : readiness,
+            BuildDiagnosticReadiness(snapshot, readiness, submitDispatched),
             snapshot?.SelectedCategory ?? 0,
             snapshot?.SelectedDutyId ?? 0,
-            snapshot?.OwnListingId ?? 0,
+            snapshot?.OwnerHandle ?? 0,
             checked((int)Math.Clamp((now - startedAtUtc).TotalMilliseconds, 0, int.MaxValue)),
+            snapshot?.ActiveRecruitment ?? false,
+            snapshot?.ConditionVisible ?? false,
+            submitDispatched,
+            string.Empty,
+            BuildObservedSettings(snapshot),
             shouldAudit);
 
     private static string DescribeStage(DadAlliancePfCreateStage value)
@@ -475,31 +565,121 @@ internal sealed class DadAlliancePartyFinderCreateFlow
             DadAlliancePfCreateStage.CloseStaleWindows => "closing stale Party Finder windows",
             DadAlliancePfCreateStage.OpenMainWindow => "opening Party Finder",
             DadAlliancePfCreateStage.OpenConditions => "opening recruitment conditions",
-            DadAlliancePfCreateStage.SelectAlliance => "selecting Alliance recruitment",
-            DadAlliancePfCreateStage.SelectRaids => "selecting the Raids category",
-            DadAlliancePfCreateStage.SelectDuty => "selecting The Labyrinth of the Ancients",
-            DadAlliancePfCreateStage.Configure => "configuring exact private alliance settings",
-            DadAlliancePfCreateStage.Submit => "submitting and acknowledging the listing",
+            DadAlliancePfCreateStage.SelectAlliance =>
+                "preparing the game-owned Alliance selector",
+            DadAlliancePfCreateStage.SelectRaids =>
+                "preparing the game-owned Raids selector",
+            DadAlliancePfCreateStage.SelectDuty =>
+                "preparing the game-owned Labyrinth selector",
+            DadAlliancePfCreateStage.ApplyPreset => "loading the exact DAD-owned Alliance preset",
+            DadAlliancePfCreateStage.Submit => "submitting and acknowledging recruitment",
             DadAlliancePfCreateStage.Complete => "complete",
             DadAlliancePfCreateStage.Stopped => "stopped",
             DadAlliancePfCreateStage.Blocked => "blocked",
             _ => value.ToString(),
         };
 
-    private static bool HasExactConfiguredSettings(
+    private static bool HasExactPresetAcknowledgement(
         DadAlliancePfCreateSnapshot snapshot,
         int passcode)
-        => snapshot.AllianceSelected &&
+        => snapshot.PresetLoaderAvailable &&
+           snapshot.GroupTypeTab ==
+               DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab &&
+           snapshot.AllianceSelected &&
            snapshot.AllianceASelected &&
+           snapshot.SelectedCategory == RaidsCategoryMask &&
+           snapshot.TargetDutySheetMatches == 1 &&
+           snapshot.TargetDutyId == LabyrinthDutyId &&
+           IsTargetDutyVisiblySelected(snapshot) &&
+           snapshot.SelectedDutyId == LabyrinthDutyId &&
            snapshot.PrivateRecruitment &&
+           snapshot.StoredPrivateRecruitment &&
            snapshot.Passcode == passcode &&
+           snapshot.StoredPasscode == passcode &&
            snapshot.CrossWorldRecruitment &&
+           snapshot.StoredCrossWorldRecruitment &&
            !snapshot.OnePlayerPerJob &&
+           !snapshot.StoredOnePlayerPerJob &&
            snapshot.EmptyComment &&
+           snapshot.StoredEmptyComment &&
            snapshot.UnrestrictedJobs &&
+           snapshot.StoredOpenSlotsUnrestricted &&
+           snapshot.StoredStaleMembersCleared &&
            snapshot.NumberOfGroups == 3 &&
            snapshot.SlotsPerGroup == 8 &&
-           snapshot.StoredSettingsExact;
+           snapshot.StoredSettingsExactBeforeSubmit;
+
+    private static bool IsTargetDutyVisiblySelected(
+        DadAlliancePfCreateSnapshot snapshot)
+        => snapshot.TargetDutyDropDownMatches == 1 &&
+           snapshot.TargetDutyEntryEnabled &&
+           snapshot.TargetDutyDropDownIndex >= 0 &&
+           snapshot.SelectedDutyDropDownIndex == snapshot.TargetDutyDropDownIndex;
+
+    private static bool HasPreparedGameOwnedSelector(
+        DadAlliancePfCreateSnapshot snapshot)
+        => snapshot.GroupTypeTab ==
+               DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab &&
+           snapshot.AllianceSelected &&
+           snapshot.SelectedCategory == RaidsCategoryMask &&
+           snapshot.TargetDutySheetMatches == 1 &&
+           snapshot.TargetDutyId == LabyrinthDutyId &&
+           IsTargetDutyVisiblySelected(snapshot) &&
+           snapshot.SelectedDutyId == LabyrinthDutyId;
+
+    private string BuildObservationTimeoutError(
+        DadAlliancePfCreateSnapshot snapshot)
+        => $"Party Finder did not acknowledge {DescribeStage(stage)} within " +
+           $"{ObservationTimeout.TotalSeconds:0} seconds after its single dispatch. " +
+           $"DAD will not open another editor, resend a callback/event, rewrite the preset, " +
+           $"refresh, or Submit on this Create request; press Create again explicitly. " +
+           $"Observed category 0x{snapshot.SelectedCategory:X}, target index " +
+           $"{snapshot.TargetDutyDropDownIndex}, visible index " +
+           $"{snapshot.SelectedDutyDropDownIndex}, stored duty " +
+           $"{snapshot.SelectedDutyId}, groups {snapshot.NumberOfGroups}.";
+
+    private static string BuildDiagnosticReadiness(
+        DadAlliancePfCreateSnapshot? snapshot,
+        string readiness,
+        bool submitWasDispatched)
+    {
+        if (snapshot == null)
+            return readiness;
+
+        var prefix = string.IsNullOrWhiteSpace(readiness)
+            ? snapshot.Readiness
+            : readiness;
+        if (!string.IsNullOrWhiteSpace(prefix))
+            prefix += "; ";
+        return prefix +
+               $"active-recruitment={snapshot.ActiveRecruitment}; " +
+               $"editor-visible={snapshot.ConditionVisible}; " +
+               $"submit-dispatched={submitWasDispatched}; " +
+               $"duty-target-index={snapshot.TargetDutyDropDownIndex}; " +
+               $"duty-visible-index={snapshot.SelectedDutyDropDownIndex}; " +
+               $"duty-stored-id={snapshot.SelectedDutyId}; " +
+               $"owner-handle={snapshot.OwnerHandle}; " +
+               BuildObservedSettings(snapshot);
+    }
+
+    private static string BuildObservedSettings(
+        DadAlliancePfCreateSnapshot? snapshot)
+    {
+        if (snapshot == null)
+            return string.Empty;
+
+        return
+            $"preset-loader={snapshot.PresetLoaderAvailable}; group-type-tab={snapshot.GroupTypeTab}; " +
+            $"alliance-tab={snapshot.AllianceSelected}; alliance-a={snapshot.AllianceASelected}; " +
+            $"private-visible={snapshot.PrivateRecruitment}; private-stored={snapshot.StoredPrivateRecruitment}; " +
+            $"passcode-visible={snapshot.Passcode}; passcode-stored={snapshot.StoredPasscode}; " +
+            $"cross-world-visible={snapshot.CrossWorldRecruitment}; cross-world-stored={snapshot.StoredCrossWorldRecruitment}; " +
+            $"one-player-per-job-visible={snapshot.OnePlayerPerJob}; one-player-per-job-stored={snapshot.StoredOnePlayerPerJob}; " +
+            $"empty-comment-visible={snapshot.EmptyComment}; empty-comment-stored={snapshot.StoredEmptyComment}; " +
+            $"unrestricted-visible={snapshot.UnrestrictedJobs}; unrestricted-open-slot-flags={snapshot.StoredOpenSlotsUnrestricted}; " +
+            $"stale-members-cleared={snapshot.StoredStaleMembersCleared}; " +
+            $"groups={snapshot.NumberOfGroups}; slots-per-group={snapshot.SlotsPerGroup}";
+    }
 
     private static DateTime EnsureUtc(DateTime value)
         => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();

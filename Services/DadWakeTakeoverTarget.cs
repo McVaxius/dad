@@ -4,7 +4,7 @@ using dad.Models;
 
 namespace dad.Services;
 
-public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
+public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMovieDismissalTarget
 {
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
@@ -60,9 +60,13 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
         var title = titleMenuReadiness.Current;
         var lifestreamState = lifestream.Inspect(
             includeAutoLogin: !participant.IsAvailable &&
+                              title.Surface == DadTitleSurface.TitleMenu &&
+                              title.ClientLoggedOut &&
+                              title.NoActiveConditionFlags &&
                               title.TitleMenuReady &&
                               title.IsFresh(DateTime.UtcNow));
         var external = vermaxion.Inspect(forceExternalRefresh);
+        var nowUtc = DateTime.UtcNow;
         var reservation = vermaxion.Reservation;
         var compatibilityEvidence = DadVermaxionCompatibilityEvidence.Evaluate(
             external,
@@ -93,11 +97,16 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
                 participant.ActiveCharacterKey.Value,
                 request.CharacterKey.Value,
                 StringComparison.OrdinalIgnoreCase),
-            TitleMenuEvidenceFresh = title.IsFresh(DateTime.UtcNow),
+            TitleSurface = title.Surface,
+            TitleSurfaceEvidenceFresh = title.IsFresh(nowUtc),
+            TitleClientLoggedOut = title.ClientLoggedOut,
+            TitleNoActiveConditionFlags = title.NoActiveConditionFlags,
+            TitleMovieExactReady = title.MovieStaffListReady,
+            TitleMenuEvidenceFresh = title.IsFresh(nowUtc),
             TitleMenuReady = title.TitleMenuReady,
             TitleNavigationOverlayVisible = title.NavigationOverlayVisible,
             TitleConnectionOverlayVisible = title.ConnectionOverlayVisible,
-            TitleErrorOverlayVisible = title.ErrorOverlayVisible,
+            TitleErrorOverlayVisible = title.DialogOverlayVisible,
             PostArReady = participant.WorldReadyStable && !authority.Held,
             ExternalAutomationHeld = authority.Held,
             VermaxionReservationAuthoritative = authority.Authoritative,
@@ -120,6 +129,8 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
             LifestreamBusy = lifestreamState.IsBusy,
             LifestreamCanAutoLogin = lifestreamState.CanAutoLogin,
             LifestreamStatus = lifestreamState.Summary,
+            VermaxionStatusEvidenceFresh = IsFreshVermaxionStatus(external, nowUtc),
+            VermaxionStatusKind = external.Kind,
             SuppressionReadable = ar.SuppressionReadable,
             AutoRetainerSuppressed = ar.IsSuppressed,
             DadOwnsSuppression = ar.SuppressionOwnedByDad,
@@ -189,6 +200,9 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
     public DadWakeTakeoverActionResult SetMultiModeEnabled(bool enabled)
         => autoRetainer.SetMultiModeAndVerify(enabled);
 
+    DadWakeTakeoverActionResult IDadTitleMovieDismissalTarget.DismissExactTitleMovie()
+        => titleMenuReadiness.QueueExactMovieStaffListEscape();
+
     public DadLifestreamChangeWorldResult ChangeWorld(string worldName)
         => lifestream.ChangeWorld(worldName);
 
@@ -241,4 +255,11 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget
             return DadWakeTakeoverActionResult.Rejected($"Typed wake command {command} failed: {ex.Message}");
         }
     }
+
+    private static bool IsFreshVermaxionStatus(
+        DadVermaxionReadinessStatus status,
+        DateTime nowUtc)
+        => status.ObservedAtUtc != DateTime.MinValue &&
+           nowUtc >= status.ObservedAtUtc &&
+           nowUtc - status.ObservedAtUtc <= TimeSpan.FromSeconds(2);
 }

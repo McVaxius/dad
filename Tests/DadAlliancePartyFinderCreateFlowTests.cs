@@ -1,375 +1,470 @@
-using dad.Services;
 using dad.Models;
+using dad.Services;
 using Xunit;
 
 namespace dad.Tests;
 
 public sealed class DadAlliancePartyFinderCreateFlowTests
 {
+    private const int Passcode = 9752;
+
     [Fact]
-    public void RaidsCategoryUsesFlagBitIndex()
+    public void Api15SelectorConstantsAreExact()
     {
         Assert.Equal(0x20u, DadAlliancePartyFinderCreateFlow.RaidsCategoryMask);
-        Assert.Equal((byte)5, DadAlliancePartyFinderCreateFlow.RaidsCategoryBitIndex);
-        Assert.Equal(TimeSpan.FromMilliseconds(250), DadAlliancePartyFinderCreateFlow.PollInterval);
+        Assert.Equal(5, DadAlliancePartyFinderCreateFlow.RaidsCategoryBitIndex);
+        Assert.Equal(92, DadAlliancePartyFinderCreateFlow.LabyrinthDutyId);
+        Assert.Equal(
+            TimeSpan.FromSeconds(5),
+            DadAlliancePartyFinderCreateFlow.ObservationTimeout);
     }
 
     [Fact]
     public void LocalStatusClonePreservesCreateDiagnostics()
     {
-        var retry = new DateTime(2026, 7, 25, 12, 34, 56, DateTimeKind.Utc);
-        var status = new DadAlliancePartyFinderStatus
+        var source = new DadAlliancePartyFinderStatus
         {
-            CreateStage = DadAlliancePfCreateStage.SelectDuty.ToString(),
-            CreateAttempt = 4,
-            CreateNextRetryUtc = retry,
-            CreateLastError = "synthetic error",
-            CreateElapsedMilliseconds = 12345,
+            CreateStage = "ApplyPreset",
+            CreateAttempt = 1,
+            CreateNextRetryUtc = DateTime.UtcNow,
+            CreateLastError = "not acknowledged",
+            CreateElapsedMilliseconds = 1234,
+            CreateActiveRecruitment = false,
+            CreateEditorVisible = true,
+            CreateSubmitDispatched = false,
+            CreateConfigurationTarget = string.Empty,
+            CreateObservedSettings = "groups=1",
         };
 
-        var clone = status.Clone();
+        var clone = source.Clone();
 
-        Assert.Equal(status.CreateStage, clone.CreateStage);
-        Assert.Equal(status.CreateAttempt, clone.CreateAttempt);
-        Assert.Equal(retry, clone.CreateNextRetryUtc);
-        Assert.Equal(status.CreateLastError, clone.CreateLastError);
-        Assert.Equal(status.CreateElapsedMilliseconds, clone.CreateElapsedMilliseconds);
+        Assert.Equal(source.CreateStage, clone.CreateStage);
+        Assert.Equal(source.CreateAttempt, clone.CreateAttempt);
+        Assert.Equal(source.CreateNextRetryUtc, clone.CreateNextRetryUtc);
+        Assert.Equal(source.CreateLastError, clone.CreateLastError);
+        Assert.Equal(
+            source.CreateElapsedMilliseconds,
+            clone.CreateElapsedMilliseconds);
+        Assert.Equal(
+            source.CreateActiveRecruitment,
+            clone.CreateActiveRecruitment);
+        Assert.Equal(source.CreateEditorVisible, clone.CreateEditorVisible);
+        Assert.Equal(
+            source.CreateSubmitDispatched,
+            clone.CreateSubmitDispatched);
+        Assert.Equal(
+            source.CreateConfigurationTarget,
+            clone.CreateConfigurationTarget);
+        Assert.Equal(
+            source.CreateObservedSettings,
+            clone.CreateObservedSettings);
     }
 
     [Fact]
-    public void VisibleLoadingMainWindowDoesNotClickOrAdvance()
+    public void PreparationDispatchesAllianceRaidsAndDutyOnceInOrder()
     {
         var fixture = new Fixture();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { MainVisible = false };
-        Assert.Equal(DadAlliancePfCreateStage.OpenMainWindow, fixture.Tick().Stage);
 
+        fixture.ReachApplyPreset();
+
+        Assert.Equal(
+            [
+                DadAlliancePfCreateAction.OpenMainWindow,
+                DadAlliancePfCreateAction.OpenConditions,
+                DadAlliancePfCreateAction.SelectAlliance,
+                DadAlliancePfCreateAction.SelectRaids,
+                DadAlliancePfCreateAction.SelectDuty,
+            ],
+            fixture.Ui.Actions);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.OpenConditions);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectAlliance);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectRaids);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectDuty);
+    }
+
+    [Fact]
+    public void UnavailablePresetLoaderBlocksBeforeAnyMutation()
+    {
+        var fixture = new Fixture();
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
-            MainVisible = true,
-            MainReady = false,
-            MainRecruitUsable = false,
-            Readiness = "main-visible-loading",
+            PresetLoaderAvailable = false,
+            PresetLoaderBlocker =
+                "The DAD-owned Party Finder refresh signature is unavailable.",
         };
+
         var result = fixture.Tick();
 
-        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, result.Kind);
-        Assert.Equal(DadAlliancePfCreateStage.OpenMainWindow, result.Stage);
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.Equal(DadAlliancePfCreateStage.Blocked, result.Stage);
+        Assert.Contains("signature is unavailable", result.Summary);
         Assert.Empty(fixture.Ui.Actions);
-        Assert.Contains("fully usable", result.Summary, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void SendingRecruitMembersDoesNotAdvanceUntilConditionsAreReady()
-    {
-        var fixture = new Fixture();
-        fixture.ReachOpenConditions();
-
-        var sent = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateResultKind.Progress, sent.Kind);
-        Assert.Equal(DadAlliancePfCreateStage.OpenConditions, sent.Stage);
-        Assert.Equal([DadAlliancePfCreateAction.OpenConditions], fixture.Ui.Actions);
-
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { ConditionVisible = false, ConditionReady = false };
-        var unacknowledged = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateStage.OpenConditions, unacknowledged.Stage);
-        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, unacknowledged.Kind);
-
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { ConditionVisible = true, ConditionReady = true };
-        var acknowledged = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateStage.SelectAlliance, acknowledged.Stage);
-        Assert.Equal("acknowledgement", acknowledged.Event);
-    }
-
-    [Fact]
-    public void AllianceAndRaidsActionsRequireObservedAcknowledgements()
-    {
-        var fixture = new Fixture();
-        fixture.ReachSelectAlliance();
-
-        var allianceSent = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateStage.SelectAlliance, allianceSent.Stage);
-        Assert.Equal(DadAlliancePfCreateAction.SelectAlliance, fixture.Ui.Actions[^1]);
-
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { AllianceSelected = true };
-        Assert.Equal(DadAlliancePfCreateStage.SelectRaids, fixture.Tick().Stage);
-        var raidsSent = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateStage.SelectRaids, raidsSent.Stage);
-        Assert.Equal(DadAlliancePfCreateAction.SelectRaids, fixture.Ui.Actions[^1]);
-
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            SelectedCategory = DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
-        };
-        Assert.Equal(DadAlliancePfCreateStage.SelectDuty, fixture.Tick().Stage);
-    }
-
-    [Fact]
-    public void LabyrinthMustResolveUniquelyAndBeEnabled()
-    {
-        var fixture = new Fixture();
-        fixture.ReachSelectDuty();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            DutyListLoaded = true,
-            TargetDutySheetMatches = 1,
-            TargetDutyDropDownMatches = 1,
-            TargetDutyEntryEnabled = false,
-            TargetDutyId = 174,
-        };
-
-        var result = fixture.Tick();
-
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
-        Assert.Contains("disabled", result.Summary, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(DadAlliancePfCreateAction.SelectDuty, fixture.Ui.Actions);
     }
 
     [Theory]
-    [InlineData(0, 1)]
-    [InlineData(2, 1)]
-    [InlineData(1, 0)]
-    [InlineData(1, 2)]
-    public void LabyrinthNonUniqueResolutionBlocks(int sheetMatches, int dropdownMatches)
+    [InlineData((int)DadAlliancePfCreateStage.CloseStaleWindows)]
+    [InlineData((int)DadAlliancePfCreateStage.OpenMainWindow)]
+    [InlineData((int)DadAlliancePfCreateStage.OpenConditions)]
+    [InlineData((int)DadAlliancePfCreateStage.SelectAlliance)]
+    [InlineData((int)DadAlliancePfCreateStage.SelectRaids)]
+    [InlineData((int)DadAlliancePfCreateStage.SelectDuty)]
+    [InlineData((int)DadAlliancePfCreateStage.ApplyPreset)]
+    [InlineData((int)DadAlliancePfCreateStage.Submit)]
+    public void ObservationTimeoutNeverRedispatchesAnyMutation(
+        int stageValue)
     {
+        var stage = (DadAlliancePfCreateStage)stageValue;
         var fixture = new Fixture();
-        fixture.ReachSelectDuty();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            DutyListLoaded = true,
-            TargetDutySheetMatches = sheetMatches,
-            TargetDutyDropDownMatches = dropdownMatches,
-            TargetDutyEntryEnabled = true,
-            TargetDutyId = 174,
-        };
+        fixture.ReachStage(stage);
+        fixture.PrepareCurrentStageForDispatch();
 
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, fixture.Tick().Kind);
-    }
+        var dispatched = fixture.Tick();
+        var actionCount = fixture.Ui.Actions.Count;
+        var dispatchedAction = fixture.Ui.Actions[^1];
+        fixture.AdvancePastObservationTimeout();
+        var blocked = fixture.Tick();
+        fixture.AdvancePastObservationTimeout();
+        var later = fixture.Tick();
 
-    [Fact]
-    public void ExactDutyIdMustBeRetainedBeforeConfiguration()
-    {
-        var fixture = new Fixture();
-        fixture.ReachSelectDuty();
-        fixture.Ui.Snapshot = ExactDutySnapshot(fixture.Ui.Snapshot) with { SelectedDutyId = 999 };
-
-        var sent = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateAction.SelectDuty, fixture.Ui.Actions[^1]);
-        Assert.Equal(DadAlliancePfCreateStage.SelectDuty, sent.Stage);
-
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { SelectedDutyId = 174 };
-        Assert.Equal(DadAlliancePfCreateStage.Configure, fixture.Tick().Stage);
-    }
-
-    [Fact]
-    public void ExactPrivateAllianceSettingsMustBeAcknowledgedBeforeSubmit()
-    {
-        var fixture = new Fixture();
-        fixture.ReachConfigure();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            AllianceASelected = true,
-            PrivateRecruitment = true,
-            Passcode = 9752,
-            CrossWorldRecruitment = true,
-            OnePlayerPerJob = false,
-            EmptyComment = true,
-            UnrestrictedJobs = true,
-            NumberOfGroups = 2,
-            SlotsPerGroup = 8,
-        };
-
-        var configured = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateAction.ConfigureNextSetting, fixture.Ui.Actions[^1]);
-        Assert.Equal(DadAlliancePfCreateStage.Configure, configured.Stage);
-
-        fixture.Ui.Snapshot = ExactSettingsSnapshot(fixture.Ui.Snapshot);
-        var acknowledged = fixture.Tick();
-        Assert.Equal(DadAlliancePfCreateStage.Submit, acknowledged.Stage);
-        Assert.DoesNotContain(DadAlliancePfCreateAction.Submit, fixture.Ui.Actions);
-    }
-
-    [Theory]
-    [InlineData("alliance-mode")]
-    [InlineData("alliance-a")]
-    [InlineData("private")]
-    [InlineData("passcode")]
-    [InlineData("cross-world")]
-    [InlineData("one-job")]
-    [InlineData("comment")]
-    [InlineData("unrestricted")]
-    [InlineData("groups")]
-    [InlineData("slots")]
-    public void EveryConfiguredSettingIsRequired(string contradiction)
-    {
-        var fixture = new Fixture();
-        fixture.ReachConfigure();
-        var exact = ExactSettingsSnapshot(fixture.Ui.Snapshot);
-        fixture.Ui.Snapshot = contradiction switch
-        {
-            "alliance-mode" => exact with { AllianceSelected = false },
-            "alliance-a" => exact with { AllianceASelected = false },
-            "private" => exact with { PrivateRecruitment = false },
-            "passcode" => exact with { Passcode = 1234 },
-            "cross-world" => exact with { CrossWorldRecruitment = false },
-            "one-job" => exact with { OnePlayerPerJob = true },
-            "comment" => exact with { EmptyComment = false },
-            "unrestricted" => exact with { UnrestrictedJobs = false },
-            "groups" => exact with { NumberOfGroups = 2 },
-            "slots" => exact with { SlotsPerGroup = 7 },
-            _ => throw new ArgumentOutOfRangeException(nameof(contradiction)),
-        };
-
-        var result = fixture.Tick();
-
-        Assert.Equal(DadAlliancePfCreateStage.Configure, result.Stage);
-        Assert.Equal(DadAlliancePfCreateAction.ConfigureNextSetting, fixture.Ui.Actions[^1]);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void AcknowledgedCategoryAndDutyCannotContradictConfiguration(bool contradictCategory)
-    {
-        var fixture = new Fixture();
-        fixture.ReachConfigure();
-        fixture.Ui.Snapshot = contradictCategory
-            ? fixture.Ui.Snapshot with { SelectedCategory = 0 }
-            : fixture.Ui.Snapshot with { SelectedDutyId = 999 };
-
-        var result = fixture.Tick();
-
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.Equal(stage, dispatched.Stage);
+        Assert.Equal(DadAlliancePfCreateResultKind.Progress, dispatched.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, blocked.Kind);
         Assert.Contains(
-            contradictCategory ? "Raids" : "Labyrinth",
-            result.Summary,
+            "will not",
+            blocked.Summary,
             StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, later.Kind);
+        Assert.Equal(actionCount, fixture.Ui.Actions.Count);
+        Assert.Single(
+            fixture.Ui.Actions,
+            action => action == dispatchedAction);
     }
 
     [Fact]
-    public void UnacknowledgedActionRetriesAtCappedBackoffWithoutStageAdvance()
+    public void DutySelectionWaitsForOneExactEnabledRowWithoutDispatching()
     {
         var fixture = new Fixture();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { MainVisible = false };
-        fixture.Tick();
+        fixture.ReachSelectDuty();
 
         var first = fixture.Tick();
-        Assert.Equal(1, first.Attempt);
-        Assert.Equal(fixture.Now + TimeSpan.FromSeconds(1.75), first.NextRetryUtc);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+        var later = fixture.Tick();
 
-        fixture.Advance(TimeSpan.FromSeconds(1.75));
-        var second = fixture.Tick();
-        Assert.Equal(2, second.Attempt);
-        Assert.Equal(TimeSpan.FromSeconds(4), second.NextRetryUtc!.Value - fixture.LastTickUtc);
+        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, first.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, later.Kind);
+        Assert.DoesNotContain(
+            DadAlliancePfCreateAction.SelectDuty,
+            fixture.Ui.Actions);
+    }
 
-        fixture.Advance(TimeSpan.FromSeconds(3.75));
-        var third = fixture.Tick();
-        Assert.Equal(3, third.Attempt);
-        Assert.Equal(TimeSpan.FromSeconds(8), third.NextRetryUtc!.Value - fixture.LastTickUtc);
+    [Theory]
+    [InlineData(0, 92)]
+    [InlineData(2, 92)]
+    [InlineData(1, 91)]
+    public void LabyrinthMustResolveUniquelyBeforeDutyMutation(
+        int sheetMatches,
+        ushort dutyId)
+    {
+        var fixture = new Fixture();
+        fixture.ReachSelectDuty();
+        fixture.Ui.Snapshot = fixture.DutyReadySnapshot() with
+        {
+            TargetDutySheetMatches = sheetMatches,
+            TargetDutyId = dutyId,
+        };
 
-        fixture.Advance(TimeSpan.FromSeconds(7.75));
-        var fourth = fixture.Tick();
-        Assert.Equal(4, fourth.Attempt);
-        Assert.Equal(TimeSpan.FromSeconds(15), fourth.NextRetryUtc!.Value - fixture.LastTickUtc);
+        var result = fixture.Tick();
 
-        fixture.Advance(TimeSpan.FromSeconds(14.75));
-        var fifth = fixture.Tick();
-        Assert.Equal(5, fifth.Attempt);
-        Assert.Equal(TimeSpan.FromSeconds(15), fifth.NextRetryUtc!.Value - fixture.LastTickUtc);
-        Assert.All(fixture.Ui.Actions, action => Assert.Equal(DadAlliancePfCreateAction.OpenMainWindow, action));
-        Assert.Equal(DadAlliancePfCreateStage.OpenMainWindow, fifth.Stage);
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.DoesNotContain(
+            DadAlliancePfCreateAction.SelectDuty,
+            fixture.Ui.Actions);
     }
 
     [Fact]
-    public void ErrorToastIsCapturedAndSchedulesRetry()
+    public void ApplyPresetDispatchDoesNotAdvanceWithoutExactLaterSnapshot()
+    {
+        var fixture = new Fixture();
+        fixture.ReachApplyPreset();
+
+        var dispatched = fixture.Tick();
+        fixture.AdvancePoll();
+        var observed = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateStage.ApplyPreset, dispatched.Stage);
+        Assert.Equal(DadAlliancePfCreateResultKind.Progress, dispatched.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, observed.Kind);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.ApplyPreset);
+    }
+
+    [Theory]
+    [InlineData("group-type")]
+    [InlineData("alliance-tab")]
+    [InlineData("alliance-a")]
+    [InlineData("category")]
+    [InlineData("visible-duty")]
+    [InlineData("stored-duty")]
+    [InlineData("private-visible")]
+    [InlineData("private-stored")]
+    [InlineData("passcode-visible")]
+    [InlineData("passcode-stored")]
+    [InlineData("cross-world-visible")]
+    [InlineData("cross-world-stored")]
+    [InlineData("one-job-visible")]
+    [InlineData("one-job-stored")]
+    [InlineData("comment-visible")]
+    [InlineData("comment-stored")]
+    [InlineData("roles-visible")]
+    [InlineData("roles-stored")]
+    [InlineData("stale-members")]
+    [InlineData("groups")]
+    [InlineData("slots")]
+    [InlineData("stored-exact")]
+    public void EveryPresetFieldRequiresLaterAcknowledgement(string missing)
+    {
+        var fixture = new Fixture();
+        fixture.ReachApplyPreset();
+        fixture.Tick();
+        fixture.Ui.Snapshot = BreakExact(
+            fixture.ExactSnapshot(),
+            missing);
+
+        var observed = fixture.Tick();
+        fixture.AdvancePastObservationTimeout();
+        var blocked = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, observed.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, blocked.Kind);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.ApplyPreset);
+        Assert.DoesNotContain(
+            DadAlliancePfCreateAction.Submit,
+            fixture.Ui.Actions);
+    }
+
+    [Fact]
+    public void ExactLaterSnapshotAdvancesToSubmit()
+    {
+        var fixture = new Fixture();
+        fixture.ReachApplyPreset();
+        fixture.Tick();
+        fixture.Ui.Snapshot = fixture.ExactSnapshot();
+
+        var acknowledged = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateStage.Submit, acknowledged.Stage);
+        Assert.Equal("acknowledgement", acknowledged.Event);
+        Assert.Equal(0, fixture.Flow.Attempt);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.ApplyPreset);
+    }
+
+    [Fact]
+    public void FailedActionAndExceptionBlockWithoutRetry()
+    {
+        var failed = new Fixture();
+        failed.ReachSelectAlliance();
+        failed.Ui.Handler = static (action, _) =>
+            action == DadAlliancePfCreateAction.SelectAlliance
+                ? new(false, "alliance failed", "native unavailable")
+                : new(true, $"sent {action}");
+
+        var failedResult = failed.Tick();
+        failed.AdvancePastObservationTimeout();
+        failed.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, failedResult.Kind);
+        Assert.Single(
+            failed.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectAlliance);
+
+        var threw = new Fixture();
+        threw.ReachSelectAlliance();
+        threw.Ui.Handler = static (action, _) =>
+            action == DadAlliancePfCreateAction.SelectAlliance
+                ? throw new InvalidOperationException("event threw")
+                : new(true, $"sent {action}");
+
+        var exceptionResult = threw.Tick();
+        threw.AdvancePastObservationTimeout();
+        threw.Tick();
+
+        Assert.Equal(
+            DadAlliancePfCreateResultKind.Blocked,
+            exceptionResult.Kind);
+        Assert.Single(
+            threw.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectAlliance);
+    }
+
+    [Fact]
+    public void ReadExceptionAndErrorToastAfterMutationNeverRedispatch()
+    {
+        var readFailure = new Fixture();
+        readFailure.ReachSelectAlliance();
+        readFailure.Tick();
+        readFailure.Ui.ThrowOnRead = true;
+        var readBlocked = readFailure.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, readBlocked.Kind);
+        Assert.Single(
+            readFailure.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectAlliance);
+
+        var toastFailure = new Fixture();
+        toastFailure.ReachSelectAlliance();
+        toastFailure.Tick();
+        toastFailure.Ui.Snapshot = toastFailure.Ui.Snapshot with
+        {
+            ErrorToastSequence = 1,
+            ErrorToast = "Unable to recruit.",
+        };
+        var toastBlocked = toastFailure.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, toastBlocked.Kind);
+        Assert.Single(
+            toastFailure.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.SelectAlliance);
+    }
+
+    [Fact]
+    public void PreExistingActiveRecruitmentBlocksBeforeAnyCreateAction()
+    {
+        var fixture = new Fixture();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            ActiveRecruitment = true,
+        };
+
+        var result = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.Empty(fixture.Ui.Actions);
+    }
+
+    [Fact]
+    public void ExactPresetDriftBeforeSubmitBlocksWithoutAnotherWrite()
+    {
+        var fixture = new Fixture();
+        fixture.ReachSubmit();
+        fixture.Ui.Snapshot = fixture.ExactSnapshot() with
+        {
+            NumberOfGroups = 1,
+            StoredSettingsExactBeforeSubmit = false,
+            StoredSettingsExact = false,
+        };
+
+        var result = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.DoesNotContain(
+            DadAlliancePfCreateAction.Submit,
+            fixture.Ui.Actions);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action =>
+                action == DadAlliancePfCreateAction.ApplyPreset);
+    }
+
+    [Fact]
+    public void SubmitIsSentOnceBeforePublicationCanSucceed()
+    {
+        var fixture = new Fixture();
+        fixture.ReachSubmit();
+
+        var submit = fixture.Tick();
+        fixture.Ui.Snapshot = fixture.ExactSnapshot() with
+        {
+            ConditionVisible = false,
+            ConditionReady = false,
+            ActiveRecruitment = true,
+            OwnerHandle = 123,
+        };
+        var success = fixture.Tick();
+
+        Assert.Equal(DadAlliancePfCreateStage.Submit, submit.Stage);
+        Assert.True(submit.SubmitDispatched);
+        Assert.Equal(DadAlliancePfCreateResultKind.Succeeded, success.Kind);
+        Assert.Equal(DadAlliancePfCreateStage.Complete, success.Stage);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action => action == DadAlliancePfCreateAction.Submit);
+    }
+
+    [Theory]
+    [InlineData(false, false, 0ul, true)]
+    [InlineData(true, false, 123ul, true)]
+    [InlineData(false, true, 0ul, true)]
+    [InlineData(false, true, 123ul, false)]
+    public void PublicationRequiresCompleteLaterSnapshot(
+        bool editorVisible,
+        bool active,
+        ulong owner,
+        bool exact)
     {
         var fixture = new Fixture();
         fixture.ReachSubmit();
         fixture.Tick();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        fixture.Ui.Snapshot = fixture.ExactSnapshot() with
         {
-            ErrorToastSequence = 1,
-            ErrorToast = "Unable to recruit at this time.",
+            ConditionVisible = editorVisible,
+            ConditionReady = editorVisible,
+            ActiveRecruitment = active,
+            OwnerHandle = owner,
+            StoredSettingsExact = exact,
+            StoredSettingsContradictory =
+                active && !editorVisible && owner != 0 && !exact,
         };
 
         var result = fixture.Tick();
 
-        Assert.Equal(DadAlliancePfCreateResultKind.Retry, result.Kind);
-        Assert.Equal("error-toast", result.Event);
-        Assert.Equal("Unable to recruit at this time.", result.LastError);
-        Assert.NotNull(result.NextRetryUtc);
+        Assert.NotEqual(DadAlliancePfCreateResultKind.Succeeded, result.Kind);
+        Assert.Single(
+            fixture.Ui.Actions,
+            static action => action == DadAlliancePfCreateAction.Submit);
     }
 
     [Fact]
-    public void ActionExceptionIsRetryableAndAuditable()
+    public void StopIsIdempotentAndPreventsFurtherActions()
     {
         var fixture = new Fixture();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { MainVisible = false };
+        fixture.ReachSelectDuty();
+        fixture.PrepareCurrentStageForDispatch();
         fixture.Tick();
-        fixture.Ui.ThrowOnPerform = true;
-
-        var result = fixture.Tick();
-
-        Assert.Equal(DadAlliancePfCreateResultKind.Retry, result.Kind);
-        Assert.Equal("exception", result.Event);
-        Assert.True(result.ShouldAudit);
-        Assert.Contains("synthetic action failure", result.LastError, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void StopIsIdempotentAndPreventsResend()
-    {
-        var fixture = new Fixture();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with { MainVisible = false };
-        fixture.Tick();
-        fixture.Tick();
-        var countBeforeStop = fixture.Ui.Actions.Count;
+        var actionCount = fixture.Ui.Actions.Count;
 
         var first = fixture.Flow.Stop();
         var second = fixture.Flow.Stop();
-        fixture.Advance(TimeSpan.FromMinutes(1));
-        var after = fixture.Tick();
+        fixture.AdvancePastObservationTimeout();
+        var later = fixture.Tick();
 
-        Assert.True(first.ShouldAudit);
-        Assert.False(second.ShouldAudit);
-        Assert.Equal(DadAlliancePfCreateResultKind.Stopped, after.Kind);
-        Assert.Equal(countBeforeStop, fixture.Ui.Actions.Count);
-    }
-
-    [Fact]
-    public void ListingRequiresNonzeroIdAndExactStoredSettings()
-    {
-        var fixture = new Fixture();
-        fixture.ReachSubmit();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            OwnListingId = 777,
-            StoredSettingsExact = true,
-            StoredSettingsContradictory = false,
-        };
-
-        var success = fixture.Tick();
-
-        Assert.Equal(DadAlliancePfCreateResultKind.Succeeded, success.Kind);
-        Assert.Equal(777ul, success.ListingId);
-        Assert.Equal(DadAlliancePfCreateStage.Complete, success.Stage);
-    }
-
-    [Fact]
-    public void ContradictoryListingNeverReportsSuccess()
-    {
-        var fixture = new Fixture();
-        fixture.ReachSubmit();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            OwnListingId = 778,
-            StoredSettingsExact = false,
-            StoredSettingsContradictory = true,
-        };
-
-        var result = fixture.Tick();
-
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
-        Assert.Contains("contradicts", result.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadAlliancePfCreateResultKind.Stopped, first.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Stopped, second.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Stopped, later.Kind);
+        Assert.Equal(actionCount, fixture.Ui.Actions.Count);
     }
 
     [Fact]
@@ -378,133 +473,374 @@ public sealed class DadAlliancePartyFinderCreateFlowTests
         var fixture = new Fixture();
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
-            MainVisible = true,
-            MainReady = true,
-            HardBlocker = "The fully loaded Party Finder window is missing Recruit Members.",
+            HardBlocker =
+                "The fully loaded Party Finder conditions window is missing required alliance controls.",
         };
 
         var result = fixture.Tick();
 
         Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
-        Assert.Equal(fixture.Ui.Snapshot.HardBlocker, result.LastError);
+        Assert.Contains("missing required alliance controls", result.Summary);
     }
 
-    private static DadAlliancePfCreateSnapshot ExactDutySnapshot(DadAlliancePfCreateSnapshot source)
-        => source with
+    private static DadAlliancePfCreateSnapshot BreakExact(
+        DadAlliancePfCreateSnapshot snapshot,
+        string missing)
+        => missing switch
         {
-            ConditionVisible = true,
-            ConditionReady = true,
-            AllianceSelected = true,
-            SelectedCategory = DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
-            DutyListLoaded = true,
-            TargetDutySheetMatches = 1,
-            TargetDutyDropDownMatches = 1,
-            TargetDutyEntryEnabled = true,
-            TargetDutyId = 174,
-        };
-
-    private static DadAlliancePfCreateSnapshot ExactSettingsSnapshot(DadAlliancePfCreateSnapshot source)
-        => source with
-        {
-            AllianceSelected = true,
-            AllianceASelected = true,
-            PrivateRecruitment = true,
-            Passcode = 9752,
-            CrossWorldRecruitment = true,
-            OnePlayerPerJob = false,
-            EmptyComment = true,
-            UnrestrictedJobs = true,
-            NumberOfGroups = 3,
-            SlotsPerGroup = 8,
-            StoredSettingsExact = true,
+            "group-type" => snapshot with { GroupTypeTab = 0 },
+            "alliance-tab" => snapshot with { AllianceSelected = false },
+            "alliance-a" => snapshot with { AllianceASelected = false },
+            "category" => snapshot with { SelectedCategory = 0 },
+            "visible-duty" => snapshot with
+            {
+                SelectedDutyDropDownIndex = -1,
+            },
+            "stored-duty" => snapshot with { SelectedDutyId = 1117 },
+            "private-visible" => snapshot with
+            {
+                PrivateRecruitment = false,
+            },
+            "private-stored" => snapshot with
+            {
+                StoredPrivateRecruitment = false,
+            },
+            "passcode-visible" => snapshot with { Passcode = 1111 },
+            "passcode-stored" => snapshot with
+            {
+                StoredPasscode = 1111,
+            },
+            "cross-world-visible" => snapshot with
+            {
+                CrossWorldRecruitment = false,
+            },
+            "cross-world-stored" => snapshot with
+            {
+                StoredCrossWorldRecruitment = false,
+            },
+            "one-job-visible" => snapshot with
+            {
+                OnePlayerPerJob = true,
+            },
+            "one-job-stored" => snapshot with
+            {
+                StoredOnePlayerPerJob = true,
+            },
+            "comment-visible" => snapshot with { EmptyComment = false },
+            "comment-stored" => snapshot with
+            {
+                StoredEmptyComment = false,
+            },
+            "roles-visible" => snapshot with { UnrestrictedJobs = false },
+            "roles-stored" => snapshot with
+            {
+                StoredOpenSlotsUnrestricted = false,
+            },
+            "stale-members" => snapshot with
+            {
+                StoredStaleMembersCleared = false,
+            },
+            "groups" => snapshot with { NumberOfGroups = 1 },
+            "slots" => snapshot with { SlotsPerGroup = 4 },
+            "stored-exact" => snapshot with
+            {
+                StoredSettingsExactBeforeSubmit = false,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(missing)),
         };
 
     private sealed class Fixture
     {
-        public DateTime Now { get; private set; } =
-            new(2026, 7, 25, 12, 0, 0, DateTimeKind.Utc);
-        public DateTime LastTickUtc { get; private set; }
-        public MockUi Ui { get; } = new();
+        public FakeClock Clock { get; } = new();
+        public FakeUi Ui { get; } = new();
         public DadAlliancePartyFinderCreateFlow Flow { get; }
 
         public Fixture()
         {
-            Flow = new DadAlliancePartyFinderCreateFlow(Ui, () => Now);
+            Flow = new DadAlliancePartyFinderCreateFlow(
+                Ui,
+                () => Clock.UtcNow);
         }
 
         public DadAlliancePfCreateResult Tick()
         {
-            LastTickUtc = Now;
-            var result = Flow.Advance(9752);
-            Now += DadAlliancePartyFinderCreateFlow.PollInterval;
+            var result = Flow.Advance(Passcode);
+            AdvancePoll();
             return result;
         }
 
-        public void Advance(TimeSpan duration)
-            => Now += duration;
+        public void AdvancePoll()
+            => Clock.Advance(
+                DadAlliancePartyFinderCreateFlow.PollInterval);
+
+        public void AdvancePastObservationTimeout()
+            => Clock.Advance(
+                DadAlliancePartyFinderCreateFlow.ObservationTimeout);
+
+        public void ReachOpenMainWindow()
+        {
+            Assert.Equal(
+                DadAlliancePfCreateStage.OpenMainWindow,
+                Tick().Stage);
+        }
 
         public void ReachOpenConditions()
         {
-            Ui.Snapshot = Ui.Snapshot with { MainVisible = false, ConditionVisible = false };
-            Assert.Equal(DadAlliancePfCreateStage.OpenMainWindow, Tick().Stage);
+            ReachOpenMainWindow();
+            Assert.Equal(
+                DadAlliancePfCreateAction.OpenMainWindow,
+                SendCurrentStage());
             Ui.Snapshot = Ui.Snapshot with
             {
                 MainVisible = true,
                 MainReady = true,
                 MainRecruitUsable = true,
             };
-            Assert.Equal(DadAlliancePfCreateStage.OpenConditions, Tick().Stage);
+            Assert.Equal(
+                DadAlliancePfCreateStage.OpenConditions,
+                Tick().Stage);
         }
 
         public void ReachSelectAlliance()
         {
             ReachOpenConditions();
-            Ui.Snapshot = Ui.Snapshot with { ConditionVisible = true, ConditionReady = true };
-            Assert.Equal(DadAlliancePfCreateStage.SelectAlliance, Tick().Stage);
+            Assert.Equal(
+                DadAlliancePfCreateAction.OpenConditions,
+                SendCurrentStage());
+            Ui.Snapshot = Ui.Snapshot with
+            {
+                ConditionVisible = true,
+                ConditionReady = true,
+            };
+            Assert.Equal(
+                DadAlliancePfCreateStage.SelectAlliance,
+                Tick().Stage);
+        }
+
+        public void ReachSelectRaids()
+        {
+            ReachSelectAlliance();
+            Assert.Equal(
+                DadAlliancePfCreateAction.SelectAlliance,
+                SendCurrentStage());
+            Ui.Snapshot = Ui.Snapshot with
+            {
+                GroupTypeTab =
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab,
+                AllianceSelected = true,
+            };
+            Assert.Equal(
+                DadAlliancePfCreateStage.SelectRaids,
+                Tick().Stage);
         }
 
         public void ReachSelectDuty()
         {
-            ReachSelectAlliance();
-            Ui.Snapshot = Ui.Snapshot with { AllianceSelected = true };
-            Assert.Equal(DadAlliancePfCreateStage.SelectRaids, Tick().Stage);
+            ReachSelectRaids();
+            Assert.Equal(
+                DadAlliancePfCreateAction.SelectRaids,
+                SendCurrentStage());
             Ui.Snapshot = Ui.Snapshot with
             {
-                SelectedCategory = DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
+                SelectedCategory =
+                    DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
             };
-            Assert.Equal(DadAlliancePfCreateStage.SelectDuty, Tick().Stage);
+            Assert.Equal(
+                DadAlliancePfCreateStage.SelectDuty,
+                Tick().Stage);
         }
 
-        public void ReachConfigure()
+        public void ReachApplyPreset()
         {
             ReachSelectDuty();
-            Ui.Snapshot = ExactDutySnapshot(Ui.Snapshot) with { SelectedDutyId = 174 };
-            Assert.Equal(DadAlliancePfCreateStage.Configure, Tick().Stage);
+            Ui.Snapshot = DutyReadySnapshot();
+            Assert.Equal(
+                DadAlliancePfCreateAction.SelectDuty,
+                SendCurrentStage());
+            Ui.Snapshot = PreparedSelectorSnapshot();
+            Assert.Equal(
+                DadAlliancePfCreateStage.ApplyPreset,
+                Tick().Stage);
         }
 
         public void ReachSubmit()
         {
-            ReachConfigure();
-            Ui.Snapshot = ExactSettingsSnapshot(Ui.Snapshot);
-            Assert.Equal(DadAlliancePfCreateStage.Submit, Tick().Stage);
+            ReachApplyPreset();
+            Assert.Equal(
+                DadAlliancePfCreateAction.ApplyPreset,
+                SendCurrentStage());
+            Ui.Snapshot = ExactSnapshot();
+            Assert.Equal(
+                DadAlliancePfCreateStage.Submit,
+                Tick().Stage);
+        }
+
+        public void ReachStage(DadAlliancePfCreateStage target)
+        {
+            switch (target)
+            {
+                case DadAlliancePfCreateStage.CloseStaleWindows:
+                    Ui.Snapshot = Ui.Snapshot with
+                    {
+                        MainVisible = true,
+                        MainReady = true,
+                    };
+                    return;
+                case DadAlliancePfCreateStage.OpenMainWindow:
+                    ReachOpenMainWindow();
+                    return;
+                case DadAlliancePfCreateStage.OpenConditions:
+                    ReachOpenConditions();
+                    return;
+                case DadAlliancePfCreateStage.SelectAlliance:
+                    ReachSelectAlliance();
+                    return;
+                case DadAlliancePfCreateStage.SelectRaids:
+                    ReachSelectRaids();
+                    return;
+                case DadAlliancePfCreateStage.SelectDuty:
+                    ReachSelectDuty();
+                    return;
+                case DadAlliancePfCreateStage.ApplyPreset:
+                    ReachApplyPreset();
+                    return;
+                case DadAlliancePfCreateStage.Submit:
+                    ReachSubmit();
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(target),
+                        target,
+                        null);
+            }
+        }
+
+        public void PrepareCurrentStageForDispatch()
+        {
+            if (Flow.Stage == DadAlliancePfCreateStage.SelectDuty)
+                Ui.Snapshot = DutyReadySnapshot();
+        }
+
+        public DadAlliancePfCreateSnapshot DutyReadySnapshot()
+            => Ui.Snapshot with
+            {
+                AgentAvailable = true,
+                MainVisible = true,
+                MainReady = true,
+                MainRecruitUsable = true,
+                ConditionVisible = true,
+                ConditionReady = true,
+                GroupTypeTab =
+                    DadAlliancePartyFinderPresetDefinition.AllianceGroupTypeTab,
+                AllianceSelected = true,
+                SelectedCategory =
+                    DadAlliancePartyFinderCreateFlow.RaidsCategoryMask,
+                TargetDutyId =
+                    DadAlliancePartyFinderCreateFlow.LabyrinthDutyId,
+                TargetDutySheetMatches = 1,
+                DutyListLoaded = true,
+                TargetDutyDropDownMatches = 1,
+                TargetDutyEntryEnabled = true,
+                TargetDutyDropDownIndex = 17,
+                SelectedDutyDropDownIndex = -1,
+                SelectedDutyId = 0,
+            };
+
+        public DadAlliancePfCreateSnapshot PreparedSelectorSnapshot()
+            => DutyReadySnapshot() with
+            {
+                SelectedDutyDropDownIndex = 17,
+                SelectedDutyId =
+                    DadAlliancePartyFinderCreateFlow.LabyrinthDutyId,
+                AllianceASelected = true,
+            };
+
+        public DadAlliancePfCreateSnapshot ExactSnapshot()
+            => PreparedSelectorSnapshot() with
+            {
+                PresetLoaderAvailable = true,
+                PresetLoaderBlocker = string.Empty,
+                PrivateRecruitment = true,
+                StoredPrivateRecruitment = true,
+                Passcode = Passcode,
+                StoredPasscode = Passcode,
+                CrossWorldRecruitment = true,
+                StoredCrossWorldRecruitment = true,
+                OnePlayerPerJob = false,
+                StoredOnePlayerPerJob = false,
+                EmptyComment = true,
+                StoredEmptyComment = true,
+                UnrestrictedJobs = true,
+                StoredOpenSlotsUnrestricted = true,
+                StoredStaleMembersCleared = true,
+                NumberOfGroups = 3,
+                SlotsPerGroup = 8,
+                StoredSettingsExactBeforeSubmit = true,
+                StoredSettingsExact = true,
+                StoredSettingsContradictory = false,
+                ErrorToastSequence = 0,
+                ErrorToast = string.Empty,
+                HardBlocker = string.Empty,
+            };
+
+        private DadAlliancePfCreateAction SendCurrentStage()
+        {
+            var before = Ui.Actions.Count;
+            var result = Tick();
+            Assert.Equal(DadAlliancePfCreateResultKind.Progress, result.Kind);
+            Assert.Equal(before + 1, Ui.Actions.Count);
+            return Ui.Actions[^1];
         }
     }
 
-    private sealed class MockUi : IDadAlliancePartyFinderCreateUi
+    private sealed class FakeClock
     {
-        public DadAlliancePfCreateSnapshot Snapshot { get; set; } = new();
+        public DateTime UtcNow { get; private set; } =
+            new(2026, 7, 26, 0, 0, 0, DateTimeKind.Utc);
+
+        public void Advance(TimeSpan duration)
+            => UtcNow += duration;
+    }
+
+    private sealed class FakeUi : IDadAlliancePartyFinderCreateUi
+    {
+        public DadAlliancePfCreateSnapshot Snapshot { get; set; } =
+            new()
+            {
+                AgentAvailable = true,
+                PresetLoaderAvailable = true,
+                TargetDutyId =
+                    DadAlliancePartyFinderCreateFlow.LabyrinthDutyId,
+                TargetDutySheetMatches = 1,
+            };
+
         public List<DadAlliancePfCreateAction> Actions { get; } = [];
-        public bool ThrowOnPerform { get; set; }
+        public Func<
+            DadAlliancePfCreateAction,
+            int,
+            DadAlliancePfCreateActionResult>? Handler { get; set; }
+        public bool ThrowOnRead { get; set; }
 
         public DadAlliancePfCreateSnapshot Read(int passcode)
-            => Snapshot;
-
-        public DadAlliancePfCreateActionResult Perform(DadAlliancePfCreateAction action, int passcode)
         {
-            if (ThrowOnPerform)
-                throw new InvalidOperationException("synthetic action failure");
+            if (ThrowOnRead)
+            {
+                ThrowOnRead = false;
+                throw new InvalidOperationException("read failed");
+            }
+
+            return Snapshot;
+        }
+
+        public DadAlliancePfCreateActionResult Perform(
+            DadAlliancePfCreateAction action,
+            int passcode)
+        {
             Actions.Add(action);
-            return new DadAlliancePfCreateActionResult(true, $"sent {action}");
+            return Handler?.Invoke(action, passcode) ??
+                   new DadAlliancePfCreateActionResult(
+                       true,
+                       $"sent {action}");
         }
     }
 }

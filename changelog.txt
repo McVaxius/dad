@@ -1,24 +1,73 @@
 # dad — changelog
 
+## 2026-07-25 — I83/I85 true-idle title relog and visible DC return (local-only, unpublished)
+- Restricted logged-out takeover to fresh exclusive ready `_TitleMenu` proof. Character Select, `TitleConnect`,
+  navigation, dialogs, movies, multiple/unknown surfaces, route/catalog drift, and busy or unreadable automation wait
+  without issuing a login or adding a timeout.
+- Required independent readable-idle AutoRetainer, fresh VERMAXION exactly `Idle`, and readable-idle Lifestream
+  `CanAutoLogin` evidence. Multi Mode is disabled and verified at most once when on, every gate is recaptured afterward,
+  and an already-off path skips the mutation. Login uses only `Lifestream.ConnectAndLogin`; accepted calls never replay,
+  explicit false retries after five seconds and fresh proof, and exception/uncertain outcomes block without replay.
+- Added one-shot exact `MovieStaffList` Escape handling while Multi Mode is already off and all three automation owners
+  are readable and idle. DAD never logs in from the movie and waits for a later fresh valid title menu.
+- Froze and retained the source character, home world, and relog target throughout return-home preparation, unavailable
+  or loading observations, explicit-false retries, accepted Data Center travel, and final home-world proof.
+- Main banner, Status > Current Activity, and mini status now use a pure display-only precedence projection for busy
+  DAD, active scheduler, active schedule/inter-entry, then terminal/idle DAD state. Runtime truth, advancement, locking,
+  cancellation, authority, and transport behavior are unchanged. No public IPC/DTO, protocol, schema, manifest, package,
+  version, website, publication, or live-client operation is part of this change; live acceptance is Not Run.
+
 ## 2026-07-25 — I63 ECommons Party Finder creation repair (local-only, unpublished)
 - Replaced blind Party Finder button events and immediate stage advancement with a mockable acknowledgement-driven create
   flow. It clean-starts `/pfinder`, polls addon/control readiness every 250 ms, retries unacknowledged actions and captured
   PF errors at the existing 2/4/8/15-second capped cadence until Stop, and exposes local stage, attempt, retry, elapsed, and
   last-error diagnostics.
-- Pinned ECommons 3.2.1.15 and included `ECommons.dll` in plugin/dev output. DAD uses only its stateless addon-ready,
-  `LookingForGroup`, `LookingForGroupCondition`, and UI-input helpers; it does not initialize ECommons' global services or
-  use signature-dependent paths.
-- Party creation now selects Alliance through the maintained wrapper, maps the Raids `0x20` flag to bit index 5, resolves
-  The Labyrinth of the Ancients uniquely from `ContentFinderCondition`, selects the exact enabled dropdown entry, and
-  configures Alliance A, private passcode, cross-world recruitment, three groups, eight slots per group, empty comment,
-  unrestricted jobs, and no one-player-per-job restriction through real controls. Success requires a nonzero
-  `OwnListingId` and exact stored settings.
-- Added create-stage/action/acknowledgement/readiness/category/duty/toast/retry/exception/Stop/success audit details without
-  adding them to the hub-safe snapshot, plus pure regression tests for the live main-window stall, no blind advancement,
-  exact settings, duty resolution, capped idempotent resend, error toasts, Stop, and listing acknowledgement.
-- Fresh verification passes 145 focused alliance/migration/share/dependency/fleet/batch tests and all 1,169 Debug x64
-  tests. The isolated no-incremental API-15 build succeeds with zero warnings/errors, and the packaged `ECommons.dll`
-  exactly matches the restored 3.2.1.15 dependency.
+- Repaired the live native-command dispatch failure: `OpenMainWindow` now sends only the fixed `/pfinder` literal through a
+  mockable typed `UIModule.ProcessChatBoxEntry` executor, reports explicit unavailable/exception errors, and always releases
+  its temporary `Utf8String`. Native submission audits `create-action` but never advances without later addon/control
+  acknowledgement. Guarded wrong-group `/leave` uses the same typed native-chat primitive with fixed input and cleanup, so
+  no alliance PF path calls `ICommandManager.ProcessCommand`.
+- Centralized the read-only Create preflight and exposed only local readiness/blocker/rejection fields. Client Dads and every
+  failed preset, authority, hub, runtime, exact-target, or Alliance-A-host prerequisite see the exact disabled-button reason.
+  Rejected Create attempts append `create-rejected` and remain visible instead of being replaced immediately by the preview;
+  hub DTOs, IPC, protocols, schemas, configuration, and coordinator-only transport authority are unchanged.
+- Pinned ECommons 3.2.1.15 and included `ECommons.dll` in plugin/dev output. DAD limits it to stateless UI-input helpers; it
+  does not initialize ECommons' global services or use signature-dependent paths.
+- Superseded revision 15 after W showed the editor requested Labyrinth but normalized to `groups=1`. API-15 refresh consumes
+  the game-owned duty-selector discriminator at recruitment offset `+0x12`; changing only public category/duty fields left
+  that selector invalid. DAD now dispatches Alliance `[Int 35, UInt 1, Undefined]`, Raids
+  `[Int 12, UInt 5, Undefined]`, and the exact enabled Labyrinth row `[Int 13, UInt index, Undefined]` once each, requiring
+  a later acknowledgement within five seconds after each action.
+- Ported the complete PartyFinderPresets transaction contract to the installed API-15 structs: capture and restore all
+  `0x478` recruitment bytes, `GroupTypeTab`, `AvgItemLvEnabled`, and `AvgItemLv`; preserve the opaque duty selector and the
+  current objective, completion, language, loot, and item-level values; then overlay only the exact DAD private Alliance A
+  `3x8` settings, cleared stale members, and 23 unrestricted open slots before one full write and one refresh.
+- Kept one DAD-owned fallible refresh signature resolved through `IGameInteropProvider`; the former API-11 update-function
+  signature is not reused. PartyFinderPresets remains a source reference only, with no installation dependency, plugin
+  discovery, reflection, IPC, assembly loading, shared configuration, or runtime fallback. Signature/layout unavailability
+  blocks before mutation, lifecycle disposal disables the loader, and apply/refresh failure restores the complete original
+  API-15 state.
+- Every creation mutation is single-dispatch. A later snapshot alone advances Alliance, Raids, Labyrinth, preset, and Submit
+  stages. Missing acknowledgement after five seconds blocks that Create request without another callback, event, editor
+  opening, preset write, refresh, or Submit; a new explicit Create request is required.
+- Reclassified `OwnListingId` as an opaque PF owner handle. Its temporary editor value no longer blocks Alliance/Raids or
+  proves success. An internal local Online Status 26 observer blocks genuinely pre-existing recruitment; publication now
+  requires Submit dispatch, a hidden editor, active recruitment, a nonzero owner handle, duty `92`, exact password,
+  three groups of eight, empty comment, cross-world/no-duplicate-job flags, and unrestricted open-slot flags.
+- Rebuilt cleanup as an acknowledged owned-detail sequence: open the typed details control, wait for the detail addon,
+  fire captured End Recruitment callback `[Int 11]`, verify and confirm a fresh recruitment-only prompt, then wait for both
+  active recruitment and the owner handle to clear. No disband, party leave, or duty-queue action is introduced.
+- Added **Stop PF** beside Create party and Grab dads. It uses the existing Stop path for pending and blocked editors or
+  DAD-owned published recruitment only; the control cannot end an unowned listing and introduces no disband or queue path.
+- Added create-stage/action/acknowledgement/readiness/category/duty/toast/deadline/exception/Stop/success audit details without
+  adding them to the hub-safe snapshot. Local status and JSONL evidence now include active-recruitment, editor, Submit, and
+  PF owner-handle state and every observed visible/stored setting value. Regressions now cover exact preset construction,
+  full-struct and opaque-byte preservation, local-slot preservation, stale-slot clearing, idempotency, passcode/layout
+  validation, complete rollback, lifecycle ownership, native-unavailable preflight, exact later acknowledgement,
+  no-redispatch timeouts at every mutation stage, exceptions/unavailable agents, one Submit, strict publication, cleanup,
+  and Stop across every create stage.
+- Revision-16 verification results are recorded in `I63_DAD_ALLIANCE_PF_STATUS_TESTING.md`; operator-gated live acceptance
+  remains Not Run.
 
 ## 2026-07-24 — I63 preset-driven alliance Party Finder formation (local-only, unpublished)
 - Added explicit Alliance A/B/C assignments to primary preset rows; substitutes inherit the primary assignment. Configuration
