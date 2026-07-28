@@ -1,5 +1,25 @@
 # dad — changelog
 
+## 2026-07-27 — I63 one-click two-cycle Create and Private PF joining (local-only, unpublished)
+- Wrapped the unchanged condition-authoritative Create flow in one bounded outer recovery. When cycle 1 blocks before
+  publication with condition `66` false, DAD runs the existing Stop-create close/reset path once, retains the request,
+  preset, exact targets, and coordinator state, generates a different fresh passcode, and starts final cycle 2. Success,
+  pre-existing recruitment, or Stop suppresses recovery, and cycle-2 failure never starts a third cycle.
+- Replaced the worker's incomplete native listing scan with the acknowledgement-driven XA-observed Private PF sequence.
+  Party Finder is shown only while hidden; Private tab `2`, Raids category index `5`, and one refresh per retry cycle are
+  acknowledged before zero-based results are opened with ordered callbacks `13` then `11`.
+- Exact detail validation now requires leader/home world, Labyrinth duty `92`, private flag, alliance mode, and three
+  parties. Mismatches close and advance the retained result cursor; pending detail requests never reset it.
+- Subgroup selection now uses the observed A/B/C callback and string pair, waits for a fresh Yes prompt, clicks Yes once,
+  acknowledges the private prompt, submits `[0, passcode]`, then sends detail close `[-2]`. Callback completion alone is
+  insufficient: success requires observing the worker in its exact assigned subgroup.
+- Removed `AgentLookingForGroup.OpenListing`, the direct stored-password write, and direct alliance-button clicking from
+  worker joining. Missing addons, results, details, or prompts retry safely until Stop, and each join action or
+  acknowledgement adds a local audit summary.
+- Added focused two-cycle, callback-order, single-dispatch, acknowledgement, mismatch, missing-addon/prompt, Stop, exact
+  subgroup, and API-15 layout regressions. No public DTO, protocol, configuration schema, IPC, version, package, manifest,
+  website, deployment, live-client operation, commit, push, or release is part of this revision.
+
 ## 2026-07-25 — I83/I85 true-idle title relog and visible DC return (local-only, unpublished)
 - Restricted logged-out takeover to fresh exclusive ready `_TitleMenu` proof. Character Select, `TitleConnect`,
   navigation, dialogs, movies, multiple/unknown surfaces, route/catalog drift, and busy or unreadable automation wait

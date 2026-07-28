@@ -107,6 +107,8 @@
     <Compile Include="..\Services\DadAlliancePartyFinderRules.cs" Link="DadAlliancePartyFinderRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderPresetRules.cs" Link="DadAlliancePartyFinderPresetRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCreateFlow.cs" Link="DadAlliancePartyFinderCreateFlow.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderCreateCycleCoordinator.cs" Link="DadAlliancePartyFinderCreateCycleCoordinator.cs" />
+    <Compile Include="..\Services\DadAlliancePartyFinderJoinFlow.cs" Link="DadAlliancePartyFinderJoinFlow.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCleanupFlow.cs" Link="DadAlliancePartyFinderCleanupFlow.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderNativeActionRules.cs" Link="DadAlliancePartyFinderNativeActionRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCreatePreflight.cs" Link="DadAlliancePartyFinderCreatePreflight.cs" />

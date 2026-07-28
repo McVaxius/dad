@@ -22,6 +22,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private readonly Dictionary<string, DadAllianceRecruitmentResultDto> coordinatorResults = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task> outboundTasks = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ulong> discordMessageIds = [];
+    private readonly DadAlliancePartyFinderCreateCycleCoordinator createCycles =
+        new();
     private readonly object statusGate = new();
     private DadAlliancePartyFinderStatus status = new();
     private DadAllianceRecruitmentInstructionDto? receiverInstruction;
@@ -95,6 +97,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         var validation = preflight.Status.Validation;
 
         ResetOperation();
+        createCycles.Reset();
         nativeGateway.Reset();
         foreach (var target in targets)
             coordinatorTargets[target.CharacterKey.Value] = target;
@@ -363,6 +366,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 ? "Alliance recruitment stopped."
                 : cancellation.Reason,
         };
+        nativeGateway.StopJoin();
         receiverInstruction = null;
         Audit("receiver-stopped", receiverResult, 0, string.Empty, receiverResult.Summary);
         return receiverResult.Clone();
@@ -397,6 +401,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             return;
 
         stopApplied = true;
+        createCycles.Stop();
         operationCancellation.Cancel();
         var stopCreate = false;
         var nextGeneration = Math.Max(status.StopGeneration, receiverInstruction?.StopGeneration ?? 0) + 1;
@@ -461,7 +466,19 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 or DadAllianceRecruitmentState.WaitingUnsafe)
         {
             var step = nativeGateway.AdvanceCreate(current.Passcode);
+            var decision = createCycles.Observe(
+                step.Kind switch
+                {
+                    DadAllianceNativeStepKind.Succeeded =>
+                        DadAlliancePfCreateCycleOutcome.Succeeded,
+                    DadAllianceNativeStepKind.Blocked =>
+                        DadAlliancePfCreateCycleOutcome.Blocked,
+                    _ => DadAlliancePfCreateCycleOutcome.InProgress,
+                },
+                step.ActiveRecruitment);
             ApplyCreateStep(step);
+            if (decision == DadAlliancePfCreateCycleDecision.RestartOnce)
+                RestartCreateCycle(step);
             return;
         }
 
@@ -630,6 +647,57 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             (int)(DateTime.UtcNow - started).TotalMilliseconds,
             step.Kind == DadAllianceNativeStepKind.Blocked ? step.Summary : string.Empty,
             step.Summary);
+        if (step.ShouldAudit)
+        {
+            var eventName = string.IsNullOrWhiteSpace(step.CreateEvent)
+                ? "join-readiness"
+                : $"join-{step.CreateEvent}";
+            Audit(
+                eventName,
+                receiverResult,
+                (int)(DateTime.UtcNow - started).TotalMilliseconds,
+                step.Kind == DadAllianceNativeStepKind.Retry
+                    ? step.LastError
+                    : string.Empty,
+                $"{step.CreateStage}: {step.Summary}");
+        }
+    }
+
+    private void RestartCreateCycle(DadAllianceNativeStep blockedStep)
+    {
+        nativeGateway.RestartCreateCycle();
+        var previousPasscode = GetStatus().Passcode;
+        var freshPasscode =
+            createCycles.GenerateFreshPasscode(previousPasscode);
+        const string summary =
+            "Create cycle 1 blocked before publication; DAD ran the existing Stop/reset path and automatically started final cycle 2 with a fresh passcode.";
+        lock (statusGate)
+        {
+            status.Passcode = freshPasscode;
+            status.State = DadAllianceRecruitmentState.CreatingListing;
+            status.Summary = summary;
+            status.ListingId = 0;
+            status.OwnsRecruitment = false;
+            status.CreateStage =
+                DadAlliancePfCreateStage.CloseStaleWindows.ToString();
+            status.CreateAttempt = 0;
+            status.CreateNextRetryUtc = null;
+            status.CreateLastError = string.Empty;
+            status.CreateElapsedMilliseconds = 0;
+            status.CreateActiveRecruitment = false;
+            status.CreateEditorVisible = false;
+            status.CreateSubmitDispatched = false;
+            status.CreateConfigurationTarget = string.Empty;
+            status.CreateObservedSettings = string.Empty;
+            status.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        lastCreateAuditFingerprint = string.Empty;
+        Audit(
+            "create-cycle-restart",
+            null,
+            blockedStep.ElapsedMilliseconds,
+            blockedStep.Summary,
+            summary);
     }
 
     private void ApplyCreateStep(DadAllianceNativeStep step)

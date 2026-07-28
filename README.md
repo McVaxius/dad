@@ -96,11 +96,15 @@ dotnet test .\Tests\dad.Tests.csproj
   their primary row; each subgroup accepts one to eight effective characters and a preset may contain three to 24 total.
   Status > Readiness > **Alliance Party Finder** validates a concrete selected preset and an Alliance-A local host, then
   **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
-  dispatches every unresolved exact target concurrently through the authenticated hub. Receivers match the exact leader and
-  home world, ignore listing comments, use only the configured subgroup button, retry transient failures at a capped cadence
-  until Stop, and repair a proven wrong subgroup only through guarded leave/rejoin. Completion verifies every effective
-  character, closes recruitment without disbanding the alliance, and never queues a duty. The preset's actual raid remains
-  unchanged for the operator to queue manually afterward. Detailed local evidence is appended beneath
+  dispatches every unresolved exact target concurrently through the authenticated hub. Receivers open Party Finder only
+  while hidden, select Private tab `2` and Raids category index `5`, refresh once per retry cycle, and inspect each
+  zero-based result through the acknowledged list/detail callbacks. They accept only the exact leader and home world,
+  Labyrinth duty, private flag, alliance mode, and three-party detail; listing comments are ignored. The configured A/B/C
+  subgroup, a fresh Yes prompt, private passcode prompt, and final exact subgroup observation are each acknowledged in
+  order. Transient failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired only through
+  guarded leave/rejoin. Completion verifies every effective character, closes recruitment without disbanding the alliance,
+  and never queues a duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
+  Detailed local evidence is appended beneath
   `<plugin-config>\alliance-pf\logs`; Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
   Party Finder by submitting only the fixed native `/pfinder` chat command and polls readiness at 250 ms. Current typed
   ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to stateless UI-input helpers. DAD
@@ -119,9 +123,13 @@ dotnet test .\Tests\dad.Tests.csproj
   implementation is source-adapted from PartyFinderPresets but does not discover, load, reflect into, call, or exchange IPC
   with that plugin. An unavailable refresh signature blocks before any agent write; an apply or refresh failure restores
   the complete original state. A mutation never advances the state machine by dispatch alone: a later snapshot must
-  acknowledge the exact visible and stored editor state. A missing acknowledgement blocks this Create request without
-  re-opening, redispatching, rewriting, refreshing, or submitting. The conditions editor's temporary owner handle is never
-  treated as publication authority. Success requires
+  acknowledge the exact visible and stored editor state. A missing acknowledgement blocks that individual Create cycle
+  without re-opening, redispatching, rewriting, refreshing, or submitting within the cycle. One **Create party** click may
+  recover from the first pre-publication block only when condition `66` remains false: DAD runs the existing Stop-create
+  close/reset path once, keeps the same request, preset, exact targets, and coordinator state, generates a fresh passcode,
+  and runs the unchanged flow as final cycle 2. First-cycle success, an already-active recruitment, or Stop never starts
+  cycle 2; a cycle-2 block remains blocked and never starts a third cycle. The conditions editor's temporary owner handle
+  is never treated as publication authority. Success requires
   one Submit, the editor to close, full stored duty/password/group/slot/comment/open-slot-flag exactness,
   `UsingPartyFinder` condition `66`, and `ParticipatingInCrossWorldPartyOrAlliance` condition `84`; the opaque native PF
   owner handle may remain zero and is shown only as optional diagnostic data. Online-status row `26` is not recruitment
