@@ -98,22 +98,32 @@ dotnet test .\Tests\dad.Tests.csproj
   **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
   dispatches every unresolved exact target concurrently through the authenticated hub. Receivers open Party Finder only
   while hidden, select Private tab `2` and Raids category index `5`, refresh once per retry cycle, and inspect each
-  zero-based result through the acknowledged list/detail callbacks. They accept only the exact leader and home world,
-  Labyrinth duty, private flag, alliance mode, and three-party detail; listing comments are ignored. The configured A/B/C
-  subgroup, a fresh Yes prompt, private passcode prompt, and final exact subgroup observation are each acknowledged in
-  order. Transient failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired only through
-  guarded leave/rejoin. Completion verifies every effective character, closes recruitment without disbanding the alliance,
-  and never queues a duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
+  zero-based result through the acknowledged list/detail callbacks. Each listing uses the exact ordered `[13, index]` then
+  `[11, index]` group from the [raw callback source](Z:/logs/20260727.md:123): DAD validates the complete group, resolves
+  `LookingForGroup` once, reuses that pointer, and fires both calls synchronously without lookup or observation between them.
+  Integer-only callbacks retain the proven stack path; mixed subgroup callbacks retain a zeroed HGlobal `AtkValue` array
+  with explicit null-terminated UTF-8 storage, and worker joining does not require ECommons global initialization. They
+  accept only the exact leader and home world, Labyrinth duty, private flag, alliance mode, and three-party detail; listing
+  comments are ignored. The exact detail is revalidated immediately before the one-shot A/B/C subgroup callback. A worker
+  that enters recruitment mode or exposes the recruitment editor is blocked without callback retries or automatic cleanup.
+  A fresh Yes prompt is acknowledged once. After the private prompt appears, DAD preflights both required addons and sends
+  passcode submission followed immediately by raw detail close `-2` with `updateState=false` as one ordered group, matching
+  the [raw passcode source](Z:/logs/20260727.md:264). Final exact subgroup observation remains mandatory. Transient search
+  failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired only through guarded leave/rejoin.
+  Completion verifies every effective character, closes recruitment without disbanding the alliance, and never queues a
+  duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
   Detailed local evidence is appended beneath
-  `<plugin-config>\alliance-pf\logs`; Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
+  `<plugin-config>\alliance-pf\logs`; native callback begin/returned markers contain only action, addon, ordinal, payload
+  types, and update-state. Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
   Party Finder by submitting only the fixed native `/pfinder` chat command and polls readiness at 250 ms. Current typed
-  ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to stateless UI-input helpers. DAD
-  dispatches Alliance, Raids, and the exact enabled Labyrinth row once each, requiring a later acknowledgement within five
-  seconds after every action. If Alliance changes the stored group tab before the open editor reflects its radio, the same
-  Create request closes conditions once. When typed Cancel resets `GroupTypeTab`, DAD restores Alliance tab `1` exactly once
-  through its existing adapter and requires a later acknowledgement; this restore neither resends Alliance nor refreshes the
-  preset. DAD then reuses or reopens the main PF window as needed, reopens conditions once, and requires the Alliance radio
-  before continuing. A ready next action may dispatch on the next 250 ms poll. Duty selection lets the game populate the
+  ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to create-side stateless UI-input
+  helpers. DAD dispatches Alliance, Raids, and the exact enabled Labyrinth row once each, requiring a later acknowledgement
+  within five seconds after every action. If Alliance changes the stored group tab before the open editor reflects its radio,
+  the same Create request closes conditions once. When typed Cancel resets `GroupTypeTab`, DAD restores Alliance tab `1`
+  exactly once through its existing adapter and requires a later acknowledgement; this restore neither resends Alliance nor
+  refreshes the preset. DAD then reuses or reopens the main PF window as needed, reopens conditions once, and requires the
+  Alliance radio before continuing. A ready next action may dispatch on the next 250 ms poll. Duty selection lets the game
+  populate the
   complete API-15 selector, including its opaque discriminator. DAD
   then captures the full current recruitment struct plus group tab and average-item-level state, overlays only the private
   passcode, API-15 cross-world byte `1`, no-duplicate-job setting, empty comment, Alliance A `3x8` membership, cleared stale

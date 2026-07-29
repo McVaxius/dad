@@ -1,7 +1,6 @@
 using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
-using ECommons.Automation;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
@@ -61,6 +60,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     private readonly IPluginLog log;
     private readonly IDataManager dataManager;
     private readonly DadAlliancePartyFinderECommonsAdapter createUi;
+    private readonly DadAlliancePartyFinderNativeCallbackDispatcher
+        joinCallbackDispatcher;
 
     private DadAlliancePartyFinderCreateFlow createFlow;
     private DadAlliancePartyFinderCleanupFlow cleanupFlow;
@@ -87,6 +88,9 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         this.presenceService = presenceService;
         this.dataManager = dataManager;
         this.log = log;
+        joinCallbackDispatcher =
+            new DadAlliancePartyFinderNativeCallbackDispatcher(
+                LogJoinCallbackTrace);
         var nativeActions = new DadAlliancePartyFinderTypedNativeActions();
         var recruitmentObserver =
             new DadAllianceLocalRecruitmentObserver(condition);
@@ -198,16 +202,6 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         }
 
         var observed = ObserveAlliance(instruction.TargetContentId);
-        if (observed == instruction.AssignedAlliance)
-        {
-            return new DadAllianceNativeStep(
-                DadAllianceNativeStepKind.Succeeded,
-                DadAllianceRecruitmentState.Complete,
-                $"Verified exact Alliance {observed}.",
-                0,
-                observed);
-        }
-
         var agent = AgentLookingForGroup.Instance();
         var isLocalCreator =
             agent != null &&
@@ -220,6 +214,26 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 local.Character.WorldName?.Trim(),
                 instruction.LeaderWorld.Trim(),
                 StringComparison.OrdinalIgnoreCase);
+        var recruitmentCondition =
+            GetAddon<AtkUnitBase>("LookingForGroupCondition");
+        if (!isLocalCreator &&
+            (condition[ConditionFlag.UsingPartyFinder] ||
+             recruitmentCondition != null &&
+             recruitmentCondition->IsVisible))
+        {
+            return Blocked(
+                "The worker unexpectedly entered Party Finder recruitment mode; this join request is blocked without retries or cleanup.");
+        }
+        if (observed == instruction.AssignedAlliance)
+        {
+            return new DadAllianceNativeStep(
+                DadAllianceNativeStepKind.Succeeded,
+                DadAllianceRecruitmentState.Complete,
+                $"Verified exact Alliance {observed}.",
+                0,
+                observed);
+        }
+
         if (isLocalCreator)
         {
             var recruitment = agent->StoredRecruitmentInfo;
@@ -271,6 +285,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                     DadAllianceNativeStepKind.Retry,
                 DadAlliancePfJoinResultKind.Succeeded =>
                     DadAllianceNativeStepKind.Succeeded,
+                DadAlliancePfJoinResultKind.Blocked =>
+                    DadAllianceNativeStepKind.Blocked,
                 DadAlliancePfJoinResultKind.Stopped =>
                     DadAllianceNativeStepKind.Stopped,
                 _ => DadAllianceNativeStepKind.Retry,
@@ -281,7 +297,9 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             CreateStage: $"Join:{result.Stage}",
             CreateEvent: result.Event,
             Attempt: result.RetryCycle,
-            LastError: result.Kind == DadAlliancePfJoinResultKind.Retry
+            LastError: result.Kind is
+                    DadAlliancePfJoinResultKind.Retry or
+                    DadAlliancePfJoinResultKind.Blocked
                 ? result.Summary
                 : string.Empty,
             Readiness: $"retry-cycle={result.RetryCycle}; listing-index={result.ListingIndex}",
@@ -298,6 +316,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         var yesNo = GetAddon<AddonSelectYesno>("SelectYesno");
         var privatePrompt =
             GetAddon<AtkUnitBase>("LookingForGroupPrivate");
+        var recruitmentCondition =
+            GetAddon<AtkUnitBase>("LookingForGroupCondition");
         var mainBase = main == null
             ? null
             : &main->AddonLookingForGroupBase.AtkUnitBase;
@@ -310,6 +330,9 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             yesNo != null && yesNo->AtkUnitBase.IsVisible;
         var privateVisible =
             privatePrompt != null && privatePrompt->IsVisible;
+        var recruitmentConditionVisible =
+            recruitmentCondition != null &&
+            recruitmentCondition->IsVisible;
         var detail = agent == null
             ? default
             : agent->LastViewedListing;
@@ -324,6 +347,13 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             AgentAvailable = agent != null,
             MainVisible = mainVisible,
             MainReady = mainVisible && mainBase->IsReady,
+            RecruitmentConditionVisible =
+                recruitmentConditionVisible,
+            RecruitmentConditionReady =
+                recruitmentConditionVisible &&
+                recruitmentCondition->IsReady,
+            WorkerRecruiting =
+                condition[ConditionFlag.UsingPartyFinder],
             SearchAreaTab = agent == null ? (byte)0 : agent->SearchAreaTab,
             CategoryTab = agent == null ? (byte)0 : agent->CategoryTab,
             NumberOfListings =
@@ -408,49 +438,18 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 $"{request.Action} has no callback plan.");
         }
 
-        var addonAddresses = new nint[callbacks.Count];
-        for (var index = 0; index < callbacks.Count; index++)
-        {
-            var callback = callbacks[index];
-            var addon = GetJoinCallbackAddon(callback.Addon);
-            if (addon == null || !addon->IsReady)
-            {
-                return new DadAlliancePfJoinActionResult(
-                    false,
-                    $"{request.Action} callback was not sent.",
-                    $"{callback.Addon} is unavailable or not ready.");
-            }
-            if (RequiresVisibleJoinAddon(
-                    callback.Addon,
-                    request.Action) &&
-                !addon->IsVisible)
-            {
-                return new DadAlliancePfJoinActionResult(
-                    false,
-                    $"{request.Action} callback was not sent.",
-                    $"{callback.Addon} is not visible.");
-            }
-
-            addonAddresses[index] = (nint)addon;
-        }
-
-        try
-        {
-            for (var index = 0; index < callbacks.Count; index++)
-            {
-                var callback = callbacks[index];
-                Callback.Fire(
-                    (AtkUnitBase*)addonAddresses[index],
-                    callback.UpdateState,
-                    callback.Values);
-            }
-        }
-        catch (Exception exception)
+        var dispatch = joinCallbackDispatcher.TryDispatch(
+            request.Action,
+            callbacks,
+            addonName => ResolveReadyJoinCallbackAddon(
+                addonName,
+                request.Action));
+        if (!dispatch.Sent)
         {
             return new DadAlliancePfJoinActionResult(
                 false,
                 $"{request.Action} callback sequence failed.",
-                exception.Message);
+                dispatch.Error);
         }
 
         return new DadAlliancePfJoinActionResult(
@@ -464,6 +463,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         {
             DadAlliancePfJoinResultKind.Succeeded =>
                 DadAllianceRecruitmentState.Complete,
+            DadAlliancePfJoinResultKind.Blocked =>
+                DadAllianceRecruitmentState.Blocked,
             DadAlliancePfJoinResultKind.Stopped =>
                 DadAllianceRecruitmentState.Stopped,
             DadAlliancePfJoinResultKind.Retry =>
@@ -473,7 +474,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 DadAlliancePfJoinStage.WaitYesNo or
                 DadAlliancePfJoinStage.ConfirmYes or
                 DadAlliancePfJoinStage.WaitPrivatePrompt or
-                DadAlliancePfJoinStage.SubmitPasscode =>
+                DadAlliancePfJoinStage.SubmitPasscode or
+                DadAlliancePfJoinStage.WaitJoinedDetailClosed =>
                 DadAllianceRecruitmentState.Joining,
             _ when result.Stage == DadAlliancePfJoinStage.VerifyAlliance =>
                 DadAllianceRecruitmentState.Verifying,
@@ -494,6 +496,22 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         }
 
         return GetAddon<AtkUnitBase>(name);
+    }
+
+    private static nint ResolveReadyJoinCallbackAddon(
+        string name,
+        DadAlliancePfJoinAction action)
+    {
+        var addon = GetJoinCallbackAddon(name);
+        if (addon == null || !addon->IsReady)
+            return nint.Zero;
+        if (RequiresVisibleJoinAddon(name, action) &&
+            !addon->IsVisible)
+        {
+            return nint.Zero;
+        }
+
+        return (nint)addon;
     }
 
     private static bool RequiresVisibleJoinAddon(
@@ -536,9 +554,21 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             DadAlliancePfJoinAction.ConfirmYes =>
                 "Clicked Yes once on the acknowledged fresh subgroup confirmation.",
             DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail =>
-                "Submitted the four-digit private passcode, then sent detail close callback -2 once.",
+                "Submitted the four-digit private passcode and sent raw detail close -2 as one ordered group.",
             _ => request.Action.ToString(),
         };
+
+    private void LogJoinCallbackTrace(
+        DadAlliancePfNativeCallbackTrace callbackTrace)
+        => log.Information(
+            "[dad][AlliancePF] native-callback {Phase} action={Action} addon={Addon} ordinal={Ordinal}/{Total} payload-types={PayloadTypes} update-state={UpdateState}",
+            callbackTrace.Phase,
+            callbackTrace.Action,
+            callbackTrace.Addon,
+            callbackTrace.Ordinal,
+            callbackTrace.Total,
+            callbackTrace.PayloadTypes,
+            callbackTrace.UpdateState);
 
     public DadAllianceNativeStep AdvanceEndRecruitment(bool dadOwnsRecruitment)
     {

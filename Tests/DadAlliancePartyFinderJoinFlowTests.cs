@@ -113,12 +113,15 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             passcode: Target.Passcode);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
-            DetailVisible = false,
-            DetailReady = false,
             PrivatePromptVisible = false,
             PrivatePromptReady = false,
+            DetailVisible = false,
+            DetailReady = false,
             ObservedAlliance = DadAllianceAssignment.C,
         };
+        AssertEvent(
+            fixture.Advance(),
+            "passcode-and-detail-close-acknowledged");
         var completed = fixture.Advance();
 
         Assert.Equal(
@@ -230,8 +233,36 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         Assert.Equal([callbackId, callbackText], callback.Values);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void ListingCallbackGroupsMatchExactZeroBasedHudPairs(
+        int listingIndex)
+    {
+        var open = DadAlliancePartyFinderJoinCallbacks.Build(
+            new DadAlliancePfJoinActionRequest(
+                DadAlliancePfJoinAction.OpenListing,
+                ListingIndex: listingIndex));
+
+        Assert.Collection(
+            open,
+            callback =>
+            {
+                Assert.Equal("LookingForGroup", callback.Addon);
+                Assert.True(callback.UpdateState);
+                Assert.Equal([13, listingIndex], callback.Values);
+            },
+            callback =>
+            {
+                Assert.Equal("LookingForGroup", callback.Addon);
+                Assert.True(callback.UpdateState);
+                Assert.Equal([11, listingIndex], callback.Values);
+            });
+    }
+
     [Fact]
-    public void ExactHudCallbackPlanUsesPrivateRaidsAndOrderedJoinSequence()
+    public void ExactHudCallbackPlanUsesPrivateRaidsAndGroupedPasscodeClose()
     {
         AssertCallback(
             DadAlliancePfJoinAction.SelectPrivate,
@@ -245,22 +276,6 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             DadAlliancePfJoinAction.Refresh,
             "LookingForGroup",
             [17]);
-        var open = DadAlliancePartyFinderJoinCallbacks.Build(
-            new DadAlliancePfJoinActionRequest(
-                DadAlliancePfJoinAction.OpenListing,
-                ListingIndex: 4));
-        Assert.Collection(
-            open,
-            callback =>
-            {
-                Assert.Equal("LookingForGroup", callback.Addon);
-                Assert.Equal([13, 4], callback.Values);
-            },
-            callback =>
-            {
-                Assert.Equal("LookingForGroup", callback.Addon);
-                Assert.Equal([11, 4], callback.Values);
-            });
         AssertCallback(
             DadAlliancePfJoinAction.ConfirmYes,
             "SelectYesno",
@@ -273,12 +288,18 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             submit,
             callback =>
             {
-                Assert.Equal("LookingForGroupPrivate", callback.Addon);
+                Assert.Equal(
+                    "LookingForGroupPrivate",
+                    callback.Addon);
+                Assert.True(callback.UpdateState);
                 Assert.Equal([0, 9752], callback.Values);
             },
             callback =>
             {
-                Assert.Equal("LookingForGroupDetail", callback.Addon);
+                Assert.Equal(
+                    "LookingForGroupDetail",
+                    callback.Addon);
+                Assert.False(callback.UpdateState);
                 Assert.Equal([-2], callback.Values);
             });
     }
@@ -317,6 +338,56 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
 
             AssertEvent(fixture.Advance(), "listing-rejected");
         }
+    }
+
+    [Fact]
+    public void ExactDetailIsRevalidatedImmediatelyBeforeAllianceDispatch()
+    {
+        var fixture = ReadyAtExactDetail();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            DetailLeaderWorld = "Changed World",
+        };
+
+        var blockedDispatch = fixture.Advance();
+
+        AssertEvent(blockedDispatch, "retry-close-required");
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SelectAlliance);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void UnexpectedRecruitmentBlocksWithoutCallbacksOrRetryLoop(
+        bool workerRecruiting,
+        bool conditionVisible)
+    {
+        var fixture = new Fixture
+        {
+            Ui =
+            {
+                Snapshot = new DadAlliancePfJoinSnapshot
+                {
+                    WorkerRecruiting = workerRecruiting,
+                    RecruitmentConditionVisible = conditionVisible,
+                    RecruitmentConditionReady = conditionVisible,
+                },
+            },
+        };
+
+        var blocked = fixture.Advance();
+        fixture.Ui.Snapshot = new DadAlliancePfJoinSnapshot();
+        var stillBlocked = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Blocked, blocked.Kind);
+        Assert.Equal(DadAlliancePfJoinStage.Blocked, blocked.Stage);
+        AssertEvent(blocked, "unexpected-recruitment-blocked");
+        Assert.Equal(DadAlliancePfJoinResultKind.Blocked, stillBlocked.Kind);
+        Assert.Empty(fixture.Ui.Requests);
+        Assert.Equal(1, fixture.Ui.ReadCount);
     }
 
     [Fact]
@@ -414,14 +485,18 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             PrivatePromptReady = true,
         };
         fixture.Advance();
-        fixture.Advance();
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+            passcode: Target.Passcode);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
-            DetailVisible = false,
-            DetailReady = false,
             PrivatePromptVisible = false,
             PrivatePromptReady = false,
+            DetailVisible = false,
+            DetailReady = false,
         };
+        fixture.Advance();
 
         var waiting = fixture.Advance();
 
@@ -537,13 +612,14 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     private static void AssertCallback(
         DadAlliancePfJoinAction action,
         string addon,
-        object[] values)
+        object[] values,
+        bool updateState = true)
     {
         var callback = Assert.Single(
             DadAlliancePartyFinderJoinCallbacks.Build(
                 new DadAlliancePfJoinActionRequest(action)));
         Assert.Equal(addon, callback.Addon);
-        Assert.True(callback.UpdateState);
+        Assert.Equal(updateState, callback.UpdateState);
         Assert.Equal(values, callback.Values);
     }
 
@@ -577,10 +653,14 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     {
         public DadAlliancePfJoinSnapshot Snapshot { get; set; } = new();
         public DadAlliancePfJoinAction? FailureAction { get; set; }
+        public int ReadCount { get; private set; }
         public List<DadAlliancePfJoinActionRequest> Requests { get; } = [];
 
         public DadAlliancePfJoinSnapshot Read(DadAlliancePfJoinTarget target)
-            => Snapshot;
+        {
+            ReadCount++;
+            return Snapshot;
+        }
 
         public DadAlliancePfJoinActionResult Perform(
             DadAlliancePfJoinActionRequest request)

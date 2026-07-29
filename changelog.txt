@@ -1,5 +1,72 @@
 # dad — changelog
 
+## 2026-07-28 — I63 exact ordered callback-group dispatch (local-only, unpublished)
+- Superseded revision 22's per-line addon lookup and passcode acknowledgement split after the
+  [raw listing capture](Z:/logs/20260727.md:123) and
+  [raw Alliance/passcode capture](Z:/logs/20260727.md:251) established that each stacked pair is one synchronous ordered
+  group, not independent actions.
+- The native dispatcher now validates every payload and resolves every unique required addon before firing anything. Each
+  listing resolves `LookingForGroup` once, reuses the same captured pointer for callbacks `[13, index]` and `[11, index]`,
+  and executes them top-to-bottom with only best-effort redacted begin/returned trace markers around native calls. A group
+  preflight failure sends zero callbacks, and a trace failure cannot split the group.
+- Restored private passcode submission and raw `LookingForGroupDetail -2` close to one action. Both addons are ready and
+  visible before either callback; passcode fires first with `updateState=true`, then raw signed `[-2]` fires immediately
+  with `updateState=false`. State observation resumes only after the complete group returns.
+- Preserved the exact single Private `[20, 2]`, Raids `[21, 5]`, and refresh `[17]` callbacks; exact A/B/C integer/string
+  payloads and zeroed HGlobal null-terminated UTF-8 storage; exact-detail revalidation; one-shot Alliance; fresh Yes;
+  unexpected-recruitment blocking; subgroup proof; retries; Stop; two-cycle Create; publication authority; API-15 layout;
+  recruitment-only cleanup; and all public schemas and versions.
+- Fresh local verification passes 207/207 focused Party Finder tests and all 1,371/1,371 Debug x64 tests. The
+  no-incremental build has zero warnings/errors, 5/5 current API-15 layout tests pass, 32/32 grouped-dispatch and boundary
+  static checks pass, and the NuGet plus four Debug/build ECommons copies retain SHA-256
+  `6F6297B7DB40DDA004D1BA989E1467E7B96E1DEFF09104BC3D88661870C21B71`.
+- Operator-controlled Create-once/Grab-once acceptance remains Not Run. No client control, remote-PC mutation, deployment,
+  relog, commit, push, package, release, or version bump occurred.
+
+## 2026-07-28 — I63 Alliance string callback and worker recruitment guard (local-only, unpublished)
+- Superseded revision 21 after redacted operator evidence proved the working Private/Raids/refresh/zero-based listing scan
+  reached and accepted the exact coordinator detail, then the first mixed integer/string `SelectAlliance` native callback
+  crashed. A separate worker entered recruitment mode and looped instead of blocking.
+- Preserved the integer-only dispatcher path and moved only mixed payloads to the callback-helper layout: a zeroed HGlobal
+  `AtkValue` array, explicit UTF-8 byte encoding, one HGlobal `length + 1` allocation per string, an explicit null terminator,
+  the exact `AtkValueType.String` pointer, and complete HGlobal cleanup in `finally`.
+- Every native callback now reacquires and preflights its addon immediately before dispatch. Redacted `dispatch-begin` and
+  `dispatch-returned` records contain only action, addon, ordinal, payload types, and update-state, leaving an exact last
+  action marker without exposing player or passcode data.
+- Revalidate the exact ready coordinator detail immediately before the one-shot A/B/C callback. Unexpected
+  `LookingForGroupCondition` or worker recruitment state now blocks the request terminally without a callback retry loop,
+  automatic recruitment action, or cleanup.
+- Kept Yes as `SelectYesno`, `updateState=true`, payload `[0]`. Passcode submission and detail close are now separate
+  actions with fresh addon lookups; detail close is raw signed `[-2]` with `updateState=false`.
+- Added regressions for the unchanged integer callbacks, zero-based mismatch scanning, all A/B/C pairs, HGlobal UTF-8
+  storage and cleanup, fresh addon lookup, redacted markers, detail drift, terminal recruitment blocking, exact Yes,
+  distinct passcode/close calls, and raw no-update detail close. Focused Party Finder tests pass 198/198 and the complete
+  Debug x64 suite passes 1,362/1,362 against Dalamud `15.0.3.0` and current API-15 ClientStructs. The no-incremental
+  build has zero warnings/errors, 26/26 static checks pass, and all five ECommons artifact copies retain exact hash parity.
+- Create coordination, retry/publication/cleanup contracts, DTOs, protocol, configuration, IPC, version, packaging,
+  deployment, and release state remain unchanged. No client control, relog, commit, push, package, release, or version bump
+  occurred; revision-22 operator acceptance remains pending.
+
+## 2026-07-28 — I63 Private PF native callback dispatcher repair (local-only, unpublished)
+- Repaired the production-only worker join failure identified by redacted live audits: two workers each opened and
+  acknowledged Party Finder, then failed five `SelectPrivate` attempts with `NullReferenceException`. The pure revision-20
+  join tests bypassed the production bridge and therefore did not expose the failure.
+- Replaced only the worker join bridge's `ECommons.Automation.Callback.Fire` call with a small internal ClientStructs
+  dispatcher that invokes `AtkUnitBase.FireCallback` directly. DAD still does not initialize ECommons globally.
+- The dispatcher preflights every addon address and payload before sending the first callback, accepts only signed integers
+  and strings, marshals strings as null-terminated UTF-8 `AtkValue`s, preserves each callback's update-state flag and order,
+  and frees every native string allocation in `finally`.
+- Preserved the complete revision-20 plan: Private `[20, 2]`, Raids `[21, 5]`, refresh `[17]`, ordered list/detail,
+  A/B/C subgroup, fresh Yes, private passcode, and detail-close callbacks. Native failures now carry the callback action,
+  addon, sequence ordinal, and exception type into the existing local audit summary without adding public identifiers.
+- Added production-dispatch regression coverage through an injected native sink. The tests prove signed integer and
+  null-terminated UTF-8 delivery with no ECommons reference/initialization, exact order and `updateState=true`, complete
+  preflight, unsupported-value rejection, exception context, and propagation into the audited retry summary.
+- Fresh local verification passes 190 focused Party Finder tests and all 1,354 Debug x64 tests. The no-incremental plugin
+  build succeeds with zero warnings/errors, and the three ECommons copies remain byte-identical. The Create coordinator,
+  join state machine, retry/publication/cleanup policies, DTOs, protocol, configuration, IPC, version, packaging, release
+  state, deployment, and client state are unchanged; post-fix operator acceptance remains Not Run.
+
 ## 2026-07-27 — I63 one-click two-cycle Create and Private PF joining (local-only, unpublished)
 - Wrapped the unchanged condition-authoritative Create flow in one bounded outer recovery. When cycle 1 blocks before
   publication with condition `66` false, DAD runs the existing Stop-create close/reset path once, retains the request,

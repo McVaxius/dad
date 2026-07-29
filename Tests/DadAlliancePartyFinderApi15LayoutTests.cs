@@ -14,7 +14,13 @@ namespace dad.Tests;
 public sealed class DadAlliancePartyFinderApi15LayoutTests
 {
     private const string ExpectedClientStructsCommit =
-        "0ce3f0220901a7c9f16d3fec526558e7829ca3b3";
+        "cc474ca90dce0824334544ad7ec7d769f3cb6ee5";
+
+    [Fact]
+    public void InstalledDalamudIdentityIsCurrentApi15Baseline()
+        => Assert.Equal(
+            new Version(15, 0, 3, 0),
+            typeof(ConditionFlag).Assembly.GetName().Version);
 
     [Fact]
     public void InstalledClientStructsIdentityIsPinned()

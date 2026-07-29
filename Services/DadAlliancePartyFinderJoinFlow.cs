@@ -21,10 +21,12 @@ internal enum DadAlliancePfJoinStage
     ConfirmYes,
     WaitPrivatePrompt,
     SubmitPasscode,
+    WaitJoinedDetailClosed,
     VerifyAlliance,
     CloseForRetry,
     WaitRetryDetailClosed,
     Complete,
+    Blocked,
     Stopped,
 }
 
@@ -47,6 +49,7 @@ internal enum DadAlliancePfJoinResultKind
     Waiting,
     Retry,
     Succeeded,
+    Blocked,
     Stopped,
 }
 
@@ -64,6 +67,9 @@ internal sealed record DadAlliancePfJoinSnapshot
     public bool AgentAvailable { get; init; } = true;
     public bool MainVisible { get; init; }
     public bool MainReady { get; init; }
+    public bool RecruitmentConditionVisible { get; init; }
+    public bool RecruitmentConditionReady { get; init; }
+    public bool WorkerRecruiting { get; init; }
     public byte SearchAreaTab { get; init; }
     public byte CategoryTab { get; init; }
     public int NumberOfListings { get; init; }
@@ -143,7 +149,7 @@ internal static class DadAlliancePartyFinderJoinCallbacks
             ],
             DadAlliancePfJoinAction.CloseDetail =>
             [
-                new("LookingForGroupDetail", true, [-2]),
+                new("LookingForGroupDetail", false, [-2]),
             ],
             DadAlliancePfJoinAction.SelectAlliance =>
             [
@@ -157,7 +163,7 @@ internal static class DadAlliancePartyFinderJoinCallbacks
                 when request.Passcode is >= 1000 and <= 9999 =>
             [
                 new("LookingForGroupPrivate", true, [0, request.Passcode]),
-                new("LookingForGroupDetail", true, [-2]),
+                new("LookingForGroupDetail", false, [-2]),
             ],
             _ => [],
         };
@@ -221,6 +227,14 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 "stop",
                 "Private Party Finder joining stopped.",
                 DadAllianceAssignment.None);
+        if (stage == DadAlliancePfJoinStage.Blocked)
+        {
+            return Result(
+                DadAlliancePfJoinResultKind.Blocked,
+                "unexpected-recruitment-blocked",
+                "The worker join request remains blocked after unexpected Party Finder recruitment state.",
+                DadAllianceAssignment.None);
+        }
 
         DadAlliancePfJoinSnapshot snapshot;
         try
@@ -233,7 +247,20 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 $"Party Finder observation failed; the worker will retry: {exception.Message}";
             return CompleteRetry(new DadAlliancePfJoinSnapshot());
         }
-        if (snapshot.ObservedAlliance == target.AssignedAlliance)
+        if (snapshot.WorkerRecruiting ||
+            snapshot.RecruitmentConditionVisible)
+        {
+            stage = DadAlliancePfJoinStage.Blocked;
+            return Result(
+                DadAlliancePfJoinResultKind.Blocked,
+                "unexpected-recruitment-blocked",
+                "The worker unexpectedly entered Party Finder recruitment mode; the join request was blocked without retries or cleanup.",
+                snapshot.ObservedAlliance,
+                shouldAudit: true);
+        }
+
+        if (snapshot.ObservedAlliance == target.AssignedAlliance &&
+            !RequiresJoinedDetailClose(stage))
         {
             stage = DadAlliancePfJoinStage.Complete;
             return Result(
@@ -297,6 +324,8 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 AdvanceWaitPrivatePrompt(snapshot, now),
             DadAlliancePfJoinStage.SubmitPasscode =>
                 AdvanceSubmitPasscode(target, snapshot, now),
+            DadAlliancePfJoinStage.WaitJoinedDetailClosed =>
+                AdvanceWaitJoinedDetailClosed(snapshot, now),
             DadAlliancePfJoinStage.VerifyAlliance =>
                 AdvanceVerifyAlliance(target, snapshot, now),
             DadAlliancePfJoinStage.CloseForRetry =>
@@ -308,6 +337,12 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                     DadAlliancePfJoinResultKind.Stopped,
                     "stop",
                     "Private Party Finder joining stopped.",
+                    snapshot.ObservedAlliance),
+            DadAlliancePfJoinStage.Blocked =>
+                Result(
+                    DadAlliancePfJoinResultKind.Blocked,
+                    "unexpected-recruitment-blocked",
+                    "The worker join request remains blocked after unexpected Party Finder recruitment state.",
                     snapshot.ObservedAlliance),
             _ => BeginRetry(
                 now,
@@ -628,6 +663,13 @@ internal sealed class DadAlliancePartyFinderJoinFlow
     {
         if (!snapshot.DetailVisible || !snapshot.DetailReady)
             return BeginRetry(now, snapshot, "The exact Party Finder detail closed before subgroup selection.");
+        if (!IsExactListing(target, snapshot))
+        {
+            return BeginRetry(
+                now,
+                snapshot,
+                "The exact Party Finder detail changed before subgroup selection; Alliance was not dispatched.");
+        }
         if (snapshot.YesNoVisible)
         {
             return WaitOrRetry(
@@ -740,10 +782,32 @@ internal sealed class DadAlliancePartyFinderJoinFlow
             new DadAlliancePfJoinActionRequest(
                 DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
                 Passcode: target.Passcode),
-            DadAlliancePfJoinStage.VerifyAlliance,
+            DadAlliancePfJoinStage.WaitJoinedDetailClosed,
             now,
             snapshot,
             "passcode-and-detail-close-dispatched");
+    }
+
+    private DadAlliancePfJoinResult AdvanceWaitJoinedDetailClosed(
+        DadAlliancePfJoinSnapshot snapshot,
+        DateTime now)
+    {
+        if (!snapshot.PrivatePromptVisible &&
+            !snapshot.DetailVisible)
+        {
+            currentDetailCloseDispatched = false;
+            stage = DadAlliancePfJoinStage.VerifyAlliance;
+            return Acknowledged(
+                "passcode-and-detail-close-acknowledged",
+                "Acknowledged the grouped passcode submission and Party Finder detail close.",
+                snapshot);
+        }
+
+        return WaitOrRetry(
+            now,
+            snapshot,
+            "Waiting for the grouped passcode and Party Finder detail close to be acknowledged.",
+            "The grouped passcode and Party Finder detail close were not acknowledged.");
     }
 
     private DadAlliancePfJoinResult AdvanceVerifyAlliance(
@@ -842,7 +906,8 @@ internal sealed class DadAlliancePartyFinderJoinFlow
 
         if (request.Action == DadAlliancePfJoinAction.OpenListing)
             currentDetailCloseDispatched = false;
-        else if (request.Action is DadAlliancePfJoinAction.CloseDetail or
+        else if (request.Action is
+                 DadAlliancePfJoinAction.CloseDetail or
                  DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail)
             currentDetailCloseDispatched = true;
         stage = waitingStage;
@@ -967,6 +1032,12 @@ internal sealed class DadAlliancePartyFinderJoinFlow
            snapshot.DetailPrivate &&
            snapshot.DetailAlliance &&
            snapshot.DetailPartyCount == 3;
+
+    private static bool RequiresJoinedDetailClose(
+        DadAlliancePfJoinStage currentStage)
+        => currentStage is
+            DadAlliancePfJoinStage.SubmitPasscode or
+            DadAlliancePfJoinStage.WaitJoinedDetailClosed;
 
     private static DateTime EnsureUtc(DateTime value)
         => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
