@@ -173,11 +173,11 @@ internal static class DadAlliancePartyFinderJoinCallbacks
         => alliance switch
         {
             DadAllianceAssignment.A =>
-                new("LookingForGroup", true, [12, "AllianceA"]),
+                new("LookingForGroupDetail", true, [12, "Alliance A"]),
             DadAllianceAssignment.B =>
-                new("LookingForGroup", true, [13, "AllianceB"]),
+                new("LookingForGroupDetail", true, [13, "Alliance B"]),
             DadAllianceAssignment.C =>
-                new("LookingForGroup", true, [14, "AllianceC"]),
+                new("LookingForGroupDetail", true, [14, "Alliance C"]),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(alliance),
                 alliance,

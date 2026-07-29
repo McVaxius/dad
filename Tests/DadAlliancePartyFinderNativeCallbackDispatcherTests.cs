@@ -154,7 +154,7 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
             call => AssertCall(call, 1, [13, 4]),
             call => AssertCall(call, 1, [11, 4]),
             call => AssertCall(call, 2, [-2], updateState: false),
-            call => AssertCall(call, 1, [14, "AllianceC"]),
+            call => AssertCall(call, 2, [14, "Alliance C"]),
             call => AssertCall(call, 3, [0]),
             call => AssertCall(call, 4, [0, 9752]),
             call => AssertCall(call, 2, [-2], updateState: false));
@@ -328,9 +328,9 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
     }
 
     [Theory]
-    [InlineData(DadAllianceAssignment.A, 12, "AllianceA")]
-    [InlineData(DadAllianceAssignment.B, 13, "AllianceB")]
-    [InlineData(DadAllianceAssignment.C, 14, "AllianceC")]
+    [InlineData(DadAllianceAssignment.A, 12, "Alliance A")]
+    [InlineData(DadAllianceAssignment.B, 13, "Alliance B")]
+    [InlineData(DadAllianceAssignment.C, 14, "Alliance C")]
     public void AlliancePayloadsRetainExactHGlobalUtf8Storage(
         DadAllianceAssignment alliance,
         int callbackId,
@@ -424,9 +424,9 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
                 sink,
                 memory);
         var callback = new DadAlliancePfJoinCallback(
-            "LookingForGroup",
+            "LookingForGroupDetail",
             true,
-            [14, "AllianceC"]);
+            [14, "Alliance C"]);
 
         var result = dispatcher.TryDispatch(
             DadAlliancePfJoinAction.SelectAlliance,

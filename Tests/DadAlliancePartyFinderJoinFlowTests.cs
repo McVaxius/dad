@@ -214,9 +214,9 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     }
 
     [Theory]
-    [InlineData(DadAllianceAssignment.A, 12, "AllianceA")]
-    [InlineData(DadAllianceAssignment.B, 13, "AllianceB")]
-    [InlineData(DadAllianceAssignment.C, 14, "AllianceC")]
+    [InlineData(DadAllianceAssignment.A, 12, "Alliance A")]
+    [InlineData(DadAllianceAssignment.B, 13, "Alliance B")]
+    [InlineData(DadAllianceAssignment.C, 14, "Alliance C")]
     public void AllianceCallbacksMatchHudObservations(
         DadAllianceAssignment alliance,
         int callbackId,
@@ -228,7 +228,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
                 Alliance: alliance));
 
         var callback = Assert.Single(callbacks);
-        Assert.Equal("LookingForGroup", callback.Addon);
+        Assert.Equal("LookingForGroupDetail", callback.Addon);
         Assert.True(callback.UpdateState);
         Assert.Equal([callbackId, callbackText], callback.Values);
     }
