@@ -109,7 +109,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             "private-prompt-acknowledged");
         AssertAction(
             fixture.Advance(),
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+            DadAlliancePfJoinAction.SubmitPasscode,
             passcode: Target.Passcode);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
@@ -121,7 +121,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         };
         AssertEvent(
             fixture.Advance(),
-            "passcode-and-detail-close-acknowledged");
+            "passcode-acknowledged-detail-closed");
         var completed = fixture.Advance();
 
         Assert.Equal(
@@ -139,7 +139,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
                 DadAlliancePfJoinAction.OpenListing,
                 DadAlliancePfJoinAction.SelectAlliance,
                 DadAlliancePfJoinAction.ConfirmYes,
-                DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+                DadAlliancePfJoinAction.SubmitPasscode,
             ],
             fixture.Ui.Requests.Select(static request => request.Action));
         Assert.All(
@@ -262,7 +262,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     }
 
     [Fact]
-    public void ExactHudCallbackPlanUsesPrivateRaidsAndGroupedPasscodeClose()
+    public void ExactHudCallbackPlanUsesPrivateRaidsPasscodeAndRawDetailClose()
     {
         AssertCallback(
             DadAlliancePfJoinAction.SelectPrivate,
@@ -282,26 +282,17 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             [0]);
         var submit = DadAlliancePartyFinderJoinCallbacks.Build(
             new DadAlliancePfJoinActionRequest(
-                DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+                DadAlliancePfJoinAction.SubmitPasscode,
                 Passcode: 9752));
-        Assert.Collection(
-            submit,
-            callback =>
-            {
-                Assert.Equal(
-                    "LookingForGroupPrivate",
-                    callback.Addon);
-                Assert.True(callback.UpdateState);
-                Assert.Equal([0, 9752], callback.Values);
-            },
-            callback =>
-            {
-                Assert.Equal(
-                    "LookingForGroupDetail",
-                    callback.Addon);
-                Assert.False(callback.UpdateState);
-                Assert.Equal([-2], callback.Values);
-            });
+        var passcode = Assert.Single(submit);
+        Assert.Equal("LookingForGroupPrivate", passcode.Addon);
+        Assert.True(passcode.UpdateState);
+        Assert.Equal([0, 9752], passcode.Values);
+        AssertCallback(
+            DadAlliancePfJoinAction.CloseDetail,
+            "LookingForGroupDetail",
+            [-2],
+            updateState: false);
     }
 
     [Fact]
@@ -463,32 +454,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     [Fact]
     public void CallbackCompletionAloneNeverSucceedsWithoutExactSubgroup()
     {
-        var fixture = ReadyAtExactDetail();
-        AssertAction(
-            fixture.Advance(),
-            DadAlliancePfJoinAction.SelectAlliance,
-            alliance: DadAllianceAssignment.C);
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            YesNoVisible = true,
-            YesNoReady = true,
-            YesNoIdentity = "fresh",
-        };
-        fixture.Advance();
-        fixture.Advance();
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            YesNoVisible = false,
-            YesNoReady = false,
-            YesNoIdentity = string.Empty,
-            PrivatePromptVisible = true,
-            PrivatePromptReady = true,
-        };
-        fixture.Advance();
-        AssertAction(
-            fixture.Advance(),
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
-            passcode: Target.Passcode);
+        var fixture = ReadyAfterPasscodeDispatch();
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             PrivatePromptVisible = false,
@@ -504,6 +470,185 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         Assert.Equal(
             DadAlliancePfJoinStage.VerifyAlliance,
             waiting.Stage);
+    }
+
+    [Fact]
+    public void PrivatePromptMustDisappearOnLaterSnapshotBeforeDeferredClose()
+    {
+        var fixture = ReadyAfterPasscodeDispatch();
+
+        var waiting = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        Assert.Equal(
+            DadAlliancePfJoinStage.WaitPasscodeAcknowledged,
+            waiting.Stage);
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SubmitPasscode);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.CloseDetail);
+
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            PrivatePromptVisible = false,
+            PrivatePromptReady = false,
+        };
+        var close = fixture.Advance();
+
+        AssertAction(close, DadAlliancePfJoinAction.CloseDetail);
+        AssertEvent(close, "joined-detail-close-dispatched");
+    }
+
+    [Fact]
+    public void AutomaticallyClosedDetailSkipsDeferredClose()
+    {
+        var fixture = ReadyAfterPasscodeDispatch();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            PrivatePromptVisible = false,
+            PrivatePromptReady = false,
+            DetailVisible = false,
+            DetailReady = false,
+        };
+
+        var acknowledged = fixture.Advance();
+
+        AssertEvent(
+            acknowledged,
+            "passcode-acknowledged-detail-closed");
+        Assert.Equal(
+            DadAlliancePfJoinStage.VerifyAlliance,
+            acknowledged.Stage);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.CloseDetail);
+    }
+
+    [Fact]
+    public void ReadyRemainingDetailReceivesExactlyOneDeferredClose()
+    {
+        var fixture = ReadyAfterPasscodeDispatch();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            PrivatePromptVisible = false,
+            PrivatePromptReady = false,
+        };
+        AssertEvent(
+            fixture.Advance(),
+            "joined-detail-close-dispatched");
+
+        var waiting = fixture.Advance();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            DetailVisible = false,
+            DetailReady = false,
+        };
+        var acknowledged = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        AssertEvent(
+            acknowledged,
+            "joined-detail-close-acknowledged");
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.CloseDetail);
+    }
+
+    [Fact]
+    public void UnreadyRemainingDetailWaitsWithoutPrematureClose()
+    {
+        var fixture = ReadyAfterPasscodeDispatch();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            PrivatePromptVisible = false,
+            PrivatePromptReady = false,
+            DetailReady = false,
+        };
+
+        var acknowledged = fixture.Advance();
+        var waiting = fixture.Advance();
+
+        AssertEvent(
+            acknowledged,
+            "passcode-acknowledged-detail-pending");
+        Assert.Equal(
+            DadAlliancePfJoinStage.CloseJoinedDetail,
+            acknowledged.Stage);
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.CloseDetail);
+
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            DetailReady = true,
+        };
+        AssertEvent(
+            fixture.Advance(),
+            "joined-detail-close-dispatched");
+    }
+
+    [Fact]
+    public void EarlySubgroupObservationCannotBypassAcknowledgementOrClose()
+    {
+        var fixture = ReadyAfterPasscodeDispatch();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            ObservedAlliance = DadAllianceAssignment.C,
+        };
+
+        var promptWaiting = fixture.Advance();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            PrivatePromptVisible = false,
+            PrivatePromptReady = false,
+        };
+        var close = fixture.Advance();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            DetailVisible = false,
+            DetailReady = false,
+        };
+        var closeAcknowledged = fixture.Advance();
+        var completed = fixture.Advance();
+
+        Assert.Equal(
+            DadAlliancePfJoinResultKind.Waiting,
+            promptWaiting.Kind);
+        AssertEvent(close, "joined-detail-close-dispatched");
+        AssertEvent(
+            closeAcknowledged,
+            "joined-detail-close-acknowledged");
+        Assert.Equal(
+            DadAlliancePfJoinResultKind.Succeeded,
+            completed.Kind);
+    }
+
+    [Fact]
+    public void PasscodeAcknowledgementTimeoutDoesNotDuplicateSubmission()
+    {
+        var fixture = ReadyAfterPasscodeDispatch();
+        fixture.Clock.Advance(
+            DadAlliancePartyFinderJoinFlow.ObservationTimeout);
+
+        var retry = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Retry, retry.Kind);
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SubmitPasscode);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.CloseDetail);
     }
 
     [Fact]
@@ -557,6 +702,41 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         return fixture;
     }
 
+    private static Fixture ReadyAfterPasscodeDispatch()
+    {
+        var fixture = ReadyAtExactDetail();
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SelectAlliance,
+            alliance: DadAllianceAssignment.C);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            YesNoVisible = true,
+            YesNoReady = true,
+            YesNoIdentity = "fresh",
+        };
+        AssertEvent(fixture.Advance(), "yesno-acknowledged");
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.ConfirmYes);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            YesNoVisible = false,
+            YesNoReady = false,
+            YesNoIdentity = string.Empty,
+            PrivatePromptVisible = true,
+            PrivatePromptReady = true,
+        };
+        AssertEvent(
+            fixture.Advance(),
+            "private-prompt-acknowledged");
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SubmitPasscode,
+            passcode: Target.Passcode);
+        return fixture;
+    }
+
     private static DadAlliancePfJoinSnapshot ExactDetail(
         DadAlliancePfJoinSnapshot snapshot)
         => snapshot with
@@ -593,8 +773,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             DadAlliancePfJoinAction.SelectAlliance =>
                 "alliance-dispatched",
             DadAlliancePfJoinAction.ConfirmYes => "yes-dispatched",
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail =>
-                "passcode-and-detail-close-dispatched",
+            DadAlliancePfJoinAction.SubmitPasscode =>
+                "passcode-dispatched",
             _ => result.Event,
         };
         Assert.Equal(expectedEvent, result.Event);

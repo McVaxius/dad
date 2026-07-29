@@ -133,8 +133,10 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
             new DadAlliancePfJoinActionRequest(
                 DadAlliancePfJoinAction.ConfirmYes),
             new DadAlliancePfJoinActionRequest(
-                DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+                DadAlliancePfJoinAction.SubmitPasscode,
                 Passcode: 9752),
+            new DadAlliancePfJoinActionRequest(
+                DadAlliancePfJoinAction.CloseDetail),
         };
 
         foreach (var request in requests)
@@ -221,19 +223,26 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
     }
 
     [Fact]
-    public void FailedGroupAddonPreflightSendsNoCallbacks()
+    public void FailedSecondUniqueAddonPreflightSendsNoCallbacks()
     {
         var sink = new CapturingSink();
         var dispatcher =
             new DadAlliancePartyFinderNativeCallbackDispatcher(sink);
-        var callbacks = DadAlliancePartyFinderJoinCallbacks.Build(
-            new DadAlliancePfJoinActionRequest(
-                DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
-                Passcode: 9752));
+        var callbacks = new[]
+        {
+            new DadAlliancePfJoinCallback(
+                "LookingForGroup",
+                true,
+                [13, 0]),
+            new DadAlliancePfJoinCallback(
+                "LookingForGroupDetail",
+                true,
+                [11, 0]),
+        };
         var lookups = 0;
 
         var result = dispatcher.TryDispatch(
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+            DadAlliancePfJoinAction.OpenListing,
             callbacks,
             _ => ++lookups == 1 ? (nint)1 : nint.Zero);
 
@@ -241,7 +250,7 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
         Assert.Empty(sink.Calls);
         Assert.Equal(2, lookups);
         Assert.Contains(
-            "SubmitPasscodeAndCloseDetail",
+            "OpenListing",
             result.Error,
             StringComparison.Ordinal);
         Assert.Contains("2/2", result.Error, StringComparison.Ordinal);
@@ -282,7 +291,7 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
     }
 
     [Fact]
-    public void PasscodeAndDetailClosePreflightBothThenFireAsOneGroup()
+    public void PasscodeDispatchResolvesOnlyPrivateAndFiresOnlyPasscode()
     {
         var events = new List<string>();
         var sink = new CapturingSink
@@ -301,7 +310,7 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
         }
 
         var request = new DadAlliancePfJoinActionRequest(
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+            DadAlliancePfJoinAction.SubmitPasscode,
             Passcode: 9752);
 
         var result = dispatcher.TryDispatch(
@@ -310,21 +319,17 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
             Resolve);
 
         Assert.True(result.Sent, result.Error);
-        Assert.Equal(
-            ["LookingForGroupPrivate", "LookingForGroupDetail"],
-            resolvedAddons);
+        Assert.Equal(["LookingForGroupPrivate"], resolvedAddons);
         Assert.Equal(
             [
                 "resolve:LookingForGroupPrivate",
-                "resolve:LookingForGroupDetail",
                 "sink:1",
-                "sink:2",
             ],
             events);
-        Assert.Collection(
-            sink.Calls,
-            call => AssertCall(call, 1, [0, 9752]),
-            call => AssertCall(call, 2, [-2], updateState: false));
+        AssertCall(
+            Assert.Single(sink.Calls),
+            1,
+            [0, 9752]);
     }
 
     [Theory]

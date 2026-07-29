@@ -1,5 +1,25 @@
 # dad — changelog
 
+## 2026-07-29 — I63 revision 24 acknowledged passcode and deferred detail close (local-only, unpublished)
+- Superseded revision 23 only for the private passcode/detail-close grouping. Every callback through the fresh one-shot Yes
+  remains unchanged, and the revision-23 `[13, index]` then `[11, index]` listing groups remain authoritative.
+- Replaced the combined passcode/detail action with passcode-only `LookingForGroupPrivate [0, passcode]` using
+  `updateState=true`. That dispatcher action resolves no detail addon and sends no detail callback.
+- After passcode submission, the flow performs no callback while the private prompt remains visible. A later snapshot must
+  show the prompt gone; an already-closed detail proceeds directly to exact subgroup verification, a remaining unready
+  detail is observed without firing, and a remaining ready detail is freshly resolved and receives one raw signed `[-2]`
+  callback with `updateState=false`. The flow then observes that deferred close before subgroup verification.
+- Exact subgroup observation cannot bypass passcode acknowledgement or deferred close. A passcode-acknowledgement timeout
+  uses the existing retry path without resubmitting the passcode or closing the detail while the prompt remains visible.
+- Preserved exact Private/Raids/refresh callbacks, listing groups, A/B/C HGlobal UTF-8 payloads, exact-detail validation,
+  recruitment blocking, one-shot Alliance and Yes, mismatch/retry/subgroup behavior, Stop, two-cycle Create, publication
+  authority, API-15 layout, ECommons parity, recruitment-only cleanup, public schemas, configuration, timing, and version.
+- Fresh local verification passes 213/213 focused Party Finder tests and all 1,377/1,377 Debug x64 tests. The
+  no-incremental build has zero warnings/errors with deployment output disabled, 7/7 API-15 layout tests and 32/32
+  state-driven callback/static boundary checks pass, and the NuGet plus four Debug/build ECommons copies remain
+  byte-identical. Operator-controlled Create-once/Grab-once acceptance remains Not Run. No client control, remote-PC
+  mutation, deployment, relog, commit, push, package, release, or version bump occurred.
+
 ## 2026-07-28 — I63 exact ordered callback-group dispatch (local-only, unpublished)
 - Superseded revision 22's per-line addon lookup and passcode acknowledgement split after the
   [raw listing capture](Z:/logs/20260727.md:123) and

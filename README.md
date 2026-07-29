@@ -106,10 +106,14 @@ dotnet test .\Tests\dad.Tests.csproj
   accept only the exact leader and home world, Labyrinth duty, private flag, alliance mode, and three-party detail; listing
   comments are ignored. The exact detail is revalidated immediately before the one-shot A/B/C subgroup callback. A worker
   that enters recruitment mode or exposes the recruitment editor is blocked without callback retries or automatic cleanup.
-  A fresh Yes prompt is acknowledged once. After the private prompt appears, DAD preflights both required addons and sends
-  passcode submission followed immediately by raw detail close `-2` with `updateState=false` as one ordered group, matching
-  the [raw passcode source](Z:/logs/20260727.md:264). Final exact subgroup observation remains mandatory. Transient search
-  failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired only through guarded leave/rejoin.
+  A fresh Yes prompt is acknowledged once. Revision 24 then resolves only
+  `LookingForGroupPrivate` and sends `[0, passcode]` with `updateState=true`. It performs no further callback until a later
+  snapshot shows that prompt gone. If the detail closed automatically, verification begins without a close callback; if a
+  detail remains unready, DAD observes it without firing; and if it remains ready, DAD resolves it fresh and sends one raw
+  signed `[-2]` with `updateState=false`, preserving the [captured callback values](Z:/logs/20260727.md:264). That deferred
+  close must disappear before final exact subgroup verification, and early subgroup observation cannot bypass either
+  acknowledgement. Transient search failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired
+  only through guarded leave/rejoin.
   Completion verifies every effective character, closes recruitment without disbanding the alliance, and never queues a
   duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
   Detailed local evidence is appended beneath

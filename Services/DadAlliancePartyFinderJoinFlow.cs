@@ -21,6 +21,8 @@ internal enum DadAlliancePfJoinStage
     ConfirmYes,
     WaitPrivatePrompt,
     SubmitPasscode,
+    WaitPasscodeAcknowledged,
+    CloseJoinedDetail,
     WaitJoinedDetailClosed,
     VerifyAlliance,
     CloseForRetry,
@@ -40,7 +42,7 @@ internal enum DadAlliancePfJoinAction
     CloseDetail,
     SelectAlliance,
     ConfirmYes,
-    SubmitPasscodeAndCloseDetail,
+    SubmitPasscode,
 }
 
 internal enum DadAlliancePfJoinResultKind
@@ -159,11 +161,10 @@ internal static class DadAlliancePartyFinderJoinCallbacks
             [
                 new("SelectYesno", true, [0]),
             ],
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail
+            DadAlliancePfJoinAction.SubmitPasscode
                 when request.Passcode is >= 1000 and <= 9999 =>
             [
                 new("LookingForGroupPrivate", true, [0, request.Passcode]),
-                new("LookingForGroupDetail", false, [-2]),
             ],
             _ => [],
         };
@@ -260,7 +261,7 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         }
 
         if (snapshot.ObservedAlliance == target.AssignedAlliance &&
-            !RequiresJoinedDetailClose(stage))
+            stage == DadAlliancePfJoinStage.VerifyAlliance)
         {
             stage = DadAlliancePfJoinStage.Complete;
             return Result(
@@ -324,6 +325,10 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 AdvanceWaitPrivatePrompt(snapshot, now),
             DadAlliancePfJoinStage.SubmitPasscode =>
                 AdvanceSubmitPasscode(target, snapshot, now),
+            DadAlliancePfJoinStage.WaitPasscodeAcknowledged =>
+                AdvanceWaitPasscodeAcknowledged(snapshot, now),
+            DadAlliancePfJoinStage.CloseJoinedDetail =>
+                AdvanceCloseJoinedDetail(snapshot, now),
             DadAlliancePfJoinStage.WaitJoinedDetailClosed =>
                 AdvanceWaitJoinedDetailClosed(snapshot, now),
             DadAlliancePfJoinStage.VerifyAlliance =>
@@ -362,18 +367,18 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
-        if (snapshot.DetailVisible)
-        {
-            retryReason = "Closed a stale Party Finder detail before starting a fresh search cycle.";
-            stage = DadAlliancePfJoinStage.CloseForRetry;
-            return AdvanceCloseForRetry(snapshot, now);
-        }
         if (snapshot.YesNoVisible || snapshot.PrivatePromptVisible)
         {
             return BeginRetry(
                 now,
                 snapshot,
                 "A stale Party Finder confirmation is visible; DAD will not click it.");
+        }
+        if (snapshot.DetailVisible)
+        {
+            retryReason = "Closed a stale Party Finder detail before starting a fresh search cycle.";
+            stage = DadAlliancePfJoinStage.CloseForRetry;
+            return AdvanceCloseForRetry(snapshot, now);
         }
         if (snapshot.MainVisible)
         {
@@ -780,34 +785,105 @@ internal sealed class DadAlliancePartyFinderJoinFlow
 
         return Send(
             new DadAlliancePfJoinActionRequest(
-                DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail,
+                DadAlliancePfJoinAction.SubmitPasscode,
                 Passcode: target.Passcode),
+            DadAlliancePfJoinStage.WaitPasscodeAcknowledged,
+            now,
+            snapshot,
+            "passcode-dispatched");
+    }
+
+    private DadAlliancePfJoinResult AdvanceWaitPasscodeAcknowledged(
+        DadAlliancePfJoinSnapshot snapshot,
+        DateTime now)
+    {
+        if (snapshot.PrivatePromptVisible)
+        {
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for a later snapshot to acknowledge the private passcode prompt disappearing.",
+                "The private passcode prompt did not acknowledge the one passcode submission.");
+        }
+
+        if (!snapshot.DetailVisible)
+        {
+            currentDetailCloseDispatched = false;
+            stage = DadAlliancePfJoinStage.VerifyAlliance;
+            return Acknowledged(
+                "passcode-acknowledged-detail-closed",
+                "Acknowledged the private passcode prompt disappearing; the Party Finder detail had already closed.",
+                snapshot);
+        }
+
+        stage = DadAlliancePfJoinStage.CloseJoinedDetail;
+        deadlineUtc = now + ObservationTimeout;
+        if (snapshot.DetailReady)
+            return AdvanceCloseJoinedDetail(snapshot, now);
+
+        return Acknowledged(
+            "passcode-acknowledged-detail-pending",
+            "Acknowledged the private passcode prompt disappearing; waiting for the remaining Party Finder detail to become ready before closing it.",
+            snapshot);
+    }
+
+    private DadAlliancePfJoinResult AdvanceCloseJoinedDetail(
+        DadAlliancePfJoinSnapshot snapshot,
+        DateTime now)
+    {
+        if (snapshot.PrivatePromptVisible)
+        {
+            return BeginRetry(
+                now,
+                snapshot,
+                "The private passcode prompt reappeared before deferred detail close; DAD will not close the detail.");
+        }
+        if (!snapshot.DetailVisible)
+        {
+            currentDetailCloseDispatched = false;
+            stage = DadAlliancePfJoinStage.VerifyAlliance;
+            return Acknowledged(
+                "passcode-acknowledged-detail-closed",
+                "The Party Finder detail closed before a deferred close callback was needed.",
+                snapshot);
+        }
+        if (!snapshot.DetailReady)
+        {
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for the acknowledged remaining Party Finder detail to become ready before deferred close.",
+                "The remaining Party Finder detail did not become ready after passcode acknowledgement.");
+        }
+
+        return Send(
+            new DadAlliancePfJoinActionRequest(
+                DadAlliancePfJoinAction.CloseDetail),
             DadAlliancePfJoinStage.WaitJoinedDetailClosed,
             now,
             snapshot,
-            "passcode-and-detail-close-dispatched");
+            "joined-detail-close-dispatched");
     }
 
     private DadAlliancePfJoinResult AdvanceWaitJoinedDetailClosed(
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
-        if (!snapshot.PrivatePromptVisible &&
-            !snapshot.DetailVisible)
+        if (!snapshot.DetailVisible)
         {
             currentDetailCloseDispatched = false;
             stage = DadAlliancePfJoinStage.VerifyAlliance;
             return Acknowledged(
-                "passcode-and-detail-close-acknowledged",
-                "Acknowledged the grouped passcode submission and Party Finder detail close.",
+                "joined-detail-close-acknowledged",
+                "Acknowledged the one deferred Party Finder detail close.",
                 snapshot);
         }
 
         return WaitOrRetry(
             now,
             snapshot,
-            "Waiting for the grouped passcode and Party Finder detail close to be acknowledged.",
-            "The grouped passcode and Party Finder detail close were not acknowledged.");
+            "Waiting for the one deferred Party Finder detail close to be acknowledged.",
+            "The deferred Party Finder detail close was not acknowledged.");
     }
 
     private DadAlliancePfJoinResult AdvanceVerifyAlliance(
@@ -906,9 +982,7 @@ internal sealed class DadAlliancePartyFinderJoinFlow
 
         if (request.Action == DadAlliancePfJoinAction.OpenListing)
             currentDetailCloseDispatched = false;
-        else if (request.Action is
-                 DadAlliancePfJoinAction.CloseDetail or
-                 DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail)
+        else if (request.Action == DadAlliancePfJoinAction.CloseDetail)
             currentDetailCloseDispatched = true;
         stage = waitingStage;
         deadlineUtc = now + ObservationTimeout;
@@ -939,7 +1013,9 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         string reason)
     {
         retryReason = reason.Trim();
-        if (snapshot.DetailVisible && !currentDetailCloseDispatched)
+        if (snapshot.DetailVisible &&
+            !snapshot.PrivatePromptVisible &&
+            !currentDetailCloseDispatched)
         {
             stage = DadAlliancePfJoinStage.CloseForRetry;
             deadlineUtc = now + ObservationTimeout;
@@ -1032,12 +1108,6 @@ internal sealed class DadAlliancePartyFinderJoinFlow
            snapshot.DetailPrivate &&
            snapshot.DetailAlliance &&
            snapshot.DetailPartyCount == 3;
-
-    private static bool RequiresJoinedDetailClose(
-        DadAlliancePfJoinStage currentStage)
-        => currentStage is
-            DadAlliancePfJoinStage.SubmitPasscode or
-            DadAlliancePfJoinStage.WaitJoinedDetailClosed;
 
     private static DateTime EnsureUtc(DateTime value)
         => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();

@@ -185,7 +185,12 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             return Blocked(instructionBlocker);
 
         var joinKey = instruction.DedupeKey;
-        if (!string.Equals(activeJoinKey, joinKey, StringComparison.OrdinalIgnoreCase))
+        var isNewJoin =
+            !string.Equals(
+                activeJoinKey,
+                joinKey,
+                StringComparison.OrdinalIgnoreCase);
+        if (isNewJoin)
         {
             ResetJoinState();
             activeJoinKey = joinKey;
@@ -224,16 +229,6 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             return Blocked(
                 "The worker unexpectedly entered Party Finder recruitment mode; this join request is blocked without retries or cleanup.");
         }
-        if (observed == instruction.AssignedAlliance)
-        {
-            return new DadAllianceNativeStep(
-                DadAllianceNativeStepKind.Succeeded,
-                DadAllianceRecruitmentState.Complete,
-                $"Verified exact Alliance {observed}.",
-                0,
-                observed);
-        }
-
         if (isLocalCreator)
         {
             var recruitment = agent->StoredRecruitmentInfo;
@@ -248,9 +243,33 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 return Blocked("The local PF creator contradicts the exact Alliance-A Labyrinth recruitment.");
             }
 
+            if (observed == instruction.AssignedAlliance)
+            {
+                return new DadAllianceNativeStep(
+                    DadAllianceNativeStepKind.Succeeded,
+                    DadAllianceRecruitmentState.Complete,
+                    $"Verified exact Alliance {observed}.",
+                    0,
+                    observed);
+            }
+
             return Waiting(
                 DadAllianceRecruitmentState.Verifying,
                 "The Alliance-A PF creator is waiting for cross-realm subgroup verification.",
+                observed);
+        }
+
+        if (observed == instruction.AssignedAlliance &&
+            (isNewJoin ||
+             joinFlow.Stage is
+                 DadAlliancePfJoinStage.VerifyAlliance or
+                 DadAlliancePfJoinStage.Complete))
+        {
+            return new DadAllianceNativeStep(
+                DadAllianceNativeStepKind.Succeeded,
+                DadAllianceRecruitmentState.Complete,
+                $"Verified exact Alliance {observed}.",
+                0,
                 observed);
         }
 
@@ -258,7 +277,10 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         if (!string.IsNullOrWhiteSpace(safety))
             return Waiting(DadAllianceRecruitmentState.WaitingUnsafe, safety, observed);
 
-        if (observed != DadAllianceAssignment.None || IsInExistingParty())
+        if ((observed != DadAllianceAssignment.None &&
+             observed != instruction.AssignedAlliance) ||
+            (observed == DadAllianceAssignment.None &&
+             IsInExistingParty()))
         {
             var leave = AdvanceGuardedLeave();
             if (leave.Kind != DadAllianceNativeStepKind.Succeeded)
@@ -475,6 +497,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 DadAlliancePfJoinStage.ConfirmYes or
                 DadAlliancePfJoinStage.WaitPrivatePrompt or
                 DadAlliancePfJoinStage.SubmitPasscode or
+                DadAlliancePfJoinStage.WaitPasscodeAcknowledged or
+                DadAlliancePfJoinStage.CloseJoinedDetail or
                 DadAlliancePfJoinStage.WaitJoinedDetailClosed =>
                 DadAllianceRecruitmentState.Joining,
             _ when result.Stage == DadAlliancePfJoinStage.VerifyAlliance =>
@@ -553,8 +577,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 $"Selected Alliance {request.Alliance} once.",
             DadAlliancePfJoinAction.ConfirmYes =>
                 "Clicked Yes once on the acknowledged fresh subgroup confirmation.",
-            DadAlliancePfJoinAction.SubmitPasscodeAndCloseDetail =>
-                "Submitted the four-digit private passcode and sent raw detail close -2 as one ordered group.",
+            DadAlliancePfJoinAction.SubmitPasscode =>
+                "Submitted the four-digit private passcode once.",
             _ => request.Action.ToString(),
         };
 
