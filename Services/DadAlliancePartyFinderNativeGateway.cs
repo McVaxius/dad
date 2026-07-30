@@ -53,6 +53,9 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     IDadAlliancePartyFinderJoinUi
 {
     public const string FormationDutyName = "The Labyrinth of the Ancients";
+    private const int MaxListingRendererScan = 100;
+    private const int MaxListingTreeNodes = 256;
+    private const int MaxListingTreeDepth = 8;
     private readonly IFramework framework;
     private readonly ICondition condition;
     private readonly IPartyList partyList;
@@ -363,6 +366,16 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 ? yesNo->PromptText->NodeText.ToString().Trim()
                 : string.Empty;
         var joinFlags = detail.JoinConditionFlags;
+        var numberOfListings =
+            agent == null ? 0 : agent->NumberOfListingsDisplayed;
+        var matchingListingIndexes =
+            main == null
+                ? []
+                : DadAlliancePartyFinderListingRowResolver.Resolve(
+                    target.LeaderName,
+                    numberOfListings,
+                    ReadListingView(main->StandardViewList),
+                    ReadListingView(main->CompactViewList));
 
         return new DadAlliancePfJoinSnapshot
         {
@@ -378,8 +391,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 condition[ConditionFlag.UsingPartyFinder],
             SearchAreaTab = agent == null ? (byte)0 : agent->SearchAreaTab,
             CategoryTab = agent == null ? (byte)0 : agent->CategoryTab,
-            NumberOfListings =
-                agent == null ? 0 : agent->NumberOfListingsDisplayed,
+            NumberOfListings = numberOfListings,
+            MatchingListingIndexes = matchingListingIndexes,
             DetailVisible = detailVisible,
             DetailReady = detailVisible && detailBase->IsReady,
             DetailLeaderName = detailVisible
@@ -409,6 +422,137 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 privateVisible && privatePrompt->IsReady,
             ObservedAlliance = ObserveAlliance(target.TargetContentId),
         };
+    }
+
+    private static DadAlliancePfListingViewSnapshot ReadListingView(
+        AtkComponentList* list)
+    {
+        if (list == null)
+            return new DadAlliancePfListingViewSnapshot();
+
+        var root = list->AtkResNode;
+        var visible = root != null && root->IsVisible();
+        var rendererStorageReady =
+            list->AllocatedItemRendererListLength == 0 ||
+            list->ItemRendererList != null;
+        var ready =
+            visible &&
+            list->UldManager.LoadedState == AtkLoadState.Loaded &&
+            list->ListLength >= 0 &&
+            list->AllocatedItemRendererListLength >= 0 &&
+            rendererStorageReady;
+        if (!ready)
+        {
+            return new DadAlliancePfListingViewSnapshot
+            {
+                Available = true,
+                Visible = visible,
+                Ready = false,
+                ListLength = Math.Max(0, list->ListLength),
+            };
+        }
+
+        var renderers =
+            new List<DadAlliancePfListingRendererSnapshot>();
+        var rendererCount = Math.Min(
+            list->AllocatedItemRendererListLength,
+            MaxListingRendererScan);
+        for (var storageIndex = 0;
+             storageIndex < rendererCount;
+             storageIndex++)
+        {
+            var renderer =
+                list->ItemRendererList[storageIndex]
+                    .AtkComponentListItemRenderer;
+            if (renderer == null ||
+                renderer->AtkResNode == null ||
+                !renderer->AtkResNode->IsVisible())
+            {
+                continue;
+            }
+
+            renderers.Add(new DadAlliancePfListingRendererSnapshot(
+                renderer->ListItemIndex,
+                ReadListingRendererTexts(renderer)));
+        }
+
+        return new DadAlliancePfListingViewSnapshot
+        {
+            Available = true,
+            Visible = true,
+            Ready = true,
+            ListLength = list->ListLength,
+            Renderers = renderers,
+        };
+    }
+
+    private static IReadOnlyList<string> ReadListingRendererTexts(
+        AtkComponentListItemRenderer* renderer)
+    {
+        var texts = new List<string>();
+        var visitedComponents = new HashSet<nint>();
+        var remainingNodes = MaxListingTreeNodes;
+        ReadListingTreeTexts(
+            &renderer->UldManager,
+            0,
+            visitedComponents,
+            texts,
+            ref remainingNodes);
+        return texts;
+    }
+
+    private static void ReadListingTreeTexts(
+        AtkUldManager* manager,
+        int depth,
+        HashSet<nint> visitedComponents,
+        List<string> texts,
+        ref int remainingNodes)
+    {
+        if (manager == null ||
+            depth > MaxListingTreeDepth ||
+            remainingNodes <= 0 ||
+            manager->NodeList == null)
+        {
+            return;
+        }
+
+        var nodeCount = Math.Min(
+            manager->NodeListCount,
+            (ushort)Math.Min(remainingNodes, ushort.MaxValue));
+        for (var nodeIndex = 0;
+             nodeIndex < nodeCount && remainingNodes > 0;
+             nodeIndex++)
+        {
+            remainingNodes--;
+            var node = manager->NodeList[nodeIndex];
+            if (node == null)
+                continue;
+
+            if (node->Type == NodeType.Text)
+            {
+                var text = ((AtkTextNode*)node)->NodeText.ToString().Trim();
+                if (text.Length > 0)
+                    texts.Add(text);
+                continue;
+            }
+
+            if ((ushort)node->Type < 1000)
+                continue;
+
+            var component = ((AtkComponentNode*)node)->Component;
+            if (component == null ||
+                !visitedComponents.Add((nint)component))
+            {
+                continue;
+            }
+
+            ReadListingTreeTexts(
+                &component->UldManager,
+                depth + 1,
+                visitedComponents,
+                texts,
+                ref remainingNodes);
+        }
     }
 
     DadAlliancePfJoinActionResult IDadAlliancePartyFinderJoinUi.Perform(

@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Xunit;
 
 namespace dad.Tests;
@@ -21,6 +23,32 @@ public sealed class DadAlliancePartyFinderJoinApi15LayoutTests
         AssertOffset<AgentLookingForGroup>(
             nameof(AgentLookingForGroup.CategoryTab),
             14011);
+    }
+
+    [Fact]
+    public void JoinListingRendererOffsetsMatchApi15()
+    {
+        AssertOffset<AddonLookingForGroup>(
+            nameof(AddonLookingForGroup.StandardViewList),
+            25432);
+        AssertOffset<AddonLookingForGroup>(
+            nameof(AddonLookingForGroup.CompactViewList),
+            25440);
+        AssertOffset<AtkComponentList>(
+            nameof(AtkComponentList.ItemRendererList),
+            240);
+        AssertOffset<AtkComponentList>(
+            nameof(AtkComponentList.AllocatedItemRendererListLength),
+            248);
+        AssertOffset<AtkComponentList>(
+            nameof(AtkComponentList.ListLength),
+            288);
+        AssertOffset<AtkComponentList.ListItem>(
+            nameof(AtkComponentList.ListItem.AtkComponentListItemRenderer),
+            8);
+        AssertOffset<AtkComponentListItemRenderer>(
+            nameof(AtkComponentListItemRenderer.ListItemIndex),
+            388);
     }
 
     [Fact]

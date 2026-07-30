@@ -75,6 +75,7 @@ internal sealed record DadAlliancePfJoinSnapshot
     public byte SearchAreaTab { get; init; }
     public byte CategoryTab { get; init; }
     public int NumberOfListings { get; init; }
+    public IReadOnlyList<int> MatchingListingIndexes { get; init; } = [];
     public bool DetailVisible { get; init; }
     public bool DetailReady { get; init; }
     public string DetailLeaderName { get; init; } = string.Empty;
@@ -89,6 +90,61 @@ internal sealed record DadAlliancePfJoinSnapshot
     public bool PrivatePromptVisible { get; init; }
     public bool PrivatePromptReady { get; init; }
     public DadAllianceAssignment ObservedAlliance { get; init; }
+}
+
+internal sealed record DadAlliancePfListingRendererSnapshot(
+    int ListItemIndex,
+    IReadOnlyList<string> Texts);
+
+internal sealed record DadAlliancePfListingViewSnapshot
+{
+    public bool Available { get; init; }
+    public bool Visible { get; init; }
+    public bool Ready { get; init; }
+    public int ListLength { get; init; }
+    public IReadOnlyList<DadAlliancePfListingRendererSnapshot> Renderers { get; init; } = [];
+}
+
+internal static class DadAlliancePartyFinderListingRowResolver
+{
+    public static IReadOnlyList<int> Resolve(
+        string coordinatorName,
+        int numberOfListingsDisplayed,
+        DadAlliancePfListingViewSnapshot standardView,
+        DadAlliancePfListingViewSnapshot compactView)
+    {
+        var target = coordinatorName.Trim();
+        if (target.Length == 0 || numberOfListingsDisplayed <= 0)
+            return [];
+
+        var standardReady = IsUsable(standardView);
+        var compactReady = IsUsable(compactView);
+        if (standardReady == compactReady)
+            return [];
+
+        var selected = standardReady ? standardView : compactView;
+        var listingBound = Math.Min(
+            numberOfListingsDisplayed,
+            Math.Max(0, selected.ListLength));
+        if (listingBound == 0)
+            return [];
+
+        return selected.Renderers
+            .Where(renderer =>
+                renderer.ListItemIndex >= 0 &&
+                renderer.ListItemIndex < listingBound &&
+                renderer.Texts.Any(text => string.Equals(
+                    target,
+                    text.Trim(),
+                    StringComparison.OrdinalIgnoreCase)))
+            .Select(static renderer => renderer.ListItemIndex)
+            .Distinct()
+            .Order()
+            .ToArray();
+    }
+
+    private static bool IsUsable(DadAlliancePfListingViewSnapshot view)
+        => view.Available && view.Visible && view.Ready;
 }
 
 internal readonly record struct DadAlliancePfJoinActionRequest(
@@ -575,6 +631,20 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 "No exact private Labyrinth listing was found in this refresh cycle.");
         }
 
+        var matchingIndex = snapshot.MatchingListingIndexes
+            .Where(index => index >= listingCursor && index < listingCount)
+            .DefaultIfEmpty(-1)
+            .Min();
+        if (matchingIndex < 0)
+        {
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for an exact coordinator-name Party Finder row to hydrate; no listing callback has been sent.",
+                "No exact coordinator-name Party Finder row was found in this refresh cycle.");
+        }
+
+        listingCursor = matchingIndex;
         return Send(
             new DadAlliancePfJoinActionRequest(
                 DadAlliancePfJoinAction.OpenListing,

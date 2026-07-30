@@ -98,10 +98,15 @@ dotnet test .\Tests\dad.Tests.csproj
   Status > Readiness > **Alliance Party Finder** validates a concrete selected preset and an Alliance-A local host, then
   **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
   dispatches every unresolved exact target concurrently through the authenticated hub. Receivers open Party Finder only
-  while hidden, select Private tab `2` and Raids category index `5`, refresh once per retry cycle, and inspect each
-  zero-based result through the acknowledged list/detail callbacks. Each listing uses the exact ordered `[13, index]` then
-  `[11, index]` group from the [raw callback source](Z:/logs/20260727.md:123): DAD validates the complete group, resolves
-  `LookingForGroup` once, reuses that pointer, and fires both calls synchronously without lookup or observation between them.
+  while hidden, select Private tab `2` and Raids category index `5`, and refresh once per retry cycle. DAD accepts exactly
+  one visible, ready standard or compact result list, searches its bounded visible renderer trees for an exact trimmed,
+  case-insensitive coordinator-name text node, and uses each match's zero-based `ListItemIndex`. Missing, hidden, unready,
+  ambiguous, unhydrated, and invalid rows send no listing callback; DAD waits under the existing five-second observation
+  deadline instead of opening earlier unrelated rows. It opens the first matching row at or after its retained cursor and,
+  after a same-name detail fails exact validation, closes it before trying the next matching row. Each requested row uses
+  the exact ordered `[13, index]` then `[11, index]` group from the
+  [raw callback source](Z:/logs/20260727.md:123): DAD validates the complete group, resolves `LookingForGroup` once, reuses
+  that pointer, and fires both calls synchronously without lookup or observation between them.
   Integer-only callbacks retain the proven stack path; mixed subgroup callbacks retain a zeroed HGlobal `AtkValue` array
   with explicit null-terminated UTF-8 storage, and worker joining does not require ECommons global initialization. They
   accept only the exact leader and home world, Labyrinth duty, private flag, alliance mode, and three-party detail; listing

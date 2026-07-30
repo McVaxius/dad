@@ -47,34 +47,9 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             NumberOfListings = 2,
+            MatchingListingIndexes = [1],
         };
         AssertEvent(fixture.Advance(), "refresh-acknowledged");
-        AssertAction(
-            fixture.Advance(),
-            DadAlliancePfJoinAction.OpenListing,
-            listingIndex: 0);
-
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            DetailVisible = true,
-            DetailReady = true,
-            DetailLeaderName = "Another Leader",
-            DetailLeaderWorld = "Expected World",
-            DetailDutyId = 92,
-            DetailPrivate = true,
-            DetailAlliance = true,
-            DetailPartyCount = 3,
-        };
-        AssertEvent(fixture.Advance(), "listing-rejected");
-        AssertAction(
-            fixture.Advance(),
-            DadAlliancePfJoinAction.CloseDetail);
-        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
-        {
-            DetailVisible = false,
-            DetailReady = false,
-        };
-        AssertEvent(fixture.Advance(), "detail-close-acknowledged");
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.OpenListing,
@@ -134,8 +109,6 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
                 DadAlliancePfJoinAction.SelectPrivate,
                 DadAlliancePfJoinAction.SelectRaids,
                 DadAlliancePfJoinAction.Refresh,
-                DadAlliancePfJoinAction.OpenListing,
-                DadAlliancePfJoinAction.CloseDetail,
                 DadAlliancePfJoinAction.OpenListing,
                 DadAlliancePfJoinAction.SelectAlliance,
                 DadAlliancePfJoinAction.ConfirmYes,
@@ -211,6 +184,207 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             fixture.Ui.Requests,
             static request =>
                 request.Action == DadAlliancePfJoinAction.OpenListing);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void MatchingRendererRowDrivesTheRequestedListingIndex(
+        int matchingIndex)
+    {
+        var fixture = ReadyToInspect(
+            numberOfListings: 3,
+            matchingListingIndexes: [matchingIndex]);
+
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.OpenListing,
+            listingIndex: matchingIndex);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            request =>
+                request.Action == DadAlliancePfJoinAction.OpenListing &&
+                request.ListingIndex < matchingIndex);
+    }
+
+    [Fact]
+    public void DelayedRowHydrationWaitsWithoutCallbackThenOpensExactRow()
+    {
+        var fixture = ReadyToInspect(
+            numberOfListings: 3,
+            matchingListingIndexes: []);
+
+        var waiting = fixture.Advance();
+        fixture.Clock.Advance(TimeSpan.FromSeconds(4));
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            MatchingListingIndexes = [2],
+        };
+        var opened = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.OpenListing &&
+                request.ListingIndex != 2);
+        AssertAction(
+            opened,
+            DadAlliancePfJoinAction.OpenListing,
+            listingIndex: 2);
+    }
+
+    [Fact]
+    public void MissingMatchingNameTimesOutWithoutListingCallback()
+    {
+        var fixture = ReadyToInspect(
+            numberOfListings: 2,
+            matchingListingIndexes: []);
+
+        Assert.Equal(
+            DadAlliancePfJoinResultKind.Waiting,
+            fixture.Advance().Kind);
+        fixture.Clock.Advance(
+            DadAlliancePartyFinderJoinFlow.ObservationTimeout);
+        var retry = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Retry, retry.Kind);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.OpenListing);
+    }
+
+    [Fact]
+    public void DuplicateCoordinatorRowsAdvanceAfterWorldValidationFails()
+    {
+        var fixture = ReadyToInspect(
+            numberOfListings: 3,
+            matchingListingIndexes: [0, 2]);
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.OpenListing,
+            listingIndex: 0);
+        fixture.Ui.Snapshot = ExactDetail(fixture.Ui.Snapshot) with
+        {
+            DetailLeaderWorld = "Other World",
+        };
+        AssertEvent(fixture.Advance(), "listing-rejected");
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.CloseDetail);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            DetailVisible = false,
+            DetailReady = false,
+        };
+        AssertEvent(fixture.Advance(), "detail-close-acknowledged");
+
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.OpenListing,
+            listingIndex: 2);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StandardAndCompactViewsResolveExactTrimmedName(
+        bool compact)
+    {
+        var selected = ListingView(
+            new DadAlliancePfListingRendererSnapshot(
+                1,
+                ["other text", "  expected leader  "]));
+        var unavailable = new DadAlliancePfListingViewSnapshot();
+
+        var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
+            "EXPECTED LEADER",
+            2,
+            compact ? unavailable : selected,
+            compact ? selected : unavailable);
+
+        Assert.Equal([1], indexes);
+    }
+
+    [Fact]
+    public void HiddenUnreadyAmbiguousAndUnavailableListsAreRejected()
+    {
+        var renderer = new DadAlliancePfListingRendererSnapshot(
+            0,
+            [Target.LeaderName]);
+        var visibleReady = ListingView(renderer);
+        var hidden = visibleReady with { Visible = false };
+        var unready = visibleReady with { Ready = false };
+        var unavailable = new DadAlliancePfListingViewSnapshot();
+
+        Assert.Empty(DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            1,
+            hidden,
+            unavailable));
+        Assert.Empty(DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            1,
+            unready,
+            unavailable));
+        Assert.Empty(DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            1,
+            visibleReady,
+            visibleReady));
+        Assert.Empty(DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            1,
+            unavailable,
+            unavailable));
+    }
+
+    [Fact]
+    public void InvalidDuplicateAndOutOfRangeRendererIndexesAreBoundedAndSorted()
+    {
+        var view = ListingView(
+            new DadAlliancePfListingRendererSnapshot(
+                2,
+                [Target.LeaderName]),
+            new DadAlliancePfListingRendererSnapshot(
+                -1,
+                [Target.LeaderName]),
+            new DadAlliancePfListingRendererSnapshot(
+                1,
+                [Target.LeaderName]),
+            new DadAlliancePfListingRendererSnapshot(
+                1,
+                [Target.LeaderName]),
+            new DadAlliancePfListingRendererSnapshot(
+                3,
+                [Target.LeaderName]));
+
+        var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            3,
+            view,
+            new DadAlliancePfListingViewSnapshot());
+
+        Assert.Equal([1, 2], indexes);
+    }
+
+    [Fact]
+    public void RendererTextRequiresAnExactCoordinatorName()
+    {
+        var view = ListingView(
+            new DadAlliancePfListingRendererSnapshot(
+                0,
+                [$"{Target.LeaderName} Extra"]));
+
+        var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            1,
+            view,
+            new DadAlliancePfListingViewSnapshot());
+
+        Assert.Empty(indexes);
     }
 
     [Theory]
@@ -678,7 +852,9 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         Assert.Empty(fixture.Ui.Requests);
     }
 
-    private static Fixture ReadyToInspect(int numberOfListings)
+    private static Fixture ReadyToInspect(
+        int numberOfListings,
+        IReadOnlyList<int>? matchingListingIndexes = null)
     {
         var fixture = new Fixture
         {
@@ -700,10 +876,24 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             NumberOfListings = numberOfListings,
+            MatchingListingIndexes =
+                matchingListingIndexes ??
+                Enumerable.Range(0, numberOfListings).ToArray(),
         };
         AssertEvent(fixture.Advance(), "refresh-acknowledged");
         return fixture;
     }
+
+    private static DadAlliancePfListingViewSnapshot ListingView(
+        params DadAlliancePfListingRendererSnapshot[] renderers)
+        => new()
+        {
+            Available = true,
+            Visible = true,
+            Ready = true,
+            ListLength = 3,
+            Renderers = renderers,
+        };
 
     private static Fixture ReadyAtExactDetail()
     {

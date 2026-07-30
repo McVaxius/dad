@@ -1,5 +1,25 @@
 # dad — changelog
 
+## 2026-07-29 — I63 revision 26 exact Party Finder row selection (local-only, unpublished)
+- Replaced the blind zero-based listing scan with internal target-row resolution. The API-15 snapshot accepts exactly one
+  visible, ready `StandardViewList` or `CompactViewList`; hidden, unready, unavailable, or simultaneously active lists
+  produce no candidate row.
+- Bounded visible list-item renderer and nested component/text traversal, matched the coordinator name exactly after trim
+  with ordinal case-insensitive comparison, and returned sorted distinct `ListItemIndex` values within
+  `NumberOfListingsDisplayed`. Recruiter text is never logged or added to public schemas.
+- The join flow opens the first matching row at or after its retained cursor. Missing or unhydrated row text waits under
+  the existing five-second observation deadline without firing a listing callback; an exact-name detail that fails world,
+  Labyrinth duty, private, alliance, or three-party validation is closed before the next matching row is tried.
+- Preserved the authoritative synchronous same-pointer `LookingForGroup` group `[13, index]` then `[11, index]`, including
+  non-first rows, without `AgentLookingForGroup.OpenListing`, lookup, observation, or interleaving between callbacks.
+- Preserved revision-25 A-G selection, passcode acknowledgement, deferred detail close, retries, exact subgroup
+  verification, Stop, recruitment-only cleanup, public schemas/protocols, timing, version, and the fixed Labyrinth Alliance
+  A `3x8` Create configuration.
+- Fresh local verification passes 275/275 focused Party Finder/schema/share tests and all 1,414/1,414 Debug x64 tests.
+  The deployment-disabled no-incremental build succeeds with zero warnings/errors, and all 8 API-15 layout tests pass,
+  including standard/compact list, renderer storage, list-length, and `ListItemIndex` offsets. All 43/43
+  static/parity/integrity checks pass. Operator acceptance remains separate and Not Run.
+
 ## 2026-07-29 — I63 revision 25 A-G Alliance selector indexing (local-only, unpublished)
 - Extended `DadAllianceAssignment` without changing its existing serialized values: `None=0`, `A=1`, `B=2`, `C=3`,
   `D=4`, `E=5`, `F=6`, and `G=7`. The enum-driven preset selector now exposes A-G, and preset plus runtime status
