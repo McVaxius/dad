@@ -127,7 +127,9 @@ dotnet test .\Tests\dad.Tests.csproj
   duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
   Detailed local evidence is appended beneath
   `<plugin-config>\alliance-pf\logs`; native callback begin/returned markers contain only action, addon, ordinal, payload
-  types, and update-state. Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
+  types, and update-state. The always-enabled **Check PFs** debug control writes a read-only UTF-8 addon-tree capture beneath
+  `<plugin-config>\alliance-pf\diagnostics`; it may contain player or recruiter text and stays out of logs, hub/Discord
+  transport, and public artifacts. Discord copies are deleted best-effort after completion or Stop. Creation clean-starts
   Party Finder by submitting only the fixed native `/pfinder` chat command and polls readiness at 250 ms. Current typed
   ClientStructs controls own Recruit Members/details and Submit; ECommons is limited to create-side stateless UI-input
   helpers. DAD dispatches Alliance, Raids, and the exact enabled Labyrinth row once each, requiring a later acknowledgement

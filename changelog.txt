@@ -1,5 +1,26 @@
 # dad — changelog
 
+## 2026-07-29 — I63 revision 27 read-only Party Finder diagnostics (local-only, unpublished)
+- Added an always-enabled **Check PFs** button after Create/Stop/Grab in the debug-only Alliance Party Finder section.
+  Coordinator, Client Dad, Create, Stop, and Grab readiness do not gate the diagnostic.
+- Captured `LookingForGroup` and agent addresses, visibility/readiness, tabs, displayed-listing count, and both standard
+  and compact lists without refreshing, navigating, clicking, dispatching callbacks, showing an agent, or changing PF
+  state. An unavailable addon is still recorded in a successful diagnostic file.
+- Added bounded renderer and recursive ULD/node output: up to 100 renderer slots, 16,384 node entries, and depth 64 with
+  address deduplication plus explicit null, invalid, cycle/duplicate, and truncation markers. Node records include their
+  path/index/address, ID/type/flags, visibility, geometry, colors/alpha, relationships, component metadata, and exact
+  escaped text content.
+- Wrote each capture as a unique UTF-8 whole file beneath
+  `<plugin-config>\alliance-pf\diagnostics\looking-for-group-tree-<UTC>.txt` using create-new semantics with no append or
+  overwrite. The chat result contains the exact saved path or failure.
+- Diagnostic files may contain player names and recruiter text and remain local-only. Their contents do not enter logs,
+  public schemas, hub DTOs, Discord, or public documentation.
+- The one focused filesystem test passes 1/1 and proves the diagnostics directory, same-timestamp unique names, exact
+  UTF-8 bytes, and no append/overwrite behavior. The existing `Z:\dad.bat` Debug x64 build succeeds with zero warnings
+  and zero errors; no full suite or broad static matrix was run.
+- Preserved all PF behavior, callbacks, public schemas, protocol, timing, version `0.4.2.1`, package, deployment, and
+  release state. No commit, push, package, release, client control, relog, or live acceptance occurred.
+
 ## 2026-07-29 — I63 revision 26 exact Party Finder row selection (local-only, unpublished)
 - Replaced the blind zero-based listing scan with internal target-row resolution. The API-15 snapshot accepts exactly one
   visible, ready `StandardViewList` or `CompactViewList`; hidden, unready, unavailable, or simultaneously active lists

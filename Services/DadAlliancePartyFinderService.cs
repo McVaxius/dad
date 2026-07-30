@@ -75,6 +75,29 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             return status.Clone();
     }
 
+    public async Task<string> CheckPartyFinderDiagnosticsAsync()
+    {
+        try
+        {
+            ThrowIfDisposed();
+            var capturedAtUtc = DateTime.UtcNow;
+            var content = await nativeGateway
+                .CaptureLookingForGroupDiagnosticsAsync(capturedAtUtc)
+                .ConfigureAwait(false);
+            return audit.TryWriteLookingForGroupDiagnostics(
+                content,
+                capturedAtUtc,
+                out var path,
+                out var error)
+                ? $"Party Finder diagnostics saved: {path}"
+                : $"Party Finder diagnostics failed: {error}";
+        }
+        catch (Exception exception)
+        {
+            return $"Party Finder diagnostics failed: {exception.Message}";
+        }
+    }
+
     public DadAlliancePartyFinderStatus Preview(
         DadPlannerGroup? group,
         DadActivityPreset? preview)

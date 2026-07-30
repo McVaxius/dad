@@ -50,6 +50,7 @@ public sealed class DadAlliancePfAuditLog
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly object gate = new();
     private readonly string logDirectory;
+    private readonly string diagnosticsDirectory;
     private readonly Action<Exception>? failure;
 
     public DadAlliancePfAuditLog(string pluginConfigurationDirectory, Action<Exception>? failure = null)
@@ -60,6 +61,10 @@ public sealed class DadAlliancePfAuditLog
             Path.GetFullPath(pluginConfigurationDirectory),
             "alliance-pf",
             "logs");
+        diagnosticsDirectory = Path.Combine(
+            Path.GetFullPath(pluginConfigurationDirectory),
+            "alliance-pf",
+            "diagnostics");
         this.failure = failure;
     }
 
@@ -87,6 +92,83 @@ public sealed class DadAlliancePfAuditLog
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            failure?.Invoke(exception);
+            return false;
+        }
+    }
+
+    public bool TryWriteLookingForGroupDiagnostics(
+        string content,
+        DateTime utcNow,
+        out string path,
+        out string error)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        utcNow = EnsureUtc(utcNow);
+        path = string.Empty;
+        error = string.Empty;
+        try
+        {
+            lock (gate)
+            {
+                Directory.CreateDirectory(diagnosticsDirectory);
+                var stem =
+                    $"looking-for-group-tree-{utcNow:yyyyMMddTHHmmss.fffffffZ}";
+                for (var suffix = 0; suffix < 1_000; suffix++)
+                {
+                    var candidate = Path.Combine(
+                        diagnosticsDirectory,
+                        suffix == 0
+                            ? $"{stem}.txt"
+                            : $"{stem}-{suffix:000}.txt");
+                    FileStream stream;
+                    try
+                    {
+                        stream = new FileStream(
+                            candidate,
+                            FileMode.CreateNew,
+                            FileAccess.Write,
+                            FileShare.None);
+                    }
+                    catch (IOException) when (File.Exists(candidate))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        using (stream)
+                        {
+                            var bytes = new UTF8Encoding(false).GetBytes(content);
+                            stream.Write(bytes, 0, bytes.Length);
+                            stream.Flush(flushToDisk: true);
+                        }
+
+                        path = candidate;
+                        return true;
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            File.Delete(candidate);
+                        }
+                        catch
+                        {
+                        }
+
+                        throw;
+                    }
+                }
+            }
+
+            error = "No unique diagnostics filename was available.";
+            return false;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            error = exception.Message;
             failure?.Invoke(exception);
             return false;
         }

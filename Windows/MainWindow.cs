@@ -1262,6 +1262,9 @@ public sealed class MainWindow : Window, IDisposable
             plugin.PrintStatus(result.Summary);
         }
         ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (DadUi.Button("Check PFs", DadUiTone.Neutral))
+            _ = PrintPartyFinderDiagnosticsAsync();
 
         foreach (var result in display.Results
                      .OrderBy(static result => result.ExpectedAlliance)
@@ -1270,6 +1273,33 @@ public sealed class MainWindow : Window, IDisposable
             DrawStatusRow(
                 $"{result.ExpectedAlliance} {FormatText(result.TargetCharacterName, result.TargetCharacterKey.Value)}",
                 $"attempt {result.Attempt} | {result.ResultKind}/{result.State} | observed {result.ObservedAlliance} | {result.Summary}");
+        }
+    }
+
+    private async Task PrintPartyFinderDiagnosticsAsync()
+    {
+        try
+        {
+            var message = await plugin.AlliancePartyFinderService
+                .CheckPartyFinderDiagnosticsAsync()
+                .ConfigureAwait(false);
+            await Plugin.Framework
+                .RunOnFrameworkThread(() => plugin.PrintStatus(message))
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                await Plugin.Framework
+                    .RunOnFrameworkThread(
+                        () => plugin.PrintStatus(
+                            $"Party Finder diagnostics failed: {exception.Message}"))
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+            }
         }
     }
 

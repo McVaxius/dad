@@ -1,3 +1,4 @@
+using System.Text;
 using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
@@ -56,6 +57,9 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     private const int MaxListingRendererScan = 100;
     private const int MaxListingTreeNodes = 256;
     private const int MaxListingTreeDepth = 8;
+    private const int MaxDiagnosticNodes = 16_384;
+    private const int MaxDiagnosticTreeDepth = 64;
+    private const int MaxDiagnosticRendererSlots = 100;
     private readonly IFramework framework;
     private readonly ICondition condition;
     private readonly IPartyList partyList;
@@ -113,6 +117,460 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
 
     public DadParticipantSnapshot BuildLocalSnapshot()
         => presenceService.BuildLiveSafetySnapshot();
+
+    public Task<string> CaptureLookingForGroupDiagnosticsAsync(
+        DateTime capturedAtUtc)
+        => framework.RunOnFrameworkThread(
+            () => CaptureLookingForGroupDiagnosticsOnFrameworkThread(
+                capturedAtUtc));
+
+    private string CaptureLookingForGroupDiagnosticsOnFrameworkThread(
+        DateTime capturedAtUtc)
+    {
+        RequireFrameworkThread();
+        capturedAtUtc = capturedAtUtc.Kind == DateTimeKind.Utc
+            ? capturedAtUtc
+            : capturedAtUtc.ToUniversalTime();
+        var context = new LookingForGroupDiagnosticCaptureContext();
+        var agent = AgentLookingForGroup.Instance();
+        var addon = GetAddon<AddonLookingForGroup>("LookingForGroup");
+        var addonBase = addon == null
+            ? null
+            : &addon->AddonLookingForGroupBase.AtkUnitBase;
+        var displayedListings =
+            agent == null ? 0 : agent->NumberOfListingsDisplayed;
+
+        context.Builder.AppendLine("DAD LookingForGroup read-only diagnostic");
+        context.Builder.AppendLine($"CapturedUtc={capturedAtUtc:O}");
+        context.Builder.AppendLine(
+            "MutationPolicy=no refresh, navigation, click, callback, agent show/open, or UI state change");
+        context.Builder.AppendLine(
+            $"Limits=nodes:{MaxDiagnosticNodes}; depth:{MaxDiagnosticTreeDepth}; renderer-slots:{MaxDiagnosticRendererSlots}");
+        context.Builder.AppendLine();
+        context.Builder.AppendLine("[agent]");
+        context.Builder.AppendLine(
+            $"address={FormatDiagnosticAddress((nint)agent)} available={agent != null}");
+        if (agent != null)
+        {
+            context.Builder.AppendLine(
+                $"tabs search-area={agent->SearchAreaTab} category={agent->CategoryTab} group-type={agent->GroupTypeTab}");
+            context.Builder.AppendLine(
+                $"number-of-listings-displayed={displayedListings}");
+        }
+        else
+        {
+            context.Builder.AppendLine(
+                "tabs=<unavailable>; number-of-listings-displayed=<unavailable>");
+        }
+
+        context.Builder.AppendLine();
+        context.Builder.AppendLine("[addon LookingForGroup]");
+        context.Builder.AppendLine(
+            $"address={FormatDiagnosticAddress((nint)addon)} atk-unit-base={FormatDiagnosticAddress((nint)addonBase)} available={addon != null}");
+        context.Builder.AppendLine(
+            addonBase == null
+                ? "visible=<unavailable> ready=<unavailable>"
+                : $"visible={addonBase->IsVisible} ready={addonBase->IsReady}");
+
+        try
+        {
+            DumpDiagnosticList(
+                "standard",
+                addon == null ? null : addon->StandardViewList,
+                displayedListings,
+                context);
+        }
+        catch (Exception exception)
+        {
+            context.Builder.AppendLine(
+                $"[list standard] <capture-error: {EscapeDiagnosticText(exception.Message)}>");
+        }
+
+        try
+        {
+            DumpDiagnosticList(
+                "compact",
+                addon == null ? null : addon->CompactViewList,
+                displayedListings,
+                context);
+        }
+        catch (Exception exception)
+        {
+            context.Builder.AppendLine(
+                $"[list compact] <capture-error: {EscapeDiagnosticText(exception.Message)}>");
+        }
+
+        context.Builder.AppendLine();
+        context.Builder.AppendLine("[addon ULD tree]");
+        try
+        {
+            if (addonBase == null)
+            {
+                context.Builder.AppendLine(
+                    "path=addon/uld manager=<null>");
+            }
+            else
+            {
+                DumpDiagnosticUldManager(
+                    &addonBase->UldManager,
+                    "addon/uld",
+                    0,
+                    context);
+            }
+        }
+        catch (Exception exception)
+        {
+            context.Builder.AppendLine(
+                $"path=addon/uld <capture-error: {EscapeDiagnosticText(exception.Message)}>");
+        }
+
+        context.Builder.AppendLine();
+        context.Builder.AppendLine("[capture summary]");
+        context.Builder.AppendLine(
+            $"renderer-slots-inspected={context.RendererSlots}; node-entries-inspected={context.NodeEntries}; " +
+            $"unique-managers={context.SeenManagers.Count}; unique-nodes={context.SeenNodes.Count}; " +
+            $"renderer-truncated={context.RendererTruncated}; node-truncated={context.NodeTruncated}; " +
+            $"depth-truncated={context.DepthTruncated}");
+        return context.Builder.ToString();
+    }
+
+    private static void DumpDiagnosticList(
+        string name,
+        AtkComponentList* list,
+        int displayedListings,
+        LookingForGroupDiagnosticCaptureContext context)
+    {
+        context.Builder.AppendLine();
+        context.Builder.AppendLine($"[list {name}]");
+        if (list == null)
+        {
+            context.Builder.AppendLine("address=<null> available=false");
+            return;
+        }
+
+        var root = list->AtkResNode;
+        context.Builder.AppendLine(
+            $"address={FormatDiagnosticAddress((nint)list)} root={FormatDiagnosticAddress((nint)root)} " +
+            $"visible={ReadDiagnosticVisibility(root)} loaded-state={list->UldManager.LoadedState}");
+        context.Builder.AppendLine(
+            $"list-length={list->ListLength}; allocated-renderer-slots={list->AllocatedItemRendererListLength}; " +
+            $"renderer-storage={FormatDiagnosticAddress((nint)list->ItemRendererList)}; " +
+            $"first-visible={list->FirstVisibleItemIndex}; visible-rows={list->VisibleRowCount}; " +
+            $"selected={list->SelectedItemIndex}; hovered={list->HoveredItemIndex}");
+        if (list->ListLength < 0)
+        {
+            context.Builder.AppendLine(
+                $"<invalid list-length: {list->ListLength}>");
+        }
+
+        var rendererCount = list->AllocatedItemRendererListLength;
+        if (rendererCount < 0)
+        {
+            context.Builder.AppendLine(
+                $"<invalid allocated-renderer-slots: {rendererCount}>");
+        }
+        else if (rendererCount > 0 && list->ItemRendererList == null)
+        {
+            context.Builder.AppendLine(
+                "<invalid renderer storage: nonzero slot count with null pointer>");
+        }
+        else
+        {
+            var inspectedHere = 0;
+            for (var storageIndex = 0;
+                 storageIndex < rendererCount &&
+                 context.RendererSlots < MaxDiagnosticRendererSlots;
+                 storageIndex++)
+            {
+                inspectedHere++;
+                context.RendererSlots++;
+                var renderer =
+                    list->ItemRendererList[storageIndex]
+                        .AtkComponentListItemRenderer;
+                var path = $"lists/{name}/renderer-slot[{storageIndex}]";
+                if (renderer == null)
+                {
+                    context.Builder.AppendLine(
+                        $"path={path} storage-index={storageIndex} renderer=<null>");
+                    continue;
+                }
+
+                var listItemIndex = renderer->ListItemIndex;
+                var validListItemIndex =
+                    listItemIndex >= 0 &&
+                    listItemIndex < list->ListLength &&
+                    listItemIndex < displayedListings;
+                context.Builder.AppendLine(
+                    $"path={path} storage-index={storageIndex} " +
+                    $"renderer={FormatDiagnosticAddress((nint)renderer)} " +
+                    $"ListItemIndex={listItemIndex} valid-index={validListItemIndex} " +
+                    $"root={FormatDiagnosticAddress((nint)renderer->AtkResNode)} " +
+                    $"component-flags=0x{renderer->ComponentFlags:X8}");
+                if (!validListItemIndex)
+                {
+                    context.Builder.AppendLine(
+                        $"path={path} <invalid ListItemIndex for list-length={list->ListLength} " +
+                        $"and displayed-listings={displayedListings}>");
+                }
+
+                DumpDiagnosticUldManager(
+                    &renderer->UldManager,
+                    $"{path}/uld",
+                    0,
+                    context);
+            }
+
+            if (rendererCount > inspectedHere)
+            {
+                context.RendererTruncated = true;
+                context.Builder.AppendLine(
+                    $"<renderer slots truncated: inspected {inspectedHere} of {rendererCount}; " +
+                    $"global limit {MaxDiagnosticRendererSlots}>");
+            }
+        }
+
+        DumpDiagnosticUldManager(
+            &list->UldManager,
+            $"lists/{name}/component-uld",
+            0,
+            context);
+    }
+
+    private static void DumpDiagnosticUldManager(
+        AtkUldManager* manager,
+        string path,
+        int depth,
+        LookingForGroupDiagnosticCaptureContext context)
+    {
+        if (manager == null)
+        {
+            context.Builder.AppendLine($"path={path} manager=<null>");
+            return;
+        }
+        if (depth > MaxDiagnosticTreeDepth)
+        {
+            context.DepthTruncated = true;
+            context.Builder.AppendLine(
+                $"path={path} manager={FormatDiagnosticAddress((nint)manager)} " +
+                $"<depth truncated at {MaxDiagnosticTreeDepth}>");
+            return;
+        }
+
+        var managerAddress = (nint)manager;
+        if (!context.SeenManagers.Add(managerAddress))
+        {
+            context.Builder.AppendLine(
+                $"path={path} manager={FormatDiagnosticAddress(managerAddress)} " +
+                "<cycle/duplicate manager>");
+            return;
+        }
+
+        context.Builder.AppendLine(
+            $"path={path} manager={FormatDiagnosticAddress(managerAddress)} depth={depth} " +
+            $"loaded-state={manager->LoadedState} base-type={manager->BaseType} " +
+            $"resource-flags={manager->ResourceFlags} node-list-count={manager->NodeListCount} " +
+            $"node-list-size={manager->NodeListSize} node-list={FormatDiagnosticAddress((nint)manager->NodeList)} " +
+            $"root={FormatDiagnosticAddress((nint)manager->RootNode)} " +
+            $"root-size={manager->RootNodeWidth}x{manager->RootNodeHeight}");
+        if (manager->NodeListSize < manager->NodeListCount)
+        {
+            context.Builder.AppendLine(
+                $"path={path} <invalid node-list-size {manager->NodeListSize} " +
+                $"below count {manager->NodeListCount}>");
+        }
+        if (manager->NodeListCount > 0 && manager->NodeList == null)
+        {
+            context.Builder.AppendLine(
+                $"path={path} <invalid node list: nonzero count with null pointer>");
+            return;
+        }
+
+        for (var nodeListIndex = 0;
+             nodeListIndex < manager->NodeListCount;
+             nodeListIndex++)
+        {
+            if (context.NodeEntries >= MaxDiagnosticNodes)
+            {
+                context.NodeTruncated = true;
+                context.Builder.AppendLine(
+                    $"path={path} <nodes truncated at global limit {MaxDiagnosticNodes}; " +
+                    $"next-node-list-index={nodeListIndex}>");
+                return;
+            }
+
+            context.NodeEntries++;
+            var node = manager->NodeList[nodeListIndex];
+            var nodePath = $"{path}/node[{nodeListIndex}]";
+            if (node == null)
+            {
+                context.Builder.AppendLine(
+                    $"path={nodePath} node-list-index={nodeListIndex} address=<null>");
+                continue;
+            }
+
+            DumpDiagnosticNode(
+                node,
+                nodePath,
+                nodeListIndex,
+                depth,
+                context);
+        }
+    }
+
+    private static void DumpDiagnosticNode(
+        AtkResNode* node,
+        string path,
+        int nodeListIndex,
+        int depth,
+        LookingForGroupDiagnosticCaptureContext context)
+    {
+        var nodeAddress = (nint)node;
+        if (!context.SeenNodes.Add(nodeAddress))
+        {
+            context.Builder.AppendLine(
+                $"path={path} node-list-index={nodeListIndex} " +
+                $"address={FormatDiagnosticAddress(nodeAddress)} <cycle/duplicate node>");
+            return;
+        }
+
+        context.Builder.AppendLine(
+            $"path={path} node-list-index={nodeListIndex} address={FormatDiagnosticAddress(nodeAddress)} " +
+            $"id={node->NodeId} type={node->Type}({(ushort)node->Type}) " +
+            $"node-flags={node->NodeFlags}(0x{(ushort)node->NodeFlags:X4}) " +
+            $"visible={ReadDiagnosticVisibility(node)} child-count={node->ChildCount}");
+        context.Builder.AppendLine(
+            $"path={path} geometry x={node->X:R} y={node->Y:R} screen-x={node->ScreenX:R} " +
+            $"screen-y={node->ScreenY:R} width={node->Width} height={node->Height} " +
+            $"scale-x={node->ScaleX:R} scale-y={node->ScaleY:R} rotation={node->Rotation:R} " +
+            $"origin-x={node->OriginX:R} origin-y={node->OriginY:R} depth={node->Depth:R} " +
+            $"depth-2={node->Depth_2:R} priority={node->Priority}");
+        context.Builder.AppendLine(
+            $"path={path} color={FormatDiagnosticColor(node->Color)} alpha-2={node->Alpha_2} " +
+            $"add-rgb=({node->AddRed},{node->AddGreen},{node->AddBlue}) " +
+            $"add-rgb-2=({node->AddRed_2},{node->AddGreen_2},{node->AddBlue_2}) " +
+            $"multiply-rgb=({node->MultiplyRed},{node->MultiplyGreen},{node->MultiplyBlue}) " +
+            $"multiply-rgb-2=({node->MultiplyRed_2},{node->MultiplyGreen_2},{node->MultiplyBlue_2})");
+        context.Builder.AppendLine(
+            $"path={path} relationships parent={FormatDiagnosticAddress((nint)node->ParentNode)} " +
+            $"prev={FormatDiagnosticAddress((nint)node->PrevSiblingNode)} " +
+            $"next={FormatDiagnosticAddress((nint)node->NextSiblingNode)} " +
+            $"child={FormatDiagnosticAddress((nint)node->ChildNode)}");
+
+        if (node->Type == NodeType.Text)
+        {
+            var textNode = (AtkTextNode*)node;
+            try
+            {
+                var text = textNode->NodeText.ToString();
+                context.Builder.AppendLine(
+                    $"path={path} text-length={text.Length} " +
+                    $"text=\"{EscapeDiagnosticText(text)}\" " +
+                    $"text-flags={textNode->TextFlags} font-size={textNode->FontSize} " +
+                    $"text-color={FormatDiagnosticColor(textNode->TextColor)} " +
+                    $"edge-color={FormatDiagnosticColor(textNode->EdgeColor)} " +
+                    $"background-color={FormatDiagnosticColor(textNode->BackgroundColor)}");
+            }
+            catch (Exception exception)
+            {
+                context.Builder.AppendLine(
+                    $"path={path} <text capture error: {EscapeDiagnosticText(exception.Message)}>");
+            }
+        }
+
+        if ((ushort)node->Type < 1_000)
+            return;
+
+        var componentNode = (AtkComponentNode*)node;
+        var component = componentNode->Component;
+        if (component == null)
+        {
+            context.Builder.AppendLine(
+                $"path={path} component=<null> <invalid component node>");
+            return;
+        }
+
+        context.Builder.AppendLine(
+            $"path={path} component={FormatDiagnosticAddress((nint)component)} " +
+            $"component-flags=0x{component->ComponentFlags:X8} " +
+            $"owner-node={FormatDiagnosticAddress((nint)component->OwnerNode)} " +
+            $"res-node={FormatDiagnosticAddress((nint)component->AtkResNode)} " +
+            $"sound-effect-id={component->SoundEffectId}");
+        DumpDiagnosticUldManager(
+            &component->UldManager,
+            $"{path}/component-uld",
+            depth + 1,
+            context);
+    }
+
+    private static string ReadDiagnosticVisibility(AtkResNode* node)
+    {
+        if (node == null)
+            return "<null>";
+        try
+        {
+            return node->IsVisible().ToString();
+        }
+        catch (Exception exception)
+        {
+            return $"<error:{EscapeDiagnosticText(exception.Message)}>";
+        }
+    }
+
+    private static string FormatDiagnosticAddress(nint address)
+        => address == nint.Zero ? "<null>" : $"0x{address:X}";
+
+    private static string FormatDiagnosticColor(
+        FFXIVClientStructs.FFXIV.Client.Graphics.ByteColor color)
+        => $"rgba({color.R},{color.G},{color.B},{color.A})";
+
+    private static string EscapeDiagnosticText(string value)
+    {
+        var escaped = new StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            switch (character)
+            {
+                case '\\':
+                    escaped.Append(@"\\");
+                    break;
+                case '"':
+                    escaped.Append("\\\"");
+                    break;
+                case '\0':
+                    escaped.Append(@"\0");
+                    break;
+                case '\a':
+                    escaped.Append(@"\a");
+                    break;
+                case '\b':
+                    escaped.Append(@"\b");
+                    break;
+                case '\f':
+                    escaped.Append(@"\f");
+                    break;
+                case '\n':
+                    escaped.Append(@"\n");
+                    break;
+                case '\r':
+                    escaped.Append(@"\r");
+                    break;
+                case '\t':
+                    escaped.Append(@"\t");
+                    break;
+                case '\v':
+                    escaped.Append(@"\v");
+                    break;
+                default:
+                    if (char.IsControl(character))
+                        escaped.Append($"\\u{(int)character:X4}");
+                    else
+                        escaped.Append(character);
+                    break;
+            }
+        }
+
+        return escaped.ToString();
+    }
 
     public DadAllianceNativeStep AdvanceCreate(int passcode)
     {
@@ -989,6 +1447,18 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         => text.Contains("leave", StringComparison.OrdinalIgnoreCase) &&
            (text.Contains("party", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("alliance", StringComparison.OrdinalIgnoreCase));
+
+    private sealed class LookingForGroupDiagnosticCaptureContext
+    {
+        public StringBuilder Builder { get; } = new(64 * 1_024);
+        public HashSet<nint> SeenManagers { get; } = [];
+        public HashSet<nint> SeenNodes { get; } = [];
+        public int RendererSlots { get; set; }
+        public int NodeEntries { get; set; }
+        public bool RendererTruncated { get; set; }
+        public bool NodeTruncated { get; set; }
+        public bool DepthTruncated { get; set; }
+    }
 
     private DadAllianceNativeStep Progress(
         string summary,

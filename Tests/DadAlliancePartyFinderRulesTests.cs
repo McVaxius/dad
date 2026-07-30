@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using dad.Models;
 using dad.Services;
@@ -461,6 +462,67 @@ public sealed class DadAlliancePartyFinderRulesTests
                 Path.Combine("alliance-pf", "logs", "alliance-pf-20260724.jsonl"),
                 path,
                 StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LookingForGroupDiagnosticsUseUniqueUtf8WholeFiles()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "dad-alliance-diagnostics",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var timestamp =
+                new DateTime(2026, 7, 29, 23, 45, 6, DateTimeKind.Utc);
+            var audit = new DadAlliancePfAuditLog(root);
+            const string first = "standard tree: Recruiter Ω\r\nnode[0]";
+            const string second = "compact tree: 二番目\nnode[1]";
+
+            Assert.True(
+                audit.TryWriteLookingForGroupDiagnostics(
+                    first,
+                    timestamp,
+                    out var firstPath,
+                    out var firstError),
+                firstError);
+            Assert.True(
+                audit.TryWriteLookingForGroupDiagnostics(
+                    second,
+                    timestamp,
+                    out var secondPath,
+                    out var secondError),
+                secondError);
+
+            Assert.NotEqual(firstPath, secondPath);
+            Assert.EndsWith(
+                Path.Combine(
+                    "alliance-pf",
+                    "diagnostics",
+                    "looking-for-group-tree-20260729T234506.0000000Z.txt"),
+                firstPath,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith(
+                Path.Combine(
+                    "alliance-pf",
+                    "diagnostics",
+                    "looking-for-group-tree-20260729T234506.0000000Z-001.txt"),
+                secondPath,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(first, File.ReadAllText(firstPath, Encoding.UTF8));
+            Assert.Equal(second, File.ReadAllText(secondPath, Encoding.UTF8));
+            Assert.Equal(
+                new UTF8Encoding(false).GetBytes(first),
+                File.ReadAllBytes(firstPath));
+            Assert.Equal(
+                new UTF8Encoding(false).GetBytes(second),
+                File.ReadAllBytes(secondPath));
         }
         finally
         {
