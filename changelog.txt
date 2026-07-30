@@ -1,5 +1,37 @@
 # dad — changelog
 
+## 2026-07-30 — I63 revision 29 direct-password Party Finder join path (local-only, unpublished)
+- Preserved the one assigned subgroup callback and allowed either valid dialog sequence observed afterward: fresh ready
+  Yes/No followed by the private passcode prompt, or the ready private prompt directly with no Yes callback.
+- Added the private prompt to the pre-selection stale-dialog guard. DAD sends no subgroup callback while either Yes/No or
+  the private prompt was already visible before selection.
+- Simultaneous Yes/No and private prompts, a visible unready Yes/No, or a visible unready private prompt send no callback
+  and remain under the existing five-second observation/retry path.
+- Retained one-shot passcode submission, prompt-disappearance acknowledgement, optional deferred ready-detail close, and
+  exact assigned-subgroup verification. A direct-route timeout cannot duplicate the password callback.
+- Kept listing `[13, index]` then `[11, index]`, Alliance B `[13, "Alliance B"]`, Alliance C
+  `[14, "Alliance C"]`, and password `[0, passcode]` payloads unchanged.
+- Added focused coverage for the Alliance-B Yes/No route, the direct Alliance-C route, stale/unready/simultaneous prompts,
+  direct-route timeout idempotency, and exact callback payloads.
+- Preserved revision-28 recruiter row selection, all other Alliance assignments, schema, protocol, timing, public APIs,
+  version `0.4.2.1`, package, deployment, and release state. Live acceptance remains operator-controlled and Not Run.
+
+## 2026-07-29 — I63 revision 28 recruiter-node Party Finder listing index (local-only, unpublished)
+- Fixed standard/compact result-list selection to use the visible `AtkComponentList.OwnerNode`; the revision-27 dump proved
+  the component's `AtkResNode` is null even when the list is visible.
+- Replaced recursive any-text renderer scanning with `GetTextNodeById(28)`, the stable recruiter node ID shown at node-list
+  index `7` in the dump. `NodeText` is decoded as a SeString and only its plain `TextValue` is compared.
+- Recruiter matching is now exact ordinal with no trim, case folding, normalization, or partial match. In the supplied
+  two-row case, `<PLAYER_1>` resolves bounded `ListItemIndex` `0` and `<PLAYER_2>` resolves `1`.
+- Missing node `28`, null or undecodable text, wrong names, hidden/unready/ambiguous lists, and invalid indexes produce no
+  match. The existing join observation waits/retries without an `OpenListing` callback and has no index-`0` fallback.
+- Preserved duplicate exact-name cursor behavior, native list/display bounds, and the authoritative uninterrupted
+  same-pointer `LookingForGroup` callbacks `[13, index]` then `[11, index]`.
+- Focused tests cover both recruiters in standard/compact views, formatted SeString text, wrong/partial/case/whitespace
+  names, missing node `28`, duplicate names, invalid indexes, no-match retry behavior, and the existing callback pair.
+- Preserved schemas, protocols, timing, version `0.4.2.1`, Create, subgroup selection, cleanup, package, deployment, and
+  release state. The two-listing live check remains operator-controlled and Not Run.
+
 ## 2026-07-29 — I63 revision 27 read-only Party Finder diagnostics (local-only, unpublished)
 - Added an always-enabled **Check PFs** button after Create/Stop/Grab in the debug-only Alliance Party Finder section.
   Coordinator, Client Dad, Create, Stop, and Grab readiness do not gate the diagnostic.

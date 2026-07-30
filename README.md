@@ -99,12 +99,13 @@ dotnet test .\Tests\dad.Tests.csproj
   **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
   dispatches every unresolved exact target concurrently through the authenticated hub. Receivers open Party Finder only
   while hidden, select Private tab `2` and Raids category index `5`, and refresh once per retry cycle. DAD accepts exactly
-  one visible, ready standard or compact result list, searches its bounded visible renderer trees for an exact trimmed,
-  case-insensitive coordinator-name text node, and uses each match's zero-based `ListItemIndex`. Missing, hidden, unready,
-  ambiguous, unhydrated, and invalid rows send no listing callback; DAD waits under the existing five-second observation
-  deadline instead of opening earlier unrelated rows. It opens the first matching row at or after its retained cursor and,
-  after a same-name detail fails exact validation, closes it before trying the next matching row. Each requested row uses
-  the exact ordered `[13, index]` then `[11, index]` group from the
+  one standard or compact result list whose `OwnerNode` is visible and whose renderer storage is ready. For each visible
+  renderer, DAD reads recruiter text node ID `28`, decodes its `NodeText` as a SeString, compares the plain `TextValue`
+  exactly and ordinally with the coordinator name, and uses each bounded match's zero-based `ListItemIndex`. Missing,
+  hidden, unready, ambiguous, unhydrated, differently cased, partial, and invalid rows send no listing callback; DAD waits
+  under the existing five-second observation deadline instead of opening earlier unrelated rows. It opens the first
+  matching row at or after its retained cursor and, after a same-name detail fails exact validation, closes it before
+  trying the next matching row. Each requested row uses the exact ordered `[13, index]` then `[11, index]` group from the
   [raw callback source](Z:/logs/20260727.md:123): DAD validates the complete group, resolves `LookingForGroup` once, reuses
   that pointer, and fires both calls synchronously without lookup or observation between them.
   Integer-only callbacks retain the proven stack path; mixed subgroup callbacks retain a zeroed HGlobal `AtkValue` array
@@ -115,14 +116,17 @@ dotnet test .\Tests\dad.Tests.csproj
   `LookingForGroupDetail`, `updateState=true`, payload `[12 + index, "Alliance X"]`, producing IDs `12`-`18`.
   B=`13` is user-observed; A=`12` and C=`14` through G=`18` are locally verified mappings only. A worker that enters
   recruitment mode or exposes the recruitment editor is blocked without callback retries or automatic cleanup.
-  A fresh Yes prompt is acknowledged once. Revision 24's preserved acknowledgement flow then resolves only
-  `LookingForGroupPrivate` and sends `[0, passcode]` with `updateState=true`. It performs no further callback until a later
-  snapshot shows that prompt gone. If the detail closed automatically, verification begins without a close callback; if a
-  detail remains unready, DAD observes it without firing; and if it remains ready, DAD resolves it fresh and sends one raw
-  signed `[-2]` with `updateState=false`, preserving the [captured callback values](Z:/logs/20260727.md:264). That deferred
-  close must disappear before final exact subgroup verification, and early subgroup observation cannot bypass either
-  acknowledgement. Transient search failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired
-  only through guarded leave/rejoin.
+  DAD requires no pre-existing Yes/No or private passcode prompt before that subgroup callback. Afterward, one fresh ready
+  Yes/No may be acknowledged and clicked once before the private prompt, or a ready private prompt may appear directly and
+  skip Yes. Simultaneous prompts and either visible-but-unready prompt send no callback and use the existing five-second
+  retry. Revision 24's preserved acknowledgement flow then resolves only `LookingForGroupPrivate` and sends
+  `[0, passcode]` with `updateState=true` once. It performs no further callback until a later snapshot shows that prompt
+  gone. If the detail closed automatically, verification begins without a close callback; if a detail remains unready,
+  DAD observes it without firing; and if it remains ready, DAD resolves it fresh and sends one raw signed `[-2]` with
+  `updateState=false`, preserving the [captured callback values](Z:/logs/20260727.md:264). That deferred close must
+  disappear before final exact subgroup verification, and early subgroup observation cannot bypass either acknowledgement.
+  Transient search failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired only through
+  guarded leave/rejoin.
   Completion verifies every effective character, closes recruitment without disbanding the alliance, and never queues a
   duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
   Detailed local evidence is appended beneath

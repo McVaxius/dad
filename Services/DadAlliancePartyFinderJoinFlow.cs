@@ -94,7 +94,7 @@ internal sealed record DadAlliancePfJoinSnapshot
 
 internal sealed record DadAlliancePfListingRendererSnapshot(
     int ListItemIndex,
-    IReadOnlyList<string> Texts);
+    string? RecruiterName);
 
 internal sealed record DadAlliancePfListingViewSnapshot
 {
@@ -113,8 +113,8 @@ internal static class DadAlliancePartyFinderListingRowResolver
         DadAlliancePfListingViewSnapshot standardView,
         DadAlliancePfListingViewSnapshot compactView)
     {
-        var target = coordinatorName.Trim();
-        if (target.Length == 0 || numberOfListingsDisplayed <= 0)
+        if (coordinatorName.Length == 0 ||
+            numberOfListingsDisplayed <= 0)
             return [];
 
         var standardReady = IsUsable(standardView);
@@ -133,10 +133,10 @@ internal static class DadAlliancePartyFinderListingRowResolver
             .Where(renderer =>
                 renderer.ListItemIndex >= 0 &&
                 renderer.ListItemIndex < listingBound &&
-                renderer.Texts.Any(text => string.Equals(
-                    target,
-                    text.Trim(),
-                    StringComparison.OrdinalIgnoreCase)))
+                string.Equals(
+                    coordinatorName,
+                    renderer.RecruiterName,
+                    StringComparison.Ordinal))
             .Select(static renderer => renderer.ListItemIndex)
             .Distinct()
             .Order()
@@ -747,13 +747,13 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 snapshot,
                 "The exact Party Finder detail changed before subgroup selection; Alliance was not dispatched.");
         }
-        if (snapshot.YesNoVisible)
+        if (snapshot.YesNoVisible || snapshot.PrivatePromptVisible)
         {
             return WaitOrRetry(
                 now,
                 snapshot,
-                "Waiting for a pre-existing confirmation to disappear; DAD will not click it.",
-                "A pre-existing confirmation remained visible; the worker will retry without clicking it.");
+                "Waiting for a pre-existing confirmation or private prompt to disappear; DAD will not click it.",
+                "A pre-existing confirmation or private prompt remained visible; the worker will retry without clicking it.");
         }
 
         return Send(
@@ -770,20 +770,55 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
-        if (snapshot.YesNoVisible &&
-            snapshot.YesNoReady &&
-            !string.IsNullOrWhiteSpace(snapshot.YesNoIdentity) &&
-            !string.Equals(
-                snapshot.YesNoIdentity,
-                freshYesNoIdentity,
-                StringComparison.Ordinal))
+        if (snapshot.YesNoVisible && snapshot.PrivatePromptVisible)
         {
-            freshYesNoIdentity = snapshot.YesNoIdentity;
-            stage = DadAlliancePfJoinStage.ConfirmYes;
-            return Acknowledged(
-                "yesno-acknowledged",
-                "Acknowledged a fresh subgroup confirmation.",
-                snapshot);
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for the simultaneous subgroup confirmation and private prompt to resolve without a callback.",
+                "Simultaneous subgroup confirmation and private prompts remained visible; the worker will retry without clicking either.");
+        }
+
+        if (snapshot.YesNoVisible)
+        {
+            if (snapshot.YesNoReady &&
+                !string.IsNullOrWhiteSpace(snapshot.YesNoIdentity) &&
+                !string.Equals(
+                    snapshot.YesNoIdentity,
+                    freshYesNoIdentity,
+                    StringComparison.Ordinal))
+            {
+                freshYesNoIdentity = snapshot.YesNoIdentity;
+                stage = DadAlliancePfJoinStage.ConfirmYes;
+                return Acknowledged(
+                    "yesno-acknowledged",
+                    "Acknowledged a fresh subgroup confirmation.",
+                    snapshot);
+            }
+
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for the visible subgroup confirmation to become freshly ready.",
+                "The visible subgroup confirmation did not become freshly ready.");
+        }
+
+        if (snapshot.PrivatePromptVisible)
+        {
+            if (snapshot.PrivatePromptReady)
+            {
+                stage = DadAlliancePfJoinStage.SubmitPasscode;
+                return Acknowledged(
+                    "private-prompt-acknowledged",
+                    "Acknowledged a ready private passcode prompt displayed directly after subgroup selection.",
+                    snapshot);
+            }
+
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for the directly displayed private passcode prompt to become ready.",
+                "The directly displayed private passcode prompt did not become ready.");
         }
 
         return WaitOrRetry(
@@ -797,17 +832,19 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
-        if (!snapshot.YesNoVisible ||
+        if (snapshot.PrivatePromptVisible ||
+            !snapshot.YesNoVisible ||
             !snapshot.YesNoReady ||
             !string.Equals(
                 snapshot.YesNoIdentity,
                 freshYesNoIdentity,
                 StringComparison.Ordinal))
         {
-            return BeginRetry(
+            return WaitOrRetry(
                 now,
                 snapshot,
-                "The acknowledged subgroup confirmation changed before Yes; DAD will not click it.");
+                "Waiting for the acknowledged subgroup confirmation to remain the only ready prompt before Yes.",
+                "The acknowledged subgroup confirmation was not the only ready prompt; DAD will retry without clicking it.");
         }
 
         return Send(
@@ -823,7 +860,9 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
-        if (snapshot.PrivatePromptVisible && snapshot.PrivatePromptReady)
+        if (!snapshot.YesNoVisible &&
+            snapshot.PrivatePromptVisible &&
+            snapshot.PrivatePromptReady)
         {
             stage = DadAlliancePfJoinStage.SubmitPasscode;
             return Acknowledged(
@@ -844,8 +883,17 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
+        if (snapshot.YesNoVisible ||
+            (snapshot.PrivatePromptVisible &&
+             !snapshot.PrivatePromptReady))
+        {
+            return WaitOrRetry(
+                now,
+                snapshot,
+                "Waiting for the private prompt to remain the only ready prompt before passcode submission.",
+                "The private prompt was not the only ready prompt; DAD will retry without submitting the passcode.");
+        }
         if (!snapshot.PrivatePromptVisible ||
-            !snapshot.PrivatePromptReady ||
             !snapshot.DetailVisible ||
             !snapshot.DetailReady)
         {

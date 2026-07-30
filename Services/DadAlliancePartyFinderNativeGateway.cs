@@ -1,6 +1,7 @@
 using System.Text;
 using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Memory;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -55,8 +56,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
 {
     public const string FormationDutyName = "The Labyrinth of the Ancients";
     private const int MaxListingRendererScan = 100;
-    private const int MaxListingTreeNodes = 256;
-    private const int MaxListingTreeDepth = 8;
+    private const uint ListingRecruiterTextNodeId = 28;
     private const int MaxDiagnosticNodes = 16_384;
     private const int MaxDiagnosticTreeDepth = 64;
     private const int MaxDiagnosticRendererSlots = 100;
@@ -888,7 +888,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         if (list == null)
             return new DadAlliancePfListingViewSnapshot();
 
-        var root = list->AtkResNode;
+        var root = (AtkResNode*)list->OwnerNode;
         var visible = root != null && root->IsVisible();
         var rendererStorageReady =
             list->AllocatedItemRendererListLength == 0 ||
@@ -931,7 +931,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
 
             renderers.Add(new DadAlliancePfListingRendererSnapshot(
                 renderer->ListItemIndex,
-                ReadListingRendererTexts(renderer)));
+                ReadListingRecruiterName(renderer)));
         }
 
         return new DadAlliancePfListingViewSnapshot
@@ -944,72 +944,25 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         };
     }
 
-    private static IReadOnlyList<string> ReadListingRendererTexts(
+    private static string? ReadListingRecruiterName(
         AtkComponentListItemRenderer* renderer)
     {
-        var texts = new List<string>();
-        var visitedComponents = new HashSet<nint>();
-        var remainingNodes = MaxListingTreeNodes;
-        ReadListingTreeTexts(
-            &renderer->UldManager,
-            0,
-            visitedComponents,
-            texts,
-            ref remainingNodes);
-        return texts;
-    }
-
-    private static void ReadListingTreeTexts(
-        AtkUldManager* manager,
-        int depth,
-        HashSet<nint> visitedComponents,
-        List<string> texts,
-        ref int remainingNodes)
-    {
-        if (manager == null ||
-            depth > MaxListingTreeDepth ||
-            remainingNodes <= 0 ||
-            manager->NodeList == null)
+        try
         {
-            return;
+            var recruiter =
+                renderer->GetTextNodeById(ListingRecruiterTextNodeId);
+            var value = recruiter == null
+                ? null
+                : recruiter->NodeText.StringPtr.Value;
+            return value == null
+                ? null
+                : MemoryHelper
+                    .ReadSeStringNullTerminated((nint)value)
+                    .TextValue;
         }
-
-        var nodeCount = Math.Min(
-            manager->NodeListCount,
-            (ushort)Math.Min(remainingNodes, ushort.MaxValue));
-        for (var nodeIndex = 0;
-             nodeIndex < nodeCount && remainingNodes > 0;
-             nodeIndex++)
+        catch
         {
-            remainingNodes--;
-            var node = manager->NodeList[nodeIndex];
-            if (node == null)
-                continue;
-
-            if (node->Type == NodeType.Text)
-            {
-                var text = ((AtkTextNode*)node)->NodeText.ToString().Trim();
-                if (text.Length > 0)
-                    texts.Add(text);
-                continue;
-            }
-
-            if ((ushort)node->Type < 1000)
-                continue;
-
-            var component = ((AtkComponentNode*)node)->Component;
-            if (component == null ||
-                !visitedComponents.Add((nint)component))
-            {
-                continue;
-            }
-
-            ReadListingTreeTexts(
-                &component->UldManager,
-                depth + 1,
-                visitedComponents,
-                texts,
-                ref remainingNodes);
+            return null;
         }
     }
 

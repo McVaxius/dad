@@ -1,5 +1,11 @@
+extern alias DalamudApi;
+
+using System.Runtime.Versioning;
 using dad.Models;
 using dad.Services;
+using SeString = DalamudApi::Dalamud.Game.Text.SeStringHandling.SeString;
+using SeStringBuilder =
+    DalamudApi::Dalamud.Game.Text.SeStringHandling.SeStringBuilder;
 using Xunit;
 
 namespace dad.Tests;
@@ -288,24 +294,51 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void StandardAndCompactViewsResolveExactTrimmedName(
-        bool compact)
+    [InlineData(false, "Fuyu Tempest", 0)]
+    [InlineData(false, "Vartak Adamantaia", 1)]
+    [InlineData(true, "Fuyu Tempest", 0)]
+    [InlineData(true, "Vartak Adamantaia", 1)]
+    public void StandardAndCompactViewsResolveExactRecruiterNodeName(
+        bool compact,
+        string recruiterName,
+        int expectedIndex)
     {
         var selected = ListingView(
+            new DadAlliancePfListingRendererSnapshot(0, "Fuyu Tempest"),
             new DadAlliancePfListingRendererSnapshot(
                 1,
-                ["other text", "  expected leader  "]));
+                "Vartak Adamantaia"));
         var unavailable = new DadAlliancePfListingViewSnapshot();
 
         var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
-            "EXPECTED LEADER",
+            recruiterName,
             2,
             compact ? unavailable : selected,
             compact ? selected : unavailable);
 
-        Assert.Equal([1], indexes);
+        Assert.Equal([expectedIndex], indexes);
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows7.0")]
+    public void FormattedSeStringRecruiterResolvesFromPlainTextValue()
+    {
+        var encoded = new SeStringBuilder()
+            .AddUiForeground(43)
+            .AddText("Fuyu Tempest")
+            .AddUiForegroundOff()
+            .Encode();
+        var recruiterName = SeString.Parse(encoded).TextValue;
+        var view = ListingView(
+            new DadAlliancePfListingRendererSnapshot(0, recruiterName));
+
+        var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
+            "Fuyu Tempest",
+            1,
+            view,
+            new DadAlliancePfListingViewSnapshot());
+
+        Assert.Equal([0], indexes);
     }
 
     [Fact]
@@ -313,7 +346,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     {
         var renderer = new DadAlliancePfListingRendererSnapshot(
             0,
-            [Target.LeaderName]);
+            Target.LeaderName);
         var visibleReady = ListingView(renderer);
         var hidden = visibleReady with { Visible = false };
         var unready = visibleReady with { Ready = false };
@@ -347,19 +380,19 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         var view = ListingView(
             new DadAlliancePfListingRendererSnapshot(
                 2,
-                [Target.LeaderName]),
+                Target.LeaderName),
             new DadAlliancePfListingRendererSnapshot(
                 -1,
-                [Target.LeaderName]),
+                Target.LeaderName),
             new DadAlliancePfListingRendererSnapshot(
                 1,
-                [Target.LeaderName]),
+                Target.LeaderName),
             new DadAlliancePfListingRendererSnapshot(
                 1,
-                [Target.LeaderName]),
+                Target.LeaderName),
             new DadAlliancePfListingRendererSnapshot(
                 3,
-                [Target.LeaderName]));
+                Target.LeaderName));
 
         var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
             Target.LeaderName,
@@ -370,13 +403,35 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         Assert.Equal([1, 2], indexes);
     }
 
-    [Fact]
-    public void RendererTextRequiresAnExactCoordinatorName()
+    [Theory]
+    [InlineData("expected leader")]
+    [InlineData(" Expected Leader")]
+    [InlineData("Expected Leader ")]
+    [InlineData("Expected")]
+    [InlineData("Expected Leader Extra")]
+    [InlineData("Other Recruiter")]
+    public void RecruiterNodeRequiresExactOrdinalCoordinatorName(
+        string recruiterName)
     {
         var view = ListingView(
             new DadAlliancePfListingRendererSnapshot(
                 0,
-                [$"{Target.LeaderName} Extra"]));
+                recruiterName));
+
+        var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
+            Target.LeaderName,
+            1,
+            view,
+            new DadAlliancePfListingViewSnapshot());
+
+        Assert.Empty(indexes);
+    }
+
+    [Fact]
+    public void MissingRecruiterNodeProducesNoMatch()
+    {
+        var view = ListingView(
+            new DadAlliancePfListingRendererSnapshot(0, null));
 
         var indexes = DadAlliancePartyFinderListingRowResolver.Resolve(
             Target.LeaderName,
@@ -485,6 +540,39 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     }
 
     [Fact]
+    public void ListingAllianceAndPasscodePayloadsRemainExact()
+    {
+        var listing = DadAlliancePartyFinderJoinCallbacks.Build(
+            new DadAlliancePfJoinActionRequest(
+                DadAlliancePfJoinAction.OpenListing,
+                ListingIndex: 1));
+        Assert.Collection(
+            listing,
+            callback => Assert.Equal([13, 1], callback.Values),
+            callback => Assert.Equal([11, 1], callback.Values));
+
+        var allianceB = Assert.Single(
+            DadAlliancePartyFinderJoinCallbacks.Build(
+                new DadAlliancePfJoinActionRequest(
+                    DadAlliancePfJoinAction.SelectAlliance,
+                    Alliance: DadAllianceAssignment.B)));
+        var allianceC = Assert.Single(
+            DadAlliancePartyFinderJoinCallbacks.Build(
+                new DadAlliancePfJoinActionRequest(
+                    DadAlliancePfJoinAction.SelectAlliance,
+                    Alliance: DadAllianceAssignment.C)));
+        var passcode = Assert.Single(
+            DadAlliancePartyFinderJoinCallbacks.Build(
+                new DadAlliancePfJoinActionRequest(
+                    DadAlliancePfJoinAction.SubmitPasscode,
+                    Passcode: Target.Passcode)));
+
+        Assert.Equal([13, "Alliance B"], allianceB.Values);
+        Assert.Equal([14, "Alliance C"], allianceC.Values);
+        Assert.Equal([0, Target.Passcode], passcode.Values);
+    }
+
+    [Fact]
     public void MismatchedDutyPrivateAllianceOrPartyCountIsRejected()
     {
         var variants = new[]
@@ -590,6 +678,231 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             fixture.Ui.Requests,
             static request =>
                 request.Action == DadAlliancePfJoinAction.ConfirmYes);
+    }
+
+    [Fact]
+    public void AllianceBRetainsYesNoRoute()
+    {
+        var target = Target with
+        {
+            AssignedAlliance = DadAllianceAssignment.B,
+        };
+        var fixture = ReadyAtExactDetail();
+
+        AssertAction(
+            fixture.Flow.Advance(target),
+            DadAlliancePfJoinAction.SelectAlliance);
+        Assert.Equal(
+            DadAllianceAssignment.B,
+            fixture.Ui.Requests[^1].Alliance);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            YesNoVisible = true,
+            YesNoReady = true,
+            YesNoIdentity = "alliance-b-confirmation",
+        };
+        AssertEvent(
+            fixture.Flow.Advance(target),
+            "yesno-acknowledged");
+        AssertAction(
+            fixture.Flow.Advance(target),
+            DadAlliancePfJoinAction.ConfirmYes);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            YesNoVisible = false,
+            YesNoReady = false,
+            YesNoIdentity = string.Empty,
+            PrivatePromptVisible = true,
+            PrivatePromptReady = true,
+        };
+        AssertEvent(
+            fixture.Flow.Advance(target),
+            "private-prompt-acknowledged");
+        AssertAction(
+            fixture.Flow.Advance(target),
+            DadAlliancePfJoinAction.SubmitPasscode);
+
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.ConfirmYes);
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SubmitPasscode);
+    }
+
+    [Fact]
+    public void AllianceCDirectPrivatePromptSkipsYesAndSubmitsOnce()
+    {
+        var fixture = ReadyAtExactDetail();
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SelectAlliance,
+            alliance: DadAllianceAssignment.C);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            PrivatePromptVisible = true,
+            PrivatePromptReady = true,
+        };
+
+        AssertEvent(
+            fixture.Advance(),
+            "private-prompt-acknowledged");
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SubmitPasscode,
+            passcode: Target.Passcode);
+
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.ConfirmYes);
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SubmitPasscode);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void PreExistingPromptPreventsAllianceDispatch(
+        bool yesNoVisible,
+        bool privatePromptVisible)
+    {
+        var fixture = ReadyAtExactDetail();
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            YesNoVisible = yesNoVisible,
+            YesNoReady = yesNoVisible,
+            YesNoIdentity = yesNoVisible ? "stale" : string.Empty,
+            PrivatePromptVisible = privatePromptVisible,
+            PrivatePromptReady = privatePromptVisible,
+        };
+        var requestCount = fixture.Ui.Requests.Count;
+
+        var waiting = fixture.Advance();
+        fixture.Clock.Advance(
+            DadAlliancePartyFinderJoinFlow.ObservationTimeout);
+        var retry = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        Assert.NotEqual(DadAlliancePfJoinResultKind.Waiting, retry.Kind);
+        Assert.Equal(requestCount, fixture.Ui.Requests.Count);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SelectAlliance);
+    }
+
+    [Theory]
+    [InlineData(true, false, false, false)]
+    [InlineData(false, false, true, false)]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, false, true, true)]
+    public void UnreadyOrSimultaneousPostAlliancePromptsSendNothing(
+        bool yesNoVisible,
+        bool yesNoReady,
+        bool privatePromptVisible,
+        bool privatePromptReady)
+    {
+        var fixture = ReadyAtExactDetail();
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SelectAlliance);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
+            YesNoVisible = yesNoVisible,
+            YesNoReady = yesNoReady,
+            YesNoIdentity = yesNoVisible ? "candidate" : string.Empty,
+            PrivatePromptVisible = privatePromptVisible,
+            PrivatePromptReady = privatePromptReady,
+        };
+        var requestCount = fixture.Ui.Requests.Count;
+
+        var waiting = fixture.Advance();
+        fixture.Clock.Advance(
+            DadAlliancePartyFinderJoinFlow.ObservationTimeout);
+        var retry = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        Assert.NotEqual(DadAlliancePfJoinResultKind.Waiting, retry.Kind);
+        Assert.Equal(requestCount, fixture.Ui.Requests.Count);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action is DadAlliancePfJoinAction.ConfirmYes or
+                    DadAlliancePfJoinAction.SubmitPasscode);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void AcknowledgedRouteRechecksForOneReadyPromptBeforeCallback(
+        bool yesNoRoute,
+        bool simultaneous)
+    {
+        var fixture = ReadyAtExactDetail();
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SelectAlliance);
+
+        if (yesNoRoute)
+        {
+            fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+            {
+                YesNoVisible = true,
+                YesNoReady = true,
+                YesNoIdentity = "acknowledged",
+            };
+            AssertEvent(
+                fixture.Advance(),
+                "yesno-acknowledged");
+            fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+            {
+                YesNoReady = simultaneous,
+                PrivatePromptVisible = simultaneous,
+                PrivatePromptReady = simultaneous,
+            };
+        }
+        else
+        {
+            fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+            {
+                PrivatePromptVisible = true,
+                PrivatePromptReady = true,
+            };
+            AssertEvent(
+                fixture.Advance(),
+                "private-prompt-acknowledged");
+            fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+            {
+                YesNoVisible = simultaneous,
+                YesNoReady = simultaneous,
+                YesNoIdentity = simultaneous
+                    ? "late-confirmation"
+                    : string.Empty,
+                PrivatePromptReady = simultaneous,
+            };
+        }
+
+        var requestCount = fixture.Ui.Requests.Count;
+        var waiting = fixture.Advance();
+        fixture.Clock.Advance(
+            DadAlliancePartyFinderJoinFlow.ObservationTimeout);
+        var retry = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Waiting, waiting.Kind);
+        Assert.NotEqual(DadAlliancePfJoinResultKind.Waiting, retry.Kind);
+        Assert.Equal(requestCount, fixture.Ui.Requests.Count);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action is DadAlliancePfJoinAction.ConfirmYes or
+                    DadAlliancePfJoinAction.SubmitPasscode);
     }
 
     [Fact]
@@ -841,6 +1154,30 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     }
 
     [Fact]
+    public void DirectPasscodeTimeoutCannotDuplicateSubmission()
+    {
+        var fixture = ReadyAfterDirectPasscodeDispatch();
+        fixture.Clock.Advance(
+            DadAlliancePartyFinderJoinFlow.ObservationTimeout);
+
+        var retry = fixture.Advance();
+        var stalePromptRetry = fixture.Advance();
+
+        Assert.Equal(DadAlliancePfJoinResultKind.Retry, retry.Kind);
+        Assert.Equal(
+            DadAlliancePfJoinResultKind.Retry,
+            stalePromptRetry.Kind);
+        Assert.DoesNotContain(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.ConfirmYes);
+        Assert.Single(
+            fixture.Ui.Requests,
+            static request =>
+                request.Action == DadAlliancePfJoinAction.SubmitPasscode);
+    }
+
+    [Fact]
     public void StopPreventsFurtherRetryOrCallbacks()
     {
         var fixture = new Fixture();
@@ -929,6 +1266,28 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             YesNoVisible = false,
             YesNoReady = false,
             YesNoIdentity = string.Empty,
+            PrivatePromptVisible = true,
+            PrivatePromptReady = true,
+        };
+        AssertEvent(
+            fixture.Advance(),
+            "private-prompt-acknowledged");
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SubmitPasscode,
+            passcode: Target.Passcode);
+        return fixture;
+    }
+
+    private static Fixture ReadyAfterDirectPasscodeDispatch()
+    {
+        var fixture = ReadyAtExactDetail();
+        AssertAction(
+            fixture.Advance(),
+            DadAlliancePfJoinAction.SelectAlliance,
+            alliance: DadAllianceAssignment.C);
+        fixture.Ui.Snapshot = fixture.Ui.Snapshot with
+        {
             PrivatePromptVisible = true,
             PrivatePromptReady = true,
         };
