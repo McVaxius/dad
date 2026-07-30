@@ -42,7 +42,13 @@ public sealed class DadSchedulerService
     private Func<DadPlannerGroup, int, DadLevelingChildBuild>? levelingChildBuilder;
     private Action? cancelActiveLevelingChild;
     private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
+    private Func<DadRunRequest, DadRunResult>? startCrewRegularParty;
+    private Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus>? createCrewAllianceParty;
+    private Func<DadAlliancePartyFinderStatus>? getCrewAllianceStatus;
+    private Func<DadAlliancePartyFinderStatus>? grabCrewAllianceParty;
+    private Action<string>? stopCrewAllianceParty;
     private LevelingOperationSession? levelingOperation;
+    private CrewFormationSession? crewFormation;
 
     private sealed class PendingTakeoverCancellation
     {
@@ -89,6 +95,15 @@ public sealed class DadSchedulerService
         public HashSet<string> IssuedIds { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
+    private sealed class CrewFormationSession
+    {
+        public DadCrewFormationStatus Status { get; init; } = new();
+        public DadPlannerGroup EffectiveGroup { get; init; } = new();
+        public DadActivityPreset AlliancePreview { get; init; } = new();
+        public string SchedulerJobId { get; init; } = string.Empty;
+        public string TerminalFailure { get; set; } = string.Empty;
+    }
+
     private sealed class LevelingRosterRefreshRow
     {
         public DadLevelingSlotSelection Selection { get; init; } = new();
@@ -133,7 +148,10 @@ public sealed class DadSchedulerService
 
     public DadSchedulerPresetState CurrentState => BuildVisibleState();
 
-    private bool IsSchedulerActive => levelingOperation != null || currentState.IsActive;
+    private bool IsSchedulerActive
+        => levelingOperation != null || currentState.IsActive || IsCrewFormationActive;
+
+    internal bool IsCrewFormationActive => crewFormation?.Status.IsActive == true;
 
     public void ConfigureLevelingMode(
         Func<DadPlannerGroup, int, DadLevelingChildBuild> childBuilder,
@@ -147,6 +165,150 @@ public sealed class DadSchedulerService
         Func<DadRunRequest, DadAutoPartyAuthorizationDecision> authorizationGate)
         => autoPartyAuthorizationGate = authorizationGate ?? throw new ArgumentNullException(nameof(authorizationGate));
 
+    internal void ConfigureCrewFormation(
+        Func<DadRunRequest, DadRunResult> startRegularParty,
+        Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus> createAllianceParty,
+        Func<DadAlliancePartyFinderStatus> getAllianceStatus,
+        Func<DadAlliancePartyFinderStatus> grabAllianceParty,
+        Action<string> stopAllianceParty)
+    {
+        startCrewRegularParty = startRegularParty ?? throw new ArgumentNullException(nameof(startRegularParty));
+        createCrewAllianceParty = createAllianceParty ?? throw new ArgumentNullException(nameof(createAllianceParty));
+        getCrewAllianceStatus = getAllianceStatus ?? throw new ArgumentNullException(nameof(getAllianceStatus));
+        grabCrewAllianceParty = grabAllianceParty ?? throw new ArgumentNullException(nameof(grabAllianceParty));
+        stopCrewAllianceParty = stopAllianceParty ?? throw new ArgumentNullException(nameof(stopAllianceParty));
+    }
+
+    internal DadCrewFormationStatus GetCrewFormationStatus()
+        => crewFormation?.Status.Clone() ?? new DadCrewFormationStatus();
+
+    internal bool IsActiveCrewFormationRun(string runId)
+        => !string.IsNullOrWhiteSpace(runId) &&
+           crewFormation?.Status.IsActive == true &&
+           string.Equals(crewFormation.Status.RunId, runId, StringComparison.Ordinal);
+
+    internal string GetCrewFormationSchedulerBlocker()
+    {
+        NormalizeQueue();
+        NormalizeSchedules();
+        if (IsCrewFormationActive)
+            return "Crew Formation is already active.";
+        if (IsSchedulerActive)
+            return "A scheduler preset is already active.";
+        if (configuration.ActiveScheduleRun?.IsActive == true)
+            return "A schedule run is already active.";
+        if (configuration.SchedulerQueue.Count > 0)
+            return "The scheduler queue must be empty before Crew Formation starts.";
+        if (HasPendingCleanup)
+            return "Scheduler takeover or requested-job cancellation cleanup is still pending.";
+        return string.Empty;
+    }
+
+    internal DadCrewFormationStatus StartCrewFormation(
+        DadPlannerGroup sourceGroup,
+        DadPlannerGroup effectiveGroup,
+        DadPlannerRunRequestPreview plannerRequestPreview,
+        DadActivityPreset alliancePreview,
+        DadCrewFormationClassification classification)
+    {
+        ArgumentNullException.ThrowIfNull(sourceGroup);
+        ArgumentNullException.ThrowIfNull(effectiveGroup);
+        ArgumentNullException.ThrowIfNull(plannerRequestPreview);
+        ArgumentNullException.ThrowIfNull(alliancePreview);
+        ArgumentNullException.ThrowIfNull(classification);
+
+        var now = DateTime.UtcNow;
+        var status = new DadCrewFormationStatus
+        {
+            RunId = Guid.NewGuid().ToString("N"),
+            RequestId = plannerRequestPreview.Request?.RequestId ?? string.Empty,
+            SourceGroupId = sourceGroup.GroupId,
+            SourcePresetName = sourceGroup.DisplayName,
+            EffectiveGroupId = effectiveGroup.GroupId,
+            EffectivePresetName = effectiveGroup.DisplayName,
+            Mode = classification.Mode,
+            Phase = DadCrewFormationPhase.Preparing,
+            StartedAtUtc = now,
+            UpdatedAtUtc = now,
+            Summary = $"Preparing {classification.Summary} for preset '{sourceGroup.DisplayName}'.",
+        };
+
+        var blocker = FirstNonEmpty(
+            classification.BlockedReason,
+            GetCrewFormationSchedulerBlocker(),
+            plannerRequestPreview.CanSchedule && plannerRequestPreview.Request != null
+                ? string.Empty
+                : FirstNonEmpty(
+                    plannerRequestPreview.BlockedReason,
+                    plannerRequestPreview.StatusSummary,
+                    "The selected preset is not schedulable."));
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            status.Phase = DadCrewFormationPhase.Blocked;
+            status.BlockedReason = blocker;
+            status.Summary = blocker;
+            status.CompletedAtUtc = now;
+            crewFormation = new CrewFormationSession { Status = status };
+            return status.Clone();
+        }
+
+        if (startCrewRegularParty == null ||
+            createCrewAllianceParty == null ||
+            getCrewAllianceStatus == null ||
+            grabCrewAllianceParty == null ||
+            stopCrewAllianceParty == null)
+        {
+            status.Phase = DadCrewFormationPhase.Blocked;
+            status.BlockedReason = "Crew Formation runtime callbacks are unavailable.";
+            status.Summary = status.BlockedReason;
+            status.CompletedAtUtc = now;
+            crewFormation = new CrewFormationSession { Status = status };
+            return status.Clone();
+        }
+
+        var frozenGroup = CloneCrewValue(effectiveGroup);
+        var frozenAlliancePreview = CloneCrewValue(alliancePreview);
+        var job = new DadScheduledCrewJob
+        {
+            JobType = DadSchedulerJobType.ScheduledPreset,
+            GroupId = frozenGroup.GroupId,
+            PresetName = frozenGroup.DisplayName,
+            DryRun = false,
+            RequestedBy = "crew-tools",
+            CreatedAtUtc = now,
+        };
+        crewFormation = new CrewFormationSession
+        {
+            Status = status,
+            EffectiveGroup = frozenGroup,
+            AlliancePreview = frozenAlliancePreview,
+            SchedulerJobId = job.JobId,
+        };
+
+        var schedulerState = StartOrdinaryPreset(
+            frozenGroup,
+            plannerRequestPreview,
+            dryRun: false,
+            job);
+        status.SchedulerRunId = schedulerState.SchedulerRunId;
+        status.RequestId = schedulerState.PlannerRequestId;
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        if (!schedulerState.IsActive)
+        {
+            FinishCrewFormation(
+                schedulerState.Phase == DadSchedulerPresetPhase.Cancelled
+                    ? DadCrewFormationPhase.Cancelled
+                    : DadCrewFormationPhase.Blocked,
+                FirstNonEmpty(schedulerState.BlockedReason, schedulerState.Summary));
+        }
+        else
+        {
+            status.Summary = schedulerState.Summary;
+        }
+
+        return crewFormation.Status.Clone();
+    }
+
     internal DadSchedulerUiRevision GetPlannerUiRevision()
     {
         var schedulerHash = new HashCode();
@@ -158,6 +320,8 @@ public sealed class DadSchedulerService
         schedulerHash.Add(currentState.PlannerStarted);
         schedulerHash.Add(currentState.ScheduleCadence);
         schedulerHash.Add(currentState.SkipKind);
+        schedulerHash.Add(crewFormation?.Status.RunId, StringComparer.Ordinal);
+        schedulerHash.Add(crewFormation?.Status.Phase);
         schedulerHash.Add(currentState.Slots.Count);
         foreach (var slot in currentState.Slots)
         {
@@ -291,7 +455,7 @@ public sealed class DadSchedulerService
                 .Take(MaxSchedulerHistory)
                 .Select(static result => result.Clone())
                 .ToList(),
-            Summary = IsSchedulerActive
+            Summary = IsSchedulerActive || IsCrewFormationActive
                 ? $"Active {visibleState.JobType}: {visibleState.Summary}"
                 : HasPendingCleanup
                     ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s) and {pendingEarlyAssignmentCancellations.Count} early assignment route(s)."
@@ -455,6 +619,16 @@ public sealed class DadSchedulerService
         NormalizeQueue();
         NormalizeHistory();
         configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        if (IsCrewFormationActive)
+        {
+            return DadScheduleRules.BlockRun(new DadScheduleRunState
+            {
+                RunId = Guid.NewGuid().ToString("N"),
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                ScheduleName = "Schedule",
+                RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
+            }, "Crew Formation is active; schedules cannot start until it releases scheduler ownership.", DateTime.UtcNow);
+        }
         if (!dryRun && !configuration.RunAsServerDad)
         {
             return DadScheduleRules.BlockRun(new DadScheduleRunState
@@ -1375,6 +1549,22 @@ public sealed class DadSchedulerService
 
         var visibleRun = visibleRunProvider?.Invoke() ?? DadRunResult.Idle();
         UpdateCompletedPlannerAssignmentCleanup(visibleRun);
+        if (IsCrewFormationActive &&
+            crewFormation!.Status.Phase != DadCrewFormationPhase.Preparing)
+        {
+            UpdateCrewFormationAfterPreparation(visibleRun);
+            return;
+        }
+        if (IsCrewFormationActive && !currentState.IsActive)
+        {
+            FinishCrewFormation(
+                currentState.Phase == DadSchedulerPresetPhase.Cancelled
+                    ? DadCrewFormationPhase.Cancelled
+                    : DadCrewFormationPhase.Blocked,
+                FirstNonEmpty(currentState.BlockedReason, currentState.Summary));
+            return;
+        }
+
         if (levelingOperation != null)
         {
             var allowOrdinaryChildAdvance = UpdateLevelingOperation(visibleRun);
@@ -1389,6 +1579,8 @@ public sealed class DadSchedulerService
 
         if (!currentState.IsActive)
         {
+            if (IsCrewFormationActive)
+                return;
             if (!TryStartNextQueuedJob(groupResolver, plannerPreviewBuilder) || !currentState.IsActive)
                 return;
         }
@@ -1539,6 +1731,9 @@ public sealed class DadSchedulerService
         if (!strictRevalidationTracker.TryClaimStart())
             return;
 
+        if (TryStartPreparedCrewFormation())
+            return;
+
         var strictRequest = CloneRunRequest(frozenPlannerRequest)!;
         var repeatBoundary = ResolveScheduleRepeatBoundary();
         var result = startPlannerRequest(strictRequest, repeatBoundary);
@@ -1555,6 +1750,313 @@ public sealed class DadSchedulerService
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         RecordTerminalResult(currentState);
     }
+
+    private bool TryStartPreparedCrewFormation()
+    {
+        var session = crewFormation;
+        if (session?.Status.IsActive != true ||
+            session.Status.Phase != DadCrewFormationPhase.Preparing ||
+            !string.Equals(
+                session.Status.SchedulerRunId,
+                currentState.SchedulerRunId,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (frozenPlannerRequest == null)
+        {
+            FinishCrewFormation(
+                DadCrewFormationPhase.Blocked,
+                "Crew Formation lost its frozen planner request before group creation.");
+            return true;
+        }
+
+        if (session.Status.Mode == DadCrewFormationMode.RegularParty)
+        {
+            var request = CloneRunRequest(frozenPlannerRequest)!;
+            request.Orchestration.AutoPartyFormationOnly = true;
+            session.Status.Phase = DadCrewFormationPhase.StartingRegularParty;
+            session.Status.Summary = $"Starting regular party formation for '{session.Status.SourcePresetName}'.";
+            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+
+            var result = startCrewRegularParty!(request);
+            currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
+            currentState.Phase = currentState.PlannerStarted
+                ? DadSchedulerPresetPhase.StartedPlanner
+                : DadSchedulerPresetPhase.Blocked;
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+            if (!currentState.PlannerStarted)
+            {
+                var rejection = FirstNonEmpty(result.BlockedReason, result.FailureReason, result.Summary);
+                currentState.BlockedReason = rejection;
+                currentState.Summary = rejection;
+                FinishCrewFormation(DadCrewFormationPhase.Blocked, rejection);
+            }
+            else
+            {
+                currentState.Summary = $"Crew Formation started exact coordinator request {request.RequestId}.";
+                session.Status.Summary = currentState.Summary;
+            }
+
+            return true;
+        }
+
+        if (session.Status.Mode == DadCrewFormationMode.AlliancePartyFinder)
+        {
+            session.Status.Phase = DadCrewFormationPhase.CreatingAllianceListing;
+            session.Status.Summary = $"Creating the private alliance recruitment for '{session.Status.SourcePresetName}'.";
+            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            var created = createCrewAllianceParty!(
+                session.Status.RunId,
+                session.EffectiveGroup,
+                session.AlliancePreview);
+            var rejection = FirstNonEmpty(
+                created.CreateRejected ? created.CreatePreflightBlocker : string.Empty,
+                created.State == DadAllianceRecruitmentState.Blocked ? created.Summary : string.Empty,
+                string.IsNullOrWhiteSpace(created.RecruitmentId)
+                    ? "Alliance Party Finder did not return an owned recruitment ID."
+                    : string.Empty);
+            if (!string.IsNullOrWhiteSpace(rejection))
+            {
+                currentState.Phase = DadSchedulerPresetPhase.Blocked;
+                currentState.BlockedReason = rejection;
+                currentState.Summary = rejection;
+                currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+                FinishCrewFormation(DadCrewFormationPhase.Blocked, rejection);
+                return true;
+            }
+
+            session.Status.RecruitmentId = created.RecruitmentId;
+            session.Status.Summary = created.Summary;
+            currentState.PlannerStarted = true;
+            currentState.Phase = DadSchedulerPresetPhase.StartedPlanner;
+            currentState.Summary = $"Crew Formation owns alliance recruitment {created.RecruitmentId}.";
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+            return true;
+        }
+
+        FinishCrewFormation(
+            DadCrewFormationPhase.Blocked,
+            "Crew Formation has no supported formation mode.");
+        return true;
+    }
+
+    private void UpdateCrewFormationAfterPreparation(DadRunResult visibleRun)
+    {
+        var session = crewFormation;
+        if (session?.Status.IsActive != true)
+            return;
+
+        if (session.Status.Mode == DadCrewFormationMode.RegularParty)
+        {
+            if (!string.Equals(visibleRun.RequestId, session.Status.RequestId, StringComparison.Ordinal))
+            {
+                session.Status.Summary = $"Waiting for exact coordinator request {session.Status.RequestId}.";
+                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (DadCrewToolsRules.IsExactRegularGroupReady(
+                    visibleRun,
+                    session.Status.RequestId))
+            {
+                session.Status.Phase = DadCrewFormationPhase.RegularGroupReady;
+                session.Status.Summary = "Regular party is formed and held at GroupReady. It will not queue.";
+                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (visibleRun.Status is DadRunStatus.Queued
+                or DadRunStatus.WaitingForParticipants
+                or DadRunStatus.Running)
+            {
+                session.Status.Summary = visibleRun.Summary;
+                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (session.Status.Phase == DadCrewFormationPhase.Disbanding &&
+                visibleRun.Status == DadRunStatus.Cancelled)
+            {
+                FinishCrewFormation(
+                    DadCrewFormationPhase.Completed,
+                    "Crew Tools disband completed and released the held formation run.");
+                return;
+            }
+
+            var terminalSummary = FirstNonEmpty(
+                visibleRun.BlockedReason,
+                visibleRun.FailureReason,
+                visibleRun.Summary,
+                $"Coordinator request {session.Status.RequestId} ended with {visibleRun.Status}.");
+            FinishCrewFormation(
+                visibleRun.Status == DadRunStatus.Cancelled
+                    ? DadCrewFormationPhase.Cancelled
+                    : DadCrewFormationPhase.Blocked,
+                terminalSummary);
+            return;
+        }
+
+        if (session.Status.Mode != DadCrewFormationMode.AlliancePartyFinder)
+        {
+            FinishCrewFormation(
+                DadCrewFormationPhase.Blocked,
+                "Crew Formation entered an unsupported runtime mode.");
+            return;
+        }
+
+        var alliance = getCrewAllianceStatus!();
+        if (!string.Equals(
+                alliance.RecruitmentId,
+                session.Status.RecruitmentId,
+                StringComparison.Ordinal))
+        {
+            FinishCrewFormation(
+                DadCrewFormationPhase.Blocked,
+                "The owned alliance recruitment identity changed; refusing to control an unrelated PF operation.");
+            return;
+        }
+
+        if (session.Status.Phase == DadCrewFormationPhase.AllianceCleanup)
+        {
+            session.Status.Summary = alliance.Summary;
+            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            if (!alliance.OwnsRecruitment &&
+                alliance.State is DadAllianceRecruitmentState.Stopped
+                    or DadAllianceRecruitmentState.Complete)
+            {
+                FinishCrewFormation(
+                    DadCrewFormationPhase.Blocked,
+                    FirstNonEmpty(session.TerminalFailure, "Alliance formation failed."));
+            }
+            return;
+        }
+
+        if (DadCrewToolsRules.ShouldGrabExactAlliance(
+                alliance,
+                session.Status.RecruitmentId,
+                session.Status.GrabRequested))
+        {
+            session.Status.GrabRequested = true;
+            session.Status.Phase = DadCrewFormationPhase.GrabbingAlliance;
+            var grabbing = grabCrewAllianceParty!();
+            session.Status.Summary = grabbing.Summary;
+            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (DadCrewToolsRules.IsExactAllianceComplete(
+                alliance,
+                session.Status.RecruitmentId))
+        {
+            FinishCrewFormation(
+                DadCrewFormationPhase.Completed,
+                "Alliance group formation completed with exact subgroup verification and PF cleanup.");
+            return;
+        }
+
+        if (alliance.State == DadAllianceRecruitmentState.Blocked)
+        {
+            session.TerminalFailure = FirstNonEmpty(alliance.Summary, "Alliance formation was blocked.");
+            if (DadAlliancePartyFinderRules.CanStop(alliance))
+            {
+                session.Status.Phase = DadCrewFormationPhase.AllianceCleanup;
+                stopCrewAllianceParty!("Crew Formation failed; cleaning up only its owned alliance recruitment.");
+                var stopping = getCrewAllianceStatus!();
+                session.Status.Summary = stopping.Summary;
+                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            FinishCrewFormation(DadCrewFormationPhase.Blocked, session.TerminalFailure);
+            return;
+        }
+
+        if (alliance.State == DadAllianceRecruitmentState.Stopped)
+        {
+            FinishCrewFormation(
+                DadCrewFormationPhase.Blocked,
+                FirstNonEmpty(alliance.Summary, "Alliance formation stopped before completion."));
+            return;
+        }
+
+        session.Status.Summary = alliance.Summary;
+        session.Status.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    internal string MarkCrewFormationDisbanding(string requestId)
+    {
+        var session = crewFormation;
+        if (session?.Status.IsActive != true ||
+            session.Status.Mode != DadCrewFormationMode.RegularParty ||
+            session.Status.Phase != DadCrewFormationPhase.RegularGroupReady ||
+            !string.Equals(session.Status.RequestId, requestId, StringComparison.Ordinal))
+        {
+            return "The exact regular Crew Formation run is not held at GroupReady.";
+        }
+
+        session.Status.Phase = DadCrewFormationPhase.Disbanding;
+        session.Status.Summary = "Guarded disband is in progress.";
+        session.Status.UpdatedAtUtc = DateTime.UtcNow;
+        return string.Empty;
+    }
+
+    internal void CancelCrewFormation(string reason)
+    {
+        if (!IsCrewFormationActive)
+            return;
+
+        reason = string.IsNullOrWhiteSpace(reason) ? "Crew Formation cancelled." : reason.Trim();
+        if (crewFormation!.Status.Mode == DadCrewFormationMode.AlliancePartyFinder &&
+            DadAlliancePartyFinderRules.CanStop(getCrewAllianceStatus?.Invoke()))
+        {
+            stopCrewAllianceParty?.Invoke(reason);
+        }
+
+        FinishCrewFormation(DadCrewFormationPhase.Cancelled, reason);
+    }
+
+    private void FinishCrewFormation(DadCrewFormationPhase phase, string summary)
+    {
+        var session = crewFormation;
+        if (session == null)
+            return;
+
+        summary = string.IsNullOrWhiteSpace(summary) ? phase.ToString() : summary.Trim();
+        CancelNonTerminalTakeovers(summary);
+        session.Status.Phase = phase;
+        session.Status.Summary = summary;
+        session.Status.BlockedReason = phase == DadCrewFormationPhase.Blocked ? summary : string.Empty;
+        session.Status.UpdatedAtUtc = DateTime.UtcNow;
+        session.Status.CompletedAtUtc = session.Status.UpdatedAtUtc;
+
+        currentState.Phase = phase switch
+        {
+            DadCrewFormationPhase.Completed => DadSchedulerPresetPhase.Completed,
+            DadCrewFormationPhase.Cancelled => DadSchedulerPresetPhase.Cancelled,
+            _ => DadSchedulerPresetPhase.Blocked,
+        };
+        currentState.Summary = summary;
+        currentState.BlockedReason = session.Status.BlockedReason;
+        currentState.CompletedAtUtc = session.Status.CompletedAtUtc;
+        currentState.UpdatedAtUtc = session.Status.UpdatedAtUtc;
+        dailyRewardPreflight = null;
+        frozenOrdinarySlots = [];
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
+        dependencyGateCommitted = false;
+        activeSchedulerModuleId = DadModuleId.None;
+        activeJob = null;
+    }
+
+    private static T CloneCrewValue<T>(T value)
+        where T : class
+        => DadIpcJson.Deserialize<T>(DadIpcJson.Serialize(value))
+           ?? throw new InvalidOperationException($"Could not freeze {typeof(T).Name} for Crew Formation.");
 
     private bool UpdateLevelingOperation(DadRunResult visibleRun)
     {
@@ -1956,6 +2458,9 @@ public sealed class DadSchedulerService
 
     public void TickScheduleEnqueue()
     {
+        if (IsCrewFormationActive)
+            return;
+
         NormalizeQueue();
         configuration.PlannerGroups ??= [];
         var now = DateTime.UtcNow;
@@ -2031,6 +2536,12 @@ public sealed class DadSchedulerService
 
     public void Cancel(string reason)
     {
+        if (IsCrewFormationActive)
+        {
+            CancelCrewFormation(reason);
+            return;
+        }
+
         if (levelingOperation != null)
         {
             CancelLevelingOperation(string.IsNullOrWhiteSpace(reason) ? "Leveling Mode cancelled." : reason);
@@ -2068,7 +2579,12 @@ public sealed class DadSchedulerService
             result.ActiveScheduleCancelled = true;
         }
 
-        if (levelingOperation != null)
+        if (IsCrewFormationActive)
+        {
+            CancelCrewFormation(reason);
+            result.ActiveJobCancelled = true;
+        }
+        else if (levelingOperation != null)
         {
             CancelLevelingOperation(reason);
             result.ActiveJobCancelled = true;
@@ -3928,7 +4444,6 @@ public sealed class DadSchedulerService
 
     private void BlockActive(string reason)
     {
-        CancelNonTerminalTakeovers(reason);
         dailyRewardPreflight = null;
         frozenOrdinarySlots = [];
         currentState.Phase = DadSchedulerPresetPhase.Blocked;
@@ -3936,6 +4451,12 @@ public sealed class DadSchedulerService
         currentState.BlockedReason = currentState.Summary;
         currentState.CompletedAtUtc = DateTime.UtcNow;
         currentState.UpdatedAtUtc = DateTime.UtcNow;
+        if (IsCrewFormationActive)
+        {
+            FinishCrewFormation(DadCrewFormationPhase.Blocked, currentState.Summary);
+            return;
+        }
+        CancelNonTerminalTakeovers(reason);
         RecordTerminalResult(currentState);
     }
 
@@ -4731,6 +5252,16 @@ public sealed class DadSchedulerService
 
     private void RecordTerminalResult(DadScheduledCrewJobResult result)
     {
+        if (crewFormation != null &&
+            !string.IsNullOrWhiteSpace(crewFormation.SchedulerJobId) &&
+            string.Equals(
+                result.JobId,
+                crewFormation.SchedulerJobId,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
         NormalizeHistory();
         if (string.IsNullOrWhiteSpace(result.JobId))
             result.JobId = Guid.NewGuid().ToString("N");

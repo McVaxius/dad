@@ -52,6 +52,7 @@ public sealed class DadCoordinatorService
     private string firstPartyInviteBoundaryRunId = string.Empty;
     private string inviteRetryContinuationRunId = string.Empty;
     private bool persistentStartup;
+    private bool crewFormationTeardownRequested;
     private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
     private readonly DadStableContradictionTracker coordinatorContradictionTracker = new();
     private readonly Dictionary<string, PendingCoordinatorCancellation> pendingCoordinatorCancellations = new(StringComparer.OrdinalIgnoreCase);
@@ -160,6 +161,26 @@ public sealed class DadCoordinatorService
            activePlan != null &&
            Guid.TryParse(activePlan.Request.Orchestration.AutoPartyProposalId, out var activeProposalId) &&
            activeProposalId == proposalId;
+
+    internal string TryBeginCrewFormationTeardown(string requestId)
+    {
+        if (activePlan == null ||
+            !IsBusy ||
+            !string.Equals(activePlan.Request.RequestId, requestId, StringComparison.Ordinal))
+        {
+            return "The exact Crew Formation coordinator run is no longer active.";
+        }
+
+        if (!activePlan.Request.Orchestration.AutoPartyFormationOnly ||
+            CurrentResult.Phase != DadRunPhase.GroupReady)
+        {
+            return "Crew Formation disband requires the exact formation-only run held at GroupReady.";
+        }
+
+        crewFormationTeardownRequested = true;
+        BeginPartyTeardown("Crew Tools disband requested.");
+        return string.Empty;
+    }
 
     public DadRunResult GetAuthorityAwareResult()
     {
@@ -345,6 +366,7 @@ public sealed class DadCoordinatorService
 
         activePlan = plan;
         this.persistentStartup = persistentStartup;
+        crewFormationTeardownRequested = false;
         activeScheduleRepeatBoundary = repeatBoundary;
         coordinatorContradictionTracker.Reset();
         activeSlotManifest = acceptedManifest;
@@ -2176,7 +2198,10 @@ public sealed class DadCoordinatorService
         switch (decision.Action)
         {
             case DadPartyTeardownAction.Complete:
-                Transition(DadRunPhase.Finalizing, DadRunStatus.Running, decision.Summary);
+                if (crewFormationTeardownRequested)
+                    CancelActiveRun();
+                else
+                    Transition(DadRunPhase.Finalizing, DadRunStatus.Running, decision.Summary);
                 break;
             case DadPartyTeardownAction.Fail:
                 FinalizeRun(DadRunStatus.PartialFailure, "Dad run completed its duty work, but guarded party teardown failed.", decision.Summary);
@@ -3014,6 +3039,7 @@ public sealed class DadCoordinatorService
         firstPartyInviteBoundaryRunId = string.Empty;
         inviteRetryContinuationRunId = string.Empty;
         persistentStartup = false;
+        crewFormationTeardownRequested = false;
         activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
         coordinatorContradictionTracker.Reset();
         remoteAssignmentTracker.Clear();

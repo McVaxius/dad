@@ -4157,17 +4157,56 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
         DadUi.Heading("PLAN", "Choose a saved preset, configure the run, resolve blockers, then start through the scheduler-backed path.");
-        if (DadUi.Button("Open Batch Preset Wizard", DadUiTone.Accent))
-            plugin.TogglePresetBatchWizardUi();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Build a non-mutating rotating-account/anchor preview, then append generated Plans and Schedules atomically.");
         var plannerOptions = plugin.PlannerOptions;
         var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
         var requestPreview = plannerSnapshot.RequestPreview;
         var plannerPreview = requestPreview.PlannerPreview;
-        var plannerLocked = IsPlannerLocked(runState);
+        var crewTools = plugin.BuildCrewToolsSnapshot(plannerSnapshot);
+        var plannerLocked = IsPlannerLocked(runState) ||
+                            crewTools.Formation.IsActive ||
+                            crewTools.StandaloneDisbandActive;
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         var levelingEnabled = selectedGroup?.LevelingMode?.Enabled == true;
+
+        if (DadUi.BeginCard("dad-plan-crew-tools-card"))
+        {
+            DadUi.Heading(
+                "CREW TOOLS",
+                "Prepare the selected preset through the normal scheduler gates, then form or deliberately disband without queueing.");
+            DrawStatusRow("Selected preset", crewTools.SelectedPresetName);
+            DrawStatusRow(
+                "Resolved mode",
+                $"{FormatCrewFormationMode(crewTools.ResolvedMode)} | effective {crewTools.ResolvedPresetName}");
+            DrawStatusRow("Live state", crewTools.LiveState);
+            DrawStatusRow(
+                "First blocker",
+                string.IsNullOrWhiteSpace(crewTools.FirstBlocker)
+                    ? "(none)"
+                    : crewTools.FirstBlocker);
+
+            ImGui.BeginDisabled(!crewTools.CanCreateGroup);
+            if (DadUi.Button("Create group", DadUiTone.Accent))
+                plugin.StartCrewFormationFromPlanner();
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+            ImGui.BeginDisabled(!crewTools.CanDisband);
+            if (DadUi.Button("Disband", DadUiTone.Danger))
+                plugin.RequestCrewToolsDisband();
+            ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) &&
+                !crewTools.CanDisband)
+            {
+                ImGui.SetTooltip(crewTools.Formation.IsActive
+                    ? "Disband becomes available only for the exact regular Crew Formation run held at GroupReady."
+                    : crewTools.DisbandSummary);
+            }
+            DadUi.EndCard();
+        }
+
+        if (DadUi.Button("Open Batch Preset Wizard", DadUiTone.Accent))
+            plugin.TogglePresetBatchWizardUi();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Build a non-mutating rotating-account/anchor preview, then append generated Plans and Schedules atomically.");
 
         if (plannerLocked)
             DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
@@ -4248,6 +4287,14 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetTooltip("Crew rows save through their inline controls. This saves the activity, duty, stop rule, and finish rule selected above.");
         ImGui.EndDisabled();
     }
+
+    private static string FormatCrewFormationMode(DadCrewFormationMode mode)
+        => mode switch
+        {
+            DadCrewFormationMode.RegularParty => "Regular party",
+            DadCrewFormationMode.AlliancePartyFinder => "Alliance PF Create → Grab",
+            _ => "Unavailable",
+        };
 
     private void DrawPlannerLanePanel(
         DadPlannerUiSnapshot plannerSnapshot,

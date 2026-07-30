@@ -33,6 +33,19 @@ dotnet test .\Tests\dad.Tests.csproj
 
 ## Crew and persistence
 
+- The top of Plans now has **Crew Tools** for deliberate party-only work from the selected saved preset. It shows the
+  frozen/effective preset, resolved regular-versus-alliance mode, live state, and first blocker. **Create group** reuses
+  the ordinary scheduler's dependency, requested-job, wake/relog, takeover, and cancellation gates without saving a job
+  or changing the preset. Leveling Mode uses only its compiled first effective child.
+- A regular crew starts the existing coordinator with only the runtime request's formation-only flag enabled and holds
+  the verified party at `GroupReady`; it never queues. An effective non-PvP Duty Finder entry with a catalog queue size
+  above eight uses the existing private alliance PF path: Create once, wait for the exact owned listing, Grab once, then
+  finish only after exact subgroup verification and recruitment-only cleanup. It never queues or automatically disbands
+  the alliance.
+- **Disband** routes a held regular Crew Formation through its exact frozen run roster and the existing guarded teardown.
+  When no Crew Formation is active, it first freezes the current authoritative party membership and requires a stable,
+  out-of-duty, out-of-queue state, at least two nonzero members, and proven local leadership. Existing seven-attempt,
+  fresh-prompt, unexpected-member, and sustained-solo safeguards remain unchanged.
 - Home includes a one-step **Name this DAD** guide. It gives the immutable local client account a meaningful alias;
   normal crew choices show the alias only, while the session-only **Details** checkbox also shows the stable ID.
 - Crew account tools list each account's characters, can show every matching roster row by clearing secondary filters,

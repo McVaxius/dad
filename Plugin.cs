@@ -149,6 +149,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRuntimeReadinessTracker localRuntimeReadinessTracker = new();
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
+    private bool standaloneCrewDisbandActive;
+    private string standaloneCrewDisbandSummary = "No standalone disband is active.";
 
     private sealed class DebouncedUiWrite
     {
@@ -156,6 +158,16 @@ public sealed class Plugin : IDalamudPlugin
         public Type ValueType { get; init; } = typeof(object);
         public object? Baseline { get; init; }
         public Func<bool> Commit { get; init; } = static () => false;
+    }
+
+    private sealed class CrewFormationSelection
+    {
+        public DadPlannerGroup SourceGroup { get; init; } = new();
+        public DadPlannerGroup EffectiveGroup { get; init; } = new();
+        public DadPlannerRunRequestPreview RequestPreview { get; init; } = new();
+        public DadActivityPreset AlliancePreview { get; init; } = new();
+        public DadCrewFormationClassification Classification { get; init; } =
+            new(DadCrewFormationMode.Unavailable, "Unavailable", "Crew Formation is unavailable.");
     }
 
     public Plugin()
@@ -365,6 +377,13 @@ public sealed class Plugin : IDalamudPlugin
             () => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureAutoPartyAuthorizationGate(
             AutoPartyService.EvaluateSchedulerAuthorization);
+        SchedulerService.ConfigureCrewFormation(
+            StartCrewRegularParty,
+            (runId, group, preview) =>
+                AlliancePartyFinderService.CreateCrewFormationParty(runId, group, preview),
+            AlliancePartyFinderService.GetStatus,
+            AlliancePartyFinderService.GrabDads,
+            AlliancePartyFinderService.Stop);
         TransportService.ConfigureAuthorityHandlers(
             () => RunCoordinatorService.GetLocalResult(),
             request =>
@@ -1219,7 +1238,9 @@ public sealed class Plugin : IDalamudPlugin
     public string GetShareMutationBlocker()
         => DadShareService.GetMutationBlocker(
             IsBusy(GetVisibleRunState().VisibleRun),
-            SchedulerService.CurrentState.IsActive,
+            SchedulerService.CurrentState.IsActive ||
+            SchedulerService.IsCrewFormationActive ||
+            standaloneCrewDisbandActive,
             Configuration.ActiveScheduleRun?.IsActive == true);
 
     public DadScheduleAttachmentResult AttachSavedPlanToSchedule(string scheduleId, DadPlannerGroup group)
@@ -2150,6 +2171,356 @@ public sealed class Plugin : IDalamudPlugin
         return SchedulerService.BuildPreview(selectedGroup, requestPreview);
     }
 
+    internal DadCrewToolsSnapshot BuildCrewToolsSnapshot(DadPlannerUiSnapshot plannerSnapshot)
+    {
+        var formation = SchedulerService.GetCrewFormationStatus();
+        var disbandPreflight = PartyTeardownService.GetCurrentPartyDisbandPreflight();
+        var snapshot = new DadCrewToolsSnapshot
+        {
+            Formation = formation,
+            DisbandPreflight = disbandPreflight,
+            StandaloneDisbandActive = standaloneCrewDisbandActive,
+            DisbandSummary = standaloneCrewDisbandSummary,
+            SelectedPresetName = formation.IsActive
+                ? formation.SourcePresetName
+                : GetSelectedPlannerGroup()?.DisplayName ?? "(select a saved preset)",
+            ResolvedPresetName = formation.IsActive
+                ? formation.EffectivePresetName
+                : "(unresolved)",
+            ResolvedMode = formation.IsActive ? formation.Mode : DadCrewFormationMode.Unavailable,
+            LiveState = standaloneCrewDisbandActive
+                ? $"Disbanding | {standaloneCrewDisbandSummary}"
+                : formation.IsActive
+                    ? $"{formation.Phase} | {formation.Summary}"
+                    : formation.Phase is DadCrewFormationPhase.Completed
+                        or DadCrewFormationPhase.Blocked
+                        or DadCrewFormationPhase.Cancelled
+                        ? $"{formation.Phase} | {formation.Summary}"
+                        : "Idle",
+        };
+
+        if (formation.IsActive)
+        {
+            var heldRegularRun = formation.Mode == DadCrewFormationMode.RegularParty &&
+                                 formation.Phase == DadCrewFormationPhase.RegularGroupReady &&
+                                 DadCrewToolsRules.IsExactRegularGroupReady(
+                                     RunCoordinatorService.GetLocalResult(),
+                                     formation.RequestId);
+            snapshot.CanDisband = heldRegularRun;
+            snapshot.FirstBlocker = heldRegularRun
+                ? string.Empty
+                : formation.BlockedReason;
+            return snapshot;
+        }
+
+        if (TryBuildCrewFormationSelection(
+                plannerSnapshot.CuratedPool,
+                out var selection,
+                out var selectionBlocker))
+        {
+            snapshot.ResolvedPresetName = selection.EffectiveGroup.DisplayName;
+            snapshot.ResolvedMode = selection.Classification.Mode;
+            var createBlocker = FirstNonEmpty(
+                BuildCrewSelectionBlocker(selection),
+                BuildCrewFormationOperationalBlocker(selection.Classification.Mode));
+            snapshot.FirstBlocker = createBlocker;
+            snapshot.CanCreateGroup = string.IsNullOrWhiteSpace(createBlocker);
+        }
+        else
+        {
+            snapshot.FirstBlocker = selectionBlocker;
+        }
+
+        var disbandBlocker = BuildStandaloneCrewDisbandBlocker();
+        snapshot.DisbandSummary = FirstNonEmpty(
+            disbandBlocker,
+            disbandPreflight.BlockedReason,
+            standaloneCrewDisbandSummary);
+        snapshot.CanDisband = string.IsNullOrWhiteSpace(disbandBlocker) &&
+                              disbandPreflight.CanDisband;
+        return snapshot;
+    }
+
+    internal DadCrewFormationStatus StartCrewFormationFromPlanner()
+    {
+        var pool = BuildPlannerPool();
+        if (!TryBuildCrewFormationSelection(pool, out var selection, out var blocker))
+        {
+            PrintStatus(blocker);
+            return new DadCrewFormationStatus
+            {
+                Phase = DadCrewFormationPhase.Blocked,
+                Summary = blocker,
+                BlockedReason = blocker,
+                CompletedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            };
+        }
+
+        blocker = FirstNonEmpty(
+            BuildCrewSelectionBlocker(selection),
+            BuildCrewFormationOperationalBlocker(selection.Classification.Mode));
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            PrintStatus(blocker);
+            return new DadCrewFormationStatus
+            {
+                SourceGroupId = selection.SourceGroup.GroupId,
+                SourcePresetName = selection.SourceGroup.DisplayName,
+                EffectiveGroupId = selection.EffectiveGroup.GroupId,
+                EffectivePresetName = selection.EffectiveGroup.DisplayName,
+                Mode = selection.Classification.Mode,
+                Phase = DadCrewFormationPhase.Blocked,
+                Summary = blocker,
+                BlockedReason = blocker,
+                CompletedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            };
+        }
+
+        var status = SchedulerService.StartCrewFormation(
+            selection.SourceGroup,
+            selection.EffectiveGroup,
+            selection.RequestPreview,
+            selection.AlliancePreview,
+            selection.Classification);
+        PrintStatus(status.Summary);
+        InvalidatePlannerPreviewCache("Crew Formation started");
+        return status;
+    }
+
+    internal string RequestCrewToolsDisband()
+    {
+        var formation = SchedulerService.GetCrewFormationStatus();
+        if (formation.IsActive)
+        {
+            if (formation.Mode != DadCrewFormationMode.RegularParty ||
+                formation.Phase != DadCrewFormationPhase.RegularGroupReady)
+            {
+                const string unavailable = "Disband is unavailable until the exact regular Crew Formation run reaches GroupReady.";
+                PrintStatus(unavailable);
+                return unavailable;
+            }
+
+            var coordinatorBlocker = RunCoordinatorService.TryBeginCrewFormationTeardown(formation.RequestId);
+            if (!string.IsNullOrWhiteSpace(coordinatorBlocker))
+            {
+                PrintStatus(coordinatorBlocker);
+                return coordinatorBlocker;
+            }
+
+            var schedulerBlocker = SchedulerService.MarkCrewFormationDisbanding(formation.RequestId);
+            if (!string.IsNullOrWhiteSpace(schedulerBlocker))
+            {
+                PrintStatus(schedulerBlocker);
+                return schedulerBlocker;
+            }
+
+            const string started = "Guarded disband started for the exact held Crew Formation party.";
+            PrintStatus(started);
+            return started;
+        }
+
+        var blocker = BuildStandaloneCrewDisbandBlocker();
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            PrintStatus(blocker);
+            return blocker;
+        }
+
+        if (!PartyTeardownService.TryBeginCurrentParty(out var preflight))
+        {
+            PrintStatus(preflight.BlockedReason);
+            return preflight.BlockedReason;
+        }
+
+        standaloneCrewDisbandActive = true;
+        standaloneCrewDisbandSummary = preflight.Summary;
+        PrintStatus(preflight.Summary);
+        return preflight.Summary;
+    }
+
+    private bool TryBuildCrewFormationSelection(
+        DadCharacterPool pool,
+        out CrewFormationSelection selection,
+        out string blocker)
+    {
+        selection = new CrewFormationSelection();
+        var source = GetSelectedPlannerGroup();
+        if (source == null)
+        {
+            blocker = "Select a saved preset before using Crew Tools.";
+            return false;
+        }
+
+        DadPlannerGroup effective;
+        DadPlannerRunRequestPreview requestPreview;
+        if (source.LevelingMode?.Enabled == true)
+        {
+            var child = BuildLevelingChild(source, pool, iteration: 1);
+            if (!child.Compilation.CanStartChild ||
+                child.Compilation.ChildGroup == null ||
+                child.PlannerPreview == null)
+            {
+                blocker = FirstNonEmpty(
+                    child.Compilation.Summary,
+                    "Leveling Mode could not compile its first effective child.");
+                return false;
+            }
+
+            effective = child.Compilation.ChildGroup;
+            requestPreview = child.PlannerPreview;
+        }
+        else
+        {
+            effective = source;
+            var options = BuildPlannerOptionsForGroup(effective, null);
+            var activity = PresetProviderService.BuildPlannerPreview(pool, options, effective);
+            requestPreview = ApplyPlannerRuntimeTruth(
+                PresetProviderService.BuildPlannerRunRequestPreview(
+                    pool,
+                    options,
+                    plannerPreviewOverride: activity,
+                    selectedGroup: effective,
+                    completionFallback: Configuration.CompletionActions),
+                pool,
+                effective);
+        }
+
+        var effectiveOptions = BuildPlannerOptionsForGroup(effective, null);
+        var alliancePreview = PresetProviderService.BuildPlannerPreview(
+            pool,
+            effectiveOptions,
+            effective);
+        var dutyQueueSize = PresetProviderService
+            .GetPlannerDutyOption(effective.DutyContentFinderConditionId)
+            ?.QueueSize ?? 0;
+        var expectedPartySize = requestPreview.Request?
+                                    .Orchestration
+                                    .RosterIntent
+                                    .ExpectedPartySize
+                                ?? requestPreview.ContractPreview.PartySize;
+        var classification = DadCrewToolsRules.Classify(
+            effective.ActivityMode,
+            dutyQueueSize,
+            expectedPartySize);
+        selection = new CrewFormationSelection
+        {
+            SourceGroup = source,
+            EffectiveGroup = effective,
+            RequestPreview = requestPreview,
+            AlliancePreview = alliancePreview,
+            Classification = classification,
+        };
+        blocker = string.Empty;
+        return true;
+    }
+
+    private static string BuildCrewSelectionBlocker(CrewFormationSelection selection)
+    {
+        if (!string.IsNullOrWhiteSpace(selection.Classification.BlockedReason))
+            return selection.Classification.BlockedReason;
+        if (selection.RequestPreview.CanSchedule &&
+            selection.RequestPreview.Request != null)
+        {
+            return string.Empty;
+        }
+
+        return FirstNonEmpty(
+            selection.RequestPreview.BlockedReason,
+            selection.RequestPreview.StatusSummary,
+            "The selected preset is not schedulable.");
+    }
+
+    private string BuildCrewFormationOperationalBlocker(DadCrewFormationMode mode)
+    {
+        if (!Configuration.PluginEnabled)
+            return "Enable DAD before using Crew Tools.";
+        if (!Configuration.RunAsServerDad)
+            return "Crew Tools must run on the active Dad Coordinator.";
+        if (standaloneCrewDisbandActive)
+            return "A standalone guarded disband is already active.";
+        var schedulerBlocker = SchedulerService.GetCrewFormationSchedulerBlocker();
+        if (!string.IsNullOrWhiteSpace(schedulerBlocker))
+            return schedulerBlocker;
+        if (RunCoordinatorService.IsBusy)
+            return "A DAD coordinator run is already active.";
+        if (DadAlliancePartyFinderRules.CanStop(AlliancePartyFinderService.GetStatus()))
+            return "An unrelated Alliance Party Finder operation is already active.";
+        if (mode == DadCrewFormationMode.AlliancePartyFinder)
+        {
+            if (Configuration.LocalOnlyModeEnabled)
+                return "Alliance Crew Formation requires the authenticated DAD hub, not Local Only mode.";
+            if (string.IsNullOrWhiteSpace(Configuration.TransportSharedSecret))
+                return "Configure the DAD hub shared secret before alliance Crew Formation.";
+            if (!TransportService.IsReady)
+                return "Wait for the DAD Coordinator hub to become ready.";
+        }
+        return string.Empty;
+    }
+
+    private string BuildStandaloneCrewDisbandBlocker()
+    {
+        if (!Configuration.PluginEnabled)
+            return "Enable DAD before using Crew Tools.";
+        if (!Configuration.RunAsServerDad)
+            return "Disband must run on the active Dad Coordinator.";
+        if (standaloneCrewDisbandActive)
+            return "A guarded disband is already active.";
+        if (SchedulerService.IsCrewFormationActive)
+            return "Disband is unavailable while Crew Formation is still preparing or forming a group.";
+        var schedulerBlocker = SchedulerService.GetCrewFormationSchedulerBlocker();
+        if (!string.IsNullOrWhiteSpace(schedulerBlocker))
+            return schedulerBlocker;
+        if (RunCoordinatorService.IsBusy)
+            return "An unrelated DAD coordinator run is active.";
+        if (DadAlliancePartyFinderRules.CanStop(AlliancePartyFinderService.GetStatus()))
+            return "An Alliance Party Finder operation is still active.";
+        return string.Empty;
+    }
+
+    private DadRunResult StartCrewRegularParty(DadRunRequest request)
+    {
+        var result = RunCoordinatorService.StartTasks(request);
+        if (result.Status != DadRunStatus.Rejected)
+            MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Plans);
+        PrimeAuthorityCacheFromRun(request, result);
+        if (result.Status != DadRunStatus.Rejected)
+            InvalidatePlannerPreviewCache("Crew Formation coordinator started");
+        return result;
+    }
+
+    private void UpdateStandaloneCrewDisband()
+    {
+        if (!standaloneCrewDisbandActive)
+            return;
+
+        var decision = PartyTeardownService.Update();
+        standaloneCrewDisbandSummary = decision.Summary;
+        if (decision.Action is DadPartyTeardownAction.Complete
+            or DadPartyTeardownAction.Fail)
+        {
+            standaloneCrewDisbandActive = false;
+            PartyTeardownService.Reset();
+        }
+    }
+
+    private void CancelStandaloneCrewDisband(string reason)
+    {
+        if (!standaloneCrewDisbandActive)
+            return;
+
+        standaloneCrewDisbandActive = false;
+        standaloneCrewDisbandSummary = string.IsNullOrWhiteSpace(reason)
+            ? "Standalone disband cancelled."
+            : reason.Trim();
+        PartyTeardownService.Reset();
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim()
+           ?? string.Empty;
+
     internal DadLevelSeekDisplayState BuildScheduleLevelSeekDisplay(
         DadPlannerGroup? group,
         DadPlannerUiSnapshot plannerSnapshot)
@@ -2222,8 +2593,11 @@ public sealed class Plugin : IDalamudPlugin
             : null;
 
     private bool CanAdvanceSchedulerQueue()
-        => Configuration.RunAsServerDad &&
-           (SchedulerService.CurrentState.IsActive || !IsBusy(GetVisibleRunState().VisibleRun));
+        => !standaloneCrewDisbandActive &&
+           Configuration.RunAsServerDad &&
+           (SchedulerService.IsCrewFormationActive ||
+            SchedulerService.CurrentState.IsActive ||
+            !IsBusy(GetVisibleRunState().VisibleRun));
 
     public string StartSchedulerPresetFromJson(string json)
     {
@@ -3473,9 +3847,22 @@ public sealed class Plugin : IDalamudPlugin
     public bool CancelSchedulerJobFromMini(string jobId)
         => SchedulerService.CancelScheduledJob(jobId, "Cancelled from DAD mini window.");
 
-    private string BuildAlliancePartyFinderConflictBlocker()
+    private string BuildAlliancePartyFinderConflictBlocker(
+        DadAlliancePartyFinderActionContext actionContext)
     {
-        if (!Configuration.DebugUiEnabled)
+        var exactCrewFormation =
+            DadCrewToolsRules.IsExactCrewPartyFinderContext(
+                actionContext,
+                SchedulerService.GetCrewFormationStatus().RunId) &&
+            SchedulerService.IsActiveCrewFormationRun(
+                actionContext.CrewFormationRunId);
+        if (actionContext.Source == DadAlliancePartyFinderActionSource.CrewFormation &&
+            !exactCrewFormation)
+        {
+            return "Alliance Party Finder Crew authorization does not match the exact active Crew Formation run.";
+        }
+        if (actionContext.Source == DadAlliancePartyFinderActionSource.Debug &&
+            !Configuration.DebugUiEnabled)
             return "Alliance Party Finder is available only while /dad debug is enabled.";
         if (!Configuration.PluginEnabled)
             return "Enable DAD before creating an alliance recruitment.";
@@ -3489,7 +3876,9 @@ public sealed class Plugin : IDalamudPlugin
             return "Wait for the DAD Coordinator hub to become ready.";
         if (RunCoordinatorService.IsBusy)
             return "A DAD run is already active.";
-        if (SchedulerService.CurrentState.IsActive)
+        if (!exactCrewFormation &&
+            (SchedulerService.CurrentState.IsActive ||
+             SchedulerService.IsCrewFormationActive))
             return "A scheduler preset is already active.";
         return string.Empty;
     }
@@ -3508,6 +3897,7 @@ public sealed class Plugin : IDalamudPlugin
             if (!hasRecordedResult)
             {
                 var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
+                CancelStandaloneCrewDisband(reason);
                 var scheduler = SchedulerService.StopAll(reason, suppression);
                 AutoPartyService.StopAll(reason);
                 AlliancePartyFinderService.Stop(reason);
@@ -3966,6 +4356,8 @@ public sealed class Plugin : IDalamudPlugin
         var wasEnabled = Configuration.PluginEnabled;
         if (!enabled && wasEnabled)
         {
+            CancelStandaloneCrewDisband("DAD disabled by operator.");
+            SchedulerService.CancelCrewFormation("DAD disabled by operator.");
             WakeTakeoverService.StopAll("DAD disabled by operator.");
             AutoPartyService.StopAll("DAD disabled by operator.");
             AlliancePartyFinderService.Stop("DAD disabled by operator.");
@@ -4979,7 +5371,11 @@ public sealed class Plugin : IDalamudPlugin
         });
         RunFrameworkStep("ProfileDirectory", () => ProfileDirectoryService.Update());
         RunFrameworkStep("WorkerExecution", () => WorkerExecutionService.Update());
-        RunFrameworkStep("SchedulerEnqueue", () => SchedulerService.TickScheduleEnqueue());
+        RunFrameworkStep("SchedulerEnqueue", () =>
+        {
+            if (!standaloneCrewDisbandActive)
+                SchedulerService.TickScheduleEnqueue();
+        });
         RunFrameworkStep("SchedulerUpdate", () =>
         {
             if (CanAdvanceSchedulerQueue())
@@ -4992,6 +5388,7 @@ public sealed class Plugin : IDalamudPlugin
             }
         });
         RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
+        RunFrameworkStep("CrewToolsDisband", UpdateStandaloneCrewDisband);
         RunFrameworkStep("MeasuredPilot", () =>
         {
             var run = RunCoordinatorService.GetLocalResult();

@@ -5,6 +5,7 @@ using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using dad.Models;
 
 namespace dad.Services;
 
@@ -41,6 +42,53 @@ internal sealed unsafe class DadPartyTeardownService
             DateTime.UtcNow,
             prompt.Visible,
             prompt.Identity);
+    }
+
+    public DadPartyDisbandPreflight GetCurrentPartyDisbandPreflight()
+    {
+        var isCrossRealmParty = InfoProxyCrossRealm.IsCrossRealmParty();
+        var memberIds = isCrossRealmParty
+            ? ReadCrossRealmMemberIds()
+            : partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList();
+        if (memberIds.Count == 0 && playerState.ContentId != 0)
+            memberIds.Add(playerState.ContentId);
+
+        var leaderContentId = 0UL;
+        if (isCrossRealmParty)
+        {
+            if (InfoProxyCrossRealm.IsLocalPlayerPartyLeader())
+                leaderContentId = playerState.ContentId;
+        }
+        else
+        {
+            var leaderIndex = partyList.PartyLeaderIndex;
+            if (leaderIndex < partyList.Length)
+                leaderContentId = partyList[(int)leaderIndex]?.ContentId ?? 0;
+        }
+
+        return DadCrewToolsRules.EvaluateDisband(
+            playerState.ContentId,
+            leaderContentId,
+            memberIds,
+            isCrossRealmParty,
+            condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56],
+            condition[ConditionFlag.InDutyQueue] ||
+            condition[ConditionFlag.WaitingForDuty] ||
+            condition[ConditionFlag.WaitingForDutyFinder],
+            IsWorldStable());
+    }
+
+    public bool TryBeginCurrentParty(out DadPartyDisbandPreflight preflight)
+    {
+        preflight = GetCurrentPartyDisbandPreflight();
+        if (!preflight.CanDisband)
+            return false;
+
+        Begin(
+            preflight.MemberContentIds,
+            preflight.LeaderContentId,
+            preflight.LeaderName);
+        return true;
     }
 
     public DadPartyTeardownDecision Update()

@@ -1,5 +1,28 @@
 # dad — changelog
 
+## 2026-07-30 — P1211 runtime-only Crew Tools (local-only, unpublished)
+- Added a **CREW TOOLS** card at the top of Plans with selected/effective preset, resolved mode, live state, first blocker,
+  **Create group**, and danger-toned **Disband** controls.
+- Reused the ordinary scheduler's immutable request, dependency gate, early requested-job acknowledgements, wake/relog,
+  takeover, cancellation, and cleanup paths without enqueueing or persisting a Crew job and without changing the saved
+  preset. Leveling Mode compiles only its first effective child.
+- Regular crews clone the frozen request, set only runtime `AutoPartyFormationOnly`, use the existing coordinator, and
+  hold at exact `GroupReady` without queueing.
+- Alliance mode is selected only from the effective non-PvP Duty Finder catalog entry with queue size above eight. It
+  narrowly authorizes the existing PF service for the exact active Crew run, performs Create then one Grab after the
+  exact owned `ListingOpen`, and completes only after exact subgroup verification and recruitment-only cleanup. It never
+  queues or automatically disbands the alliance.
+- Routed held regular-party disband through the existing exact-manifest teardown. Standalone disband freezes the current
+  authoritative roster only after stable, out-of-duty, out-of-queue, two-member, and local-leader admission; existing
+  retry, prompt-ownership, membership, leadership, cross-world leave, and sustained-solo guards remain unchanged.
+- Added focused Crew classification/session/auth/disband coverage. Existing alliance PF, scheduler, and teardown
+  regressions pass 335/335; focused Crew tests pass 12/12; compile-only Debug x64 succeeds with zero warnings/errors.
+  The full Debug suite passes 1,450/1,450 with no skips, and the isolated no-incremental x64 Debug build succeeds with
+  zero warnings/errors and live deployment output disabled.
+- Preserved FrenRider, ADS, repair, idle-command, ordinary scheduler/preset behavior, configuration and transport schemas,
+  public IPC, version `0.4.2.1`, package, deployment, and release state. Live regular/alliance acceptance is Not Run by
+  Codex. No client control, remote mutation, relog, package, deployment, plugin commit, or plugin push occurred.
+
 ## 2026-07-30 — I63 revision 29 direct-password Party Finder join path (local-only, unpublished)
 - Preserved the one assigned subgroup callback and allowed either valid dialog sequence observed afterward: fresh ready
   Yes/No followed by the private passcode prompt, or the ready private prompt directly with no Yes callback.

@@ -35,6 +35,25 @@ Level seek is useful for leveling schedules. DAD evaluates targeted primary rows
 
 Templates can keep the party roles without binding permanent characters. Instantiate a template when needed and DAD fills matching roster characters by role, leaving unresolved slots visible for review.
 
+## Form A Crew Without Queueing
+
+At the top of Plans, **Crew Tools** can prepare and form the selected saved preset without starting its duty. The card
+shows the selected/effective preset, whether DAD resolved it as a regular party or alliance Party Finder formation, its
+live state, and the first blocker.
+
+- **Create group** runs the same dependency checks, requested-job preparation, wake/relog, takeover, and readiness gates
+  as the ordinary scheduler. It does not edit the saved preset or save a scheduler job.
+- Regular parties use DAD's normal verified assembly and stop at **GroupReady**. DAD does not queue them.
+- A selected non-PvP Duty Finder raid whose live catalog size is above eight uses the proven private alliance flow. DAD
+  creates its owned listing, waits for it to open, grabs the exact preset characters once, verifies their assigned
+  subgroups, and closes only the recruitment. DAD does not queue or automatically disband the alliance.
+- Leveling Mode resolves and freezes only its first effective child for this operation.
+- **Disband** tears down the exact held regular crew. With no active Crew Formation, it can also disband the current
+  party only when DAD proves a stable out-of-duty/out-of-queue state, at least two exact members, and local leadership.
+  Membership drift, leadership drift, stale confirmations, and unrelated prompts remain fail-closed.
+
+Use **Stop All** to cancel active Crew Tools preparation or formation. The normal Plan and saved preset remain intact.
+
 ## Supported Today
 
 These lanes have guarded live execution in the current plugin. "Guarded" means DAD validates the selected content, roster, required-plugin truth, client state, and queue ownership before it changes game state.

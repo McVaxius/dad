@@ -11,7 +11,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private readonly DadAutoPartyDiscordService discordService;
     private readonly DadAlliancePartyFinderNativeGateway nativeGateway;
     private readonly DadAlliancePfAuditLog audit;
-    private readonly Func<string> conflictBlocker;
+    private readonly Func<DadAlliancePartyFinderActionContext, string> conflictBlocker;
     private readonly Func<string> coordinatorIdentity;
     private readonly IPluginLog log;
     private readonly DadAllianceDeliveryDedupe receiverDedupe = new();
@@ -54,7 +54,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         DadAutoPartyDiscordService discordService,
         DadAlliancePartyFinderNativeGateway nativeGateway,
         DadAlliancePfAuditLog audit,
-        Func<string> conflictBlocker,
+        Func<DadAlliancePartyFinderActionContext, string> conflictBlocker,
         Func<string> coordinatorIdentity,
         IPluginLog log)
     {
@@ -101,14 +101,35 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     public DadAlliancePartyFinderStatus Preview(
         DadPlannerGroup? group,
         DadActivityPreset? preview)
-        => EvaluateCreatePreflight(group, preview).Status.Clone();
+        => EvaluateCreatePreflight(
+            group,
+            preview,
+            DadAlliancePartyFinderActionContext.Debug).Status.Clone();
 
     public DadAlliancePartyFinderStatus CreateParty(
         DadPlannerGroup? group,
         DadActivityPreset? preview)
+        => CreateParty(
+            group,
+            preview,
+            DadAlliancePartyFinderActionContext.Debug);
+
+    internal DadAlliancePartyFinderStatus CreateCrewFormationParty(
+        string crewFormationRunId,
+        DadPlannerGroup? group,
+        DadActivityPreset? preview)
+        => CreateParty(
+            group,
+            preview,
+            DadAlliancePartyFinderActionContext.CrewFormation(crewFormationRunId));
+
+    private DadAlliancePartyFinderStatus CreateParty(
+        DadPlannerGroup? group,
+        DadActivityPreset? preview,
+        DadAlliancePartyFinderActionContext actionContext)
     {
         ThrowIfDisposed();
-        var preflight = EvaluateCreatePreflight(group, preview);
+        var preflight = EvaluateCreatePreflight(group, preview, actionContext);
         if (!preflight.Status.CreatePreflightReady)
             return RejectCreate(preflight.Status);
 
@@ -152,7 +173,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 
     private DadAlliancePfCreatePreflightEvaluation EvaluateCreatePreflight(
         DadPlannerGroup? group,
-        DadActivityPreset? preview)
+        DadActivityPreset? preview,
+        DadAlliancePartyFinderActionContext actionContext)
     {
         var hasConcretePreset =
             group != null &&
@@ -209,7 +231,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 local);
         }
 
-        var operationalBlocker = conflictBlocker();
+        var operationalBlocker = conflictBlocker(actionContext);
         if (!string.IsNullOrWhiteSpace(operationalBlocker))
         {
             return BuildCreatePreflightEvaluation(
