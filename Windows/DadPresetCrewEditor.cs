@@ -51,7 +51,9 @@ internal sealed class DadPresetCrewEditor
         var allianceValidation = DadAlliancePartyFinderRules.ValidateSavedRows(group.Slots);
         ImGui.TextUnformatted(
             $"Alliance PF assignments: A {allianceValidation.AllianceACount}/8 | " +
-            $"B {allianceValidation.AllianceBCount}/8 | C {allianceValidation.AllianceCCount}/8");
+            $"B {allianceValidation.AllianceBCount}/8 | C {allianceValidation.AllianceCCount}/8 | " +
+            $"D {allianceValidation.AllianceDCount}/8 | E {allianceValidation.AllianceECount}/8 | " +
+            $"F {allianceValidation.AllianceFCount}/8 | G {allianceValidation.AllianceGCount}/8");
 
         ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(2f, 2f));
         var tableOpen = ImGui.BeginTable(
@@ -210,7 +212,7 @@ internal sealed class DadPresetCrewEditor
             }
             else if (header == "Alliance" && ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("Explicit A/B/C subgroup for the debug-only Alliance Party Finder flow. Substitutes inherit their primary row.");
+                ImGui.SetTooltip("Explicit A-G subgroup for the debug-only Alliance Party Finder flow. Substitutes inherit their primary row.");
             }
         }
     }

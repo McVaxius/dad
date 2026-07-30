@@ -64,7 +64,11 @@ public static class DadAlliancePartyFinderRules
     public static bool IsConcreteAssignment(DadAllianceAssignment assignment)
         => assignment is DadAllianceAssignment.A
             or DadAllianceAssignment.B
-            or DadAllianceAssignment.C;
+            or DadAllianceAssignment.C
+            or DadAllianceAssignment.D
+            or DadAllianceAssignment.E
+            or DadAllianceAssignment.F
+            or DadAllianceAssignment.G;
 
     public static int GeneratePasscode(Func<int, int, int>? randomInt32 = null)
         => (randomInt32 ?? RandomNumberGenerator.GetInt32)(1000, 10000);
@@ -78,6 +82,10 @@ public static class DadAlliancePartyFinderRules
             DadAllianceAssignment.A => 0,
             DadAllianceAssignment.B => 1,
             DadAllianceAssignment.C => 2,
+            DadAllianceAssignment.D => 3,
+            DadAllianceAssignment.E => 4,
+            DadAllianceAssignment.F => 5,
+            DadAllianceAssignment.G => 6,
             _ => -1,
         };
 
@@ -87,6 +95,10 @@ public static class DadAlliancePartyFinderRules
             0 => DadAllianceAssignment.A,
             1 => DadAllianceAssignment.B,
             2 => DadAllianceAssignment.C,
+            3 => DadAllianceAssignment.D,
+            4 => DadAllianceAssignment.E,
+            5 => DadAllianceAssignment.F,
+            6 => DadAllianceAssignment.G,
             _ => DadAllianceAssignment.None,
         };
 
@@ -153,7 +165,7 @@ public static class DadAlliancePartyFinderRules
             return "Exact Party Finder leader identity is incomplete.";
         }
         if (!IsConcreteAssignment(instruction.AssignedAlliance))
-            return "A concrete A/B/C assignment is required.";
+            return "A concrete A-G assignment is required.";
         if (instruction.Passcode is < 1000 or > 9999)
             return "The Party Finder passcode must be exactly four digits.";
         if (instruction.Attempt < 0 || instruction.StopGeneration < 0)
@@ -183,7 +195,7 @@ public static class DadAlliancePartyFinderRules
             .Select(static row => row.SlotId)
             .ToList();
         if (unassigned.Count > 0)
-            blockers.Add($"Assign A, B, or C to {string.Join(", ", unassigned)}.");
+            blockers.Add($"Assign A, B, C, D, E, F, or G to {string.Join(", ", unassigned)}.");
 
         var unresolved = rows
             .Where(static row => !row.HasIdentity)
@@ -195,11 +207,19 @@ public static class DadAlliancePartyFinderRules
         var a = rows.Count(static row => row.Assignment == DadAllianceAssignment.A);
         var b = rows.Count(static row => row.Assignment == DadAllianceAssignment.B);
         var c = rows.Count(static row => row.Assignment == DadAllianceAssignment.C);
+        var d = rows.Count(static row => row.Assignment == DadAllianceAssignment.D);
+        var e = rows.Count(static row => row.Assignment == DadAllianceAssignment.E);
+        var f = rows.Count(static row => row.Assignment == DadAllianceAssignment.F);
+        var g = rows.Count(static row => row.Assignment == DadAllianceAssignment.G);
         ValidateCount("A", a, blockers);
         ValidateCount("B", b, blockers);
         ValidateCount("C", c, blockers);
+        ValidateCount("D", d, blockers, required: false);
+        ValidateCount("E", e, blockers, required: false);
+        ValidateCount("F", f, blockers, required: false);
+        ValidateCount("G", g, blockers, required: false);
 
-        var total = a + b + c;
+        var total = a + b + c + d + e + f + g;
         if (total is < MinimumTotalSize or > MaximumTotalSize)
             blockers.Add($"Alliance recruitment requires {MinimumTotalSize}-{MaximumTotalSize} effective characters; found {total}.");
 
@@ -230,21 +250,29 @@ public static class DadAlliancePartyFinderRules
         }
 
         var summary = blockers.Count == 0
-            ? $"Ready: A {a}/8, B {b}/8, C {c}/8 ({total} total)."
-            : $"Blocked: A {a}/8, B {b}/8, C {c}/8 ({total} total). {string.Join(" ", blockers)}";
+            ? $"Ready: A {a}/8, B {b}/8, C {c}/8, D {d}/8, E {e}/8, F {f}/8, G {g}/8 ({total} total)."
+            : $"Blocked: A {a}/8, B {b}/8, C {c}/8, D {d}/8, E {e}/8, F {f}/8, G {g}/8 ({total} total). {string.Join(" ", blockers)}";
         return new DadAlliancePresetValidation
         {
             AllianceACount = a,
             AllianceBCount = b,
             AllianceCCount = c,
+            AllianceDCount = d,
+            AllianceECount = e,
+            AllianceFCount = f,
+            AllianceGCount = g,
             Blockers = blockers,
             Summary = summary,
         };
     }
 
-    private static void ValidateCount(string alliance, int count, ICollection<string> blockers)
+    private static void ValidateCount(
+        string alliance,
+        int count,
+        ICollection<string> blockers,
+        bool required = true)
     {
-        if (count < MinimumAllianceSize)
+        if (required && count < MinimumAllianceSize)
             blockers.Add($"Alliance {alliance} requires at least one character.");
         else if (count > MaximumAllianceSize)
             blockers.Add($"Alliance {alliance} cannot exceed eight characters.");

@@ -1,5 +1,26 @@
 # dad — changelog
 
+## 2026-07-29 — I63 revision 25 A-G Alliance selector indexing (local-only, unpublished)
+- Extended `DadAllianceAssignment` without changing its existing serialized values: `None=0`, `A=1`, `B=2`, `C=3`,
+  `D=4`, `E=5`, `F=6`, and `G=7`. The enum-driven preset selector now exposes A-G, and preset plus runtime status
+  summaries show all seven counts.
+- A-G are concrete assignments and map exactly to selector and observed cross-realm group indexes `0`-`6`; `None`,
+  negative, and out-of-range values remain rejected. The single subgroup callback is computed as
+  `LookingForGroupDetail`, `updateState=true`, payload `[12 + index, "Alliance X"]`, proving A=`12` through G=`18`.
+- Preserved required A-C validation for the existing three-group Labyrinth Create listing. Optional D-G assignments count
+  toward the unchanged 3-24 total and receive the same eight-member cap without changing Create's Alliance A `3x8`
+  configuration or 23 open slots.
+- Propagated G through configuration and hub IPC round trips, scheduler cloning, substitute inheritance, template
+  materialization, and sharing schema 3 without a configuration, sharing, or hub-protocol version bump.
+- Preserved revision-24 passcode acknowledgement and deferred detail close, listing groups, exact detail validation,
+  one-shot Alliance and Yes, retries, subgroup verification, Stop, recruitment-only cleanup, API-15, ECommons, timing,
+  version, package, deployment, and release behavior.
+- Fresh local verification passes 263/263 focused Party Finder/schema/share tests and all 1,402/1,402 Debug x64 tests.
+  The deployment-disabled no-incremental build succeeds with zero warnings/errors, 7/7 API-15 layout tests pass, and the
+  revision-25 static/parity/integrity audit passes 109/109 checks. B=`13` is user-observed; A=`12` and C=`14` through
+  G=`18` remain locally verified only. No client control, remote-PC mutation, deployment, relog, commit, push, package,
+  release, or version bump occurred.
+
 ## 2026-07-29 — I63 revision 24 acknowledged passcode and deferred detail close (local-only, unpublished)
 - Superseded revision 23 only for the private passcode/detail-close grouping. Every callback through the fresh one-shot Yes
   remains unchanged, and the revision-23 `[13, index]` then `[11, index]` listing groups remain authoritative.

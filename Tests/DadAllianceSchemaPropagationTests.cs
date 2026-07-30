@@ -89,7 +89,7 @@ public sealed class DadAllianceSchemaPropagationTests
             TargetCharacterName = "Target Example",
             TargetCharacterWorld = "Beta",
             TargetContentId = 400,
-            AssignedAlliance = DadAllianceAssignment.B,
+            AssignedAlliance = DadAllianceAssignment.G,
             Passcode = 6789,
             Attempt = 12,
             State = DadAllianceRecruitmentState.RetryWaiting,
@@ -109,7 +109,7 @@ public sealed class DadAllianceSchemaPropagationTests
         Assert.Equal(instruction.TargetApplicationId, restored.TargetApplicationId);
         Assert.Equal(instruction.TargetCharacterKey, restored.TargetCharacterKey);
         Assert.Equal(instruction.TargetContentId, restored.TargetContentId);
-        Assert.Equal(DadAllianceAssignment.B, restored.AssignedAlliance);
+        Assert.Equal(DadAllianceAssignment.G, restored.AssignedAlliance);
         Assert.Equal(6789, restored.Passcode);
         Assert.Equal(12, restored.Attempt);
         Assert.Equal(DadAllianceRecruitmentState.RetryWaiting, restored.State);
@@ -125,7 +125,7 @@ public sealed class DadAllianceSchemaPropagationTests
         var state = new DadSchedulerSlotState
         {
             SlotId = "Slot1",
-            AllianceAssignment = DadAllianceAssignment.C,
+            AllianceAssignment = DadAllianceAssignment.G,
         };
         var clonedState = state.Clone();
         var refreshed = DadPlannerGroupUpdateRules.RefreshSlotsPreservingOperationalSettings(
@@ -134,31 +134,32 @@ public sealed class DadAllianceSchemaPropagationTests
                 new DadPlannerGroupSlot
                 {
                     SlotId = "Slot1",
-                    AllianceAssignment = DadAllianceAssignment.C,
+                    AllianceAssignment = DadAllianceAssignment.G,
                 },
                 new DadPlannerGroupSlot
                 {
                     SlotId = "Slot2",
-                    AllianceAssignment = DadAllianceAssignment.C,
+                    AllianceAssignment = DadAllianceAssignment.G,
                 },
                 new DadPlannerGroupSlot
                 {
                     SlotId = "Slot3",
-                    AllianceAssignment = DadAllianceAssignment.C,
+                    AllianceAssignment = DadAllianceAssignment.G,
                 },
             ]);
 
         AssertAssignments(clone);
-        Assert.Equal(DadAllianceAssignment.C, clonedState.AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.G, clonedState.AllianceAssignment);
         Assert.All(
             refreshed,
-            static slot => Assert.Equal(DadAllianceAssignment.C, slot.AllianceAssignment));
+            static slot => Assert.Equal(DadAllianceAssignment.G, slot.AllianceAssignment));
     }
 
     [Fact]
     public void EffectiveSubstitutionUsesThePrimaryConfiguredAlliance()
     {
         var group = GroupWithAssignments();
+        group.Slots[0].AllianceAssignment = DadAllianceAssignment.G;
         group.Slots.Insert(1, new DadPlannerGroupSlot
         {
             SlotId = "Slot1",
@@ -176,7 +177,7 @@ public sealed class DadAllianceSchemaPropagationTests
                 new DadPresetCharacterSlot
                 {
                     SlotId = "Slot1",
-                    AllianceAssignment = DadAllianceAssignment.A,
+                    AllianceAssignment = DadAllianceAssignment.G,
                     CharacterKey = "Substitute Example@Beta",
                     RequiredCharacterKey = new DadCharacterKey("Substitute Example@Beta"),
                     ContentId = 1234,
@@ -184,9 +185,9 @@ public sealed class DadAllianceSchemaPropagationTests
                 },
             ]);
 
-        Assert.Equal(DadAllianceAssignment.A, projected.Slots[0].AllianceAssignment);
-        Assert.Equal(DadAllianceAssignment.A, projected.Slots[1].AllianceAssignment);
-        Assert.Equal(DadAllianceAssignment.A, bound.Slots[0].AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.G, projected.Slots[0].AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.G, projected.Slots[1].AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.G, bound.Slots[0].AllianceAssignment);
     }
 
     [Fact]
@@ -216,7 +217,7 @@ public sealed class DadAllianceSchemaPropagationTests
             [
                 Slot("Slot1", DadAllianceAssignment.A),
                 Slot("Slot2", DadAllianceAssignment.B),
-                Slot("Slot3", DadAllianceAssignment.C),
+                Slot("Slot3", DadAllianceAssignment.G),
             ],
         };
 
@@ -230,6 +231,6 @@ public sealed class DadAllianceSchemaPropagationTests
 
     private static void AssertAssignments(DadPlannerGroup group)
         => Assert.Equal(
-            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.C],
+            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.G],
             group.Slots.Select(static slot => slot.AllianceAssignment).ToArray());
 }

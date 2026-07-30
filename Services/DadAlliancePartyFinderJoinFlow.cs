@@ -171,19 +171,21 @@ internal static class DadAlliancePartyFinderJoinCallbacks
 
     private static DadAlliancePfJoinCallback BuildAllianceCallback(
         DadAllianceAssignment alliance)
-        => alliance switch
+    {
+        var index = DadAlliancePartyFinderRules.GetJoinAllianceButtonIndex(alliance);
+        if (index < 0)
         {
-            DadAllianceAssignment.A =>
-                new("LookingForGroupDetail", true, [12, "Alliance A"]),
-            DadAllianceAssignment.B =>
-                new("LookingForGroupDetail", true, [13, "Alliance B"]),
-            DadAllianceAssignment.C =>
-                new("LookingForGroupDetail", true, [14, "Alliance C"]),
-            _ => throw new ArgumentOutOfRangeException(
+            throw new ArgumentOutOfRangeException(
                 nameof(alliance),
                 alliance,
-                "A concrete alliance assignment is required."),
-        };
+                "A concrete alliance assignment is required.");
+        }
+
+        return new(
+            "LookingForGroupDetail",
+            true,
+            [12 + index, $"Alliance {alliance}"]);
+    }
 }
 
 /// <summary>

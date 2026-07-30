@@ -155,7 +155,18 @@ public sealed class DadAlliancePresetValidation
     public int AllianceACount { get; init; }
     public int AllianceBCount { get; init; }
     public int AllianceCCount { get; init; }
-    public int TotalCount => AllianceACount + AllianceBCount + AllianceCCount;
+    public int AllianceDCount { get; init; }
+    public int AllianceECount { get; init; }
+    public int AllianceFCount { get; init; }
+    public int AllianceGCount { get; init; }
+    public int TotalCount =>
+        AllianceACount +
+        AllianceBCount +
+        AllianceCCount +
+        AllianceDCount +
+        AllianceECount +
+        AllianceFCount +
+        AllianceGCount;
     public List<string> Blockers { get; init; } = [];
     public bool IsValid => Blockers.Count == 0;
     public string Summary { get; init; } = string.Empty;
@@ -238,6 +249,10 @@ public sealed class DadAlliancePartyFinderStatus
                 AllianceACount = Validation.AllianceACount,
                 AllianceBCount = Validation.AllianceBCount,
                 AllianceCCount = Validation.AllianceCCount,
+                AllianceDCount = Validation.AllianceDCount,
+                AllianceECount = Validation.AllianceECount,
+                AllianceFCount = Validation.AllianceFCount,
+                AllianceGCount = Validation.AllianceGCount,
                 Blockers = Validation.Blockers.ToList(),
                 Summary = Validation.Summary,
             },

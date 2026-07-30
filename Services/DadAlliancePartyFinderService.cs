@@ -570,7 +570,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             lock (statusGate)
             {
                 status.State = DadAllianceRecruitmentState.Verifying;
-                status.Summary = $"Verified all {successful} effective characters in their exact A/B/C subgroups; ending recruitment only.";
+                status.Summary = $"Verified all {successful} effective characters in their exact A-G subgroups; ending recruitment only.";
                 status.Results = coordinatorResults.Values.Select(static result => result.Clone()).ToList();
                 status.UpdatedAtUtc = now;
             }

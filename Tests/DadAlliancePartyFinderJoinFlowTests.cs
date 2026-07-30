@@ -217,6 +217,10 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
     [InlineData(DadAllianceAssignment.A, 12, "Alliance A")]
     [InlineData(DadAllianceAssignment.B, 13, "Alliance B")]
     [InlineData(DadAllianceAssignment.C, 14, "Alliance C")]
+    [InlineData(DadAllianceAssignment.D, 15, "Alliance D")]
+    [InlineData(DadAllianceAssignment.E, 16, "Alliance E")]
+    [InlineData(DadAllianceAssignment.F, 17, "Alliance F")]
+    [InlineData(DadAllianceAssignment.G, 18, "Alliance G")]
     public void AllianceCallbacksMatchHudObservations(
         DadAllianceAssignment alliance,
         int callbackId,
@@ -232,6 +236,17 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         Assert.True(callback.UpdateState);
         Assert.Equal([callbackId, callbackText], callback.Values);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(8)]
+    public void NoneAndOutOfRangeAllianceCallbacksAreRejected(int rawAssignment)
+        => Assert.Throws<ArgumentOutOfRangeException>(
+            () => DadAlliancePartyFinderJoinCallbacks.Build(
+                new DadAlliancePfJoinActionRequest(
+                    DadAlliancePfJoinAction.SelectAlliance,
+                    Alliance: (DadAllianceAssignment)rawAssignment)));
 
     [Theory]
     [InlineData(0)]

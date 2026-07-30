@@ -336,6 +336,10 @@ public sealed class DadAlliancePartyFinderNativeCallbackDispatcherTests
     [InlineData(DadAllianceAssignment.A, 12, "Alliance A")]
     [InlineData(DadAllianceAssignment.B, 13, "Alliance B")]
     [InlineData(DadAllianceAssignment.C, 14, "Alliance C")]
+    [InlineData(DadAllianceAssignment.D, 15, "Alliance D")]
+    [InlineData(DadAllianceAssignment.E, 16, "Alliance E")]
+    [InlineData(DadAllianceAssignment.F, 17, "Alliance F")]
+    [InlineData(DadAllianceAssignment.G, 18, "Alliance G")]
     public void AlliancePayloadsRetainExactHGlobalUtf8Storage(
         DadAllianceAssignment alliance,
         int callbackId,

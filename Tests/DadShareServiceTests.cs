@@ -83,7 +83,7 @@ public sealed class DadShareServiceTests
             Assert.False(slot.CharacterLoadInstruction.Enabled);
         });
         Assert.Equal(
-            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.C],
+            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.G],
             imported.Slots.Select(static slot => slot.AllianceAssignment).ToArray());
         Assert.True(DadSharedPlanRules.HasUnresolvedPlaceholders(imported));
         Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
@@ -104,7 +104,7 @@ public sealed class DadShareServiceTests
         Assert.True(current.Plan!.Slots[0].SkipIfDailyRouletteRewardReceived);
         Assert.Equal(DadAllianceAssignment.A, current.Plan.Slots[0].AllianceAssignment);
         Assert.Equal(DadAllianceAssignment.B, current.Plan.Slots[1].AllianceAssignment);
-        Assert.Equal(DadAllianceAssignment.C, current.Plan.Slots[2].AllianceAssignment);
+        Assert.Equal(DadAllianceAssignment.G, current.Plan.Slots[2].AllianceAssignment);
 
         var legacy = JsonNode.Parse(DecodeJson(encoded))!.AsObject();
         legacy["schema"] = 2;
@@ -575,7 +575,7 @@ public sealed class DadShareServiceTests
             [
                 Slot("Slot1", "account-real", "Alice Example@World", 21, DadAllianceAssignment.A),
                 Slot("Slot2", "account-real", "Bob Example@World", 24, DadAllianceAssignment.B),
-                Slot("Slot3", "account-other", string.Empty, 32, DadAllianceAssignment.C),
+                Slot("Slot3", "account-other", string.Empty, 32, DadAllianceAssignment.G),
             ],
             MapRunTemplate = "Alice Example map route",
             MapMode = DadMapCrewJobMode.GatherThenRun,

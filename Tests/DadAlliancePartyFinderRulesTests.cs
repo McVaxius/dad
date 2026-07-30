@@ -8,7 +8,7 @@ namespace dad.Tests;
 public sealed class DadAlliancePartyFinderRulesTests
 {
     [Fact]
-    public void SparsePresetWithEveryAllianceAndAllianceAHostIsValid()
+    public void SparsePresetWithRequiredAndOptionalAlliancesAndAllianceAHostIsValid()
     {
         var slots = new[]
         {
@@ -16,6 +16,10 @@ public sealed class DadAlliancePartyFinderRulesTests
             Effective("Slot2", "Second Example@Alpha", 1002, DadAllianceAssignment.A),
             Effective("Slot3", "Third Example@Beta", 1003, DadAllianceAssignment.B),
             Effective("Slot4", "Fourth Example@Gamma", 1004, DadAllianceAssignment.C),
+            Effective("Slot5", "Fifth Example@Delta", 1005, DadAllianceAssignment.D),
+            Effective("Slot6", "Sixth Example@Epsilon", 1006, DadAllianceAssignment.E),
+            Effective("Slot7", "Seventh Example@Zeta", 1007, DadAllianceAssignment.F),
+            Effective("Slot8", "Eighth Example@Eta", 1008, DadAllianceAssignment.G),
         };
 
         var validation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
@@ -26,7 +30,11 @@ public sealed class DadAlliancePartyFinderRulesTests
         Assert.Equal(2, validation.AllianceACount);
         Assert.Equal(1, validation.AllianceBCount);
         Assert.Equal(1, validation.AllianceCCount);
-        Assert.Equal(4, validation.TotalCount);
+        Assert.Equal(1, validation.AllianceDCount);
+        Assert.Equal(1, validation.AllianceECount);
+        Assert.Equal(1, validation.AllianceFCount);
+        Assert.Equal(1, validation.AllianceGCount);
+        Assert.Equal(8, validation.TotalCount);
     }
 
     [Fact]
@@ -44,26 +52,62 @@ public sealed class DadAlliancePartyFinderRulesTests
             new DadCharacterKey("Host Example@Alpha"));
 
         Assert.False(validation.IsValid);
-        Assert.Contains(validation.Blockers, static blocker => blocker.Contains("Assign A, B, or C", StringComparison.Ordinal));
+        Assert.Contains(validation.Blockers, static blocker => blocker.Contains("Assign A, B, C, D, E, F, or G", StringComparison.Ordinal));
         Assert.Contains(validation.Blockers, static blocker => blocker.Contains("Alliance A", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void AllianceCapAndTotalCapAreEnforcedWithoutDynamicBalancing()
+    public void OptionalAllianceCapAndTotalCountAreEnforcedWithoutDynamicBalancing()
     {
-        var rows = Enumerable.Range(1, 9)
-            .Select(index => Saved($"Slot{index}", DadAllianceAssignment.A))
-            .Append(Saved("Slot10", DadAllianceAssignment.B))
-            .Append(Saved("Slot11", DadAllianceAssignment.C))
+        var rows = new[]
+            {
+                Saved("Slot1", DadAllianceAssignment.A),
+                Saved("Slot2", DadAllianceAssignment.B),
+                Saved("Slot3", DadAllianceAssignment.C),
+            }
+            .Concat(
+                Enumerable.Range(4, 9)
+                    .Select(index => Saved($"Slot{index}", DadAllianceAssignment.G)))
             .ToList();
 
         var validation = DadAlliancePartyFinderRules.ValidateSavedRows(rows);
 
         Assert.False(validation.IsValid);
-        Assert.Equal(9, validation.AllianceACount);
-        Assert.Contains(validation.Blockers, static blocker => blocker.Contains("cannot exceed eight", StringComparison.Ordinal));
-        Assert.False(DadAlliancePartyFinderRules.CanAssign(rows, "Slot10", DadAllianceAssignment.A));
-        Assert.True(DadAlliancePartyFinderRules.CanAssign(rows, "Slot10", DadAllianceAssignment.None));
+        Assert.Equal(9, validation.AllianceGCount);
+        Assert.Equal(12, validation.TotalCount);
+        Assert.Contains(
+            validation.Blockers,
+            static blocker =>
+                blocker.Contains("Alliance G", StringComparison.Ordinal) &&
+                blocker.Contains("cannot exceed eight", StringComparison.Ordinal));
+        Assert.False(DadAlliancePartyFinderRules.CanAssign(rows, "Slot1", DadAllianceAssignment.G));
+        Assert.True(DadAlliancePartyFinderRules.CanAssign(rows, "Slot1", DadAllianceAssignment.None));
+    }
+
+    [Fact]
+    public void MaximumTotalIncludesOptionalAllianceAssignments()
+    {
+        var rows = Enumerable.Range(1, 8)
+            .Select(index => Saved($"A{index}", DadAllianceAssignment.A))
+            .Concat(
+                Enumerable.Range(1, 8)
+                    .Select(index => Saved($"B{index}", DadAllianceAssignment.B)))
+            .Concat(
+                Enumerable.Range(1, 8)
+                    .Select(index => Saved($"C{index}", DadAllianceAssignment.C)))
+            .Append(Saved("G1", DadAllianceAssignment.G))
+            .ToList();
+
+        var validation = DadAlliancePartyFinderRules.ValidateSavedRows(rows);
+
+        Assert.False(validation.IsValid);
+        Assert.Equal(1, validation.AllianceGCount);
+        Assert.Equal(25, validation.TotalCount);
+        Assert.Contains(
+            validation.Blockers,
+            static blocker =>
+                blocker.Contains("3-24", StringComparison.Ordinal) &&
+                blocker.Contains("found 25", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -85,7 +129,13 @@ public sealed class DadAlliancePartyFinderRulesTests
         Assert.Equal(DadAllianceAssignment.A, normalized[0].AllianceAssignment);
         Assert.True(normalized[1].IsSubstitute);
         Assert.Equal(DadAllianceAssignment.A, normalized[1].AllianceAssignment);
-        Assert.True(DadAlliancePartyFinderRules.ValidateSavedRows(normalized).IsValid);
+        var validation = DadAlliancePartyFinderRules.ValidateSavedRows(normalized);
+        Assert.True(validation.IsValid, validation.Summary);
+        Assert.Equal(0, validation.AllianceDCount);
+        Assert.Equal(0, validation.AllianceECount);
+        Assert.Equal(0, validation.AllianceFCount);
+        Assert.Equal(0, validation.AllianceGCount);
+        Assert.Equal(3, validation.TotalCount);
     }
 
     [Fact]
@@ -125,21 +175,94 @@ public sealed class DadAlliancePartyFinderRulesTests
         Assert.NotEmpty(arbitraryListingComment);
     }
 
-    [Theory]
-    [InlineData(DadAllianceAssignment.A, 0)]
-    [InlineData(DadAllianceAssignment.B, 1)]
-    [InlineData(DadAllianceAssignment.C, 2)]
-    [InlineData(DadAllianceAssignment.None, -1)]
-    public void AllianceButtonsMapExactly(DadAllianceAssignment assignment, int expectedButton)
-        => Assert.Equal(expectedButton, DadAlliancePartyFinderRules.GetJoinAllianceButtonIndex(assignment));
+    [Fact]
+    public void PresetUiEnumerationPreservesNumericValuesAndIncludesAThroughG()
+    {
+        var assignments = Enum.GetValues<DadAllianceAssignment>();
+
+        Assert.Equal(
+            [
+                DadAllianceAssignment.None,
+                DadAllianceAssignment.A,
+                DadAllianceAssignment.B,
+                DadAllianceAssignment.C,
+                DadAllianceAssignment.D,
+                DadAllianceAssignment.E,
+                DadAllianceAssignment.F,
+                DadAllianceAssignment.G,
+            ],
+            assignments);
+        Assert.Equal(
+            [0, 1, 2, 3, 4, 5, 6, 7],
+            assignments.Select(static assignment => (int)assignment).ToArray());
+        Assert.False(DadAlliancePartyFinderRules.IsConcreteAssignment(DadAllianceAssignment.None));
+        Assert.All(
+            assignments.Skip(1),
+            static assignment =>
+                Assert.True(DadAlliancePartyFinderRules.IsConcreteAssignment(assignment)));
+        Assert.False(
+            DadAlliancePartyFinderRules.IsConcreteAssignment(
+                (DadAllianceAssignment)8));
+    }
 
     [Theory]
+    [InlineData(1, 0)]
+    [InlineData(2, 1)]
+    [InlineData(3, 2)]
+    [InlineData(4, 3)]
+    [InlineData(5, 4)]
+    [InlineData(6, 5)]
+    [InlineData(7, 6)]
+    [InlineData(0, -1)]
+    [InlineData(-1, -1)]
+    [InlineData(8, -1)]
+    public void AllianceButtonsMapExactly(int rawAssignment, int expectedButton)
+        => Assert.Equal(
+            expectedButton,
+            DadAlliancePartyFinderRules.GetJoinAllianceButtonIndex(
+                (DadAllianceAssignment)rawAssignment));
+
+    [Theory]
+    [InlineData(-1, DadAllianceAssignment.None)]
     [InlineData(0, DadAllianceAssignment.A)]
     [InlineData(1, DadAllianceAssignment.B)]
     [InlineData(2, DadAllianceAssignment.C)]
-    [InlineData(3, DadAllianceAssignment.None)]
+    [InlineData(3, DadAllianceAssignment.D)]
+    [InlineData(4, DadAllianceAssignment.E)]
+    [InlineData(5, DadAllianceAssignment.F)]
+    [InlineData(6, DadAllianceAssignment.G)]
+    [InlineData(7, DadAllianceAssignment.None)]
     public void CrossRealmGroupsMapExactly(int groupIndex, DadAllianceAssignment expected)
         => Assert.Equal(expected, DadAlliancePartyFinderRules.FromCrossRealmGroupIndex(groupIndex));
+
+    [Fact]
+    public void StatusClonePreservesEveryAllianceCount()
+    {
+        var status = new DadAlliancePartyFinderStatus
+        {
+            Validation = new DadAlliancePresetValidation
+            {
+                AllianceACount = 1,
+                AllianceBCount = 2,
+                AllianceCCount = 3,
+                AllianceDCount = 4,
+                AllianceECount = 5,
+                AllianceFCount = 6,
+                AllianceGCount = 7,
+            },
+        };
+
+        var clone = status.Clone();
+
+        Assert.Equal(1, clone.Validation.AllianceACount);
+        Assert.Equal(2, clone.Validation.AllianceBCount);
+        Assert.Equal(3, clone.Validation.AllianceCCount);
+        Assert.Equal(4, clone.Validation.AllianceDCount);
+        Assert.Equal(5, clone.Validation.AllianceECount);
+        Assert.Equal(6, clone.Validation.AllianceFCount);
+        Assert.Equal(7, clone.Validation.AllianceGCount);
+        Assert.Equal(28, clone.Validation.TotalCount);
+    }
 
     [Fact]
     public void RetryBackoffCapsAtFifteenSecondsWithoutAttemptLimit()

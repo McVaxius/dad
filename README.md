@@ -92,8 +92,9 @@ dotnet test .\Tests\dad.Tests.csproj
   primary row; leaving that option off preserves the template's existing row flags. The existing reward probe remains
   unchanged, so no checked rows means no probe and any
   unchecked, unknown, not-received, stale, contradictory, or unproven result still runs the ordinary preset.
-- With `/dad debug` enabled, saved preset rows expose an explicit Alliance `A`, `B`, or `C` assignment. Substitutes inherit
-  their primary row; each subgroup accepts one to eight effective characters and a preset may contain three to 24 total.
+- With `/dad debug` enabled, saved preset rows expose an explicit Alliance `A` through `G` assignment. Substitutes inherit
+  their primary row; A-C remain required with one to eight effective characters each, optional D-G accept up to eight
+  each, and a preset may contain three to 24 total.
   Status > Readiness > **Alliance Party Finder** validates a concrete selected preset and an Alliance-A local host, then
   **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
   dispatches every unresolved exact target concurrently through the authenticated hub. Receivers open Party Finder only
@@ -104,9 +105,12 @@ dotnet test .\Tests\dad.Tests.csproj
   Integer-only callbacks retain the proven stack path; mixed subgroup callbacks retain a zeroed HGlobal `AtkValue` array
   with explicit null-terminated UTF-8 storage, and worker joining does not require ECommons global initialization. They
   accept only the exact leader and home world, Labyrinth duty, private flag, alliance mode, and three-party detail; listing
-  comments are ignored. The exact detail is revalidated immediately before the one-shot A/B/C subgroup callback. A worker
-  that enters recruitment mode or exposes the recruitment editor is blocked without callback retries or automatic cleanup.
-  A fresh Yes prompt is acknowledged once. Revision 24 then resolves only
+  comments are ignored. The exact detail is revalidated immediately before the one-shot A-G subgroup callback. Assignment
+  A-G maps to zero-based selector and observed group indexes `0`-`6`; the callback is
+  `LookingForGroupDetail`, `updateState=true`, payload `[12 + index, "Alliance X"]`, producing IDs `12`-`18`.
+  B=`13` is user-observed; A=`12` and C=`14` through G=`18` are locally verified mappings only. A worker that enters
+  recruitment mode or exposes the recruitment editor is blocked without callback retries or automatic cleanup.
+  A fresh Yes prompt is acknowledged once. Revision 24's preserved acknowledgement flow then resolves only
   `LookingForGroupPrivate` and sends `[0, passcode]` with `updateState=true`. It performs no further callback until a later
   snapshot shows that prompt gone. If the detail closed automatically, verification begins without a close callback; if a
   detail remains unready, DAD observes it without firing; and if it remains ready, DAD resolves it fresh and sends one raw

@@ -1183,7 +1183,9 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow(
             "Assignments",
             $"A {preflight.Validation.AllianceACount}/8 | B {preflight.Validation.AllianceBCount}/8 | " +
-            $"C {preflight.Validation.AllianceCCount}/8 | total {preflight.Validation.TotalCount}");
+            $"C {preflight.Validation.AllianceCCount}/8 | D {preflight.Validation.AllianceDCount}/8 | " +
+            $"E {preflight.Validation.AllianceECount}/8 | F {preflight.Validation.AllianceFCount}/8 | " +
+            $"G {preflight.Validation.AllianceGCount}/8 | total {preflight.Validation.TotalCount}");
         DrawStatusRow("Validation", preflight.Validation.Summary);
         DrawStatusRow(
             "Create readiness",
