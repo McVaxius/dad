@@ -12,7 +12,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     private const ulong LeaderContentId = 1001;
 
     [Fact]
-    public void ExactFrozenParticipantsAndRawLocalSlotOneAuthorityAreAcceptedWithoutMutatingInputs()
+    public void ExactFrozenRemoteSlotOneIsAcceptedWithoutMutatingInputs()
     {
         var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
         var originalStates = runtime.Select(static participant => participant.State).ToList();
@@ -29,8 +29,8 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
         Assert.True(accepted, blocker);
         Assert.Empty(blocker);
         Assert.Equal(4, resolved.Count);
-        Assert.True(resolved[0].IsLocalClient);
-        Assert.True(resolved[0].IsAuthority);
+        Assert.False(resolved[0].IsLocalClient);
+        Assert.False(resolved[0].IsAuthority);
         Assert.Equal(originalStates, runtime.Select(static participant => participant.State));
     }
 
@@ -54,11 +54,9 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     }
 
     [Fact]
-    public void MissingExactLocalSlotOneProofFailsBeforeMutation()
+    public void RemoteSlotOneDoesNotRequireALocalRosterParticipant()
     {
         var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
-        runtime[0].IsLocalClient = false;
-
         var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
             plan,
             manifest,
@@ -68,12 +66,12 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             out _,
             out var blocker);
 
-        Assert.False(accepted);
-        Assert.Contains("exactly one local participant", blocker, StringComparison.OrdinalIgnoreCase);
+        Assert.True(accepted, blocker);
+        Assert.Empty(blocker);
     }
 
     [Fact]
-    public void RawDifferentAccountCannotBeHiddenByAStaleExactPresenceRow()
+    public void UnrelatedCoordinatorAccountDoesNotChangeFrozenSlotOneAuthority()
     {
         var (plan, manifest, runtime, _) = BuildBoundary();
         var wrongAccountRuntime = LiveCoordinator(
@@ -93,8 +91,8 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             out _,
             out var blocker);
 
-        Assert.False(accepted);
-        Assert.Contains("different account", blocker, StringComparison.OrdinalIgnoreCase);
+        Assert.True(accepted, blocker);
+        Assert.Empty(blocker);
     }
 
     [Fact]
@@ -117,7 +115,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
     }
 
     [Fact]
-    public void MissingExplicitLiveCoordinatorTruthCannotUseProjectedLocalRow()
+    public void MissingCoordinatorRosterTruthDoesNotReplaceExactSlotOneTruth()
     {
         var (plan, manifest, runtime, _) = BuildBoundary();
 
@@ -130,15 +128,15 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             out _,
             out var blocker);
 
-        Assert.False(accepted);
-        Assert.Contains("Explicit live coordinator truth", blocker, StringComparison.OrdinalIgnoreCase);
+        Assert.True(accepted, blocker);
+        Assert.Empty(blocker);
     }
 
     [Fact]
-    public void LiveContentIdOrSessionDriftFailsBeforeMutation()
+    public void SlotOneContentIdOrSessionDriftFailsBeforeMutation()
     {
         var (plan, manifest, runtime, liveCoordinator) = BuildBoundary();
-        liveCoordinator.Character.ContentId = 9999;
+        runtime[0].Character.ContentId = 9999;
 
         Assert.False(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
             plan,
@@ -148,10 +146,10 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             liveCoordinator,
             out _,
             out var contentBlocker));
-        Assert.Contains("Content ID mismatch", contentBlocker, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Content ID", contentBlocker, StringComparison.OrdinalIgnoreCase);
 
         (_, _, runtime, liveCoordinator) = BuildBoundary();
-        liveCoordinator.WorkerSessionId = new DadWorkerSessionId("replacement-session");
+        runtime[0].WorkerSessionId = new DadWorkerSessionId("replacement-session");
         Assert.False(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
             plan,
             manifest,
@@ -160,7 +158,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
             liveCoordinator,
             out _,
             out var sessionBlocker));
-        Assert.Contains("worker/client/session", sessionBlocker, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("frozen worker session", sessionBlocker, StringComparison.OrdinalIgnoreCase);
     }
 
     private static (DadRunPlan Plan, DadRunSlotManifest Manifest, List<DadParticipantSnapshot> Runtime, DadParticipantSnapshot LiveCoordinator) BuildBoundary()
@@ -242,16 +240,21 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
                 slot.CharacterKey.Value,
                 slot.AccountKey.Value,
                 slot.ContentId,
-                index == 0 ? DadCharacterSource.LocalRuntime : DadCharacterSource.PeerRuntime),
-            IsLocalClient = index == 0,
+                DadCharacterSource.PeerRuntime),
+            IsLocalClient = false,
             IsAvailable = true,
             IsEligibleForRun = true,
             PostArReady = true,
             WorldReadyStable = true,
             State = DadParticipantState.AssemblyConfirmed,
         }).ToList();
-        runtime[0].ClientInstanceId = "client-w";
-        var liveCoordinator = LiveCoordinator(runtime[0].Character.Clone(), CoordinatorAccount);
+        var liveCoordinator = LiveCoordinator(
+            Character(
+                "Unrelated Coordinator@Other",
+                "unrelated-account",
+                9009,
+                DadCharacterSource.LocalRuntime),
+            "unrelated-account");
         return (plan, manifest, runtime, liveCoordinator);
     }
 
@@ -261,7 +264,7 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
         => new()
         {
             ClientInstanceId = "client-w",
-            WorkerSessionId = new DadWorkerSessionId("worker-1"),
+            WorkerSessionId = new DadWorkerSessionId("coordinator-worker"),
             ManagedAccountKey = new DadAccountKey(accountId),
             ActiveCharacterKey = new DadCharacterKey(character.CharacterKey),
             Character = character,

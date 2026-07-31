@@ -34,15 +34,27 @@ dotnet test .\Tests\dad.Tests.csproj
 ## Crew and persistence
 
 - The top of Plans now has **Crew Tools** for deliberate party-only work from the selected saved preset. It shows the
-  frozen/effective preset, resolved regular-versus-alliance mode, live state, and first blocker. **Create group** reuses
-  the ordinary scheduler's dependency, requested-job, wake/relog, takeover, and cancellation gates without saving a job
-  or changing the preset. Leveling Mode uses only its compiled first effective child.
+  frozen/effective preset, resolved regular-versus-alliance mode, live state, and first blocker. Once the selected roster
+  is structurally valid, **Create group** submits one in-memory formation request immediately. Offline, busy, post-AR,
+  and relog readiness then wait in the ordinary scheduler instead of disabling the button. The request is single-active,
+  is not persisted across restart, and does not change the saved preset. Leveling Mode uses only its compiled first
+  effective child.
+- Formation uses the exact number of selected primary crew slots even when the preset's duty or roulette normally expects
+  a larger queue party. Missing or ambiguous identities, duplicate accounts/characters, invalid requested jobs,
+  incompatible wake policy, exact Slot1 authority, dependency, transport, scheduler-conflict, and cancellation guards
+  remain fail-closed. The Coordinator is the orchestration control plane and does not need its account or character in
+  the crew. Ordinary Plan and Schedule validation still require their normal duty, roulette, queue, and stop policy fields.
 - A regular crew starts the existing coordinator with only the runtime request's formation-only flag enabled and holds
   the verified party at `GroupReady`; it never queues. An effective non-PvP Duty Finder entry with a catalog queue size
   above eight uses the existing private alliance PF path: Create once, wait for the exact owned listing, Grab once, then
   finish only after exact subgroup verification and recruitment-only cleanup. It never queues or automatically disbands
   the alliance.
-- **Disband** routes a held regular Crew Formation through its exact frozen run roster and the existing guarded teardown.
+- The exact frozen first primary slot is the party leader, inviter, queue executor, alliance PF host, and managed teardown
+  authority. A remote Slot1 follows its saved wake/relog policy, receives the authenticated assembly request, and returns
+  its authoritative PartyList for coordinator verification. Slot1 identity is fail-closed across worker, account,
+  character, and Content ID; either executable invite-authority setting resolves to that same slot.
+- **Disband** routes a held regular Crew Formation through exact frozen Slot1 and waits for that worker's terminal guarded
+  teardown response.
   When no Crew Formation is active, it first freezes the current authoritative party membership and requires a stable,
   out-of-duty, out-of-queue state, at least two nonzero members, and proven local leadership. Existing seven-attempt,
   fresh-prompt, unexpected-member, and sustained-solo safeguards remain unchanged.
@@ -108,13 +120,14 @@ dotnet test .\Tests\dad.Tests.csproj
 - With `/dad debug` enabled, saved preset rows expose an explicit Alliance `A` through `G` assignment. Substitutes inherit
   their primary row; A-C remain required with one to eight effective characters each, optional D-G accept up to eight
   each, and a preset may contain three to 24 total.
-  Status > Readiness > **Alliance Party Finder** validates a concrete selected preset and an Alliance-A local host, then
-  **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients and **Grab dads**
-  dispatches every unresolved exact target concurrently through the authenticated hub. Receivers open Party Finder only
+  Status > Readiness > **Alliance Party Finder** validates a concrete selected preset and exact Alliance-A Slot1 host.
+  **Create party** opens one private cross-world three-group recruitment for The Labyrinth of the Ancients on that local
+  or authenticated remote worker; only after Slot1 reports its owned listing open does **Grab dads** dispatch every
+  unresolved non-host target concurrently through the authenticated hub. Receivers open Party Finder only
   while hidden, select Private tab `2` and Raids category index `5`, and refresh once per retry cycle. DAD accepts exactly
   one standard or compact result list whose `OwnerNode` is visible and whose renderer storage is ready. For each visible
   renderer, DAD reads recruiter text node ID `28`, decodes its `NodeText` as a SeString, compares the plain `TextValue`
-  exactly and ordinally with the coordinator name, and uses each bounded match's zero-based `ListItemIndex`. Missing,
+  exactly and ordinally with the Slot1 host name, and uses each bounded match's zero-based `ListItemIndex`. Missing,
   hidden, unready, ambiguous, unhydrated, differently cased, partial, and invalid rows send no listing callback; DAD waits
   under the existing five-second observation deadline instead of opening earlier unrelated rows. It opens the first
   matching row at or after its retained cursor and, after a same-name detail fails exact validation, closes it before
@@ -179,7 +192,9 @@ dotnet test .\Tests\dad.Tests.csproj
   Submit; later calls observe publication without another mutation gate. Exact success retains DAD ownership as
   `ListingOpen` and enables **Grab dads**; blocked, stopped, and unowned states keep Grab disabled.
   **Stop PF** beside Create/Grab uses DAD's existing Stop policy: it closes a pending or blocked editor or ends only DAD's
-  owned recruitment through the acknowledged recruitment-only cleanup path; it never disbands or queues.
+  owned recruitment through the acknowledged recruitment-only cleanup path; it never disbands or queues. Remote cleanup
+  remains pending until the Slot1 host confirms that listing ownership is cleared, including when Stop races the first
+  host response.
   Stop and post-formation cleanup open the owned detail window, require a fresh
   recruitment-only confirmation, and acknowledge closure when condition `66` clears. Retained DAD ownership—not the
   diagnostic native owner handle—authorizes that cleanup.

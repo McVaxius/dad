@@ -166,6 +166,53 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return inviteAttempts.ConfirmRun(runId);
     }
 
+    public IReadOnlyList<DadPartyMemberSnapshot> ReadAuthoritativePartyMembers()
+    {
+        RequireFrameworkThread();
+        var members = new List<DadPartyMemberSnapshot>();
+        if (InfoProxyCrossRealm.IsCrossRealmParty())
+        {
+            var count = InfoProxyCrossRealm.GetPartyMemberCount();
+            for (uint index = 0; index < count; index++)
+            {
+                var member = InfoProxyCrossRealm.GetGroupMember(index);
+                if (member == null || member->ContentId == 0)
+                    continue;
+                members.Add(new DadPartyMemberSnapshot
+                {
+                    ContentId = member->ContentId,
+                    CharacterName = member->NameString,
+                    IsLocalPlayer = member->ContentId == playerState.ContentId,
+                });
+            }
+        }
+        else
+        {
+            members.AddRange(partyList
+                .Where(static member => member.ContentId != 0)
+                .Select(member => new DadPartyMemberSnapshot
+                {
+                    ContentId = member.ContentId,
+                    CharacterName = member.Name.ToString(),
+                    IsLocalPlayer = member.ContentId == playerState.ContentId,
+                }));
+        }
+
+        if (playerState.ContentId != 0 && members.All(member => member.ContentId != playerState.ContentId))
+        {
+            members.Add(new DadPartyMemberSnapshot
+            {
+                ContentId = playerState.ContentId,
+                IsLocalPlayer = true,
+            });
+        }
+
+        return members
+            .DistinctBy(static member => member.ContentId)
+            .Select(static member => member.Clone())
+            .ToList();
+    }
+
     public void UpdateAcceptance()
     {
         RequireFrameworkThread();
@@ -393,26 +440,10 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         => contentId != 0 && ReadAuthoritativePartyMemberIds(InfoProxyCrossRealm.IsCrossRealmParty()).Contains(contentId);
 
     private IReadOnlyList<ulong> ReadAuthoritativePartyMemberIds(bool crossRealm)
-    {
-        if (!crossRealm)
-        {
-            return partyList
-                .Select(static member => member.ContentId)
-                .Where(static contentId => contentId != 0)
-                .ToList();
-        }
-
-        var members = new List<ulong>();
-        var count = InfoProxyCrossRealm.GetPartyMemberCount();
-        for (uint index = 0; index < count; index++)
-        {
-            var member = InfoProxyCrossRealm.GetGroupMember(index);
-            if (member != null && member->ContentId != 0)
-                members.Add(member->ContentId);
-        }
-
-        return members;
-    }
+        => ReadAuthoritativePartyMembers()
+            .Select(static member => member.ContentId)
+            .Where(static contentId => contentId != 0)
+            .ToList();
 
     private bool IsWorldStable()
         => playerState.ContentId != 0 &&

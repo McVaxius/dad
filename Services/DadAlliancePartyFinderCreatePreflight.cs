@@ -24,7 +24,7 @@ internal static class DadAlliancePartyFinderCreatePreflight
     internal const string ActiveRecruitmentBlocker =
         "Stop the active alliance recruitment before creating another party.";
     internal const string HostBlocker =
-        "The current PF creator must be the effective Alliance-A host.";
+        "The exact first primary Slot1 must be the effective Alliance-A host.";
 
     public static DadAlliancePfCreatePreflightDecision Evaluate(
         DadAlliancePfCreatePreflightInput input)

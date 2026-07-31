@@ -6,6 +6,37 @@ namespace dad.Tests;
 
 public sealed class DadRunSlotManifestRulesTests
 {
+    [Fact]
+    public void FormationManifestAcceptsExactRosterWhileOrdinaryRouletteStillRejectsTwoSlots()
+    {
+        var formation = BuildPlan(DadModuleId.None, 2, static _ => { });
+        formation.Orchestration.AutoPartyFormationOnly = true;
+        formation.Request.Orchestration.AutoPartyFormationOnly = true;
+
+        Assert.True(
+            DadRunSlotManifestRules.TryCreate(formation, out var manifest, out var formationBlocker),
+            formationBlocker);
+        Assert.Equal(2, manifest.ExpectedPartySize);
+        Assert.Single(manifest.Modules);
+        Assert.Equal(DadModuleId.None, manifest.Modules[0].ModuleId);
+
+        var ordinary = BuildPlan(
+            DadModuleId.DailyMsq,
+            2,
+            request => request.DailyMsq = new DadDailyMsqTask
+            {
+                QueueTarget = new DadQueueTarget
+                {
+                    Kind = DadQueueTargetKind.Roulette,
+                    RouletteId = 3,
+                    DisplayName = "Main Scenario",
+                },
+            });
+
+        Assert.False(DadRunSlotManifestRules.TryCreate(ordinary, out _, out var ordinaryBlocker));
+        Assert.Contains("party size 4", ordinaryBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
     private const string WAccount = "account-w";
     private const string XAccount = "account-x";
     private const string WCharacter = "W Character@Alpha";
@@ -59,6 +90,28 @@ public sealed class DadRunSlotManifestRulesTests
         Assert.Equal("worker-w", resolvedW.WorkerSessionId.Value);
         Assert.Equal("Slot2", resolvedX.AssignedSlotId);
         Assert.Equal("worker-x", resolvedX.WorkerSessionId.Value);
+    }
+
+    [Fact]
+    public void FrozenManifestRejectsExternalMissingOrNonSlotOneInviteAuthority()
+    {
+        var external = BuildPremadeDutyPlan();
+        external.Orchestration.InviteAuthority = DadInviteAuthority.External;
+        external.Request.Orchestration.InviteAuthority = DadInviteAuthority.External;
+        Assert.False(DadRunSlotManifestRules.TryCreate(external, out _, out var externalBlocker));
+        Assert.Contains("Slot1", externalBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var missing = BuildPremadeDutyPlan();
+        missing.InviterCharacterKey = string.Empty;
+        Assert.False(DadRunSlotManifestRules.TryCreate(missing, out _, out var missingBlocker));
+        Assert.Contains("Slot1", missingBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var nonSlotOne = BuildPremadeDutyPlan();
+        nonSlotOne.InviterCharacterKey = XCharacter;
+        nonSlotOne.Orchestration.PreferredInviterCharacterKey = new DadCharacterKey(XCharacter);
+        nonSlotOne.Request.Orchestration.PreferredInviterCharacterKey = new DadCharacterKey(XCharacter);
+        Assert.False(DadRunSlotManifestRules.TryCreate(nonSlotOne, out _, out var nonSlotOneBlocker));
+        Assert.Contains("Slot1", nonSlotOneBlocker, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

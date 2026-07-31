@@ -166,6 +166,11 @@ public static class DadAlliancePartyFinderRules
         }
         if (!IsConcreteAssignment(instruction.AssignedAlliance))
             return "A concrete A-G assignment is required.";
+        if (instruction.CreateListingAsHost &&
+            instruction.AssignedAlliance != DadAllianceAssignment.A)
+        {
+            return "Remote Slot1 PF host must be assigned to Alliance A.";
+        }
         if (instruction.Passcode is < 1000 or > 9999)
             return "The Party Finder passcode must be exactly four digits.";
         if (instruction.Attempt < 0 || instruction.StopGeneration < 0)
@@ -309,5 +314,50 @@ public sealed class DadAllianceDeliveryDedupe
         var key = DadAlliancePartyFinderRules.BuildDedupeKey(recruitmentId, targetCharacterKey);
         lock (gate)
             acceptedGenerations.Remove(key);
+    }
+}
+
+public enum DadAllianceRemoteHostLifecycleState
+{
+    LocalHost,
+    CreatePending,
+    ListingOpen,
+    CleanupPending,
+    CleanupComplete,
+    Blocked,
+}
+
+public static class DadAllianceRemoteHostRules
+{
+    public static DadAllianceRemoteHostLifecycleState Evaluate(
+        bool remoteHost,
+        bool ownershipPossible,
+        bool cleanupRequested,
+        DadAllianceRecruitmentResultDto? result)
+    {
+        if (!remoteHost)
+            return DadAllianceRemoteHostLifecycleState.LocalHost;
+        if (cleanupRequested)
+        {
+            if (!ownershipPossible || result?.ResultKind == DadAllianceRecruitmentResultKind.Stopped)
+                return DadAllianceRemoteHostLifecycleState.CleanupComplete;
+            if (result?.ResultKind == DadAllianceRecruitmentResultKind.Blocked)
+                return DadAllianceRemoteHostLifecycleState.Blocked;
+            return DadAllianceRemoteHostLifecycleState.CleanupPending;
+        }
+
+        if (result?.ResultKind == DadAllianceRecruitmentResultKind.Blocked)
+            return DadAllianceRemoteHostLifecycleState.Blocked;
+        if (result is
+            {
+                ResultKind: DadAllianceRecruitmentResultKind.Succeeded,
+                State: DadAllianceRecruitmentState.ListingOpen,
+                ObservedAlliance: DadAllianceAssignment.A,
+            })
+        {
+            return DadAllianceRemoteHostLifecycleState.ListingOpen;
+        }
+
+        return DadAllianceRemoteHostLifecycleState.CreatePending;
     }
 }

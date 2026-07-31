@@ -39,9 +39,6 @@ internal static class DadCoordinatorMutationBoundaryRules
                 currentParticipants,
                 plan.Orchestration.RequirePostArReady,
                 out var slotBlocker);
-            participant.IsAuthority = participant.IsLocalClient &&
-                                      slot.IsLeader &&
-                                      plan.Orchestration.AuthorityMode is DadAuthorityMode.ServerDad or DadAuthorityMode.LocalOnly;
             resolvedParticipants.Add(participant);
 
             if (!string.IsNullOrWhiteSpace(slotBlocker))
@@ -56,72 +53,57 @@ internal static class DadCoordinatorMutationBoundaryRules
             return false;
         }
 
-        if (!DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(plan.Request))
+        if (!DadFullPartyExecutionRules.RequiresFrozenSlot1Authority(plan.Request))
             return true;
 
         var leaderSlots = manifest.Slots.Where(static slot => slot.IsLeader).ToList();
+        var inviterSlots = manifest.Slots.Where(static slot => slot.IsInviter).ToList();
         if (leaderSlots.Count != 1 ||
-            !Same(leaderSlots[0].SlotId, DadPlannerSlotRules.LeaderSlotId))
+            inviterSlots.Count != 1 ||
+            !Same(leaderSlots[0].SlotId, DadPlannerSlotRules.LeaderSlotId) ||
+            !Same(inviterSlots[0].SlotId, DadPlannerSlotRules.LeaderSlotId) ||
+            !Same(leaderSlots[0].CharacterKey.Value, inviterSlots[0].CharacterKey.Value))
         {
-            return Fail("Strict coordinator mutation validation requires exactly one frozen Slot1 leader.", out blocker);
+            return Fail("Strict coordinator mutation validation requires exactly one frozen Slot1 leader and inviter.", out blocker);
         }
 
         var leaderSlot = leaderSlots[0];
-        var localParticipants = resolvedParticipants.Where(static participant => participant.IsLocalClient).ToList();
-        if (localParticipants.Count != 1)
+        var slotOneParticipants = resolvedParticipants.Where(participant =>
+            Same(participant.AssignedSlotId, leaderSlot.SlotId) &&
+            Same(participant.WorkerSessionId.Value, leaderSlot.WorkerSessionId.Value)).ToList();
+        if (slotOneParticipants.Count != 1)
         {
             return Fail(
-                $"Strict coordinator mutation validation requires exactly one local participant; found {localParticipants.Count}.",
+                $"Strict coordinator mutation validation requires exactly one exact frozen Slot1 worker; found {slotOneParticipants.Count}.",
                 out blocker);
         }
 
-        var localLeader = localParticipants[0];
-        if (!Same(localLeader.AssignedSlotId, leaderSlot.SlotId) ||
-            !Same(localLeader.WorkerSessionId.Value, leaderSlot.WorkerSessionId.Value) ||
-            !localLeader.IsAuthority)
+        var slotOne = slotOneParticipants[0];
+        if (!DadRosterIdentity.SameAccount(slotOne.ManagedAccountKey, leaderSlot.AccountKey) ||
+            !Same(slotOne.ActiveCharacterKey.Value, leaderSlot.CharacterKey.Value) ||
+            slotOne.Character.ContentId != leaderSlot.ContentId ||
+            !slotOne.WorldReadyStable)
         {
             return Fail(
-                $"Strict coordinator mutation validation requires frozen {leaderSlot.SlotId} '{leaderSlot.CharacterKey}' on its exact local authority worker session '{leaderSlot.WorkerSessionId}'.",
+                $"Strict coordinator mutation validation requires frozen {leaderSlot.SlotId} '{leaderSlot.CharacterKey}' Content ID {leaderSlot.ContentId} on exact worker '{leaderSlot.WorkerSessionId}'.",
                 out blocker);
         }
 
-        if (!DadFullPartyExecutionRules.TryResolveActiveCoordinatorCharacter(
-                liveCoordinatorTruth,
-                out var activeCoordinatorCharacter,
-                out var liveTruthBlocker))
-        {
-            return Fail(liveTruthBlocker, out blocker);
-        }
-
-        if (!Same(liveCoordinatorTruth!.WorkerSessionId.Value, leaderSlot.WorkerSessionId.Value) ||
-            !Same(liveCoordinatorTruth.WorkerSessionId.Value, localLeader.WorkerSessionId.Value) ||
-            !Same(liveCoordinatorTruth.ClientInstanceId, localLeader.ClientInstanceId) ||
-            !liveCoordinatorTruth.WorldReadyStable)
-        {
-            return Fail(
-                $"Strict coordinator mutation validation requires live Slot1 worker/client/session/world-safety proof for '{leaderSlot.CharacterKey}'.",
-                out blocker);
-        }
-
-        var activeAccount = ResolveAccount(activeCoordinatorCharacter);
-        var rawIdentityIsExact = activeCoordinatorCharacter?.Source == DadCharacterSource.LocalRuntime &&
-                                 Same(activeCoordinatorCharacter.CharacterKey, leaderSlot.CharacterKey.Value) &&
-                                 activeCoordinatorCharacter.ContentId == leaderSlot.ContentId &&
-                                 !activeAccount.IsEmpty &&
-                                 DadRosterIdentity.SameAccount(activeAccount, leaderSlot.AccountKey);
         var plannedLeader = new DadAcquiredCharacter
         {
             AccountId = leaderSlot.AccountKey.Value,
             CharacterKey = leaderSlot.CharacterKey.Value,
             ContentId = leaderSlot.ContentId,
-            Source = rawIdentityIsExact ? DadCharacterSource.LocalRuntime : DadCharacterSource.XadbOnly,
+            Source = slotOne.Character.Source,
+            Freshness = slotOne.Character.Freshness,
+            Readiness = slotOne.Character.Readiness,
         };
 
         return DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
             plan.Request,
             plannedLeader,
-            coordinatorAccountKey,
-            activeCoordinatorCharacter,
+            new DadAccountKey(string.Empty),
+            null,
             requireExactLocalIdentity: true,
             allowWakeableCoordinatorLeader: false,
             out blocker);

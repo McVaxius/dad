@@ -301,6 +301,104 @@ public sealed class DadPartyAssemblyServiceTests
         Assert.Empty(complete);
     }
 
+    [Fact]
+    public void FrozenRemoteSlotOneCarriesExactInviterTargetsAndCoordinatorTransportAuthority()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader);
+        plan.InviterCharacterKey = plan.LeaderCharacterKey;
+        var slotOne = Participant("Leader@Alpha", 100, isLocal: false, isAuthority: false, slot: "Slot1");
+        slotOne.ManagedAccountKey = new DadAccountKey("slot1-account");
+        slotOne.Character.AccountId = "slot1-account";
+        slotOne.WorkerSessionId = new DadWorkerSessionId("remote-slot1-worker");
+        var slotTwo = Participant("Coordinator@Alpha", 200, isLocal: true, isAuthority: true, slot: "Slot2");
+        slotTwo.ManagedAccountKey = new DadAccountKey("coordinator-account");
+        slotTwo.Character.AccountId = "coordinator-account";
+        slotTwo.WorkerSessionId = new DadWorkerSessionId("coordinator-worker");
+        var manifest = new DadRunSlotManifest
+        {
+            RequestId = "run",
+            ExpectedPartySize = 2,
+            LeaderCharacterKey = "Leader@Alpha",
+            InviterCharacterKey = "Leader@Alpha",
+            Slots =
+            [
+                FrozenSlot("Slot1", slotOne, isLeader: true),
+                FrozenSlot("Slot2", slotTwo, isLeader: false),
+            ],
+        };
+
+        var instructions = service.BuildInstructions(
+            plan,
+            [slotTwo, slotOne],
+            manifest,
+            new DadWorkerSessionId("coordinator-worker"),
+            out var blocker);
+
+        Assert.Empty(blocker);
+        var form = Assert.Single(instructions, static instruction =>
+            instruction.InstructionKind == DadAssemblyInstructionKind.FormParty);
+        Assert.Equal("remote-slot1-worker", form.FrozenInviter.WorkerSessionId.Value);
+        Assert.Equal("Leader@Alpha", form.FrozenInviter.CharacterKey.Value);
+        Assert.Equal((ulong)100, form.FrozenInviter.ContentId);
+        Assert.Equal("coordinator-worker", form.AuthorityWorkerSessionId.Value);
+        var target = Assert.Single(form.InviteTargets);
+        Assert.Equal("Slot2", target.SlotId);
+        Assert.Equal("coordinator-worker", target.WorkerSessionId.Value);
+        Assert.All(instructions, instruction =>
+            Assert.Equal(form.FrozenInviter.CharacterKey, instruction.FrozenInviter.CharacterKey));
+
+        var disband = service.BuildDisbandInstruction(
+            plan,
+            [slotTwo, slotOne],
+            manifest,
+            new DadWorkerSessionId("coordinator-worker"),
+            out var disbandBlocker);
+        Assert.Empty(disbandBlocker);
+        Assert.NotNull(disband);
+        Assert.Equal(DadAssemblyInstructionKind.DisbandParty, disband.InstructionKind);
+        Assert.Equal("remote-slot1-worker", disband.FrozenInviter.WorkerSessionId.Value);
+    }
+
+    [Fact]
+    public void FrozenAssemblyRejectsWorkerAccountCharacterOrCidDrift()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader);
+        plan.InviterCharacterKey = plan.LeaderCharacterKey;
+        var leader = Participant("Leader@Alpha", 100, isLocal: false, isAuthority: false, slot: "Slot1");
+        leader.ManagedAccountKey = new DadAccountKey("slot1-account");
+        leader.Character.AccountId = "slot1-account";
+        leader.WorkerSessionId = new DadWorkerSessionId("remote-slot1-worker");
+        var member = Participant("Member@Alpha", 200, isLocal: true, isAuthority: true, slot: "Slot2");
+        member.ManagedAccountKey = new DadAccountKey("member-account");
+        member.Character.AccountId = "member-account";
+        member.WorkerSessionId = new DadWorkerSessionId("member-worker");
+        var manifest = new DadRunSlotManifest
+        {
+            RequestId = "run",
+            ExpectedPartySize = 2,
+            LeaderCharacterKey = "Leader@Alpha",
+            InviterCharacterKey = "Leader@Alpha",
+            Slots =
+            [
+                FrozenSlot("Slot1", leader, isLeader: true),
+                FrozenSlot("Slot2", member, isLeader: false),
+            ],
+        };
+        member.Character.ContentId = 999;
+
+        var instructions = service.BuildInstructions(
+            plan,
+            [leader, member],
+            manifest,
+            new DadWorkerSessionId("coordinator-worker"),
+            out var blocker);
+
+        Assert.Empty(instructions);
+        Assert.Contains("exact frozen", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static DadRunPlan Plan(DadQueueAuthority queueAuthority, int partySize = 2)
         => new()
         {
@@ -325,12 +423,28 @@ public sealed class DadPartyAssemblyServiceTests
                 ContentId = contentId,
                 CharacterName = characterKey.Split('@')[0],
                 WorldName = "Alpha",
+                WorldId = 1,
             },
             IsLocalClient = isLocal,
             IsAuthority = isAuthority,
             PostArReady = true,
             AssignedSlotId = slot,
             WorkerSessionId = new DadWorkerSessionId(characterKey),
+        };
+
+    private static DadFrozenRunSlot FrozenSlot(
+        string slotId,
+        DadParticipantSnapshot participant,
+        bool isLeader)
+        => new()
+        {
+            SlotId = slotId,
+            AccountKey = participant.ManagedAccountKey,
+            CharacterKey = participant.ActiveCharacterKey,
+            ContentId = participant.Character.ContentId,
+            IsLeader = isLeader,
+            IsInviter = isLeader,
+            WorkerSessionId = participant.WorkerSessionId,
         };
 
     private static List<DadParticipantSnapshot> FourParticipants()

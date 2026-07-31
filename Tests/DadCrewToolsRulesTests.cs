@@ -46,6 +46,63 @@ public sealed class DadCrewToolsRulesTests
     }
 
     [Fact]
+    public void Classify_RejectsSoloRosterEvenWhenDutyCatalogIsAllianceSized()
+    {
+        var result = DadCrewToolsRules.Classify(
+            DadPlannerActivityMode.DutyPremade,
+            selectedDutyQueueSize: 24,
+            expectedPartySize: 1);
+
+        Assert.False(result.CanCreate);
+        Assert.Equal(DadCrewFormationMode.Unavailable, result.Mode);
+    }
+
+    [Fact]
+    public void FormationAdmission_IgnoresOnlyRunBlockersAndKeepsOrderedStructuralAndWakeFailures()
+    {
+        string[] orderedStatic = ["missing identity", "missing roulette", "invalid requested job", "stop already met"];
+        string[] runOnly = ["missing roulette", "stop already met"];
+        string[] readiness = ["offline"];
+        string[] wakePolicy = ["Already online cannot wake"];
+
+        var formation = DadCrewToolsRules.EvaluateFormationAdmission(
+            formationOnly: true,
+            orderedStatic,
+            readiness,
+            wakePolicy,
+            runOnly);
+        var ordinary = DadCrewToolsRules.EvaluateFormationAdmission(
+            formationOnly: false,
+            orderedStatic,
+            readiness,
+            wakePolicy,
+            runOnly);
+
+        Assert.Equal(["missing identity", "invalid requested job"], formation.StaticBlockers);
+        Assert.Equal(["offline"], formation.ReadinessBlockers);
+        Assert.Equal(["Already online cannot wake"], formation.ScheduleBlockers);
+        Assert.False(formation.CanSchedule);
+        Assert.Equal(orderedStatic, ordinary.StaticBlockers);
+        Assert.False(ordinary.CanSchedule);
+    }
+
+    [Fact]
+    public void FormationAdmission_TreatsReadinessAsSchedulableWait()
+    {
+        var admission = DadCrewToolsRules.EvaluateFormationAdmission(
+            formationOnly: true,
+            orderedStaticBlockers: ["missing duty"],
+            readinessBlockers: ["offline", "waiting for post-AR"],
+            scheduleBlockers: [],
+            runOnlyBlockers: ["missing duty"]);
+
+        Assert.True(admission.CanSchedule);
+        Assert.False(admission.CanStart);
+        Assert.Empty(admission.StaticBlockers);
+        Assert.Equal(["offline", "waiting for post-AR"], admission.ReadinessBlockers);
+    }
+
+    [Fact]
     public void CrewPartyFinderAuthorization_RequiresExactActiveRun()
     {
         Assert.True(DadCrewToolsRules.IsExactCrewPartyFinderContext(

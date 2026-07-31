@@ -166,6 +166,7 @@ public enum DadAssemblyInstructionKind
     TravelToPullPoint,
     FormParty,
     JoinParty,
+    DisbandParty,
     ReadyCheck,
 }
 
@@ -441,7 +442,23 @@ public sealed class DadAssemblyInstructionDto
     public string SlotId { get; set; } = string.Empty;
     public DadCharacterKey RequiredCharacterKey { get; set; } = new(string.Empty);
     public DadAssemblyInstructionKind InstructionKind { get; set; } = DadAssemblyInstructionKind.None;
+    public DadExpectedPartyInviter FrozenInviter { get; set; } = new();
+    public List<DadNativePartyInviteTarget> InviteTargets { get; set; } = [];
     public string Summary { get; set; } = string.Empty;
+
+    public DadAssemblyInstructionDto Clone()
+        => new()
+        {
+            RunId = RunId,
+            AuthorityWorkerSessionId = AuthorityWorkerSessionId,
+            ModuleId = ModuleId,
+            SlotId = SlotId,
+            RequiredCharacterKey = RequiredCharacterKey,
+            InstructionKind = InstructionKind,
+            FrozenInviter = FrozenInviter.Clone(),
+            InviteTargets = InviteTargets.Select(static target => target.Clone()).ToList(),
+            Summary = Summary,
+        };
 }
 
 public sealed class DadPartyMemberSnapshot
@@ -451,6 +468,16 @@ public sealed class DadPartyMemberSnapshot
     public string CharacterName { get; set; } = string.Empty;
     public string WorldName { get; set; } = string.Empty;
     public bool IsLocalPlayer { get; set; }
+
+    public DadPartyMemberSnapshot Clone()
+        => new()
+        {
+            CharacterKey = CharacterKey,
+            ContentId = ContentId,
+            CharacterName = CharacterName,
+            WorldName = WorldName,
+            IsLocalPlayer = IsLocalPlayer,
+        };
 }
 
 public sealed class DadCancelCommandDto
@@ -485,6 +512,7 @@ public sealed class DadRunStepResultDto
     public string BlockedReason { get; set; } = string.Empty;
     public DadModuleExecutionStatusDto ExecutorStatus { get; set; } = new();
     public List<DadModuleBlockerDto> ModuleBlockers { get; set; } = [];
+    public List<DadPartyMemberSnapshot> AuthoritativePartyMembers { get; set; } = [];
     public DateTime ReportedAtUtc { get; set; } = DateTime.UtcNow;
 
     public DadRunStepResultDto Clone() => new()
@@ -501,6 +529,7 @@ public sealed class DadRunStepResultDto
         BlockedReason = BlockedReason,
         ExecutorStatus = ExecutorStatus.Clone(),
         ModuleBlockers = ModuleBlockers.Select(static blocker => blocker.Clone()).ToList(),
+        AuthoritativePartyMembers = AuthoritativePartyMembers.Select(static member => member.Clone()).ToList(),
         ReportedAtUtc = ReportedAtUtc,
     };
 }

@@ -210,6 +210,7 @@ public sealed class Plugin : IDalamudPlugin
             AutoRetainerIpcService,
             LifestreamIpcService,
             PartyInviteGateway,
+            PartyTeardownService,
             requestedJobPreparationGate,
             classJobGearsetGateway,
             Log);
@@ -2353,11 +2354,13 @@ public sealed class Plugin : IDalamudPlugin
             return false;
         }
 
+        var runtimeSource = DadCrewToolsRules.BuildRuntimeFormationGroup(source);
+
         DadPlannerGroup effective;
         DadPlannerRunRequestPreview requestPreview;
-        if (source.LevelingMode?.Enabled == true)
+        if (runtimeSource.LevelingMode?.Enabled == true)
         {
-            var child = BuildLevelingChild(source, pool, iteration: 1);
+            var child = BuildLevelingChild(runtimeSource, pool, iteration: 1);
             if (!child.Compilation.CanStartChild ||
                 child.Compilation.ChildGroup == null ||
                 child.PlannerPreview == null)
@@ -2373,7 +2376,7 @@ public sealed class Plugin : IDalamudPlugin
         }
         else
         {
-            effective = source;
+            effective = runtimeSource;
             var options = BuildPlannerOptionsForGroup(effective, null);
             var activity = PresetProviderService.BuildPlannerPreview(pool, options, effective);
             requestPreview = ApplyPlannerRuntimeTruth(
@@ -2395,11 +2398,7 @@ public sealed class Plugin : IDalamudPlugin
         var dutyQueueSize = PresetProviderService
             .GetPlannerDutyOption(effective.DutyContentFinderConditionId)
             ?.QueueSize ?? 0;
-        var expectedPartySize = requestPreview.Request?
-                                    .Orchestration
-                                    .RosterIntent
-                                    .ExpectedPartySize
-                                ?? requestPreview.ContractPreview.PartySize;
+        var expectedPartySize = DadPlannerSlotRules.CountPrimarySlots(effective.Slots);
         var classification = DadCrewToolsRules.Classify(
             effective.ActivityMode,
             dutyQueueSize,
@@ -3490,7 +3489,8 @@ public sealed class Plugin : IDalamudPlugin
                     MergePlannerPreviewBlocker(requestPreview, rejectionReason);
                 }
             }
-            else
+            else if (!requestPreview.Request.Orchestration.AutoPartyFormationOnly &&
+                     DadFullPartyExecutionRules.IsQueueAuthorityLocal(plan, liveLocalRuntimeTruth))
             {
                 var runtimeStatus = QueueExecutionService.PreviewModuleStart(plan);
                 MergePlannerRuntimeStatus(requestPreview, runtimeStatus);

@@ -59,6 +59,20 @@ internal static class DadRunSlotManifestRules
                 out blocker);
         }
 
+        if (isMultiplayer)
+        {
+            if (plan.Orchestration.InviteAuthority is DadInviteAuthority.External or DadInviteAuthority.NotNeeded)
+                return Fail("Multiplayer frozen roster requires exact Slot1 invite authority.", out blocker);
+            if (string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) ||
+                string.IsNullOrWhiteSpace(plan.InviterCharacterKey) ||
+                !Same(plan.LeaderCharacterKey, plan.InviterCharacterKey))
+            {
+                return Fail(
+                    $"Frozen leader '{plan.LeaderCharacterKey}' and inviter '{plan.InviterCharacterKey}' must both be exact Slot1.",
+                    out blocker);
+            }
+        }
+
         var slots = new List<DadFrozenRunSlot>(roster.Count);
         for (var index = 0; index < roster.Count; index++)
         {
@@ -87,8 +101,8 @@ internal static class DadRunSlotManifestRules
                 ContentId = reference.ContentId,
                 RequiredJobId = reference.RequiredJobId,
                 AdsLootMode = reference.AdsLootMode,
-                IsLeader = string.Equals(reference.CharacterKey.Value, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase),
-                IsInviter = string.Equals(reference.CharacterKey.Value, plan.InviterCharacterKey, StringComparison.OrdinalIgnoreCase),
+                IsLeader = index == 0,
+                IsInviter = index == 0 && isMultiplayer,
             });
         }
 
@@ -110,17 +124,35 @@ internal static class DadRunSlotManifestRules
         if (duplicateContentId != null)
             return Fail($"Content ID {duplicateContentId.Key} is assigned to more than one frozen slot.", out blocker);
 
-        if (!slots[0].IsLeader || slots.Count(static slot => slot.IsLeader) != 1)
+        if (!Same(slots[0].CharacterKey.Value, plan.LeaderCharacterKey) ||
+            !slots[0].IsLeader ||
+            slots.Count(static slot => slot.IsLeader) != 1)
             return Fail($"Slot1 must be the one exact queue leader '{plan.LeaderCharacterKey}'.", out blocker);
 
-        if (!string.IsNullOrWhiteSpace(plan.InviterCharacterKey) && slots.Count(static slot => slot.IsInviter) != 1)
-            return Fail($"Party inviter '{plan.InviterCharacterKey}' is not exactly one frozen roster slot.", out blocker);
+        if (isMultiplayer &&
+            (!Same(slots[0].CharacterKey.Value, plan.InviterCharacterKey) ||
+             !slots[0].IsInviter ||
+             slots.Count(static slot => slot.IsInviter) != 1))
+        {
+            return Fail($"Party inviter '{plan.InviterCharacterKey}' must be the one exact frozen Slot1.", out blocker);
+        }
 
         var payloads = new List<DadFrozenModulePayload>(plan.Modules.Count);
         foreach (var module in plan.Modules)
         {
-            if (!TryBuildModulePayload(plan.Request, module, out var payload, out blocker))
+            DadFrozenModulePayload payload;
+            if (plan.Orchestration.AutoPartyFormationOnly)
+            {
+                payload = new DadFrozenModulePayload
+                {
+                    ModuleId = module.ModuleId,
+                    ExpectedPartySize = module.ExpectedPartySize,
+                };
+            }
+            else if (!TryBuildModulePayload(plan.Request, module, out payload, out blocker))
+            {
                 return false;
+            }
 
             if (module.RequiresPeers && module.ExpectedPartySize != plan.RequiredParticipantCount)
             {

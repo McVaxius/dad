@@ -41,14 +41,26 @@ At the top of Plans, **Crew Tools** can prepare and form the selected saved pres
 shows the selected/effective preset, whether DAD resolved it as a regular party or alliance Party Finder formation, its
 live state, and the first blocker.
 
-- **Create group** runs the same dependency checks, requested-job preparation, wake/relog, takeover, and readiness gates
-  as the ordinary scheduler. It does not edit the saved preset or save a scheduler job.
+- **Create group** becomes available as soon as the selected roster itself is valid. Pressing it submits one runtime-only,
+  in-memory formation request immediately; characters that are offline, busy, waiting for post-AR, or need a permitted
+  relog wait in the normal scheduler until ready. The request is single-active, is not restored after a plugin restart,
+  does not edit the saved preset, and does not save a scheduler job.
+- Formation uses exactly the selected primary crew rows, even when the saved activity normally queues with more players.
+  Missing, duplicate, unresolved, or ambiguous identities, invalid requested jobs, an incompatible **Already online**
+  wake policy, exact Slot1 authority, dependencies, transport, scheduler conflicts, and cancellation safety still block
+  creation. The Coordinator operates the run but does not need its account or character in the selected crew. These
+  formation-only rules do not relax normal Plan or Schedule validation.
 - Regular parties use DAD's normal verified assembly and stop at **GroupReady**. DAD does not queue them.
 - A selected non-PvP Duty Finder raid whose live catalog size is above eight uses the proven private alliance flow. DAD
-  creates its owned listing, waits for it to open, grabs the exact preset characters once, verifies their assigned
-  subgroups, and closes only the recruitment. DAD does not queue or automatically disband the alliance.
+  asks exact Slot1 to create and own the listing, waits for it to open, grabs the remaining exact preset characters once,
+  verifies their assigned subgroups, and closes only the recruitment after Slot1 confirms ownership is cleared. DAD does
+  not queue or automatically disband the alliance.
+- Exact Slot1 is always the party leader, inviter, queue executor, alliance host, and managed teardown authority. This
+  works whether that worker is local or remote; DAD rejects worker, account, character, or Content-ID drift and verifies
+  formation from Slot1's returned PartyList.
 - Leveling Mode resolves and freezes only its first effective child for this operation.
-- **Disband** tears down the exact held regular crew. With no active Crew Formation, it can also disband the current
+- **Disband** asks exact Slot1 to tear down the held regular crew and waits for its guarded terminal response. With no
+  active Crew Formation, it can also disband the current
   party only when DAD proves a stable out-of-duty/out-of-queue state, at least two exact members, and local leadership.
   Membership drift, leadership drift, stale confirmations, and unrelated prompts remain fail-closed.
 
@@ -84,7 +96,8 @@ If an ordinary entry failure or a coordinator/plugin reload blocks a schedule, t
 
 Local-only runs stay on one DAD instance. Multibox runs use one **Coordinator Dad** and one or more **Client Dads**:
 
-- the Coordinator owns the run, selected roster, party plan, and queue decision;
+- the Coordinator owns orchestration, the selected roster, and the party plan, and does not need to be in that roster;
+- exact frozen Slot1 owns party leadership, invitations, queue execution, alliance hosting, and managed teardown;
 - each Client Dad proves its current account, character, job, and readiness;
 - the Coordinator and every selected Client Dad publish fresh required-plugin truth on their heartbeat;
 - non-leader participants become ready before the queue leader is released;
@@ -101,9 +114,9 @@ Clients on the same machine can use loopback transport. LAN setups require the s
 5. Requested jobs are prepared through valid saved gearsets and rechecked against live game state.
 6. DAD waits for AutoRetainer, VERMAXION, world loading, queue state, and other safety gates to become clear.
 7. Every selected worker proves its identity and required readiness.
-8. DAD assembles the party and starts the supported queue through the correct leader.
+8. DAD sends party formation to exact Slot1, verifies Slot1's returned PartyList, and starts the supported queue there.
 9. During and after the duty, DAD reports progress, completion, blockers, and recovery state.
-10. At the final party boundary, DAD verifies leadership and membership before disbanding.
+10. At the final party boundary, DAD refreshes exact Slot1 identity and waits for Slot1's guarded teardown result.
 
 ## Integrations
 
@@ -152,7 +165,7 @@ The proposed in-plugin DAD Hub/community integration is also future design work.
 
 ## Safety And Recovery
 
-- Exact account, character, Content ID, worker, requested-job, and party evidence protect live mutations.
+- Exact Slot1 account, character, Content ID, worker, requested-job, and returned PartyList evidence protect live mutations.
 - Readiness and queue blockers are shown before the start action instead of being hidden in logs.
 - Required-plugin truth is fail-closed across the frozen crew: missing, disabled, outdated, malformed, legacy, null, or stale truth waits safely.
 - Dependency loss opens the local dependency window but never cancels, rewrites, or revalidates work that already crossed its start gate.

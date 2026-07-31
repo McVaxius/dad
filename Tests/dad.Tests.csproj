@@ -114,6 +114,8 @@
     <Compile Include="..\Services\DadAlliancePartyFinderNativeActionRules.cs" Link="DadAlliancePartyFinderNativeActionRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCreatePreflight.cs" Link="DadAlliancePartyFinderCreatePreflight.cs" />
     <Compile Include="..\Services\DadCrewToolsRules.cs" Link="DadCrewToolsRules.cs" />
+    <Compile Include="..\Services\DadCrewFormationPlannerRules.cs" Link="DadCrewFormationPlannerRules.cs" />
+    <Compile Include="..\Services\DadPlannerService.cs" Link="DadPlannerService.cs" />
     <Compile Include="..\Services\DadGameCommandExecutor.cs" Link="DadGameCommandExecutor.cs" />
     <Compile Include="..\Services\DadAllianceDiscordProtocol.cs" Link="DadAllianceDiscordProtocol.cs" />
     <Compile Include="..\Services\DadAlliancePfAuditLog.cs" Link="DadAlliancePfAuditLog.cs" />

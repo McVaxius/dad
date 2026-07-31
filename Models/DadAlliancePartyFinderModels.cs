@@ -44,6 +44,7 @@ public sealed class DadAllianceRecruitmentInstructionDto
     public string TargetCharacterWorld { get; set; } = string.Empty;
     public ulong TargetContentId { get; set; }
     public DadAllianceAssignment AssignedAlliance { get; set; }
+    public bool CreateListingAsHost { get; set; }
     public int Passcode { get; set; }
     public int Attempt { get; set; }
     public DadAllianceRecruitmentState State { get; set; } = DadAllianceRecruitmentState.Validating;
@@ -69,6 +70,7 @@ public sealed class DadAllianceRecruitmentInstructionDto
             TargetCharacterWorld = TargetCharacterWorld,
             TargetContentId = TargetContentId,
             AssignedAlliance = AssignedAlliance,
+            CreateListingAsHost = CreateListingAsHost,
             Passcode = Passcode,
             Attempt = Attempt,
             State = State,

@@ -72,9 +72,14 @@ public static class DadFullPartyExecutionRules
     }
 
     public static bool RequiresLocalCoordinatorLeader(DadRunRequest request)
+        => RequiresFrozenSlot1Authority(request);
+
+    public static bool RequiresFrozenSlot1Authority(DadRunRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return request.DailyMsq != null ||
+        return request.Orchestration.AutoPartyFormationOnly ||
+               request.Orchestration.RosterIntent.ExpectedPartySize > 1 ||
+               request.DailyMsq != null ||
                request.PremadeDuty != null ||
                request.Dungeon?.QueueViaLanParty == true;
     }
@@ -96,9 +101,19 @@ public static class DadFullPartyExecutionRules
             return false;
         }
 
-        if (leader.Source != DadCharacterSource.LocalRuntime)
+        if (request.Orchestration.QueueAuthority != DadQueueAuthority.Leader)
         {
-            blocker = $"Full-party queue leader '{leader.CharacterKey}' must be the character loaded on this Dad Coordinator client (Slot1).";
+            blocker = $"Full-party Slot1 requires leader queue authority; request has {request.Orchestration.QueueAuthority}.";
+            return false;
+        }
+
+        if (!TryResolveFirstPrimaryRoster(request, out var slotOne, out blocker))
+            return false;
+        if (!MatchesFrozenCharacter(slotOne, leader))
+        {
+            blocker =
+                $"Full-party Slot1 must be exact: planned '{slotOne.CharacterKey}' Content ID {slotOne.ContentId}, " +
+                $"resolved '{leader.CharacterKey}' Content ID {leader.ContentId}.";
             return false;
         }
 
@@ -117,7 +132,7 @@ public static class DadFullPartyExecutionRules
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(leader);
         blocker = string.Empty;
-        if (!RequiresLocalCoordinatorLeader(request))
+        if (!RequiresFrozenSlot1Authority(request))
             return true;
 
         if (request.Orchestration.AuthorityMode != DadAuthorityMode.ServerDad)
@@ -132,81 +147,73 @@ public static class DadFullPartyExecutionRules
             return false;
         }
 
+        if (!TryResolveFirstPrimaryRoster(request, out var slotOne, out blocker))
+            return false;
+
         var requestedLeaderKey = request.Orchestration.PreferredLeaderCharacterKey.IsEmpty
-            ? new DadCharacterKey(leader.CharacterKey)
+            ? slotOne.CharacterKey
             : request.Orchestration.PreferredLeaderCharacterKey;
         if (requestedLeaderKey.IsEmpty ||
-            !string.Equals(requestedLeaderKey.Value, leader.CharacterKey, StringComparison.OrdinalIgnoreCase))
+            !DadRosterIdentity.SameCharacter(
+                requestedLeaderKey,
+                slotOne.ContentId,
+                slotOne.CharacterKey,
+                slotOne.ContentId) ||
+            !MatchesFrozenCharacter(slotOne, leader))
         {
-            blocker = $"Full-party Slot1 identity must be exact; requested '{requestedLeaderKey}', resolved '{leader.CharacterKey}'.";
+            blocker =
+                $"Full-party Slot1 identity must be exact; frozen '{slotOne.CharacterKey}' Content ID {slotOne.ContentId}, " +
+                $"requested '{requestedLeaderKey}', resolved '{leader.CharacterKey}' Content ID {leader.ContentId}.";
             return false;
         }
 
-        var requestedLeaderAccount = ResolveLeaderAccount(request, leader, requestedLeaderKey);
-        if (coordinatorAccountKey.IsEmpty && activeCoordinatorCharacter != null)
-            coordinatorAccountKey = ResolveCharacterAccount(activeCoordinatorCharacter);
-        if (coordinatorAccountKey.IsEmpty || requestedLeaderAccount.IsEmpty)
+        var requestedLeaderAccount = ResolveCharacterAccount(leader);
+        if (requestedLeaderAccount.IsEmpty)
+            requestedLeaderAccount = slotOne.AccountKey;
+        if (requestedLeaderAccount.IsEmpty ||
+            !DadRosterIdentity.SameAccount(requestedLeaderAccount, slotOne.AccountKey))
         {
-            blocker = $"Full-party Slot1 '{requestedLeaderKey}' must have an exact coordinator account identity.";
+            blocker =
+                $"Full-party Slot1 '{requestedLeaderKey}' must belong to exact frozen account '{slotOne.AccountKey}', " +
+                $"not '{requestedLeaderAccount}'.";
             return false;
         }
 
-        if (activeCoordinatorCharacter == null ||
-            activeCoordinatorCharacter.Source != DadCharacterSource.LocalRuntime ||
-            string.IsNullOrWhiteSpace(activeCoordinatorCharacter.CharacterKey) ||
-            activeCoordinatorCharacter.ContentId == 0)
+        if (requireExactLocalIdentity &&
+            (leader.Source is not (DadCharacterSource.LocalRuntime or DadCharacterSource.PeerRuntime) ||
+             leader.Freshness is not (DadSnapshotFreshness.Live or DadSnapshotFreshness.Recent) ||
+             leader.Readiness != DadReadinessState.Ready))
         {
-            if (!requireExactLocalIdentity && allowWakeableCoordinatorLeader)
-                return true;
-
-            blocker = "Full-party coordinator validation requires explicit live local character, account, and Content ID truth.";
-            return false;
-        }
-
-        if (!DadRosterIdentity.SameAccount(requestedLeaderAccount, coordinatorAccountKey))
-        {
-            blocker = $"Full-party Slot1 '{requestedLeaderKey}' belongs to account '{requestedLeaderAccount}', not coordinator account '{coordinatorAccountKey}'.";
-            return false;
-        }
-
-        var activeAccount = ResolveCharacterAccount(activeCoordinatorCharacter);
-        if (!activeAccount.IsEmpty && !DadRosterIdentity.SameAccount(activeAccount, coordinatorAccountKey))
-        {
-            blocker = $"Dad Coordinator currently observes different account '{activeAccount}', not required coordinator account '{coordinatorAccountKey}'.";
-            return false;
-        }
-
-        var activeCharacterKeyMatches = string.Equals(
-            activeCoordinatorCharacter.CharacterKey,
-            requestedLeaderKey.Value,
-            StringComparison.OrdinalIgnoreCase);
-        if (activeCharacterKeyMatches &&
-            leader.ContentId != 0 &&
-            activeCoordinatorCharacter.ContentId != leader.ContentId)
-        {
-            if (!requireExactLocalIdentity && allowWakeableCoordinatorLeader)
-                return true;
-
-            blocker = $"Full-party Slot1 '{requestedLeaderKey}' Content ID mismatch: planned {leader.ContentId}, live {activeCoordinatorCharacter.ContentId}.";
-            return false;
-        }
-
-        var exactLocalIdentity = activeCharacterKeyMatches &&
-                                 leader.ContentId != 0 &&
-                                 activeCoordinatorCharacter.ContentId == leader.ContentId;
-        if (!requireExactLocalIdentity && (exactLocalIdentity || allowWakeableCoordinatorLeader))
-            return true;
-
-        if (!exactLocalIdentity)
-        {
-            var activeCharacter = activeCoordinatorCharacter == null || string.IsNullOrWhiteSpace(activeCoordinatorCharacter.CharacterKey)
-                ? "(none)"
-                : activeCoordinatorCharacter.CharacterKey;
-            blocker = $"Full-party queue leader '{requestedLeaderKey}' must be the exact character loaded on this Dad Coordinator client (Slot1); active '{activeCharacter}'.";
+            blocker = $"Full-party Slot1 '{requestedLeaderKey}' is not live and ready on its exact Dad worker.";
             return false;
         }
 
         return true;
+    }
+
+    public static bool IsQueueAuthorityLocal(
+        DadRunPlan plan,
+        DadParticipantSnapshot? liveCoordinatorTruth)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (plan.RequiredParticipantCount <= 1)
+            return true;
+        if (liveCoordinatorTruth == null ||
+            liveCoordinatorTruth.WorkerSessionId.IsEmpty ||
+            liveCoordinatorTruth.ActiveCharacterKey.IsEmpty ||
+            liveCoordinatorTruth.Character.ContentId == 0)
+        {
+            return false;
+        }
+
+        var slotOne = plan.Orchestration.RequiredRosterCharacters?.FirstOrDefault();
+        return slotOne != null &&
+               DadRosterIdentity.SameAccount(slotOne.AccountKey, liveCoordinatorTruth.ManagedAccountKey) &&
+               DadRosterIdentity.SameCharacter(
+                   slotOne.CharacterKey,
+                   slotOne.ContentId,
+                   liveCoordinatorTruth.ActiveCharacterKey,
+                   liveCoordinatorTruth.Character.ContentId);
     }
 
     public static IReadOnlyList<DadModuleBlockerDto> Evaluate(
@@ -266,52 +273,31 @@ public static class DadFullPartyExecutionRules
                 DadModuleBlockerSeverity.Blocked));
         }
 
-        var localParticipants = participants.Where(static participant => participant.IsLocalClient).ToList();
-        if (localParticipants.Count != 1)
+        var slotOneParticipants = participants
+            .Where(static participant => string.Equals(
+                participant.AssignedSlotId,
+                DadPlannerSlotRules.LeaderSlotId,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (slotOneParticipants.Count != 1)
         {
             blockers.Add(BuildBlocker(
                 moduleId,
                 "LeaderAuthority",
-                $"{displayName} requires exactly one Dad Coordinator local client as the queue leader; found {localParticipants.Count}.",
+                $"{displayName} requires exactly one frozen Slot1 queue authority; found {slotOneParticipants.Count}.",
                 DadModuleBlockerSeverity.Blocked));
         }
         else
         {
-            var localLeader = localParticipants[0];
-            if (!localLeader.IsAuthority)
-            {
-                blockers.Add(BuildBlocker(
-                    moduleId,
-                    "LeaderAuthority",
-                    $"Local client is not marked as Dad Coordinator authority for this {displayName} queue.",
-                    DadModuleBlockerSeverity.Blocked));
-            }
-
-            if (localLeader.Character?.Source != DadCharacterSource.LocalRuntime)
-            {
-                blockers.Add(BuildBlocker(
-                    moduleId,
-                    "LeaderAuthority",
-                    $"{displayName} queue leader must be the character loaded on this Dad Coordinator client.",
-                    DadModuleBlockerSeverity.Blocked));
-            }
-
-            if (!string.Equals(localLeader.AssignedSlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase))
-            {
-                blockers.Add(BuildBlocker(
-                    moduleId,
-                    "LeaderAuthority",
-                    $"Local client is assigned to '{localLeader.AssignedSlotId}', not Slot1.",
-                    DadModuleBlockerSeverity.Blocked));
-            }
+            var slotOneLeader = slotOneParticipants[0];
 
             if (!string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) &&
-                !string.Equals(localLeader.ActiveCharacterKey.ToString(), plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(slotOneLeader.ActiveCharacterKey.ToString(), plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))
             {
                 blockers.Add(BuildBlocker(
                     moduleId,
                     "LeaderAuthority",
-                    $"Local leader mismatch: need {plan.LeaderCharacterKey}, active {localLeader.ActiveCharacterKey}.",
+                    $"Slot1 leader mismatch: need {plan.LeaderCharacterKey}, active {slotOneLeader.ActiveCharacterKey}.",
                     DadModuleBlockerSeverity.Blocked));
             }
         }
@@ -386,6 +372,36 @@ public static class DadFullPartyExecutionRules
                        string.Equals(reference.CharacterKey.Value, requestedLeaderKey.Value, StringComparison.OrdinalIgnoreCase))
                    ?.AccountKey
                ?? new DadAccountKey(string.Empty);
+    }
+
+    private static bool TryResolveFirstPrimaryRoster(
+        DadRunRequest request,
+        out DadRosterCharacterRef slotOne,
+        out string blocker)
+    {
+        slotOne = request.Orchestration.RequiredRosterCharacters?.FirstOrDefault() ?? new DadRosterCharacterRef();
+        if (slotOne.AccountKey.IsEmpty || slotOne.CharacterKey.IsEmpty || slotOne.ContentId == 0)
+        {
+            blocker = "Full-party Slot1 requires an exact frozen account, character, and non-zero Content ID.";
+            return false;
+        }
+
+        blocker = string.Empty;
+        return true;
+    }
+
+    private static bool MatchesFrozenCharacter(
+        DadRosterCharacterRef slot,
+        DadAcquiredCharacter character)
+    {
+        var account = ResolveCharacterAccount(character);
+        return !account.IsEmpty &&
+               DadRosterIdentity.SameAccount(slot.AccountKey, account) &&
+               DadRosterIdentity.SameCharacter(
+                   slot.CharacterKey,
+                   slot.ContentId,
+                   new DadCharacterKey(character.CharacterKey),
+                   character.ContentId);
     }
 
     private static DadAccountKey ResolveCharacterAccount(DadAcquiredCharacter? character)

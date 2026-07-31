@@ -21,6 +21,13 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private readonly Dictionary<string, DadAllianceRecruitmentInstructionDto> coordinatorInstructions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadAllianceRecruitmentResultDto> coordinatorResults = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task> outboundTasks = new(StringComparer.OrdinalIgnoreCase);
+    private DadAllianceRecruitmentTarget? coordinatorHostTarget;
+    private DadAllianceRecruitmentInstructionDto? coordinatorHostInstruction;
+    private DadAllianceRecruitmentResultDto? coordinatorHostResult;
+    private Task? coordinatorHostTask;
+    private Task? coordinatorHostCancellationTask;
+    private bool coordinatorHostDispatched;
+    private bool coordinatorHostAccepted;
     private readonly List<ulong> discordMessageIds = [];
     private readonly DadAlliancePartyFinderCreateCycleCoordinator createCycles =
         new();
@@ -40,13 +47,16 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private bool grabRequested;
     private bool cleanupRequested;
     private bool stopApplied;
+    private bool receiverHostOwnsRecruitment;
+    private bool receiverHostCleanupRequested;
     private string lastCreateAuditFingerprint = string.Empty;
     private bool disposed;
 
     private sealed record DadAlliancePfCreatePreflightEvaluation(
         DadAlliancePartyFinderStatus Status,
         DadParticipantSnapshot? Local,
-        List<DadAllianceRecruitmentTarget> Targets);
+        List<DadAllianceRecruitmentTarget> Targets,
+        DadAllianceRecruitmentTarget? Host);
 
     internal DadAlliancePartyFinderService(
         DadPresenceService presenceService,
@@ -133,8 +143,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         if (!preflight.Status.CreatePreflightReady)
             return RejectCreate(preflight.Status);
 
-        var local = preflight.Local ??
-                    throw new InvalidOperationException("Alliance PF Create preflight lost the local participant.");
+        var host = preflight.Host ??
+                   throw new InvalidOperationException("Alliance PF Create preflight lost exact Slot1.");
         var selectedGroup = group ??
                             throw new InvalidOperationException("Alliance PF Create preflight lost the selected preset.");
         var targets = preflight.Targets;
@@ -143,7 +153,14 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         ResetOperation();
         createCycles.Reset();
         nativeGateway.Reset();
-        foreach (var target in targets)
+        coordinatorHostTarget = string.Equals(
+            host.WorkerSessionId.Value,
+            presenceService.WorkerSessionId.Value,
+            StringComparison.OrdinalIgnoreCase)
+            ? null
+            : host;
+        foreach (var target in targets.Where(target =>
+                     !string.Equals(target.SlotId, host.SlotId, StringComparison.OrdinalIgnoreCase)))
             coordinatorTargets[target.CharacterKey.Value] = target;
 
         var now = DateTime.UtcNow;
@@ -154,16 +171,20 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             State = DadAllianceRecruitmentState.CreatingListing,
             PresetGroupId = selectedGroup.GroupId,
             PresetName = selectedGroup.DisplayName,
-            LeaderName = local.Character.CharacterName,
-            LeaderWorld = local.Character.WorldName,
+            LeaderName = host.CharacterName,
+            LeaderWorld = host.WorldName,
             Passcode = passcode,
-            CreateStage = DadAlliancePfCreateStage.CloseStaleWindows.ToString(),
+            CreateStage = coordinatorHostTarget == null
+                ? DadAlliancePfCreateStage.CloseStaleWindows.ToString()
+                : "RemoteSlot1Host",
             CreatePreflightReady = false,
             CreatePreflightBlocker = DadAlliancePartyFinderCreatePreflight.ActiveRecruitmentBlocker,
             StopGeneration = status.StopGeneration,
             StartedAtUtc = now,
             UpdatedAtUtc = now,
-            Summary = $"Creating a private {DadAlliancePartyFinderNativeGateway.FormationDutyName} alliance recruitment.",
+            Summary = coordinatorHostTarget == null
+                ? $"Creating a private {DadAlliancePartyFinderNativeGateway.FormationDutyName} alliance recruitment."
+                : $"Dispatching private {DadAlliancePartyFinderNativeGateway.FormationDutyName} listing creation to exact remote Slot1.",
             Validation = validation,
         };
         SetStatus(next);
@@ -200,9 +221,15 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         }
 
         var local = nativeGateway.BuildLocalSnapshot();
+        var slotOne = preview!.SelectedCharacters
+            .OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.SlotId))
+            .FirstOrDefault(static slot => string.Equals(
+                slot.SlotId,
+                DadPlannerSlotRules.LeaderSlotId,
+                StringComparison.OrdinalIgnoreCase));
         var validation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
-            preview!.SelectedCharacters,
-            local.ActiveCharacterKey);
+            preview.SelectedCharacters,
+            slotOne == null ? null : new DadCharacterKey(slotOne.CharacterKey));
         if (!validation.IsValid)
         {
             return BuildCreatePreflightEvaluation(
@@ -253,8 +280,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             out var targetBlocker);
         var host = targetsResolved
             ? targets.SingleOrDefault(target => string.Equals(
-                target.CharacterKey.Value,
-                local.ActiveCharacterKey.Value,
+                target.SlotId,
+                DadPlannerSlotRules.LeaderSlotId,
                 StringComparison.OrdinalIgnoreCase))
             : null;
         var input = new DadAlliancePfCreatePreflightInput
@@ -265,7 +292,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             TargetBlocker = targetBlocker,
             HostIsAllianceA = host?.Assignment == DadAllianceAssignment.A,
         };
-        return BuildCreatePreflightEvaluation(group, validation, input, local, targets);
+        return BuildCreatePreflightEvaluation(group, validation, input, local, targets, host);
     }
 
     private static DadAlliancePfCreatePreflightEvaluation BuildCreatePreflightEvaluation(
@@ -273,7 +300,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         DadAlliancePresetValidation validation,
         DadAlliancePfCreatePreflightInput input,
         DadParticipantSnapshot? local = null,
-        List<DadAllianceRecruitmentTarget>? targets = null)
+        List<DadAllianceRecruitmentTarget>? targets = null,
+        DadAllianceRecruitmentTarget? host = null)
     {
         var decision = DadAlliancePartyFinderCreatePreflight.Evaluate(input);
         return new DadAlliancePfCreatePreflightEvaluation(
@@ -290,7 +318,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 Summary = decision.Ready ? validation.Summary : decision.Blocker,
             },
             local,
-            targets ?? []);
+            targets ?? [],
+            host);
     }
 
     private bool HasActiveRecruitment()
@@ -395,6 +424,39 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             return receiverResult.Clone();
         }
 
+        if (receiverInstruction.CreateListingAsHost)
+        {
+            receiverInstruction.StopGeneration = cancellation.StopGeneration;
+            if (!receiverHostOwnsRecruitment)
+            {
+                nativeGateway.StopCreate();
+                receiverResult = new DadAllianceRecruitmentResultDto
+                {
+                    RecruitmentId = cancellation.RecruitmentId,
+                    WorkerSessionId = presenceService.WorkerSessionId,
+                    TargetCharacterKey = cancellation.TargetCharacterKey,
+                    ExpectedAlliance = DadAllianceAssignment.A,
+                    ObservedAlliance = DadAllianceAssignment.A,
+                    Attempt = receiverInstruction.Attempt,
+                    State = DadAllianceRecruitmentState.Stopped,
+                    ResultKind = DadAllianceRecruitmentResultKind.Stopped,
+                    Retryable = false,
+                    StopGeneration = cancellation.StopGeneration,
+                    Summary = "Remote Slot1 PF create stopped before listing ownership was established.",
+                };
+                receiverInstruction = null;
+                return receiverResult.Clone();
+            }
+
+            receiverHostCleanupRequested = true;
+            receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Waiting;
+            receiverResult.State = DadAllianceRecruitmentState.Verifying;
+            receiverResult.Retryable = true;
+            receiverResult.StopGeneration = cancellation.StopGeneration;
+            receiverResult.Summary = "Remote Slot1 accepted PF cleanup; ownership remains active until native listing clearance is proven.";
+            return receiverResult.Clone();
+        }
+
         receiverResult = new DadAllianceRecruitmentResultDto
         {
             RecruitmentId = cancellation.RecruitmentId,
@@ -460,7 +522,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.State = DadAllianceRecruitmentState.Stopped;
             status.UpdatedAtUtc = DateTime.UtcNow;
             status.Summary = string.IsNullOrWhiteSpace(reason) ? "Alliance recruitment stopped." : reason.Trim();
-            cleanupRequested |= status.OwnsRecruitment;
+            cleanupRequested |= status.OwnsRecruitment || coordinatorHostTarget != null;
         }
         if (stopCreate)
             nativeGateway.StopCreate();
@@ -504,7 +566,15 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         lock (statusGate)
             current = status.Clone();
 
-        if (!current.OwnsRecruitment &&
+        if (coordinatorHostTarget != null &&
+            (cleanupRequested || current.State != DadAllianceRecruitmentState.ListingOpen))
+        {
+            UpdateRemoteHostCoordinator(current);
+            return;
+        }
+
+        if (coordinatorHostTarget == null &&
+            !current.OwnsRecruitment &&
             !string.IsNullOrWhiteSpace(current.CreateStage) &&
             current.State is DadAllianceRecruitmentState.CreatingListing
                 or DadAllianceRecruitmentState.RetryWaiting
@@ -616,7 +686,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             {
                 status.State = DadAllianceRecruitmentState.Verifying;
                 status.Summary = $"Verified all {successful} effective characters in their exact A-G subgroups; ending recruitment only.";
-                status.Results = coordinatorResults.Values.Select(static result => result.Clone()).ToList();
+                status.Results = BuildCoordinatorResultList();
                 status.UpdatedAtUtc = now;
             }
             Audit("all-verified", null, 0, string.Empty, status.Summary);
@@ -627,16 +697,271 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             coordinatorResults.Values.DefaultIfEmpty().Max(static result => result?.Attempt ?? 0));
         lock (statusGate)
         {
-            status.Results = coordinatorResults.Values.Select(static result => result.Clone()).ToList();
+            status.Results = BuildCoordinatorResultList();
             status.Summary = $"Alliance verification: {successful}/{coordinatorTargets.Count} exact subgroup assignments complete; unresolved targets will retry.";
             status.UpdatedAtUtc = now;
         }
     }
 
+    private void UpdateRemoteHostCoordinator(DadAlliancePartyFinderStatus current)
+    {
+        var host = coordinatorHostTarget;
+        if (host == null)
+            return;
+
+        var now = DateTime.UtcNow;
+        var lifecycle = DadAllianceRemoteHostRules.Evaluate(
+            true,
+            coordinatorHostDispatched || coordinatorHostAccepted,
+            cleanupRequested,
+            coordinatorHostResult);
+        if (cleanupRequested)
+        {
+            if (lifecycle == DadAllianceRemoteHostLifecycleState.CleanupComplete &&
+                !coordinatorHostDispatched &&
+                !coordinatorHostAccepted)
+            {
+                cleanupRequested = false;
+                lock (statusGate)
+                {
+                    status.OwnsRecruitment = false;
+                    status.ListingId = 0;
+                    status.State = current.State == DadAllianceRecruitmentState.Stopped
+                        ? DadAllianceRecruitmentState.Stopped
+                        : DadAllianceRecruitmentState.Complete;
+                    status.Summary = "Remote Slot1 never accepted PF host ownership; no listing cleanup is pending.";
+                    status.UpdatedAtUtc = now;
+                }
+                return;
+            }
+
+            if (lifecycle == DadAllianceRemoteHostLifecycleState.CleanupComplete)
+            {
+                cleanupRequested = false;
+                lock (statusGate)
+                {
+                    status.OwnsRecruitment = false;
+                    status.ListingId = 0;
+                    status.State = current.State == DadAllianceRecruitmentState.Stopped
+                        ? DadAllianceRecruitmentState.Stopped
+                        : DadAllianceRecruitmentState.Complete;
+                    status.Summary = coordinatorHostResult.Summary;
+                    status.Results = BuildCoordinatorResultList();
+                    status.UpdatedAtUtc = now;
+                }
+                QueueDiscordCleanup();
+                Audit("remote-host-recruitment-ended", coordinatorHostResult, 0, string.Empty, coordinatorHostResult.Summary);
+                return;
+            }
+
+            if (lifecycle == DadAllianceRemoteHostLifecycleState.Blocked)
+            {
+                lock (statusGate)
+                {
+                    status.State = DadAllianceRecruitmentState.Blocked;
+                    status.Summary = coordinatorHostResult.Summary;
+                    status.Results = BuildCoordinatorResultList();
+                    status.UpdatedAtUtc = now;
+                }
+                return;
+            }
+
+            if ((coordinatorHostCancellationTask == null || coordinatorHostCancellationTask.IsCompleted) &&
+                now >= coordinatorNextResendUtc)
+            {
+                QueueHostCancellation(host, current.StopGeneration, current.Summary);
+                coordinatorNextResendUtc = now + TimeSpan.FromMilliseconds(750);
+            }
+
+            lock (statusGate)
+            {
+                status.OwnsRecruitment = coordinatorHostAccepted;
+                status.State = current.State == DadAllianceRecruitmentState.Stopped
+                    ? DadAllianceRecruitmentState.Stopped
+                    : DadAllianceRecruitmentState.Verifying;
+                status.Summary = "Waiting for remote Slot1 to prove Party Finder listing ownership is cleared.";
+                status.Results = BuildCoordinatorResultList();
+                status.UpdatedAtUtc = now;
+            }
+            return;
+        }
+
+        if (lifecycle == DadAllianceRemoteHostLifecycleState.ListingOpen)
+        {
+            lock (statusGate)
+            {
+                status.OwnsRecruitment = true;
+                status.State = DadAllianceRecruitmentState.ListingOpen;
+                status.Summary = "Remote Slot1 proved its owned Alliance-A Party Finder listing is open.";
+                status.Results = BuildCoordinatorResultList();
+                status.UpdatedAtUtc = now;
+            }
+            Audit("remote-host-listing-open", coordinatorHostResult, 0, string.Empty, status.Summary);
+            return;
+        }
+
+        if (lifecycle == DadAllianceRemoteHostLifecycleState.Blocked)
+        {
+            lock (statusGate)
+            {
+                status.OwnsRecruitment = true;
+                status.State = DadAllianceRecruitmentState.Blocked;
+                status.Summary = coordinatorHostResult.Summary;
+                status.Results = BuildCoordinatorResultList();
+                status.UpdatedAtUtc = now;
+            }
+            return;
+        }
+
+        if ((coordinatorHostTask == null || coordinatorHostTask.IsCompleted) &&
+            now >= coordinatorNextResendUtc)
+        {
+            QueueHostInstruction(host);
+            coordinatorNextResendUtc = now + TimeSpan.FromMilliseconds(750);
+        }
+
+        lock (statusGate)
+        {
+            status.OwnsRecruitment = coordinatorHostAccepted;
+            status.State = DadAllianceRecruitmentState.CreatingListing;
+            status.Summary = coordinatorHostResult?.Summary ??
+                             "Dispatching authenticated Party Finder create instruction to exact remote Slot1.";
+            status.Results = BuildCoordinatorResultList();
+            status.UpdatedAtUtc = now;
+        }
+    }
+
+    private void QueueHostInstruction(DadAllianceRecruitmentTarget host)
+    {
+        var participant = ResolveParticipant(host.WorkerSessionId);
+        if (participant == null)
+        {
+            coordinatorHostResult = BuildCoordinatorRetry(host, "Remote Slot1 worker is temporarily disconnected.");
+            return;
+        }
+
+        var current = GetStatus();
+        var instruction = new DadAllianceRecruitmentInstructionDto
+        {
+            RecruitmentId = current.RecruitmentId,
+            CoordinatorWorkerSessionId = presenceService.WorkerSessionId,
+            CoordinatorIdentity = coordinatorIdentity().Trim(),
+            LeaderName = host.CharacterName,
+            LeaderWorld = host.WorldName,
+            TargetWorkerSessionId = host.WorkerSessionId,
+            TargetApplicationId = host.DiscordApplicationId,
+            TargetCharacterKey = host.CharacterKey,
+            TargetCharacterName = host.CharacterName,
+            TargetCharacterWorld = host.WorldName,
+            TargetContentId = host.ContentId,
+            AssignedAlliance = DadAllianceAssignment.A,
+            CreateListingAsHost = true,
+            Passcode = current.Passcode,
+            Attempt = (coordinatorHostResult?.Attempt ?? 0) + 1,
+            State = DadAllianceRecruitmentState.CreatingListing,
+            StopGeneration = current.StopGeneration,
+            IssuedAtUtc = DateTime.UtcNow,
+        };
+        coordinatorHostInstruction = instruction.Clone();
+        coordinatorHostDispatched = true;
+        coordinatorHostTask = DispatchHostInstructionAsync(participant, instruction);
+    }
+
+    private async Task DispatchHostInstructionAsync(
+        DadParticipantSnapshot participant,
+        DadAllianceRecruitmentInstructionDto instruction)
+    {
+        try
+        {
+            var result = await transportService.SendAllianceRecruitmentInstructionAsync(
+                    participant,
+                    instruction,
+                    operationCancellation.Token)
+                .ConfigureAwait(false);
+            frameworkCompletions.Enqueue(() =>
+            {
+                coordinatorHostAccepted = true;
+                coordinatorHostResult = result.Clone();
+                Audit("remote-host-transport-delivery", result, 0, string.Empty, "Authenticated hub host delivery completed.");
+            });
+        }
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            frameworkCompletions.Enqueue(() =>
+            {
+                coordinatorHostResult = BuildCoordinatorRetry(coordinatorHostTarget!, exception.Message);
+                Audit("remote-host-transport-failure", coordinatorHostResult, 0, exception.Message, "Remote host delivery will retry.");
+            });
+        }
+    }
+
+    private void QueueHostCancellation(
+        DadAllianceRecruitmentTarget host,
+        long stopGeneration,
+        string reason)
+    {
+        var participant = ResolveParticipant(host.WorkerSessionId);
+        var current = GetStatus();
+        if (participant == null || string.IsNullOrWhiteSpace(current.RecruitmentId))
+            return;
+
+        coordinatorHostCancellationTask = DispatchHostCancellationAsync(
+            participant,
+            new DadAllianceRecruitmentCancellationDto
+            {
+                RecruitmentId = current.RecruitmentId,
+                CoordinatorWorkerSessionId = presenceService.WorkerSessionId,
+                TargetWorkerSessionId = host.WorkerSessionId,
+                TargetCharacterKey = host.CharacterKey,
+                StopGeneration = stopGeneration,
+                Reason = reason,
+            });
+    }
+
+    private async Task DispatchHostCancellationAsync(
+        DadParticipantSnapshot participant,
+        DadAllianceRecruitmentCancellationDto cancellation)
+    {
+        try
+        {
+            var result = await transportService.SendAllianceRecruitmentCancellationAsync(
+                    participant,
+                    cancellation,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            frameworkCompletions.Enqueue(() => coordinatorHostResult = result.Clone());
+        }
+        catch (Exception exception)
+        {
+            frameworkCompletions.Enqueue(() =>
+                coordinatorHostResult = BuildCoordinatorRetry(
+                    coordinatorHostTarget!,
+                    $"Remote Slot1 cleanup response failed: {exception.Message}"));
+        }
+    }
+
+    private List<DadAllianceRecruitmentResultDto> BuildCoordinatorResultList()
+    {
+        var results = coordinatorResults.Values.Select(static result => result.Clone()).ToList();
+        if (coordinatorHostResult != null)
+            results.Insert(0, coordinatorHostResult.Clone());
+        return results;
+    }
+
     private void UpdateReceiver()
     {
         var instruction = receiverInstruction;
-        if (instruction == null || receiverResult.IsTerminal || DateTime.UtcNow < receiverNextAttemptUtc)
+        if (instruction == null || DateTime.UtcNow < receiverNextAttemptUtc)
+            return;
+        if (instruction.CreateListingAsHost)
+        {
+            UpdateHostReceiver(instruction);
+            return;
+        }
+        if (receiverResult.IsTerminal)
             return;
 
         var started = DateTime.UtcNow;
@@ -706,6 +1031,106 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     : string.Empty,
                 $"{step.CreateStage}: {step.Summary}");
         }
+    }
+
+    private void UpdateHostReceiver(DadAllianceRecruitmentInstructionDto instruction)
+    {
+        var started = DateTime.UtcNow;
+        if (receiverHostCleanupRequested)
+        {
+            var cleanup = nativeGateway.AdvanceEndRecruitment(receiverHostOwnsRecruitment);
+            receiverResult.ObservedAtUtc = DateTime.UtcNow;
+            receiverResult.StopGeneration = instruction.StopGeneration;
+            receiverResult.Summary = cleanup.Summary;
+            receiverResult.State = cleanup.State;
+            if (cleanup.Kind == DadAllianceNativeStepKind.Succeeded)
+            {
+                receiverHostOwnsRecruitment = false;
+                receiverHostCleanupRequested = false;
+                receiverResult.State = DadAllianceRecruitmentState.Stopped;
+                receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Stopped;
+                receiverResult.Retryable = false;
+                receiverInstruction = null;
+            }
+            else if (cleanup.Kind == DadAllianceNativeStepKind.Blocked)
+            {
+                receiverResult.State = DadAllianceRecruitmentState.Blocked;
+                receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Blocked;
+                receiverResult.Retryable = false;
+            }
+            else
+            {
+                receiverResult.State = DadAllianceRecruitmentState.Verifying;
+                receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Waiting;
+                receiverResult.Retryable = true;
+                receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+            }
+
+            Audit(
+                "remote-host-cleanup",
+                receiverResult,
+                (int)(DateTime.UtcNow - started).TotalMilliseconds,
+                cleanup.Kind == DadAllianceNativeStepKind.Blocked ? cleanup.Summary : string.Empty,
+                cleanup.Summary);
+            return;
+        }
+
+        if (receiverResult is
+            {
+                ResultKind: DadAllianceRecruitmentResultKind.Succeeded,
+                State: DadAllianceRecruitmentState.ListingOpen,
+            })
+        {
+            return;
+        }
+
+        var step = nativeGateway.AdvanceCreate(instruction.Passcode);
+        receiverResult.RecruitmentId = instruction.RecruitmentId;
+        receiverResult.WorkerSessionId = presenceService.WorkerSessionId;
+        receiverResult.TargetCharacterKey = instruction.TargetCharacterKey;
+        receiverResult.TargetCharacterName = instruction.TargetCharacterName;
+        receiverResult.TargetCharacterWorld = instruction.TargetCharacterWorld;
+        receiverResult.TargetContentId = instruction.TargetContentId;
+        receiverResult.ExpectedAlliance = DadAllianceAssignment.A;
+        receiverResult.ObservedAlliance = step.Kind == DadAllianceNativeStepKind.Succeeded
+            ? DadAllianceAssignment.A
+            : DadAllianceAssignment.None;
+        receiverResult.Attempt = instruction.Attempt;
+        receiverResult.State = step.State;
+        receiverResult.StopGeneration = instruction.StopGeneration;
+        receiverResult.ObservedAtUtc = DateTime.UtcNow;
+        receiverResult.Summary = step.Summary;
+
+        if (step.Kind == DadAllianceNativeStepKind.Succeeded)
+        {
+            receiverHostOwnsRecruitment = true;
+            receiverResult.State = DadAllianceRecruitmentState.ListingOpen;
+            receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Succeeded;
+            receiverResult.Retryable = false;
+        }
+        else if (step.Kind == DadAllianceNativeStepKind.Blocked)
+        {
+            receiverHostOwnsRecruitment |= step.ActiveRecruitment;
+            receiverResult.State = DadAllianceRecruitmentState.Blocked;
+            receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Blocked;
+            receiverResult.Retryable = false;
+        }
+        else
+        {
+            receiverHostOwnsRecruitment |= step.ActiveRecruitment;
+            receiverResult.ResultKind = step.Kind == DadAllianceNativeStepKind.Retry
+                ? DadAllianceRecruitmentResultKind.Retry
+                : DadAllianceRecruitmentResultKind.Waiting;
+            receiverResult.Retryable = true;
+            receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+        }
+
+        Audit(
+            "remote-host-create",
+            receiverResult,
+            (int)(DateTime.UtcNow - started).TotalMilliseconds,
+            step.Kind == DadAllianceNativeStepKind.Blocked ? step.Summary : string.Empty,
+            step.Summary);
     }
 
     private void RestartCreateCycle(DadAllianceNativeStep blockedStep)
@@ -931,6 +1356,12 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         var blocker = DadAlliancePartyFinderRules.ValidateInstruction(instruction);
         var local = presenceService.BuildLiveSafetySnapshot();
         if (string.IsNullOrWhiteSpace(blocker) &&
+            instruction.CreateListingAsHost &&
+            string.Equals(transport, "discord", StringComparison.OrdinalIgnoreCase))
+        {
+            blocker = "Remote Slot1 PF host instructions require authenticated hub transport.";
+        }
+        if (string.IsNullOrWhiteSpace(blocker) &&
             requireConnectedCoordinator &&
             !transportService.IsWorkerOnline(instruction.CoordinatorWorkerSessionId))
         {
@@ -986,6 +1417,13 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         }
 
         receiverInstruction = instruction.Clone();
+        if (instruction.CreateListingAsHost)
+        {
+            createCycles.Reset();
+            nativeGateway.Reset();
+            receiverHostOwnsRecruitment = false;
+            receiverHostCleanupRequested = false;
+        }
         stopApplied = false;
         receiverCompletedAttempts = 0;
         receiverNextAttemptUtc = DateTime.MinValue;
@@ -999,11 +1437,15 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             TargetContentId = instruction.TargetContentId,
             ExpectedAlliance = instruction.AssignedAlliance,
             Attempt = instruction.Attempt,
-            State = DadAllianceRecruitmentState.Searching,
+            State = instruction.CreateListingAsHost
+                ? DadAllianceRecruitmentState.CreatingListing
+                : DadAllianceRecruitmentState.Searching,
             ResultKind = DadAllianceRecruitmentResultKind.Pending,
             Retryable = true,
             StopGeneration = instruction.StopGeneration,
-            Summary = $"Accepted exact Alliance {instruction.AssignedAlliance} recruitment over {transport}.",
+            Summary = instruction.CreateListingAsHost
+                ? $"Accepted exact remote Slot1 Alliance-A PF host instruction over {transport}."
+                : $"Accepted exact Alliance {instruction.AssignedAlliance} recruitment over {transport}.",
         };
         Audit("instruction-accepted", receiverResult, 0, string.Empty, receiverResult.Summary);
         return receiverResult.Clone();
@@ -1200,6 +1642,13 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         coordinatorInstructions.Clear();
         coordinatorResults.Clear();
         outboundTasks.Clear();
+        coordinatorHostTarget = null;
+        coordinatorHostInstruction = null;
+        coordinatorHostResult = null;
+        coordinatorHostTask = null;
+        coordinatorHostCancellationTask = null;
+        coordinatorHostDispatched = false;
+        coordinatorHostAccepted = false;
         discordMessageIds.Clear();
         grabRequested = false;
         cleanupRequested = false;

@@ -28,6 +28,21 @@ public sealed class DadPlannerService
         var activeCoordinatorCharacter = DadFullPartyExecutionRules.ResolveActiveCoordinatorCharacter(
             liveLocalRuntimeTruth);
 
+        if (request.Orchestration.AutoPartyFormationOnly)
+        {
+            return DadCrewFormationPlannerRules.TryBuildPlan(
+                request,
+                pool,
+                configuration,
+                activeCoordinatorCharacter,
+                requireLiveReadiness,
+                allowWakeableCoordinatorLeader,
+                out var formationPlan,
+                out rejectionReason)
+                ? formationPlan
+                : null;
+        }
+
         if (!ResolveNpcAutoLevelSelections(request, activeCoordinatorCharacter, out rejectionReason))
             return null;
 
@@ -379,13 +394,17 @@ public sealed class DadPlannerService
             !ValidateRequiredRuntimeParticipants(request, pool, configuration.PartyValidationOverrideEnabled, out rejectionReason))
             return null;
 
-        var localCharacterKey = activeCoordinatorCharacter?.CharacterKey ?? string.Empty;
-        var leaderCharacterKey = string.IsNullOrWhiteSpace(request.Orchestration.PreferredLeaderCharacterKey)
-            ? localCharacterKey
-            : request.Orchestration.PreferredLeaderCharacterKey.Value;
         var requiredParticipantCount = Math.Max(
             request.Orchestration.RosterIntent.ExpectedPartySize,
             modules.Max(static module => module.ExpectedPartySize));
+        var localCharacterKey = activeCoordinatorCharacter?.CharacterKey ?? string.Empty;
+        var firstPrimaryCharacterKey = request.Orchestration.RequiredRosterCharacters?
+            .FirstOrDefault()?.CharacterKey.Value ?? string.Empty;
+        var leaderCharacterKey = string.IsNullOrWhiteSpace(request.Orchestration.PreferredLeaderCharacterKey)
+            ? requiredParticipantCount > 1 && !string.IsNullOrWhiteSpace(firstPrimaryCharacterKey)
+                ? firstPrimaryCharacterKey
+                : localCharacterKey
+            : request.Orchestration.PreferredLeaderCharacterKey.Value;
         var inviterCharacterKey = ResolveInviterCharacterKey(
             request,
             leaderCharacterKey,
@@ -427,11 +446,8 @@ public sealed class DadPlannerService
         => request.Orchestration.InviteAuthority switch
         {
             DadInviteAuthority.NotNeeded => string.Empty,
-            DadInviteAuthority.ServerDad when DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(request) => leaderCharacterKey,
-            DadInviteAuthority.ServerDad => activeCoordinatorCharacter?.CharacterKey ?? localCharacterKey,
-            DadInviteAuthority.PresetLeader => request.Orchestration.PreferredInviterCharacterKey.IsEmpty
-                ? leaderCharacterKey
-                : request.Orchestration.PreferredInviterCharacterKey.Value,
+            DadInviteAuthority.ServerDad => leaderCharacterKey,
+            DadInviteAuthority.PresetLeader => leaderCharacterKey,
             _ => request.Orchestration.PreferredInviterCharacterKey.Value ?? string.Empty,
         };
 
@@ -494,7 +510,7 @@ public sealed class DadPlannerService
 
         if (request.Orchestration.InviteAuthority == DadInviteAuthority.External)
         {
-            rejectionReason = "External party inviter is not executable by Dad; select Preset leader or Dad Coordinator.";
+            rejectionReason = "External party inviter is not executable by Dad; select an executable Slot1 invite authority.";
             return false;
         }
 
@@ -506,36 +522,19 @@ public sealed class DadPlannerService
 
         if (string.IsNullOrWhiteSpace(inviterCharacterKey))
         {
-            rejectionReason = "Party inviter is not selected.";
+            rejectionReason = "Party Slot1 inviter is not selected.";
             return false;
         }
 
-        var inviter = ResolveAuthorityCharacter(pool, inviterCharacterKey, activeCoordinatorCharacter);
-        if (inviter == null)
+        if (!string.Equals(inviterCharacterKey, leaderCharacterKey, StringComparison.OrdinalIgnoreCase) ||
+            (!request.Orchestration.PreferredInviterCharacterKey.IsEmpty &&
+             !string.Equals(
+                 request.Orchestration.PreferredInviterCharacterKey.Value,
+                 leaderCharacterKey,
+                 StringComparison.OrdinalIgnoreCase)))
         {
-            rejectionReason = $"Party inviter '{inviterCharacterKey}' is not known to Dad.";
+            rejectionReason = $"Party inviter '{inviterCharacterKey}' must be exact Slot1 '{leaderCharacterKey}'.";
             return false;
-        }
-
-        if (requireLiveReadiness && !IsConnectedForRuntime(inviter))
-        {
-            rejectionReason = $"Party inviter '{inviterCharacterKey}' is not live/ready at runtime.";
-            return false;
-        }
-
-        if (request.Orchestration.InviteAuthority == DadInviteAuthority.ServerDad)
-        {
-            if (requireLiveReadiness && inviter.Source != DadCharacterSource.LocalRuntime)
-            {
-                rejectionReason = $"Dad Coordinator inviter '{inviterCharacterKey}' is not loaded on this Dad client.";
-                return false;
-            }
-
-            if (!IsPlannedPartyCharacter(request, inviterCharacterKey))
-            {
-                rejectionReason = $"Dad Coordinator inviter '{inviterCharacterKey}' is not one of the planned party characters.";
-                return false;
-            }
         }
 
         return true;

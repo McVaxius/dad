@@ -12,6 +12,7 @@ public sealed class DadPresenceService
     private readonly DadAutoRetainerIpcService autoRetainer;
     private readonly DadLifestreamIpcService lifestream;
     private readonly InfoProxyPartyInviteGateway partyInviteGateway;
+    private readonly DadPartyTeardownService partyTeardownService;
     private readonly DadRequestedJobPreparationGate requestedJobPreparationGate;
     private readonly IDadClassJobGearsetGateway classJobGearsetGateway;
     private readonly IPluginLog log;
@@ -39,6 +40,7 @@ public sealed class DadPresenceService
     private DadOceTravelCapacityProof? cachedOceTravelCapacityProof;
     private DateTime nextOceTravelCapacityRefreshUtc = DateTime.MinValue;
     private string lastTravelTransition = string.Empty;
+    private string partyTeardownRunId = string.Empty;
 
     internal DadPresenceService(
         Configuration configuration,
@@ -47,6 +49,7 @@ public sealed class DadPresenceService
         DadAutoRetainerIpcService autoRetainer,
         DadLifestreamIpcService lifestream,
         InfoProxyPartyInviteGateway partyInviteGateway,
+        DadPartyTeardownService partyTeardownService,
         DadRequestedJobPreparationGate requestedJobPreparationGate,
         IDadClassJobGearsetGateway classJobGearsetGateway,
         IPluginLog log)
@@ -57,6 +60,7 @@ public sealed class DadPresenceService
         this.autoRetainer = autoRetainer;
         this.lifestream = lifestream;
         this.partyInviteGateway = partyInviteGateway;
+        this.partyTeardownService = partyTeardownService;
         this.requestedJobPreparationGate = requestedJobPreparationGate;
         this.classJobGearsetGateway = classJobGearsetGateway;
         this.log = log;
@@ -182,6 +186,9 @@ public sealed class DadPresenceService
     }
 
     public void MarkLeader(string runId, DadAuthorityMode authorityMode, string summary)
+        => MarkCoordinator(runId, authorityMode, summary);
+
+    public void MarkCoordinator(string runId, DadAuthorityMode authorityMode, string summary)
     {
         if (!string.Equals(currentRunId, runId, StringComparison.Ordinal))
         {
@@ -192,9 +199,9 @@ public sealed class DadPresenceService
         currentRunId = runId;
         currentAuthorityWorkerSessionId = WorkerSessionId;
         currentAuthorityMode = authorityMode;
-        requiredAccountKey = CurrentParticipant.ManagedAccountKey;
-        requiredCharacterKey = CurrentParticipant.ActiveCharacterKey;
-        assignedSlotId = DadPlannerSlotRules.LeaderSlotId;
+        requiredAccountKey = new DadAccountKey(string.Empty);
+        requiredCharacterKey = new DadCharacterKey(string.Empty);
+        assignedSlotId = string.Empty;
         CurrentParticipant.Role = DadOrchestrationRole.Leader;
         CurrentParticipant.WorkerRole = GetConfiguredWorkerRole();
         CurrentParticipant.State = DadParticipantState.Ready;
@@ -280,14 +287,10 @@ public sealed class DadPresenceService
             var target = request.CoordinatorTravelTarget;
             if (!target.IsComplete ||
                 !string.Equals(target.RunId, request.RunId, StringComparison.Ordinal) ||
-                !string.Equals(
-                    target.CoordinatorWorkerSessionId.Value,
-                    request.AuthorityWorkerSessionId.Value,
-                    StringComparison.OrdinalIgnoreCase) ||
                 !TravelTargetMatchesWorldCatalog(target))
             {
                 return BuildReadyResponse(
-                    blockerSummary: "Coordinator travel target is incomplete or contradicts the assignment run/authority identity.",
+                    blockerSummary: "Slot1 assembly target is incomplete or contradicts the assignment run.",
                     acceptedAssignment: false);
             }
 
@@ -301,14 +304,14 @@ public sealed class DadPresenceService
             if (travelRegistration.Disposition == DadImmutableCommandDisposition.Collision)
             {
                 log.Error(
-                    "[dad] Immutable Coordinator travel-target collision command={CommandId} originalProducerRoute={OriginalProducerRoute} incomingProducerRoute={IncomingProducerRoute} originalPayload={OriginalPayload} incomingPayload={IncomingPayload}.",
+                    "[dad] Immutable Slot1 assembly-target collision command={CommandId} originalProducerRoute={OriginalProducerRoute} incomingProducerRoute={IncomingProducerRoute} originalPayload={OriginalPayload} incomingPayload={IncomingPayload}.",
                     travelRegistration.CommandId,
                     travelRegistration.OriginalProducerRoute,
                     travelRegistration.IncomingProducerRoute,
                     travelRegistration.OriginalPayload,
                     travelRegistration.IncomingPayload);
                 return BuildReadyResponse(
-                    blockerSummary: $"Immutable Coordinator travel-target collision for {travelCommandId}.",
+                    blockerSummary: $"Immutable Slot1 assembly-target collision for {travelCommandId}.",
                     acceptedAssignment: false);
             }
         }
@@ -448,6 +451,29 @@ public sealed class DadPresenceService
             };
         }
 
+        if (instruction.InstructionKind is DadAssemblyInstructionKind.FormParty
+            or DadAssemblyInstructionKind.JoinParty
+            or DadAssemblyInstructionKind.DisbandParty)
+        {
+            var authorityBlocker = ValidateFrozenPartyInstruction(instruction);
+            if (!string.IsNullOrWhiteSpace(authorityBlocker))
+            {
+                return new DadRunStepResultDto
+                {
+                    RunId = instruction.RunId,
+                    ModuleId = instruction.ModuleId,
+                    StepName = "Assembly",
+                    ParticipantState = DadParticipantState.Failed,
+                    Summary = authorityBlocker,
+                    FailureReason = authorityBlocker,
+                    BlockedReason = authorityBlocker,
+                };
+            }
+        }
+
+        if (instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
+            return HandlePartyTeardownInstruction(instruction);
+
         if (!CurrentParticipant.PostArReady)
         {
             CurrentParticipant.State = DadParticipantState.WaitingForPostArReady;
@@ -464,9 +490,12 @@ public sealed class DadPresenceService
         }
 
         var summary = instruction.Summary;
+        if (instruction.InstructionKind == DadAssemblyInstructionKind.FormParty)
+            return HandleFormPartyInstruction(instruction);
+
         if (instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty)
         {
-            var joinResult = TryArmNativePartyInvitationAcceptance(instruction.RunId);
+            var joinResult = TryArmNativePartyInvitationAcceptance(instruction.FrozenInviter);
             if (!joinResult.Success)
             {
                 CurrentParticipant.State = DadParticipantState.AssemblyPending;
@@ -498,6 +527,185 @@ public sealed class DadPresenceService
             Success = true,
             Summary = summary,
         };
+    }
+
+    private DadRunStepResultDto HandleFormPartyInstruction(DadAssemblyInstructionDto instruction)
+    {
+        var members = partyInviteGateway.ReadAuthoritativePartyMembers();
+        var summaries = new List<string>();
+        foreach (var target in instruction.InviteTargets)
+        {
+            var alreadyJoined = members.Any(member => member.ContentId == target.ContentId);
+            var attempt = partyInviteGateway.TryInvite(target, alreadyJoined, out var blocker);
+            if (!string.IsNullOrWhiteSpace(blocker))
+            {
+                return new DadRunStepResultDto
+                {
+                    RunId = instruction.RunId,
+                    ModuleId = instruction.ModuleId,
+                    StepName = "Assembly",
+                    ParticipantState = DadParticipantState.Failed,
+                    Summary = blocker,
+                    FailureReason = blocker,
+                    BlockedReason = blocker,
+                    AuthoritativePartyMembers = members.Select(static member => member.Clone()).ToList(),
+                };
+            }
+
+            if (alreadyJoined)
+                continue;
+            if (attempt != null)
+            {
+                summaries.Add(attempt.DispatchResult
+                    ? $"Invited {target.CharacterKey} with {attempt.InviteType} attempt {attempt.AttemptNumber}."
+                    : $"Invite dispatch returned false for {target.CharacterKey}; guarded retry remains active.");
+            }
+        }
+
+        members = partyInviteGateway.ReadAuthoritativePartyMembers();
+        var expectedIds = instruction.InviteTargets
+            .Select(static target => target.ContentId)
+            .Append(instruction.FrozenInviter.ContentId)
+            .ToHashSet();
+        var observedIds = members
+            .Select(static member => member.ContentId)
+            .Where(static contentId => contentId != 0)
+            .ToHashSet();
+        var complete = expectedIds.SetEquals(observedIds);
+        if (complete)
+            partyInviteGateway.ConfirmRunPartyMembership(instruction.RunId);
+
+        CurrentParticipant.State = complete
+            ? DadParticipantState.AssemblyConfirmed
+            : DadParticipantState.AssemblyPending;
+        var summary = complete
+            ? $"Slot1 authoritative PartyList proves exact frozen membership {observedIds.Count}/{expectedIds.Count}."
+            : summaries.Count > 0
+                ? string.Join(" ", summaries)
+                : $"Slot1 is waiting for exact PartyList membership {observedIds.Count}/{expectedIds.Count}.";
+        CurrentParticipant.StatusText = summary;
+        return new DadRunStepResultDto
+        {
+            RunId = instruction.RunId,
+            ModuleId = instruction.ModuleId,
+            StepName = "Assembly",
+            ParticipantState = CurrentParticipant.State,
+            Success = true,
+            Deferred = !complete,
+            Summary = summary,
+            AuthoritativePartyMembers = members.Select(static member => member.Clone()).ToList(),
+        };
+    }
+
+    private DadRunStepResultDto HandlePartyTeardownInstruction(DadAssemblyInstructionDto instruction)
+    {
+        if (!string.Equals(partyTeardownRunId, instruction.RunId, StringComparison.Ordinal))
+        {
+            partyTeardownService.Reset();
+            partyTeardownRunId = instruction.RunId;
+            partyTeardownService.Begin(
+                instruction.InviteTargets
+                    .Select(static target => target.ContentId)
+                    .Append(instruction.FrozenInviter.ContentId)
+                    .Where(static contentId => contentId != 0)
+                    .ToList(),
+                instruction.FrozenInviter.ContentId,
+                instruction.FrozenInviter.CharacterName);
+        }
+
+        var decision = partyTeardownService.Update();
+        var complete = decision.Action == DadPartyTeardownAction.Complete;
+        var failed = decision.Action == DadPartyTeardownAction.Fail;
+        CurrentParticipant.State = complete
+            ? DadParticipantState.AssemblyConfirmed
+            : failed
+                ? DadParticipantState.Failed
+                : DadParticipantState.AssemblyPending;
+        CurrentParticipant.StatusText = decision.Summary;
+        return new DadRunStepResultDto
+        {
+            RunId = instruction.RunId,
+            ModuleId = instruction.ModuleId,
+            StepName = "PartyTeardown",
+            ParticipantState = CurrentParticipant.State,
+            Success = complete,
+            Deferred = !complete && !failed,
+            TimedOut = failed && decision.Summary.Contains("timed out", StringComparison.OrdinalIgnoreCase),
+            Summary = decision.Summary,
+            FailureReason = failed ? decision.Summary : string.Empty,
+            BlockedReason = failed ? decision.Summary : string.Empty,
+            AuthoritativePartyMembers = partyInviteGateway.ReadAuthoritativePartyMembers()
+                .Select(static member => member.Clone())
+                .ToList(),
+        };
+    }
+
+    private string ValidateFrozenPartyInstruction(DadAssemblyInstructionDto instruction)
+    {
+        var inviter = instruction.FrozenInviter;
+        var blocker = DadPartyInvitationAcceptanceTracker.Validate(inviter);
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return blocker;
+        if (!string.Equals(inviter.RunId, instruction.RunId, StringComparison.Ordinal) ||
+            (instruction.InstructionKind is DadAssemblyInstructionKind.FormParty or DadAssemblyInstructionKind.DisbandParty &&
+             !string.Equals(inviter.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Frozen Slot1 inviter contradicts the assembly run or target worker.";
+        }
+
+        var duplicateTarget = instruction.InviteTargets
+            .GroupBy(static target => target.ContentId)
+            .FirstOrDefault(static group => group.Key == 0 || group.Count() > 1);
+        var duplicateTargetCharacter = instruction.InviteTargets
+            .GroupBy(static target => target.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
+        var duplicateTargetWorker = instruction.InviteTargets
+            .GroupBy(static target => target.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
+        if (duplicateTarget != null ||
+            duplicateTargetCharacter != null ||
+            duplicateTargetWorker != null ||
+            instruction.InviteTargets.Any(target =>
+                target.AccountKey.IsEmpty ||
+                target.CharacterKey.IsEmpty ||
+                target.WorkerSessionId.IsEmpty ||
+                string.IsNullOrWhiteSpace(target.CharacterName) ||
+                target.WorldId == 0 ||
+                target.ContentId == inviter.ContentId ||
+                string.Equals(target.CharacterKey.Value, inviter.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(target.RunId) ||
+                !string.Equals(target.RunId, instruction.RunId, StringComparison.Ordinal)))
+        {
+            return "Frozen Slot1 invite targets are missing, duplicate, include Slot1, or contradict the assembly run.";
+        }
+
+        if (instruction.InstructionKind is DadAssemblyInstructionKind.FormParty or DadAssemblyInstructionKind.DisbandParty)
+        {
+            if (!DadRosterIdentity.SameAccount(CurrentParticipant.ManagedAccountKey, inviter.AccountKey) ||
+                !DadRosterIdentity.SameCharacter(
+                    CurrentParticipant.ActiveCharacterKey,
+                    CurrentParticipant.Character.ContentId,
+                    inviter.CharacterKey,
+                    inviter.ContentId))
+            {
+                return "This worker no longer matches the exact frozen Slot1 inviter identity.";
+            }
+        }
+        else
+        {
+            var localTargets = instruction.InviteTargets.Where(target =>
+                string.Equals(target.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+                DadRosterIdentity.SameAccount(target.AccountKey, CurrentParticipant.ManagedAccountKey) &&
+                DadRosterIdentity.SameCharacter(
+                    target.CharacterKey,
+                    target.ContentId,
+                    CurrentParticipant.ActiveCharacterKey,
+                    CurrentParticipant.Character.ContentId)).ToList();
+            if (localTargets.Count != 1)
+                return "This follower no longer matches exactly one frozen Slot1 invite target.";
+        }
+
+        return string.Empty;
     }
 
     public DadCancelAckDto HandleCancelRun(DadCancelCommandDto command)
@@ -940,34 +1148,8 @@ public sealed class DadPresenceService
         log.Warning("[dad] Presence warning for {WorkerSessionId}: {Warning}", WorkerSessionId, warning);
     }
 
-    private (bool Success, string Summary) TryArmNativePartyInvitationAcceptance(string runId)
+    private (bool Success, string Summary) TryArmNativePartyInvitationAcceptance(DadExpectedPartyInviter expected)
     {
-        var inviter = participantResolver(currentAuthorityWorkerSessionId);
-        if (inviter == null)
-        {
-            return (false,
-                $"Waiting for frozen inviter worker '{currentAuthorityWorkerSessionId}' before accepting a native party invitation.");
-        }
-
-        if (inviter.Character.ContentId == 0 ||
-            string.IsNullOrEmpty(inviter.Character.CharacterName) ||
-            inviter.Character.WorldId == 0 ||
-            inviter.Character.WorldId > ushort.MaxValue)
-        {
-            return (false,
-                $"Frozen inviter '{inviter.ActiveCharacterKey}' is missing its exact name, Content ID, or World ID.");
-        }
-
-        var expected = new DadExpectedPartyInviter
-        {
-            RunId = runId,
-            WorkerSessionId = currentAuthorityWorkerSessionId,
-            AccountKey = inviter.ManagedAccountKey,
-            CharacterKey = inviter.ActiveCharacterKey,
-            ContentId = inviter.Character.ContentId,
-            CharacterName = inviter.Character.CharacterName,
-            WorldId = (ushort)inviter.Character.WorldId,
-        };
         if (!partyInviteGateway.TryArmAcceptance(expected, out var blocker))
         {
             if (DadPartyInvitationRetryRules.IsPersistentWarning(blocker))
@@ -1296,6 +1478,8 @@ public sealed class DadPresenceService
     private void ResetRunContext()
     {
         partyInviteGateway.Reset();
+        partyTeardownService.Reset();
+        partyTeardownRunId = string.Empty;
         ResetRequestedJobPreparation();
         ResetClientTravel();
         currentRunId = string.Empty;

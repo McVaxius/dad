@@ -118,6 +118,85 @@ public sealed class DadAllianceSchemaPropagationTests
     }
 
     [Fact]
+    public void AdditiveSlotOneAssemblyAndRemoteHostFieldsCloneAndRoundTrip()
+    {
+        var assembly = new DadAssemblyInstructionDto
+        {
+            RunId = "run",
+            AuthorityWorkerSessionId = new DadWorkerSessionId("coordinator-worker"),
+            ModuleId = DadModuleId.PremadeDuty,
+            SlotId = "Slot1",
+            RequiredCharacterKey = new DadCharacterKey("Leader@Alpha"),
+            InstructionKind = DadAssemblyInstructionKind.FormParty,
+            FrozenInviter = new DadExpectedPartyInviter
+            {
+                RunId = "run",
+                WorkerSessionId = new DadWorkerSessionId("slot1-worker"),
+                AccountKey = new DadAccountKey("slot1-account"),
+                CharacterKey = new DadCharacterKey("Leader@Alpha"),
+                ContentId = 100,
+                CharacterName = "Leader",
+                WorldId = 1,
+            },
+            InviteTargets =
+            [
+                new DadNativePartyInviteTarget
+                {
+                    RunId = "run",
+                    ModuleId = DadModuleId.PremadeDuty,
+                    SlotId = "Slot2",
+                    AccountKey = new DadAccountKey("slot2-account"),
+                    CharacterKey = new DadCharacterKey("Member@Beta"),
+                    ContentId = 200,
+                    CharacterName = "Member",
+                    WorldId = 2,
+                    WorkerSessionId = new DadWorkerSessionId("slot2-worker"),
+                },
+            ],
+        };
+        var result = new DadRunStepResultDto
+        {
+            RunId = "run",
+            AuthoritativePartyMembers =
+            [
+                new DadPartyMemberSnapshot { ContentId = 100, CharacterName = "Leader" },
+                new DadPartyMemberSnapshot { ContentId = 200, CharacterName = "Member" },
+            ],
+        };
+        var host = new DadAllianceRecruitmentInstructionDto
+        {
+            RecruitmentId = Guid.NewGuid().ToString("N"),
+            CoordinatorWorkerSessionId = new DadWorkerSessionId("coordinator-worker"),
+            CoordinatorIdentity = "coordinator",
+            LeaderName = "Leader",
+            LeaderWorld = "Alpha",
+            TargetWorkerSessionId = new DadWorkerSessionId("slot1-worker"),
+            TargetCharacterKey = new DadCharacterKey("Leader@Alpha"),
+            TargetCharacterName = "Leader",
+            TargetCharacterWorld = "Alpha",
+            TargetContentId = 100,
+            AssignedAlliance = DadAllianceAssignment.A,
+            CreateListingAsHost = true,
+            Passcode = 1234,
+        };
+
+        var assemblyRoundTrip = DadIpcJson.Deserialize<DadAssemblyInstructionDto>(
+            DadIpcJson.Serialize(assembly))!;
+        var resultRoundTrip = DadIpcJson.Deserialize<DadRunStepResultDto>(
+            DadIpcJson.Serialize(result))!;
+        var hostRoundTrip = DadIpcJson.Deserialize<DadAllianceRecruitmentInstructionDto>(
+            DadIpcJson.Serialize(host))!;
+
+        Assert.Equal("slot1-worker", assembly.Clone().FrozenInviter.WorkerSessionId.Value);
+        Assert.Equal((ulong)200, Assert.Single(assemblyRoundTrip.InviteTargets).ContentId);
+        Assert.Equal([100UL, 200UL], result.Clone().AuthoritativePartyMembers.Select(static member => member.ContentId));
+        Assert.Equal(2, resultRoundTrip.AuthoritativePartyMembers.Count);
+        Assert.True(host.Clone().CreateListingAsHost);
+        Assert.True(hostRoundTrip.CreateListingAsHost);
+        Assert.Empty(DadAlliancePartyFinderRules.ValidateInstruction(hostRoundTrip));
+    }
+
+    [Fact]
     public void SchedulerCloneStateAndPlannerRefreshPreserveAssignments()
     {
         var group = GroupWithAssignments();

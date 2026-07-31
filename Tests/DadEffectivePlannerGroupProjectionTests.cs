@@ -56,6 +56,36 @@ public sealed class DadEffectivePlannerGroupProjectionTests
     }
 
     [Fact]
+    public void TwoCharacterDailyRouletteFormationUsesExactRosterWithoutChangingSavedOrOrdinaryProjection()
+    {
+        var saved = BuildGroup(2);
+        saved.ActivityMode = DadPlannerActivityMode.DailyRoulette;
+        saved.Slots[0].LevelSeekTarget = 50;
+        saved.Slots[0].SkipIfDailyRouletteRewardReceived = true;
+        var formation = DadCrewToolsRules.BuildRuntimeFormationGroup(saved);
+
+        var projectedFormation = DadEffectivePlannerGroupProjection.Project(
+            formation,
+            DadPlannerActivityMode.DailyRoulette,
+            requestedPartySize: 4);
+        var ordinary = BuildGroup(5);
+        var projectedOrdinary = DadEffectivePlannerGroupProjection.Project(
+            ordinary,
+            DadPlannerActivityMode.DailyRoulette,
+            requestedPartySize: 8);
+
+        Assert.Equal(2, DadPlannerSlotRules.CountPrimarySlots(projectedFormation.Slots));
+        Assert.Equal(2, DadPlannerSlotRules.CountPrimarySlots(saved.Slots));
+        Assert.False(saved.AutoPartyFormationOnly);
+        Assert.Equal(50, saved.Slots[0].LevelSeekTarget);
+        Assert.True(saved.Slots[0].SkipIfDailyRouletteRewardReceived);
+        Assert.Null(formation.Slots[0].LevelSeekTarget);
+        Assert.False(formation.Slots[0].SkipIfDailyRouletteRewardReceived);
+        Assert.Equal(4, DadPlannerSlotRules.CountPrimarySlots(projectedOrdinary.Slots));
+        Assert.Equal(5, DadPlannerSlotRules.CountPrimarySlots(ordinary.Slots));
+    }
+
+    [Fact]
     public void SchedulerBindingEmitsOneRowPerProjectedPrimaryEvenWhenResolutionIsMissing()
     {
         var group = BuildGroup(4);

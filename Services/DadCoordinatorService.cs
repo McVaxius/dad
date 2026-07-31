@@ -46,6 +46,7 @@ public sealed class DadCoordinatorService
     private readonly Dictionary<string, string> workerCommandTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> coordinatorProvenanceTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<ulong, DateTime> firstPartyInviteAttemptUtcByContentId = [];
+    private readonly HashSet<string> deliveredTravelAssignmentSlots = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRemoteAssignmentTracker remoteAssignmentTracker = new();
     private DateTime nextWorkerStatusPollUtc = DateTime.MinValue;
     private DadRunPhase? lastLoggedCoordinatorPhase;
@@ -53,6 +54,7 @@ public sealed class DadCoordinatorService
     private string inviteRetryContinuationRunId = string.Empty;
     private bool persistentStartup;
     private bool crewFormationTeardownRequested;
+    private DadAssemblyInstructionDto? activePartyTeardownInstruction;
     private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
     private readonly DadStableContradictionTracker coordinatorContradictionTracker = new();
     private readonly Dictionary<string, PendingCoordinatorCancellation> pendingCoordinatorCancellations = new(StringComparer.OrdinalIgnoreCase);
@@ -134,6 +136,8 @@ public sealed class DadCoordinatorService
             case DadRunPhase.GroupReady:
                 // Formation-only AutoParty runs deliberately hold until a local veto,
                 // owner Stop, disable, expiry, or revocation cancels the run.
+                if (crewFormationTeardownRequested)
+                    BeginPartyTeardown("Crew Tools disband requested.");
                 break;
             case DadRunPhase.RoutingModules:
             case DadRunPhase.QueuePreparing:
@@ -297,39 +301,6 @@ public sealed class DadCoordinatorService
                 return DadRunResult.Rejected(request, rejectionReason);
             }
 
-            if (plan.RequiredParticipantCount > 1 || plan.RequiresRemoteParticipants)
-            {
-                if (!DadCoordinatorTravelRules.TryFreezeTarget(
-                        plan.Request.RequestId,
-                        liveCoordinatorTruth,
-                        DateTime.UtcNow,
-                        out var travelTarget,
-                        out rejectionReason))
-                {
-                    return DadRunResult.Rejected(request, rejectionReason);
-                }
-
-                var coordinatorSlots = acceptedManifest.Slots
-                    .Where(slot => string.Equals(
-                        slot.WorkerSessionId.Value,
-                        travelTarget.CoordinatorWorkerSessionId.Value,
-                        StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (coordinatorSlots.Count != 1 ||
-                    !DadRosterIdentity.SameAccount(coordinatorSlots[0].AccountKey, travelTarget.CoordinatorAccountKey) ||
-                    !string.Equals(
-                        coordinatorSlots[0].CharacterKey.Value,
-                        travelTarget.CoordinatorCharacterKey.Value,
-                        StringComparison.OrdinalIgnoreCase) ||
-                    coordinatorSlots[0].ContentId != travelTarget.CoordinatorContentId)
-                {
-                    return DadRunResult.Rejected(
-                        request,
-                        "Frozen Coordinator travel target does not match exactly one bound roster slot identity.");
-                }
-
-                acceptedManifest.CoordinatorTravelTarget = travelTarget;
-            }
         }
 
         var selectedDependencyParticipants = new List<DadParticipantSnapshot?>();
@@ -386,18 +357,20 @@ public sealed class DadCoordinatorService
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
+        activePartyTeardownInstruction = null;
         slotResolutionTransitions.Clear();
         assignmentTransitions.Clear();
         partyTransitions.Clear();
         workerCommandTransitions.Clear();
         coordinatorProvenanceTransitions.Clear();
         firstPartyInviteAttemptUtcByContentId.Clear();
+        deliveredTravelAssignmentSlots.Clear();
         firstPartyInviteBoundaryRunId = string.Empty;
         inviteRetryContinuationRunId = string.Empty;
         remoteAssignmentTracker.BeginAttempt(plan.Request.RequestId);
         lastLoggedCoordinatorPhase = null;
         claimService.ReleaseClaims(plan.Request.RequestId);
-        presenceService.MarkLeader(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Dad Coordinator planned {plan.Modules.Count} Dad module(s).");
+        presenceService.MarkCoordinator(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Dad Coordinator planned {plan.Modules.Count} Dad module(s).");
         if (!TryBeginLocalRequestedJobPreparation(plan, acceptedManifest, out var preparationBlocker))
         {
             activePlan = null;
@@ -642,8 +615,6 @@ public sealed class DadCoordinatorService
                 runtimeParticipants,
                 activePlan.Orchestration.RequirePostArReady,
                 out var blocker);
-            participant.IsAuthority = participant.IsLocalClient && slot.IsLeader &&
-                                      (IsServerDad || activePlan.Orchestration.AuthorityMode == DadAuthorityMode.LocalOnly);
             activeParticipants.Add(participant);
             LogSlotResolutionTransition(activePlan, slot, participant, blocker);
             if (!string.IsNullOrWhiteSpace(blocker))
@@ -651,8 +622,58 @@ public sealed class DadCoordinatorService
         }
 
         var blockers = new List<string>(resolutionBlockers);
+        if ((activePlan.RequiredParticipantCount > 1 || activePlan.RequiresRemoteParticipants) &&
+            activeSlotManifest.CoordinatorTravelTarget == null)
+        {
+            var slotOne = activeSlotManifest.Slots.SingleOrDefault(static slot =>
+                slot.IsLeader &&
+                string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase));
+            var slotOneParticipant = slotOne == null
+                ? null
+                : activeParticipants.SingleOrDefault(participant =>
+                    string.Equals(participant.AssignedSlotId, slotOne.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        participant.WorkerSessionId.Value,
+                        slotOne.WorkerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase));
+            if (slotOne == null || slotOneParticipant == null)
+            {
+                blockers.Add("Waiting to resolve the exact frozen Slot1 assembly target.");
+            }
+            else if (slotOneParticipant.State == DadParticipantState.Discovered &&
+                     slotOneParticipant.WorldReadyStable)
+            {
+                if (!DadCoordinatorTravelRules.TryFreezeTarget(
+                        activePlan.Request.RequestId,
+                        slotOneParticipant,
+                        DateTime.UtcNow,
+                        out var travelTarget,
+                        out var travelBlocker))
+                {
+                    blockers.Add(travelBlocker);
+                }
+                else
+                {
+                    activeSlotManifest.CoordinatorTravelTarget = travelTarget;
+                    log.Information(
+                        "[dad] Frozen Slot1 assembly target request={RequestId} slot={SlotId} worker={WorkerSessionId} account={AccountKey} character={CharacterKey} contentId={ContentId} world={WorldName} dataCenter={DataCenterName}.",
+                        activePlan.Request.RequestId,
+                        slotOne.SlotId,
+                        slotOne.WorkerSessionId,
+                        slotOne.AccountKey,
+                        slotOne.CharacterKey,
+                        slotOne.ContentId,
+                        travelTarget.WorldName,
+                        travelTarget.DataCenterName);
+                }
+            }
+            else
+            {
+                blockers.Add($"Waiting for fresh world-stable Slot1 assembly-target proof from '{slotOne.CharacterKey}'.");
+            }
+        }
+
         foreach (var participant in activeParticipants.Where(participant =>
-                     !participant.IsLocalClient &&
                      runtimeParticipants.Count(runtime => string.Equals(
                          runtime.WorkerSessionId.Value,
                          participant.WorkerSessionId.Value,
@@ -660,13 +681,17 @@ public sealed class DadCoordinatorService
         {
             var frozenSlot = activeSlotManifest.Slots.Single(slot =>
                 string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
-            if (remoteAssignmentTracker.IsAccepted(activePlan.Request.RequestId, frozenSlot))
+            var needsTravelTargetDelivery =
+                activeSlotManifest.CoordinatorTravelTarget != null &&
+                !deliveredTravelAssignmentSlots.Contains(frozenSlot.SlotId);
+            if (remoteAssignmentTracker.IsAccepted(activePlan.Request.RequestId, frozenSlot) &&
+                !needsTravelTargetDelivery)
             {
                 LogAssignmentTransition(activePlan, frozenSlot, "accepted/cached", "Using exact heartbeat truth after sticky assignment acceptance.");
                 continue;
             }
 
-            var ready = transportService.SendWakeRequest(participant, new DadWakeRequestDto
+            var wakeRequest = new DadWakeRequestDto
             {
                 RunId = activePlan.Request.RequestId,
                 AuthorityWorkerSessionId = presenceService.WorkerSessionId,
@@ -679,7 +704,10 @@ public sealed class DadCoordinatorService
                 AssignedSlotId = participant.AssignedSlotId,
                 RequirePostArReady = activePlan.Orchestration.RequirePostArReady,
                 CoordinatorTravelTarget = activeSlotManifest.CoordinatorTravelTarget?.Clone(),
-            });
+            };
+            var ready = participant.IsLocalClient
+                ? presenceService.HandleWakeRequest(wakeRequest)
+                : transportService.SendWakeRequest(participant, wakeRequest);
 
             if (ready == null)
             {
@@ -702,6 +730,8 @@ public sealed class DadCoordinatorService
             }
 
             LogAssignmentTransition(activePlan, frozenSlot, "accepted", assignment.Summary);
+            if (activeSlotManifest.CoordinatorTravelTarget != null)
+                deliveredTravelAssignmentSlots.Add(frozenSlot.SlotId);
         }
 
         foreach (var slot in activeSlotManifest.Slots.Where(static slot => slot.RequiredJobId.HasValue))
@@ -735,7 +765,7 @@ public sealed class DadCoordinatorService
             {
                 FinalizeRun(
                     DadRunStatus.Failed,
-                    "Dad rejected participant discovery because the immutable Coordinator travel target changed.",
+                    "Dad rejected participant discovery because the immutable Slot1 assembly target changed.",
                     travelProof.Summary);
                 return;
             }
@@ -915,7 +945,21 @@ public sealed class DadCoordinatorService
         if (TryResolveSingleWorkerAssembly(activePlan))
             return;
 
-        var instructions = partyAssemblyService.BuildInstructions(activePlan, activeParticipants, out var blocker);
+        if (activeSlotManifest == null)
+        {
+            FinalizeRun(
+                DadRunStatus.Failed,
+                "Dad party assembly lost its frozen Slot1 manifest.",
+                "Authenticated party assembly requires the exact frozen Slot1 manifest.");
+            return;
+        }
+
+        var instructions = partyAssemblyService.BuildInstructions(
+            activePlan,
+            activeParticipants,
+            activeSlotManifest,
+            presenceService.WorkerSessionId,
+            out var blocker);
         if (!string.IsNullOrWhiteSpace(blocker))
         {
             if (!persistentStartup && HasTimedOut(activePlan.Orchestration.WaitPolicy.GetAssemblyTimeout()))
@@ -931,6 +975,7 @@ public sealed class DadCoordinatorService
         }
 
         var blockers = new List<string>();
+        IReadOnlyList<DadPartyMemberSnapshot> partyMembers = [];
         foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.FormParty))
         {
             var participant = ResolveParticipantForInstruction(instruction);
@@ -943,19 +988,16 @@ public sealed class DadCoordinatorService
                 : transportService.SendAssemblyInstruction(participant, instruction);
             if (result == null || !result.Success)
             {
-                blockers.Add(result?.FailureReason ?? $"Assembly acknowledgement missing for {participant.ActiveCharacterKey}.");
+                blockers.Add(result?.FailureReason ?? $"Slot1 assembly acknowledgement missing for {participant.ActiveCharacterKey}.");
                 continue;
             }
 
             participant.State = DadParticipantState.AssemblyConfirmed;
             participant.StatusText = result.Summary;
+            partyMembers = result.AuthoritativePartyMembers
+                .Select(static member => member.Clone())
+                .ToList();
         }
-
-        var partyMembers = BuildLocalPartySnapshot(out var partySnapshotBlocker);
-        if (!string.IsNullOrWhiteSpace(partySnapshotBlocker))
-            blockers.Add(partySnapshotBlocker);
-        else
-            IssueLeaderPartyInvites(activePlan, instructions, partyMembers, blockers);
 
         foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty))
         {
@@ -966,7 +1008,7 @@ public sealed class DadCoordinatorService
             if (!DadPartyAssemblyService.ShouldDispatchJoinInstruction(participant, partyMembers))
             {
                 participant.State = DadParticipantState.AssemblyConfirmed;
-                participant.StatusText = $"Dad Coordinator PartyList confirms {participant.ActiveCharacterKey}.";
+                participant.StatusText = $"Slot1 authoritative PartyList confirms {participant.ActiveCharacterKey}.";
                 LogPartyTransition(activePlan, participant, "partylist-confirmed", participant.StatusText);
                 continue;
             }
@@ -1026,7 +1068,6 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        partyMembers = BuildLocalPartySnapshot(out partySnapshotBlocker);
         var membership = partyAssemblyService.EvaluatePartyMembership(activePlan, activeParticipants, partyMembers);
         if (membership.Disposition == DadPartyMembershipDisposition.Reject)
         {
@@ -1037,9 +1078,9 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(partySnapshotBlocker) || membership.Disposition != DadPartyMembershipDisposition.Ready)
+        if (membership.Disposition != DadPartyMembershipDisposition.Ready)
         {
-            var blockerSummary = string.IsNullOrWhiteSpace(partySnapshotBlocker) ? membership.Summary : partySnapshotBlocker;
+            var blockerSummary = membership.Summary;
             var inviteRetryContinues = string.Equals(
                 inviteRetryContinuationRunId,
                 activePlan.Request.RequestId,
@@ -1067,11 +1108,8 @@ public sealed class DadCoordinatorService
                 activePlan,
                 participant,
                 "party-complete",
-                $"Dad Coordinator PartyList confirms complete frozen membership {partyMembers.Count}/{activePlan.RequiredParticipantCount}.");
+                $"Slot1 authoritative PartyList confirms complete frozen membership {partyMembers.Count}/{activePlan.RequiredParticipantCount}.");
         }
-
-        if (!partyInviteGateway.ConfirmRunPartyMembership(activePlan.Request.RequestId))
-            return;
 
         inviteRetryContinuationRunId = string.Empty;
         TransitionAfterAssembly(activePlan, "Dad party assembly confirmed; preparing queue executor.");
@@ -1181,6 +1219,8 @@ public sealed class DadCoordinatorService
                string.Equals(member.CharacterKey.Value, participant.ActiveCharacterKey.Value, StringComparison.OrdinalIgnoreCase);
     }
 
+    // Legacy local-invite compatibility path retained for its private helper shape.
+    // Production coordinator assembly delegates FormParty to exact frozen Slot1.
     private void IssueLeaderPartyInvites(
         DadRunPlan plan,
         IReadOnlyList<DadAssemblyInstructionDto> instructions,
@@ -1306,6 +1346,8 @@ public sealed class DadCoordinatorService
         log.Warning("[dad] {Warning}", warning);
     }
 
+    // Legacy local-invite compatibility helper. Production assembly sends FormParty
+    // to exact frozen Slot1, which owns both local and remote invite execution.
     private bool TryResolveLocalPartyInviter(
         DadRunPlan plan,
         out DadParticipantSnapshot inviter,
@@ -1347,7 +1389,7 @@ public sealed class DadCoordinatorService
 
         if (!participant.IsLocalClient)
         {
-            blocker = $"Configured inviter {requiredInviterKey} is not loaded on this Dad client; remote party invite execution is not available.";
+            blocker = $"Legacy local invite compatibility cannot execute exact remote Slot1 {requiredInviterKey}; production assembly routes invites to that worker.";
             return false;
         }
 
@@ -1362,7 +1404,7 @@ public sealed class DadCoordinatorService
                 candidate.IsLocalClient &&
                 string.Equals(candidate.ActiveCharacterKey.Value, requiredInviterKey, StringComparison.OrdinalIgnoreCase)))
         {
-            blocker = $"Dad Coordinator inviter {requiredInviterKey} is not the loaded local character.";
+            blocker = $"Legacy local invite compatibility requires exact Slot1 {requiredInviterKey} to be the loaded local character.";
             return false;
         }
 
@@ -1995,7 +2037,7 @@ public sealed class DadCoordinatorService
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
         claimService.ReleaseClaims(nextPlan.Request.RequestId);
-        presenceService.MarkLeader(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Dad Coordinator repeating {module.DisplayName}; {stopProgress.Summary}");
+        presenceService.MarkCoordinator(nextPlan.Request.RequestId, nextPlan.Orchestration.AuthorityMode, $"Dad Coordinator repeating {module.DisplayName}; {stopProgress.Summary}");
         if (!TryBeginLocalRequestedJobPreparation(nextPlan, activeSlotManifest, out var preparationBlocker))
         {
             FinalizeRun(
@@ -2168,6 +2210,34 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
+        if (activeSlotManifest != null && activePlan.RequiredParticipantCount > 1)
+        {
+            if (!TryRefreshStrictMutationBoundary("managed party teardown"))
+                return;
+
+            activePartyTeardownInstruction = partyAssemblyService.BuildDisbandInstruction(
+                activePlan,
+                activeParticipants,
+                activeSlotManifest,
+                presenceService.WorkerSessionId,
+                out var blocker);
+            if (activePartyTeardownInstruction == null)
+            {
+                FinalizeRun(
+                    DadRunStatus.PartialFailure,
+                    "Dad run completed its duty work, but exact Slot1 teardown could not start.",
+                    blocker);
+                return;
+            }
+
+            Transition(
+                DadRunPhase.TearingDownParty,
+                DadRunStatus.Running,
+                $"{summary} Waiting for guarded teardown on exact Slot1.");
+            return;
+        }
+
+        activePartyTeardownInstruction = null;
         var frozenRoster = activeSlotManifest?.Slots
             .Select(static slot => (ContentId: slot.ContentId, CharacterKey: slot.CharacterKey.Value, IsLeader: slot.IsLeader))
             .ToList()
@@ -2191,6 +2261,55 @@ public sealed class DadCoordinatorService
 
     private void UpdatePartyTeardown()
     {
+        if (activePartyTeardownInstruction != null)
+        {
+            var participant = ResolveParticipantForInstruction(activePartyTeardownInstruction);
+            if (participant == null)
+            {
+                CurrentResult.ActiveTaskStatus = "Waiting for exact frozen Slot1 teardown worker.";
+                CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+                Publish();
+                return;
+            }
+
+            var result = participant.IsLocalClient
+                ? presenceService.HandleAssemblyInstruction(activePartyTeardownInstruction)
+                : transportService.SendAssemblyInstruction(participant, activePartyTeardownInstruction);
+            if (result == null)
+            {
+                CurrentResult.ActiveTaskStatus = "Waiting for exact frozen Slot1 teardown response.";
+                CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+                Publish();
+                return;
+            }
+
+            CurrentResult.ActiveTaskStatus = result.Summary;
+            CurrentResult.Summary = result.Summary;
+            if (result.Success)
+            {
+                activePartyTeardownInstruction = null;
+                if (crewFormationTeardownRequested)
+                    CancelActiveRun();
+                else
+                    Transition(DadRunPhase.Finalizing, DadRunStatus.Running, result.Summary);
+            }
+            else if (!result.Deferred)
+            {
+                activePartyTeardownInstruction = null;
+                FinalizeRun(
+                    DadRunStatus.PartialFailure,
+                    result.TimedOut
+                        ? "Dad run completed its duty work, but remote Slot1 party teardown timed out."
+                        : "Dad run completed its duty work, but guarded Slot1 party teardown failed.",
+                    result.FailureReason);
+            }
+            else
+            {
+                Publish();
+            }
+            return;
+        }
+
         var decision = partyTeardownService.Update();
         CurrentResult.ActiveTaskStatus = decision.Summary;
         CurrentResult.Summary = decision.Summary;
@@ -2240,12 +2359,6 @@ public sealed class DadCoordinatorService
     private bool TryRefreshStrictMutationBoundary(string boundary)
     {
         if (activePlan == null || activeSlotManifest == null)
-        {
-            return true;
-        }
-
-        if (!DadFullPartyExecutionRules.RequiresLocalCoordinatorLeader(activePlan.Request) &&
-            activeSlotManifest.CoordinatorTravelTarget == null)
         {
             return true;
         }
@@ -2320,7 +2433,7 @@ public sealed class DadCoordinatorService
                 {
                     FinalizeRun(
                         DadRunStatus.Failed,
-                        $"Dad rejected {boundary} because the immutable Coordinator travel target changed.",
+                        $"Dad rejected {boundary} because the immutable Slot1 assembly target changed.",
                         travelProof.Summary);
                     return false;
                 }
@@ -3045,6 +3158,7 @@ public sealed class DadCoordinatorService
         remoteAssignmentTracker.Clear();
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
+        activePartyTeardownInstruction = null;
         presenceService.ResetToIdle();
 
         log.Information("[dad] Finalized run {RequestId}: {Status} {Summary}", CurrentResult.RequestId, status, summary);

@@ -23,19 +23,19 @@ public static class DadCoordinatorTravelRules
             coordinator.ActiveCharacterKey.IsEmpty ||
             coordinator.Character.ContentId == 0)
         {
-            blocker = "Coordinator travel target requires exact run, worker, account, character, and Content ID identity.";
+            blocker = "Slot1 assembly target requires exact run, worker, account, character, and Content ID identity.";
             return false;
         }
 
         if (!coordinator.IsAvailable || !coordinator.WorldReadyStable)
         {
-            blocker = "Coordinator travel target requires fresh world-stable live coordinator truth.";
+            blocker = "Slot1 assembly target requires fresh world-stable live Slot1 truth.";
             return false;
         }
 
         if (!IsFreshComplete(location, nowUtc))
         {
-            blocker = "Coordinator current world, data center, and region proof is missing, incomplete, or stale.";
+            blocker = "Slot1 current world, data center, and region proof is missing, incomplete, or stale.";
             return false;
         }
 
@@ -65,7 +65,7 @@ public static class DadCoordinatorTravelRules
         if (target is not { IsComplete: true })
         {
             return Blocked(
-                "Frozen Coordinator travel target is missing or incomplete.",
+                "Frozen Slot1 assembly target is missing or incomplete.",
                 immutableTargetChanged: true);
         }
 
@@ -75,7 +75,7 @@ public static class DadCoordinatorTravelRules
         if (coordinatorMatches.Count != 1)
         {
             return Blocked(
-                $"Frozen Coordinator worker '{target.CoordinatorWorkerSessionId}' has {coordinatorMatches.Count} live location proof row(s).",
+                $"Frozen Slot1 worker '{target.CoordinatorWorkerSessionId}' has {coordinatorMatches.Count} live location proof row(s).",
                 immutableTargetChanged: coordinatorMatches.Count > 1);
         }
 
@@ -85,7 +85,7 @@ public static class DadCoordinatorTravelRules
             coordinator.Character.ContentId != target.CoordinatorContentId)
         {
             return Blocked(
-                "Frozen Coordinator identity changed after the travel target was accepted.",
+                "Frozen Slot1 identity changed after the assembly target was accepted.",
                 immutableTargetChanged: true);
         }
 
@@ -108,7 +108,7 @@ public static class DadCoordinatorTravelRules
                 !Same(location.RegionName, target.RegionName))
             {
                 return Blocked(
-                    $"{slot} is currently on {location.DataCenterName} ({location.RegionName}); frozen Coordinator data center is {target.DataCenterName} ({target.RegionName}).",
+                    $"{slot} is currently on {location.DataCenterName} ({location.RegionName}); frozen Slot1 data center is {target.DataCenterName} ({target.RegionName}).",
                     immutableTargetChanged: false);
             }
 
@@ -118,7 +118,7 @@ public static class DadCoordinatorTravelRules
             if (location.WorldId != target.WorldId || !Same(location.WorldName, target.WorldName))
             {
                 return Blocked(
-                    $"Coordinator current world changed from frozen target {target.WorldName} to {location.WorldName}.",
+                    $"Slot1 current world changed from frozen assembly target {target.WorldName} to {location.WorldName}.",
                     immutableTargetChanged: true);
             }
         }
@@ -126,7 +126,7 @@ public static class DadCoordinatorTravelRules
         return new DadCoordinatorTravelProofResult
         {
             Ready = true,
-            Summary = $"All {participants.Count} participant(s) proved current presence on frozen Coordinator data center {target.DataCenterName}.",
+            Summary = $"All {participants.Count} participant(s) proved current presence on frozen Slot1 data center {target.DataCenterName}.",
         };
     }
 
@@ -179,12 +179,11 @@ public sealed class DadClientTravelGate
         var assignment = context.Assignment ?? new DadWakeRequestDto();
         var target = assignment.CoordinatorTravelTarget;
         if (target is not { IsComplete: true })
-            return Reject("Coordinator travel target is missing or incomplete.");
-        if (!string.Equals(target.RunId, assignment.RunId, StringComparison.Ordinal) ||
-            !Same(target.CoordinatorWorkerSessionId.Value, assignment.AuthorityWorkerSessionId.Value))
+            return Reject("Slot1 assembly target is missing or incomplete.");
+        if (!string.Equals(target.RunId, assignment.RunId, StringComparison.Ordinal))
         {
             terminalFailure = true;
-            terminalSummary = "Coordinator travel target contradicts the assignment run or authority worker identity.";
+            terminalSummary = "Slot1 assembly target contradicts the assignment run.";
             return Reject(terminalSummary);
         }
 
@@ -194,7 +193,7 @@ public sealed class DadClientTravelGate
         else if (!string.Equals(immutableSignature, signature, StringComparison.Ordinal))
         {
             terminalFailure = true;
-            terminalSummary = "Immutable Coordinator travel target or exact assignment identity changed.";
+            terminalSummary = "Immutable Slot1 assembly target or exact assignment identity changed.";
         }
 
         if (terminalFailure)
@@ -213,7 +212,7 @@ public sealed class DadClientTravelGate
             current.RegionId == target.RegionId &&
             Same(current.RegionName, target.RegionName))
         {
-            return Ready($"Current data center matches frozen Coordinator data center {target.DataCenterName}.");
+            return Ready($"Current data center matches frozen Slot1 data center {target.DataCenterName}.");
         }
 
         if (acceptedInvocation)

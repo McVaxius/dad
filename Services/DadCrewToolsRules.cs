@@ -18,14 +18,6 @@ internal static class DadCrewToolsRules
         int selectedDutyQueueSize,
         int expectedPartySize)
     {
-        if (selectedDutyQueueSize > 8)
-        {
-            return new DadCrewFormationClassification(
-                DadCrewFormationMode.AlliancePartyFinder,
-                $"Alliance Party Finder ({selectedDutyQueueSize} players)",
-                string.Empty);
-        }
-
         if (IsNpcOnly(activityMode))
         {
             const string blocker = "Crew Tools does not form parties for solo or NPC-only presets.";
@@ -44,10 +36,55 @@ internal static class DadCrewToolsRules
                 blocker);
         }
 
+        if (selectedDutyQueueSize > 8)
+        {
+            return new DadCrewFormationClassification(
+                DadCrewFormationMode.AlliancePartyFinder,
+                $"Alliance Party Finder ({selectedDutyQueueSize} players)",
+                string.Empty);
+        }
+
         return new DadCrewFormationClassification(
             DadCrewFormationMode.RegularParty,
             $"Regular party ({expectedPartySize} players)",
             string.Empty);
+    }
+
+    public static DadPlannerValidationDetails EvaluateFormationAdmission(
+        bool formationOnly,
+        IEnumerable<string> orderedStaticBlockers,
+        IEnumerable<string> readinessBlockers,
+        IEnumerable<string> scheduleBlockers,
+        IEnumerable<string> runOnlyBlockers)
+    {
+        var staticBlockers = orderedStaticBlockers.ToList();
+        if (formationOnly)
+        {
+            var ignored = runOnlyBlockers
+                .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
+                .Select(static blocker => blocker.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            staticBlockers.RemoveAll(blocker => ignored.Contains(blocker.Trim()));
+        }
+
+        return DadPlannerValidationRules.Evaluate(
+            staticBlockers,
+            readinessBlockers,
+            scheduleBlockers);
+    }
+
+    public static DadPlannerGroup BuildRuntimeFormationGroup(DadPlannerGroup source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var runtime = DadSchedulerGroupCloneRules.CloneWithSlots(source, source.Slots);
+        runtime.AutoPartyFormationOnly = true;
+        foreach (var row in runtime.Slots)
+        {
+            row.LevelSeekTarget = null;
+            row.SkipIfDailyRouletteRewardReceived = false;
+        }
+
+        return runtime;
     }
 
     public static bool IsExactCrewPartyFinderContext(

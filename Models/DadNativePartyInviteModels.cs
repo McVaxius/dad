@@ -299,6 +299,18 @@ public sealed class DadExpectedPartyInviter
     public ulong ContentId { get; init; }
     public string CharacterName { get; init; } = string.Empty;
     public ushort WorldId { get; init; }
+
+    public DadExpectedPartyInviter Clone()
+        => new()
+        {
+            RunId = RunId,
+            WorkerSessionId = WorkerSessionId,
+            AccountKey = AccountKey,
+            CharacterKey = CharacterKey,
+            ContentId = ContentId,
+            CharacterName = CharacterName,
+            WorldId = WorldId,
+        };
 }
 
 public sealed class DadPartyInvitationAcceptanceTracker

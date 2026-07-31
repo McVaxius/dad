@@ -338,6 +338,78 @@ public sealed class DadAlliancePartyFinderRulesTests
     }
 
     [Fact]
+    public void RemoteHostMarkerRequiresExactAllianceAAndPreservesLocalJoinCompatibility()
+    {
+        var instruction = new DadAllianceRecruitmentInstructionDto
+        {
+            RecruitmentId = Guid.NewGuid().ToString("N"),
+            CoordinatorWorkerSessionId = new DadWorkerSessionId("coordinator-worker"),
+            CoordinatorIdentity = "coordinator",
+            LeaderName = "Remote Leader",
+            LeaderWorld = "Alpha",
+            TargetWorkerSessionId = new DadWorkerSessionId("remote-slot1-worker"),
+            TargetCharacterKey = new DadCharacterKey("Remote Leader@Alpha"),
+            TargetCharacterName = "Remote Leader",
+            TargetCharacterWorld = "Alpha",
+            TargetContentId = 100,
+            AssignedAlliance = DadAllianceAssignment.A,
+            CreateListingAsHost = true,
+            Passcode = 1234,
+        };
+
+        Assert.Empty(DadAlliancePartyFinderRules.ValidateInstruction(instruction));
+        instruction.AssignedAlliance = DadAllianceAssignment.B;
+        Assert.Contains("Alliance A", DadAlliancePartyFinderRules.ValidateInstruction(instruction), StringComparison.OrdinalIgnoreCase);
+        instruction.CreateListingAsHost = false;
+        Assert.Empty(DadAlliancePartyFinderRules.ValidateInstruction(instruction));
+    }
+
+    [Fact]
+    public void RemoteHostLifecycleWaitsForListingAndOwnershipCleanupWhileLocalHostStaysCompatible()
+    {
+        var pending = new DadAllianceRecruitmentResultDto
+        {
+            ResultKind = DadAllianceRecruitmentResultKind.Waiting,
+            State = DadAllianceRecruitmentState.CreatingListing,
+        };
+        var listing = pending.Clone();
+        listing.ResultKind = DadAllianceRecruitmentResultKind.Succeeded;
+        listing.State = DadAllianceRecruitmentState.ListingOpen;
+        listing.ObservedAlliance = DadAllianceAssignment.A;
+        var stopped = listing.Clone();
+        stopped.ResultKind = DadAllianceRecruitmentResultKind.Stopped;
+        stopped.State = DadAllianceRecruitmentState.Stopped;
+        var blocked = listing.Clone();
+        blocked.ResultKind = DadAllianceRecruitmentResultKind.Blocked;
+        blocked.State = DadAllianceRecruitmentState.Blocked;
+
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.LocalHost,
+            DadAllianceRemoteHostRules.Evaluate(false, false, false, null));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.CreatePending,
+            DadAllianceRemoteHostRules.Evaluate(true, true, false, pending));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.ListingOpen,
+            DadAllianceRemoteHostRules.Evaluate(true, true, false, listing));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.CleanupPending,
+            DadAllianceRemoteHostRules.Evaluate(true, true, true, listing));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.CleanupPending,
+            DadAllianceRemoteHostRules.Evaluate(true, true, true, null));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.CleanupComplete,
+            DadAllianceRemoteHostRules.Evaluate(true, true, true, stopped));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.CleanupComplete,
+            DadAllianceRemoteHostRules.Evaluate(true, false, true, null));
+        Assert.Equal(
+            DadAllianceRemoteHostLifecycleState.Blocked,
+            DadAllianceRemoteHostRules.Evaluate(true, true, true, blocked));
+    }
+
+    [Fact]
     public void HubAndDiscordCopiesDeduplicateByRecruitmentAndTarget()
     {
         var dedupe = new DadAllianceDeliveryDedupe();

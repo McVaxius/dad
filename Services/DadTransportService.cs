@@ -1794,6 +1794,12 @@ public sealed class DadTransportService : IDisposable
     {
         var instruction = DadIpcJson.Deserialize<DadAssemblyInstructionDto>(payloadJson)
                           ?? new DadAssemblyInstructionDto();
+        if (!IsAuthoritativeCoordinator(instruction.AuthorityWorkerSessionId))
+        {
+            return BuildRejectedAssemblyResult(
+                instruction,
+                "Assembly instruction did not come from the active Dad Coordinator identity.");
+        }
         return remoteMutationsAllowed
             ? presenceService.HandleAssemblyInstruction(instruction)
             : BuildRejectedAssemblyResult(
@@ -1805,7 +1811,7 @@ public sealed class DadTransportService : IDisposable
     {
         var instruction = DadIpcJson.Deserialize<DadAllianceRecruitmentInstructionDto>(payloadJson)
                           ?? new DadAllianceRecruitmentInstructionDto();
-        if (!IsAuthoritativeAllianceCoordinator(instruction.CoordinatorWorkerSessionId))
+        if (!IsAuthoritativeCoordinator(instruction.CoordinatorWorkerSessionId))
         {
             return BuildRejectedAllianceResult(
                 instruction,
@@ -1826,7 +1832,7 @@ public sealed class DadTransportService : IDisposable
     {
         var cancellation = DadIpcJson.Deserialize<DadAllianceRecruitmentCancellationDto>(payloadJson)
                            ?? new DadAllianceRecruitmentCancellationDto();
-        if (!IsAuthoritativeAllianceCoordinator(cancellation.CoordinatorWorkerSessionId))
+        if (!IsAuthoritativeCoordinator(cancellation.CoordinatorWorkerSessionId))
         {
             return new DadAllianceRecruitmentResultDto
             {
@@ -1866,7 +1872,7 @@ public sealed class DadTransportService : IDisposable
                };
     }
 
-    private bool IsAuthoritativeAllianceCoordinator(DadWorkerSessionId workerSessionId)
+    private bool IsAuthoritativeCoordinator(DadWorkerSessionId workerSessionId)
     {
         var expected = configuration.RunAsServerDad
             ? presenceService.WorkerSessionId

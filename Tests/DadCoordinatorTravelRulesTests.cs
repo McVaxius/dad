@@ -31,6 +31,21 @@ public sealed class DadCoordinatorTravelRulesTests
     }
 
     [Fact]
+    public void AuthenticatedCoordinatorMaySendARemoteSlotOneAssemblyTarget()
+    {
+        var context = Context(currentDcId: 10, targetDcId: 20, targetRegionId: 2, homeRegionId: 2);
+        context.Assignment.AuthorityWorkerSessionId = new DadWorkerSessionId("coordinator-worker");
+        context.Assignment.CoordinatorTravelTarget!.CoordinatorWorkerSessionId =
+            new DadWorkerSessionId("remote-slot1-worker");
+
+        var decision = new DadClientTravelGate().Evaluate(context, Now);
+
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, decision.Action);
+        Assert.Equal("remote-slot1-worker",
+            context.Assignment.CoordinatorTravelTarget.CoordinatorWorkerSessionId.Value);
+    }
+
+    [Fact]
     public void NonOceHomeMayVisitOceBelowExactAccountCap()
     {
         var context = Context(currentDcId: 10, targetDcId: 40, targetRegionId: 4, homeRegionId: 2);

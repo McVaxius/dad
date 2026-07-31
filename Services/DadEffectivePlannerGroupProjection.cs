@@ -16,7 +16,9 @@ public static class DadEffectivePlannerGroupProjection
         ArgumentNullException.ThrowIfNull(source);
 
         var normalizedRows = DadPlannerSlotRules.NormalizeGroupSlots(source.Slots);
-        var logicalSlotCount = ResolveLogicalSlotCount(activityMode, requestedPartySize);
+        var logicalSlotCount = source.AutoPartyFormationOnly
+            ? null
+            : ResolveLogicalSlotCount(activityMode, requestedPartySize);
         var projectedRows = logicalSlotCount.HasValue
             ? normalizedRows
                 .Where(row =>

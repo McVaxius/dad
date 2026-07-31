@@ -1,5 +1,26 @@
 # dad — changelog
 
+## 2026-07-30 — W61 remote Slot1 party authority (local-only, unpublished)
+- Kept the existing **Create group** and **Disband** controls while separating Coordinator orchestration from party
+  authority. The Coordinator no longer needs its account or character in formation or ordinary Plan/Schedule rosters.
+- Made the exact frozen first primary slot the sole party leader, inviter, queue executor, alliance PF host, and managed
+  teardown authority. Both existing executable invite settings resolve to Slot1; external, missing, duplicate,
+  non-Slot1, or worker/account/character/Content-ID drift fails closed.
+- Remote Slot1 follows its saved wake/relog policy. DAD freezes the legacy travel-target fields from Slot1's live stable
+  location, sends authenticated `FormParty` with the exact inviter and invite targets to Slot1, and verifies membership
+  only from Slot1's returned authoritative PartyList. Local Slot1 remains compatible.
+- Added authenticated remote `DisbandParty` handling through the existing seven-attempt, 60-second guarded controller.
+  The Coordinator refreshes the strict frozen boundary before construction and waits for Slot1's terminal success,
+  failure, timeout, or cancellation response. Standalone local **Disband** is unchanged.
+- Added remote Slot1 alliance hosting through the existing recruitment instruction. Grab starts only after exact Slot1
+  reports its owned Alliance-A listing open, excludes the host, and keeps cleanup or cancellation incomplete until Slot1
+  confirms ownership cleared. A dispatched-but-unanswered host request is treated conservatively as possible ownership.
+- Extended only existing authenticated DTOs with frozen inviter/targets, authoritative PartyList members, and the
+  remote-host marker. Preserved saved presets, runtime-only Crew Formation, schemas, protocol family, timing, settings,
+  public IPC, version `0.5.0.0`, package, deployment, and release state.
+- Focused W61 formation, authority, manifest, travel, assembly, inviter, teardown, alliance lifecycle, and DTO tests pass
+  290/290 with no failures or skips. The full suite was not run.
+
 ## 2026-07-30 — P1211 runtime-only Crew Tools (local-only, unpublished)
 - Added a **CREW TOOLS** card at the top of Plans with selected/effective preset, resolved mode, live state, first blocker,
   **Create group**, and danger-toned **Disband** controls.
@@ -22,6 +43,21 @@
 - Preserved FrenRider, ADS, repair, idle-command, ordinary scheduler/preset behavior, configuration and transport schemas,
   public IPC, version `0.4.2.1`, package, deployment, and release state. Live regular/alliance acceptance is Not Run by
   Codex. No client control, remote mutation, relog, package, deployment, plugin commit, or plugin push occurred.
+
+### W60 queued Crew Formation readiness follow-up (local-only, unpublished)
+- Changed **Create group** to submit one runtime-only formation request as soon as the selected roster is structurally
+  valid. Offline, busy, post-AR, relog, and `LaunchIfOffline` readiness now wait in the existing scheduler pipeline
+  instead of disabling the button.
+- Formation-only projection and frozen manifests use the exact selected primary crew count, independent of the duty or
+  roulette queue size. A Duty Finder catalog size above eight remains only the regular-versus-alliance classifier.
+- Added a neutral formation-only planner path that ignores queue task selectors, executor preflight, unsupported run-lane
+  checks, and stop/completion policy while preserving exact identity, duplicate, requested-job, wake-policy, local
+  coordinator/inviter, dependency, transport, scheduler-conflict, and cancellation safeguards.
+- Preserved the saved preset, ordinary Plan/Schedule validation, one-shot scheduler start, requested-job acknowledgement,
+  regular `GroupReady`, alliance PF Create-to-Grab and subgroup verification, guarded disband, and cleanup behavior.
+- Focused formation admission, projection, planner, and manifest coverage passes 51/51; the complete Debug suite passes
+  1,463/1,463 with no skips; and unchanged `Z:\dad.bat` builds x64 Debug with zero warnings/errors.
+- Version remains `0.5.0.0`; no schema, public API, protocol, timing, packaging, deployment, or release-state change.
 
 ## 2026-07-30 — I63 revision 29 direct-password Party Finder join path (local-only, unpublished)
 - Preserved the one assigned subgroup callback and allowed either valid dialog sequence observed afterward: fresh ready
