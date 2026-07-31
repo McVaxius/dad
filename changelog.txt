@@ -1,5 +1,17 @@
 # dad — changelog
 
+## 2026-07-31 — I130 LevelSeek priority over Daily reward preflight (local-only, unpublished)
+- Deferred Daily Roulette reward preflight for target-bearing scheduled entries until every worker is ready, requested
+  jobs are acknowledged, and refreshed LevelSeek evidence is evaluated. A proven target now skips without a Daily probe;
+  below or unknown evidence follows the existing eligible Daily path.
+- Target-free Daily entries retain their early preflight behavior. The preflight is latched after it starts, so its
+  existing fail-open continuation cannot restart it. Schedule advancement, wake/job assignment, IPC, timeout behavior,
+  configuration/schema, version `0.5.0.3`, and release files are unchanged.
+- Focused LevelSeek/Daily/source-contract coverage passes 39/39, schedule/scheduler coverage passes 66/66, and the
+  full suite passes 1,503/1,503. The Debug x64 build succeeds with 0 errors and the four existing nullable warnings in
+  untouched `DadAlliancePartyFinderService.cs`; whitespace verification passes. Live acceptance remains user-controlled
+  and Not Run.
+
 ## 2026-07-31 — P1212 scheduled worker timeout (local-only, unpublished)
 - Changed only the worker command-level deadline: `TimeoutSeconds <= 0` is unbounded until explicit cancellation,
   while positive values remain finite and clamp to 30–7,200 seconds from worker execution start.

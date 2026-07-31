@@ -41,6 +41,7 @@ public sealed class DadSchedulerService
     private List<FrozenEarlyAssignment> frozenEarlyAssignments = [];
     private List<DadSchedulerSlotState> frozenOrdinarySlots = [];
     private DailyRewardPreflightSession? dailyRewardPreflight;
+    private bool dailyRewardPreflightAttempted;
     private Func<DadPlannerGroup, int, DadLevelingChildBuild>? levelingChildBuilder;
     private Action? cancelActiveLevelingChild;
     private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
@@ -1160,6 +1161,7 @@ public sealed class DadSchedulerService
         DadScheduledCrewJob? job = null)
     {
         dailyRewardPreflight = null;
+        dailyRewardPreflightAttempted = false;
         frozenOrdinarySlots = [];
         var preview = BuildPreview(group, plannerRequestPreview);
         var levelSeek = EvaluateLevelSeek(group, plannerRequestPreview);
@@ -1295,38 +1297,9 @@ public sealed class DadSchedulerService
             return CurrentState;
         }
 
-        var rouletteTarget = frozenPlannerRequest?.DailyMsq?.QueueTarget;
-        var checkedRows = effectiveGroup.Slots
-            .Where(static slot => slot.SkipIfDailyRouletteRewardReceived)
-            .ToList();
-        if (DadDailyRewardPreflightRules.IsEligible(
-                effectiveGroup.ActivityMode,
-                activeJob.ScheduleCadence,
-                activeJob.ScheduleId,
-                activeJob.ScheduleRunId,
-                activeJob.ScheduleEntryId,
-                rouletteTarget,
-                checkedRows.Count))
+        if (frozenLevelSeekGroup == null &&
+            TryBeginDailyRewardPreflight(effectiveGroup))
         {
-            var checkedSlotIds = checkedRows
-                .Select(static slot => slot.SlotId)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            frozenOrdinarySlots = currentState.Slots.Select(static slot => slot.Clone()).ToList();
-            currentState.Slots = currentState.Slots
-                .Where(slot => checkedSlotIds.Contains(slot.SlotId))
-                .Select(static slot => slot.Clone())
-                .ToList();
-            dailyRewardPreflight = new DailyRewardPreflightSession
-            {
-                Target = rouletteTarget!.Clone(),
-                CheckedSlotCount = currentState.Slots.Count,
-                SlotDeadlineUtc = DateTime.UtcNow + ResolveDailyRewardPreflightTimeout(),
-            };
-            InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
-            currentState.Phase = DadSchedulerPresetPhase.DailyRewardPreflight;
-            currentState.Summary = $"DailyReset reward preflight will inspect {currentState.Slots.Count} checked effective row(s) before ordinary execution.";
-            currentState.UpdatedAtUtc = DateTime.UtcNow;
-            LogSchedulerPhaseTransition();
             return CurrentState;
         }
 
@@ -1565,6 +1538,50 @@ public sealed class DadSchedulerService
         return true;
     }
 
+    private bool TryBeginDailyRewardPreflight(DadPlannerGroup effectiveGroup)
+    {
+        if (dailyRewardPreflightAttempted)
+            return false;
+
+        var rouletteTarget = frozenPlannerRequest?.DailyMsq?.QueueTarget;
+        var checkedRows = effectiveGroup.Slots
+            .Where(static slot => slot.SkipIfDailyRouletteRewardReceived)
+            .ToList();
+        if (!DadDailyRewardPreflightRules.IsEligible(
+                effectiveGroup.ActivityMode,
+                activeJob?.ScheduleCadence ?? DadScheduleCadence.Manual,
+                activeJob?.ScheduleId ?? string.Empty,
+                activeJob?.ScheduleRunId ?? string.Empty,
+                activeJob?.ScheduleEntryId ?? string.Empty,
+                rouletteTarget,
+                checkedRows.Count))
+        {
+            return false;
+        }
+
+        var checkedSlotIds = checkedRows
+            .Select(static slot => slot.SlotId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        frozenOrdinarySlots = currentState.Slots.Select(static slot => slot.Clone()).ToList();
+        currentState.Slots = currentState.Slots
+            .Where(slot => checkedSlotIds.Contains(slot.SlotId))
+            .Select(static slot => slot.Clone())
+            .ToList();
+        dailyRewardPreflight = new DailyRewardPreflightSession
+        {
+            Target = rouletteTarget!.Clone(),
+            CheckedSlotCount = currentState.Slots.Count,
+            SlotDeadlineUtc = DateTime.UtcNow + ResolveDailyRewardPreflightTimeout(),
+        };
+        dailyRewardPreflightAttempted = true;
+        InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
+        currentState.Phase = DadSchedulerPresetPhase.DailyRewardPreflight;
+        currentState.Summary = $"DailyReset reward preflight will inspect {currentState.Slots.Count} checked effective row(s) before ordinary execution.";
+        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        LogSchedulerPhaseTransition();
+        return true;
+    }
+
     public void WakeForRuntimeReadiness(DadWorkerSessionId workerSessionId)
     {
         nextRefreshUtc = DateTime.MinValue;
@@ -1761,6 +1778,12 @@ public sealed class DadSchedulerService
 
         if (TrySkipSatisfiedPostWakeLevelTargets())
             return;
+
+        if (frozenLevelSeekGroup != null &&
+            TryBeginDailyRewardPreflight(frozenLevelSeekGroup))
+        {
+            return;
+        }
 
         var autoPartyAuthorization = autoPartyAuthorizationGate?.Invoke(frozenPlannerRequest)
             ?? new DadAutoPartyAuthorizationDecision(

@@ -8,6 +8,12 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     public void SchedulerReevaluatesFrozenLevelSeekAfterReadinessAndJobAcknowledgementBeforeDispatch()
     {
         var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var initialDailyPreflight = source.IndexOf(
+            "if (frozenLevelSeekGroup == null &&",
+            StringComparison.Ordinal);
+        var initialLevelSeekSkip = source.IndexOf(
+            "if (levelSeek.ShouldSkip)",
+            StringComparison.Ordinal);
         var acknowledgement = source.IndexOf(
             "if (!assignmentsAcknowledged)",
             StringComparison.Ordinal);
@@ -15,14 +21,25 @@ public sealed class DadReliabilityIntegrationSourceContractTests
             "if (TrySkipSatisfiedPostWakeLevelTargets())",
             acknowledgement,
             StringComparison.Ordinal);
+        var deferredDailyPreflight = source.IndexOf(
+            "TryBeginDailyRewardPreflight(frozenLevelSeekGroup)",
+            postWakeCheck,
+            StringComparison.Ordinal);
         var plannerDispatch = source.IndexOf(
             "var result = startPlannerRequest",
             postWakeCheck,
             StringComparison.Ordinal);
 
+        Assert.True(initialDailyPreflight >= 0);
+        Assert.True(initialLevelSeekSkip >= 0);
+        Assert.True(initialDailyPreflight > initialLevelSeekSkip);
         Assert.True(acknowledgement >= 0);
         Assert.True(postWakeCheck > acknowledgement);
+        Assert.True(deferredDailyPreflight > postWakeCheck);
         Assert.True(plannerDispatch > postWakeCheck);
+        Assert.True(plannerDispatch > deferredDailyPreflight);
+        Assert.Contains("if (dailyRewardPreflightAttempted)", source, StringComparison.Ordinal);
+        Assert.Contains("dailyRewardPreflightAttempted = true;", source, StringComparison.Ordinal);
         Assert.Contains(
             "characterIntelligenceService.RequestPeerSnapshots()",
             source,
@@ -61,7 +78,7 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     private static string ReadRepositorySource(params string[] pathParts)
     {
         var repositoryRoot = Path.GetFullPath(
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
     }
 }
