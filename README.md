@@ -57,8 +57,9 @@ dotnet test .\Tests\dad.Tests.csproj
   blank. A target on that row overrides the bottom value; every other nonblank row target is additive, and DAD stops or
   skips only when all resolved targets are proven. **Any** requires the loaded character's live current job and level,
   while a selected job reads that job's ledger. Missing evidence and observed levels 0 or 1 remain unknown and continue
-  under the existing safety cap. Targets are frozen before wake/relog, checked again after exact readiness and requested
-  jobs, and refreshed after each completed run. Other stop modes keep the existing per-row Level-seek behavior.
+  under the existing safety cap. DAD freezes the exact effective LevelSeek rows and resolved targets before wake/relog,
+  then re-evaluates both after exact readiness and requested-job acknowledgement, before planner dispatch. It refreshes
+  the same target evidence after each completed run.
 - **Disband** routes a held regular Crew Formation through the exact frozen roster. Slot1 receives the guarded disband
   first; after its terminal response, every follower independently leaves or proves authoritative solo state. DAD waits
   for every exact worker and reports one partial failure naming all affected slots instead of treating Slot1 alone as
@@ -234,7 +235,9 @@ dotnet test .\Tests\dad.Tests.csproj
   at least 250 milliseconds apart; contradiction or timeout restarts the full safe selection cycle.
 - Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
   targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
-  evidence used by execution; missing characters, unknown levels, missing presets, and untargeted rows stay normal.
+  evidence used by execution. After required job changes and exact worker readiness, DAD repeats the frozen evaluation
+  from fresh local/peer truth before it can dispatch; missing characters, unknown levels, missing presets, and
+  untargeted rows stay normal.
 - The selected Schedule's ordered preset rows show `SKIPPED` badges for exact skips in its active or latest non-dry run,
   aggregate repeated skips, explain them on hover, and disclose when bounded history retains fewer row details than the run's total skip count.
 - Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It is consulted only when that

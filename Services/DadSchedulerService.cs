@@ -36,6 +36,7 @@ public sealed class DadSchedulerService
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private DateTime suppressAutomaticEnqueueUntilUtc = DateTime.MinValue;
     private DadRunRequest? frozenPlannerRequest;
+    private DadPlannerGroup? frozenLevelSeekGroup;
     private bool postWakeLevelTargetsEvaluated;
     private List<FrozenEarlyAssignment> frozenEarlyAssignments = [];
     private List<DadSchedulerSlotState> frozenOrdinarySlots = [];
@@ -1174,6 +1175,9 @@ public sealed class DadSchedulerService
         // Freeze exact targets before early job assignment, wake, launch, or relog. Their evidence is
         // intentionally re-read after every exact worker and requested job is ready.
         frozenPlannerRequest = levelSeek.ShouldSkip ? null : CloneRunRequest(plannerRequestPreview.Request);
+        frozenLevelSeekGroup = frozenPlannerRequest != null && levelSeek.HasTargetedRows
+            ? DadSchedulerGroupCloneRules.CloneWithSlots(effectiveGroup, effectiveGroup.Slots)
+            : null;
         postWakeLevelTargetsEvaluated = false;
         frozenEarlyAssignments = frozenPlannerRequest == null
             ? []
@@ -1513,17 +1517,11 @@ public sealed class DadSchedulerService
         ArgumentNullException.ThrowIfNull(group);
         ArgumentNullException.ThrowIfNull(plannerRequestPreview);
 
-        var stopPolicy = plannerRequestPreview.Request?.StopPolicy;
-        if (stopPolicy?.Mode == DadPlannerStopMode.TargetLevel &&
-            stopPolicy.ResolvedLevelTargets?.Count > 0)
-        {
-            return DadResolvedLevelTargetRules
-                .Evaluate(stopPolicy, characterIntelligenceService.CurrentPool)
-                .ToLevelSeekEvaluation();
-        }
-
         var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
-        return DadLevelSeekEvaluator.Evaluate(effectiveGroup, characterIntelligenceService.CurrentPool);
+        return DadLevelSeekEvaluationRules.Evaluate(
+            effectiveGroup,
+            plannerRequestPreview.Request?.StopPolicy,
+            characterIntelligenceService.CurrentPool);
     }
 
     private bool TrySkipSatisfiedPostWakeLevelTargets()
@@ -1532,23 +1530,20 @@ public sealed class DadSchedulerService
             return false;
 
         postWakeLevelTargetsEvaluated = true;
-        var stopPolicy = frozenPlannerRequest?.StopPolicy;
-        if (stopPolicy?.Mode != DadPlannerStopMode.TargetLevel ||
-            stopPolicy.ResolvedLevelTargets?.Count is not > 0)
-        {
+        if (frozenLevelSeekGroup == null || frozenPlannerRequest == null)
             return false;
-        }
 
         characterIntelligenceService.RefreshLocalCharacterPool(
             "scheduler-stop-policy",
             logRefresh: false);
-        var evaluation = DadResolvedLevelTargetRules.Evaluate(
-            stopPolicy,
+        var evaluation = DadLevelSeekEvaluationRules.Evaluate(
+            frozenLevelSeekGroup,
+            frozenPlannerRequest.StopPolicy,
             characterIntelligenceService.RequestPeerSnapshots());
-        if (!evaluation.AllSatisfied)
+        if (!evaluation.ShouldSkip)
         {
             currentState.Summary =
-                $"Post-readiness level check will continue to planner dispatch. {evaluation.DescribeEvidence()}";
+                $"Post-readiness LevelSeek will continue to planner dispatch. {evaluation.DescribeEvidence()}";
             currentState.UpdatedAtUtc = DateTime.UtcNow;
             return false;
         }
@@ -1564,6 +1559,7 @@ public sealed class DadSchedulerService
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        frozenLevelSeekGroup = null;
         postWakeLevelTargetsEvaluated = false;
         RecordTerminalResult(currentState);
         return true;

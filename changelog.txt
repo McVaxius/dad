@@ -10,6 +10,18 @@
   with 0 errors and 4 nullable warnings in the untouched `DadAlliancePartyFinderService.cs`; live acceptance remains
   user-controlled and unrun in this local implementation pass.
 
+## 2026-07-31 - I130 scheduled LevelSeek post-readiness gate (local-only, unpublished)
+- The scheduler now re-evaluates every frozen effective LevelSeek row after exact worker readiness and requested-job
+  acknowledgement, using refreshed local/peer truth before planner dispatch. This includes specific-job ledgers and
+  **Any** current-job checks as well as the existing resolved **STOP: Target level** path.
+- A fully satisfied result skips the schedule entry through the existing terminal cleanup and advancement flow instead
+  of starting its roulette; unknown or below-target evidence retains the existing dispatch path. No configuration,
+  schema, IPC, version, release, or P1212 worker-timeout behavior changed.
+- Added focused shared-evaluator coverage for specific-job, **Any**, and resolved Target-level post-readiness checks.
+  Focused coverage passes 35/35, schedule/scheduler coverage passes 66/66, the full suite passes 1,503/1,503, and the
+  Debug x64 build succeeds with 0 errors and the four existing nullable warnings in untouched
+  `DadAlliancePartyFinderService.cs`; live acceptance remains user-controlled and unrun.
+
 ## 2026-07-30 — W62 I124/I125/I126 reliability fixes (local-only, unpublished)
 - Resolved **STOP: Target level** into an immutable exact-character target list before wake or relog. The bottom target
   applies only to the first selected primary character when that row is blank; its row value overrides the bottom

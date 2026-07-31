@@ -5,7 +5,7 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
-    public void SchedulerReevaluatesFrozenTargetsAfterReadinessAndJobAcknowledgementBeforeDispatch()
+    public void SchedulerReevaluatesFrozenLevelSeekAfterReadinessAndJobAcknowledgementBeforeDispatch()
     {
         var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
         var acknowledgement = source.IndexOf(
@@ -25,6 +25,10 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.True(plannerDispatch > postWakeCheck);
         Assert.Contains(
             "characterIntelligenceService.RequestPeerSnapshots()",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DadLevelSeekEvaluationRules.Evaluate(",
             source,
             StringComparison.Ordinal);
     }

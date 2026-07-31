@@ -24,6 +24,11 @@ public sealed class DadLevelSeekEvaluation
     public bool ShouldSkip { get; init; }
     public IReadOnlyList<DadLevelSeekRowEvaluation> Rows { get; init; } = [];
     public string Summary { get; init; } = string.Empty;
+
+    public string DescribeEvidence()
+        => string.Join(
+            " ",
+            new[] { Summary }.Concat(Rows.Select(static row => row.Summary)));
 }
 
 public sealed record DadLevelSeekDisplayState(bool IsSkipIndicated, string Tooltip)
@@ -43,6 +48,32 @@ public static class DadLevelSeekDisplayRules
             .Where(static summary => !string.IsNullOrWhiteSpace(summary));
         var tooltip = string.Join(Environment.NewLine, new[] { evaluation.Summary }.Concat(evidence));
         return new DadLevelSeekDisplayState(evaluation.ShouldSkip, tooltip);
+    }
+}
+
+/// <summary>
+/// Evaluates the frozen effective preset rows and the frozen Target-level policy with one pool snapshot.
+/// The scheduler uses this both before wake and after exact worker/job readiness.
+/// </summary>
+public static class DadLevelSeekEvaluationRules
+{
+    public static DadLevelSeekEvaluation Evaluate(
+        DadPlannerGroup effectiveGroup,
+        DadRunStopPolicy? stopPolicy,
+        DadCharacterPool pool)
+    {
+        ArgumentNullException.ThrowIfNull(effectiveGroup);
+        ArgumentNullException.ThrowIfNull(pool);
+
+        if (stopPolicy?.Mode == DadPlannerStopMode.TargetLevel &&
+            stopPolicy.ResolvedLevelTargets?.Count > 0)
+        {
+            return DadResolvedLevelTargetRules
+                .Evaluate(stopPolicy, pool)
+                .ToLevelSeekEvaluation();
+        }
+
+        return DadLevelSeekEvaluator.Evaluate(effectiveGroup, pool);
     }
 }
 
