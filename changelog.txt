@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-07-31 — P1212 scheduled worker timeout (local-only, unpublished)
+- Changed only the worker command-level deadline: `TimeoutSeconds <= 0` is unbounded until explicit cancellation,
+  while positive values remain finite and clamp to 30–7,200 seconds from worker execution start.
+- Removed persistent startup deadline tracking without changing executor/pulse results, coordinator waits, IPC,
+  scheduler advancement, level-target skipping, configuration, schemas, version, or release files.
+- Added pure timeout-rule coverage for non-positive, lower-bound, finite, and upper-bound inputs. Focused timeout tests
+  pass 9/9, schedule/scheduler tests pass 66/66, and the full suite passes 1,500/1,500. The Debug x64 build succeeds
+  with 0 errors and 4 nullable warnings in the untouched `DadAlliancePartyFinderService.cs`; live acceptance remains
+  user-controlled and unrun in this local implementation pass.
+
 ## 2026-07-30 — W62 I124/I125/I126 reliability fixes (local-only, unpublished)
 - Resolved **STOP: Target level** into an immutable exact-character target list before wake or relog. The bottom target
   applies only to the first selected primary character when that row is blank; its row value overrides the bottom

@@ -31,7 +31,6 @@ public sealed class DadWorkerExecutionService
     private DadLocalDutyResolvedContent? participantQueueContent;
     private string lastParticipantQueueTransition = string.Empty;
     private DadCombatRotationMode participantCombatRotationMode = DadCombatRotationMode.UseFrenRider;
-    private DateTime? persistentStartupRegisteredAtUtc;
     private bool prequeuePrepared;
 
     public DadWorkerExecutionService(
@@ -298,13 +297,8 @@ public sealed class DadWorkerExecutionService
             if (activeCommand == null || status.IsTerminal)
                 return;
 
-            var timeoutStart = activeCommand.TimeoutSeconds <= 0
-                ? persistentStartupRegisteredAtUtc
-                : startedAtUtc;
-            var timeout = TimeSpan.FromSeconds(activeCommand.TimeoutSeconds <= 0
-                ? 1800
-                : Math.Clamp(activeCommand.TimeoutSeconds, 30, 7200));
-            if (timeoutStart.HasValue && DateTime.UtcNow - timeoutStart.Value >= timeout)
+            var timeout = DadWorkerTimeoutRules.ResolveTimeout(activeCommand.TimeoutSeconds);
+            if (timeout.HasValue && DateTime.UtcNow - startedAtUtc >= timeout.Value)
             {
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
                     status.ModuleId == DadModuleId.Mogtome)
@@ -331,7 +325,6 @@ public sealed class DadWorkerExecutionService
     {
         activeCommand = command;
         startedAtUtc = DateTime.UtcNow;
-        persistentStartupRegisteredAtUtc = null;
         enteredDuty = condition[ConditionFlag.BoundByDuty];
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
@@ -535,11 +528,6 @@ public sealed class DadWorkerExecutionService
         status.Summary = result.Summary;
         status.FailureReason = result.FailureReason;
         status.EnteredDuty |= result.ExecutorStatus.Phase == DadRunPhase.InDutyOrTask;
-        if (activeCommand?.TimeoutSeconds <= 0 &&
-            result.ExecutorStatus.Phase is DadRunPhase.WaitingForQueuePop or DadRunPhase.InDutyOrTask)
-        {
-            persistentStartupRegisteredAtUtc ??= DateTime.UtcNow;
-        }
 
         if (!result.Success)
         {
@@ -577,14 +565,6 @@ public sealed class DadWorkerExecutionService
 
             var pulse = queueExecutionService.ObserveParticipantQueue(activeCommand.RunId, participantQueueContent);
             LogParticipantQueueTransition(pulse);
-            if (activeCommand.TimeoutSeconds <= 0 &&
-                pulse.Kind is DadLocalDutyQueuePulseKind.WaitingForQueue or
-                    DadLocalDutyQueuePulseKind.AcceptedQueueConfirm or
-                    DadLocalDutyQueuePulseKind.DutyEntryTransition or
-                    DadLocalDutyQueuePulseKind.EnteredDuty)
-            {
-                persistentStartupRegisteredAtUtc ??= DateTime.UtcNow;
-            }
             if (!pulse.Success)
             {
                 Finish(

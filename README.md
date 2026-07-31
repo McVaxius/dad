@@ -224,6 +224,10 @@ dotnet test .\Tests\dad.Tests.csproj
   through the operator's **Resume from failed entry** action. DAD creates a new run at the exact persisted cursor,
   retains prior history, requires all clients and DAD/scheduler work to be idle, and never replays automatically.
   Cancelled runs remain terminal and cannot be resumed.
+- Scheduled worker commands with `TimeoutSeconds <= 0` have no outer command deadline and remain active until explicit
+  cancellation or an executor/queue-pulse result completes them. Positive worker command values remain finite, begin at
+  worker execution start, and clamp to 30–7,200 seconds; coordinator waits, IPC, scheduler advancement, and
+  level-target skipping are unchanged.
 - Regular Duty Finder starts from either a direct preset or a Schedule use the same exact-selection executor. Before
   Join, DAD requires the stable mapped row and character, callback ordinal, selected agent type/id, and interface-selected
   duty ID to agree. If API15 publishes the interface value late, DAD waits at most six seconds for two exact observations
