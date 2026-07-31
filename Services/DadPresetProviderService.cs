@@ -1594,25 +1594,10 @@ public sealed class DadPresetProviderService
         DadRunStopPolicy? source,
         IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
         IReadOnlyList<DadAcquiredCharacter> availableCharacters)
-    {
-        var policy = (source ?? new DadRunStopPolicy()).Clone().Normalize();
-        if (policy.Mode != DadPlannerStopMode.TargetLevel)
-            return policy;
-
-        var selectedKey = selectedSlots
-            .Select(static slot => slot.CharacterKey)
-            .FirstOrDefault(static key => !string.IsNullOrWhiteSpace(key)) ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(selectedKey))
-            return policy;
-
-        policy.TargetCharacterKey = new DadCharacterKey(selectedKey);
-        var character = availableCharacters.FirstOrDefault(candidate =>
-            string.Equals(candidate.CharacterKey, selectedKey, StringComparison.OrdinalIgnoreCase));
-        policy.TargetCharacterLabel = character == null
-            ? selectedKey
-            : FormatCharacterDisplay(character);
-        return policy;
-    }
+        => DadResolvedLevelTargetRules.ResolvePolicy(
+            source,
+            selectedSlots,
+            availableCharacters);
 
     private static DadCompletionActions? ResolvePlannerCompletionActions(
         DadPresetPlannerOptions options,
@@ -1628,6 +1613,21 @@ public sealed class DadPresetProviderService
         stopPolicy.Normalize();
         if (stopPolicy.Mode != DadPlannerStopMode.TargetLevel)
             return [];
+
+        if (stopPolicy.ResolvedLevelTargets.Count > 0)
+        {
+            var evaluation = DadResolvedLevelTargetRules.Evaluate(
+                stopPolicy,
+                new DadCharacterPool
+                {
+                    Characters = availableCharacters
+                        .Select(static character => character.Clone())
+                        .ToList(),
+                });
+            return evaluation.AllSatisfied
+                ? [$"{evaluation.Summary} {string.Join(" ", evaluation.Evidence.Select(static evidence => evidence.Summary))}"]
+                : [];
+        }
 
         var blockers = new List<string>();
         var targetKey = stopPolicy.TargetCharacterKey.Value?.Trim() ?? string.Empty;

@@ -54,7 +54,9 @@ public sealed class DadCoordinatorService
     private string inviteRetryContinuationRunId = string.Empty;
     private bool persistentStartup;
     private bool crewFormationTeardownRequested;
-    private DadAssemblyInstructionDto? activePartyTeardownInstruction;
+    private List<DadAssemblyInstructionDto> activePartyTeardownInstructions = [];
+    private readonly Dictionary<string, DadRunStepResultDto> partyTeardownTerminalResults =
+        new(StringComparer.OrdinalIgnoreCase);
     private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
     private readonly DadStableContradictionTracker coordinatorContradictionTracker = new();
     private readonly Dictionary<string, PendingCoordinatorCancellation> pendingCoordinatorCancellations = new(StringComparer.OrdinalIgnoreCase);
@@ -357,7 +359,8 @@ public sealed class DadCoordinatorService
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
-        activePartyTeardownInstruction = null;
+        activePartyTeardownInstructions = [];
+        partyTeardownTerminalResults.Clear();
         slotResolutionTransitions.Clear();
         assignmentTransitions.Clear();
         partyTransitions.Clear();
@@ -2075,10 +2078,23 @@ public sealed class DadCoordinatorService
         stopProgress.StopPolicy = policy.Clone();
         stopProgress.SafetyCap = policy.GetSafetyCap();
         stopProgress.CompletedRuns = CountCompletedStopPolicyRuns(plan);
+        var resolvedTargetsSatisfied = stopProgress.StopReached;
         if (refreshPool)
         {
             var pool = RefreshStopPolicyPool(plan);
-            stopProgress.CurrentLevel = ResolveStopPolicyCurrentLevel(policy, pool);
+            if (policy.Mode == DadPlannerStopMode.TargetLevel &&
+                policy.ResolvedLevelTargets.Count > 0)
+            {
+                var evaluation = DadResolvedLevelTargetRules.Evaluate(policy, pool);
+                stopProgress.CurrentLevel = null;
+                stopProgress.ResolvedLevelTargetEvidence = evaluation.DescribeEvidence();
+                resolvedTargetsSatisfied = evaluation.AllSatisfied;
+            }
+            else
+            {
+                stopProgress.CurrentLevel = ResolveStopPolicyCurrentLevel(policy, pool);
+                stopProgress.ResolvedLevelTargetEvidence = string.Empty;
+            }
         }
 
         stopProgress.RestedExperience = policy.Mode == DadPlannerStopMode.RestedXpDepleted
@@ -2088,7 +2104,10 @@ public sealed class DadCoordinatorService
         stopProgress.StopReached = policy.Mode switch
         {
             DadPlannerStopMode.AfterRuns => stopProgress.CompletedRuns >= Math.Max(1, policy.AfterRuns),
-            DadPlannerStopMode.TargetLevel => stopProgress.CurrentLevel.HasValue && stopProgress.CurrentLevel.Value >= policy.TargetLevel,
+            DadPlannerStopMode.TargetLevel when policy.ResolvedLevelTargets.Count > 0 =>
+                resolvedTargetsSatisfied,
+            DadPlannerStopMode.TargetLevel =>
+                stopProgress.CurrentLevel.HasValue && stopProgress.CurrentLevel.Value >= policy.TargetLevel,
             // Feature batch A: item-target stop condition (SafetyCap below still bounds the run).
             DadPlannerStopMode.ItemTarget => DadGameStateReader.GetInventoryItemCount(policy.StopItemId) >= Math.Max(1, policy.StopItemTargetCount),
             DadPlannerStopMode.RestedXpDepleted => stopProgress.RestedExperience == 0,
@@ -2140,6 +2159,10 @@ public sealed class DadCoordinatorService
         var policy = progress.StopPolicy;
         return policy.Mode switch
         {
+            DadPlannerStopMode.TargetLevel when policy.ResolvedLevelTargets.Count > 0 =>
+                $"{(string.IsNullOrWhiteSpace(progress.ResolvedLevelTargetEvidence)
+                    ? $"waiting for refreshed evidence across {policy.ResolvedLevelTargets.Count} resolved target(s)"
+                    : progress.ResolvedLevelTargetEvidence)} completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)",
             DadPlannerStopMode.TargetLevel => progress.CurrentLevel.HasValue
                 ? $"target level {policy.TargetLevel}; current {progress.CurrentLevel.Value}; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)"
                 : $"target level {policy.TargetLevel}; current level unknown; completed {progress.CompletedRuns}/{progress.SafetyCap} run(s)",
@@ -2215,17 +2238,18 @@ public sealed class DadCoordinatorService
             if (!TryRefreshStrictMutationBoundary("managed party teardown"))
                 return;
 
-            activePartyTeardownInstruction = partyAssemblyService.BuildDisbandInstruction(
+            activePartyTeardownInstructions = partyAssemblyService.BuildTeardownInstructions(
                 activePlan,
                 activeParticipants,
                 activeSlotManifest,
                 presenceService.WorkerSessionId,
                 out var blocker);
-            if (activePartyTeardownInstruction == null)
+            partyTeardownTerminalResults.Clear();
+            if (activePartyTeardownInstructions.Count == 0)
             {
                 FinalizeRun(
                     DadRunStatus.PartialFailure,
-                    "Dad run completed its duty work, but exact Slot1 teardown could not start.",
+                    "Dad run completed its duty work, but exact-roster teardown could not start.",
                     blocker);
                 return;
             }
@@ -2233,11 +2257,12 @@ public sealed class DadCoordinatorService
             Transition(
                 DadRunPhase.TearingDownParty,
                 DadRunStatus.Running,
-                $"{summary} Waiting for guarded teardown on exact Slot1.");
+                $"{summary} Waiting for guarded Slot1 teardown before {activePartyTeardownInstructions.Count - 1} exact follower(s) leave or prove solo.");
             return;
         }
 
-        activePartyTeardownInstruction = null;
+        activePartyTeardownInstructions = [];
+        partyTeardownTerminalResults.Clear();
         var frozenRoster = activeSlotManifest?.Slots
             .Select(static slot => (ContentId: slot.ContentId, CharacterKey: slot.CharacterKey.Value, IsLeader: slot.IsLeader))
             .ToList()
@@ -2261,51 +2286,109 @@ public sealed class DadCoordinatorService
 
     private void UpdatePartyTeardown()
     {
-        if (activePartyTeardownInstruction != null)
+        if (activePartyTeardownInstructions.Count > 0)
         {
-            var participant = ResolveParticipantForInstruction(activePartyTeardownInstruction);
-            if (participant == null)
+            var latestSummaries = new List<string>();
+            while (true)
             {
-                CurrentResult.ActiveTaskStatus = "Waiting for exact frozen Slot1 teardown worker.";
-                CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+                var leaderWasTerminal = activePartyTeardownInstructions
+                    .Where(static instruction =>
+                        instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
+                    .All(instruction => partyTeardownTerminalResults.ContainsKey(instruction.SlotId));
+                var dispatchable = DadExactPartyTeardownRules.GetDispatchableInstructions(
+                    activePartyTeardownInstructions,
+                    partyTeardownTerminalResults);
+                if (dispatchable.Count == 0)
+                    break;
+
+                foreach (var instruction in dispatchable)
+                {
+                    var participant = ResolveParticipantForInstruction(instruction);
+                    DadRunStepResultDto? result;
+                    if (participant == null)
+                    {
+                        var reason =
+                            $"{instruction.SlotId} no longer has its exact frozen worker/character route during teardown.";
+                        result = new DadRunStepResultDto
+                        {
+                            RunId = instruction.RunId,
+                            ModuleId = instruction.ModuleId,
+                            StepName = "PartyTeardown",
+                            ParticipantState = DadParticipantState.Failed,
+                            Summary = reason,
+                            FailureReason = reason,
+                            BlockedReason = reason,
+                        };
+                    }
+                    else
+                    {
+                        result = participant.IsLocalClient
+                            ? presenceService.HandleAssemblyInstruction(instruction)
+                            : transportService.SendAssemblyInstruction(participant, instruction);
+                    }
+
+                    if (result == null)
+                    {
+                        latestSummaries.Add(
+                            $"{instruction.SlotId} is waiting for its exact teardown response.");
+                        continue;
+                    }
+
+                    latestSummaries.Add($"{instruction.SlotId}: {result.Summary}");
+                    if (!result.Deferred)
+                        partyTeardownTerminalResults[instruction.SlotId] = result.Clone();
+                }
+
+                var leaderIsTerminal = activePartyTeardownInstructions
+                    .Where(static instruction =>
+                        instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
+                    .All(instruction => partyTeardownTerminalResults.ContainsKey(instruction.SlotId));
+                if (leaderWasTerminal || !leaderIsTerminal)
+                    break;
+            }
+
+            var aggregate = DadExactPartyTeardownRules.Aggregate(
+                activePartyTeardownInstructions,
+                partyTeardownTerminalResults);
+            CurrentResult.ActiveTaskStatus = latestSummaries.Count > 0
+                ? string.Join(" | ", latestSummaries)
+                : aggregate.Summary;
+            CurrentResult.Summary = aggregate.Summary;
+            if (!aggregate.Complete)
+            {
+                CurrentResult.BlockedReason = aggregate.Summary;
                 Publish();
                 return;
             }
 
-            var result = participant.IsLocalClient
-                ? presenceService.HandleAssemblyInstruction(activePartyTeardownInstruction)
-                : transportService.SendAssemblyInstruction(participant, activePartyTeardownInstruction);
-            if (result == null)
+            var failureDetails = activePartyTeardownInstructions
+                .Where(instruction => aggregate.FailedSlots.Contains(
+                    instruction.SlotId,
+                    StringComparer.OrdinalIgnoreCase))
+                .Select(instruction =>
+                    partyTeardownTerminalResults.TryGetValue(instruction.SlotId, out var result)
+                        ? $"{instruction.SlotId}: {(!string.IsNullOrWhiteSpace(result.FailureReason)
+                            ? result.FailureReason
+                            : !string.IsNullOrWhiteSpace(result.BlockedReason)
+                                ? result.BlockedReason
+                                : result.Summary)}"
+                        : $"{instruction.SlotId}: no terminal result")
+                .ToList();
+            activePartyTeardownInstructions = [];
+            partyTeardownTerminalResults.Clear();
+            if (aggregate.Success)
             {
-                CurrentResult.ActiveTaskStatus = "Waiting for exact frozen Slot1 teardown response.";
-                CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
-                Publish();
-                return;
-            }
-
-            CurrentResult.ActiveTaskStatus = result.Summary;
-            CurrentResult.Summary = result.Summary;
-            if (result.Success)
-            {
-                activePartyTeardownInstruction = null;
                 if (crewFormationTeardownRequested)
                     CancelActiveRun();
                 else
-                    Transition(DadRunPhase.Finalizing, DadRunStatus.Running, result.Summary);
-            }
-            else if (!result.Deferred)
-            {
-                activePartyTeardownInstruction = null;
-                FinalizeRun(
-                    DadRunStatus.PartialFailure,
-                    result.TimedOut
-                        ? "Dad run completed its duty work, but remote Slot1 party teardown timed out."
-                        : "Dad run completed its duty work, but guarded Slot1 party teardown failed.",
-                    result.FailureReason);
+                    Transition(DadRunPhase.Finalizing, DadRunStatus.Running, aggregate.Summary);
             }
             else
             {
-                Publish();
+                FinalizeRun(
+                    DadRunStatus.PartialFailure,
+                    $"Dad run completed its duty work, but exact-roster teardown partially failed on {string.Join(", ", aggregate.FailedSlots)}.",
+                    string.Join(" | ", failureDetails));
             }
             return;
         }
@@ -3158,7 +3241,8 @@ public sealed class DadCoordinatorService
         remoteAssignmentTracker.Clear();
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
-        activePartyTeardownInstruction = null;
+        activePartyTeardownInstructions = [];
+        partyTeardownTerminalResults.Clear();
         presenceService.ResetToIdle();
 
         log.Information("[dad] Finalized run {RequestId}: {Status} {Summary}", CurrentResult.RequestId, status, summary);

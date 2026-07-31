@@ -168,6 +168,7 @@ public enum DadAssemblyInstructionKind
     JoinParty,
     DisbandParty,
     ReadyCheck,
+    LeaveParty,
 }
 
 public sealed class DadRunWaitPolicy

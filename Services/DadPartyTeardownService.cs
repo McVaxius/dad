@@ -18,6 +18,7 @@ internal sealed unsafe class DadPartyTeardownService
     private DadPartyTeardownController? controller;
     private string fallbackInviterName = string.Empty;
     private string lastDecisionDiagnostic = string.Empty;
+    private DadPartyTeardownMutationMode mutationMode;
 
     public DadPartyTeardownService(
         IPartyList partyList,
@@ -32,13 +33,29 @@ internal sealed unsafe class DadPartyTeardownService
     }
 
     public void Begin(IReadOnlyCollection<ulong> expectedMembers, ulong expectedLeaderContentId, string expectedLeaderName)
+        => Begin(
+            expectedMembers,
+            expectedLeaderContentId,
+            expectedLeaderContentId,
+            expectedLeaderName,
+            DadPartyTeardownMutationMode.DisbandAsLeader);
+
+    public void Begin(
+        IReadOnlyCollection<ulong> expectedMembers,
+        ulong expectedLeaderContentId,
+        ulong expectedLocalContentId,
+        string expectedLeaderName,
+        DadPartyTeardownMutationMode mode)
     {
         var prompt = ReadPrompt();
         fallbackInviterName = expectedLeaderName?.Trim() ?? string.Empty;
         lastDecisionDiagnostic = string.Empty;
+        mutationMode = mode;
         controller = new DadPartyTeardownController(
             expectedMembers,
             expectedLeaderContentId,
+            expectedLocalContentId,
+            mode,
             DateTime.UtcNow,
             prompt.Visible,
             prompt.Identity);
@@ -183,11 +200,14 @@ internal sealed unsafe class DadPartyTeardownService
         {
             if (decision.Action == DadPartyTeardownAction.SendBreakup)
             {
-                SubmitBreakupChatCommand();
+                var command = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                    ? DadPartyTeardownController.BreakupCommand
+                    : DadPartyTeardownController.LeaveCommand;
+                SubmitChatCommand(command);
                 log.Information(
                     "[dad] Submitted exact chat command command={Command} characters={CharacterCount}. {Summary}",
-                    DadPartyTeardownController.BreakupCommand,
-                    DadPartyTeardownController.BreakupCommand.Length,
+                    command,
+                    command.Length,
                     decision.Summary);
             }
             else if (decision.Action == DadPartyTeardownAction.InvokePartyMenuLeave)
@@ -249,13 +269,13 @@ internal sealed unsafe class DadPartyTeardownService
         return memberIds;
     }
 
-    private static void SubmitBreakupChatCommand()
+    private static void SubmitChatCommand(string command)
     {
         var uiModule = UIModule.Instance();
         if (uiModule == null)
             throw new InvalidOperationException("The native game UI module is unavailable for chat input.");
 
-        var bytes = Encoding.UTF8.GetBytes(DadPartyTeardownController.BreakupCommand);
+        var bytes = Encoding.UTF8.GetBytes(command);
         var utf8String = Utf8String.FromSequence(bytes);
         uiModule->ProcessChatBoxEntry(utf8String, nint.Zero);
     }
@@ -265,6 +285,7 @@ internal sealed unsafe class DadPartyTeardownService
         controller = null;
         fallbackInviterName = string.Empty;
         lastDecisionDiagnostic = string.Empty;
+        mutationMode = DadPartyTeardownMutationMode.DisbandAsLeader;
     }
 
     private static PromptSnapshot ReadPrompt()

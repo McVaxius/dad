@@ -911,6 +911,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 var targetLevel = presetStopDraft.TargetLevel;
                 if (ImGui.InputInt("Target level", ref targetLevel))
                     presetStopDraft.TargetLevel = targetLevel;
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(
+                        "The bottom target applies only to the first selected primary character when that row is blank. That row overrides it when set; other nonblank row targets are additive, and all must be proven. Any reads the loaded character's live current job/level; a specific job reads that job's ledger.");
+                }
                 var targetSafetyCap = presetStopDraft.SafetyCap;
                 if (ImGui.InputInt("Safety cap (runs)", ref targetSafetyCap))
                     presetStopDraft.SafetyCap = targetSafetyCap;

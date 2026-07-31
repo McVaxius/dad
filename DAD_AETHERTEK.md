@@ -31,7 +31,9 @@ A DAD preset combines the activity with the characters who should perform it. Ea
 - an ADS loot preference: no change, Need, Greed, or Pass;
 - an optional Level seek target.
 
-Level seek is useful for leveling schedules. DAD evaluates targeted primary rows and skips a preset only when every targeted, bound primary row has a known job level at or above its target. A bound target with an unknown or below-target level keeps the preset runnable; untargeted and empty placeholder rows are ignored.
+Level seek is useful for leveling schedules. With **STOP: Target level**, the bottom target applies only to the first selected primary character when that row is blank. A value on that row overrides the bottom target, while every other nonblank row value adds another required target. DAD skips or stops only when all resolved targets are proven. **Any** uses the loaded character's live current job and level; a selected job uses that job's ledger. Missing evidence and levels 0 or 1 are unknown, so the preset continues under its existing safety cap. DAD freezes the resolved characters, jobs, and targets before wake or relog, checks them again after exact readiness and requested-job preparation, and refreshes the evidence after each completed run.
+
+With other STOP modes, the existing row Level-seek rule is unchanged: DAD skips only when every targeted, bound primary row has a known job level at or above its target. Unknown or below-target rows keep the preset runnable; untargeted and empty placeholder rows are ignored.
 
 Templates can keep the party roles without binding permanent characters. Instantiate a template when needed and DAD fills matching roster characters by role, leaving unresolved slots visible for review.
 
@@ -59,10 +61,13 @@ live state, and the first blocker.
   works whether that worker is local or remote; DAD rejects worker, account, character, or Content-ID drift and verifies
   formation from Slot1's returned PartyList.
 - Leveling Mode resolves and freezes only its first effective child for this operation.
-- **Disband** asks exact Slot1 to tear down the held regular crew and waits for its guarded terminal response. With no
+- **Disband** asks exact Slot1 to tear down the held regular crew first. After Slot1 returns a terminal result, every
+  exact follower independently leaves or proves that authoritative party state is already solo. DAD waits for all
+  workers and reports one partial failure naming any affected slots. With no
   active Crew Formation, it can also disband the current
   party only when DAD proves a stable out-of-duty/out-of-queue state, at least two exact members, and local leadership.
-  Membership drift, leadership drift, stale confirmations, and unrelated prompts remain fail-closed.
+  Membership drift, identity drift, stale confirmations, and unrelated prompts remain fail-closed. Seven guarded
+  attempts, the eight-second throttle, 60-second timeout, and sustained solo proof remain unchanged.
 
 Use **Stop All** to cancel active Crew Tools preparation or formation. The normal Plan and saved preset remain intact.
 
@@ -88,7 +93,7 @@ Saved Local Duty presets also adapt to their configured primary rows: one primar
 
 A schedule chains saved presets in an exact order. Each entry can repeat from 1 to 99 times. Schedules can be started manually or assigned to the FFXIV daily reset boundary at 15:00 UTC.
 
-DAD validates each entry before it starts. A satisfied Level-seek entry is recorded as skipped and the schedule moves on. Successful party entries tear down at the appropriate boundary so the next preset can form a fresh verified party. Dry-run validation is available before relying on a live schedule.
+DAD validates each entry before it starts. A satisfied Level-seek entry is recorded as skipped and the schedule moves on. Successful party entries tear down every exact worker at the appropriate boundary so the next preset can form a fresh verified party. Dry-run validation is available before relying on a live schedule.
 
 If an ordinary entry failure or a coordinator/plugin reload blocks a schedule, the Coordinator operator can use **Resume from failed entry**. DAD starts a new run at the exact persisted entry and repeat cursor, keeps the earlier run in history, and requires every client plus DAD and scheduler work to be idle. It never resumes or replays automatically. A cancelled schedule is terminal and cannot be resumed.
 
@@ -116,7 +121,7 @@ Clients on the same machine can use loopback transport. LAN setups require the s
 7. Every selected worker proves its identity and required readiness.
 8. DAD sends party formation to exact Slot1, verifies Slot1's returned PartyList, and starts the supported queue there.
 9. During and after the duty, DAD reports progress, completion, blockers, and recovery state.
-10. At the final party boundary, DAD refreshes exact Slot1 identity and waits for Slot1's guarded teardown result.
+10. At the final party boundary, DAD refreshes the exact roster, waits for Slot1's guarded disband result, then waits for every follower to leave or prove solo.
 
 ## Integrations
 

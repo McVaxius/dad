@@ -13,6 +13,71 @@ public readonly record struct DadPartyMembershipDecision(
     DadPartyMembershipDisposition Disposition,
     string Summary);
 
+public sealed record DadExactPartyTeardownAggregate(
+    bool Complete,
+    bool Success,
+    IReadOnlyList<string> FailedSlots,
+    string Summary);
+
+public static class DadExactPartyTeardownRules
+{
+    public static IReadOnlyList<DadAssemblyInstructionDto> GetDispatchableInstructions(
+        IReadOnlyList<DadAssemblyInstructionDto> instructions,
+        IReadOnlyDictionary<string, DadRunStepResultDto> terminalResults)
+    {
+        var leader = instructions.FirstOrDefault(static instruction =>
+            instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty);
+        if (leader == null)
+            return [];
+
+        if (!terminalResults.ContainsKey(leader.SlotId))
+            return [leader];
+
+        return instructions
+            .Where(static instruction =>
+                instruction.InstructionKind == DadAssemblyInstructionKind.LeaveParty)
+            .Where(instruction => !terminalResults.ContainsKey(instruction.SlotId))
+            .ToList();
+    }
+
+    public static DadExactPartyTeardownAggregate Aggregate(
+        IReadOnlyList<DadAssemblyInstructionDto> instructions,
+        IReadOnlyDictionary<string, DadRunStepResultDto> terminalResults)
+    {
+        if (instructions.Count == 0 || terminalResults.Count < instructions.Count)
+        {
+            var pending = instructions
+                .Where(instruction => !terminalResults.ContainsKey(instruction.SlotId))
+                .Select(static instruction => instruction.SlotId)
+                .ToList();
+            return new DadExactPartyTeardownAggregate(
+                Complete: false,
+                Success: false,
+                FailedSlots: [],
+                Summary: $"Waiting for terminal teardown result(s): {string.Join(", ", pending)}.");
+        }
+
+        var failed = instructions
+            .Where(instruction =>
+                !terminalResults.TryGetValue(instruction.SlotId, out var result) ||
+                !result.Success)
+            .Select(static instruction => instruction.SlotId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return failed.Count == 0
+            ? new DadExactPartyTeardownAggregate(
+                Complete: true,
+                Success: true,
+                FailedSlots: [],
+                Summary: $"Exact-roster teardown completed on all {instructions.Count} slot(s).")
+            : new DadExactPartyTeardownAggregate(
+                Complete: true,
+                Success: false,
+                FailedSlots: failed,
+                Summary: $"Exact-roster teardown partially failed on {string.Join(", ", failed)}.");
+    }
+}
+
 internal static class DadPartySnapshotSourceRules
 {
     public static IReadOnlyList<DadPartyMemberSnapshot> Read(
@@ -125,27 +190,37 @@ public sealed class DadPartyAssemblyService
         return instructions;
     }
 
-    internal DadAssemblyInstructionDto? BuildDisbandInstruction(
+    internal List<DadAssemblyInstructionDto> BuildTeardownInstructions(
         DadRunPlan plan,
         IReadOnlyList<DadParticipantSnapshot> participants,
         DadRunSlotManifest manifest,
         DadWorkerSessionId authorityWorkerSessionId,
         out string blocker)
     {
-        var form = BuildInstructions(
-                plan,
-                participants,
-                manifest,
-                authorityWorkerSessionId,
-                out blocker)
-            .SingleOrDefault(static instruction =>
-                instruction.InstructionKind == DadAssemblyInstructionKind.FormParty);
-        if (form == null)
-            return null;
+        var instructions = BuildInstructions(
+            plan,
+            participants,
+            manifest,
+            authorityWorkerSessionId,
+            out blocker);
+        if (!string.IsNullOrWhiteSpace(blocker) || instructions.Count == 0)
+            return [];
 
-        form.InstructionKind = DadAssemblyInstructionKind.DisbandParty;
-        form.Summary = "Slot1 is performing guarded Dad party teardown.";
-        return form;
+        foreach (var instruction in instructions)
+        {
+            if (instruction.InstructionKind == DadAssemblyInstructionKind.FormParty)
+            {
+                instruction.InstructionKind = DadAssemblyInstructionKind.DisbandParty;
+                instruction.Summary = "Slot1 is performing guarded Dad party teardown.";
+            }
+            else
+            {
+                instruction.InstructionKind = DadAssemblyInstructionKind.LeaveParty;
+                instruction.Summary = $"{instruction.SlotId} is leaving the exact Dad party or proving it is already solo.";
+            }
+        }
+
+        return instructions;
     }
 
     public bool VerifyPartyMembership(

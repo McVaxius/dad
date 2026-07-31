@@ -36,6 +36,7 @@ public sealed class DadSchedulerService
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private DateTime suppressAutomaticEnqueueUntilUtc = DateTime.MinValue;
     private DadRunRequest? frozenPlannerRequest;
+    private bool postWakeLevelTargetsEvaluated;
     private List<FrozenEarlyAssignment> frozenEarlyAssignments = [];
     private List<DadSchedulerSlotState> frozenOrdinarySlots = [];
     private DailyRewardPreflightSession? dailyRewardPreflight;
@@ -233,7 +234,7 @@ public sealed class DadSchedulerService
             Summary = $"Preparing {classification.Summary} for preset '{sourceGroup.DisplayName}'.",
         };
 
-        var blocker = FirstNonEmpty(
+        var blocker = FirstNonEmptyOrEmpty(
             classification.BlockedReason,
             GetCrewFormationSchedulerBlocker(),
             plannerRequestPreview.CanSchedule && plannerRequestPreview.Request != null
@@ -925,6 +926,7 @@ public sealed class DadSchedulerService
         frozenOrdinarySlots = [];
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
         currentState = new DadSchedulerPresetState
         {
             Phase = DadSchedulerPresetPhase.Idle,
@@ -1169,8 +1171,10 @@ public sealed class DadSchedulerService
             DryRun = dryRun,
             RequestedBy = "scheduler",
         };
-        // This decision is intentionally frozen before early job assignment, wake, launch, or relog.
+        // Freeze exact targets before early job assignment, wake, launch, or relog. Their evidence is
+        // intentionally re-read after every exact worker and requested job is ready.
         frozenPlannerRequest = levelSeek.ShouldSkip ? null : CloneRunRequest(plannerRequestPreview.Request);
+        postWakeLevelTargetsEvaluated = false;
         frozenEarlyAssignments = frozenPlannerRequest == null
             ? []
             : BuildFrozenEarlyAssignments(frozenPlannerRequest, preview.Slots, activeJob);
@@ -1474,6 +1478,7 @@ public sealed class DadSchedulerService
         frozenOrdinarySlots = [];
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
         dependencyGateCommitted = false;
         activeSchedulerModuleId = DadModuleId.None;
         RecordTerminalResult(currentState);
@@ -1508,8 +1513,60 @@ public sealed class DadSchedulerService
         ArgumentNullException.ThrowIfNull(group);
         ArgumentNullException.ThrowIfNull(plannerRequestPreview);
 
+        var stopPolicy = plannerRequestPreview.Request?.StopPolicy;
+        if (stopPolicy?.Mode == DadPlannerStopMode.TargetLevel &&
+            stopPolicy.ResolvedLevelTargets?.Count > 0)
+        {
+            return DadResolvedLevelTargetRules
+                .Evaluate(stopPolicy, characterIntelligenceService.CurrentPool)
+                .ToLevelSeekEvaluation();
+        }
+
         var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
         return DadLevelSeekEvaluator.Evaluate(effectiveGroup, characterIntelligenceService.CurrentPool);
+    }
+
+    private bool TrySkipSatisfiedPostWakeLevelTargets()
+    {
+        if (postWakeLevelTargetsEvaluated)
+            return false;
+
+        postWakeLevelTargetsEvaluated = true;
+        var stopPolicy = frozenPlannerRequest?.StopPolicy;
+        if (stopPolicy?.Mode != DadPlannerStopMode.TargetLevel ||
+            stopPolicy.ResolvedLevelTargets?.Count is not > 0)
+        {
+            return false;
+        }
+
+        characterIntelligenceService.RefreshLocalCharacterPool(
+            "scheduler-stop-policy",
+            logRefresh: false);
+        var evaluation = DadResolvedLevelTargetRules.Evaluate(
+            stopPolicy,
+            characterIntelligenceService.RequestPeerSnapshots());
+        if (!evaluation.AllSatisfied)
+        {
+            currentState.Summary =
+                $"Post-readiness level check will continue to planner dispatch. {evaluation.DescribeEvidence()}";
+            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            return false;
+        }
+
+        var summary =
+            $"Skipped preset '{currentState.PresetName}' after exact worker readiness: {evaluation.DescribeEvidence()}";
+        CancelNonTerminalTakeovers(summary);
+        currentState.Phase = DadSchedulerPresetPhase.Skipped;
+        currentState.SkipKind = DadSchedulerSkipKind.LevelSeek;
+        currentState.Summary = summary;
+        currentState.BlockedReason = string.Empty;
+        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+        frozenEarlyAssignments = [];
+        frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
+        RecordTerminalResult(currentState);
+        return true;
     }
 
     public void WakeForRuntimeReadiness(DadWorkerSessionId workerSessionId)
@@ -1706,6 +1763,9 @@ public sealed class DadSchedulerService
             return;
         }
 
+        if (TrySkipSatisfiedPostWakeLevelTargets())
+            return;
+
         var autoPartyAuthorization = autoPartyAuthorizationGate?.Invoke(frozenPlannerRequest)
             ?? new DadAutoPartyAuthorizationDecision(
                 DadAutoPartyAuthorizationState.NotRequired,
@@ -1812,7 +1872,7 @@ public sealed class DadSchedulerService
                 session.Status.RunId,
                 session.EffectiveGroup,
                 session.AlliancePreview);
-            var rejection = FirstNonEmpty(
+            var rejection = FirstNonEmptyOrEmpty(
                 created.CreateRejected ? created.CreatePreflightBlocker : string.Empty,
                 created.State == DadAllianceRecruitmentState.Blocked ? created.Summary : string.Empty,
                 string.IsNullOrWhiteSpace(created.RecruitmentId)
@@ -2048,6 +2108,7 @@ public sealed class DadSchedulerService
         frozenOrdinarySlots = [];
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
         dependencyGateCommitted = false;
         activeSchedulerModuleId = DadModuleId.None;
         activeJob = null;
@@ -2612,6 +2673,7 @@ public sealed class DadSchedulerService
         frozenOrdinarySlots = [];
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
         takeoverDiagnosticStates.Clear();
         nextRefreshUtc = DateTime.MinValue;
         suppressAutomaticEnqueueUntilUtc = DateTime.UtcNow +
@@ -3328,6 +3390,7 @@ public sealed class DadSchedulerService
         frozenOrdinarySlots = [];
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
         RecordTerminalResult(currentState);
     }
 
@@ -4546,6 +4609,7 @@ public sealed class DadSchedulerService
             frozenEarlyAssignments.Sum(static assignment => assignment.AttemptedWorkerSessionIds.Count));
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
+        postWakeLevelTargetsEvaluated = false;
         UpdatePendingEarlyAssignmentCancellations();
     }
 
@@ -4689,6 +4753,9 @@ public sealed class DadSchedulerService
                 : job.StatusSummary,
             _ => $"Queued preset '{job.PresetName}'.",
         };
+
+    private static string FirstNonEmptyOrEmpty(params string[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
 
     private static string FirstNonEmpty(params string[] values)
         => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim()

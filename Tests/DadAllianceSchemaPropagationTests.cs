@@ -197,6 +197,53 @@ public sealed class DadAllianceSchemaPropagationTests
     }
 
     [Fact]
+    public void AppendedLeavePartyAndResolvedTargetsPreserveWireAndCloneContracts()
+    {
+        Assert.Equal(6, (int)DadAssemblyInstructionKind.ReadyCheck);
+        Assert.Equal(7, (int)DadAssemblyInstructionKind.LeaveParty);
+
+        var instruction = new DadAssemblyInstructionDto
+        {
+            RunId = "run",
+            AuthorityWorkerSessionId = new DadWorkerSessionId("coordinator-worker"),
+            ModuleId = DadModuleId.PremadeDuty,
+            SlotId = "Slot2",
+            RequiredCharacterKey = new DadCharacterKey("Follower@Beta"),
+            InstructionKind = DadAssemblyInstructionKind.LeaveParty,
+        };
+        var instructionRoundTrip = DadIpcJson.Deserialize<DadAssemblyInstructionDto>(
+            DadIpcJson.Serialize(instruction))!;
+        Assert.Equal(DadAssemblyInstructionKind.LeaveParty, instruction.Clone().InstructionKind);
+        Assert.Equal(DadAssemblyInstructionKind.LeaveParty, instructionRoundTrip.InstructionKind);
+
+        var request = new DadRunRequest
+        {
+            StopPolicy = new DadRunStopPolicy
+            {
+                Mode = DadPlannerStopMode.TargetLevel,
+                ResolvedLevelTargets =
+                [
+                    new DadResolvedLevelTarget
+                    {
+                        CharacterKey = new DadCharacterKey("Follower@Beta"),
+                        CharacterLabel = "Follower@Beta",
+                        JobId = 19,
+                        TargetLevel = 90,
+                    },
+                ],
+            },
+        };
+        var clonedPolicy = request.StopPolicy.Clone();
+        clonedPolicy.ResolvedLevelTargets[0].TargetLevel = 99;
+        var requestRoundTrip = DadIpcJson.Deserialize<DadRunRequest>(
+            DadIpcJson.Serialize(request))!;
+
+        Assert.Equal(90, request.StopPolicy.ResolvedLevelTargets[0].TargetLevel);
+        Assert.Equal(90, requestRoundTrip.StopPolicy.ResolvedLevelTargets[0].TargetLevel);
+        Assert.Equal((uint?)19, requestRoundTrip.StopPolicy.ResolvedLevelTargets[0].JobId);
+    }
+
+    [Fact]
     public void SchedulerCloneStateAndPlannerRefreshPreserveAssignments()
     {
         var group = GroupWithAssignments();

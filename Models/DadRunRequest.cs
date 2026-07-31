@@ -305,6 +305,35 @@ public sealed class DadRunRequest
     }
 }
 
+public sealed class DadResolvedLevelTarget
+{
+    public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
+    public string CharacterLabel { get; set; } = string.Empty;
+    public uint? JobId { get; set; }
+    public int TargetLevel { get; set; } = DadRunStopPolicy.DefaultTargetLevel;
+
+    public DadResolvedLevelTarget Normalize()
+    {
+        CharacterKey = new DadCharacterKey((CharacterKey.Value ?? string.Empty).Trim());
+        CharacterLabel = CharacterLabel?.Trim() ?? string.Empty;
+        JobId = JobId is > 0 ? JobId : null;
+        TargetLevel = Math.Clamp(
+            TargetLevel <= 0 ? DadRunStopPolicy.DefaultTargetLevel : TargetLevel,
+            1,
+            999);
+        return this;
+    }
+
+    public DadResolvedLevelTarget Clone()
+        => new()
+        {
+            CharacterKey = CharacterKey,
+            CharacterLabel = CharacterLabel,
+            JobId = JobId,
+            TargetLevel = TargetLevel,
+        };
+}
+
 public sealed class DadRunStopPolicy
 {
     public const int DefaultTargetLevel = 100;
@@ -315,6 +344,7 @@ public sealed class DadRunStopPolicy
     public int TargetLevel { get; set; } = DefaultTargetLevel;
     public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
     public string TargetCharacterLabel { get; set; } = string.Empty;
+    public List<DadResolvedLevelTarget> ResolvedLevelTargets { get; set; } = [];
     public int SafetyCap { get; set; } = DefaultSafetyCap;
     public uint StopItemId { get; set; }              // feature batch A: ItemTarget mode
     public int StopItemTargetCount { get; set; } = 1; // feature batch A: ItemTarget mode
@@ -327,6 +357,11 @@ public sealed class DadRunStopPolicy
         StopItemTargetCount = Math.Clamp(StopItemTargetCount <= 0 ? 1 : StopItemTargetCount, 1, 99999);
         TargetCharacterKey = new DadCharacterKey((TargetCharacterKey.Value ?? string.Empty).Trim());
         TargetCharacterLabel = TargetCharacterLabel?.Trim() ?? string.Empty;
+        ResolvedLevelTargets ??= [];
+        ResolvedLevelTargets = ResolvedLevelTargets
+            .Where(static target => target != null)
+            .Select(static target => target.Normalize())
+            .ToList();
         return this;
     }
 
@@ -338,6 +373,9 @@ public sealed class DadRunStopPolicy
             TargetLevel = TargetLevel,
             TargetCharacterKey = TargetCharacterKey,
             TargetCharacterLabel = TargetCharacterLabel,
+            ResolvedLevelTargets = (ResolvedLevelTargets ?? [])
+                .Select(static target => target.Clone())
+                .ToList(),
             SafetyCap = SafetyCap,
             StopItemId = StopItemId,
             StopItemTargetCount = StopItemTargetCount,
@@ -351,6 +389,8 @@ public sealed class DadRunStopPolicy
     public string Describe()
         => Mode switch
         {
+            DadPlannerStopMode.TargetLevel when ResolvedLevelTargets?.Count > 0 =>
+                $"all {ResolvedLevelTargets.Count} resolved level target(s), safety cap {GetSafetyCap()} run(s)",
             DadPlannerStopMode.TargetLevel => TargetCharacterKey.IsEmpty
                 ? $"target level {TargetLevel} for selected character, safety cap {GetSafetyCap()} run(s)"
                 : $"target level {TargetLevel} for {TargetCharacterKey}, safety cap {GetSafetyCap()} run(s)",

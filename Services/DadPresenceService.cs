@@ -453,7 +453,8 @@ public sealed class DadPresenceService
 
         if (instruction.InstructionKind is DadAssemblyInstructionKind.FormParty
             or DadAssemblyInstructionKind.JoinParty
-            or DadAssemblyInstructionKind.DisbandParty)
+            or DadAssemblyInstructionKind.DisbandParty
+            or DadAssemblyInstructionKind.LeaveParty)
         {
             var authorityBlocker = ValidateFrozenPartyInstruction(instruction);
             if (!string.IsNullOrWhiteSpace(authorityBlocker))
@@ -471,7 +472,8 @@ public sealed class DadPresenceService
             }
         }
 
-        if (instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
+        if (instruction.InstructionKind is DadAssemblyInstructionKind.DisbandParty
+            or DadAssemblyInstructionKind.LeaveParty)
             return HandlePartyTeardownInstruction(instruction);
 
         if (!CurrentParticipant.PostArReady)
@@ -599,10 +601,22 @@ public sealed class DadPresenceService
 
     private DadRunStepResultDto HandlePartyTeardownInstruction(DadAssemblyInstructionDto instruction)
     {
-        if (!string.Equals(partyTeardownRunId, instruction.RunId, StringComparison.Ordinal))
+        var teardownKey = $"{instruction.RunId}|{instruction.SlotId}|{instruction.InstructionKind}";
+        if (!string.Equals(partyTeardownRunId, teardownKey, StringComparison.Ordinal))
         {
             partyTeardownService.Reset();
-            partyTeardownRunId = instruction.RunId;
+            partyTeardownRunId = teardownKey;
+            var follower = instruction.InviteTargets.SingleOrDefault(target =>
+                string.Equals(
+                    target.WorkerSessionId.Value,
+                    WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase));
+            var mode = instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty
+                ? DadPartyTeardownMutationMode.DisbandAsLeader
+                : DadPartyTeardownMutationMode.LeaveAsFollower;
+            var expectedLocalContentId = mode == DadPartyTeardownMutationMode.DisbandAsLeader
+                ? instruction.FrozenInviter.ContentId
+                : follower?.ContentId ?? 0;
             partyTeardownService.Begin(
                 instruction.InviteTargets
                     .Select(static target => target.ContentId)
@@ -610,7 +624,9 @@ public sealed class DadPresenceService
                     .Where(static contentId => contentId != 0)
                     .ToList(),
                 instruction.FrozenInviter.ContentId,
-                instruction.FrozenInviter.CharacterName);
+                expectedLocalContentId,
+                instruction.FrozenInviter.CharacterName,
+                mode);
         }
 
         var decision = partyTeardownService.Update();

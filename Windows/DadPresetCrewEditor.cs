@@ -698,7 +698,10 @@ internal sealed class DadPresetCrewEditor
             }
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Blank disables Level seek. A preset is skipped only when every targeted exact row has a known level at or above its target.");
+        {
+            ImGui.SetTooltip(
+                "With STOP Target level, the first selected primary row inherits the bottom target when blank; its row value overrides it, and other nonblank rows add required targets. Any uses that loaded character's live current job/level; a specific job uses its ledger. With other STOP modes, blank disables this row and the existing Level seek skip requires every targeted exact row.");
+        }
     }
 
     private static void DrawDailyRewardPreflight(

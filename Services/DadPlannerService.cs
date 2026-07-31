@@ -785,6 +785,30 @@ public sealed class DadPlannerService
         if (policy.Mode != DadPlannerStopMode.TargetLevel)
             return true;
 
+        if (policy.ResolvedLevelTargets.Count > 0)
+        {
+            var invalidTarget = policy.ResolvedLevelTargets.FirstOrDefault(target =>
+                target.CharacterKey.IsEmpty ||
+                !IsStopTargetInPlannedRoster(request, target.CharacterKey.Value));
+            if (invalidTarget != null)
+            {
+                rejectionReason = invalidTarget.CharacterKey.IsEmpty
+                    ? "Resolved Target-level stop contains an empty exact character."
+                    : $"Resolved Target-level stop character '{invalidTarget.CharacterKey}' is not one of the selected planner characters.";
+                return false;
+            }
+
+            var evaluation = DadResolvedLevelTargetRules.Evaluate(policy, pool);
+            if (evaluation.AllSatisfied)
+            {
+                rejectionReason =
+                    $"{evaluation.Summary} {string.Join(" ", evaluation.Evidence.Select(static evidence => evidence.Summary))}";
+                return false;
+            }
+
+            return true;
+        }
+
         var targetKey = policy.TargetCharacterKey.Value?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(targetKey))
         {

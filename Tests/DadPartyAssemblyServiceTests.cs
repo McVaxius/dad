@@ -348,16 +348,64 @@ public sealed class DadPartyAssemblyServiceTests
         Assert.All(instructions, instruction =>
             Assert.Equal(form.FrozenInviter.CharacterKey, instruction.FrozenInviter.CharacterKey));
 
-        var disband = service.BuildDisbandInstruction(
+        var teardown = service.BuildTeardownInstructions(
             plan,
             [slotTwo, slotOne],
             manifest,
             new DadWorkerSessionId("coordinator-worker"),
             out var disbandBlocker);
         Assert.Empty(disbandBlocker);
-        Assert.NotNull(disband);
-        Assert.Equal(DadAssemblyInstructionKind.DisbandParty, disband.InstructionKind);
-        Assert.Equal("remote-slot1-worker", disband.FrozenInviter.WorkerSessionId.Value);
+        Assert.Collection(
+            teardown,
+            disband =>
+            {
+                Assert.Equal(DadAssemblyInstructionKind.DisbandParty, disband.InstructionKind);
+                Assert.Equal("Slot1", disband.SlotId);
+                Assert.Equal("remote-slot1-worker", disband.FrozenInviter.WorkerSessionId.Value);
+            },
+            follower =>
+            {
+                Assert.Equal(DadAssemblyInstructionKind.LeaveParty, follower.InstructionKind);
+                Assert.Equal("Slot2", follower.SlotId);
+                Assert.Equal("remote-slot1-worker", follower.FrozenInviter.WorkerSessionId.Value);
+                Assert.Equal("coordinator-worker", follower.AuthorityWorkerSessionId.Value);
+            });
+    }
+
+    [Fact]
+    public void ExactTeardownDispatchesLeaderBeforeEveryFollowerAndAggregatesFailures()
+    {
+        var instructions = new[]
+        {
+            TeardownInstruction("Slot1", DadAssemblyInstructionKind.DisbandParty),
+            TeardownInstruction("Slot2", DadAssemblyInstructionKind.LeaveParty),
+            TeardownInstruction("Slot3", DadAssemblyInstructionKind.LeaveParty),
+        };
+        var terminal = new Dictionary<string, DadRunStepResultDto>(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            ["Slot1"],
+            DadExactPartyTeardownRules.GetDispatchableInstructions(instructions, terminal)
+                .Select(static instruction => instruction.SlotId));
+
+        terminal["Slot1"] = Terminal("Slot1", success: false);
+        Assert.Equal(
+            ["Slot2", "Slot3"],
+            DadExactPartyTeardownRules.GetDispatchableInstructions(instructions, terminal)
+                .Select(static instruction => instruction.SlotId));
+
+        terminal["Slot2"] = Terminal("Slot2", success: true);
+        var pending = DadExactPartyTeardownRules.Aggregate(instructions, terminal);
+        Assert.False(pending.Complete);
+        Assert.Contains("Slot3", pending.Summary, StringComparison.Ordinal);
+
+        terminal["Slot3"] = Terminal("Slot3", success: false);
+        var complete = DadExactPartyTeardownRules.Aggregate(instructions, terminal);
+        Assert.True(complete.Complete);
+        Assert.False(complete.Success);
+        Assert.Equal(["Slot1", "Slot3"], complete.FailedSlots);
+        Assert.Contains("Slot1", complete.Summary, StringComparison.Ordinal);
+        Assert.Contains("Slot3", complete.Summary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -411,6 +459,27 @@ public sealed class DadPartyAssemblyServiceTests
                 QueueAuthority = queueAuthority,
                 RosterIntent = new DadRosterIntent { ExpectedPartySize = partySize, RequireRemoteParticipants = true },
             },
+        };
+
+    private static DadAssemblyInstructionDto TeardownInstruction(
+        string slotId,
+        DadAssemblyInstructionKind kind)
+        => new()
+        {
+            RunId = "run",
+            SlotId = slotId,
+            InstructionKind = kind,
+        };
+
+    private static DadRunStepResultDto Terminal(string slotId, bool success)
+        => new()
+        {
+            RunId = "run",
+            StepName = slotId,
+            Success = success,
+            Deferred = false,
+            Summary = success ? $"{slotId} complete." : $"{slotId} failed.",
+            FailureReason = success ? string.Empty : $"{slotId} failed.",
         };
 
     private static DadParticipantSnapshot Participant(string characterKey, ulong contentId, bool isLocal, bool isAuthority, string slot)

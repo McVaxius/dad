@@ -1,5 +1,11 @@
 namespace dad.Services;
 
+public enum DadPartyTeardownMutationMode
+{
+    DisbandAsLeader = 0,
+    LeaveAsFollower = 1,
+}
+
 public enum DadPartyTeardownAction
 {
     None = 0,
@@ -33,6 +39,7 @@ public sealed record DadPartyTeardownDecision(DadPartyTeardownAction Action, str
 public sealed class DadPartyTeardownController
 {
     public const string BreakupCommand = "/partycmd breakup";
+    public const string LeaveCommand = "/partycmd leave";
     public const int PartyMenuLeaveCallbackOperation = 2;
     public const int PartyMenuLeaveCallbackArgument = 3;
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
@@ -42,6 +49,8 @@ public sealed class DadPartyTeardownController
 
     private readonly HashSet<ulong> expectedMembers;
     private readonly ulong expectedLeaderContentId;
+    private readonly ulong expectedLocalContentId;
+    private readonly DadPartyTeardownMutationMode mutationMode;
     private readonly DateTime startedAtUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
@@ -57,9 +66,30 @@ public sealed class DadPartyTeardownController
         DateTime startedAtUtc,
         bool promptVisible,
         string promptIdentity)
+        : this(
+            expectedMemberContentIds,
+            expectedLeaderContentId,
+            expectedLeaderContentId,
+            DadPartyTeardownMutationMode.DisbandAsLeader,
+            startedAtUtc,
+            promptVisible,
+            promptIdentity)
+    {
+    }
+
+    public DadPartyTeardownController(
+        IEnumerable<ulong> expectedMemberContentIds,
+        ulong expectedLeaderContentId,
+        ulong expectedLocalContentId,
+        DadPartyTeardownMutationMode mutationMode,
+        DateTime startedAtUtc,
+        bool promptVisible,
+        string promptIdentity)
     {
         expectedMembers = expectedMemberContentIds.Where(static id => id != 0).ToHashSet();
         this.expectedLeaderContentId = expectedLeaderContentId;
+        this.expectedLocalContentId = expectedLocalContentId;
+        this.mutationMode = mutationMode;
         this.startedAtUtc = startedAtUtc;
         lastPromptVisible = promptVisible;
         nextAttemptUtc = startedAtUtc;
@@ -74,16 +104,59 @@ public sealed class DadPartyTeardownController
                                      observation.LocalContentId != 0 &&
                                      (actualMembers.Count == 0 ||
                                       (actualMembers.Count == 1 && actualMembers.Contains(observation.LocalContentId)));
-        if (partyStateConfirmsSolo && expectedMembers.Count <= 1)
+        if (observation.LocalContentId == 0 ||
+            expectedLocalContentId == 0 ||
+            observation.LocalContentId != expectedLocalContentId)
+        {
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.Fail,
+                "The local character no longer matches the exact frozen teardown identity.");
+        }
+
+        if (mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader &&
+            (expectedLeaderContentId == 0 ||
+             observation.LocalContentId != expectedLeaderContentId ||
+             (!partyStateConfirmsSolo && observation.PartyLeaderContentId != expectedLeaderContentId)))
+        {
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.Fail,
+                "The local frozen leader is no longer proven by the authoritative party source; refusing teardown mutation.");
+        }
+
+        if (mutationMode == DadPartyTeardownMutationMode.LeaveAsFollower &&
+            (!expectedMembers.Contains(expectedLocalContentId) ||
+             (!partyStateConfirmsSolo &&
+              observation.PartyLeaderContentId != 0 &&
+              observation.PartyLeaderContentId != expectedLeaderContentId)))
+        {
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.Fail,
+                "The follower party authority no longer matches the exact frozen Slot1 leader.");
+        }
+
+        if (partyStateConfirmsSolo &&
+            (mutationMode == DadPartyTeardownMutationMode.LeaveAsFollower || expectedMembers.Count <= 1) &&
+            !commandSent)
+        {
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Complete, "Party teardown complete; the local character is already solo.");
+        }
 
         if (observation.NowUtc - startedAtUtc >= Timeout)
-            return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, $"Party teardown timed out after {commandAttempts} breakup command attempt(s).");
+        {
+            var operation = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                ? "breakup"
+                : "leave";
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.Fail,
+                $"Party teardown timed out after {commandAttempts} {operation} command attempt(s).");
+        }
 
         var promptJustAppeared = observation.PromptVisible && !lastPromptVisible;
         lastPromptVisible = observation.PromptVisible;
 
-        if (observation.IsInDuty || observation.IsQueued)
+        if (observation.IsInDuty ||
+            observation.IsQueued ||
+            (mutationMode == DadPartyTeardownMutationMode.LeaveAsFollower && !observation.IsWorldStable))
             return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "Waiting for out-of-duty, not-queued teardown state.");
 
         var unexpectedMembers = actualMembers.Where(member => !expectedMembers.Contains(member)).ToArray();
@@ -94,28 +167,11 @@ public sealed class DadPartyTeardownController
                 $"Party membership contains unexpected Content ID(s) {string.Join(",", unexpectedMembers)}; refusing teardown mutation.");
         }
 
-        if (observation.LocalContentId == 0 ||
-            expectedLeaderContentId == 0 ||
-            observation.LocalContentId != expectedLeaderContentId ||
-            (!partyStateConfirmsSolo && observation.PartyLeaderContentId != expectedLeaderContentId))
-        {
-            return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "The local frozen leader is no longer proven by the authoritative party source; refusing teardown mutation.");
-        }
-
-        if (observation.PromptVisible)
-        {
-            if (!commandSent || !promptJustAppeared || approvedCommandAttempt == commandAttempts)
-            {
-                return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "A pre-existing or already-handled confirmation is visible; it will not be approved.");
-            }
-
-            approvedCommandAttempt = commandAttempts;
-            return new DadPartyTeardownDecision(
-                DadPartyTeardownAction.ApprovePrompt,
-                $"Approving the newly appeared breakup confirmation associated with command attempt {commandAttempts}/{MaximumAttempts}.");
-        }
-
-        if (approvedCommandAttempt > 0 && partyStateConfirmsSolo)
+        var soloCompletionAllowed = commandSent &&
+                                    partyStateConfirmsSolo &&
+                                    (mutationMode == DadPartyTeardownMutationMode.LeaveAsFollower ||
+                                     approvedCommandAttempt > 0);
+        if (soloCompletionAllowed)
         {
             soloConfirmedSinceUtc ??= observation.NowUtc;
             if (observation.NowUtc - soloConfirmedSinceUtc.Value < SoloConfirmationInterval)
@@ -127,7 +183,28 @@ public sealed class DadPartyTeardownController
 
             return new DadPartyTeardownDecision(
                 DadPartyTeardownAction.Complete,
-                "Party teardown complete; cross-world party state is inactive and PartyList remained solo after prompt approval.");
+                mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                    ? "Party teardown complete; cross-world party state is inactive and PartyList remained solo after prompt approval."
+                    : "Follower party teardown complete; authoritative party state remained solo after the leave mutation.");
+        }
+
+        if (observation.PromptVisible)
+        {
+            if (!commandSent ||
+                !promptJustAppeared ||
+                approvedCommandAttempt == commandAttempts ||
+                !IsRelevantPrompt(observation.PromptText))
+            {
+                return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "A pre-existing or already-handled confirmation is visible; it will not be approved.");
+            }
+
+            approvedCommandAttempt = commandAttempts;
+            var operation = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                ? "breakup"
+                : "leave";
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.ApprovePrompt,
+                $"Approving the newly appeared {operation} confirmation associated with command attempt {commandAttempts}/{MaximumAttempts}.");
         }
 
         soloConfirmedSinceUtc = null;
@@ -149,6 +226,23 @@ public sealed class DadPartyTeardownController
         commandAttempts++;
         commandSent = true;
         nextAttemptUtc = observation.NowUtc + AttemptThrottle;
-        return new DadPartyTeardownDecision(DadPartyTeardownAction.SendBreakup, $"Sending guarded party breakup command attempt {commandAttempts}/{MaximumAttempts}.");
+        var commandKind = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+            ? "breakup"
+            : "leave";
+        return new DadPartyTeardownDecision(
+            DadPartyTeardownAction.SendBreakup,
+            $"Sending guarded party {commandKind} command attempt {commandAttempts}/{MaximumAttempts}.");
+    }
+
+    private bool IsRelevantPrompt(string promptText)
+    {
+        if (string.IsNullOrWhiteSpace(promptText))
+            return true;
+
+        return promptText.Contains("party", StringComparison.OrdinalIgnoreCase) &&
+               (mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                   ? promptText.Contains("disband", StringComparison.OrdinalIgnoreCase) ||
+                     promptText.Contains("break", StringComparison.OrdinalIgnoreCase)
+                   : promptText.Contains("leave", StringComparison.OrdinalIgnoreCase));
     }
 }

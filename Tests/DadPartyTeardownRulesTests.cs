@@ -203,6 +203,139 @@ public sealed class DadPartyTeardownRulesTests
         Assert.Equal(DadPartyTeardownAction.InvokePartyMenuLeave, controller.Pulse(Observation(now.AddSeconds(8.1), crossRealm: true, partyMenu: true)).Action);
     }
 
+    [Fact]
+    public void FollowerAlreadyAuthoritativelySoloCompletesWithoutMutation()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+
+        var complete = controller.Pulse(Observation(
+            now,
+            local: 2,
+            leader: 0,
+            members: [2UL]));
+
+        Assert.Equal(DadPartyTeardownAction.Complete, complete.Action);
+        Assert.Equal(0, controller.CommandAttempts);
+    }
+
+    [Fact]
+    public void FollowerUsesGuardedLeaveAndFreshRelevantConfirmation()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+
+        var leave = controller.Pulse(Observation(now, local: 2));
+        var approve = controller.Pulse(Observation(
+            now.AddSeconds(1),
+            local: 2,
+            prompt: true,
+            identity: "fresh-leave",
+            text: "Leave the party?"));
+
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, leave.Action);
+        Assert.Contains("leave command", leave.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadPartyTeardownAction.ApprovePrompt, approve.Action);
+        Assert.Equal("/partycmd leave", DadPartyTeardownController.LeaveCommand);
+    }
+
+    [Fact]
+    public void ApprovedFollowerPromptMayRemainVisibleDuringSustainedSoloProof()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, local: 2)).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.ApprovePrompt,
+            controller.Pulse(Observation(
+                now.AddSeconds(1),
+                local: 2,
+                prompt: true,
+                identity: "fresh-leave",
+                text: "Leave the party?")).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.None,
+            controller.Pulse(Observation(
+                now.AddSeconds(2),
+                local: 2,
+                leader: 0,
+                members: [2UL],
+                prompt: true,
+                identity: "fresh-leave",
+                text: "Leave the party?")).Action);
+        Assert.Equal(
+            DadPartyTeardownAction.Complete,
+            controller.Pulse(Observation(
+                now.AddSeconds(3),
+                local: 2,
+                leader: 0,
+                members: [2UL],
+                prompt: true,
+                identity: "fresh-leave",
+                text: "Leave the party?")).Action);
+    }
+
+    [Fact]
+    public void FollowerNeverApprovesAnUnrelatedFreshPrompt()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, local: 2)).Action);
+        var unrelated = controller.Pulse(Observation(
+            now.AddSeconds(1),
+            local: 2,
+            prompt: true,
+            identity: "unrelated",
+            text: "Commence the duty?"));
+
+        Assert.Equal(DadPartyTeardownAction.None, unrelated.Action);
+        Assert.Contains("will not be approved", unrelated.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FollowerRejectsLocalOrFrozenLeaderIdentityDrift()
+    {
+        var now = DateTime.UtcNow;
+        var localDrift = FollowerController(now).Pulse(Observation(
+            now,
+            local: 3,
+            members: [1UL, 2UL]));
+        var leaderDrift = FollowerController(now).Pulse(Observation(
+            now,
+            local: 2,
+            leader: 3,
+            members: [1UL, 2UL]));
+
+        Assert.Equal(DadPartyTeardownAction.Fail, localDrift.Action);
+        Assert.Contains("local character", localDrift.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadPartyTeardownAction.Fail, leaderDrift.Action);
+        Assert.Contains("Slot1 leader", leaderDrift.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FollowerLeaveRetainsSevenAttemptsEightSecondThrottleAndSixtySecondTimeout()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+
+        Assert.Equal(TimeSpan.FromSeconds(8), DadPartyTeardownController.AttemptThrottle);
+        Assert.Equal(TimeSpan.FromSeconds(60), DadPartyTeardownController.Timeout);
+        Assert.Equal(7, DadPartyTeardownController.MaximumAttempts);
+        foreach (var attemptSecond in new[] { 0, 8, 16, 24, 32, 40, 48 })
+        {
+            Assert.Equal(
+                DadPartyTeardownAction.SendBreakup,
+                controller.Pulse(Observation(now.AddSeconds(attemptSecond), local: 2)).Action);
+        }
+
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(56), local: 2)).Action);
+        var timeout = controller.Pulse(Observation(now.AddSeconds(60), local: 2));
+        Assert.Equal(DadPartyTeardownAction.Fail, timeout.Action);
+        Assert.Contains("7 leave command attempt(s)", timeout.Summary, StringComparison.Ordinal);
+    }
+
     private static DadPartyTeardownController ApprovedAttemptOne(DateTime now)
     {
         var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, string.Empty);
@@ -213,9 +346,20 @@ public sealed class DadPartyTeardownRulesTests
         return controller;
     }
 
+    private static DadPartyTeardownController FollowerController(DateTime now)
+        => new(
+            [1UL, 2UL],
+            expectedLeaderContentId: 1,
+            expectedLocalContentId: 2,
+            mutationMode: DadPartyTeardownMutationMode.LeaveAsFollower,
+            startedAtUtc: now,
+            promptVisible: false,
+            promptIdentity: string.Empty);
+
     private static DadPartyTeardownObservation Observation(
         DateTime now,
         IReadOnlyCollection<ulong>? members = null,
+        ulong local = 1,
         ulong leader = 1,
         bool crossRealm = false,
         bool partyMenu = false,
@@ -227,7 +371,7 @@ public sealed class DadPartyTeardownRulesTests
         bool queued = false)
         => new(
             now,
-            LocalContentId: 1,
+            LocalContentId: local,
             PartyLeaderContentId: leader,
             PartyMemberContentIds: members ?? [1UL, 2UL],
             IsCrossRealmParty: crossRealm,

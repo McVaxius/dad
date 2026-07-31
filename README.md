@@ -53,8 +53,16 @@ dotnet test .\Tests\dad.Tests.csproj
   authority. A remote Slot1 follows its saved wake/relog policy, receives the authenticated assembly request, and returns
   its authoritative PartyList for coordinator verification. Slot1 identity is fail-closed across worker, account,
   character, and Content ID; either executable invite-authority setting resolves to that same slot.
-- **Disband** routes a held regular Crew Formation through exact frozen Slot1 and waits for that worker's terminal guarded
-  teardown response.
+- With **STOP: Target level**, the bottom target applies only to the first selected primary character when that row is
+  blank. A target on that row overrides the bottom value; every other nonblank row target is additive, and DAD stops or
+  skips only when all resolved targets are proven. **Any** requires the loaded character's live current job and level,
+  while a selected job reads that job's ledger. Missing evidence and observed levels 0 or 1 remain unknown and continue
+  under the existing safety cap. Targets are frozen before wake/relog, checked again after exact readiness and requested
+  jobs, and refreshed after each completed run. Other stop modes keep the existing per-row Level-seek behavior.
+- **Disband** routes a held regular Crew Formation through the exact frozen roster. Slot1 receives the guarded disband
+  first; after its terminal response, every follower independently leaves or proves authoritative solo state. DAD waits
+  for every exact worker and reports one partial failure naming all affected slots instead of treating Slot1 alone as
+  complete.
   When no Crew Formation is active, it first freezes the current authoritative party membership and requires a stable,
   out-of-duty, out-of-queue state, at least two nonzero members, and proven local leadership. Existing seven-attempt,
   fresh-prompt, unexpected-member, and sustained-solo safeguards remain unchanged.

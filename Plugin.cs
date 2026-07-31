@@ -2966,6 +2966,9 @@ public sealed class Plugin : IDalamudPlugin
                 ? localNpcRunner.CharacterKey
                 : $"{localNpcRunner.CharacterName}@{localNpcRunner.WorldName}";
         }
+        // Row-level targets are resolved against the effective selected roster for each request.
+        // Saved groups retain only their row inputs and scalar compatibility fields.
+        stopPolicy.ResolvedLevelTargets = [];
 
         var now = DateTime.UtcNow;
         return new DadPlannerGroup

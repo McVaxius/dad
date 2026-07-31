@@ -1,5 +1,30 @@
 # dad — changelog
 
+## 2026-07-30 — W62 I124/I125/I126 reliability fixes (local-only, unpublished)
+- Resolved **STOP: Target level** into an immutable exact-character target list before wake or relog. The bottom target
+  applies only to the first selected primary character when that row is blank; its row value overrides the bottom
+  value, and every other nonblank row target is additive. Blank additional rows remain ignored.
+- Specific-job targets read that job's ledger. **Any** requires the loaded character's live current job and level.
+  Missing evidence and observed levels `0` or `1` remain unknown instead of satisfying the target, while target entry
+  remains compatible with `1` through `999`.
+- Re-evaluated aggregate evidence after every exact worker and requested job are ready, before planner dispatch, and
+  after every completed run from refreshed local/peer truth. DAD skips or stops only when every resolved target is
+  proven; unknown or below-target evidence continues to the existing safety cap. The scalar single-character path and
+  row Level-seek behavior under other stop modes remain unchanged.
+- Replaced Slot1-only managed teardown completion with an exact-roster sequence: Slot1 receives `DisbandParty` first,
+  then every follower receives appended `LeaveParty` after Slot1 returns any terminal result. Every follower is polled
+  independently even after Slot1 failure, and DAD aggregates one partial failure naming all affected slots only after
+  every exact worker is terminal.
+- Followers complete immediately from authoritative solo state or use the existing guarded `/partycmd leave`,
+  cross-world callback, fresh-confirmation, unexpected-member, and identity checks. An already-approved prompt may
+  remain visible during sustained solo proof; stale or unrelated prompts are never reapproved. Seven attempts, the
+  eight-second throttle, 60-second timeout, and exact worker/account/character/Content-ID boundary remain unchanged.
+- Updated Plan, crew-row, and Setup Wizard guidance without adding settings, controls, dependencies, schema/protocol
+  versions, migrations, release versions, packages, or publication work. Operator live acceptance is Not Run.
+- Focused affected level/stop, planner/scheduler/coordinator, teardown/departure, assembly, DTO, and persistence tests
+  pass 140/140 with no failures or skips. The Debug x64 plugin build succeeds with zero errors; its four nullable
+  warnings are pre-existing in untouched `DadAlliancePartyFinderService.cs`. The full suite was not run.
+
 ## 2026-07-30 — W61 remote Slot1 party authority (local-only, unpublished)
 - Kept the existing **Create group** and **Disband** controls while separating Coordinator orchestration from party
   authority. The Coordinator no longer needs its account or character in formation or ordinary Plan/Schedule rosters.
