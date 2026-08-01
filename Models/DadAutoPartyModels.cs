@@ -131,7 +131,7 @@ public sealed class DadAutoPartyConfiguration
             PilotCourierProbeVerified = PilotCourierProbeVerified,
             StateGeneration = StateGeneration,
             Pairings = Pairings.Select(static pairing => pairing.Clone()).ToList(),
-            Grants = [.. Grants],
+            Grants = Grants.Select(static grant => grant with { }).ToList(),
             Listings = Listings.Select(static listing => listing.Clone()).ToList(),
             RemoteBindings = RemoteBindings.Select(static binding => binding.Clone()).ToList(),
             PendingPairings = PendingPairings.Select(static pairing => pairing.Clone()).ToList(),
@@ -244,6 +244,7 @@ public sealed class DadAutoPartyConfiguration
 public sealed class DadAutoPartyRemoteBinding
 {
     public string FleetRowId { get; set; } = string.Empty;
+    public string OpaqueCharacterId { get; set; } = string.Empty;
     public string OwnerId { get; set; } = string.Empty;
     public string IslandId { get; set; } = string.Empty;
     public string RequestedJobId { get; set; } = string.Empty;
@@ -252,6 +253,7 @@ public sealed class DadAutoPartyRemoteBinding
 
     public bool IsValid =>
         !string.IsNullOrWhiteSpace(FleetRowId) &&
+        !string.IsNullOrWhiteSpace(OpaqueCharacterId) &&
         !string.IsNullOrWhiteSpace(OwnerId) &&
         !string.IsNullOrWhiteSpace(IslandId) &&
         !string.IsNullOrWhiteSpace(RequestedJobId) &&
@@ -260,6 +262,7 @@ public sealed class DadAutoPartyRemoteBinding
     public DadAutoPartyRemoteBinding Normalize()
     {
         FleetRowId = DadAutoPartyConfiguration.NormalizeIdentifier(FleetRowId);
+        OpaqueCharacterId = DadAutoPartyConfiguration.NormalizeIdentifier(OpaqueCharacterId);
         OwnerId = DadAutoPartyConfiguration.NormalizeIdentifier(OwnerId);
         IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
         RequestedJobId = DadAutoPartyConfiguration.NormalizeIdentifier(RequestedJobId);
@@ -269,6 +272,7 @@ public sealed class DadAutoPartyRemoteBinding
     public DadAutoPartyRemoteBinding Clone() => new()
     {
         FleetRowId = FleetRowId,
+        OpaqueCharacterId = OpaqueCharacterId,
         OwnerId = OwnerId,
         IslandId = IslandId,
         RequestedJobId = RequestedJobId,
@@ -602,6 +606,7 @@ public sealed record DadMeasuredPilotEvaluation(
 public sealed record DadAutoPartyGrant
 {
     public string GrantId { get; init; } = string.Empty;
+    public string ProposalId { get; init; } = string.Empty;
     public string OwnerId { get; init; } = string.Empty;
     public string IslandId { get; init; } = string.Empty;
     public string OpaqueCharacterId { get; init; } = string.Empty;
@@ -610,9 +615,12 @@ public sealed record DadAutoPartyGrant
     public SessionPermission Permissions { get; init; }
     public DateTime IssuedAtUtc { get; init; }
     public DateTime ExpiresAtUtc { get; init; }
+    public int MaximumUses { get; init; }
+    public DateTime? ConsumedAtUtc { get; set; }
 
     public bool IsValid =>
         Guid.TryParse(GrantId, out _) &&
+        Guid.TryParse(ProposalId, out _) &&
         !string.IsNullOrWhiteSpace(OwnerId) &&
         !string.IsNullOrWhiteSpace(IslandId) &&
         !string.IsNullOrWhiteSpace(OpaqueCharacterId) &&
@@ -620,8 +628,16 @@ public sealed record DadAutoPartyGrant
         !string.IsNullOrWhiteSpace(ActivityId) &&
         Permissions != SessionPermission.None &&
         IssuedAtUtc != default &&
-        ExpiresAtUtc > IssuedAtUtc;
+        ExpiresAtUtc > IssuedAtUtc &&
+        MaximumUses == 1;
 }
+
+internal sealed record DadAutoPartyPrivateIdentityPackage(
+    string OwnerId,
+    string IslandId,
+    long KeyGeneration,
+    string SigningPrivateKey,
+    string EncryptionPrivateKey);
 
 public sealed class DadAutoPartyListing
 {

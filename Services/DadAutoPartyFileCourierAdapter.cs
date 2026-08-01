@@ -138,24 +138,29 @@ public sealed class DadAutoPartyFileCourierAdapter : IAutoPartyTransportAdapter,
         cancellationToken.ThrowIfCancellationRequested();
         if (disposed || acknowledgement.EnvelopeId == Guid.Empty ||
             !IsSafeCode(acknowledgement.SafeCode) ||
-            !receivedFiles.Remove(acknowledgement.EnvelopeId, out var inboxPath))
+            !receivedFiles.TryGetValue(acknowledgement.EnvelopeId, out var inboxPath))
             return;
-        if (File.Exists(inboxPath))
-            File.Delete(inboxPath);
         var acknowledgementFolder = GetIslandFolder(
             GetRootPath(),
             "acknowledgements",
             configuration.RegisteredIslandId);
         Directory.CreateDirectory(acknowledgementFolder);
         var path = Path.Combine(acknowledgementFolder, $"{acknowledgement.EnvelopeId:N}.apack");
+        var temporary = path + $".{Guid.NewGuid():N}.tmp";
         var payload = Encoding.UTF8.GetBytes(acknowledgement.SafeCode + "\n");
         try
         {
-            await File.WriteAllBytesAsync(path, payload, cancellationToken).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(temporary, payload, cancellationToken).ConfigureAwait(false);
+            File.Move(temporary, path, true);
+            if (File.Exists(inboxPath))
+                File.Delete(inboxPath);
+            receivedFiles.Remove(acknowledgement.EnvelopeId);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(payload);
+            if (File.Exists(temporary))
+                File.Delete(temporary);
         }
     }
 

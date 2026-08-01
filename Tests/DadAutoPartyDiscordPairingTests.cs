@@ -90,6 +90,85 @@ public sealed class DadAutoPartyDiscordPairingTests
     }
 
     [Fact]
+    public async Task PairingProtocolRejectsMissingAndTamperedSignatures()
+    {
+        var missingFixture = await SignedEnvelopeFixture.CreateAsync();
+        missingFixture.Envelope.Signature = null!;
+        var missing = missingFixture.Protocol.Validate(
+            missingFixture.Envelope,
+            missingFixture.Envelope.BotUserId,
+            DateTime.UtcNow,
+            DadAutoPartyRole.Coordinator);
+        var tamperedFixture = await SignedEnvelopeFixture.CreateAsync();
+        tamperedFixture.Envelope.Signature = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
+        var tampered = tamperedFixture.Protocol.Validate(
+            tamperedFixture.Envelope,
+            tamperedFixture.Envelope.BotUserId,
+            DateTime.UtcNow,
+            DadAutoPartyRole.Coordinator);
+
+        Assert.Equal("dad-discord-envelope-invalid", missing.SafeCode);
+        Assert.Equal("dad-discord-envelope-signature-invalid", tampered.SafeCode);
+    }
+
+    [Fact]
+    public void InboundQueueIsBoundedAndPreservesAcceptedOrder()
+    {
+        var queue = new DadAutoPartyDiscordInboundQueue(capacity: 2);
+        var first = Message("first");
+        var second = Message("second");
+
+        Assert.True(queue.TryEnqueue(first));
+        Assert.True(queue.TryEnqueue(second));
+        Assert.False(queue.TryEnqueue(Message("overflow")));
+        Assert.Equal(2, queue.Count);
+        Assert.True(queue.TryDequeue(out var observedFirst));
+        Assert.True(queue.TryDequeue(out var observedSecond));
+        Assert.Equal("first", observedFirst!.Content);
+        Assert.Equal("second", observedSecond!.Content);
+        Assert.False(queue.TryDequeue(out _));
+    }
+
+    [Fact]
+    public void PendingPairingIdentityMustMatchEveryPersistedPeerField()
+    {
+        var peer = new DadAutoPartyDiscoveredClient(
+            10,
+            20,
+            "island-a",
+            new string('A', 64),
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            3,
+            DadAutoPartyRole.Client,
+            DateTime.UtcNow,
+            DadAutoPartyPairingHealth.Unpaired,
+            string.Empty);
+        var pending = new DadAutoPartyPairing
+        {
+            OwnerId = "discord",
+            IslandId = peer.DadIdentity,
+            PublicKeyFingerprint = peer.EndpointFingerprint,
+            SigningPublicKey = peer.SigningPublicKey,
+            KeyGeneration = peer.KeyGeneration,
+            ApplicationId = peer.ApplicationId,
+            BotUserId = peer.BotUserId,
+            Role = peer.Role,
+            ConfirmedAtUtc = DateTime.UtcNow,
+        };
+
+        Assert.True(DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(pending, peer));
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(
+            pending,
+            peer with { EndpointFingerprint = new string('B', 64) }));
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(
+            pending,
+            peer with { SigningPublicKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }));
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(
+            pending,
+            peer with { BotUserId = 21 }));
+    }
+
+    [Fact]
     public async Task CurrentUserDpapiTokenStoreRoundTripsAndDeletesToken()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -122,6 +201,9 @@ public sealed class DadAutoPartyDiscordPairingTests
         public ValueTask<bool> DeleteAsync(string identityReference, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(true);
     }
+
+    private static DadAutoPartyDiscordInboundMessage Message(string content)
+        => new(1, 2, 3, true, content);
 
     private sealed record SignedEnvelopeFixture(
         DadAutoPartyPairingProtocol Protocol,

@@ -21,6 +21,23 @@ public sealed class DadAutoPartyFleetMatrixTests
     }
 
     [Fact]
+    public void NormalizeDropsNullMatrixEntriesBeforeNormalizingChildren()
+    {
+        var matrix = new DadAutoPartyFleetConfiguration
+        {
+            Rows = [null!, new DadAutoPartyFleetRow { RowId = " row " }],
+            CrewSets = [null!, new DadAutoPartyCrewSet { CrewSetId = " crew ", DisplayName = " Crew " }],
+            Blueprints = [null!, new DadAutoPartyFleetBlueprint { BlueprintId = " blueprint " }],
+        };
+
+        matrix.Normalize();
+
+        Assert.Equal("row", Assert.Single(matrix.Rows).RowId);
+        Assert.Equal("crew", Assert.Single(matrix.CrewSets).CrewSetId);
+        Assert.Equal("blueprint", Assert.Single(matrix.Blueprints).BlueprintId);
+    }
+
+    [Fact]
     public void PreviewIsDeterministicAndDoesNotMutateConfiguration()
     {
         var configuration = BuildConfiguration(2, 4);
@@ -96,6 +113,25 @@ public sealed class DadAutoPartyFleetMatrixTests
         Assert.Null(configuration.AutoPartyFleet.UndoSnapshot);
         Assert.Empty(configuration.AutoPartyFleet.ManagedPlannerGroupIds);
         Assert.Empty(configuration.AutoPartyFleet.ManagedScheduleIds);
+    }
+
+    [Fact]
+    public void UndoRefusesToOverwritePlansChangedAfterApply()
+    {
+        var configuration = BuildConfiguration(1, 4);
+        var service = new DadAutoPartyFleetMatrixService(configuration, static () => string.Empty);
+        var applied = service.Apply(FixtureTime);
+        Assert.True(applied.Succeeded);
+        var managedGroup = configuration.PlannerGroups.Single(group =>
+            configuration.AutoPartyFleet.ManagedPlannerGroupIds.Contains(group.GroupId, StringComparer.OrdinalIgnoreCase));
+        managedGroup.DisplayName = "Operator changed this plan after apply";
+
+        var result = service.Undo(applied.UndoToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("dad-fleet-undo-drift", result.SafeCode);
+        Assert.Equal("Operator changed this plan after apply", managedGroup.DisplayName);
+        Assert.NotNull(configuration.AutoPartyFleet.UndoSnapshot);
     }
 
     [Fact]
@@ -195,6 +231,37 @@ public sealed class DadAutoPartyFleetMatrixTests
         Assert.True(slot.RequiredCharacterKey.IsEmpty);
         Assert.Equal("remote-opaque-001", slot.SharedIdentity?.IdentityToken);
         Assert.False(slot.CharacterLoadInstruction.Enabled);
+    }
+
+    [Fact]
+    public void RemoteAuthorizationJoinsOpaqueIdentityAndRequiresExactJob()
+    {
+        var configuration = BuildConfiguration(1, 1);
+        var row = configuration.AutoPartyFleet.Rows[0];
+        row.IsRemote = true;
+        row.OpaqueCharacterId = "remote-opaque-001";
+        row.AccountKey = string.Empty;
+        row.CharacterKey = string.Empty;
+        row.JobId = 19;
+        configuration.AutoParty.RemoteBindings.Add(new DadAutoPartyRemoteBinding
+        {
+            FleetRowId = "historical-row-id",
+            OpaqueCharacterId = row.OpaqueCharacterId,
+            OwnerId = "owner-remote",
+            IslandId = "island-remote",
+            RequestedJobId = "19",
+            OwnerConsentConfirmed = true,
+        });
+        var service = new DadAutoPartyFleetMatrixService(configuration, static () => string.Empty);
+
+        var matched = Assert.Single(service.BuildPreview(FixtureTime).PlannerGroups);
+        configuration.AutoParty.RemoteBindings[0].RequestedJobId = "20";
+        var wrongJob = Assert.Single(service.BuildPreview(FixtureTime).PlannerGroups);
+
+        Assert.True(matched.AutoPartyFormationOnly);
+        Assert.NotEmpty(matched.AutoPartyProposalId);
+        Assert.False(wrongJob.AutoPartyFormationOnly);
+        Assert.Equal(string.Empty, wrongJob.AutoPartyProposalId);
     }
 
     [Fact]

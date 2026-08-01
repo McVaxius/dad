@@ -162,7 +162,7 @@ public sealed class DadXadbClient
         var status = command.SaveAfterRefresh ? Save() : Refresh();
         result.XadbStatus = status;
         result.Accepted = true;
-        result.Success = status.IsReady && status.Warnings.Count == 0;
+        result.Success = DadXadbRefreshResultRules.MutationSucceeded(status, command.SaveAfterRefresh);
         result.RefreshedAtUtc = result.Success ? DateTime.UtcNow : null;
         result.Summary = status.LastStatus;
         return result;

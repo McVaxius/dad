@@ -55,7 +55,7 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.SetNextItemWidth(300f);
         ImGui.InputText("DAD identity alias", ref endpointAlias, 48);
         if (ImGui.Button("Generate immutable DAD identity"))
-            StartIdentity(plugin.AutoPartyService.IdentityPackages.GenerateAsync(endpointAlias));
+            StartIdentity(() => plugin.AutoPartyService.IdentityPackages.GenerateAsync(endpointAlias));
         ImGui.SameLine();
         ImGui.TextDisabled(string.IsNullOrWhiteSpace(configuration.RegistrationFingerprint)
             ? "Required before connecting"
@@ -73,14 +73,14 @@ public sealed class DadAutoPartyWindow : Window
                 status = "dad-discord-settings-invalid";
             else
             {
-                StartPolicy(discord.SaveAndConnectAsync(botToken.AsMemory(), parsedGuild, parsedChannel));
+                StartPolicy(() => discord.SaveAndConnectAsync(botToken.AsMemory(), parsedGuild, parsedChannel));
                 botToken = string.Empty;
             }
         }
         ImGui.SameLine();
-        if (ImGui.Button("Disconnect")) StartVoid(discord.DisconnectAsync(), "dad-discord-disconnected");
+        if (ImGui.Button("Disconnect")) StartVoid(() => discord.DisconnectAsync(), "dad-discord-disconnected");
         ImGui.SameLine();
-        if (ImGui.Button("Forget Token")) StartVoid(discord.ForgetTokenAsync(), "dad-discord-token-forgotten");
+        if (ImGui.Button("Forget Token")) StartVoid(() => discord.ForgetTokenAsync(), "dad-discord-token-forgotten");
         ImGui.TextDisabled("The token is stored only through Windows CurrentUser DPAPI. It is never placed in DAD configuration or logs.");
 
         ImGui.TextUnformatted($"Connection: {health.State} ({health.SafeCode})");
@@ -109,19 +109,19 @@ public sealed class DadAutoPartyWindow : Window
             var pairing = configuration.Pairings.FirstOrDefault(candidate => candidate.ApplicationId == peer.ApplicationId);
             if (pending)
             {
-                if (ImGui.Button("Accept")) StartPolicy(discord.AcceptAsync(peer.ApplicationId));
+                if (ImGui.Button("Accept")) StartPolicy(() => discord.AcceptAsync(peer.ApplicationId));
                 ImGui.SameLine();
-                if (ImGui.Button("Reject")) StartPolicy(discord.RejectAsync(peer.ApplicationId));
+                if (ImGui.Button("Reject")) StartPolicy(() => discord.RejectAsync(peer.ApplicationId));
             }
             else if (pairing?.RevokedAtUtc != null)
             {
-                if (ImGui.Button("Re-pair")) StartPolicy(discord.PairAsync(peer.ApplicationId));
+                if (ImGui.Button("Re-pair")) StartPolicy(() => discord.PairAsync(peer.ApplicationId));
             }
             else if (pairing == null)
             {
-                if (ImGui.Button("Pair")) StartPolicy(discord.PairAsync(peer.ApplicationId));
+                if (ImGui.Button("Pair")) StartPolicy(() => discord.PairAsync(peer.ApplicationId));
             }
-            else if (ImGui.Button("Revoke")) StartPolicy(discord.RevokeAsync(peer.ApplicationId));
+            else if (ImGui.Button("Revoke")) StartPolicy(() => discord.RevokeAsync(peer.ApplicationId));
             ImGui.PopID();
         }
 
@@ -163,14 +163,14 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.TextWrapped($"Status: {status}");
     }
 
-    private void StartIdentity(ValueTask<DadAutoPartyIdentityOperationResult> task)
-        => Start(async () => (await task.ConfigureAwait(false)).SafeCode);
+    private void StartIdentity(Func<ValueTask<DadAutoPartyIdentityOperationResult>> operation)
+        => Start(async () => (await operation().ConfigureAwait(false)).SafeCode);
 
-    private void StartPolicy(ValueTask<DadAutoPartyPolicyDecision> task)
-        => Start(async () => (await task.ConfigureAwait(false)).SafeCode);
+    private void StartPolicy(Func<ValueTask<DadAutoPartyPolicyDecision>> operation)
+        => Start(async () => (await operation().ConfigureAwait(false)).SafeCode);
 
-    private void StartVoid(ValueTask task, string successCode)
-        => Start(async () => { await task.ConfigureAwait(false); return successCode; });
+    private void StartVoid(Func<ValueTask> operation, string successCode)
+        => Start(async () => { await operation().ConfigureAwait(false); return successCode; });
 
     private void Start(Func<Task<string>> operation)
     {

@@ -169,6 +169,7 @@ public sealed class DadAutoPartyPilotFixtureService
             return new DadAutoPartyRemoteBinding
             {
                 FleetRowId = $"autoparty-{index + 1}",
+                OpaqueCharacterId = participant.IdentityFingerprint,
                 OwnerId = isLocal ? autoParty.RegisteredOwnerId : pairing?.OwnerId ?? string.Empty,
                 IslandId = isLocal ? autoParty.RegisteredIslandId : pairing?.IslandId ?? string.Empty,
                 RequestedJobId = participant.RequestedJobId,

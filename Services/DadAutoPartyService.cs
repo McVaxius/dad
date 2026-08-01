@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using AutoParty.Contracts;
+using AutoParty.Core.Cryptography;
 using dad.Models;
 
 namespace dad.Services;
@@ -25,7 +27,7 @@ public sealed class DadAutoPartyService : IDisposable
         this.identityStore = identityStore ?? throw new ArgumentNullException(nameof(identityStore));
         this.saveConfiguration = saveConfiguration ?? throw new ArgumentNullException(nameof(saveConfiguration));
         Connector = new DadDiscordCourierConnector(configuration, dadEnabled);
-        Policy = new DadAutoPartyPolicyFacade(configuration, dadEnabled, localSafetyAllowsExecution);
+        Policy = new DadAutoPartyPolicyFacade(configuration, dadEnabled, localSafetyAllowsExecution, saveConfiguration);
         Execution = new DadAutoPartyFakeExecutionFacade(Policy);
         IdentityPackages = new DadAutoPartyIdentityPackageService(configuration, identityStore, saveConfiguration);
     }
@@ -92,7 +94,7 @@ public sealed class DadAutoPartyService : IDisposable
         ThrowIfDisposed();
         if (enabled && (!configuration.Enabled || !configuration.PairingEnabled ||
                         !configuration.OwnerAcceptanceConfirmed ||
-                        configuration.Pairings.Count == 0 ||
+                        !configuration.Pairings.Any(static pairing => pairing.RevokedAtUtc == null) ||
                         string.IsNullOrWhiteSpace(configuration.PilotPlannerGroupId) ||
                         string.IsNullOrWhiteSpace(configuration.PilotQueueAuthorityFingerprint) ||
                         !configuration.PilotCourierProbeVerified))
@@ -226,19 +228,63 @@ public sealed class DadAutoPartyService : IDisposable
         if (!string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) && !confirmReplacement)
             return Decision(false, "dad-registration-replacement-confirmation-required");
 
-        var oldReference = configuration.EndpointIdentityReference;
-        var newReference = await identityStore.StoreAsync(
-            registration.ProtectedIdentityMaterial,
-            cancellationToken).ConfigureAwait(false);
-        configuration.EndpointIdentityReference = newReference;
-        configuration.RegisteredOwnerId = ownerId;
-        configuration.RegisteredIslandId = islandId;
-        configuration.RegistrationFingerprint = fingerprint;
-        configuration.StateGeneration++;
-        saveConfiguration();
-        if (!string.IsNullOrWhiteSpace(oldReference))
-            await identityStore.DeleteAsync(oldReference, cancellationToken).ConfigureAwait(false);
-        return Decision(true, "dad-registration-imported");
+        DadAutoPartyPrivateIdentityPackage? privateIdentity;
+        byte[]? signingPrivate = null;
+        byte[]? encryptionPrivate = null;
+        byte[]? signingPublic = null;
+        byte[]? encryptionPublic = null;
+        try
+        {
+            privateIdentity = JsonSerializer.Deserialize<DadAutoPartyPrivateIdentityPackage>(registration.ProtectedIdentityMaterial);
+            if (privateIdentity == null ||
+                !string.Equals(privateIdentity.OwnerId, ownerId, StringComparison.Ordinal) ||
+                !string.Equals(privateIdentity.IslandId, islandId, StringComparison.Ordinal) ||
+                privateIdentity.KeyGeneration != registration.KeyGeneration ||
+                string.IsNullOrWhiteSpace(privateIdentity.SigningPrivateKey) ||
+                string.IsNullOrWhiteSpace(privateIdentity.EncryptionPrivateKey))
+                return Decision(false, "dad-registration-private-identity-mismatch");
+            signingPrivate = Convert.FromBase64String(privateIdentity.SigningPrivateKey);
+            encryptionPrivate = Convert.FromBase64String(privateIdentity.EncryptionPrivateKey);
+            if (signingPrivate.Length != AutoPartyProtocol.X25519KeyBytes ||
+                encryptionPrivate.Length != AutoPartyProtocol.X25519KeyBytes)
+                return Decision(false, "dad-registration-private-identity-invalid");
+            signingPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(signingPrivate);
+            encryptionPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(encryptionPrivate);
+            var derivedFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                ownerId,
+                islandId,
+                registration.KeyGeneration,
+                signingPublic,
+                encryptionPublic);
+            if (!string.Equals(derivedFingerprint, fingerprint, StringComparison.Ordinal))
+                return Decision(false, "dad-registration-fingerprint-mismatch");
+            var oldReference = configuration.EndpointIdentityReference;
+            var newReference = await identityStore.StoreAsync(
+                registration.ProtectedIdentityMaterial,
+                cancellationToken).ConfigureAwait(false);
+            configuration.EndpointIdentityReference = newReference;
+            configuration.RegisteredOwnerId = ownerId;
+            configuration.RegisteredIslandId = islandId;
+            configuration.RegistrationFingerprint = fingerprint;
+            configuration.SigningPublicKey = Convert.ToBase64String(signingPublic!);
+            configuration.EncryptionPublicKey = Convert.ToBase64String(encryptionPublic!);
+            configuration.StateGeneration++;
+            saveConfiguration();
+            if (!string.IsNullOrWhiteSpace(oldReference))
+                await identityStore.DeleteAsync(oldReference, cancellationToken).ConfigureAwait(false);
+            return Decision(true, "dad-registration-imported");
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException or CryptographicException or ArgumentException)
+        {
+            return Decision(false, "dad-registration-private-identity-invalid");
+        }
+        finally
+        {
+            if (signingPrivate != null) CryptographicOperations.ZeroMemory(signingPrivate);
+            if (encryptionPrivate != null) CryptographicOperations.ZeroMemory(encryptionPrivate);
+            if (signingPublic != null) CryptographicOperations.ZeroMemory(signingPublic);
+            if (encryptionPublic != null) CryptographicOperations.ZeroMemory(encryptionPublic);
+        }
     }
 
     public DadAutoPartyPairingChallenge? BeginPairing(
@@ -353,6 +399,7 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.Grants.Add(new DadAutoPartyGrant
         {
             GrantId = grantId,
+            ProposalId = grant.ProposalId.ToString("D"),
             OwnerId = grant.OwnerId.Value,
             IslandId = grant.Header.SenderIslandId.Value,
             OpaqueCharacterId = grant.Scope.CharacterId.Value,
@@ -361,6 +408,7 @@ public sealed class DadAutoPartyService : IDisposable
             Permissions = grant.Scope.Permissions,
             IssuedAtUtc = grant.ValidFrom.UtcDateTime,
             ExpiresAtUtc = grant.ValidUntil.UtcDateTime,
+            MaximumUses = grant.Scope.MaximumUses,
         });
         configuration.StateGeneration++;
         saveConfiguration();

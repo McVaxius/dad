@@ -30,6 +30,7 @@
     <Compile Include="..\Models\**\*.cs" Exclude="..\Models\backups\**\*.cs" LinkBase="Models" />
     <Compile Include="..\Services\DadRosterCharacterMerge.cs" Link="DadRosterCharacterMerge.cs" />
     <Compile Include="..\Services\DadCharacterXadbMergeRules.cs" Link="DadCharacterXadbMergeRules.cs" />
+    <Compile Include="..\Services\DadXadbRefreshResultRules.cs" Link="DadXadbRefreshResultRules.cs" />
     <Compile Include="..\Services\DadRosterKnownCharacterLedger.cs" Link="DadRosterKnownCharacterLedger.cs" />
     <Compile Include="..\Services\DadRosterKnowledgeLearningCursor.cs" Link="DadRosterKnowledgeLearningCursor.cs" />
     <Compile Include="..\Services\DadRosterKnowledgeSourceRules.cs" Link="DadRosterKnowledgeSourceRules.cs" />
@@ -100,6 +101,7 @@
     <Compile Include="..\Services\DadAutoPartyDiscordTokenStore.cs" Link="DadAutoPartyDiscordTokenStore.cs" />
     <Compile Include="..\Services\DadAutoPartySigningService.cs" Link="DadAutoPartySigningService.cs" />
     <Compile Include="..\Services\DadAutoPartyPairingProtocol.cs" Link="DadAutoPartyPairingProtocol.cs" />
+    <Compile Include="..\Services\DadAutoPartyDiscordInboundRules.cs" Link="DadAutoPartyDiscordInboundRules.cs" />
     <Compile Include="..\Services\DadDiscordReconnectBackoff.cs" Link="DadDiscordReconnectBackoff.cs" />
     <Compile Include="..\Services\DadMeasuredPilotService.cs" Link="DadMeasuredPilotService.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetTsv.cs" Link="DadAutoPartyFleetTsv.cs" />

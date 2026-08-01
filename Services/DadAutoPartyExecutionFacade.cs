@@ -232,6 +232,8 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
             var state = sessions.TryGetValue(operation.ProposalId, out var existing)
                 ? existing
                 : new FakeSessionState(operation.ProposalId, operation.ExpectedStateGeneration);
+            if (state.Cancelled && expectedKind is not ExecutionOperationKind.Cancel and not ExecutionOperationKind.Restore)
+                return ValueTask.FromResult(Denied(operation, "dad-session-cancelled", state.Generation));
             return ValueTask.FromResult(mutation(state));
         }
     }

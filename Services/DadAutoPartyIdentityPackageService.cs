@@ -51,7 +51,7 @@ public sealed class DadAutoPartyIdentityPackageService
             if (string.IsNullOrWhiteSpace(alias))
                 alias = $"Island-{fingerprint[..8]}";
             privatePackage = JsonSerializer.SerializeToUtf8Bytes(
-                new PrivateIdentityPackage(
+                new DadAutoPartyPrivateIdentityPackage(
                     ownerId,
                     islandId,
                     1,
@@ -271,7 +271,7 @@ public sealed class DadAutoPartyIdentityPackageService
         !string.IsNullOrWhiteSpace(configuration.SigningPublicKey) &&
         !string.IsNullOrWhiteSpace(configuration.EncryptionPublicKey);
 
-    private static string BuildFingerprint(
+    internal static string BuildFingerprint(
         string ownerId,
         string islandId,
         long keyGeneration,
@@ -295,10 +295,4 @@ public sealed class DadAutoPartyIdentityPackageService
         }
     }
 
-    private sealed record PrivateIdentityPackage(
-        string OwnerId,
-        string IslandId,
-        long KeyGeneration,
-        string SigningPrivateKey,
-        string EncryptionPrivateKey);
 }

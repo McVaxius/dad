@@ -66,7 +66,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SelectAlliance,
-            alliance: DadAllianceAssignment.C);
+            alliance: DadAllianceAssignment.C,
+            request: fixture.Ui.Requests[^1]);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             YesNoVisible = true,
@@ -91,7 +92,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SubmitPasscode,
-            passcode: Target.Passcode);
+            passcode: Target.Passcode,
+            request: fixture.Ui.Requests[^1]);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             PrivatePromptVisible = false,
@@ -279,7 +281,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertEvent(fixture.Advance(), "listing-rejected");
         AssertAction(
             fixture.Advance(),
-            DadAlliancePfJoinAction.CloseDetail);
+            DadAlliancePfJoinAction.CloseDetail,
+            explicitEvent: "detail-close-dispatched");
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             DetailVisible = false,
@@ -665,7 +668,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SelectAlliance,
-            alliance: DadAllianceAssignment.C);
+            alliance: DadAllianceAssignment.C,
+            request: fixture.Ui.Requests[^1]);
         fixture.Clock.Advance(
             DadAlliancePartyFinderJoinFlow.ObservationTimeout);
 
@@ -691,10 +695,9 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
 
         AssertAction(
             fixture.Flow.Advance(target),
-            DadAlliancePfJoinAction.SelectAlliance);
-        Assert.Equal(
-            DadAllianceAssignment.B,
-            fixture.Ui.Requests[^1].Alliance);
+            DadAlliancePfJoinAction.SelectAlliance,
+            alliance: DadAllianceAssignment.B,
+            request: fixture.Ui.Requests[^1]);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             YesNoVisible = true,
@@ -720,7 +723,9 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             "private-prompt-acknowledged");
         AssertAction(
             fixture.Flow.Advance(target),
-            DadAlliancePfJoinAction.SubmitPasscode);
+            DadAlliancePfJoinAction.SubmitPasscode,
+            passcode: target.Passcode,
+            request: fixture.Ui.Requests[^1]);
 
         Assert.Single(
             fixture.Ui.Requests,
@@ -739,7 +744,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SelectAlliance,
-            alliance: DadAllianceAssignment.C);
+            alliance: DadAllianceAssignment.C,
+            request: fixture.Ui.Requests[^1]);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             PrivatePromptVisible = true,
@@ -752,7 +758,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SubmitPasscode,
-            passcode: Target.Passcode);
+            passcode: Target.Passcode,
+            request: fixture.Ui.Requests[^1]);
 
         Assert.DoesNotContain(
             fixture.Ui.Requests,
@@ -917,7 +924,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         fixture.Advance();
         AssertAction(
             fixture.Advance(),
-            DadAlliancePfJoinAction.CloseDetail);
+            DadAlliancePfJoinAction.CloseDetail,
+            explicitEvent: "detail-close-dispatched");
         fixture.Clock.Advance(
             DadAlliancePartyFinderJoinFlow.ObservationTimeout);
 
@@ -1001,8 +1009,10 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         };
         var close = fixture.Advance();
 
-        AssertAction(close, DadAlliancePfJoinAction.CloseDetail);
-        AssertEvent(close, "joined-detail-close-dispatched");
+        AssertAction(
+            close,
+            DadAlliancePfJoinAction.CloseDetail,
+            explicitEvent: "joined-detail-close-dispatched");
     }
 
     [Fact]
@@ -1250,7 +1260,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SelectAlliance,
-            alliance: DadAllianceAssignment.C);
+            alliance: DadAllianceAssignment.C,
+            request: fixture.Ui.Requests[^1]);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             YesNoVisible = true,
@@ -1275,7 +1286,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SubmitPasscode,
-            passcode: Target.Passcode);
+            passcode: Target.Passcode,
+            request: fixture.Ui.Requests[^1]);
         return fixture;
     }
 
@@ -1285,7 +1297,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SelectAlliance,
-            alliance: DadAllianceAssignment.C);
+            alliance: DadAllianceAssignment.C,
+            request: fixture.Ui.Requests[^1]);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             PrivatePromptVisible = true,
@@ -1297,7 +1310,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         AssertAction(
             fixture.Advance(),
             DadAlliancePfJoinAction.SubmitPasscode,
-            passcode: Target.Passcode);
+            passcode: Target.Passcode,
+            request: fixture.Ui.Requests[^1]);
         return fixture;
     }
 
@@ -1320,7 +1334,9 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         DadAlliancePfJoinAction expected,
         int listingIndex = -1,
         DadAllianceAssignment alliance = DadAllianceAssignment.None,
-        int passcode = 0)
+        int passcode = 0,
+        DadAlliancePfJoinActionRequest request = default,
+        string? explicitEvent = null)
     {
         Assert.Equal(DadAlliancePfJoinResultKind.Progress, result.Kind);
         var expectedEvent = expected switch
@@ -1333,7 +1349,8 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             DadAlliancePfJoinAction.OpenListing =>
                 "listing-open-dispatched",
             DadAlliancePfJoinAction.CloseDetail =>
-                result.Event,
+                explicitEvent ?? throw new InvalidOperationException(
+                    "CloseDetail assertions must name the expected event."),
             DadAlliancePfJoinAction.SelectAlliance =>
                 "alliance-dispatched",
             DadAlliancePfJoinAction.ConfirmYes => "yes-dispatched",
@@ -1344,8 +1361,10 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         Assert.Equal(expectedEvent, result.Event);
         if (listingIndex >= 0)
             Assert.Equal(listingIndex, result.ListingIndex);
-        _ = alliance;
-        _ = passcode;
+        if (alliance != DadAllianceAssignment.None)
+            Assert.Equal(alliance, request.Alliance);
+        if (passcode != 0)
+            Assert.Equal(passcode, request.Passcode);
     }
 
     private static void AssertEvent(

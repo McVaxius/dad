@@ -20,12 +20,15 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     private readonly DadDiscordReconnectBackoff reconnectBackoff = new();
     private readonly object discoveredGate = new();
     private readonly Dictionary<ulong, DadAutoPartyDiscoveredClient> discovered = [];
+    private readonly Dictionary<ulong, DadAutoPartyPairing> outgoingPairings = [];
+    private readonly DadAutoPartyDiscordInboundQueue inboundMessages = new();
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private DiscordSocketClient? client;
     private Task? lifecycleTask;
     private DateTime nextPresenceUtc = DateTime.MinValue;
     private DateTime nextReconnectUtc = DateTime.MinValue;
     private bool restartRequested;
+    private volatile bool blockedUntilExplicitReconnect;
     private bool disposed;
     private DadAutoPartyDiscordHealth health = new(
         DadAutoPartyDiscordConnectionState.Disabled,
@@ -150,6 +153,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         saveConfiguration();
         if (!string.IsNullOrWhiteSpace(oldReference) && !string.Equals(oldReference, newReference, StringComparison.Ordinal))
             await tokenStore.DeleteAsync(oldReference, cancellationToken).ConfigureAwait(false);
+        blockedUntilExplicitReconnect = false;
+        inboundMessages.Clear();
         await RestartNowAsync(cancellationToken).ConfigureAwait(false);
         return Decision(true, "dad-discord-connect-started");
     }
@@ -184,7 +189,16 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     {
         ThrowIfDisposed();
         if (!dadEnabled || !configuration.DiscordEnabled)
+        {
+            inboundMessages.Clear();
             return;
+        }
+        if (blockedUntilExplicitReconnect)
+        {
+            inboundMessages.Clear();
+            return;
+        }
+        DrainInboundMessages();
         if (lifecycleTask is { IsCompleted: true })
         {
             _ = lifecycleTask.Exception;
@@ -194,12 +208,14 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         if (health.LastPresenceAtUtc.HasValue && now - health.LastPresenceAtUtc.Value > PresenceStaleAfter &&
             health.State == DadAutoPartyDiscordConnectionState.Ready)
             SetHealth(DadAutoPartyDiscordConnectionState.Stale, "dad-discord-presence-stale", health.PermissionsValid, health.LastPresenceAtUtc);
-        if ((client == null || restartRequested) && lifecycleTask == null && now >= nextReconnectUtc)
+        if (!blockedUntilExplicitReconnect &&
+            (client == null || restartRequested) && lifecycleTask == null && now >= nextReconnectUtc)
         {
             restartRequested = false;
             lifecycleTask = RestartNowAsync(CancellationToken.None);
         }
-        else if (client?.ConnectionState == ConnectionState.Connected && lifecycleTask == null && now >= nextPresenceUtc)
+        else if (!blockedUntilExplicitReconnect &&
+                 client?.ConnectionState == ConnectionState.Connected && lifecycleTask == null && now >= nextPresenceUtc)
         {
             nextPresenceUtc = now + PresenceInterval;
             lifecycleTask = PublishPresenceAsync(CancellationToken.None);
@@ -212,7 +228,16 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         if (peer == null) return Decision(false, "dad-discord-peer-not-discovered");
         if (peer.Role == (isCoordinator() ? DadAutoPartyRole.Coordinator : DadAutoPartyRole.Client))
             return Decision(false, "dad-discord-coordinator-star-required");
-        return await SendEnvelopeAsync(DadAutoPartyPairingMessageKind.PairRequest, peer, cancellationToken).ConfigureAwait(false);
+        var decision = await SendEnvelopeAsync(
+            DadAutoPartyPairingMessageKind.PairRequest,
+            peer,
+            cancellationToken).ConfigureAwait(false);
+        if (decision.Allowed)
+        {
+            lock (discoveredGate)
+                outgoingPairings[applicationId] = ToPairing(peer, DateTime.UtcNow);
+        }
+        return decision;
     }
 
     public async ValueTask<DadAutoPartyPolicyDecision> AcceptAsync(ulong applicationId, CancellationToken cancellationToken = default)
@@ -220,10 +245,10 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         var pending = configuration.PendingPairings.FirstOrDefault(pairing => pairing.ApplicationId == applicationId);
         var peer = FindDiscovered(applicationId);
         if (pending == null || peer == null) return Decision(false, "dad-discord-pair-request-not-pending");
-        SavePairing(peer);
+        if (!DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(pending, peer))
+            return Decision(false, "dad-discord-pair-request-identity-changed");
         configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == applicationId);
-        configuration.StateGeneration++;
-        saveConfiguration();
+        SavePairing(pending, peer);
         PairingRestored?.Invoke(applicationId);
         return await SendEnvelopeAsync(DadAutoPartyPairingMessageKind.PairAccept, peer, cancellationToken).ConfigureAwait(false);
     }
@@ -329,7 +354,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         try
         {
             await StopClientCoreAsync(cancellationToken).ConfigureAwait(false);
-            if (!configuration.DiscordEnabled || string.IsNullOrWhiteSpace(configuration.DiscordTokenReference))
+            if (blockedUntilExplicitReconnect || !configuration.DiscordEnabled ||
+                string.IsNullOrWhiteSpace(configuration.DiscordTokenReference))
                 return;
             SetHealth(DadAutoPartyDiscordConnectionState.Connecting, "dad-discord-connecting", false, health.LastPresenceAtUtc);
             var socket = new DiscordSocketClient(new DiscordSocketConfig
@@ -370,11 +396,13 @@ public sealed class DadAutoPartyDiscordService : IDisposable
 
     private async Task OnReadyAsync()
     {
+        if (blockedUntilExplicitReconnect) return;
         var socket = client;
         if (socket == null) return;
         try
         {
             var application = await socket.GetApplicationInfoAsync().ConfigureAwait(false);
+            if (blockedUntilExplicitReconnect) return;
             var applicationId = application.Id;
             var botUserId = socket.CurrentUser.Id;
             var guild = socket.GetGuild(configuration.DiscordGuildId);
@@ -413,7 +441,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             reconnectBackoff.Reset();
             nextPresenceUtc = DateTime.MinValue;
             SetHealth(DadAutoPartyDiscordConnectionState.Ready, "dad-discord-ready", true, DateTime.UtcNow);
-            await PublishPresenceAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!blockedUntilExplicitReconnect)
+                await PublishPresenceAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -424,10 +453,41 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     private Task OnMessageUpdatedAsync(Cacheable<IMessage, ulong> _, SocketMessage message, ISocketMessageChannel __)
         => OnMessageReceivedAsync(message);
 
-    private async Task OnMessageReceivedAsync(SocketMessage message)
+    private Task OnMessageReceivedAsync(SocketMessage message)
     {
-        if (message.Channel.Id != configuration.DiscordChannelId || message.Author.Id == 0 || !message.Author.IsBot ||
-            message.Channel is not SocketGuildChannel guildChannel || guildChannel.Guild.Id != configuration.DiscordGuildId)
+        if (blockedUntilExplicitReconnect)
+            return Task.CompletedTask;
+        var guildId = message.Channel is SocketGuildChannel guildChannel ? guildChannel.Guild.Id : 0;
+        var accepted = inboundMessages.TryEnqueue(new DadAutoPartyDiscordInboundMessage(
+            message.Channel.Id,
+            guildId,
+            message.Author.Id,
+            message.Author.IsBot,
+            message.Content ?? string.Empty));
+        if (!accepted)
+            diagnostic("dad-discord-inbound-queue-full");
+        return Task.CompletedTask;
+    }
+
+    private void DrainInboundMessages()
+    {
+        while (!blockedUntilExplicitReconnect && inboundMessages.TryDequeue(out var message))
+        {
+            try
+            {
+                ProcessInboundMessage(message!);
+            }
+            catch (Exception)
+            {
+                diagnostic("dad-discord-inbound-processing-failed");
+            }
+        }
+    }
+
+    private void ProcessInboundMessage(DadAutoPartyDiscordInboundMessage message)
+    {
+        if (message.ChannelId != configuration.DiscordChannelId || message.AuthorId == 0 || !message.AuthorIsBot ||
+            message.GuildId != configuration.DiscordGuildId)
             return;
 
         var allianceEnvelope = DadAllianceDiscordProtocol.Deserialize(message.Content);
@@ -439,7 +499,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             var allianceDecision = allianceProtocol.Validate(
                 allianceEnvelope,
                 new DadAllianceDiscordValidationContext(
-                    message.Author.Id,
+                    message.AuthorId,
                     configuration.DiscordApplicationId,
                     localCharacterKey(),
                     coordinatorPairing,
@@ -474,7 +534,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         var envelope = DadAutoPartyPairingProtocol.Deserialize(message.Content);
         var decision = protocol.Validate(
             envelope,
-            message.Author.Id,
+            message.AuthorId,
             DateTime.UtcNow,
             isCoordinator() ? DadAutoPartyRole.Coordinator : DadAutoPartyRole.Client);
         if (!decision.Allowed || envelope == null)
@@ -504,16 +564,16 @@ public sealed class DadAutoPartyDiscordService : IDisposable
                 SavePending(discoveredPeer);
                 break;
             case DadAutoPartyPairingMessageKind.PairAccept:
-                SavePairing(discoveredPeer);
-                configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == envelope.ApplicationId);
-                configuration.StateGeneration++;
-                saveConfiguration();
+                var outgoing = FindOutgoingPairing(envelope.ApplicationId);
+                if (outgoing == null ||
+                    !DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(outgoing, discoveredPeer))
+                    break;
+                SavePairing(outgoing, discoveredPeer);
+                RemoveOutgoingPairing(envelope.ApplicationId);
                 PairingRestored?.Invoke(envelope.ApplicationId);
                 break;
             case DadAutoPartyPairingMessageKind.PairReject:
-                configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == envelope.ApplicationId);
-                configuration.StateGeneration++;
-                saveConfiguration();
+                RemoveOutgoingPairing(envelope.ApplicationId);
                 break;
             case DadAutoPartyPairingMessageKind.Revoke:
                 if (known != null)
@@ -525,12 +585,13 @@ public sealed class DadAutoPartyDiscordService : IDisposable
                 }
                 break;
         }
-        await Task.CompletedTask;
     }
 
     private Task OnDisconnectedAsync(Exception _)
     {
         if (disposed || !configuration.DiscordEnabled)
+            return Task.CompletedTask;
+        if (blockedUntilExplicitReconnect)
             return Task.CompletedTask;
         SetHealth(DadAutoPartyDiscordConnectionState.Disconnected, "dad-discord-disconnected-retrying", false, health.LastPresenceAtUtc);
         restartRequested = true;
@@ -540,6 +601,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
 
     private async Task PublishPresenceAsync(CancellationToken cancellationToken)
     {
+        if (blockedUntilExplicitReconnect) return;
         var socket = client;
         var channel = socket?.GetGuild(configuration.DiscordGuildId)?.GetTextChannel(configuration.DiscordChannelId);
         if (socket == null || channel == null || socket.ConnectionState != ConnectionState.Connected)
@@ -563,7 +625,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             configuration.StateGeneration++;
             saveConfiguration();
         }
-        SetHealth(DadAutoPartyDiscordConnectionState.Ready, "dad-discord-ready", true, DateTime.UtcNow);
+        if (!blockedUntilExplicitReconnect)
+            SetHealth(DadAutoPartyDiscordConnectionState.Ready, "dad-discord-ready", true, DateTime.UtcNow);
     }
 
     private async ValueTask<DadAutoPartyPolicyDecision> SendEnvelopeAsync(
@@ -573,7 +636,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     {
         var socket = client;
         var channel = socket?.GetGuild(configuration.DiscordGuildId)?.GetTextChannel(configuration.DiscordChannelId);
-        if (socket == null || channel == null || health.State != DadAutoPartyDiscordConnectionState.Ready)
+        if (blockedUntilExplicitReconnect || socket == null || channel == null ||
+            health.State != DadAutoPartyDiscordConnectionState.Ready)
             return Decision(false, "dad-discord-not-ready");
         var envelope = await protocol.CreateAsync(
             kind,
@@ -595,14 +659,18 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         saveConfiguration();
     }
 
-    private void SavePairing(DadAutoPartyDiscoveredClient peer)
+    private void SavePairing(DadAutoPartyPairing pending, DadAutoPartyDiscoveredClient peer)
     {
-        configuration.Pairings.RemoveAll(pairing => pairing.ApplicationId == peer.ApplicationId ||
-            string.Equals(pairing.IslandId, peer.DadIdentity, StringComparison.Ordinal));
-        configuration.Pairings.Add(ToPairing(peer, DateTime.UtcNow));
+        var accepted = pending.Clone();
+        accepted.ConfirmedAtUtc = DateTime.UtcNow;
+        accepted.RevokedAtUtc = null;
+        configuration.Pairings.RemoveAll(pairing => pairing.ApplicationId == accepted.ApplicationId ||
+            string.Equals(pairing.IslandId, accepted.IslandId, StringComparison.Ordinal));
+        configuration.Pairings.Add(accepted);
         configuration.StateGeneration++;
         saveConfiguration();
-        lock (discoveredGate) discovered[peer.ApplicationId] = peer with { PairingHealth = DadAutoPartyPairingHealth.Healthy };
+        lock (discoveredGate)
+            discovered[peer.ApplicationId] = peer with { PairingHealth = DadAutoPartyPairingHealth.Healthy };
     }
 
     private static DadAutoPartyPairing ToPairing(DadAutoPartyDiscoveredClient peer, DateTime confirmedAtUtc) => new()
@@ -623,12 +691,27 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         lock (discoveredGate) return discovered.GetValueOrDefault(applicationId);
     }
 
+    private DadAutoPartyPairing? FindOutgoingPairing(ulong applicationId)
+    {
+        lock (discoveredGate)
+            return outgoingPairings.GetValueOrDefault(applicationId)?.Clone();
+    }
+
+    private void RemoveOutgoingPairing(ulong applicationId)
+    {
+        lock (discoveredGate) outgoingPairings.Remove(applicationId);
+    }
+
     private static bool IsActiveVerifiedPairing(DadAutoPartyPairing pairing)
         => pairing.RevokedAtUtc == null && pairing.ApplicationId != 0 &&
            !string.IsNullOrWhiteSpace(pairing.SigningPublicKey);
 
     private void Block(string safeCode)
     {
+        blockedUntilExplicitReconnect = true;
+        restartRequested = false;
+        nextReconnectUtc = DateTime.MaxValue;
+        inboundMessages.Clear();
         diagnostic(safeCode);
         SetHealth(DadAutoPartyDiscordConnectionState.Blocked, safeCode, false, health.LastPresenceAtUtc);
     }
@@ -638,8 +721,12 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         string safeCode,
         bool permissionsValid,
         DateTime? lastPresenceUtc)
-        => health = new(state, safeCode, DateTime.UtcNow, lastPresenceUtc,
+    {
+        if (state == DadAutoPartyDiscordConnectionState.Ready && blockedUntilExplicitReconnect)
+            return;
+        health = new(state, safeCode, DateTime.UtcNow, lastPresenceUtc,
             configuration.DiscordApplicationId, configuration.DiscordBotUserId, permissionsValid);
+    }
 
     private async Task StopClientAsync(CancellationToken cancellationToken)
     {

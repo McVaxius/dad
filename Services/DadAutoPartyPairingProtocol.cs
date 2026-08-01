@@ -72,7 +72,8 @@ public sealed class DadAutoPartyPairingProtocol
             envelope.KeyGeneration < 1 || !Guid.TryParseExact(envelope.Nonce, "N", out _) ||
             string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeIdentifier(envelope.DadIdentity)) ||
             string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeFingerprint(envelope.EndpointFingerprint)) ||
-            string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(envelope.SigningPublicKey)))
+            string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(envelope.SigningPublicKey)) ||
+            string.IsNullOrWhiteSpace(envelope.Signature))
             return Denied("dad-discord-envelope-invalid");
 
         DateTime observedAt;

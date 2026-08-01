@@ -1,4 +1,3 @@
-using System.Text;
 using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
@@ -541,9 +540,19 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         if (uiModule == null)
             throw new InvalidOperationException("The native game UI module is unavailable for chat input.");
 
-        var bytes = Encoding.UTF8.GetBytes(DadParticipantPartyDepartureController.LeaveCommand);
-        var utf8String = Utf8String.FromSequence(bytes);
-        uiModule->ProcessChatBoxEntry(utf8String, nint.Zero);
+        Utf8String* utf8String = null;
+        try
+        {
+            utf8String = Utf8String.FromString(DadParticipantPartyDepartureController.LeaveCommand);
+            if (utf8String == null)
+                throw new InvalidOperationException("The native /leave chat entry could not be allocated.");
+            uiModule->ProcessChatBoxEntry(utf8String, nint.Zero);
+        }
+        finally
+        {
+            if (utf8String != null)
+                utf8String->Dtor(true);
+        }
     }
 
     private void RequireFrameworkThread()

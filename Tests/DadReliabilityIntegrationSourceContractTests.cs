@@ -77,8 +77,11 @@ public sealed class DadReliabilityIntegrationSourceContractTests
 
     private static string ReadRepositorySource(params string[] pathParts)
     {
-        var repositoryRoot = Path.GetFullPath(
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "dad.csproj")))
+            directory = directory.Parent;
+        var repositoryRoot = directory?.FullName ?? throw new DirectoryNotFoundException(
+            "Could not locate the Dad repository root from the test output directory.");
         return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
     }
 }

@@ -8,6 +8,7 @@ namespace dad.Services;
 public sealed class DadMeasuredPilotService
 {
     public const string ReceiptSchema = "dad.pilot-evidence/v1";
+    private static readonly TimeSpan ReceiptRetryDelay = TimeSpan.FromSeconds(30);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -17,8 +18,10 @@ public sealed class DadMeasuredPilotService
     private readonly Func<bool> isCoordinator;
     private readonly Action saveConfiguration;
     private readonly string assemblyPath;
+    private readonly Action<string> diagnostic;
     private bool receiptDirty;
     private Task? receiptTask;
+    private DateTime nextReceiptAttemptUtc = DateTime.MinValue;
     private DadAutoPartyDiscordConnectionState priorDiscordState = DadAutoPartyDiscordConnectionState.Disabled;
     private bool observedDiscordLoss;
     private string lastStopOperationId = string.Empty;
@@ -28,18 +31,23 @@ public sealed class DadMeasuredPilotService
         DadAutoPartySigningService signing,
         Func<bool> isCoordinator,
         Action saveConfiguration,
-        string? assemblyPath = null)
+        string? assemblyPath = null,
+        Action<string>? diagnostic = null)
     {
         this.configuration = configuration;
         this.signing = signing;
         this.isCoordinator = isCoordinator;
         this.saveConfiguration = saveConfiguration;
+        this.diagnostic = diagnostic ?? (static _ => { });
         this.assemblyPath = string.IsNullOrWhiteSpace(assemblyPath)
             ? Assembly.GetExecutingAssembly().Location
             : Path.GetFullPath(assemblyPath);
     }
 
     public DadMeasuredPilotEvaluation CurrentEvaluation => Evaluate(configuration.MeasuredPilot);
+    internal bool ReceiptDirty => receiptDirty;
+    internal bool ReceiptWriteInFlight => receiptTask is { IsCompleted: false };
+    internal DateTime NextReceiptAttemptUtc => nextReceiptAttemptUtc;
 
     public DadAutoPartyPolicyDecision Start()
     {
@@ -60,6 +68,10 @@ public sealed class DadMeasuredPilotService
             CoordinatorIdentity = configuration.RegisteredIslandId,
             AssemblySha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assemblyPath))).ToLowerInvariant(),
         };
+        priorDiscordState = DadAutoPartyDiscordConnectionState.Disabled;
+        observedDiscordLoss = false;
+        lastStopOperationId = string.Empty;
+        nextReceiptAttemptUtc = DateTime.MinValue;
         RecordEvent(DadMeasuredPilotEventKind.CampaignStarted, "dad-pilot-started");
         Persist();
         return Allowed("dad-pilot-started");
@@ -256,10 +268,16 @@ public sealed class DadMeasuredPilotService
     {
         if (receiptTask is { IsCompleted: true })
         {
-            _ = receiptTask.Exception;
+            if (receiptTask.IsFaulted)
+            {
+                _ = receiptTask.Exception;
+                receiptDirty = true;
+                nextReceiptAttemptUtc = DateTime.UtcNow + ReceiptRetryDelay;
+                diagnostic("dad-pilot-receipt-write-failed");
+            }
             receiptTask = null;
         }
-        if (receiptDirty && receiptTask == null && HasSigningIdentity())
+        if (receiptDirty && receiptTask == null && DateTime.UtcNow >= nextReceiptAttemptUtc && HasSigningIdentity())
         {
             receiptDirty = false;
             var snapshot = configuration.MeasuredPilot.Clone();
@@ -326,10 +344,12 @@ public sealed class DadMeasuredPilotService
             events = snapshot.Events,
         }, JsonOptions);
         byte[]? signature = null;
+        byte[]? envelope = null;
+        string? temporary = null;
         try
         {
             signature = await signing.SignAsync(payload).ConfigureAwait(false);
-            var envelope = JsonSerializer.SerializeToUtf8Bytes(new
+            envelope = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 schema = ReceiptSchema,
                 payloadBase64 = Convert.ToBase64String(payload),
@@ -339,17 +359,31 @@ public sealed class DadMeasuredPilotService
             var root = configuration.GetPilotReceiptRoot();
             Directory.CreateDirectory(root);
             var path = Path.Combine(root, $"dad-pilot-evidence-{snapshot.CampaignId}.json");
-            var temporary = path + ".tmp";
+            temporary = path + ".tmp";
             await File.WriteAllBytesAsync(temporary, envelope).ConfigureAwait(false);
             File.Move(temporary, path, true);
-            configuration.MeasuredPilot.ReceiptPath = path;
-            saveConfiguration();
-            CryptographicOperations.ZeroMemory(envelope);
+            temporary = null;
+            if (string.Equals(configuration.MeasuredPilot.CampaignId, snapshot.CampaignId, StringComparison.Ordinal))
+            {
+                configuration.MeasuredPilot.ReceiptPath = path;
+                saveConfiguration();
+            }
         }
         finally
         {
             CryptographicOperations.ZeroMemory(payload);
             if (signature != null) CryptographicOperations.ZeroMemory(signature);
+            if (envelope != null) CryptographicOperations.ZeroMemory(envelope);
+            if (!string.IsNullOrWhiteSpace(temporary))
+            {
+                try
+                {
+                    if (File.Exists(temporary)) File.Delete(temporary);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
         }
     }
 

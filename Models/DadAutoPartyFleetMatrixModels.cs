@@ -31,9 +31,18 @@ public sealed class DadAutoPartyFleetConfiguration
         Blueprints ??= [];
         ManagedPlannerGroupIds ??= [];
         ManagedScheduleIds ??= [];
-        Rows = Rows.Take(DadAutoPartyFleetLimits.MaxFleetRows).Select(static row => row.Normalize()).ToList();
-        CrewSets = CrewSets.Take(DadAutoPartyFleetLimits.MaxCrewSets).Select(static crew => crew.Normalize()).ToList();
-        Blueprints = Blueprints.Take(DadAutoPartyFleetLimits.MaxBlueprints).Select(static blueprint => blueprint.Normalize()).ToList();
+        Rows = Rows.Where(static row => row != null)
+            .Take(DadAutoPartyFleetLimits.MaxFleetRows)
+            .Select(static row => row!.Normalize())
+            .ToList();
+        CrewSets = CrewSets.Where(static crew => crew != null)
+            .Take(DadAutoPartyFleetLimits.MaxCrewSets)
+            .Select(static crew => crew!.Normalize())
+            .ToList();
+        Blueprints = Blueprints.Where(static blueprint => blueprint != null)
+            .Take(DadAutoPartyFleetLimits.MaxBlueprints)
+            .Select(static blueprint => blueprint!.Normalize())
+            .ToList();
         ManagedPlannerGroupIds = NormalizeIdentifiers(ManagedPlannerGroupIds, DadAutoPartyFleetLimits.MaxGeneratedParties);
         ManagedScheduleIds = NormalizeIdentifiers(ManagedScheduleIds, DadAutoPartyFleetLimits.MaxBlueprints);
         UndoSnapshot?.Normalize();
@@ -182,6 +191,7 @@ public sealed class DadAutoPartyFleetUndoSnapshot
 {
     public string UndoToken { get; set; } = string.Empty;
     public long AppliedRevision { get; set; }
+    public string AppliedStateFingerprint { get; set; } = string.Empty;
     public DateTime CapturedAtUtc { get; set; }
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
     public List<DadScheduleDefinition> Schedules { get; set; } = [];
@@ -190,6 +200,7 @@ public sealed class DadAutoPartyFleetUndoSnapshot
     {
         UndoToken = DadAutoPartyFleetConfiguration.NormalizeIdentifier(UndoToken);
         AppliedRevision = Math.Max(1, AppliedRevision);
+        AppliedStateFingerprint = DadAutoPartyConfiguration.NormalizeSha256(AppliedStateFingerprint);
         PlannerGroups ??= [];
         Schedules ??= [];
         return this;
@@ -200,6 +211,7 @@ public sealed class DadAutoPartyFleetUndoSnapshot
         {
             UndoToken = UndoToken,
             AppliedRevision = AppliedRevision,
+            AppliedStateFingerprint = AppliedStateFingerprint,
             CapturedAtUtc = CapturedAtUtc,
             PlannerGroups = PlannerGroups?.ToList() ?? [],
             Schedules = Schedules?.Select(static schedule => schedule.Clone()).ToList() ?? [],

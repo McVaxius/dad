@@ -5943,7 +5943,11 @@ public sealed class MainWindow : Window, IDisposable
                     plannerDutySearch = search;
 
                 ImGui.Separator();
-                if (ImGui.BeginChild($"dad-duty-results-{lane.ActivityMode}", new Vector2(popupContentWidth, 220f), true))
+                var dutyResultsVisible = ImGui.BeginChild(
+                    $"dad-duty-results-{lane.ActivityMode}",
+                    new Vector2(popupContentWidth, 220f),
+                    true);
+                if (dutyResultsVisible)
                 {
                     var dutyOptions = GetCachedPlannerDutySearchResults(lane.ActivityMode);
                     if (dutyOptions.Count == 0)
@@ -5967,9 +5971,8 @@ public sealed class MainWindow : Window, IDisposable
                                 ImGui.SetItemDefaultFocus();
                         }
                     }
-
-                    ImGui.EndChild();
                 }
+                ImGui.EndChild();
 
                 ImGui.EndCombo();
             }

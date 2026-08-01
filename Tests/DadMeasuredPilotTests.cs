@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using AutoParty.Core.Cryptography;
 using dad.Models;
 using dad.Services;
 using Xunit;
@@ -68,6 +71,85 @@ public sealed class DadMeasuredPilotTests
         Assert.Contains("Schedule executions: 0/3", evaluation.Missing);
     }
 
+    [Fact]
+    public void NewCampaignDoesNotInheritDiscordOrStopObservations()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "dad-measured-pilot-reset", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var assemblyPath = Path.Combine(root, "dad-test.dll");
+        File.WriteAllBytes(assemblyPath, [1, 2, 3]);
+        var fixture = SigningFixture(root);
+        try
+        {
+            fixture.Configuration.MeasuredPilot.State = DadMeasuredPilotState.Active;
+            fixture.Configuration.MeasuredPilot.StopAllVerified = true;
+            fixture.Configuration.MeasuredPilot.RecoveryRunVerified = true;
+            var service = new DadMeasuredPilotService(
+                fixture.Configuration,
+                fixture.Signing,
+                static () => true,
+                static () => { },
+                assemblyPath);
+            service.ObserveDiscordHealth(Health(DadAutoPartyDiscordConnectionState.Ready));
+            service.ObserveDiscordHealth(Health(DadAutoPartyDiscordConnectionState.Disconnected));
+            fixture.Configuration.MeasuredPilot.State = DadMeasuredPilotState.EvaluationIncomplete;
+
+            var started = service.Start();
+            service.ObserveDiscordHealth(Health(DadAutoPartyDiscordConnectionState.Ready));
+
+            Assert.True(started.Allowed, started.SafeCode);
+            Assert.False(fixture.Configuration.MeasuredPilot.DiscordReconnectCycleVerified);
+            Assert.False(fixture.Configuration.MeasuredPilot.StopAllVerified);
+            Assert.False(fixture.Configuration.MeasuredPilot.RecoveryRunVerified);
+        }
+        finally
+        {
+            fixture.Dispose();
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task ReceiptWriteFailureRestoresDirtyStateAndSchedulesRetry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "dad-measured-pilot-retry", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var assemblyPath = Path.Combine(root, "dad-test.dll");
+        File.WriteAllBytes(assemblyPath, [1, 2, 3]);
+        File.WriteAllText(Path.Combine(root, "pilot-receipts"), "blocks receipt directory creation");
+        var fixture = SigningFixture(root);
+        var diagnostics = new List<string>();
+        try
+        {
+            var service = new DadMeasuredPilotService(
+                fixture.Configuration,
+                fixture.Signing,
+                static () => true,
+                static () => { },
+                assemblyPath,
+                diagnostics.Add);
+            Assert.True(service.Start().Allowed);
+
+            service.Update();
+            for (var attempt = 0; attempt < 2000 && diagnostics.Count == 0; attempt++)
+            {
+                await Task.Yield();
+                service.Update();
+            }
+
+            Assert.Contains("dad-pilot-receipt-write-failed", diagnostics);
+            Assert.True(service.ReceiptDirty);
+            Assert.False(service.ReceiptWriteInFlight);
+            Assert.True(service.NextReceiptAttemptUtc > DateTime.UtcNow);
+            Assert.Equal(string.Empty, fixture.Configuration.MeasuredPilot.ReceiptPath);
+        }
+        finally
+        {
+            fixture.Dispose();
+            Directory.Delete(root, true);
+        }
+    }
+
     private static DadMeasuredPilotCampaign PassingCampaign()
     {
         var runs = Enumerable.Range(0, 10).Select(index =>
@@ -111,4 +193,52 @@ public sealed class DadMeasuredPilotTests
         SchedulerCleanupVerified = true,
         ProfileRestoration = "not-applicable",
     };
+
+    private static DadAutoPartyDiscordHealth Health(DadAutoPartyDiscordConnectionState state)
+        => new(state, state.ToString(), DateTime.UtcNow, DateTime.UtcNow, 1, 2, true);
+
+    private static SigningContext SigningFixture(string pilotExchangeRoot)
+    {
+        var signingPrivate = RandomNumberGenerator.GetBytes(32);
+        var encryptionPrivate = RandomNumberGenerator.GetBytes(32);
+        var signingPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(signingPrivate);
+        var package = JsonSerializer.SerializeToUtf8Bytes(new DadAutoPartyPrivateIdentityPackage(
+            "owner-test",
+            "island-test",
+            1,
+            Convert.ToBase64String(signingPrivate),
+            Convert.ToBase64String(encryptionPrivate)));
+        var configuration = new DadAutoPartyConfiguration
+        {
+            PilotExchangeRoot = pilotExchangeRoot,
+            EndpointIdentityReference = "identity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            RegisteredOwnerId = "owner-test",
+            RegisteredIslandId = "island-test",
+            SigningPublicKey = Convert.ToBase64String(signingPublic),
+        };
+        CryptographicOperations.ZeroMemory(signingPrivate);
+        CryptographicOperations.ZeroMemory(encryptionPrivate);
+        CryptographicOperations.ZeroMemory(signingPublic);
+        var store = new MemoryIdentityStore(package);
+        return new(configuration, new DadAutoPartySigningService(configuration, store), store);
+    }
+
+    private sealed record SigningContext(
+        DadAutoPartyConfiguration Configuration,
+        DadAutoPartySigningService Signing,
+        MemoryIdentityStore Store) : IDisposable
+    {
+        public void Dispose() => Store.Dispose();
+    }
+
+    private sealed class MemoryIdentityStore(byte[] package) : IDadAutoPartyEndpointIdentityStore, IDisposable
+    {
+        public ValueTask<string> StoreAsync(ReadOnlyMemory<byte> identityMaterial, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult("identity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        public ValueTask<byte[]> LoadAsync(string identityReference, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(package.ToArray());
+        public ValueTask<bool> DeleteAsync(string identityReference, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(true);
+        public void Dispose() => CryptographicOperations.ZeroMemory(package);
+    }
 }

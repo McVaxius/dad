@@ -21,13 +21,15 @@ public interface IAutoPartyPolicyFacade
 
 public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
 {
+    private const int MaximumReplayEntries = 4096;
     private readonly object gate = new();
     private readonly DadAutoPartyConfiguration configuration;
     private readonly Func<bool> dadEnabled;
     private readonly Func<bool> localSafetyAllowsExecution;
     private readonly Dictionary<Guid, ProposalState> proposals = [];
     private readonly Dictionary<string, Guid> activeIslandSessions = new(StringComparer.Ordinal);
-    private readonly HashSet<Guid> replayedMessageIds = [];
+    private readonly Dictionary<Guid, DateTimeOffset> replayedMessageIds = [];
+    private readonly Action saveConfiguration;
     private readonly HashSet<string> vetoedOwners = new(StringComparer.Ordinal);
     private readonly HashSet<string> revokedTargets = new(StringComparer.Ordinal);
     private long stateGeneration;
@@ -36,11 +38,13 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     public DadAutoPartyPolicyFacade(
         DadAutoPartyConfiguration configuration,
         Func<bool> dadEnabled,
-        Func<bool>? localSafetyAllowsExecution = null)
+        Func<bool>? localSafetyAllowsExecution = null,
+        Action? saveConfiguration = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.dadEnabled = dadEnabled ?? throw new ArgumentNullException(nameof(dadEnabled));
         this.localSafetyAllowsExecution = localSafetyAllowsExecution ?? (static () => true);
+        this.saveConfiguration = saveConfiguration ?? (static () => { });
         stateGeneration = Math.Max(1, configuration.StateGeneration);
     }
 
@@ -98,8 +102,16 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                 header.ExpiresAt <= now ||
                 header.ExpiresAt <= header.IssuedAt)
                 return Denied("dad-contract-header-invalid");
-            if (!replayedMessageIds.Add(header.MessageId))
+            foreach (var messageId in replayedMessageIds
+                         .Where(pair => pair.Value <= now)
+                         .Select(static pair => pair.Key)
+                         .ToList())
+                replayedMessageIds.Remove(messageId);
+            if (replayedMessageIds.ContainsKey(header.MessageId))
                 return Denied("dad-contract-replay-denied");
+            while (replayedMessageIds.Count >= MaximumReplayEntries)
+                replayedMessageIds.Remove(replayedMessageIds.MinBy(static pair => pair.Value).Key);
+            replayedMessageIds[header.MessageId] = header.ExpiresAt;
             return Allowed("dad-contract-fresh");
         }
     }
@@ -122,12 +134,14 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                 return Denied("dad-proposal-sender-not-paired");
 
             var now = DateTime.UtcNow;
+            var matchedGrants = new List<DadAutoPartyGrant>();
             foreach (var participant in proposal.Participants)
             {
                 if (vetoedOwners.Contains(participant.OwnerId.Value))
                     return Denied("dad-participant-owner-veto");
                 var grant = configuration.Grants.FirstOrDefault(candidate =>
                     candidate.IsValid &&
+                    candidate.ConsumedAtUtc == null &&
                     candidate.IssuedAtUtc <= now &&
                     candidate.ExpiresAtUtc > now &&
                     string.Equals(candidate.OwnerId, participant.OwnerId.Value, StringComparison.Ordinal) &&
@@ -135,15 +149,20 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                     string.Equals(candidate.OpaqueCharacterId, participant.CharacterId.Value, StringComparison.Ordinal) &&
                     string.Equals(candidate.RequestedJobId, participant.RequestedJob.Value, StringComparison.Ordinal) &&
                     string.Equals(candidate.ActivityId, proposal.ActivityId.Value, StringComparison.Ordinal) &&
+                    string.Equals(candidate.ProposalId, proposal.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
                     (candidate.Permissions & requiredPermissions) == requiredPermissions &&
                     !revokedTargets.Contains(candidate.GrantId));
                 if (grant == null)
                     return Denied("dad-grant-intersection-empty");
+                matchedGrants.Add(grant);
             }
 
             var islandId = proposal.Header.RecipientIslandId.Value;
             if (string.IsNullOrWhiteSpace(islandId))
                 return Denied("dad-proposal-recipient-island-missing");
+            foreach (var grant in matchedGrants.DistinctBy(static grant => grant.GrantId, StringComparer.Ordinal))
+                grant.ConsumedAtUtc = now;
+            var nextGeneration = NextGeneration();
             proposals[proposal.ProposalId] = new ProposalState(
                 proposal.ProposalId,
                 islandId,
@@ -154,7 +173,8 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                 DateTime.MinValue,
                 false,
                 false,
-                NextGeneration());
+                nextGeneration);
+            saveConfiguration();
             return Allowed("dad-grant-intersection-accepted");
         }
     }
@@ -300,6 +320,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
             var participantGrant = configuration.Grants.Any(grant =>
                 grant.IsValid &&
                 grant.ExpiresAtUtc > DateTime.UtcNow &&
+                string.Equals(grant.ProposalId, operation.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
                 !revokedTargets.Contains(grant.GrantId) &&
                 string.Equals(grant.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal) &&
                 string.Equals(grant.OpaqueCharacterId, operation.CharacterId.Value, StringComparison.Ordinal) &&
@@ -393,6 +414,15 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
             pairing.RevokedAtUtc == null &&
             string.Equals(pairing.OwnerId, ownerId, StringComparison.Ordinal) &&
             string.Equals(pairing.IslandId, islandId, StringComparison.Ordinal));
+
+    internal int ReplayEntryCount
+    {
+        get
+        {
+            lock (gate)
+                return replayedMessageIds.Count;
+        }
+    }
 
     private void ExpireSessions(DateTime now)
     {

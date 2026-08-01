@@ -1,6 +1,5 @@
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
-using System.Text;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
@@ -275,9 +274,19 @@ internal sealed unsafe class DadPartyTeardownService
         if (uiModule == null)
             throw new InvalidOperationException("The native game UI module is unavailable for chat input.");
 
-        var bytes = Encoding.UTF8.GetBytes(command);
-        var utf8String = Utf8String.FromSequence(bytes);
-        uiModule->ProcessChatBoxEntry(utf8String, nint.Zero);
+        Utf8String* utf8String = null;
+        try
+        {
+            utf8String = Utf8String.FromString(command);
+            if (utf8String == null)
+                throw new InvalidOperationException("The native party teardown chat entry could not be allocated.");
+            uiModule->ProcessChatBoxEntry(utf8String, nint.Zero);
+        }
+        finally
+        {
+            if (utf8String != null)
+                utf8String->Dtor(true);
+        }
     }
 
     public void Reset()

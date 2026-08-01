@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using dad.Models;
 
 namespace dad.Services;
@@ -115,6 +116,7 @@ public sealed class DadAutoPartyFleetMatrixService
                 {
                     UndoToken = token,
                     AppliedRevision = configuration.AutoPartyFleet.Revision,
+                    AppliedStateFingerprint = BuildAppliedStateFingerprint(nextGroups, nextSchedules),
                     CapturedAtUtc = EnsureUtc(nowUtc ?? DateTime.UtcNow),
                     PlannerGroups = previousGroups,
                     Schedules = previousSchedules,
@@ -152,6 +154,12 @@ public sealed class DadAutoPartyFleetMatrixService
                 return Failure("dad-fleet-undo-unavailable", "No Fleet apply is available to undo.");
             if (!string.IsNullOrWhiteSpace(undoToken) && !string.Equals(snapshot.UndoToken, undoToken.Trim(), StringComparison.Ordinal))
                 return Failure("dad-fleet-undo-token-mismatch", "The Fleet undo token does not match the current revision.");
+            if (string.IsNullOrWhiteSpace(snapshot.AppliedStateFingerprint) ||
+                !string.Equals(
+                    snapshot.AppliedStateFingerprint,
+                    BuildAppliedStateFingerprint(configuration.PlannerGroups, configuration.Schedules),
+                    StringComparison.Ordinal))
+                return Failure("dad-fleet-undo-drift", "Plans or Schedules changed after Fleet apply; undo will not overwrite later work.");
 
             var currentGroups = ClonePlannerGroups(configuration.PlannerGroups);
             var currentSchedules = CloneSchedules(configuration.Schedules);
@@ -481,9 +489,15 @@ public sealed class DadAutoPartyFleetMatrixService
             .Where(rowId => rows[rowId].IsRemote)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var bindingMap = remoteBindings
-            .Where(binding => binding.IsValid && remoteRowIds.Contains(binding.FleetRowId))
-            .ToDictionary(binding => binding.FleetRowId, StringComparer.OrdinalIgnoreCase);
-        var formationOnly = remoteRowIds.Count > 0 && remoteRowIds.All(bindingMap.ContainsKey);
+            .Where(static binding => binding.IsValid)
+            .DistinctBy(static binding => binding.OpaqueCharacterId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(binding => binding.OpaqueCharacterId, StringComparer.OrdinalIgnoreCase);
+        var formationOnly = remoteRowIds.Count > 0 && remoteRowIds.All(rowId =>
+            bindingMap.TryGetValue(rows[rowId].OpaqueCharacterId, out var binding) &&
+            string.Equals(
+                binding.RequestedJobId,
+                rows[rowId].JobId.ToString(CultureInfo.InvariantCulture),
+                StringComparison.Ordinal));
         return new DadPlannerGroup
         {
             GroupId = StableId("fleet-plan-v1", blueprint.BlueprintId, crew.CrewSetId),
@@ -560,6 +574,25 @@ public sealed class DadAutoPartyFleetMatrixService
             Append(builder, blueprint.CrewSetIds.ToArray());
         }
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+    }
+
+    private static string BuildAppliedStateFingerprint(
+        IEnumerable<DadPlannerGroup> groups,
+        IEnumerable<DadScheduleDefinition> schedules)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            PlannerGroups = groups,
+            Schedules = schedules,
+        });
+        try
+        {
+            return Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(payload);
+        }
     }
 
     private static void Append(StringBuilder builder, params string[] values)
