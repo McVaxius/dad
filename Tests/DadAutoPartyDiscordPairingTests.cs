@@ -129,6 +129,46 @@ public sealed class DadAutoPartyDiscordPairingTests
         Assert.False(queue.TryDequeue(out _));
     }
 
+    [Theory]
+    [InlineData(false, false, false, false, false)]
+    [InlineData(true, false, false, false, true)]
+    [InlineData(false, true, false, false, false)]
+    [InlineData(true, true, false, false, false)]
+    [InlineData(false, true, true, true, false)]
+    [InlineData(true, true, true, true, true)]
+    public void BlockedLifecycleDecisionObservesCompletionAndSchedulesOnlyAnIdleClientStop(
+        bool clientExists,
+        bool lifecycleTaskExists,
+        bool lifecycleTaskCompleted,
+        bool expectedObserve,
+        bool expectedStop)
+    {
+        var decision = DadAutoPartyDiscordLifecycleRules.EvaluateBlocked(
+            clientExists,
+            lifecycleTaskExists,
+            lifecycleTaskCompleted);
+
+        Assert.Equal(expectedObserve, decision.ObserveCompletedTask);
+        Assert.Equal(expectedStop, decision.ScheduleBlockedStop);
+    }
+
+    [Fact]
+    public void BlockedHealthAcceptsOnlyBlockedStateUntilExplicitReconnect()
+    {
+        Assert.True(DadAutoPartyDiscordLifecycleRules.CanSetHealth(
+            false,
+            DadAutoPartyDiscordConnectionState.Connecting));
+        Assert.True(DadAutoPartyDiscordLifecycleRules.CanSetHealth(
+            true,
+            DadAutoPartyDiscordConnectionState.Blocked));
+        Assert.False(DadAutoPartyDiscordLifecycleRules.CanSetHealth(
+            true,
+            DadAutoPartyDiscordConnectionState.Disconnected));
+        Assert.False(DadAutoPartyDiscordLifecycleRules.CanSetHealth(
+            true,
+            DadAutoPartyDiscordConnectionState.Ready));
+    }
+
     [Fact]
     public void PendingPairingIdentityMustMatchEveryPersistedPeerField()
     {

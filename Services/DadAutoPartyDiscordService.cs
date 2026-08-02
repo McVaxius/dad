@@ -188,22 +188,29 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     public void Update(bool dadEnabled)
     {
         ThrowIfDisposed();
+        var observedLifecycleTask = lifecycleTask;
+        var blockedLifecycleDecision = DadAutoPartyDiscordLifecycleRules.EvaluateBlocked(
+            client != null,
+            observedLifecycleTask != null,
+            observedLifecycleTask?.IsCompleted == true);
+        if (blockedLifecycleDecision.ObserveCompletedTask)
+        {
+            _ = observedLifecycleTask!.Exception;
+            lifecycleTask = null;
+        }
+        if (blockedUntilExplicitReconnect)
+        {
+            inboundMessages.Clear();
+            if (blockedLifecycleDecision.ScheduleBlockedStop)
+                lifecycleTask = StopClientAsync(CancellationToken.None);
+            return;
+        }
         if (!dadEnabled || !configuration.DiscordEnabled)
         {
             inboundMessages.Clear();
             return;
         }
-        if (blockedUntilExplicitReconnect)
-        {
-            inboundMessages.Clear();
-            return;
-        }
         DrainInboundMessages();
-        if (lifecycleTask is { IsCompleted: true })
-        {
-            _ = lifecycleTask.Exception;
-            lifecycleTask = null;
-        }
         var now = DateTime.UtcNow;
         if (health.LastPresenceAtUtc.HasValue && now - health.LastPresenceAtUtc.Value > PresenceStaleAfter &&
             health.State == DadAutoPartyDiscordConnectionState.Ready)
@@ -722,7 +729,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         bool permissionsValid,
         DateTime? lastPresenceUtc)
     {
-        if (state == DadAutoPartyDiscordConnectionState.Ready && blockedUntilExplicitReconnect)
+        if (!DadAutoPartyDiscordLifecycleRules.CanSetHealth(blockedUntilExplicitReconnect, state))
             return;
         health = new(state, safeCode, DateTime.UtcNow, lastPresenceUtc,
             configuration.DiscordApplicationId, configuration.DiscordBotUserId, permissionsValid);

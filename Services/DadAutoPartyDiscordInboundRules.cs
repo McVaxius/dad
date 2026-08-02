@@ -63,6 +63,28 @@ internal sealed class DadAutoPartyDiscordInboundQueue
     }
 }
 
+internal readonly record struct DadAutoPartyDiscordLifecycleDecision(
+    bool ObserveCompletedTask,
+    bool ScheduleBlockedStop);
+
+internal static class DadAutoPartyDiscordLifecycleRules
+{
+    internal static DadAutoPartyDiscordLifecycleDecision EvaluateBlocked(
+        bool clientExists,
+        bool lifecycleTaskExists,
+        bool lifecycleTaskCompleted)
+    {
+        var observeCompletedTask = lifecycleTaskExists && lifecycleTaskCompleted;
+        var lifecycleTaskActive = lifecycleTaskExists && !lifecycleTaskCompleted;
+        return new(observeCompletedTask, clientExists && !lifecycleTaskActive);
+    }
+
+    internal static bool CanSetHealth(
+        bool blockedUntilExplicitReconnect,
+        DadAutoPartyDiscordConnectionState state)
+        => !blockedUntilExplicitReconnect || state == DadAutoPartyDiscordConnectionState.Blocked;
+}
+
 internal static class DadAutoPartyDiscordPairingRules
 {
     internal static bool MatchesPendingIdentity(

@@ -3,21 +3,25 @@
 ## 2026-08-01 — P1215 review-review narrow fixes (local-only, unpublished)
 - Hardened the untested AutoParty surface without changing its wire schema or trust model: Discord gateway messages now
   drain through a bounded framework-update queue, pairing acceptance is bound to the exact pending/requested identity,
-  Blocked connections quarantine traffic until explicit reconnect, and UI operations are created only after the
-  single-flight guard admits them.
+  Blocked connections quarantine traffic, observe completed lifecycle work, and schedule one deferred socket stop while
+  keeping Blocked latched until explicit Save & Connect; UI operations are created only after the single-flight guard
+  admits them.
 - Made grants proposal-bound and single-use, bounded replay tracking, made cancellation terminal, retained courier inbox
   work across acknowledgement failure, verified imported private identity/key material before refreshing public keys,
   required a live non-revoked pairing for execution enablement, and hardened Fleet Matrix normalization, remote identity/
-  job binding, and drift-safe undo. Measured-pilot campaigns reset inherited observations and retry failed receipts.
+  job binding, and drift-safe undo. Duplicate opaque-identity bindings now remain valid only when every exact requested-job
+  claim agrees; conflicting claims fail closed regardless of order. Measured-pilot campaigns reset inherited observations
+  and retry failed receipts.
 - Corrected both leaked native chat-string lifetimes, balanced the ImGui child scope, removed injected Kaspersky scripts,
   and based XADB mutation success on completed refresh/save operations rather than optional summary parsing. Tests now
   assert actual alliance/passcode requests, signature tampering, and nested-checkout source paths.
 - The ephemeral plaintext four-digit PF passcode remains unchanged by operator decision. Enrollment receipt signing,
   Dad lifecycle/state-machine findings, transport redesign, CI/release topology, and other accepted/refuted/uncertain
   findings are explicitly classified in the external review reports and excluded from this stage.
-- Focused affected coverage passes 136/136, the full Dad suite passes 1,521/1,521, and the external AutoParty suite passes
-  140/140. The isolated no-deploy x64 Debug build succeeds with 0 errors and four pre-existing nullable warnings in
-  `DadAlliancePartyFinderService.cs`. Version `0.5.0.4`, packaging, release, publication, and live acceptance are unchanged.
+- Original affected coverage passed 136/136; P1216 Discord/Fleet correction coverage passes 36/36, the current full Dad
+  suite passes 1,531/1,531, and the external AutoParty suite passes 140/140. The isolated no-deploy x64 Debug build
+  succeeds with 0 errors and four pre-existing nullable warnings in `DadAlliancePartyFinderService.cs`. Version `0.5.0.4`,
+  packaging, release, publication, and live acceptance are unchanged.
 
 ## 2026-07-31 — I130 LevelSeek priority over Daily reward preflight (local-only, unpublished)
 - Deferred Daily Roulette reward preflight for target-bearing scheduled entries until every worker is ready, requested

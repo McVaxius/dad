@@ -488,14 +488,21 @@ public sealed class DadAutoPartyFleetMatrixService
         var remoteRowIds = crew.FleetRowIds
             .Where(rowId => rows[rowId].IsRemote)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var bindingMap = remoteBindings
+        var requestedJobsByIdentity = remoteBindings
             .Where(static binding => binding.IsValid)
-            .DistinctBy(static binding => binding.OpaqueCharacterId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(binding => binding.OpaqueCharacterId, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(static binding => binding.OpaqueCharacterId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group
+                    .Select(static binding => binding.RequestedJobId)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
         var formationOnly = remoteRowIds.Count > 0 && remoteRowIds.All(rowId =>
-            bindingMap.TryGetValue(rows[rowId].OpaqueCharacterId, out var binding) &&
+            requestedJobsByIdentity.TryGetValue(rows[rowId].OpaqueCharacterId, out var requestedJobs) &&
+            requestedJobs.Count == 1 &&
             string.Equals(
-                binding.RequestedJobId,
+                requestedJobs[0],
                 rows[rowId].JobId.ToString(CultureInfo.InvariantCulture),
                 StringComparison.Ordinal));
         return new DadPlannerGroup

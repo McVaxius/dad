@@ -265,6 +265,34 @@ public sealed class DadAutoPartyFleetMatrixTests
     }
 
     [Fact]
+    public void AgreeingDuplicateRemoteBindingsRemainAuthorized()
+    {
+        var configuration = BuildRemoteAuthorizationConfiguration("19", "19");
+        var service = new DadAutoPartyFleetMatrixService(configuration, static () => string.Empty);
+
+        var group = Assert.Single(service.BuildPreview(FixtureTime).PlannerGroups);
+
+        Assert.True(group.AutoPartyFormationOnly);
+        Assert.NotEmpty(group.AutoPartyProposalId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConflictingDuplicateRemoteBindingsFailClosedRegardlessOfOrder(bool reverseOrder)
+    {
+        var configuration = reverseOrder
+            ? BuildRemoteAuthorizationConfiguration("20", "19")
+            : BuildRemoteAuthorizationConfiguration("19", "20");
+        var service = new DadAutoPartyFleetMatrixService(configuration, static () => string.Empty);
+
+        var group = Assert.Single(service.BuildPreview(FixtureTime).PlannerGroups);
+
+        Assert.False(group.AutoPartyFormationOnly);
+        Assert.Equal(string.Empty, group.AutoPartyProposalId);
+    }
+
+    [Fact]
     public void TsvRoundTripPreservesRowsAndCrewOrderAndProtectsFormulaPrefixes()
     {
         var configuration = BuildConfiguration(1, 4);
@@ -340,6 +368,31 @@ public sealed class DadAutoPartyFleetMatrixTests
 
         Assert.Equal("dad-fleet-tsv-row-id-duplicate", duplicate.SafeCode);
         Assert.Equal("dad-fleet-tsv-control-character", control.SafeCode);
+    }
+
+    private static Configuration BuildRemoteAuthorizationConfiguration(params string[] requestedJobIds)
+    {
+        var configuration = BuildConfiguration(1, 1);
+        var row = configuration.AutoPartyFleet.Rows[0];
+        row.IsRemote = true;
+        row.OpaqueCharacterId = "remote-opaque-001";
+        row.AccountKey = string.Empty;
+        row.CharacterKey = string.Empty;
+        row.JobId = 19;
+        for (var index = 0; index < requestedJobIds.Length; index++)
+        {
+            configuration.AutoParty.RemoteBindings.Add(new DadAutoPartyRemoteBinding
+            {
+                FleetRowId = $"binding-{index}",
+                OpaqueCharacterId = index % 2 == 0 ? row.OpaqueCharacterId : row.OpaqueCharacterId.ToUpperInvariant(),
+                OwnerId = $"owner-{index}",
+                IslandId = $"island-{index}",
+                RequestedJobId = requestedJobIds[index],
+                OwnerConsentConfirmed = true,
+            });
+        }
+
+        return configuration;
     }
 
     private static Configuration BuildConfiguration(int crewCount, int membersPerCrew)
