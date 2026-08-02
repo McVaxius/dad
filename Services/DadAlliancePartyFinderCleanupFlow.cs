@@ -24,8 +24,10 @@ internal sealed record DadAlliancePfCleanupSnapshot
     public bool DetailVisible { get; init; }
     public bool DetailReady { get; init; }
     public bool ConfirmationVisible { get; init; }
+    public bool ConfirmationReady { get; init; }
     public string ConfirmationIdentity { get; init; } = string.Empty;
     public string ConfirmationText { get; init; } = string.Empty;
+    public bool OtherReadyPromptVisible { get; init; }
     public string HardBlocker { get; init; } = string.Empty;
     public string Readiness { get; init; } = string.Empty;
 }
@@ -47,7 +49,8 @@ internal readonly record struct DadAlliancePfCleanupResult(
     string Readiness,
     bool ActiveRecruitment,
     ulong OwnerHandle,
-    bool ShouldAudit);
+    bool ShouldAudit,
+    bool PromptOverrideUsed = false);
 
 /// <summary>
 /// Pure recruitment-only cleanup coordinator. Each destructive step is gated by
@@ -60,22 +63,29 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
 
     private readonly IDadAlliancePartyFinderCleanupUi ui;
     private readonly Func<DateTime> utcNow;
+    private readonly bool allowFreshUnprovenPromptApproval;
     private DadAlliancePfCleanupStage stage = DadAlliancePfCleanupStage.OpenMainWindow;
     private DateTime nextPollUtc;
     private DateTime nextActionUtc;
     private int actionAttempt;
     private string lastError = string.Empty;
-    private string confirmationBaseline = string.Empty;
     private string acceptedConfirmation = string.Empty;
+    private DadPromptObservation confirmationBaselineObservation;
+    private int confirmationCommandAttempt;
+    private int approvedConfirmationAttempt;
+    private int blockedRetryAttempt;
+    private bool pendingPromptOverride;
     private bool detailsDispatched;
     private bool stopped;
 
     public DadAlliancePartyFinderCleanupFlow(
         IDadAlliancePartyFinderCleanupUi ui,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        bool allowFreshUnprovenPromptApproval = false)
     {
         this.ui = ui ?? throw new ArgumentNullException(nameof(ui));
         this.utcNow = utcNow ?? (() => DateTime.UtcNow);
+        this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
     }
 
     public DadAlliancePfCleanupStage Stage => stage;
@@ -88,7 +98,20 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
         if (stage == DadAlliancePfCleanupStage.Complete)
             return Result(DadAlliancePfCreateResultKind.Succeeded, "success", "Recruitment-only cleanup is acknowledged.", default, false);
         if (stage == DadAlliancePfCleanupStage.Blocked)
-            return Result(DadAlliancePfCreateResultKind.Blocked, "block", lastError, default, false);
+        {
+            if (now < nextActionUtc)
+            {
+                return Result(
+                    DadAlliancePfCreateResultKind.Blocked,
+                    "block-wait",
+                    lastError,
+                    default,
+                    false);
+            }
+
+            stage = DadAlliancePfCleanupStage.OpenMainWindow;
+            nextActionUtc = DateTime.MinValue;
+        }
         if (now < nextPollUtc)
             return Result(DadAlliancePfCreateResultKind.Waiting, "poll-wait", "Waiting for the next cleanup readiness poll.", default, false);
 
@@ -107,11 +130,11 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
         }
 
         if (!string.IsNullOrWhiteSpace(snapshot.HardBlocker))
-            return Block(snapshot.HardBlocker, snapshot);
+            return Block(now, snapshot.HardBlocker, snapshot, retryable: true);
         if (!snapshot.AgentAvailable)
             return ScheduleRetry(now, "Party Finder agent is unavailable during cleanup.", snapshot);
         if (!dadOwnsRecruitment)
-            return Block("DAD cannot clean up recruitment without retained DAD ownership.", snapshot);
+            return Block(now, "DAD cannot clean up recruitment without retained DAD ownership.", snapshot);
 
         if (!snapshot.ActiveRecruitment)
         {
@@ -138,7 +161,7 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
                 "Waiting for condition 66 UsingPartyFinder to clear.",
                 snapshot,
                 true),
-            _ => Block($"Unsupported Party Finder cleanup stage {stage}.", snapshot),
+            _ => Block(now, $"Unsupported Party Finder cleanup stage {stage}.", snapshot),
         };
     }
 
@@ -230,9 +253,9 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
                 true);
         }
 
-        confirmationBaseline = snapshot.ConfirmationVisible
-            ? snapshot.ConfirmationIdentity
-            : string.Empty;
+        confirmationBaselineObservation = BuildPromptObservation(snapshot);
+        confirmationCommandAttempt++;
+        pendingPromptOverride = false;
         return Send(
             now,
             DadAlliancePfNativeAction.EndRecruitment,
@@ -244,31 +267,24 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
     private DadAlliancePfCleanupResult AdvanceConfirmation(
         DadAlliancePfCleanupSnapshot snapshot)
     {
-        if (!snapshot.ConfirmationVisible ||
-            string.IsNullOrWhiteSpace(snapshot.ConfirmationIdentity) ||
-            string.Equals(
-                snapshot.ConfirmationIdentity,
-                confirmationBaseline,
-                StringComparison.Ordinal))
+        var decision = EvaluatePrompt(snapshot);
+        if (!decision.CanApprove)
         {
             return Result(
                 DadAlliancePfCreateResultKind.Waiting,
                 "readiness",
-                "Waiting for a fresh recruitment-only confirmation.",
+                $"Waiting for a fresh recruitment-only confirmation: {decision.Summary}",
                 snapshot,
                 true);
         }
-        if (!IsRecruitmentOnlyConfirmation(snapshot.ConfirmationText))
-        {
-            return Block(
-                "A fresh recruitment-only confirmation could not be proven; DAD will not click it.",
-                snapshot);
-        }
 
         acceptedConfirmation = snapshot.ConfirmationIdentity;
+        pendingPromptOverride = decision.UsedOverride;
         return Acknowledge(
             DadAlliancePfCleanupStage.ConfirmEndRecruitment,
-            "fresh recruitment-only confirmation",
+            decision.UsedOverride
+                ? "WARNING: one fresh sole recruitment prompt through the operator override"
+                : "fresh exact recruitment-only confirmation",
             snapshot);
     }
 
@@ -276,24 +292,32 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
         DateTime now,
         DadAlliancePfCleanupSnapshot snapshot)
     {
-        if (!snapshot.ConfirmationVisible ||
+        var decision = EvaluatePrompt(snapshot);
+        if (!decision.CanApprove ||
+            decision.UsedOverride != pendingPromptOverride ||
             !string.Equals(
                 snapshot.ConfirmationIdentity,
                 acceptedConfirmation,
-                StringComparison.Ordinal) ||
-            !IsRecruitmentOnlyConfirmation(snapshot.ConfirmationText))
+                StringComparison.Ordinal))
         {
             return Block(
+                now,
                 "The acknowledged recruitment-only confirmation changed before confirmation.",
-                snapshot);
+                snapshot,
+                retryable: true);
         }
 
-        return Send(
+        var result = Send(
             now,
             DadAlliancePfNativeAction.ConfirmEndRecruitment,
             "confirming recruitment-only closure",
             snapshot,
             DadAlliancePfCleanupStage.AwaitClosure);
+        if (result.Kind != DadAlliancePfCreateResultKind.Progress)
+            return result;
+
+        approvedConfirmationAttempt = confirmationCommandAttempt;
+        return result with { PromptOverrideUsed = decision.UsedOverride };
     }
 
     private DadAlliancePfCleanupResult Send(
@@ -361,6 +385,7 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
         DadAlliancePfCleanupSnapshot snapshot)
     {
         stage = next;
+        blockedRetryAttempt = 0;
         actionAttempt = 0;
         nextActionUtc = DateTime.MinValue;
         lastError = string.Empty;
@@ -390,12 +415,16 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
     }
 
     private DadAlliancePfCleanupResult Block(
+        DateTime now,
         string error,
-        DadAlliancePfCleanupSnapshot snapshot)
+        DadAlliancePfCleanupSnapshot snapshot,
+        bool retryable = false)
     {
         lastError = error;
         stage = DadAlliancePfCleanupStage.Blocked;
-        nextActionUtc = DateTime.MinValue;
+        nextActionUtc = retryable
+            ? now + DadAlliancePartyFinderRules.GetRetryDelay(blockedRetryAttempt++)
+            : DateTime.MaxValue;
         return Result(
             DadAlliancePfCreateResultKind.Blocked,
             "block",
@@ -423,11 +452,31 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
             snapshot?.OwnerHandle ?? 0,
             shouldAudit);
 
-    private static bool IsRecruitmentOnlyConfirmation(string text)
-        => text.Contains("recruit", StringComparison.OrdinalIgnoreCase) &&
-           !text.Contains("disband", StringComparison.OrdinalIgnoreCase) &&
-           !text.Contains("leave the party", StringComparison.OrdinalIgnoreCase) &&
-           !text.Contains("leave the alliance", StringComparison.OrdinalIgnoreCase);
+    private DadPromptApprovalDecision EvaluatePrompt(
+        DadAlliancePfCleanupSnapshot snapshot)
+    {
+        var operationKey = "alliance-recruitment-cleanup";
+        return DadPromptOwnershipRules.Evaluate(new DadPromptApprovalRequest(
+            DadPromptOperationKind.AllianceRecruitmentCleanup,
+            operationKey,
+            operationKey,
+            confirmationCommandAttempt,
+            confirmationCommandAttempt,
+            approvedConfirmationAttempt,
+            confirmationBaselineObservation,
+            BuildPromptObservation(snapshot),
+            string.Empty,
+            allowFreshUnprovenPromptApproval));
+    }
+
+    private static DadPromptObservation BuildPromptObservation(
+        DadAlliancePfCleanupSnapshot snapshot)
+        => new(
+            snapshot.ConfirmationVisible,
+            snapshot.ConfirmationReady,
+            snapshot.ConfirmationIdentity,
+            snapshot.ConfirmationText,
+            snapshot.ConfirmationVisible && !snapshot.OtherReadyPromptVisible);
 
     private static DateTime EnsureUtc(DateTime value)
         => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();

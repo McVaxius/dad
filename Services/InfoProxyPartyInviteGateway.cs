@@ -24,6 +24,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     private DadSelectYesnoPromptSnapshot baselineSelectYesnoPrompt;
     private string lastDepartureDiagnostic = string.Empty;
     private string departureFailure = string.Empty;
+    private int approvedInvitationPromptAttempt;
 
     public InfoProxyPartyInviteGateway(
         Configuration configuration,
@@ -53,6 +54,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             baselineSelectYesnoPrompt = ReadSelectYesnoPrompt().Snapshot;
             lastDepartureDiagnostic = string.Empty;
             departureFailure = string.Empty;
+            approvedInvitationPromptAttempt = 0;
         }
 
         acceptance.BeginRun(runId, ReadPendingInvitation());
@@ -77,7 +79,11 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             departureController = new DadParticipantPartyDepartureController(
                 inviter.ContentId,
                 DateTime.UtcNow,
-                prompt.Snapshot.Visible);
+                prompt.Snapshot.Visible,
+                prompt.Snapshot.Identity,
+                prompt.Snapshot.Ready,
+                prompt.Snapshot.Text,
+                configuration.AllowFreshUnprovenPromptApproval);
         }
         else if (!DadPartyInvitationAcceptanceTracker.SameExpectedInviter(pendingExpectedInviter, inviter))
         {
@@ -278,6 +284,8 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         }
 
         var directYes = false;
+        var promptDecision = default(DadPromptApprovalDecision);
+        var currentAttempt = acceptance.AttemptCount + 1;
         if (!nativeResponded &&
             DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
                 invitation,
@@ -286,9 +294,27 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
                 baselineSelectYesnoPrompt,
                 promptBefore.Snapshot,
                 promptAfter.Snapshot,
-                restoreDispatched))
+                restoreDispatched,
+                currentAttempt,
+                approvedInvitationPromptAttempt,
+                soleReadyPrompt: !IsOtherReadyPromptVisible(),
+                configuration.AllowFreshUnprovenPromptApproval,
+                out promptDecision))
         {
             directYes = FireYes(promptAfter.Addon);
+            if (directYes)
+            {
+                approvedInvitationPromptAttempt = currentAttempt;
+                if (promptDecision.UsedOverride)
+                {
+                    log.Warning(
+                        "[dad] Prompt ownership override used operation=party-invitation request={RequestId} attempt={Attempt} prompt={PromptIdentity} warning={Warning}",
+                        expected.RunId,
+                        currentAttempt,
+                        promptAfter.Snapshot.Identity,
+                        promptDecision.Summary);
+                }
+            }
         }
 
         acceptance.RecordAttempt(invitation, nowUtc);
@@ -317,6 +343,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         baselineSelectYesnoPrompt = default;
         lastDepartureDiagnostic = string.Empty;
         departureFailure = string.Empty;
+        approvedInvitationPromptAttempt = 0;
     }
 
     public bool InviteSameWorld(ulong contentId, string exactCharacterName, ushort worldId)
@@ -389,7 +416,9 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             partyMenu != null && partyMenu->IsVisible,
             prompt.Snapshot.Visible,
             prompt.Snapshot.Identity,
-            prompt.Snapshot.Text));
+            prompt.Snapshot.Text,
+            prompt.Snapshot.Ready,
+            IsOtherReadyPromptVisible()));
 
         var diagnostic = $"{decision.Action}|{decision.Summary}|{departureController.CommandAttempts}|{crossRealm}|{string.Join(',', members)}|{prompt.Snapshot.Identity}";
         if (!string.Equals(lastDepartureDiagnostic, diagnostic, StringComparison.Ordinal))
@@ -421,6 +450,15 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
                 case DadParticipantPartyDepartureAction.ApprovePrompt:
                     if (!FireYes(prompt.Addon))
                         throw new InvalidOperationException("The fresh participant leave confirmation disappeared before Yes could be fired.");
+                    if (decision.PromptOverrideUsed)
+                    {
+                        log.Warning(
+                            "[dad] Prompt ownership override used operation=participant-party-departure request={RequestId} attempt={Attempt} prompt={PromptIdentity} warning={Warning}",
+                            activeParticipantRunId,
+                            departureController.CommandAttempts,
+                            prompt.Snapshot.Identity,
+                            decision.PromptAudit);
+                    }
                     break;
             }
         }
@@ -483,8 +521,18 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             ? string.Empty
             : selectYesno->PromptText->NodeText.ToString().Trim();
         return new PromptRuntimeSnapshot(
-            new DadSelectYesnoPromptSnapshot(true, $"{(nint)addon:X}:{text}", text),
+            new DadSelectYesnoPromptSnapshot(
+                true,
+                addon->IsReady,
+                $"{(nint)addon:X}",
+                text),
             addon);
+    }
+
+    private static bool IsOtherReadyPromptVisible()
+    {
+        var privatePrompt = GetAddon("LookingForGroupPrivate");
+        return privatePrompt != null && privatePrompt->IsVisible && privatePrompt->IsReady;
     }
 
     private static AtkUnitBase* GetAddon(string name)
@@ -496,7 +544,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     private static bool FireNotificationInviteRestore()
     {
         var addon = GetAddon("_Notification");
-        if (addon == null || !addon->IsVisible)
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
         var values = stackalloc AtkValue[2];
@@ -510,7 +558,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
 
     private static bool FireYes(AtkUnitBase* addon)
     {
-        if (addon == null || !addon->IsVisible)
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
         var values = stackalloc AtkValue[1];

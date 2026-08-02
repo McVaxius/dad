@@ -79,7 +79,7 @@ public sealed class DadScheduleSkipBadgeProjectionTests
             schedule,
             null,
             [
-                Run("schedule-a", "run-retry", skipped: 1, completedAt: Utc(14), retriedFrom: "run-original"),
+                Run("schedule-a", "run-retry", skipped: 2, completedAt: Utc(14), retriedFrom: "run-original"),
                 Run("schedule-a", "run-original", skipped: 1, completedAt: Utc(13)),
             ],
             [

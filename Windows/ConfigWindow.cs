@@ -27,7 +27,6 @@ public sealed class ConfigWindow : Window, IDisposable
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string pendingDeleteAccountId = string.Empty;
-    private string pendingMergeAccountId = string.Empty;
 
     public ConfigWindow(Plugin plugin) : base($"{PluginInfo.DisplayName} Settings##Config", ImGuiWindowFlags.None)
     {
@@ -165,6 +164,15 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.TextWrapped("When on, DAD skips runtime connectivity and readiness checks before starting. Duplicate-slot checks stay enforced. Leave this off for normal play.");
+
+        var promptOverride = configuration.AllowFreshUnprovenPromptApproval;
+        if (ImGui.Checkbox("Allow one fresh unproven prompt approval (unsafe)", ref promptOverride))
+        {
+            configuration.AllowFreshUnprovenPromptApproval = promptOverride;
+            configuration.Save();
+        }
+
+        ImGui.TextWrapped("Default off. When enabled, DAD may approve one fresh, sole, ready prompt tied to the current command attempt if localized prompt text cannot be proven. Every use is logged as a warning and audit event.");
 
         DrawSectionHeader("Pre-duty repair");
         configuration.PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
@@ -694,10 +702,9 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawAccountAliasEditor(Configuration configuration)
     {
         DrawSectionHeader("Account names");
-        ImGui.TextDisabled("Full account tools (merge / delete / forget copies) live in the main window under Crew -> Roster state -> Account tools.");
+        ImGui.TextDisabled("Full account tools (delete / forget copies) live in the main window under Crew -> Roster state -> Account tools.");
         if (DrawClearAllAccountDataButton("dad-config-clear-all-account-data"))
         {
-            DrawMergeAccountPopup();
             DrawDeleteAccountPopup();
             return;
         }
@@ -706,14 +713,12 @@ public sealed class ConfigWindow : Window, IDisposable
         if (accounts.Count == 0)
         {
             ImGui.TextDisabled("No Dad account configs have been seen on this client.");
-            DrawMergeAccountPopup();
             DrawDeleteAccountPopup();
             return;
         }
 
         if (!ImGui.BeginTable("dad-account-aliases", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
-            DrawMergeAccountPopup();
             DrawDeleteAccountPopup();
             return;
         }
@@ -738,17 +743,6 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(account.Characters.Count.ToString());
             ImGui.TableNextColumn();
-            var currentAccountId = plugin.ConfigManager.CurrentAccountId?.Trim() ?? string.Empty;
-            var canMerge = !string.IsNullOrWhiteSpace(currentAccountId) &&
-                           !string.Equals(currentAccountId, account.AccountId, StringComparison.OrdinalIgnoreCase);
-            ImGui.BeginDisabled(!canMerge);
-            if (ImGui.SmallButton($"Merge into current##dad-config-merge-account-{account.AccountId}"))
-            {
-                pendingMergeAccountId = account.AccountId;
-                ImGui.OpenPopup("Confirm merge account##dad-config-merge-account");
-            }
-            ImGui.EndDisabled();
-            ImGui.SameLine();
             if (DrawCtrlShiftSmallButton(
                     "Delete",
                     $"dad-config-delete-account-{account.AccountId}",
@@ -761,7 +755,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.EndTable();
-        DrawMergeAccountPopup();
         DrawDeleteAccountPopup();
     }
 
@@ -783,7 +776,6 @@ public sealed class ConfigWindow : Window, IDisposable
             return false;
 
         pendingDeleteAccountId = string.Empty;
-        pendingMergeAccountId = string.Empty;
         var result = plugin.ClearAllDadAccountData();
         plugin.PrintStatus(result.ToStatusMessage());
         return true;
@@ -804,43 +796,6 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.SetTooltip(enabled ? enabledTooltip : disabledTooltip);
 
         return clicked;
-    }
-
-    private void DrawMergeAccountPopup()
-    {
-        if (!ImGui.BeginPopup("Confirm merge account##dad-config-merge-account"))
-            return;
-
-        var source = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingMergeAccountId));
-        var target = plugin.ConfigManager.GetCurrentAccount();
-        if (source == null || target == null)
-        {
-            ImGui.TextUnformatted("No merge source or current target account selected.");
-            if (ImGui.SmallButton("Close"))
-                ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-            return;
-        }
-
-        ImGui.TextWrapped($"Merge Dad account '{source.AccountAlias}' ({source.AccountId}) into current account '{target.AccountAlias}' ({target.AccountId})?");
-        ImGui.TextDisabled("Moves missing character configs and Dad roster metadata. Target keeps duplicate character configs. Source config is deleted. XADB snapshots stay untouched.");
-        if (ImGui.SmallButton("Merge account"))
-        {
-            if (plugin.MergeDadAccountIntoCurrent(new DadAccountKey(source.AccountId)))
-                plugin.PrintStatus($"Merged Dad account '{source.AccountAlias}' into '{target.AccountAlias}'.");
-
-            pendingMergeAccountId = string.Empty;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Cancel"))
-        {
-            pendingMergeAccountId = string.Empty;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.EndPopup();
     }
 
     private void DrawDeleteAccountPopup()

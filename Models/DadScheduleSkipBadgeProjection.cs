@@ -54,7 +54,9 @@ internal static class DadScheduleSkipBadgeProjection
         var current = selectedRun;
         while (current != null && includedRunIds.Add(current.RunId))
         {
-            totalSkipCount += Math.Max(0, current.SkippedEntryExecutions);
+            // Retry runs inherit the cumulative counter from their ancestor. The latest/highest
+            // counter is the total; summing a retry lineage counts the same earlier skips twice.
+            totalSkipCount = Math.Max(totalSkipCount, Math.Max(0, current.SkippedEntryExecutions));
             if (string.IsNullOrWhiteSpace(current.RetriedFromRunId) ||
                 !resultsByRunId.TryGetValue(current.RetriedFromRunId, out var ancestor))
             {

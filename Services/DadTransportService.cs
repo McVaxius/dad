@@ -6,6 +6,11 @@ using Dalamud.Plugin.Services;
 
 namespace dad.Services;
 
+internal readonly record struct DadInboundRequestContext(
+    DadWorkerSessionId AuthenticatedSourceWorkerSessionId,
+    DadWorkerSessionId AuthenticatedTargetWorkerSessionId,
+    bool ReceivedByCoordinator);
+
 public sealed class DadTransportService : IDisposable
 {
     private const string MessageSnapshotRequest = "snapshot-request";
@@ -77,6 +82,7 @@ public sealed class DadTransportService : IDisposable
     private readonly DadDeferredDisposalSemaphore outboundSlots = new(MaxConcurrentOutboundOperations, MaxConcurrentOutboundOperations);
     private readonly DadRosterPublishCoalescer rosterPublishCoalescer = new();
     private readonly DadReadinessHeartbeatCoalescer readinessHeartbeatCoalescer = new();
+    private readonly DadBoundedDiagnosticGate malformedNotificationDiagnostics = new(TimeSpan.FromMinutes(1));
     private readonly Dictionary<string, long> pendingRuntimeReadinessChanges = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private long pendingOutboundOperations;
@@ -524,7 +530,12 @@ public sealed class DadTransportService : IDisposable
                 presenceService.WorkerSessionId.Value,
                 StringComparison.OrdinalIgnoreCase))
         {
-            return HandleAllianceRecruitmentInstruction(DadIpcJson.Serialize(instruction));
+            return HandleAllianceRecruitmentInstruction(
+                new DadInboundRequestContext(
+                    presenceService.WorkerSessionId,
+                    presenceService.WorkerSessionId,
+                    configuration.RunAsServerDad),
+                DadIpcJson.Serialize(instruction));
         }
 
         var response = await SendRequestAsync(
@@ -549,7 +560,12 @@ public sealed class DadTransportService : IDisposable
                 presenceService.WorkerSessionId.Value,
                 StringComparison.OrdinalIgnoreCase))
         {
-            return HandleAllianceRecruitmentCancellation(DadIpcJson.Serialize(cancellation));
+            return HandleAllianceRecruitmentCancellation(
+                new DadInboundRequestContext(
+                    presenceService.WorkerSessionId,
+                    presenceService.WorkerSessionId,
+                    configuration.RunAsServerDad),
+                DadIpcJson.Serialize(cancellation));
         }
 
         var response = await SendRequestAsync(
@@ -1141,6 +1157,14 @@ public sealed class DadTransportService : IDisposable
             {
                 throw new DadHubProtocolException("hello-invalid", "Client Dad hello worker session does not match frame source.");
             }
+            if (!DadHubParticipantIdentityRules.MatchesAuthenticatedSource(
+                    hello.Participant,
+                    helloFrame.SourceWorkerSessionId))
+            {
+                throw new DadHubProtocolException(
+                    "hello-invalid",
+                    "Client Dad hello participant worker session does not match frame source.");
+            }
 
             connection.WorkerSessionId = hello.WorkerSessionId;
             connection.RemoteWorkerSessionId = hello.WorkerSessionId;
@@ -1192,7 +1216,10 @@ public sealed class DadTransportService : IDisposable
         finally
         {
             if (connection != null)
+            {
                 MarkServerSessionDisconnected(connection);
+                connection.Dispose();
+            }
             else
                 client.Dispose();
         }
@@ -1281,6 +1308,14 @@ public sealed class DadTransportService : IDisposable
                 {
                     throw new DadHubProtocolException("hello-invalid", "Dad Coordinator hello acknowledgement identity or correlation is invalid.");
                 }
+                if (!DadHubParticipantIdentityRules.MatchesAuthenticatedSource(
+                        serverHello.Participant,
+                        response.SourceWorkerSessionId))
+                {
+                    throw new DadHubProtocolException(
+                        "hello-invalid",
+                        "Dad Coordinator hello participant worker session does not match frame source.");
+                }
 
                 serverParticipant = DadHubParticipants.PrepareRemote(serverHello.Participant, DateTime.UtcNow);
                 connection.RemoteWorkerSessionId = serverHello.WorkerSessionId;
@@ -1354,6 +1389,7 @@ public sealed class DadTransportService : IDisposable
                     clientConnection.Close();
                     clientConnection = null;
                 }
+                activeConnection?.Dispose();
                 CurrentTransport.AuthorityRoutable = false;
                 CurrentTransport.AuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
                 CurrentTransport.LastDisconnectedUtc = DateTime.UtcNow;
@@ -1484,9 +1520,25 @@ public sealed class DadTransportService : IDisposable
 
     private void HandleHeartbeat(DadHubConnection connection, DadHubFrame frame, bool isServerSide)
     {
-        var heartbeat = DadIpcJson.Deserialize<DadHubHeartbeat>(frame.PayloadJson);
-        if (heartbeat == null)
+        if (!DadIpcJson.TryDeserialize(
+                frame.PayloadJson,
+                out DadHubHeartbeat? heartbeat,
+                out var rejectionReason) || heartbeat == null)
+        {
+            RecordMalformedNotification("heartbeat", rejectionReason);
             return;
+        }
+        var authenticatedSource = isServerSide
+            ? connection.WorkerSessionId
+            : connection.RemoteWorkerSessionId;
+        if (!DadHubParticipantIdentityRules.MatchesAuthenticatedSource(
+                heartbeat.Participant,
+                authenticatedSource))
+        {
+            throw new DadHubProtocolException(
+                "session-mismatch",
+                "Heartbeat participant worker session does not match the authenticated connection source.");
+        }
 
         QueueTransportEvent(
             () =>
@@ -1526,20 +1578,32 @@ public sealed class DadTransportService : IDisposable
 
         if (string.Equals(frame.MessageType, MessageStopAll, StringComparison.Ordinal))
         {
-            var status = DadIpcJson.Deserialize<DadStopAllStatus>(frame.PayloadJson);
-            if (status != null)
-                QueueTransportEvent(() => RecordStopAllStatus(status), "stop-all-status");
+            if (!DadIpcJson.TryDeserialize(
+                    frame.PayloadJson,
+                    out DadStopAllStatus? status,
+                    out var rejectionReason) || status == null)
+            {
+                RecordMalformedNotification("stop-all-status", rejectionReason);
+                return;
+            }
+
+            QueueTransportEvent(() => RecordStopAllStatus(status), "stop-all-status");
             return;
         }
 
         if (!string.Equals(frame.MessageType, MessageHubRosterPublish, StringComparison.Ordinal))
             return;
 
-        var publish = DadIpcJson.Deserialize<DadHubRosterPublish>(frame.PayloadJson);
-        if (publish == null)
+        if (!DadIpcJson.TryDeserialize(
+                frame.PayloadJson,
+                out DadHubRosterPublish? publish,
+                out var publishRejectionReason) || publish == null)
+        {
+            RecordMalformedNotification("hub-roster-publish", publishRejectionReason);
             return;
+        }
 
-        ApplyHubRosterPublish(publish);
+        QueueTransportEvent(() => ApplyHubRosterPublish(publish), "hub-roster-publish");
     }
 
     private async Task HandleInboundRequestAsync(
@@ -1552,7 +1616,9 @@ public sealed class DadTransportService : IDisposable
         {
             if (isServerSide && string.Equals(request.MessageType, MessageHubRosterPublishRequest, StringComparison.Ordinal))
             {
-                response = HandleHubRosterPublishRequest(origin, request);
+                response = await Plugin.Framework
+                    .RunOnFrameworkThread(() => HandleHubRosterPublishRequest(origin, request))
+                    .ConfigureAwait(false);
             }
             else if (isServerSide &&
                 !request.TargetWorkerSessionId.IsEmpty &&
@@ -1578,8 +1644,12 @@ public sealed class DadTransportService : IDisposable
             }
             else
             {
+                var context = new DadInboundRequestContext(
+                    request.SourceWorkerSessionId,
+                    request.TargetWorkerSessionId,
+                    isServerSide);
                 var responseJson = await Plugin.Framework
-                    .RunOnFrameworkThread(() => DispatchRequest(request.MessageType, request.PayloadJson))
+                    .RunOnFrameworkThread(() => DispatchRequest(context, request.MessageType, request.PayloadJson))
                     .ConfigureAwait(false);
                 response = DadHubProtocol.CreateFrame(
                     DadHubFrameKind.Response,
@@ -1608,14 +1678,36 @@ public sealed class DadTransportService : IDisposable
 
     private DadHubFrame HandleHubRosterPublishRequest(DadHubConnection origin, DadHubFrame request)
     {
-        var heartbeat = DadIpcJson.Deserialize<DadHubHeartbeat>(request.PayloadJson);
-        if (heartbeat != null)
+        if (!DadIpcJson.TryDeserialize(
+                request.PayloadJson,
+                out DadHubHeartbeat? heartbeat,
+                out var rejectionReason) || heartbeat == null)
         {
-            var now = DateTime.UtcNow;
-            origin.LastHeartbeatUtc = now;
-            origin.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
-            disconnectedParticipants.TryRemove(origin.WorkerSessionId.Value, out _);
+            return DadHubProtocol.CreateError(
+                presenceService.WorkerSessionId,
+                request.SourceWorkerSessionId,
+                request.CorrelationId,
+                "malformed-request",
+                $"Malformed hub roster publish request: {rejectionReason}",
+                configuration.TransportSharedSecret);
         }
+        if (!DadHubParticipantIdentityRules.MatchesAuthenticatedSource(
+                heartbeat.Participant,
+                request.SourceWorkerSessionId))
+        {
+            return DadHubProtocol.CreateError(
+                presenceService.WorkerSessionId,
+                request.SourceWorkerSessionId,
+                request.CorrelationId,
+                "session-mismatch",
+                "Roster publish participant worker session does not match the authenticated frame source.",
+                configuration.TransportSharedSecret);
+        }
+
+        var now = DateTime.UtcNow;
+        origin.LastHeartbeatUtc = now;
+        origin.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
+        disconnectedParticipants.TryRemove(origin.WorkerSessionId.Value, out _);
 
         var reason = $"Client Dad {origin.WorkerSessionId} requested roster publish.";
         MarkHubRosterDirty(reason, fast: true);
@@ -1637,6 +1729,17 @@ public sealed class DadTransportService : IDisposable
         DadHubFrame request,
         CancellationToken cancellationToken)
     {
+        if (!IsReadOnlyForwardRequest(request.MessageType))
+        {
+            return DadHubProtocol.CreateError(
+                presenceService.WorkerSessionId,
+                request.SourceWorkerSessionId,
+                request.CorrelationId,
+                "forwarding-authority-rejected",
+                $"Authenticated worker {request.SourceWorkerSessionId} is not permitted to re-originate mutating request '{request.MessageType}' through the coordinator.",
+                configuration.TransportSharedSecret);
+        }
+
         if (!serverSessions.TryGet(request.TargetWorkerSessionId, out var target) || target is not { IsRoutable: true })
         {
             return DadHubProtocol.CreateError(
@@ -1662,44 +1765,61 @@ public sealed class DadTransportService : IDisposable
         return forwarded;
     }
 
-    private string DispatchRequest(string messageType, string payloadJson)
+    private string DispatchRequest(DadInboundRequestContext context, string messageType, string payloadJson)
     {
         RefreshLocalMutationState();
 
         return messageType switch
         {
             MessageSnapshotRequest => DadIpcJson.Serialize(HandleSnapshotRequest(payloadJson)),
-            MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(payloadJson)),
-            MessageWakeTakeoverRequest => DadIpcJson.Serialize(HandleWakeTakeoverRequest(payloadJson)),
-            MessageRouletteRewardProbe => DadIpcJson.Serialize(HandleRouletteRewardProbe(payloadJson)),
-            MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(payloadJson)),
-            MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(payloadJson)),
-            MessageAllianceRecruitmentInstruction => DadIpcJson.Serialize(HandleAllianceRecruitmentInstruction(payloadJson)),
-            MessageAllianceRecruitmentCancellation => DadIpcJson.Serialize(HandleAllianceRecruitmentCancellation(payloadJson)),
+            MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(context, payloadJson)),
+            MessageWakeTakeoverRequest => DadIpcJson.Serialize(HandleWakeTakeoverRequest(context, payloadJson)),
+            MessageRouletteRewardProbe => DadIpcJson.Serialize(HandleRouletteRewardProbe(context, payloadJson)),
+            MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(context, payloadJson)),
+            MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(context, payloadJson)),
+            MessageAllianceRecruitmentInstruction => DadIpcJson.Serialize(HandleAllianceRecruitmentInstruction(context, payloadJson)),
+            MessageAllianceRecruitmentCancellation => DadIpcJson.Serialize(HandleAllianceRecruitmentCancellation(context, payloadJson)),
             MessageAllianceUiSnapshot => DadIpcJson.Serialize(HandleAllianceUiSnapshot()),
-            MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(payloadJson)),
-            MessageCancelRun => DadIpcJson.Serialize(HandleCancelRun(payloadJson)),
-            MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(payloadJson)),
+            MessageCharacterLoadCommand => DadIpcJson.Serialize(HandleCharacterLoadCommand(context, payloadJson)),
+            MessageCancelRun => DadIpcJson.Serialize(HandleCancelRun(context, payloadJson)),
+            MessageCancelCommand => DadIpcJson.Serialize(HandleCancelCommand(context, payloadJson)),
             MessageStatusQuery => DadIpcJson.Serialize(HandleStatusQuery()),
             MessageStartRun => DadIpcJson.Serialize(HandleStartRun(payloadJson)),
             MessageRosterCatalogRequest => DadIpcJson.Serialize(HandleRosterCatalogRequest(payloadJson)),
-            MessageRosterAggregateCatalogRequest => DadIpcJson.Serialize(HandleAggregateRosterCatalogRequest(payloadJson)),
-            MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(payloadJson)),
+            MessageRosterAggregateCatalogRequest => DadIpcJson.Serialize(HandleAggregateRosterCatalogRequest(context, payloadJson)),
+            MessageRosterRefreshCommand => DadIpcJson.Serialize(HandleRosterRefreshCommand(context, payloadJson)),
             MessageProfileCatalogRequest => DadIpcJson.Serialize(HandleProfileCatalogRequest(payloadJson)),
-            MessageProfileAggregateCatalogRequest => DadIpcJson.Serialize(HandleAggregateProfileCatalogRequest(payloadJson)),
-            MessageProfileUpdateCommand => DadIpcJson.Serialize(HandleProfileUpdateCommand(payloadJson)),
-            MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(payloadJson)),
+            MessageProfileAggregateCatalogRequest => DadIpcJson.Serialize(HandleAggregateProfileCatalogRequest(context, payloadJson)),
+            MessageProfileUpdateCommand => DadIpcJson.Serialize(HandleProfileUpdateCommand(context, payloadJson)),
+            MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(context, payloadJson)),
             MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
-            MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(payloadJson)),
-            MessageStopAll => DadIpcJson.Serialize(HandleStopAllRequest(payloadJson)),
+            MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(context, payloadJson)),
+            MessageStopAll => DadIpcJson.Serialize(HandleStopAllRequest(context, payloadJson)),
             _ => throw new InvalidOperationException($"Unsupported Dad hub message type '{messageType}'."),
         };
     }
 
-    private DadStopAllStatus HandleStopAllRequest(string payloadJson)
+    private DadStopAllStatus HandleStopAllRequest(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadStopAllRequest>(payloadJson) ?? new DadStopAllRequest();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadStopAllRequest? request, out var rejectionReason) || request == null)
+            return BuildRejectedStopAll(new DadStopAllRequest(), $"Malformed Stop-all request: {rejectionReason}");
+        if (request.RequestedByWorkerSessionId.IsEmpty ||
+            !SameWorker(request.RequestedByWorkerSessionId, context.AuthenticatedSourceWorkerSessionId))
+        {
+            return BuildRejectedStopAll(request, "Stop-all requester does not match the authenticated frame source.");
+        }
+
         NormalizeStopAllRequest(request);
+        var active = statusProvider?.Invoke();
+        if (active != null && active.Status != DadRunStatus.Idle && !active.IsTerminal)
+        {
+            var authority = active.AuthorityWorkerSessionId.IsEmpty
+                ? ResolveAuthorityWorkerSessionId()
+                : active.AuthorityWorkerSessionId;
+            if (authority.IsEmpty || !SameWorker(authority, context.AuthenticatedSourceWorkerSessionId))
+                return BuildRejectedStopAll(request, "Stop-all rejected because the authenticated sender does not own the active coordinator authority.");
+        }
+
         if (configuration.RunAsServerDad)
             return BeginCoordinatorStopAll(request);
 
@@ -1719,10 +1839,18 @@ public sealed class DadTransportService : IDisposable
         return response;
     }
 
-    private DadRouletteRewardProbeResultDto HandleRouletteRewardProbe(string payloadJson)
+    private DadRouletteRewardProbeResultDto HandleRouletteRewardProbe(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadRouletteRewardProbeRequestDto>(payloadJson)
-                      ?? new DadRouletteRewardProbeRequestDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadRouletteRewardProbeRequestDto? request, out var rejectionReason) || request == null)
+        {
+            request = new DadRouletteRewardProbeRequestDto();
+            return DadRouletteRewardProbeResultDto.FromRequest(request, DadRouletteRewardProbeOutcome.Unknown, $"Malformed reward probe: {rejectionReason}", DateTime.UtcNow);
+        }
+        if (!IsAuthenticatedCoordinator(context) ||
+            (!request.RouteWorkerSessionId.IsEmpty && !SameWorker(request.RouteWorkerSessionId, presenceService.WorkerSessionId)))
+        {
+            return DadRouletteRewardProbeResultDto.FromRequest(request, DadRouletteRewardProbeOutcome.Unknown, "Reward probe authority or target does not match the authenticated route.", DateTime.UtcNow);
+        }
         if (!remoteMutationsAllowed)
         {
             return DadRouletteRewardProbeResultDto.FromRequest(
@@ -1759,24 +1887,32 @@ public sealed class DadTransportService : IDisposable
         };
     }
 
-    private DadParticipantReadyDto HandleWakeRequest(string payloadJson)
+    private DadParticipantReadyDto HandleWakeRequest(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadWakeRequestDto>(payloadJson) ?? new DadWakeRequestDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadWakeRequestDto? request, out var rejectionReason) || request == null)
+            return BuildRejectedWakeResponse(new DadWakeRequestDto(), $"Malformed wake request: {rejectionReason}");
+        if (!MatchesAuthenticatedCoordinator(context, request.AuthorityWorkerSessionId))
+            return BuildRejectedWakeResponse(request, "Wake authority does not match the authenticated coordinator source.");
         return remoteMutationsAllowed
             ? presenceService.HandleWakeRequest(request)
             : BuildRejectedWakeResponse(request, BuildRemoteMutationRejectedReason("remote wake request"));
     }
 
-    private DadWakeTakeoverResultDto HandleWakeTakeoverRequest(string payloadJson)
+    private DadWakeTakeoverResultDto HandleWakeTakeoverRequest(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadWakeTakeoverRequestDto>(payloadJson)
-                      ?? new DadWakeTakeoverRequestDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadWakeTakeoverRequestDto? request, out var rejectionReason) || request == null)
+            return BuildRejectedWakeTakeover(new DadWakeTakeoverRequestDto(), $"Malformed wake-takeover request: {rejectionReason}");
+        if (!IsAuthenticatedCoordinator(context))
+            return BuildRejectedWakeTakeover(request, "Wake-takeover request did not come from the authenticated coordinator.");
         return wakeTakeoverService.Handle(request);
     }
 
-    private DadClaimDecisionDto HandleClaimRequest(string payloadJson)
+    private DadClaimDecisionDto HandleClaimRequest(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadClaimRequestDto>(payloadJson) ?? new DadClaimRequestDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadClaimRequestDto? request, out var rejectionReason) || request == null)
+            return BuildRejectedClaimDecision(new DadClaimRequestDto(), $"Malformed claim request: {rejectionReason}");
+        if (!MatchesAuthenticatedCoordinator(context, request.AuthorityWorkerSessionId))
+            return BuildRejectedClaimDecision(request, "Claim authority does not match the authenticated coordinator source.");
         if (!remoteMutationsAllowed)
             return BuildRejectedClaimDecision(request, BuildRemoteMutationRejectedReason("remote claim request"));
 
@@ -1790,11 +1926,11 @@ public sealed class DadTransportService : IDisposable
         return decision;
     }
 
-    private DadRunStepResultDto HandleAssemblyInstruction(string payloadJson)
+    private DadRunStepResultDto HandleAssemblyInstruction(DadInboundRequestContext context, string payloadJson)
     {
-        var instruction = DadIpcJson.Deserialize<DadAssemblyInstructionDto>(payloadJson)
-                          ?? new DadAssemblyInstructionDto();
-        if (!IsAuthoritativeCoordinator(instruction.AuthorityWorkerSessionId))
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadAssemblyInstructionDto? instruction, out var rejectionReason) || instruction == null)
+            return BuildRejectedAssemblyResult(new DadAssemblyInstructionDto(), $"Malformed assembly instruction: {rejectionReason}");
+        if (!MatchesAuthenticatedCoordinator(context, instruction.AuthorityWorkerSessionId))
         {
             return BuildRejectedAssemblyResult(
                 instruction,
@@ -1807,11 +1943,13 @@ public sealed class DadTransportService : IDisposable
                 BuildRemoteMutationRejectedReason("remote assembly instruction"));
     }
 
-    private DadAllianceRecruitmentResultDto HandleAllianceRecruitmentInstruction(string payloadJson)
+    private DadAllianceRecruitmentResultDto HandleAllianceRecruitmentInstruction(DadInboundRequestContext context, string payloadJson)
     {
-        var instruction = DadIpcJson.Deserialize<DadAllianceRecruitmentInstructionDto>(payloadJson)
-                          ?? new DadAllianceRecruitmentInstructionDto();
-        if (!IsAuthoritativeCoordinator(instruction.CoordinatorWorkerSessionId))
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadAllianceRecruitmentInstructionDto? instruction, out var rejectionReason) || instruction == null)
+            return BuildRejectedAllianceResult(new DadAllianceRecruitmentInstructionDto(), $"Malformed Alliance PF instruction: {rejectionReason}");
+        if (!MatchesAuthenticatedCoordinator(context, instruction.CoordinatorWorkerSessionId) ||
+            instruction.TargetWorkerSessionId.IsEmpty ||
+            !SameWorker(instruction.TargetWorkerSessionId, presenceService.WorkerSessionId))
         {
             return BuildRejectedAllianceResult(
                 instruction,
@@ -1828,35 +1966,23 @@ public sealed class DadTransportService : IDisposable
                ?? BuildRejectedAllianceResult(instruction, "Alliance PF receiver is unavailable.");
     }
 
-    private DadAllianceRecruitmentResultDto HandleAllianceRecruitmentCancellation(string payloadJson)
+    private DadAllianceRecruitmentResultDto HandleAllianceRecruitmentCancellation(DadInboundRequestContext context, string payloadJson)
     {
-        var cancellation = DadIpcJson.Deserialize<DadAllianceRecruitmentCancellationDto>(payloadJson)
-                           ?? new DadAllianceRecruitmentCancellationDto();
-        if (!IsAuthoritativeCoordinator(cancellation.CoordinatorWorkerSessionId))
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadAllianceRecruitmentCancellationDto? cancellation, out var rejectionReason) || cancellation == null)
         {
-            return new DadAllianceRecruitmentResultDto
-            {
-                RecruitmentId = cancellation.RecruitmentId,
-                WorkerSessionId = presenceService.WorkerSessionId,
-                TargetCharacterKey = cancellation.TargetCharacterKey,
-                State = DadAllianceRecruitmentState.Blocked,
-                ResultKind = DadAllianceRecruitmentResultKind.Blocked,
-                StopGeneration = cancellation.StopGeneration,
-                Summary = "Alliance PF cancellation did not come from the active Dad Coordinator identity.",
-            };
+            cancellation = new DadAllianceRecruitmentCancellationDto();
+            rejectionReason = $"Malformed Alliance PF cancellation: {rejectionReason}";
+            return BuildRejectedAllianceCancellation(cancellation, rejectionReason);
+        }
+        if (!MatchesAuthenticatedCoordinator(context, cancellation.CoordinatorWorkerSessionId) ||
+            cancellation.TargetWorkerSessionId.IsEmpty ||
+            !SameWorker(cancellation.TargetWorkerSessionId, presenceService.WorkerSessionId))
+        {
+            return BuildRejectedAllianceCancellation(cancellation, "Alliance PF cancellation authority or target does not match the authenticated route.");
         }
         if (!remoteMutationsAllowed)
         {
-            return new DadAllianceRecruitmentResultDto
-            {
-                RecruitmentId = cancellation.RecruitmentId,
-                WorkerSessionId = presenceService.WorkerSessionId,
-                TargetCharacterKey = cancellation.TargetCharacterKey,
-                State = DadAllianceRecruitmentState.Blocked,
-                ResultKind = DadAllianceRecruitmentResultKind.Blocked,
-                StopGeneration = cancellation.StopGeneration,
-                Summary = BuildRemoteMutationRejectedReason("alliance PF cancellation"),
-            };
+            return BuildRejectedAllianceCancellation(cancellation, BuildRemoteMutationRejectedReason("alliance PF cancellation"));
         }
 
         return allianceCancellationHandler?.Invoke(cancellation)
@@ -1884,6 +2010,29 @@ public sealed class DadTransportService : IDisposable
                    workerSessionId.Value,
                    StringComparison.OrdinalIgnoreCase);
     }
+
+    private bool IsAuthenticatedCoordinator(DadInboundRequestContext context)
+        => TargetsLocalWorker(context) &&
+           IsAuthoritativeCoordinator(context.AuthenticatedSourceWorkerSessionId);
+
+    private bool MatchesAuthenticatedCoordinator(
+        DadInboundRequestContext context,
+        DadWorkerSessionId declaredAuthority)
+        => !declaredAuthority.IsEmpty &&
+           SameWorker(declaredAuthority, context.AuthenticatedSourceWorkerSessionId) &&
+           IsAuthenticatedCoordinator(context);
+
+    private bool TargetsLocalWorker(DadInboundRequestContext context)
+        => context.AuthenticatedTargetWorkerSessionId.IsEmpty ||
+           SameWorker(context.AuthenticatedTargetWorkerSessionId, presenceService.WorkerSessionId);
+
+    private static bool SameWorker(DadWorkerSessionId left, DadWorkerSessionId right)
+        => !left.IsEmpty && !right.IsEmpty &&
+           string.Equals(left.Value, right.Value, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsReadOnlyForwardRequest(string messageType)
+        => messageType is MessageSnapshotRequest or MessageStatusQuery or MessageRosterCatalogRequest or
+            MessageProfileCatalogRequest or MessageWorkerExecutionStatus or MessageAllianceUiSnapshot;
 
     private DadAlliancePfUiSnapshotDto HandleAllianceUiSnapshot()
         => allianceUiSnapshotProvider?.Invoke() ?? new DadAlliancePfUiSnapshotDto
@@ -1913,20 +2062,29 @@ public sealed class DadTransportService : IDisposable
             Summary = summary,
         };
 
-    private DadCharacterLoadResultDto HandleCharacterLoadCommand(string payloadJson)
+    private DadAllianceRecruitmentResultDto BuildRejectedAllianceCancellation(
+        DadAllianceRecruitmentCancellationDto cancellation,
+        string summary)
+        => new()
+        {
+            RecruitmentId = cancellation.RecruitmentId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            TargetCharacterKey = cancellation.TargetCharacterKey,
+            State = DadAllianceRecruitmentState.Blocked,
+            ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+            StopGeneration = cancellation.StopGeneration,
+            Summary = summary,
+        };
+
+    private DadCharacterLoadResultDto HandleCharacterLoadCommand(DadInboundRequestContext context, string payloadJson)
     {
-        var command = DadIpcJson.Deserialize<DadCharacterLoadCommandDto>(payloadJson)
-                      ?? new DadCharacterLoadCommandDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadCharacterLoadCommandDto? command, out var rejectionReason) || command == null)
+            return BuildRejectedCharacterLoad(new DadCharacterLoadCommandDto(), $"Malformed character-load command: {rejectionReason}");
+        if (!IsAuthenticatedCoordinator(context))
+            return BuildRejectedCharacterLoad(command, "Character-load command did not come from the authenticated coordinator.");
         if (!remoteMutationsAllowed)
         {
-            return new DadCharacterLoadResultDto
-            {
-                CommandId = command.CommandId,
-                Accepted = false,
-                DryRun = command.DryRun,
-                Summary = BuildRemoteMutationRejectedReason("remote character-load command"),
-                Snapshot = BuildLocalTransportSnapshot(),
-            };
+            return BuildRejectedCharacterLoad(command, BuildRemoteMutationRejectedReason("remote character-load command"));
         }
 
         if (command.DryRun)
@@ -1964,9 +2122,12 @@ public sealed class DadTransportService : IDisposable
         };
     }
 
-    private DadCancelAckDto HandleCancelRun(string payloadJson)
+    private DadCancelAckDto HandleCancelRun(DadInboundRequestContext context, string payloadJson)
     {
-        var command = DadIpcJson.Deserialize<DadCancelCommandDto>(payloadJson) ?? new DadCancelCommandDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadCancelCommandDto? command, out var rejectionReason) || command == null)
+            return BuildRejectedCancelAck(new DadCancelCommandDto(), $"Malformed cancel command: {rejectionReason}");
+        if (!MatchesAuthenticatedCoordinator(context, command.AuthorityWorkerSessionId))
+            return BuildRejectedCancelAck(command, "Cancel authority does not match the authenticated coordinator source.");
         if (!remoteMutationsAllowed)
             return BuildRejectedCancelAck(command, BuildRemoteMutationRejectedReason("remote cancel broadcast"));
 
@@ -1974,9 +2135,12 @@ public sealed class DadTransportService : IDisposable
         return presenceService.HandleCancelRun(command);
     }
 
-    private DadRunResult HandleCancelCommand(string payloadJson)
+    private DadRunResult HandleCancelCommand(DadInboundRequestContext context, string payloadJson)
     {
-        var command = DadIpcJson.Deserialize<DadCancelCommandDto>(payloadJson) ?? new DadCancelCommandDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadCancelCommandDto? command, out var rejectionReason) || command == null)
+            return DadRunResult.Rejected(null, $"Malformed cancel command: {rejectionReason}");
+        if (!MatchesAuthenticatedCoordinator(context, command.AuthorityWorkerSessionId))
+            return DadRunResult.Rejected(null, "Cancel authority does not match the authenticated coordinator source.");
         if (!remoteMutationsAllowed)
             return DadRunResult.Rejected(null, BuildRemoteMutationRejectedReason("remote cancel command"));
 
@@ -2001,7 +2165,15 @@ public sealed class DadTransportService : IDisposable
 
     private DadRunResult HandleStartRun(string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadRunRequest>(payloadJson) ?? new DadRunRequest();
+        if (!DadIpcJson.TryDeserialize(
+                payloadJson,
+                out DadRunRequest? request,
+                out var rejectionReason) || request == null)
+        {
+            return DadRunResult.Rejected(
+                null,
+                $"Malformed run start request: {rejectionReason}");
+        }
         if (!configuration.RunAsServerDad)
             return DadRunResult.Rejected(request, "Only Dad Coordinator accepts remote run starts.");
         if (!remoteMutationsAllowed)
@@ -2017,10 +2189,13 @@ public sealed class DadTransportService : IDisposable
         return BuildLocalRosterCatalogResponse(request);
     }
 
-    private DadAggregateRosterCatalogResponse HandleAggregateRosterCatalogRequest(string payloadJson)
+    private DadAggregateRosterCatalogResponse HandleAggregateRosterCatalogRequest(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadAggregateRosterCatalogRequest>(payloadJson)
-                      ?? new DadAggregateRosterCatalogRequest();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadAggregateRosterCatalogRequest? request, out var rejectionReason) || request == null)
+            return BuildRejectedRosterAggregate($"Malformed roster aggregate request: {rejectionReason}");
+        if (request.RequestingWorkerSessionId.IsEmpty ||
+            !SameWorker(request.RequestingWorkerSessionId, context.AuthenticatedSourceWorkerSessionId))
+            return BuildRejectedRosterAggregate("Roster aggregate requester does not match the authenticated frame source.");
         request.Plan ??= new DadRosterRefreshPlan();
         request.Plan.PlanId = string.IsNullOrWhiteSpace(request.Plan.PlanId)
             ? request.RequestId
@@ -2056,9 +2231,9 @@ public sealed class DadTransportService : IDisposable
         };
     }
 
-    // B2/B7: return the cached local roster-catalog response WITHOUT building (the build is heavy XADB work
-    // and the publish projection can run on the inbound socket thread via HandleHubRosterPublishRequest).
-    // The cache is rebuilt only on the framework-thread cadence (RebuildLocalRosterCatalogCacheIfDue), which
+    // B2/B7: return the cached local roster-catalog response WITHOUT building (the build is heavy XADB work).
+    // Both publication projections and cache rebuilds are framework-thread confined; the cache is rebuilt only
+    // on the framework-thread cadence (RebuildLocalRosterCatalogCacheIfDue), which
     // runs immediately before each publish flush, so this is fresh on the normal publish path.
     private DadPeerRosterCatalogResponse? GetCachedLocalRosterCatalogResponse()
         => cachedLocalRosterCatalog?.Response;
@@ -2145,21 +2320,15 @@ public sealed class DadTransportService : IDisposable
         });
     }
 
-    private DadRosterRefreshResultDto HandleRosterRefreshCommand(string payloadJson)
+    private DadRosterRefreshResultDto HandleRosterRefreshCommand(DadInboundRequestContext context, string payloadJson)
     {
-        var command = DadIpcJson.Deserialize<DadRosterRefreshCommandDto>(payloadJson)
-                      ?? new DadRosterRefreshCommandDto();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadRosterRefreshCommandDto? command, out var rejectionReason) || command == null)
+            return BuildRejectedRosterRefresh(new DadRosterRefreshCommandDto(), $"Malformed roster-refresh command: {rejectionReason}");
+        if (!IsAuthenticatedCoordinator(context))
+            return BuildRejectedRosterRefresh(command, "Roster-refresh command did not come from the authenticated coordinator.");
         if (!remoteMutationsAllowed)
         {
-            return new DadRosterRefreshResultDto
-            {
-                CommandId = command.CommandId,
-                AccountKey = command.AccountKey,
-                CharacterKey = command.CharacterKey,
-                ContentId = command.ContentId,
-                Summary = BuildRemoteMutationRejectedReason("remote roster-refresh command"),
-                Snapshot = BuildLocalTransportSnapshot(),
-            };
+            return BuildRejectedRosterRefresh(command, BuildRemoteMutationRejectedReason("remote roster-refresh command"));
         }
 
         return rosterRefreshHandler?.Invoke(command) ?? new DadRosterRefreshResultDto
@@ -2179,10 +2348,13 @@ public sealed class DadTransportService : IDisposable
         return BuildLocalProfileCatalogResponse(requestId);
     }
 
-    private DadAggregateProfileCatalogResponse HandleAggregateProfileCatalogRequest(string payloadJson)
+    private DadAggregateProfileCatalogResponse HandleAggregateProfileCatalogRequest(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadAggregateProfileCatalogRequest>(payloadJson)
-                      ?? new DadAggregateProfileCatalogRequest();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadAggregateProfileCatalogRequest? request, out var rejectionReason) || request == null)
+            return BuildRejectedProfileAggregate($"Malformed profile aggregate request: {rejectionReason}");
+        if (request.RequestingWorkerSessionId.IsEmpty ||
+            !SameWorker(request.RequestingWorkerSessionId, context.AuthenticatedSourceWorkerSessionId))
+            return BuildRejectedProfileAggregate("Profile aggregate requester does not match the authenticated frame source.");
         request.RequestId = string.IsNullOrWhiteSpace(request.RequestId)
             ? Guid.NewGuid().ToString("N")
             : request.RequestId;
@@ -2211,10 +2383,12 @@ public sealed class DadTransportService : IDisposable
         };
     }
 
-    private DadProfileUpdateAck HandleProfileUpdateCommand(string payloadJson)
+    private DadProfileUpdateAck HandleProfileUpdateCommand(DadInboundRequestContext context, string payloadJson)
     {
-        var request = DadIpcJson.Deserialize<DadProfileUpdateRequest>(payloadJson)
-                      ?? new DadProfileUpdateRequest();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadProfileUpdateRequest? request, out var rejectionReason) || request == null)
+            return new DadProfileUpdateAck { Summary = $"Malformed profile update: {rejectionReason}" };
+        if (!IsAuthenticatedCoordinator(context))
+            return new DadProfileUpdateAck { RequestId = request.RequestId, Summary = "Profile update did not come from the authenticated coordinator." };
         if (!remoteMutationsAllowed)
         {
             return new DadProfileUpdateAck
@@ -2231,10 +2405,12 @@ public sealed class DadTransportService : IDisposable
         };
     }
 
-    private DadWorkerExecutionAck HandleWorkerExecutionCommand(string payloadJson)
+    private DadWorkerExecutionAck HandleWorkerExecutionCommand(DadInboundRequestContext context, string payloadJson)
     {
-        var command = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(payloadJson)
-                      ?? new DadWorkerExecutionCommand();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadWorkerExecutionCommand? command, out var rejectionReason) || command == null)
+            return BuildRejectedWorkerExecution(new DadWorkerExecutionCommand(), $"Malformed worker execution command: {rejectionReason}");
+        if (!IsAuthenticatedCoordinator(context))
+            return BuildRejectedWorkerExecution(command, "Worker execution command did not come from the authenticated coordinator.");
         if (!remoteMutationsAllowed)
         {
             return new DadWorkerExecutionAck
@@ -2262,10 +2438,12 @@ public sealed class DadTransportService : IDisposable
             Summary = "Dad worker execution status unavailable.",
         };
 
-    private DadWorkerExecutionAck HandleWorkerExecutionCancel(string payloadJson)
+    private DadWorkerExecutionAck HandleWorkerExecutionCancel(DadInboundRequestContext context, string payloadJson)
     {
-        var command = DadIpcJson.Deserialize<DadWorkerExecutionCancel>(payloadJson)
-                      ?? new DadWorkerExecutionCancel();
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadWorkerExecutionCancel? command, out var rejectionReason) || command == null)
+            return BuildRejectedWorkerExecutionCancel(new DadWorkerExecutionCancel(), $"Malformed worker execution cancellation: {rejectionReason}");
+        if (!IsAuthenticatedCoordinator(context))
+            return BuildRejectedWorkerExecutionCancel(command, "Worker execution cancellation did not come from the authenticated coordinator.");
         if (!remoteMutationsAllowed)
         {
             return new DadWorkerExecutionAck
@@ -2938,6 +3116,9 @@ public sealed class DadTransportService : IDisposable
     {
         try
         {
+            var authenticatedRequest = DadLifecycleCleanupRules.RebindStopAllFanoutRequester(
+                request,
+                presenceService.WorkerSessionId);
             var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
             var deadlineUtc = DateTime.UtcNow + timeout;
             while (DateTime.UtcNow < deadlineUtc)
@@ -2949,7 +3130,7 @@ public sealed class DadTransportService : IDisposable
                 var response = await SendRequestAsync(
                         target,
                         MessageStopAll,
-                        DadIpcJson.Serialize(request),
+                        DadIpcJson.Serialize(authenticatedRequest),
                         cancellationToken,
                         remaining)
                     .ConfigureAwait(false);
@@ -4297,6 +4478,110 @@ public sealed class DadTransportService : IDisposable
         return string.Empty;
     }
 
+    private DadStopAllStatus BuildRejectedStopAll(DadStopAllRequest request, string reason)
+    {
+        var rejected = new DadStopAllStatus
+        {
+            OperationId = string.IsNullOrWhiteSpace(request.OperationId) ? Guid.NewGuid().ToString("N") : request.OperationId,
+            RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
+            SubmittedAtUtc = request.RequestedAtUtc == default ? DateTime.UtcNow : request.RequestedAtUtc,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Partial = true,
+            LocalResult = new DadStopAllWorkerResult
+            {
+                OperationId = request.OperationId,
+                WorkerSessionId = presenceService.WorkerSessionId,
+                State = DadStopAllWorkerState.Rejected,
+                LocalCleanupCompleted = false,
+                Partial = true,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Summary = reason,
+            },
+            Summary = reason,
+        };
+        DadStopAllStatusRules.FinalizeFromWorkers(rejected, DateTime.UtcNow);
+        rejected.Summary = reason;
+        return rejected;
+    }
+
+    private DadWakeTakeoverResultDto BuildRejectedWakeTakeover(DadWakeTakeoverRequestDto request, string reason)
+        => new()
+        {
+            SchedulerRunId = request.SchedulerRunId,
+            SlotId = request.SlotId,
+            AccountKey = request.AccountKey,
+            CharacterKey = request.CharacterKey,
+            OperationToken = request.OperationToken,
+            CommitKind = request.CommitKind,
+            ExecutionTimeUtc = request.ExecutionTimeUtc,
+            Status = DadWakeTakeoverStatus.Blocked,
+            Stage = DadWakeTakeoverStage.Blocked,
+            Phase = DadWakeTakeoverPhase.Blocked,
+            AcknowledgementState = DadWakeAcknowledgementState.Rejected,
+            Summary = reason,
+            BlockedReason = reason,
+            Snapshot = BuildLocalTransportSnapshot(),
+        };
+
+    private DadCharacterLoadResultDto BuildRejectedCharacterLoad(DadCharacterLoadCommandDto command, string reason)
+        => new()
+        {
+            CommandId = command.CommandId,
+            Accepted = false,
+            DryRun = command.DryRun,
+            Summary = reason,
+            Snapshot = BuildLocalTransportSnapshot(),
+        };
+
+    private DadAggregateRosterCatalogResponse BuildRejectedRosterAggregate(string reason)
+        => new()
+        {
+            RespondedAtUtc = DateTime.UtcNow,
+            Complete = true,
+            Summary = reason,
+            Warnings = [reason],
+        };
+
+    private DadRosterRefreshResultDto BuildRejectedRosterRefresh(DadRosterRefreshCommandDto command, string reason)
+        => new()
+        {
+            CommandId = command.CommandId,
+            AccountKey = command.AccountKey,
+            CharacterKey = command.CharacterKey,
+            ContentId = command.ContentId,
+            DryRun = command.DryRun,
+            Summary = reason,
+            Snapshot = BuildLocalTransportSnapshot(),
+        };
+
+    private static DadAggregateProfileCatalogResponse BuildRejectedProfileAggregate(string reason)
+        => new()
+        {
+            RespondedAtUtc = DateTime.UtcNow,
+            Complete = true,
+            Summary = reason,
+            Warnings = [reason],
+        };
+
+    private DadWorkerExecutionAck BuildRejectedWorkerExecution(DadWorkerExecutionCommand command, string reason)
+        => new()
+        {
+            CommandId = command.CommandId,
+            RunId = command.RunId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            Accepted = false,
+            Summary = reason,
+        };
+
+    private DadWorkerExecutionAck BuildRejectedWorkerExecutionCancel(DadWorkerExecutionCancel command, string reason)
+        => new()
+        {
+            RunId = command.RunId,
+            WorkerSessionId = presenceService.WorkerSessionId,
+            Accepted = false,
+            Summary = reason,
+        };
+
     private DadParticipantReadyDto BuildRejectedWakeResponse(DadWakeRequestDto request, string reason)
     {
         var snapshot = BuildLocalTransportSnapshot();
@@ -4384,6 +4669,18 @@ public sealed class DadTransportService : IDisposable
 
         UpdateTransportQueueDiagnostics();
         return true;
+    }
+
+    private void RecordMalformedNotification(string notification, string reason)
+    {
+        if (!malformedNotificationDiagnostics.TryReport(DateTime.UtcNow, out var suppressed))
+            return;
+
+        log.Warning(
+            "[dad] Dropped malformed {Notification} notification: {Reason}. Suppressed {SuppressedCount} similar diagnostic(s) since the prior report.",
+            notification,
+            string.IsNullOrWhiteSpace(reason) ? "payload rejected" : reason,
+            suppressed);
     }
 
     private void DrainTransportEvents()
@@ -4559,13 +4856,14 @@ public sealed class DadTransportService : IDisposable
     private static string GetBuildVersion()
         => typeof(DadTransportService).Assembly.GetName().Version?.ToString() ?? "unknown";
 
-    private sealed class DadHubConnection
+    private sealed class DadHubConnection : IDisposable
     {
         private readonly TcpClient client;
         private readonly SemaphoreSlim writeGate = new(1, 1);
         private readonly DadHubHandshakeState handshake;
         private readonly DadInboundRequestGate inboundRequestGate = new(MaxConcurrentInboundRequestsPerConnection);
         private readonly DadRuntimeReadinessTracker runtimeReadinessTracker = new();
+        private int disposed;
 
         public DadHubConnection(
             TcpClient client,
@@ -4656,6 +4954,15 @@ public sealed class DadTransportService : IDisposable
             catch
             {
             }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+                return;
+
+            Close();
+            Cancellation.Dispose();
         }
     }
 

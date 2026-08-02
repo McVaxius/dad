@@ -200,7 +200,7 @@ public sealed class Plugin : IDalamudPlugin
             Condition,
             KeyState);
         PartyInviteGateway = new InfoProxyPartyInviteGateway(Configuration, Framework, PlayerState, PartyList, Condition, Log);
-        PartyTeardownService = new DadPartyTeardownService(PartyList, PlayerState, Condition, Log);
+        PartyTeardownService = new DadPartyTeardownService(Configuration, PartyList, PlayerState, Condition, Log);
         var requestedJobPreparationGate = new DadRequestedJobPreparationGate();
         var classJobGearsetGateway = new DadClassJobGearsetGateway(Framework);
         PresenceService = new DadPresenceService(
@@ -341,6 +341,7 @@ public sealed class Plugin : IDalamudPlugin
             TransportService,
             AutoPartyDiscordService,
             new DadAlliancePartyFinderNativeGateway(
+                Configuration,
                 Framework,
                 Condition,
                 PartyList,
@@ -378,6 +379,7 @@ public sealed class Plugin : IDalamudPlugin
             () => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureAutoPartyAuthorizationGate(
             AutoPartyService.EvaluateSchedulerAuthorization);
+        SchedulerService.ConfigureAdmissionBlocker(GetSchedulerAdmissionBlocker);
         SchedulerService.ConfigureCrewFormation(
             StartCrewRegularParty,
             (runId, group, preview) =>
@@ -407,14 +409,14 @@ public sealed class Plugin : IDalamudPlugin
             WorkerExecutionService.Accept,
             WorkerExecutionService.GetStatus,
             WorkerExecutionService.Cancel);
-        TransportService.ConfigureStopAllHandler(StopAllLocal);
+        TransportService.ConfigureStopAllHandler(RunLocalLifecycleCleanup);
         TransportService.ConfigureAlliancePartyFinderHandlers(
             AlliancePartyFinderService.AcceptHubInstruction,
             AlliancePartyFinderService.AcceptCancellation,
             AlliancePartyFinderService.BuildUiSnapshot);
 
         if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
-            ConfigManager.CurrentAccountId = Configuration.ClientAccountId;
+            ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId);
 
         ClientState.Login += OnLogin;
 
@@ -482,6 +484,13 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        RunLocalLifecycleCleanup(new DadStopAllRequest
+        {
+            OperationId = $"unload-{Guid.NewGuid():N}",
+            RequestedByWorkerSessionId = PresenceService.WorkerSessionId,
+            RequestedAtUtc = DateTime.UtcNow,
+            Reason = "DAD unloading.",
+        });
         backgroundCancellation.Cancel();
         backgroundTasks.Dispose();
         PartyInviteGateway.Reset();
@@ -942,40 +951,6 @@ public sealed class Plugin : IDalamudPlugin
         PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
         TransportService.NotifyLocalRosterChanged("Local DAD account alias changed.");
         status = $"Named this DAD '{normalizedAlias}'.";
-        return true;
-    }
-
-    public bool MergeDadAccountIntoCurrent(DadAccountKey sourceAccountKey)
-    {
-        var sourceAccount = ConfigManager.GetAccount(sourceAccountKey);
-        var targetAccount = ConfigManager.GetCurrentAccount();
-        if (sourceAccount == null || targetAccount == null)
-            return false;
-
-        var sourceKey = new DadAccountKey(sourceAccount.AccountId);
-        var targetKey = new DadAccountKey(targetAccount.AccountId);
-        if (sourceKey.IsEmpty || targetKey.IsEmpty ||
-            DadRosterIdentity.SameAccount(sourceKey, targetKey))
-        {
-            return false;
-        }
-
-        if (!ConfigManager.MergeAccountInto(sourceKey, targetKey))
-            return false;
-
-        DropDebouncedAccountAlias(sourceKey);
-        DropDebouncedUiWrites("launch-profile:");
-        RosterCatalogService.MergeAccount(sourceKey, targetKey, targetAccount.AccountAlias);
-        Configuration.LastAccountId = targetAccount.AccountId;
-        Configuration.Save();
-
-        PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
-        RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool, new DadRosterRefreshPlan
-        {
-            IncludeHidden = true,
-            IncludeIgnored = true,
-            StaleAfterHours = Configuration.RosterCatalog.StaleAfterHours,
-        });
         return true;
     }
 
@@ -2591,12 +2566,25 @@ public sealed class Plugin : IDalamudPlugin
             ? feedback
             : null;
 
-    private bool CanAdvanceSchedulerQueue()
-        => !standaloneCrewDisbandActive &&
-           Configuration.RunAsServerDad &&
+    private string GetSchedulerAdmissionBlocker()
+        => DadSchedulerRoutingRules.GetAdmissionBlocker(
+            Configuration.RunAsServerDad,
+            SchedulerService.CurrentState.IsActive,
+            SchedulerService.IsCrewFormationActive,
+            standaloneCrewDisbandActive,
+            IsBusy(GetVisibleRunState().VisibleRun),
+            SchedulerService.HasPendingCancellationCleanup,
+            RunCoordinatorService.HasPendingCancellationCleanup);
+
+    private bool CanAdmitSchedulerWork()
+        => string.IsNullOrWhiteSpace(GetSchedulerAdmissionBlocker());
+
+    private bool CanUpdateSchedulerLifecycle()
+        => Configuration.RunAsServerDad &&
+           !standaloneCrewDisbandActive &&
            (SchedulerService.IsCrewFormationActive ||
             SchedulerService.CurrentState.IsActive ||
-            !IsBusy(GetVisibleRunState().VisibleRun));
+            CanAdmitSchedulerWork());
 
     public string StartSchedulerPresetFromJson(string json)
     {
@@ -2615,8 +2603,9 @@ public sealed class Plugin : IDalamudPlugin
             return DadIpcJson.Serialize(DadRunResult.Rejected(null, rejectionReason));
         }
 
-        if (!CanAdvanceSchedulerQueue())
-            return DadIpcJson.Serialize(DadRunResult.Rejected(null, "Dad run active; enqueue scheduler preset instead of direct start."));
+        var admissionBlocker = GetSchedulerAdmissionBlocker();
+        if (!string.IsNullOrWhiteSpace(admissionBlocker))
+            return DadIpcJson.Serialize(DadRunResult.Rejected(null, admissionBlocker));
 
         var preview = BuildPlannerGroupRunRequestPreview(group.GroupId, new DadPlannerGroupStartRequest
         {
@@ -2642,7 +2631,7 @@ public sealed class Plugin : IDalamudPlugin
             RequestedBy = schedulerRequestedBy,
             CreatedAtUtc = DateTime.UtcNow,
         });
-        if (!startRequest.DryRun && state.IsActive && CanAdvanceSchedulerQueue())
+        if (!startRequest.DryRun && state.IsActive && CanUpdateSchedulerLifecycle())
         {
             SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
@@ -2729,7 +2718,7 @@ public sealed class Plugin : IDalamudPlugin
             DryRun = plan.DryRun,
         });
         SchedulerService.EnqueueRosterUpdate(plan, catalog);
-        if (CanAdvanceSchedulerQueue())
+        if (CanAdmitSchedulerWork())
         {
             SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
@@ -2795,7 +2784,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadScheduleRunState StartScheduleRunFromShell(string scheduleId, bool dryRun, string requestedBy)
     {
         var state = SchedulerService.StartScheduleRun(scheduleId, dryRun, requestedBy);
-        if (CanAdvanceSchedulerQueue())
+        if (CanAdmitSchedulerWork())
         {
             SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
@@ -2839,7 +2828,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var enqueue = SchedulerService.EnqueueScheduledPresetWithDisposition(group, request);
-        if (enqueue.Disposition == DadSchedulerEnqueueDisposition.Added && CanAdvanceSchedulerQueue())
+        if (enqueue.Disposition == DadSchedulerEnqueueDisposition.Added && CanAdmitSchedulerWork())
         {
             SchedulerService.UpdateWithScheduleRepeatBoundary(
                 ResolvePlannerGroup,
@@ -3886,10 +3875,13 @@ public sealed class Plugin : IDalamudPlugin
         return string.Empty;
     }
 
-    private DadStopAllWorkerResult StopAllLocal(DadStopAllRequest request)
+    private DadStopAllWorkerResult RunLocalLifecycleCleanup(DadStopAllRequest request)
     {
         var hasRecordedResult = localStopAllResults.TryGetValue(request.OperationId, out var recorded);
-        if (hasRecordedResult && !DadStopAllStatusRules.IsLocalCleanupPending(recorded!))
+        var decision = DadLifecycleCleanupRules.Decide(
+            hasRecordedResult,
+            hasRecordedResult && DadStopAllStatusRules.IsLocalCleanupPending(recorded!));
+        if (decision.ReturnRecordedResult)
             return recorded!.Clone();
 
         try
@@ -3897,7 +3889,7 @@ public sealed class Plugin : IDalamudPlugin
             var reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by DAD Stop-all." : request.Reason;
             DadStopAllWorkerResult result;
             DadWakeTakeoverStopAllResult wake;
-            if (!hasRecordedResult)
+            if (decision.RunFullCleanup)
             {
                 var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
                 CancelStandaloneCrewDisband(reason);
@@ -4359,11 +4351,13 @@ public sealed class Plugin : IDalamudPlugin
         var wasEnabled = Configuration.PluginEnabled;
         if (!enabled && wasEnabled)
         {
-            CancelStandaloneCrewDisband("DAD disabled by operator.");
-            SchedulerService.CancelCrewFormation("DAD disabled by operator.");
-            WakeTakeoverService.StopAll("DAD disabled by operator.");
-            AutoPartyService.StopAll("DAD disabled by operator.");
-            AlliancePartyFinderService.Stop("DAD disabled by operator.");
+            RunLocalLifecycleCleanup(new DadStopAllRequest
+            {
+                OperationId = $"disable-{Guid.NewGuid():N}",
+                RequestedByWorkerSessionId = PresenceService.WorkerSessionId,
+                RequestedAtUtc = DateTime.UtcNow,
+                Reason = "DAD disabled by operator.",
+            });
         }
         Configuration.PluginEnabled = enabled;
         if (enabled && !wasEnabled)
@@ -5362,6 +5356,7 @@ public sealed class Plugin : IDalamudPlugin
         RunFrameworkStep("AutoParty", () => AutoPartyService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
         RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);
+        RunFrameworkStep("PendingRewardProbeCancellation", SchedulerService.UpdatePendingRewardProbeCancellations);
         RunFrameworkStep("RetainedRosterKnowledge", LearnRetainedTransportRosterKnowledge);
         RunFrameworkStep("DeferredRosterPersistence", RosterCatalogService.UpdateDeferredPersistence);
         RunFrameworkStep("ClientReconnectWindow", () =>
@@ -5381,7 +5376,7 @@ public sealed class Plugin : IDalamudPlugin
         });
         RunFrameworkStep("SchedulerUpdate", () =>
         {
-            if (CanAdvanceSchedulerQueue())
+            if (CanUpdateSchedulerLifecycle())
             {
                 SchedulerService.UpdateWithScheduleRepeatBoundary(
                     ResolvePlannerGroup,

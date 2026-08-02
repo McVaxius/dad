@@ -7,6 +7,8 @@ namespace dad.Services;
 // Invoked from DadCoordinatorService.FinalizeRun on successful completion (framework thread).
 internal static class DadCompletionActionRunner
 {
+    private static readonly IDadGameCommandExecutor NativeCommandExecutor = new DadNativeGameCommandExecutor();
+
     private enum StepKind
     {
         Sound,
@@ -101,7 +103,7 @@ internal static class DadCompletionActionRunner
                 RunGrandCompanyHandIn(step.Payload, log);
                 break;
             case StepKind.CustomCommand:
-                Plugin.CommandManager.ProcessCommand(step.Payload);
+                RunNativeCommand(step.Payload, "post-run completion command", log);
                 break;
             case StepKind.KillAction:
                 if (int.TryParse(step.Payload, out var killMode) &&
@@ -122,13 +124,21 @@ internal static class DadCompletionActionRunner
             return;
         }
 
-        if (!trimmed.StartsWith("/", StringComparison.Ordinal) || trimmed.Contains('\n') || trimmed.Contains('\r'))
+        RunNativeCommand(trimmed, "Grand Company hand-in command", log);
+    }
+
+    private static void RunNativeCommand(string command, string actionLabel, IPluginLog log)
+    {
+        if (NativeCommandExecutor.TryExecute(command, out var failure))
         {
-            log.Warning("[dad] Grand Company hand-in utility skipped invalid command.");
+            log.Information("[dad] Submitted native {ActionLabel}.", actionLabel);
             return;
         }
 
-        Plugin.CommandManager.ProcessCommand(trimmed);
+        log.Warning(
+            "[dad] Rejected {ActionLabel}: {Failure}",
+            actionLabel,
+            string.IsNullOrWhiteSpace(failure) ? "native chat submission failed" : failure);
     }
 
     private static void RunKillAction(DadCompletionKillMode mode, IPluginLog log)

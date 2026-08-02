@@ -22,11 +22,15 @@ public sealed record DadParticipantPartyDepartureObservation(
     bool PartyMenuVisible,
     bool PromptVisible,
     string PromptIdentity,
-    string PromptText);
+    string PromptText,
+    bool PromptReady = true,
+    bool OtherReadyPromptVisible = false);
 
 public sealed record DadParticipantPartyDepartureDecision(
     DadParticipantPartyDepartureAction Action,
-    string Summary);
+    string Summary,
+    bool PromptOverrideUsed = false,
+    string PromptAudit = "");
 
 /// <summary>
 /// Runtime-independent safety controller used only before participant invite acceptance. Successful-run
@@ -46,20 +50,31 @@ public sealed class DadParticipantPartyDepartureController
     private readonly DateTime startedAtUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
-    private bool lastPromptVisible;
+    private DadPromptObservation lastPrompt;
     private bool commandSent;
     private int approvedCommandAttempt;
     private int partyMenuCallbackAttempts;
     private DateTime? soloConfirmedSinceUtc;
+    private readonly bool allowFreshUnprovenPromptApproval;
 
     public DadParticipantPartyDepartureController(
         ulong expectedInviterContentId,
         DateTime startedAtUtc,
-        bool promptVisible)
+        bool promptVisible,
+        string promptIdentity = "",
+        bool promptReady = false,
+        string promptText = "",
+        bool allowFreshUnprovenPromptApproval = false)
     {
         this.expectedInviterContentId = expectedInviterContentId;
         this.startedAtUtc = startedAtUtc;
-        lastPromptVisible = promptVisible;
+        this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
+        lastPrompt = new DadPromptObservation(
+            promptVisible,
+            promptReady,
+            promptIdentity,
+            promptText,
+            SoleReadyPrompt: promptVisible);
         nextAttemptUtc = startedAtUtc;
     }
 
@@ -100,8 +115,14 @@ public sealed class DadParticipantPartyDepartureController
                 $"Participant party departure timed out after {commandAttempts} leave command attempt(s).");
         }
 
-        var promptJustAppeared = observation.PromptVisible && !lastPromptVisible;
-        lastPromptVisible = observation.PromptVisible;
+        var currentPrompt = new DadPromptObservation(
+            observation.PromptVisible,
+            observation.PromptReady,
+            observation.PromptIdentity,
+            observation.PromptText,
+            observation.PromptVisible && !observation.OtherReadyPromptVisible);
+        var promptBaseline = lastPrompt;
+        lastPrompt = currentPrompt;
 
         if (observation.IsInDuty || observation.IsQueued || !observation.IsWorldStable)
         {
@@ -119,17 +140,31 @@ public sealed class DadParticipantPartyDepartureController
 
         if (observation.PromptVisible)
         {
-            if (!commandSent || !promptJustAppeared || approvedCommandAttempt == commandAttempts)
+            var operationKey = $"participant-departure|{expectedInviterContentId}";
+            var promptDecision = DadPromptOwnershipRules.Evaluate(new DadPromptApprovalRequest(
+                DadPromptOperationKind.ParticipantPartyDeparture,
+                operationKey,
+                $"participant-departure|{observation.ExpectedInviterContentId}",
+                commandAttempts,
+                commandAttempts,
+                approvedCommandAttempt,
+                promptBaseline,
+                currentPrompt,
+                string.Empty,
+                allowFreshUnprovenPromptApproval));
+            if (!commandSent || !promptDecision.CanApprove)
             {
                 return new DadParticipantPartyDepartureDecision(
                     DadParticipantPartyDepartureAction.None,
-                    "A pre-existing or already-handled confirmation is visible; it will not be approved.");
+                    $"The participant leave confirmation will not be approved: {promptDecision.Summary}");
             }
 
             approvedCommandAttempt = commandAttempts;
             return new DadParticipantPartyDepartureDecision(
                 DadParticipantPartyDepartureAction.ApprovePrompt,
-                $"Approving the fresh participant leave confirmation for attempt {commandAttempts}/{MaximumAttempts}.");
+                $"Approving the fresh participant leave confirmation for attempt {commandAttempts}/{MaximumAttempts}.",
+                promptDecision.UsedOverride,
+                promptDecision.Summary);
         }
 
         if (commandSent && partyStateConfirmsSolo)

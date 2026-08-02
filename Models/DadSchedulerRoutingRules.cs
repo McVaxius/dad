@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace dad.Models;
 
 public readonly record struct DadSchedulerClientRoute(
@@ -13,6 +15,42 @@ public readonly record struct DadWakeSlotPipelineDecision(
 
 public static class DadSchedulerRoutingRules
 {
+    private static readonly JsonSerializerOptions ContractJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        MaxDepth = 32,
+    };
+
+    public static string GetAdmissionBlocker(
+        bool isCoordinator,
+        bool schedulerActive,
+        bool crewFormationActive,
+        bool standaloneDisbandActive,
+        bool visibleRunActive,
+        bool schedulerCleanupPending,
+        bool coordinatorCleanupPending)
+    {
+        if (!isCoordinator)
+            return "Only Dad Coordinator may admit scheduler work.";
+        if (schedulerActive)
+            return "A scheduler preset is already active.";
+        if (crewFormationActive)
+            return "Crew Formation is already active.";
+        if (standaloneDisbandActive)
+            return "A standalone guarded disband is already active.";
+        if (visibleRunActive)
+            return "A visible DAD run is already active.";
+        if (schedulerCleanupPending)
+            return "Scheduler cancellation cleanup is still awaiting exact acknowledgement.";
+        if (coordinatorCleanupPending)
+            return "Coordinator cancellation cleanup is still awaiting exact acknowledgement.";
+        return string.Empty;
+    }
+
+    public static bool ShouldAdvanceOccurrenceCadence(
+        bool occurrenceAdmitted,
+        bool occurrenceConsumedByExplicitSkip)
+        => occurrenceAdmitted || occurrenceConsumedByExplicitSkip;
+
     public static bool IsTakeoverCancellationComplete(DadWakeTakeoverResultDto? result)
         => result is
         {
@@ -22,6 +60,101 @@ public static class DadSchedulerRoutingRules
         {
             Phase: DadWakeTakeoverPhase.Ready,
         };
+
+    public static bool IsTakeoverCancellationComplete(
+        DadWakeTakeoverRequestDto request,
+        DadWorkerSessionId expectedWorkerSessionId,
+        DadWakeTakeoverResultDto? result)
+        => IsTakeoverCancellationComplete(result) &&
+           result != null &&
+           Same(request.SchedulerRunId, result.SchedulerRunId) &&
+           Same(request.OperationToken, result.OperationToken) &&
+           Same(request.SlotId, result.SlotId) &&
+           Same(request.AccountKey.Value, result.AccountKey.Value) &&
+           Same(request.CharacterKey.Value, result.CharacterKey.Value) &&
+           !expectedWorkerSessionId.IsEmpty &&
+           Same(expectedWorkerSessionId.Value, result.Snapshot?.WorkerSessionId.Value);
+
+    public static bool IsRunCancellationAcknowledged(
+        string runId,
+        DadWorkerSessionId expectedWorkerSessionId,
+        DadCancelAckDto? acknowledgement)
+        => acknowledgement is
+           {
+               Acknowledged: true,
+               CancellationState: DadRunCancellationState.Acknowledged,
+           } &&
+           Same(runId, acknowledgement.RunId) &&
+           !expectedWorkerSessionId.IsEmpty &&
+           Same(expectedWorkerSessionId.Value, acknowledgement.WorkerSessionId.Value);
+
+    public static bool IsWorkerCancellationAcknowledged(
+        string runId,
+        DadWorkerSessionId expectedWorkerSessionId,
+        DadWorkerExecutionAck? acknowledgement)
+        => acknowledgement is { Accepted: true } &&
+           Same(runId, acknowledgement.RunId) &&
+           !expectedWorkerSessionId.IsEmpty &&
+           Same(expectedWorkerSessionId.Value, acknowledgement.WorkerSessionId.Value);
+
+    public static bool IsRewardProbeCancellationAcknowledged(
+        DadRouletteRewardProbeRequestDto request,
+        DadRouletteRewardProbeResultDto? result,
+        DateTime nowUtc)
+        => request.Operation == DadRouletteRewardProbeOperation.Cancel &&
+           DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, result, nowUtc, out _) &&
+           result!.Outcome != DadRouletteRewardProbeOutcome.Pending;
+
+    public static DateTime ResolveFixedCancellationDeadline(
+        DateTime existingDeadlineUtc,
+        DateTime requestedAtUtc,
+        TimeSpan acknowledgementTimeout)
+        => existingDeadlineUtc == default
+            ? EnsureUtc(requestedAtUtc) + acknowledgementTimeout
+            : EnsureUtc(existingDeadlineUtc);
+
+    public static bool TryInvokeCallback<T>(
+        Func<T> callback,
+        out T? result,
+        out Exception? exception)
+    {
+        try
+        {
+            result = callback();
+            exception = null;
+            return true;
+        }
+        catch (Exception caught)
+        {
+            result = default;
+            exception = caught;
+            return false;
+        }
+    }
+
+    public static bool MatchesFrozenRequestContract(
+        DadRunRequest? frozenRequest,
+        DadRunRequest? strictRequest,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (frozenRequest == null || strictRequest == null)
+        {
+            reason = "Strict planner revalidation did not produce both request contracts.";
+            return false;
+        }
+
+        if (string.Equals(
+                BuildComparableRequestContract(frozenRequest),
+                BuildComparableRequestContract(strictRequest),
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        reason = "Strict planner revalidation changed the frozen execution contract.";
+        return false;
+    }
 
     public static bool RequiresTakeoverCancellation(DadSchedulerSlotState slot)
         => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline &&
@@ -277,4 +410,18 @@ public static class DadSchedulerRoutingRules
         => value.Kind == DateTimeKind.Utc
             ? value
             : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+
+    private static string BuildComparableRequestContract(DadRunRequest request)
+    {
+        var payload = JsonSerializer.Serialize(request, ContractJsonOptions);
+        var clone = JsonSerializer.Deserialize<DadRunRequest>(payload, ContractJsonOptions)
+                    ?? new DadRunRequest();
+        clone.RequestId = string.Empty;
+        clone.RequestedAtUtc = DateTime.UnixEpoch;
+        clone.RequestedBy = string.Empty;
+        return JsonSerializer.Serialize(clone, ContractJsonOptions);
+    }
+
+    private static bool Same(string? left, string? right)
+        => string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
 }

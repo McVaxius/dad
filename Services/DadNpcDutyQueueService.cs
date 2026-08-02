@@ -96,7 +96,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     private DateTime nextConfirmAttemptUtc = DateTime.MinValue;
     private DateTime lastDutyCompletedUtc = DateTime.MinValue;
     private uint lastDutyCompletedTerritoryId;
-    private string activeRunId = string.Empty;
+    private readonly DadQueueOwnershipGate queueOwnership = new();
     private DadNpcDutyQueueMode activeMode = DadNpcDutyQueueMode.DutySupport;
     private bool dutyStateSubscribed;
     private bool dutyEntryEvidenceObserved;
@@ -181,7 +181,8 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     public DadNpcDutyQueuePulse Pulse(string runId, DadNpcDutyResolvedContent content)
     {
         // Review M16: mutual exclusion on the shared queue (see DadLocalDutyQueueService).
-        if (!string.IsNullOrEmpty(activeRunId) && !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        var ownershipClaim = queueOwnership.TryClaim(runId);
+        if (ownershipClaim == DadQueueOwnershipClaim.Rejected)
         {
             var busyLane = FormatLaneName(content.Mode);
             return new DadNpcDutyQueuePulse
@@ -192,12 +193,17 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
                 ParticipantState = DadParticipantState.QueuePending,
                 Success = false,
                 IsActive = false,
-                Summary = $"{busyLane} queue is busy with another run ({activeRunId}).",
-                FailureReason = $"{busyLane} queue owned by run {activeRunId}.",
+                Summary = queueOwnership.IsOwned
+                    ? $"{busyLane} queue is busy with another run ({queueOwnership.ActiveRunId})."
+                    : $"{busyLane} queue requires a non-empty run ID.",
+                FailureReason = queueOwnership.IsOwned
+                    ? $"{busyLane} queue owned by run {queueOwnership.ActiveRunId}."
+                    : "Queue run ID is required.",
             };
         }
 
-        ResetForNewRun(runId, content.Mode);
+        if (ownershipClaim == DadQueueOwnershipClaim.Acquired || activeMode != content.Mode)
+            ResetForNewRun(content.Mode);
 
         var commonPulse = BuildCommonQueuePulse(content);
         if (commonPulse != null)
@@ -210,7 +216,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
 
     public DadNpcDutyQueuePulse Cancel(string runId, DadNpcDutyQueueMode mode, string reason)
     {
-        if (string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        if (queueOwnership.IsOwnedBy(runId))
             ClearRunState();
 
         var laneName = FormatLaneName(mode);
@@ -350,6 +356,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         if (isBoundByDuty && isRequestedTerritory)
         {
             dutyEntryEvidenceObserved = true;
+            queueOwnership.Release();
             return Active(content, DadNpcDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered {content.LaneName} duty {content.DutyName}.");
         }
 
@@ -655,12 +662,8 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         return true;
     }
 
-    private void ResetForNewRun(string runId, DadNpcDutyQueueMode mode)
+    private void ResetForNewRun(DadNpcDutyQueueMode mode)
     {
-        if (string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase) && activeMode == mode)
-            return;
-
-        activeRunId = runId;
         activeMode = mode;
         nextOpenAttemptUtc = DateTime.MinValue;
         nextSelectAttemptUtc = DateTime.MinValue;
@@ -676,7 +679,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
 
     private void ClearRunState()
     {
-        activeRunId = string.Empty;
+        queueOwnership.Release();
         nextOpenAttemptUtc = DateTime.MinValue;
         nextSelectAttemptUtc = DateTime.MinValue;
         nextRegisterAttemptUtc = DateTime.MinValue;
@@ -721,7 +724,8 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         try
         {
             var addon = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinderConfirm");
-            if (addon == null || !addon->IsVisible)
+            if (addon == null ||
+                !DadDutyLifecycleRules.IsAddonReadyForMutation(addon->IsVisible, addon->IsReady))
                 return false;
 
             var atkValues = stackalloc AtkValue[1];
@@ -865,8 +869,10 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
                 ],
         };
 
-    private static DadNpcDutyQueuePulse Failed(DadNpcDutyResolvedContent content, string reason)
-        => new()
+    private DadNpcDutyQueuePulse Failed(DadNpcDutyResolvedContent content, string reason)
+    {
+        ClearRunState();
+        return new DadNpcDutyQueuePulse
         {
             Kind = DadNpcDutyQueuePulseKind.Failed,
             Phase = DadRunPhase.Finalizing,
@@ -888,4 +894,5 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
                 },
             ],
         };
+    }
 }

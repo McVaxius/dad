@@ -69,7 +69,6 @@ public sealed class MainWindow : Window, IDisposable
     private DadShareEnvelopeDto? pendingScheduleShareImport;
     private DadShareImportPreview? pendingScheduleSharePreview;
     private string pendingDeleteAccountId = string.Empty;
-    private string pendingMergeAccountId = string.Empty;
     private string rosterSearch = string.Empty;
     private string rosterAccountFilter = string.Empty;
     private string rosterAssignedFilter = string.Empty;
@@ -303,8 +302,7 @@ public sealed class MainWindow : Window, IDisposable
         var profileEnabled = profile.Enabled;
         if (ImGui.Checkbox("Allow DAD to automate this character", ref profileEnabled))
         {
-            profile.Enabled = profileEnabled;
-            plugin.ConfigManager.SaveCurrentAccount();
+            plugin.ConfigManager.UpdateActiveConfig(active => active.Enabled = profileEnabled);
             plugin.UpdateDtrBar();
         }
         if (ImGui.IsItemHovered())
@@ -1114,10 +1112,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         var allowIpcStarts = profile.AllowIpcStarts;
         if (ImGui.Checkbox("Allow DAD starts", ref allowIpcStarts))
-        {
-            profile.AllowIpcStarts = allowIpcStarts;
-            plugin.ConfigManager.SaveCurrentAccount();
-        }
+            plugin.ConfigManager.UpdateActiveConfig(active => active.AllowIpcStarts = allowIpcStarts);
         ImGui.SameLine();
         var localOnlyMode = configuration.LocalOnlyModeEnabled;
         if (ImGui.Checkbox("Local-only mode", ref localOnlyMode))
@@ -3182,7 +3177,6 @@ public sealed class MainWindow : Window, IDisposable
             rosterAssignedFilter = string.Empty;
             rosterSelectedRows.Clear();
             rosterAccountInitialized = false;
-            DrawMergeAccountPopup(catalog);
             DrawDeleteAccountPopup(catalog);
             return;
         }
@@ -3191,14 +3185,12 @@ public sealed class MainWindow : Window, IDisposable
         if (accountOptions.Count == 0)
         {
             ImGui.TextDisabled("No Dad roster accounts.");
-            DrawMergeAccountPopup(catalog);
             DrawDeleteAccountPopup(catalog);
             return;
         }
 
         if (!ImGui.BeginTable("dad-roster-account-tools", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
-            DrawMergeAccountPopup(catalog);
             DrawDeleteAccountPopup(catalog);
             return;
         }
@@ -3251,17 +3243,6 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SameLine();
             if (account != null)
             {
-                var currentAccountId = plugin.ConfigManager.CurrentAccountId?.Trim() ?? string.Empty;
-                var canMerge = !string.IsNullOrWhiteSpace(currentAccountId) &&
-                               !string.Equals(currentAccountId, account.AccountId, StringComparison.OrdinalIgnoreCase);
-                ImGui.BeginDisabled(!canMerge);
-                if (ImGui.SmallButton($"Merge into current##dad-roster-merge-account-{accountId}"))
-                {
-                    pendingMergeAccountId = account.AccountId;
-                    ImGui.OpenPopup("Confirm merge account##dad-roster-merge-account");
-                }
-                ImGui.EndDisabled();
-                ImGui.SameLine();
                 if (DrawCtrlShiftSmallButton(
                         "Delete",
                         $"dad-roster-delete-account-{accountId}",
@@ -3283,7 +3264,6 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.EndTable();
-        DrawMergeAccountPopup(catalog);
         DrawDeleteAccountPopup(catalog);
     }
 
@@ -3380,7 +3360,6 @@ public sealed class MainWindow : Window, IDisposable
             return false;
 
         pendingDeleteAccountId = string.Empty;
-        pendingMergeAccountId = string.Empty;
         var result = plugin.ClearAllDadAccountData();
         plugin.PrintStatus(result.ToStatusMessage());
         return true;
@@ -3401,57 +3380,6 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetTooltip(enabled ? enabledTooltip : disabledTooltip);
 
         return clicked;
-    }
-
-    private void DrawMergeAccountPopup(DadAccountRosterCatalog catalog)
-    {
-        if (!ImGui.BeginPopup("Confirm merge account##dad-roster-merge-account"))
-            return;
-
-        var source = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingMergeAccountId));
-        var target = plugin.ConfigManager.GetCurrentAccount();
-        if (source == null || target == null)
-        {
-            ImGui.TextUnformatted("No merge source or current target account selected.");
-            if (ImGui.SmallButton("Close"))
-                ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-            return;
-        }
-
-        var sourceKey = new DadAccountKey(source.AccountId);
-        var rowCount = catalog.Characters
-            .Where(character => !character.AccountKey.IsEmpty &&
-                                DadRosterIdentity.SameAccount(character.AccountKey, sourceKey))
-            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
-            .Count();
-        ImGui.TextWrapped($"Merge Dad account '{source.AccountAlias}' ({source.AccountId}) into current account '{target.AccountAlias}' ({target.AccountId})?");
-        ImGui.TextDisabled($"Moves missing character configs and Dad roster metadata for {rowCount} row(s). Target keeps duplicate character configs. Source config is deleted. XADB snapshots stay untouched.");
-        if (ImGui.SmallButton("Merge account"))
-        {
-            if (plugin.MergeDadAccountIntoCurrent(sourceKey))
-            {
-                if (MatchesRosterAccountFilterKey(source.AccountId, rosterAccountFilter))
-                {
-                    rosterAccountFilter = target.AccountId;
-                    rosterAccountInitialized = true;
-                }
-
-                plugin.PrintStatus($"Merged Dad account '{source.AccountAlias}' into '{target.AccountAlias}'.");
-            }
-
-            pendingMergeAccountId = string.Empty;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Cancel"))
-        {
-            pendingMergeAccountId = string.Empty;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.EndPopup();
     }
 
     private void DrawDeleteAccountPopup(DadAccountRosterCatalog catalog)

@@ -162,20 +162,22 @@ public sealed unsafe class DadDutySupportAdsService
             if (equipped == null || !equipped->IsLoaded)
                 return DadEquippedDurabilityObservation.Unreadable("Equipped inventory is unavailable or not loaded.");
 
-            var found = false;
-            var minimum = 100;
+            var minimum = DadEquippedDurabilityMinimum.Empty;
             for (var index = 0; index < equipped->Size; index++)
             {
                 var item = equipped->GetInventorySlot(index);
-                if (item == null || item->ItemId == 0)
+                if (item == null)
                     continue;
 
-                found = true;
-                minimum = Math.Min(minimum, (int)(item->Condition / 300));
+                minimum = DadDutyLifecycleRules.ObserveEquippedDurability(
+                    minimum,
+                    index,
+                    item->ItemId,
+                    item->Condition);
             }
 
-            return found
-                ? DadEquippedDurabilityObservation.ReadableAt(minimum)
+            return minimum.Found
+                ? DadEquippedDurabilityObservation.ReadableAt(minimum.MinimumPercent)
                 : DadEquippedDurabilityObservation.Unreadable("No equipped item durability was readable.");
         }
         catch (Exception ex)

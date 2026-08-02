@@ -10,6 +10,7 @@ namespace dad.Services;
 
 internal sealed unsafe class DadPartyTeardownService
 {
+    private readonly Configuration configuration;
     private readonly IPartyList partyList;
     private readonly IPlayerState playerState;
     private readonly ICondition condition;
@@ -20,11 +21,13 @@ internal sealed unsafe class DadPartyTeardownService
     private DadPartyTeardownMutationMode mutationMode;
 
     public DadPartyTeardownService(
+        Configuration configuration,
         IPartyList partyList,
         IPlayerState playerState,
         ICondition condition,
         IPluginLog log)
     {
+        this.configuration = configuration;
         this.partyList = partyList;
         this.playerState = playerState;
         this.condition = condition;
@@ -57,7 +60,10 @@ internal sealed unsafe class DadPartyTeardownService
             mode,
             DateTime.UtcNow,
             prompt.Visible,
-            prompt.Identity);
+            prompt.Identity,
+            prompt.Ready,
+            prompt.Text,
+            configuration.AllowFreshUnprovenPromptApproval);
     }
 
     public DadPartyDisbandPreflight GetCurrentPartyDisbandPreflight()
@@ -156,7 +162,9 @@ internal sealed unsafe class DadPartyTeardownService
             prompt.Visible,
             prompt.Identity,
             prompt.Text,
-            inviterName));
+            inviterName,
+            prompt.Ready,
+            IsOtherReadyPromptVisible()));
 
         var diagnostic = string.Join(
             "|",
@@ -226,6 +234,14 @@ internal sealed unsafe class DadPartyTeardownService
                     throw new InvalidOperationException("The newly observed SelectYesno prompt disappeared before Yes could be fired.");
 
                 log.Information("[dad] Approved newly appeared SelectYesno breakup prompt. {Summary}", decision.Summary);
+                if (decision.PromptOverrideUsed)
+                {
+                    log.Warning(
+                        "[dad] Prompt ownership override used operation=party-teardown attempt={Attempt} prompt={PromptIdentity} warning={Warning}",
+                        controller.CommandAttempts,
+                        prompt.Identity,
+                        decision.PromptAudit);
+                }
             }
         }
         catch (Exception ex)
@@ -307,12 +323,26 @@ internal sealed unsafe class DadPartyTeardownService
         var text = addon->PromptText == null
             ? string.Empty
             : addon->PromptText->NodeText.ToString().Trim();
-        return new PromptSnapshot(true, $"{(nint)addonBase:X}:{text}", text, addonBase);
+        return new PromptSnapshot(
+            true,
+            addonBase->IsReady,
+            $"{(nint)addonBase:X}",
+            text,
+            addonBase);
+    }
+
+    private static bool IsOtherReadyPromptVisible()
+    {
+        var manager = RaptureAtkUnitManager.Instance();
+        var privatePrompt = manager == null
+            ? null
+            : manager->GetAddonByName("LookingForGroupPrivate");
+        return privatePrompt != null && privatePrompt->IsVisible && privatePrompt->IsReady;
     }
 
     private static bool FireYes(AtkUnitBase* addon)
     {
-        if (addon == null || !addon->IsVisible)
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
         var values = stackalloc AtkValue[1];
@@ -338,15 +368,17 @@ internal sealed unsafe class DadPartyTeardownService
 
     private readonly struct PromptSnapshot
     {
-        public PromptSnapshot(bool visible, string identity, string text, AtkUnitBase* addon)
+        public PromptSnapshot(bool visible, bool ready, string identity, string text, AtkUnitBase* addon)
         {
             Visible = visible;
+            Ready = ready;
             Identity = identity;
             Text = text;
             Addon = addon;
         }
 
         public bool Visible { get; }
+        public bool Ready { get; }
         public string Identity { get; }
         public string Text { get; }
         public AtkUnitBase* Addon { get; }

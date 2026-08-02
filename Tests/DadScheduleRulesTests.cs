@@ -441,6 +441,33 @@ public sealed class DadScheduleRulesTests
         Assert.Contains("identity changed", identityBlocker, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(0, false, false)]
+    [InlineData(1, true, true)]
+    [InlineData(2, true, false)]
+    [InlineData(3, false, false)]
+    public void InvalidRepeatCursorAlwaysFallsBackToStandaloneTeardown(
+        int repeatIteration,
+        bool expectedScheduleRun,
+        bool expectedPreserveParty)
+    {
+        var entry = new DadScheduleEntry
+        {
+            EntryId = "entry-a",
+            GroupId = "group-a",
+            RepeatCount = 2,
+        };
+
+        var boundary = DadScheduleRules.ResolveRepeatBoundary(
+            "schedule-run",
+            entry.EntryId,
+            repeatIteration,
+            [entry]);
+
+        Assert.Equal(expectedScheduleRun, boundary.IsScheduleRun);
+        Assert.Equal(expectedPreserveParty, boundary.PreservePartyAfterCompletion);
+    }
+
     private static DadScheduleDefinition RetrySchedule()
         => new DadScheduleDefinition
         {

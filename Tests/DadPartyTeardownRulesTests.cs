@@ -109,7 +109,7 @@ public sealed class DadPartyTeardownRulesTests
             controller.Pulse(Observation(now.AddMilliseconds(100), crossRealm: true, partyMenu: true)).Action);
         Assert.Equal(
             DadPartyTeardownAction.ApprovePrompt,
-            controller.Pulse(Observation(now.AddSeconds(1), crossRealm: true, prompt: true, identity: "attempt-1")).Action);
+            controller.Pulse(Observation(now.AddSeconds(1), crossRealm: true, prompt: true, identity: "attempt-1", text: "Disband the party?")).Action);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(2), crossRealm: true)).Action);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(7.9), crossRealm: true)).Action);
 
@@ -122,7 +122,7 @@ public sealed class DadPartyTeardownRulesTests
             controller.Pulse(Observation(now.AddSeconds(8.2), crossRealm: true, partyMenu: true)).Action);
         Assert.Equal(
             DadPartyTeardownAction.ApprovePrompt,
-            controller.Pulse(Observation(now.AddSeconds(9), crossRealm: true, prompt: true, identity: "attempt-2")).Action);
+            controller.Pulse(Observation(now.AddSeconds(9), crossRealm: true, prompt: true, identity: "attempt-2", text: "Disband the party?")).Action);
 
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(10), members: [1UL])).Action);
         Assert.Equal(DadPartyTeardownAction.Complete, controller.Pulse(Observation(now.AddSeconds(11), members: [1UL])).Action);
@@ -342,7 +342,7 @@ public sealed class DadPartyTeardownRulesTests
         Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now)).Action);
         Assert.Equal(
             DadPartyTeardownAction.ApprovePrompt,
-            controller.Pulse(Observation(now.AddSeconds(1), prompt: true, identity: "attempt-1")).Action);
+            controller.Pulse(Observation(now.AddSeconds(1), prompt: true, identity: "attempt-1", text: "Disband the party?")).Action);
         return controller;
     }
 

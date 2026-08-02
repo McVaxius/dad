@@ -49,18 +49,22 @@ public sealed class DadClaimService
     {
         lock (gate)
         {
-            var lease = request.Lease?.Clone() ?? new DadParticipantLeaseRecord
+            if (!TryValidateLease(request, participant, DateTime.UtcNow, out var validationReason))
             {
-                RunId = request.RunId,
-                SlotId = request.SlotId,
-                AssignedAccountKey = request.RequiredAccountKey,
-                AssignedCharacterKey = request.RequiredCharacterKey,
-                OwningWorkerSessionId = participant.WorkerSessionId,
-                IssuedUtc = DateTime.UtcNow,
-                RenewedUtc = DateTime.UtcNow,
-                ExpiresUtc = DateTime.UtcNow.AddSeconds(20),
-                State = DadParticipantLeaseState.Pending,
-            };
+                var rejectedLease = request.Lease?.Clone() ?? new DadParticipantLeaseRecord();
+                rejectedLease.State = DadParticipantLeaseState.Denied;
+                rejectedLease.Summary = validationReason;
+                return BuildDecision(
+                    request,
+                    participant,
+                    granted: false,
+                    DadClaimState.Denied,
+                    DadParticipantLeaseState.Denied,
+                    validationReason,
+                    rejectedLease);
+            }
+
+            var lease = request.Lease.Clone();
 
             var characterKey = participant.ActiveCharacterKey.ToString();
             if (!string.IsNullOrWhiteSpace(request.RequiredAccountKey) &&
@@ -99,6 +103,47 @@ public sealed class DadClaimService
             localAcceptedLeasesByCharacter[characterKey] = lease.Clone();
             return BuildDecision(request, participant, granted: true, DadClaimState.Granted, DadParticipantLeaseState.Granted, $"Granted lease for {characterKey}.", lease);
         }
+    }
+
+    internal static bool TryValidateLease(
+        DadClaimRequestDto request,
+        DadParticipantSnapshot participant,
+        DateTime nowUtc,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (request == null || request.Lease == null)
+            return Fail("Claim request is missing its required lease.", out reason);
+        if (string.IsNullOrWhiteSpace(request.RunId) || string.IsNullOrWhiteSpace(request.SlotId) ||
+            request.AuthorityWorkerSessionId.IsEmpty || request.RequiredAccountKey.IsEmpty ||
+            request.RequiredCharacterKey.IsEmpty)
+        {
+            return Fail("Claim request is missing run, slot, authority, account, or character identity.", out reason);
+        }
+
+        var lease = request.Lease;
+        if (!Same(lease.RunId, request.RunId) || !Same(lease.SlotId, request.SlotId) ||
+            !DadRosterIdentity.SameAccount(lease.AssignedAccountKey, request.RequiredAccountKey) ||
+            !Same(lease.AssignedCharacterKey.Value, request.RequiredCharacterKey.Value))
+        {
+            return Fail("Claim lease identity does not match the requested run, slot, account, and character.", out reason);
+        }
+
+        if (participant.WorkerSessionId.IsEmpty || lease.OwningWorkerSessionId.IsEmpty ||
+            !Same(lease.OwningWorkerSessionId.Value, participant.WorkerSessionId.Value))
+        {
+            return Fail("Claim lease is not owned by the authenticated target worker.", out reason);
+        }
+
+        nowUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
+        if (lease.IssuedUtc == default || lease.RenewedUtc == default || lease.ExpiresUtc == default ||
+            lease.RenewedUtc < lease.IssuedUtc || lease.ExpiresUtc <= lease.RenewedUtc ||
+            lease.ExpiresUtc <= nowUtc)
+        {
+            return Fail("Claim lease timing is invalid or expired.", out reason);
+        }
+
+        return true;
     }
 
     public void AcknowledgeLease(DadClaimDecisionDto decision)
@@ -227,5 +272,14 @@ public sealed class DadClaimService
             Lease = lease,
             Snapshot = snapshot,
         };
+    }
+
+    private static bool Same(string? left, string? right)
+        => string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static bool Fail(string message, out string reason)
+    {
+        reason = message;
+        return false;
     }
 }

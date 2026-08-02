@@ -1,5 +1,42 @@
 # dad — changelog
 
+## 2026-08-02 — P1217 lifecycle-risk hardening (local-only, unpublished)
+- Validated worker commands before serialization/registration, enforced one active/pending run owner with FIFO same-run
+  sequencing, drained whole cancelled runs, retained historical duplicate results without replacing visible current state,
+  and released terminal ownership before advancement.
+- Confined mutable account state to framework-thread transactions and snapshots. Per-account files now load independently
+  and save through unique same-directory atomic replacement with cloned in-memory/revision rollback on required-write
+  failure. Removed all account-merge UI, popup, Plugin, ConfigManager, and roster service surfaces while preserving delete,
+  forget-copies, clear-all, and history behavior.
+- Bound mutating transport authority to authenticated source/target context, required complete current claim/VERMAXION/XADB
+  identity contracts, marshalled roster/plugin/DAD/Duty mutations to the framework thread, reserved bounded connection
+  capacity atomically, and disposed each linked connection token. One production wire-ingress normalizer now handles
+  requests, responses, and mutating CallGate inputs while preserving valid current/legacy wire shapes and specialized
+  signed/import/account validation paths.
+- Unified Stop-all, Disable, and unload behind one idempotent local lifecycle cleanup path; Disable/unload never broadcast,
+  and remote Stop-all requires idle state or the authenticated active Coordinator. Scheduler admission is Coordinator-only,
+  blocks on every conflicting owner/unresolved cleanup acknowledgement, advances cadence only after admission or consumed
+  skip, revalidates immediately before dispatch, and contains thrown start callbacks as terminal blocked results.
+- Added the persisted global **Allow one fresh unproven prompt approval (unsafe)** setting, default off. PF join, invite
+  acceptance, participant departure, recruitment cleanup, and teardown now share one fresh/visible/ready/attempt-bound
+  prompt rule with exact operation context; override use is single-prompt and always warned/audited.
+- Split PF listing ownership from presentation, added monotonic generations and full late-result identity checks, retained
+  ownership through Blocked/Stopped cleanup, bounded local/remote cleanup to one fixed 60-second deadline with partial
+  failure visibility, capped remote audit retries, required two distinct alliance observations, handled absent ECommons
+  controls, and scanned every bounded native listing entry. After a terminal partial deadline, read-only bounded audits
+  now detect exact operator cleanup and release retained ownership without resuming create or cancellation mutations.
+- Read fresh `DutyCompleted` evidence before Local Duty, Duty Support, and Trust exit classification; made local/NPC queue
+  ownership explicit and terminally released; correlated every MOGTOME start/status/stop result to the exact active run and
+  preserved failed stops; applied strict safety and addon-ready gates to regular/roulette native writes; excluded the
+  soul-crystal durability slot while keeping zero-condition gear; and routed completion/AutoRetainer GC slash commands
+  through guarded native chat submission for native and plugin commands.
+- The focused lifecycle-hardening set passes 75/75. The complete Dad suite passes 1,618/1,618, the refreshed XA
+  documentation checkout's AutoParty suite passes 140/140, and the isolated x64 Debug build under
+  `.codex-lifecycle-build` succeeds with 0 errors and only three
+  established nullable warnings in `DadAlliancePartyFinderService.cs`. Version `0.5.0.4`, dependencies, public IPC/wire
+  schemas, diagnostic/privacy behavior, release workflow, packaging, publication, deployment, and live acceptance are
+  unchanged.
+
 ## 2026-08-01 — P1215 review-review narrow fixes (local-only, unpublished)
 - Hardened the untested AutoParty surface without changing its wire schema or trust model: Discord gateway messages now
   drain through a bounded framework-update queue, pairing acceptance is bound to the exact pending/requested identity,

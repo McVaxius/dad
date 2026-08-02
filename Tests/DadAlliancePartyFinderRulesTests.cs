@@ -405,7 +405,7 @@ public sealed class DadAlliancePartyFinderRulesTests
             DadAllianceRemoteHostLifecycleState.CleanupComplete,
             DadAllianceRemoteHostRules.Evaluate(true, false, true, null));
         Assert.Equal(
-            DadAllianceRemoteHostLifecycleState.Blocked,
+            DadAllianceRemoteHostLifecycleState.CleanupPending,
             DadAllianceRemoteHostRules.Evaluate(true, true, true, blocked));
     }
 

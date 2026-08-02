@@ -50,6 +50,20 @@ internal sealed class DadHubHeartbeat
     public DadParticipantSnapshot Participant { get; set; } = new();
 }
 
+internal static class DadHubParticipantIdentityRules
+{
+    public static bool MatchesAuthenticatedSource(
+        DadParticipantSnapshot? participant,
+        DadWorkerSessionId authenticatedSource)
+        => participant != null &&
+           !authenticatedSource.IsEmpty &&
+           !participant.WorkerSessionId.IsEmpty &&
+           string.Equals(
+               participant.WorkerSessionId.Value,
+               authenticatedSource.Value,
+               StringComparison.OrdinalIgnoreCase);
+}
+
 // B2: compact per-character roster projection that rides along the hub publish so clients can render
 // peers (and the coordinator) without issuing a manual catalog pull. Fields are kept intentionally small
 // to stay well under DadHubProtocol.MaxFrameBytes (256 KiB) even with a large roster.
@@ -301,7 +315,8 @@ internal static class DadHubProtocol
 
         var payload = new byte[payloadLength];
         await ReadExactlyAsync(stream, payload, cancellationToken).ConfigureAwait(false);
-        var frame = DadIpcJson.Deserialize<DadHubFrame>(Encoding.UTF8.GetString(payload));
+        // The signed envelope must remain byte-for-byte intact until HMAC verification.
+        var frame = DadIpcJson.DeserializeRaw<DadHubFrame>(Encoding.UTF8.GetString(payload));
         return frame ?? throw new DadHubProtocolException("invalid-frame", "Dad hub frame JSON is invalid.");
     }
 
@@ -319,27 +334,30 @@ internal static class DadHubProtocol
 
         // B5: replay/forgery resistance only applies on authenticated (shared-secret) links. Loopback /
         // no-secret frames keep today's behavior (empty secret = no auth, no replay window).
-        if (string.IsNullOrEmpty(sharedSecret))
-            return;
-
-        if (string.IsNullOrEmpty(frame.Nonce))
-            throw new DadHubProtocolException("replay-detected", "Dad hub frame is missing its replay nonce.");
-
-        var nowUtc = DateTimeOffset.UtcNow;
-        var sentAt = DateTimeOffset.FromUnixTimeMilliseconds(frame.SentAtUnixMs);
-        if (Math.Abs((nowUtc - sentAt).TotalMilliseconds) > ReplayWindow.TotalMilliseconds)
+        if (!string.IsNullOrEmpty(sharedSecret))
         {
-            throw new DadHubProtocolException(
-                "stale-frame",
-                $"Dad hub frame timestamp is outside the {ReplayWindow.TotalSeconds:0}s replay window.");
+            if (string.IsNullOrEmpty(frame.Nonce))
+                throw new DadHubProtocolException("replay-detected", "Dad hub frame is missing its replay nonce.");
+
+            var nowUtc = DateTimeOffset.UtcNow;
+            var sentAt = DateTimeOffset.FromUnixTimeMilliseconds(frame.SentAtUnixMs);
+            if (Math.Abs((nowUtc - sentAt).TotalMilliseconds) > ReplayWindow.TotalMilliseconds)
+            {
+                throw new DadHubProtocolException(
+                    "stale-frame",
+                    $"Dad hub frame timestamp is outside the {ReplayWindow.TotalSeconds:0}s replay window.");
+            }
+
+            if (!ReplayGuard.TryAccept(frame.SourceWorkerSessionId.Value ?? string.Empty, frame.Nonce, sentAt, nowUtc))
+            {
+                throw new DadHubProtocolException(
+                    "replay-detected",
+                    "Dad hub frame nonce was already seen; rejecting replayed envelope.");
+            }
         }
 
-        if (!ReplayGuard.TryAccept(frame.SourceWorkerSessionId.Value ?? string.Empty, frame.Nonce, sentAt, nowUtc))
-        {
-            throw new DadHubProtocolException(
-                "replay-detected",
-                "Dad hub frame nonce was already seen; rejecting replayed envelope.");
-        }
+        if (!DadWireIngressNormalizer.TryNormalize(frame, out var rejectionReason))
+            throw new DadHubProtocolException("invalid-frame", rejectionReason);
     }
 
     private static string BuildAuthPayload(DadHubFrame frame)

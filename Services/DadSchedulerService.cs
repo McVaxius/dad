@@ -25,6 +25,7 @@ public sealed class DadSchedulerService
     private readonly Dictionary<string, string> takeoverDiagnosticStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingTakeoverCancellation> pendingTakeoverCancellations = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingEarlyAssignmentCancellation> pendingEarlyAssignmentCancellations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingRewardProbeCancellation> pendingRewardProbeCancellations = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStableContradictionTracker> slotContradictionTrackers = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadImmutableCommandRegistry frozenRequestRegistry = new();
     private DadStrictPlannerRevalidationTracker strictRevalidationTracker = new();
@@ -45,6 +46,7 @@ public sealed class DadSchedulerService
     private Func<DadPlannerGroup, int, DadLevelingChildBuild>? levelingChildBuilder;
     private Action? cancelActiveLevelingChild;
     private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
+    private Func<string>? admissionBlockerProvider;
     private Func<DadRunRequest, DadRunResult>? startCrewRegularParty;
     private Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus>? createCrewAllianceParty;
     private Func<DadAlliancePartyFinderStatus>? getCrewAllianceStatus;
@@ -60,8 +62,11 @@ public sealed class DadSchedulerService
         public DadSchedulerSlotState Slot { get; init; } = new();
         public string Reason { get; init; } = string.Empty;
         public DateTime RequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationDeadlineUtc { get; init; }
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
         public bool BlocksFutureWork { get; init; } = true;
+        public bool DeadlineLogged { get; set; }
     }
 
     private sealed class FrozenEarlyAssignment
@@ -122,8 +127,21 @@ public sealed class DadSchedulerService
         public DadScheduledCrewJob Job { get; init; } = new();
         public string SlotId { get; init; } = string.Empty;
         public string Reason { get; init; } = string.Empty;
+        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationDeadlineUtc { get; init; }
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
         public bool BlocksFutureWork { get; init; } = true;
+        public bool DeadlineLogged { get; set; }
+    }
+
+    private sealed class PendingRewardProbeCancellation
+    {
+        public DadRouletteRewardProbeRequestDto Request { get; init; } = new();
+        public DadScheduledCrewJob Job { get; init; } = new();
+        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationDeadlineUtc { get; init; }
+        public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
+        public bool DeadlineLogged { get; set; }
     }
 
     public DadSchedulerService(
@@ -168,6 +186,11 @@ public sealed class DadSchedulerService
         Func<DadRunRequest, DadAutoPartyAuthorizationDecision> authorizationGate)
         => autoPartyAuthorizationGate = authorizationGate ?? throw new ArgumentNullException(nameof(authorizationGate));
 
+    public void ConfigureAdmissionBlocker(Func<string> blockerProvider)
+        => admissionBlockerProvider = blockerProvider ?? throw new ArgumentNullException(nameof(blockerProvider));
+
+    internal bool HasPendingCancellationCleanup => HasPendingCleanup;
+
     internal void ConfigureCrewFormation(
         Func<DadRunRequest, DadRunResult> startRegularParty,
         Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus> createAllianceParty,
@@ -204,6 +227,9 @@ public sealed class DadSchedulerService
             return "The scheduler queue must be empty before Crew Formation starts.";
         if (HasPendingCleanup)
             return "Scheduler takeover or requested-job cancellation cleanup is still pending.";
+        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(admissionBlocker))
+            return admissionBlocker;
         return string.Empty;
     }
 
@@ -413,6 +439,13 @@ public sealed class DadSchedulerService
             schedulerHash.Add(pending.Key, StringComparer.Ordinal);
             schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
         }
+        schedulerHash.Add(pendingRewardProbeCancellations.Count);
+        foreach (var pending in pendingRewardProbeCancellations.OrderBy(static pair => pair.Key))
+        {
+            schedulerHash.Add(pending.Key, StringComparer.Ordinal);
+            schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
+            schedulerHash.Add(pending.Value.Request.RouteWorkerSessionId.Value, StringComparer.OrdinalIgnoreCase);
+        }
 
         var launchProfilesHash = new HashCode();
         launchProfilesHash.Add(configuration.LaunchProfiles?.Count ?? 0);
@@ -461,7 +494,7 @@ public sealed class DadSchedulerService
             Summary = IsSchedulerActive || IsCrewFormationActive
                 ? $"Active {visibleState.JobType}: {visibleState.Summary}"
                 : HasPendingCleanup
-                    ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s) and {pendingEarlyAssignmentCancellations.Count} early assignment route(s)."
+                    ? $"Cancellation cleanup pending for {pendingTakeoverCancellations.Count} wake takeover(s), {pendingEarlyAssignmentCancellations.Count} early assignment route(s), and {pendingRewardProbeCancellations.Count} reward probe(s)."
                 : configuration.SchedulerQueue.Count == 0
                     ? "Scheduler queue idle."
                     : $"{configuration.SchedulerQueue.Count} queued scheduler job(s).",
@@ -640,7 +673,20 @@ public sealed class DadSchedulerService
                 ScheduleId = scheduleId?.Trim() ?? string.Empty,
                 ScheduleName = "Schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
-            }, "Only Dad Coordinator may run schedules.", DateTime.UtcNow);
+                }, "Only Dad Coordinator may run schedules.", DateTime.UtcNow);
+        }
+
+        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(admissionBlocker))
+        {
+            return DadScheduleRules.BlockRun(new DadScheduleRunState
+            {
+                RunId = Guid.NewGuid().ToString("N"),
+                ScheduleId = scheduleId?.Trim() ?? string.Empty,
+                ScheduleName = "Schedule",
+                RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
+                DryRun = dryRun,
+            }, admissionBlocker, DateTime.UtcNow);
         }
 
         if (configuration.ActiveScheduleRun.IsActive)
@@ -1148,6 +1194,19 @@ public sealed class DadSchedulerService
         bool dryRun,
         DadScheduledCrewJob? job = null)
     {
+        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(admissionBlocker))
+        {
+            var blockedJob = job?.Clone() ?? new DadScheduledCrewJob
+            {
+                GroupId = group.GroupId,
+                PresetName = group.DisplayName,
+                DryRun = dryRun,
+                RequestedBy = "scheduler",
+            };
+            return BuildBlockedQueuedState(blockedJob, admissionBlocker);
+        }
+
         if (group.LevelingMode?.Enabled == true)
             return StartLevelingOperation(group, dryRun, job);
 
@@ -1614,6 +1673,7 @@ public sealed class DadSchedulerService
     {
         UpdatePendingTakeoverCancellations();
         UpdatePendingEarlyAssignmentCancellations();
+        UpdatePendingRewardProbeCancellations();
         LogSchedulerPhaseTransition();
         TickScheduleEnqueue();
 
@@ -1803,6 +1863,44 @@ public sealed class DadSchedulerService
             return;
         }
 
+        if (!DadSchedulerRoutingRules.TryInvokeCallback(
+                () => plannerPreviewBuilder(currentState.GroupId),
+                out DadPlannerRunRequestPreview? strictPreview,
+                out var strictPreviewException))
+        {
+            log.Error(
+                strictPreviewException,
+                "[dad] Scheduler strict planner revalidation callback failed for {SchedulerRunId}.",
+                currentState.SchedulerRunId);
+            BlockActive($"Strict planner revalidation callback failed: {strictPreviewException!.Message}");
+            return;
+        }
+
+        var strictDecision = DadPlannerValidationRules.EvaluateStrictScheduledRun(
+            currentState.Slots.All(static slot => slot.Ready),
+            strictPreview);
+        LogStrictRevalidationDiagnostic(strictDecision);
+        if (strictDecision.Disposition == DadStrictPlannerRevalidationDisposition.WaitForRuntimeReadiness)
+        {
+            currentState.Phase = DadSchedulerPresetPhase.ReadyToStart;
+            currentState.Summary = strictDecision.Reason;
+            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+        if (strictDecision.Disposition == DadStrictPlannerRevalidationDisposition.TerminalRejection)
+        {
+            BlockActive(strictDecision.Reason);
+            return;
+        }
+        if (!DadSchedulerRoutingRules.MatchesFrozenRequestContract(
+                frozenPlannerRequest,
+                strictPreview!.Request,
+                out var contractBlocker))
+        {
+            BlockActive(contractBlocker);
+            return;
+        }
+
         currentState.Phase = DadSchedulerPresetPhase.StartingPlanner;
         currentState.Summary = $"Scheduler ready; starting preset '{currentState.PresetName}'.";
         currentState.UpdatedAtUtc = DateTime.UtcNow;
@@ -1815,7 +1913,21 @@ public sealed class DadSchedulerService
 
         var strictRequest = CloneRunRequest(frozenPlannerRequest)!;
         var repeatBoundary = ResolveScheduleRepeatBoundary();
-        var result = startPlannerRequest(strictRequest, repeatBoundary);
+        if (!DadSchedulerRoutingRules.TryInvokeCallback(
+                () => startPlannerRequest(strictRequest, repeatBoundary),
+                out DadRunResult? result,
+                out var startException))
+        {
+            log.Error(
+                startException,
+                "[dad] Scheduler planner-start callback failed for {SchedulerRunId} request {RequestId}.",
+                currentState.SchedulerRunId,
+                strictRequest.RequestId);
+            BlockActive($"Planner start callback failed: {startException!.Message}");
+            return;
+        }
+
+        result ??= DadRunResult.Rejected(strictRequest, "Planner start callback returned no result.");
         currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
         currentState.Phase = currentState.PlannerStarted
             ? DadSchedulerPresetPhase.StartedPlanner
@@ -1859,7 +1971,20 @@ public sealed class DadSchedulerService
             session.Status.Summary = $"Starting regular party formation for '{session.Status.SourcePresetName}'.";
             session.Status.UpdatedAtUtc = DateTime.UtcNow;
 
-            var result = startCrewRegularParty!(request);
+            if (!DadSchedulerRoutingRules.TryInvokeCallback(
+                    () => startCrewRegularParty!(request),
+                    out DadRunResult? result,
+                    out var startException))
+            {
+                log.Error(
+                    startException,
+                    "[dad] Crew Formation regular-party start callback failed for {RunId}.",
+                    session.Status.RunId);
+                BlockActive($"Crew Formation regular-party start callback failed: {startException!.Message}");
+                return true;
+            }
+
+            result ??= DadRunResult.Rejected(request, "Crew Formation regular-party callback returned no result.");
             currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
             currentState.Phase = currentState.PlannerStarted
                 ? DadSchedulerPresetPhase.StartedPlanner
@@ -1887,10 +2012,27 @@ public sealed class DadSchedulerService
             session.Status.Phase = DadCrewFormationPhase.CreatingAllianceListing;
             session.Status.Summary = $"Creating the private alliance recruitment for '{session.Status.SourcePresetName}'.";
             session.Status.UpdatedAtUtc = DateTime.UtcNow;
-            var created = createCrewAllianceParty!(
-                session.Status.RunId,
-                session.EffectiveGroup,
-                session.AlliancePreview);
+            if (!DadSchedulerRoutingRules.TryInvokeCallback(
+                    () => createCrewAllianceParty!(
+                        session.Status.RunId,
+                        session.EffectiveGroup,
+                        session.AlliancePreview),
+                    out DadAlliancePartyFinderStatus? created,
+                    out var createException))
+            {
+                log.Error(
+                    createException,
+                    "[dad] Crew Formation alliance-PF creation callback failed for {RunId}.",
+                    session.Status.RunId);
+                BlockActive($"Crew Formation alliance-PF creation callback failed: {createException!.Message}");
+                return true;
+            }
+
+            created ??= new DadAlliancePartyFinderStatus
+            {
+                State = DadAllianceRecruitmentState.Blocked,
+                Summary = "Crew Formation alliance-PF creation callback returned no status.",
+            };
             var rejection = FirstNonEmptyOrEmpty(
                 created.CreateRejected ? created.CreatePreflightBlocker : string.Empty,
                 created.State == DadAllianceRecruitmentState.Blocked ? created.Summary : string.Empty,
@@ -2353,6 +2495,17 @@ public sealed class DadSchedulerService
         foreach (var pair in pendingTakeoverCancellations.ToList())
         {
             var pending = pair.Value;
+            if (now >= pending.CancellationDeadlineUtc && !pending.DeadlineLogged)
+            {
+                pending.DeadlineLogged = true;
+                log.Warning(
+                    "[dad] Wake cancellation acknowledgement deadline expired but cleanup remains blocking: request={SchedulerRunId}, slot={SlotId}, worker={WorkerSessionId}, requested={RequestedAtUtc}, deadline={DeadlineUtc}.",
+                    pending.SchedulerRunId,
+                    pending.Slot.SlotId,
+                    pending.Slot.MatchedWorkerSessionId,
+                    pending.CancellationRequestedAtUtc,
+                    pending.CancellationDeadlineUtc);
+            }
             if (now < pending.NextAttemptUtc)
                 continue;
 
@@ -2387,7 +2540,10 @@ public sealed class DadSchedulerService
             var result = participant.IsLocalClient
                 ? wakeTakeoverService.Handle(request)
                 : transportService.SendWakeTakeoverRequest(participant, request);
-            if (result == null || !DadSchedulerRoutingRules.IsTakeoverCancellationComplete(result))
+            if (!DadSchedulerRoutingRules.IsTakeoverCancellationComplete(
+                    request,
+                    participant.WorkerSessionId,
+                    result))
                 continue;
 
             pendingTakeoverCancellations.Remove(pair.Key);
@@ -2397,7 +2553,7 @@ public sealed class DadSchedulerService
                 slot.SlotId,
                 slot.RequiredAccountKey,
                 slot.RequiredCharacterKey,
-                result.AcknowledgementState,
+                result!.AcknowledgementState,
                 pending.Reason,
                 FirstNonEmpty(result.BlockedReason, result.Summary));
         }
@@ -2413,6 +2569,17 @@ public sealed class DadSchedulerService
         foreach (var pair in pendingEarlyAssignmentCancellations.ToList())
         {
             var pending = pair.Value;
+            if (now >= pending.CancellationDeadlineUtc && !pending.DeadlineLogged)
+            {
+                pending.DeadlineLogged = true;
+                log.Warning(
+                    "[dad] Early requested-job cancellation acknowledgement deadline expired but cleanup remains blocking: request={RequestId}, slot={SlotId}, worker={WorkerSessionId}, requested={RequestedAtUtc}, deadline={DeadlineUtc}.",
+                    pending.RunId,
+                    pending.SlotId,
+                    pending.WorkerSessionId,
+                    pending.CancellationRequestedAtUtc,
+                    pending.CancellationDeadlineUtc);
+            }
             if (now < pending.NextAttemptUtc)
                 continue;
 
@@ -2436,7 +2603,10 @@ public sealed class DadSchedulerService
             var ack = participant.IsLocalClient
                 ? presenceService.HandleCancelRun(command)
                 : transportService.SendCancelRun(participant, command);
-            if (ack is not { Acknowledged: true })
+            if (!DadSchedulerRoutingRules.IsRunCancellationAcknowledged(
+                    pending.RunId,
+                    pending.WorkerSessionId,
+                    ack))
                 continue;
 
             pendingEarlyAssignmentCancellations.Remove(pair.Key);
@@ -2446,7 +2616,48 @@ public sealed class DadSchedulerService
                 pending.SlotId,
                 pending.WorkerSessionId,
                 pending.Reason,
-                ack.Summary);
+                ack!.Summary);
+        }
+    }
+
+    public void UpdatePendingRewardProbeCancellations()
+    {
+        if (pendingRewardProbeCancellations.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var pair in pendingRewardProbeCancellations.ToList())
+        {
+            var pending = pair.Value;
+            if (now >= pending.CancellationDeadlineUtc && !pending.DeadlineLogged)
+            {
+                pending.DeadlineLogged = true;
+                log.Warning(
+                    "[dad] Roulette reward-probe cancellation acknowledgement deadline expired but cleanup remains blocking: operation={OperationId}, worker={WorkerSessionId}, requested={RequestedAtUtc}, deadline={DeadlineUtc}.",
+                    pending.Request.OperationId,
+                    pending.Request.RouteWorkerSessionId,
+                    pending.CancellationRequestedAtUtc,
+                    pending.CancellationDeadlineUtc);
+            }
+            if (now < pending.NextAttemptUtc)
+                continue;
+
+            pending.NextAttemptUtc = now + RefreshInterval;
+            var participant = new DadParticipantSnapshot
+            {
+                WorkerSessionId = pending.Request.RouteWorkerSessionId,
+            };
+            var result = transportService.SendRouletteRewardProbe(participant, pending.Request);
+            if (!DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(pending.Request, result, now))
+                continue;
+
+            pendingRewardProbeCancellations.Remove(pair.Key);
+            log.Information(
+                "[dad] Roulette reward-probe cancellation acknowledged operation={OperationId} worker={WorkerSessionId} outcome={Outcome} summary={Summary}.",
+                pending.Request.OperationId,
+                pending.Request.RouteWorkerSessionId,
+                result!.Outcome,
+                result.Summary);
         }
     }
 
@@ -2538,7 +2749,7 @@ public sealed class DadSchedulerService
 
     public void TickScheduleEnqueue()
     {
-        if (IsCrewFormationActive)
+        if (!configuration.RunAsServerDad || IsCrewFormationActive)
             return;
 
         NormalizeQueue();
@@ -2558,6 +2769,7 @@ public sealed class DadSchedulerService
                 continue;
 
             var jobType = DadSchedulerJobType.ScheduledPreset;
+            var occurrenceAdmitted = false;
             if (FindEquivalentActiveOrPendingJob(group.GroupId) == null)
             {
                 var job = new DadScheduledCrewJob
@@ -2579,11 +2791,17 @@ public sealed class DadSchedulerService
                 };
                 job.StatusSummary = BuildQueuedJobSummary(job);
                 configuration.SchedulerQueue.Add(job);
+                occurrenceAdmitted = true;
             }
 
-            group.NextEligibleTimeUtc = now + TimeSpan.FromHours(ResolveScheduleCadenceHours(group.ScheduleCadenceHours));
-            group.UpdatedAtUtc = now;
-            changed = true;
+            if (DadSchedulerRoutingRules.ShouldAdvanceOccurrenceCadence(
+                    occurrenceAdmitted,
+                    occurrenceConsumedByExplicitSkip: false))
+            {
+                group.NextEligibleTimeUtc = now + TimeSpan.FromHours(ResolveScheduleCadenceHours(group.ScheduleCadenceHours));
+                group.UpdatedAtUtc = now;
+                changed = true;
+            }
         }
 
         changed |= TryStartDueDailySchedule(now);
@@ -2595,6 +2813,8 @@ public sealed class DadSchedulerService
     private bool TryStartDueDailySchedule(DateTime now)
     {
         if (!configuration.RunAsServerDad)
+            return false;
+        if (!string.IsNullOrWhiteSpace(admissionBlockerProvider?.Invoke()))
             return false;
 
         NormalizeSchedules();
@@ -2734,6 +2954,9 @@ public sealed class DadSchedulerService
         NormalizeQueue();
         if (!DadSchedulerSubmissionRules.CanStartNextQueuedJob(HasPendingCleanup))
             return false;
+        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(admissionBlocker))
+            return false;
 
         var now = DateTime.UtcNow;
         var nextJob = configuration.SchedulerQueue
@@ -2769,7 +2992,22 @@ public sealed class DadSchedulerService
             return true;
         }
 
-        var preview = plannerPreviewBuilder(nextJob.GroupId);
+        if (!DadSchedulerRoutingRules.TryInvokeCallback(
+                () => plannerPreviewBuilder(nextJob.GroupId),
+                out DadPlannerRunRequestPreview? preview,
+                out var previewException))
+        {
+            log.Error(
+                previewException,
+                "[dad] Queued scheduler planner-preview callback failed for Job ID {JobId}.",
+                nextJob.JobId);
+            activeJob = nextJob.Clone();
+            currentState = BuildBlockedQueuedState(
+                nextJob,
+                $"Queued preset '{nextJob.GroupId}' preview callback failed: {previewException!.Message}");
+            RecordTerminalResult(currentState);
+            return true;
+        }
         if (preview == null)
         {
             activeJob = nextJob.Clone();
@@ -2778,7 +3016,21 @@ public sealed class DadSchedulerService
             return true;
         }
 
-        StartPreset(group, preview, nextJob.DryRun, nextJob);
+        if (!DadSchedulerRoutingRules.TryInvokeCallback(
+                () => StartPreset(group, preview, nextJob.DryRun, nextJob),
+                out DadSchedulerPresetState? _,
+                out var startException))
+        {
+            log.Error(
+                startException,
+                "[dad] Queued scheduler preset-start callback failed for Job ID {JobId}.",
+                nextJob.JobId);
+            activeJob = nextJob.Clone();
+            currentState = BuildBlockedQueuedState(
+                nextJob,
+                $"Queued preset '{nextJob.GroupId}' start callback failed: {startException!.Message}");
+            RecordTerminalResult(currentState);
+        }
         return true;
     }
 
@@ -3421,11 +3673,28 @@ public sealed class DadSchedulerService
 
         var cancel = request.Clone();
         cancel.Operation = DadRouletteRewardProbeOperation.Cancel;
-        var participant = new DadParticipantSnapshot
+        var now = DateTime.UtcNow;
+        var cleanupJob = activeJob?.Clone() ?? new DadScheduledCrewJob
         {
-            WorkerSessionId = cancel.RouteWorkerSessionId,
+            JobId = currentState.JobId,
+            JobType = currentState.JobType,
+            GroupId = currentState.GroupId,
+            PresetName = currentState.PresetName,
+            RequestedBy = currentState.RequestedBy,
+            CreatedAtUtc = currentState.StartedAtUtc,
         };
-        _ = transportService.SendRouletteRewardProbe(participant, cancel);
+        cleanupJob.StatusSummary = $"Cancellation cleanup pending for roulette reward probe {cancel.OperationId}.";
+        pendingRewardProbeCancellations.TryAdd(cancel.OperationId, new PendingRewardProbeCancellation
+        {
+            Request = cancel,
+            Job = cleanupJob,
+            CancellationRequestedAtUtc = now,
+            CancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+                default,
+                now,
+                ResolveCancellationAcknowledgementTimeout()),
+        });
+        UpdatePendingRewardProbeCancellations();
     }
 
     private TimeSpan ResolveDailyRewardPreflightTimeout()
@@ -3793,18 +4062,25 @@ public sealed class DadSchedulerService
             RequestedBy = currentState.RequestedBy,
         };
         const string reason = "Stable-account route reconnected on a new worker session; retaining exact old-route cleanup while the sole replacement safely rebinds.";
+        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+            default,
+            cancellationRequestedAtUtc,
+            ResolveCancellationAcknowledgementTimeout());
         if (DadSchedulerRoutingRules.RequiresTakeoverCancellation(previous))
         {
             var takeoverKey = $"{currentState.SchedulerRunId}|{previous.SlotId}|{previous.MatchedWorkerSessionId.Value}";
-            pendingTakeoverCancellations[takeoverKey] = new PendingTakeoverCancellation
+            pendingTakeoverCancellations.TryAdd(takeoverKey, new PendingTakeoverCancellation
             {
                 SchedulerRunId = currentState.SchedulerRunId,
                 Job = cleanupJob.Clone(),
                 Slot = previous.Clone(),
                 Reason = reason,
                 RequestedAtUtc = previous.TakeoverRequestedUtc ?? currentState.StartedAtUtc,
-                BlocksFutureWork = false,
-            };
+                CancellationRequestedAtUtc = cancellationRequestedAtUtc,
+                CancellationDeadlineUtc = cancellationDeadlineUtc,
+                BlocksFutureWork = true,
+            });
         }
 
         foreach (var assignment in frozenEarlyAssignments.Where(assignment =>
@@ -3812,15 +4088,17 @@ public sealed class DadSchedulerService
                      assignment.AttemptedWorkerSessionIds.Contains(previous.MatchedWorkerSessionId.Value)))
         {
             var assignmentKey = $"{assignment.Request.RunId}|{assignment.Request.AssignedSlotId}|{previous.MatchedWorkerSessionId.Value}";
-            pendingEarlyAssignmentCancellations[assignmentKey] = new PendingEarlyAssignmentCancellation
+            pendingEarlyAssignmentCancellations.TryAdd(assignmentKey, new PendingEarlyAssignmentCancellation
             {
                 RunId = assignment.Request.RunId,
                 WorkerSessionId = previous.MatchedWorkerSessionId,
                 Job = cleanupJob.Clone(),
                 SlotId = assignment.Request.AssignedSlotId,
                 Reason = reason,
-                BlocksFutureWork = false,
-            };
+                CancellationRequestedAtUtc = cancellationRequestedAtUtc,
+                CancellationDeadlineUtc = cancellationDeadlineUtc,
+                BlocksFutureWork = true,
+            });
         }
     }
 
@@ -4562,17 +4840,24 @@ public sealed class DadSchedulerService
 
         QueueEarlyAssignmentCancellations(cleanupJob, reason);
 
+        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+            default,
+            cancellationRequestedAtUtc,
+            ResolveCancellationAcknowledgementTimeout());
         foreach (var slot in currentState.Slots.Where(DadSchedulerRoutingRules.RequiresTakeoverCancellation))
         {
             var key = $"{currentState.SchedulerRunId}|{slot.SlotId}";
-            pendingTakeoverCancellations[key] = new PendingTakeoverCancellation
+            pendingTakeoverCancellations.TryAdd(key, new PendingTakeoverCancellation
             {
                 SchedulerRunId = currentState.SchedulerRunId,
                 Job = cleanupJob.Clone(),
                 Slot = slot.Clone(),
                 Reason = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason.Trim(),
                 RequestedAtUtc = slot.TakeoverRequestedUtc ?? currentState.StartedAtUtc,
-            };
+                CancellationRequestedAtUtc = cancellationRequestedAtUtc,
+                CancellationDeadlineUtc = cancellationDeadlineUtc,
+            });
             LogTakeoverTransition(slot, "cleanup-queued", "cancel-pending-route-or-ack");
         }
 
@@ -4582,19 +4867,26 @@ public sealed class DadSchedulerService
 
     private void QueueEarlyAssignmentCancellations(DadScheduledCrewJob cleanupJob, string reason)
     {
+        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+            default,
+            cancellationRequestedAtUtc,
+            ResolveCancellationAcknowledgementTimeout());
         foreach (var assignment in frozenEarlyAssignments)
         {
             foreach (var workerId in assignment.AttemptedWorkerSessionIds)
             {
                 var key = $"{assignment.Request.RunId}|{assignment.Request.AssignedSlotId}|{workerId}";
-                pendingEarlyAssignmentCancellations[key] = new PendingEarlyAssignmentCancellation
+                pendingEarlyAssignmentCancellations.TryAdd(key, new PendingEarlyAssignmentCancellation
                 {
                     RunId = assignment.Request.RunId,
                     WorkerSessionId = new DadWorkerSessionId(workerId),
                     Job = cleanupJob.Clone(),
                     SlotId = assignment.Request.AssignedSlotId,
                     Reason = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason.Trim(),
-                };
+                    CancellationRequestedAtUtc = cancellationRequestedAtUtc,
+                    CancellationDeadlineUtc = cancellationDeadlineUtc,
+                });
             }
         }
     }
@@ -4663,7 +4955,8 @@ public sealed class DadSchedulerService
 
     private bool HasPendingCleanup
         => pendingTakeoverCancellations.Values.Any(static pending => pending.BlocksFutureWork) ||
-           pendingEarlyAssignmentCancellations.Values.Any(static pending => pending.BlocksFutureWork);
+           pendingEarlyAssignmentCancellations.Values.Any(static pending => pending.BlocksFutureWork) ||
+           pendingRewardProbeCancellations.Count > 0;
 
     private bool HasActiveRebindCleanup
         => pendingTakeoverCancellations.Values.Any(pending =>
@@ -4679,7 +4972,12 @@ public sealed class DadSchedulerService
             .Select(static pending => pending.Job)
             .Concat(pendingEarlyAssignmentCancellations.Values
                 .Where(static pending => pending.BlocksFutureWork)
+                .Select(static pending => pending.Job))
+            .Concat(pendingRewardProbeCancellations.Values
                 .Select(static pending => pending.Job));
+
+    private TimeSpan ResolveCancellationAcknowledgementTimeout()
+        => TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
 
     private static DadRunRequest? CloneRunRequest(DadRunRequest? request)
         => request == null

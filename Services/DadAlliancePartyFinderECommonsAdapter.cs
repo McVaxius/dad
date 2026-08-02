@@ -60,6 +60,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var conditionVisible = condition != null && condition->AtkUnitBase.IsVisible;
         var mainReady = mainVisible && main->AddonLookingForGroupBase.AtkUnitBase.IsReady;
         var conditionReady = conditionVisible && condition->AtkUnitBase.IsReady;
+        var conditionControlsReady = conditionReady && HasRequiredConditionControls(condition);
         var activeRecruitment = recruitmentObserver.IsActiveRecruitment;
         var participatingInCrossWorldPartyOrAlliance =
             recruitmentObserver.IsParticipatingInCrossWorldPartyOrAlliance;
@@ -67,7 +68,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
 
         if (mainReady && main->RecruitMembersButton == null)
             hardBlocker = "The fully loaded Party Finder window is missing Recruit Members.";
-        if (conditionReady && !HasRequiredConditionControls(condition))
+        if (conditionReady && !conditionControlsReady)
             hardBlocker = "The fully loaded Party Finder conditions window is missing required alliance controls.";
         if (!presetLoader.IsAvailable)
             hardBlocker = presetLoader.UnavailableReason;
@@ -83,7 +84,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var dropDownMatches = 0;
         var dutyEntryEnabled = false;
         var selectedDutyDropDownIndex = -1;
-        if (conditionReady &&
+        if (conditionControlsReady &&
             condition->DutyDropDown != null &&
             condition->DutyDropDown->List != null)
         {
@@ -129,7 +130,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             string.IsNullOrEmpty(stored->CommentString);
         var storedOpenSlotsUnrestricted = StoredOpenSlotsUnrestricted(stored);
         var storedStaleMembersCleared = StoredStaleMembersCleared(stored);
-        var allianceSelected = conditionReady &&
+        var allianceSelected = conditionControlsReady &&
                                IsChecked(condition->RecruitmentType, 1);
         var storedExactBeforeSubmit = StoredSettingsExactBeforeSubmit(
             agent,
@@ -153,7 +154,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             conditionVisible,
             conditionReady,
             mainReady && IsUsable(main->RecruitMembersButton),
-            conditionReady &&
+            conditionControlsReady &&
             condition->DutyDropDown != null &&
             condition->DutyDropDown->List != null,
             targetDutyDropDownIndex,
@@ -176,7 +177,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             SelectedCategory = selectedCategory,
             TargetDutyId = targetDutyId,
             TargetDutySheetMatches = targetDutyIds.Length,
-            DutyListLoaded = conditionReady &&
+            DutyListLoaded = conditionControlsReady &&
                              condition->DutyDropDown != null &&
                              condition->DutyDropDown->List != null,
             TargetDutyDropDownMatches = dropDownMatches,
@@ -184,19 +185,19 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             TargetDutyDropDownIndex = targetDutyDropDownIndex,
             SelectedDutyDropDownIndex = selectedDutyDropDownIndex,
             SelectedDutyId = selectedDutyId,
-            AllianceASelected = conditionReady && IsChecked(condition->AllianceSelection, 0),
-            PrivateRecruitment = conditionReady && condition->FormPrivatePartyCheckbox->IsChecked,
+            AllianceASelected = conditionControlsReady && IsChecked(condition->AllianceSelection, 0),
+            PrivateRecruitment = conditionControlsReady && condition->FormPrivatePartyCheckbox->IsChecked,
             StoredPrivateRecruitment = storedPrivateRecruitment,
-            Passcode = conditionReady ? condition->PasswordNumericInput->Value : 0,
+            Passcode = conditionControlsReady ? condition->PasswordNumericInput->Value : 0,
             StoredPasscode = storedPasscode,
-            CrossWorldRecruitment = conditionReady && !condition->LimitToWorldServerCheckbox->IsChecked,
+            CrossWorldRecruitment = conditionControlsReady && !condition->LimitToWorldServerCheckbox->IsChecked,
             StoredCrossWorldRecruitment = storedCrossWorldRecruitment,
-            OnePlayerPerJob = conditionReady && condition->OnePlayerPerJobCheckbox->IsChecked,
+            OnePlayerPerJob = conditionControlsReady && condition->OnePlayerPerJobCheckbox->IsChecked,
             StoredOnePlayerPerJob = storedOnePlayerPerJob,
-            EmptyComment = conditionReady &&
+            EmptyComment = conditionControlsReady &&
                            string.IsNullOrEmpty(condition->CommentTextInput->AtkComponentInputBase.RawString.ToString()),
             StoredEmptyComment = storedEmptyComment,
-            UnrestrictedJobs = conditionReady && condition->RemoveRoleRestrictionsCheckBox->IsChecked,
+            UnrestrictedJobs = conditionControlsReady && condition->RemoveRoleRestrictionsCheckBox->IsChecked,
             StoredOpenSlotsUnrestricted = storedOpenSlotsUnrestricted,
             StoredStaleMembersCleared = storedStaleMembersCleared,
             NumberOfGroups = stored == null ? 0 : stored->NumberOfGroups,
@@ -272,6 +273,7 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
         var detailVisible = detail != null && detail->AtkUnitBase.IsVisible;
         var detailReady = detailVisible && detail->AtkUnitBase.IsReady;
         var confirmationVisible = confirmation != null && confirmation->AtkUnitBase.IsVisible;
+        var confirmationReady = confirmationVisible && confirmation->AtkUnitBase.IsReady;
         var confirmationText = confirmationVisible && confirmation->PromptText != null
             ? confirmation->PromptText->NodeText.ToString().Trim()
             : string.Empty;
@@ -293,10 +295,12 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
             DetailVisible = detailVisible,
             DetailReady = detailReady,
             ConfirmationVisible = confirmationVisible,
+            ConfirmationReady = confirmationReady,
             ConfirmationIdentity = confirmationVisible
-                ? $"{(nint)confirmation:X}:{confirmationText}"
+                ? $"{(nint)confirmation:X}"
                 : string.Empty,
             ConfirmationText = confirmationText,
+            OtherReadyPromptVisible = IsReadyAddon("LookingForGroupPrivate"),
             HardBlocker = hardBlocker,
             Readiness =
                 $"active-recruitment={activeRecruitment}; owner-handle={ownerHandle}; " +
@@ -527,5 +531,12 @@ internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
     {
         var manager = RaptureAtkUnitManager.Instance();
         return manager == null ? null : (T*)manager->GetAddonByName(name);
+    }
+
+    private static bool IsReadyAddon(string name)
+    {
+        var manager = RaptureAtkUnitManager.Instance();
+        var addon = manager == null ? null : manager->GetAddonByName(name);
+        return addon != null && addon->IsVisible && addon->IsReady;
     }
 }

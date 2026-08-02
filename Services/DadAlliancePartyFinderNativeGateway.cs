@@ -1,7 +1,6 @@
 using System.Text;
 using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
-using Dalamud.Memory;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -55,12 +54,12 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     IDadAlliancePartyFinderJoinUi
 {
     public const string FormationDutyName = "The Labyrinth of the Ancients";
-    private const int MaxListingRendererScan = 100;
-    private const uint ListingRecruiterTextNodeId = 28;
+    private const int MaxNativeListingScan = 50;
     private const int MaxDiagnosticNodes = 16_384;
     private const int MaxDiagnosticTreeDepth = 64;
     private const int MaxDiagnosticRendererSlots = 100;
     private readonly IFramework framework;
+    private readonly Configuration configuration;
     private readonly ICondition condition;
     private readonly IPartyList partyList;
     private readonly DadPresenceService presenceService;
@@ -69,6 +68,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     private readonly DadAlliancePartyFinderECommonsAdapter createUi;
     private readonly DadAlliancePartyFinderNativeCallbackDispatcher
         joinCallbackDispatcher;
+    private readonly DadStableAllianceHydrationTracker allianceHydration = new();
 
     private DadAlliancePartyFinderCreateFlow createFlow;
     private DadAlliancePartyFinderCleanupFlow cleanupFlow;
@@ -76,8 +76,10 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     private string activeJoinKey = string.Empty;
     private string leavePromptBaseline = string.Empty;
     private bool leaveRequested;
+    private long allianceObservationGeneration;
 
     public DadAlliancePartyFinderNativeGateway(
+        Configuration configuration,
         IFramework framework,
         ICondition condition,
         IPartyList partyList,
@@ -89,6 +91,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         IGameInteropProvider gameInteropProvider,
         IPluginLog log)
     {
+        this.configuration = configuration;
         this.framework = framework;
         this.condition = condition;
         this.partyList = partyList;
@@ -111,8 +114,14 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             dataManager,
             toastGui);
         createFlow = new DadAlliancePartyFinderCreateFlow(createUi);
-        cleanupFlow = new DadAlliancePartyFinderCleanupFlow(createUi);
-        joinFlow = new DadAlliancePartyFinderJoinFlow(this);
+        cleanupFlow = new DadAlliancePartyFinderCleanupFlow(
+            createUi,
+            allowFreshUnprovenPromptApproval:
+                configuration.AllowFreshUnprovenPromptApproval);
+        joinFlow = new DadAlliancePartyFinderJoinFlow(
+            this,
+            allowFreshUnprovenPromptApproval:
+                configuration.AllowFreshUnprovenPromptApproval);
     }
 
     public DadParticipantSnapshot BuildLocalSnapshot()
@@ -667,7 +676,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             return Blocked("The active local character contradicts the exact alliance recruitment target.");
         }
 
-        var observed = ObserveAlliance(instruction.TargetContentId);
+        var observed = AdvanceAllianceObservation(instruction.TargetContentId);
         var agent = AgentLookingForGroup.Instance();
         var isLocalCreator =
             agent != null &&
@@ -746,7 +755,10 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             var leave = AdvanceGuardedLeave();
             if (leave.Kind != DadAllianceNativeStepKind.Succeeded)
                 return leave with { ObservedAlliance = observed };
-            joinFlow = new DadAlliancePartyFinderJoinFlow(this);
+            joinFlow = new DadAlliancePartyFinderJoinFlow(
+                this,
+                allowFreshUnprovenPromptApproval:
+                    configuration.AllowFreshUnprovenPromptApproval);
         }
 
         var result = joinFlow.Advance(new DadAlliancePfJoinTarget
@@ -757,6 +769,15 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             AssignedAlliance = instruction.AssignedAlliance,
             Passcode = instruction.Passcode,
         });
+        if (result.PromptOverrideUsed)
+        {
+            log.Warning(
+                "[dad] Prompt ownership override used operation=alliance-pf-join recruitment={RecruitmentId} attempt={Attempt} target={TargetCharacterKey} summary={Summary}",
+                instruction.RecruitmentId,
+                result.RetryCycle,
+                instruction.TargetCharacterKey,
+                result.Summary);
+        }
         return new DadAllianceNativeStep(
             result.Kind switch
             {
@@ -824,16 +845,19 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 ? yesNo->PromptText->NodeText.ToString().Trim()
                 : string.Empty;
         var joinFlags = detail.JoinConditionFlags;
-        var numberOfListings =
-            agent == null ? 0 : agent->NumberOfListingsDisplayed;
+        var nativeListingView =
+            agent == null
+                ? new DadAlliancePfListingViewSnapshot()
+                : ReadNativeListingView(agent, mainVisible, mainVisible && mainBase->IsReady);
+        var numberOfListings = nativeListingView.ListLength;
         var matchingListingIndexes =
-            main == null
+            agent == null
                 ? []
                 : DadAlliancePartyFinderListingRowResolver.Resolve(
                     target.LeaderName,
                     numberOfListings,
-                    ReadListingView(main->StandardViewList),
-                    ReadListingView(main->CompactViewList));
+                    nativeListingView,
+                    new DadAlliancePfListingViewSnapshot());
 
         return new DadAlliancePfJoinSnapshot
         {
@@ -873,97 +897,78 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             YesNoVisible = yesNoVisible,
             YesNoReady = yesNoVisible && yesNo->AtkUnitBase.IsReady,
             YesNoIdentity = yesNoVisible
-                ? $"{(nint)yesNo:X}:{yesNoText}"
+                ? $"{(nint)yesNo:X}"
                 : string.Empty,
+            YesNoText = yesNoText,
             PrivatePromptVisible = privateVisible,
             PrivatePromptReady =
                 privateVisible && privatePrompt->IsReady,
-            ObservedAlliance = ObserveAlliance(target.TargetContentId),
+            ObservedAlliance = allianceHydration.GetStable(target.TargetContentId),
         };
     }
 
-    private static DadAlliancePfListingViewSnapshot ReadListingView(
-        AtkComponentList* list)
+    private static DadAlliancePfListingViewSnapshot ReadNativeListingView(
+        AgentLookingForGroup* agent,
+        bool mainVisible,
+        bool mainReady)
     {
-        if (list == null)
+        if (agent == null)
             return new DadAlliancePfListingViewSnapshot();
 
-        var root = (AtkResNode*)list->OwnerNode;
-        var visible = root != null && root->IsVisible();
-        var rendererStorageReady =
-            list->AllocatedItemRendererListLength == 0 ||
-            list->ItemRendererList != null;
-        var ready =
-            visible &&
-            list->UldManager.LoadedState == AtkLoadState.Loaded &&
-            list->ListLength >= 0 &&
-            list->AllocatedItemRendererListLength >= 0 &&
-            rendererStorageReady;
-        if (!ready)
+        var scanLength = DadAlliancePartyFinderNativeListingRules.GetScanLength(
+            agent->Listings.ListingIds.Length,
+            MaxNativeListingScan);
+        var reportedCount = Math.Min(agent->NumberOfListingsDisplayed, scanLength);
+        if (!mainVisible || !mainReady)
         {
             return new DadAlliancePfListingViewSnapshot
             {
                 Available = true,
-                Visible = visible,
+                Visible = mainVisible,
                 Ready = false,
-                ListLength = Math.Max(0, list->ListLength),
+                ListLength = reportedCount,
             };
         }
 
-        var renderers =
+        var entries =
             new List<DadAlliancePfListingRendererSnapshot>();
-        var rendererCount = Math.Min(
-            list->AllocatedItemRendererListLength,
-            MaxListingRendererScan);
-        for (var storageIndex = 0;
-             storageIndex < rendererCount;
-             storageIndex++)
+        for (var listingIndex = 0; listingIndex < scanLength; listingIndex++)
         {
-            var renderer =
-                list->ItemRendererList[storageIndex]
-                    .AtkComponentListItemRenderer;
-            if (renderer == null ||
-                renderer->AtkResNode == null ||
-                !renderer->AtkResNode->IsVisible())
-            {
+            var listingId = agent->Listings.ListingIds[listingIndex];
+            if (listingId == 0)
                 continue;
-            }
 
-            renderers.Add(new DadAlliancePfListingRendererSnapshot(
-                renderer->ListItemIndex,
-                ReadListingRecruiterName(renderer)));
+            try
+            {
+                var detail = new AgentLookingForGroup.Detailed
+                {
+                    ListingId = listingId,
+                };
+                agent->PopulateListingData(&detail);
+                entries.Add(new DadAlliancePfListingRendererSnapshot(
+                    listingIndex,
+                    detail.LeaderString.Trim()));
+            }
+            catch
+            {
+                entries.Add(new DadAlliancePfListingRendererSnapshot(
+                    listingIndex,
+                    null));
+            }
         }
 
+        var listingCount = DadAlliancePartyFinderNativeListingRules.GetLogicalLength(
+            reportedCount,
+            scanLength,
+            entries.Select(static entry => entry.ListItemIndex));
         return new DadAlliancePfListingViewSnapshot
         {
             Available = true,
             Visible = true,
             Ready = true,
-            ListLength = list->ListLength,
-            Renderers = renderers,
+            ListLength = listingCount,
+            Renderers = entries,
         };
-    }
-
-    private static string? ReadListingRecruiterName(
-        AtkComponentListItemRenderer* renderer)
-    {
-        try
-        {
-            var recruiter =
-                renderer->GetTextNodeById(ListingRecruiterTextNodeId);
-            var value = recruiter == null
-                ? null
-                : recruiter->NodeText.StringPtr.Value;
-            return value == null
-                ? null
-                : MemoryHelper
-                    .ReadSeStringNullTerminated((nint)value)
-                    .TextValue;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     DadAlliancePfJoinActionResult IDadAlliancePartyFinderJoinUi.Perform(
@@ -1157,6 +1162,13 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             return Waiting(DadAllianceRecruitmentState.WaitingUnsafe, safety);
 
         var result = cleanupFlow.Advance(dadOwnsRecruitment);
+        if (result.PromptOverrideUsed)
+        {
+            log.Warning(
+                "[dad] Prompt ownership override used operation=alliance-recruitment-cleanup attempt={Attempt} summary={Summary}",
+                result.Attempt,
+                result.Summary);
+        }
         return new DadAllianceNativeStep(
             result.Kind switch
             {
@@ -1188,24 +1200,53 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             ShouldAudit: result.ShouldAudit);
     }
 
+    public bool ObserveActiveRecruitment()
+    {
+        RequireFrameworkThread();
+        try
+        {
+            return createUi.ReadCleanup().ActiveRecruitment;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
     public DadAllianceAssignment ObserveAlliance(ulong contentId)
     {
         RequireFrameworkThread();
+        return allianceHydration.GetStable(contentId);
+    }
+
+    private DadAllianceAssignment AdvanceAllianceObservation(ulong contentId)
+    {
         if (contentId == 0 || !InfoProxyCrossRealm.IsAllianceRaid())
+        {
+            allianceHydration.Reset();
             return DadAllianceAssignment.None;
+        }
 
         var member = InfoProxyCrossRealm.GetMemberByContentId(contentId);
-        return member == null
+        var observed = member == null
             ? DadAllianceAssignment.None
             : DadAlliancePartyFinderRules.FromCrossRealmGroupIndex(member->GroupIndex);
+        return allianceHydration.Observe(
+            contentId,
+            observed,
+            ++allianceObservationGeneration);
     }
 
     public void Reset()
     {
         RequireFrameworkThread();
         createUi.ResetErrors();
+        allianceHydration.Reset();
         createFlow = new DadAlliancePartyFinderCreateFlow(createUi);
-        cleanupFlow = new DadAlliancePartyFinderCleanupFlow(createUi);
+        cleanupFlow = new DadAlliancePartyFinderCleanupFlow(
+            createUi,
+            allowFreshUnprovenPromptApproval:
+                configuration.AllowFreshUnprovenPromptApproval);
         ResetJoinState();
     }
 
@@ -1257,13 +1298,16 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
 
         if (!prompt.Visible)
             return Waiting(DadAllianceRecruitmentState.CorrectingWrongAlliance, "Waiting for the guarded leave confirmation.");
+        if (!prompt.Ready)
+            return Waiting(DadAllianceRecruitmentState.CorrectingWrongAlliance, "Waiting for the guarded leave confirmation to become ready.");
         if (string.Equals(prompt.Identity, leavePromptBaseline, StringComparison.Ordinal) ||
             !ContainsLeaveLanguage(prompt.Text))
         {
             return Blocked("A fresh party/alliance leave confirmation could not be proven; DAD will not click it.");
         }
 
-        FireYes(prompt.Addon);
+        if (!FireYes(prompt.Addon))
+            return Waiting(DadAllianceRecruitmentState.CorrectingWrongAlliance, "The guarded leave confirmation changed before approval.");
         return Progress("Confirmed guarded departure.", DadAllianceRecruitmentState.CorrectingWrongAlliance);
     }
 
@@ -1362,7 +1406,10 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     private void ResetJoinState()
     {
         activeJoinKey = string.Empty;
-        joinFlow = new DadAlliancePartyFinderJoinFlow(this);
+        joinFlow = new DadAlliancePartyFinderJoinFlow(
+            this,
+            allowFreshUnprovenPromptApproval:
+                configuration.AllowFreshUnprovenPromptApproval);
         leavePromptBaseline = string.Empty;
         leaveRequested = false;
     }
@@ -1383,17 +1430,22 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             : addon->PromptText->NodeText.ToString().Trim();
         return new PromptSnapshot(
             true,
-            $"{(nint)addon:X}:{text}",
+            addon->AtkUnitBase.IsReady,
+            $"{(nint)addon:X}",
             text,
             &addon->AtkUnitBase);
     }
 
-    private static void FireYes(AtkUnitBase* addon)
+    private static bool FireYes(AtkUnitBase* addon)
     {
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
+            return false;
+
         var values = stackalloc AtkValue[1];
         values[0].Type = AtkValueType.Int;
         values[0].Int = 0;
         addon->FireCallback(1, values, true);
+        return true;
     }
 
     private static bool ContainsLeaveLanguage(string text)
@@ -1447,17 +1499,20 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     {
         public PromptSnapshot(
             bool visible,
+            bool ready,
             string identity,
             string text,
             AtkUnitBase* addon)
         {
             Visible = visible;
+            Ready = ready;
             Identity = identity;
             Text = text;
             Addon = addon;
         }
 
         public bool Visible { get; }
+        public bool Ready { get; }
         public string Identity { get; }
         public string Text { get; }
         public AtkUnitBase* Addon { get; }

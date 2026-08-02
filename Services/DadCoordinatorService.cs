@@ -68,8 +68,11 @@ public sealed class DadCoordinatorService
         public DadWorkerExecutionCancel WorkerCommand { get; init; } = new();
         public bool RunAcknowledged { get; set; }
         public bool WorkerAcknowledged { get; set; }
+        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationDeadlineUtc { get; init; }
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
         public string LastDiagnosticState { get; set; } = string.Empty;
+        public bool DeadlineLogged { get; set; }
     }
 
     internal DadCoordinatorService(
@@ -108,6 +111,8 @@ public sealed class DadCoordinatorService
     public bool IsReady => transportService.IsReady;
 
     public bool IsBusy => CurrentResult.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running;
+
+    internal bool HasPendingCancellationCleanup => pendingCoordinatorCancellations.Count > 0;
 
     public bool IsServerDad => configuration.RunAsServerDad;
 
@@ -462,47 +467,42 @@ public sealed class DadCoordinatorService
         };
 
         CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
+        foreach (var participant in activeParticipants)
+        {
+            participant.CancellationState = participant.IsLocalClient
+                ? DadRunCancellationState.Cancelling
+                : DadRunCancellationState.Requested;
+        }
         QueueCoordinatorCancellations(command, "Cancelled by Dad Coordinator.");
-        var remoteAcks = transportService.BroadcastCancel(command, activeParticipants);
         var localAck = presenceService.HandleCancelRun(command);
         var executorCancelAck = workerExecutionService.Cancel(new DadWorkerExecutionCancel
         {
             RunId = activePlan.Request.RequestId,
             Reason = "Cancelled by operator.",
         });
-        foreach (var participant in activeParticipants.Where(static participant => !participant.IsLocalClient))
-        {
-            transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
-            {
-                RunId = activePlan.Request.RequestId,
-                Reason = "Cancelled by Dad Coordinator.",
-            });
-        }
         claimService.ReleaseClaims(activePlan.Request.RequestId);
         if (!string.IsNullOrWhiteSpace(executorCancelAck.Status.StepResult.StepName))
             stepResults.Add(executorCancelAck.Status.StepResult.Clone());
 
-        foreach (var participant in activeParticipants)
+        var local = activeParticipants.FirstOrDefault(static participant => participant.IsLocalClient);
+        if (local != null && DadSchedulerRoutingRules.IsRunCancellationAcknowledged(
+                command.RunId,
+                local.WorkerSessionId,
+                localAck))
         {
-            participant.CancellationState = DadRunCancellationState.Acknowledged;
-            participant.State = DadParticipantState.Cancelled;
-            participant.LeaseState = DadParticipantLeaseState.Released;
-            participant.ClaimState = DadClaimState.Released;
+            local.CancellationState = DadRunCancellationState.Acknowledged;
+            local.State = DadParticipantState.Cancelled;
         }
 
         if (localAck.Snapshot != null)
         {
-            var local = activeParticipants.FirstOrDefault(static participant => participant.IsLocalClient);
             if (local != null)
                 CopyLocalParticipant(local, localAck.Snapshot);
         }
-
-        foreach (var ack in remoteAcks)
+        foreach (var participant in activeParticipants)
         {
-            var participant = activeParticipants.FirstOrDefault(candidate =>
-                string.Equals(candidate.WorkerSessionId, ack.WorkerSessionId.ToString(), StringComparison.OrdinalIgnoreCase));
-            if (participant != null && !TryApplyRemoteParticipantResponse(participant, ack.Snapshot, out var blocker))
-                log.Warning("[dad] Ignored remote cancellation snapshot for {WorkerSessionId}: {Blocker}", ack.WorkerSessionId, blocker);
+            participant.LeaseState = DadParticipantLeaseState.Released;
+            participant.ClaimState = DadClaimState.Released;
         }
 
         return FinalizeRun(DadRunStatus.Cancelled, "Dad run cancelled.", "Cancelled by operator.");
@@ -528,36 +528,39 @@ public sealed class DadCoordinatorService
             Reason = reason,
         });
 
-        QueueCoordinatorCancellations(
-            new DadCancelCommandDto
-            {
-                RunId = runId,
-                AuthorityWorkerSessionId = presenceService.WorkerSessionId,
-                CancellationState = DadRunCancellationState.Cancelling,
-                Reason = reason,
-            },
-            reason);
-
-        var localAck = presenceService.HandleCancelRun(new DadCancelCommandDto
+        var command = new DadCancelCommandDto
         {
             RunId = runId,
             AuthorityWorkerSessionId = presenceService.WorkerSessionId,
             CancellationState = DadRunCancellationState.Cancelling,
             Reason = reason,
-        });
+        };
         foreach (var participant in activeParticipants)
         {
-            participant.CancellationState = DadRunCancellationState.Acknowledged;
-            participant.State = DadParticipantState.Cancelled;
+            participant.CancellationState = participant.IsLocalClient
+                ? DadRunCancellationState.Cancelling
+                : DadRunCancellationState.Requested;
             participant.LeaseState = DadParticipantLeaseState.Released;
             participant.ClaimState = DadClaimState.Released;
         }
+
+        QueueCoordinatorCancellations(command, reason);
+        var localAck = presenceService.HandleCancelRun(command);
 
         if (localAck.Snapshot != null)
         {
             var local = activeParticipants.FirstOrDefault(static participant => participant.IsLocalClient);
             if (local != null)
                 CopyLocalParticipant(local, localAck.Snapshot);
+        }
+        var localParticipant = activeParticipants.FirstOrDefault(static participant => participant.IsLocalClient);
+        if (localParticipant != null && DadSchedulerRoutingRules.IsRunCancellationAcknowledged(
+                command.RunId,
+                localParticipant.WorkerSessionId,
+                localAck))
+        {
+            localParticipant.CancellationState = DadRunCancellationState.Acknowledged;
+            localParticipant.State = DadParticipantState.Cancelled;
         }
 
         CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
@@ -569,8 +572,11 @@ public sealed class DadCoordinatorService
         if (activePlan == null || activeSlotManifest == null)
             return;
 
-        var pool = GetPlanningPool(forcePeerRefresh: DateTime.UtcNow >= nextParticipantPollUtc);
-        nextParticipantPollUtc = DateTime.UtcNow + ParticipantPollInterval;
+        var now = DateTime.UtcNow;
+        var participantPollDue = now >= nextParticipantPollUtc;
+        var pool = GetPlanningPool(forcePeerRefresh: participantPollDue);
+        if (participantPollDue)
+            nextParticipantPollUtc = now + ParticipantPollInterval;
 
         activeParticipants.Clear();
         var liveCoordinatorTruth = presenceService.BuildLiveSafetySnapshot();
@@ -2233,6 +2239,18 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return;
 
+        if (DadLifecycleCleanupRules.ShouldFinalizeRosterlessSingleWorker(
+                activePlan.RequiredParticipantCount,
+                activeSlotManifest != null,
+                activePlan.Orchestration.RequiredRosterCharacters.Count))
+        {
+            Transition(
+                DadRunPhase.Finalizing,
+                DadRunStatus.Running,
+                $"{summary} No managed party roster exists for this single-worker run; party teardown is unnecessary.");
+            return;
+        }
+
         if (activeSlotManifest != null && activePlan.RequiredParticipantCount > 1)
         {
             if (!TryRefreshStrictMutationBoundary("managed party teardown"))
@@ -3148,10 +3166,6 @@ public sealed class DadCoordinatorService
         if (activePlan != null && status != DadRunStatus.Cancelled)
         {
             var exactCancellationScope = finalizationCancellationScopeOverride;
-            var cancellationTargets = exactCancellationScope ?? activeParticipants;
-            var remoteCancellationTargets = cancellationTargets
-                .Where(static participant => !participant.IsLocalClient)
-                .ToList();
             var finalizationCommand = new DadCancelCommandDto
             {
                 RunId = activePlan.Request.RequestId,
@@ -3163,9 +3177,6 @@ public sealed class DadCoordinatorService
                 finalizationCommand,
                 finalizationCommand.Reason,
                 exactCancellationScope);
-            transportService.BroadcastCancel(
-                finalizationCommand,
-                remoteCancellationTargets);
             presenceService.HandleCancelRun(finalizationCommand);
             if (exactCancellationScope == null ||
                 exactCancellationScope.Any(static participant => participant.IsLocalClient))
@@ -3287,6 +3298,11 @@ public sealed class DadCoordinatorService
             }
         }
 
+        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+            default,
+            cancellationRequestedAtUtc,
+            ResolveCancellationAcknowledgementTimeout());
         foreach (var participant in targets)
         {
             var key = $"{command.RunId}|{participant.WorkerSessionId.Value}";
@@ -3308,6 +3324,8 @@ public sealed class DadCoordinatorService
                     RunId = command.RunId,
                     Reason = string.IsNullOrWhiteSpace(workerReason) ? command.Reason : workerReason,
                 },
+                CancellationRequestedAtUtc = cancellationRequestedAtUtc,
+                CancellationDeadlineUtc = cancellationDeadlineUtc,
             };
         }
 
@@ -3323,6 +3341,18 @@ public sealed class DadCoordinatorService
         foreach (var pair in pendingCoordinatorCancellations.ToList())
         {
             var pending = pair.Value;
+            if (now >= pending.CancellationDeadlineUtc && !pending.DeadlineLogged)
+            {
+                pending.DeadlineLogged = true;
+                log.Warning(
+                    "[dad] Coordinator cancellation acknowledgement deadline expired but cleanup remains blocking: request={RequestId}, worker={WorkerSessionId}, requested={RequestedAtUtc}, deadline={DeadlineUtc}, runAck={RunAcknowledged}, workerAck={WorkerAcknowledged}.",
+                    pending.RunCommand.RunId,
+                    pending.Target.WorkerSessionId,
+                    pending.CancellationRequestedAtUtc,
+                    pending.CancellationDeadlineUtc,
+                    pending.RunAcknowledged,
+                    pending.WorkerAcknowledged);
+            }
             if (now < pending.NextAttemptUtc)
                 continue;
 
@@ -3336,23 +3366,19 @@ public sealed class DadCoordinatorService
             if (!pending.RunAcknowledged)
             {
                 var ack = transportService.SendCancelRun(pending.Target, pending.RunCommand);
-                pending.RunAcknowledged = ack is { Acknowledged: true } &&
-                                          string.Equals(ack.RunId, pending.RunCommand.RunId, StringComparison.Ordinal) &&
-                                          string.Equals(
-                                              ack.WorkerSessionId.Value,
-                                              pending.Target.WorkerSessionId.Value,
-                                              StringComparison.OrdinalIgnoreCase);
+                pending.RunAcknowledged = DadSchedulerRoutingRules.IsRunCancellationAcknowledged(
+                    pending.RunCommand.RunId,
+                    pending.Target.WorkerSessionId,
+                    ack);
             }
 
             if (!pending.WorkerAcknowledged)
             {
                 var ack = transportService.SendWorkerExecutionCancel(pending.Target, pending.WorkerCommand);
-                pending.WorkerAcknowledged = ack is { Accepted: true } &&
-                                             string.Equals(ack.RunId, pending.WorkerCommand.RunId, StringComparison.Ordinal) &&
-                                             string.Equals(
-                                                 ack.WorkerSessionId.Value,
-                                                 pending.Target.WorkerSessionId.Value,
-                                                 StringComparison.OrdinalIgnoreCase);
+                pending.WorkerAcknowledged = DadSchedulerRoutingRules.IsWorkerCancellationAcknowledged(
+                    pending.WorkerCommand.RunId,
+                    pending.Target.WorkerSessionId,
+                    ack);
             }
 
             if (!pending.RunAcknowledged || !pending.WorkerAcknowledged)
@@ -3365,9 +3391,37 @@ public sealed class DadCoordinatorService
             }
 
             LogCoordinatorCancellationTransition(pair.Key, pending, "acknowledged");
+            MarkCoordinatorCancellationAcknowledged(pending);
             pendingCoordinatorCancellations.Remove(pair.Key);
         }
     }
+
+    private void MarkCoordinatorCancellationAcknowledged(PendingCoordinatorCancellation pending)
+    {
+        pending.Target.CancellationState = DadRunCancellationState.Acknowledged;
+        pending.Target.State = DadParticipantState.Cancelled;
+        pending.Target.LeaseState = DadParticipantLeaseState.Released;
+        pending.Target.ClaimState = DadClaimState.Released;
+
+        var active = activeParticipants.FirstOrDefault(participant =>
+            string.Equals(
+                participant.WorkerSessionId.Value,
+                pending.Target.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase));
+        if (active == null)
+            return;
+
+        active.CancellationState = DadRunCancellationState.Acknowledged;
+        active.State = DadParticipantState.Cancelled;
+        active.LeaseState = DadParticipantLeaseState.Released;
+        active.ClaimState = DadClaimState.Released;
+    }
+
+    private TimeSpan ResolveCancellationAcknowledgementTimeout()
+        => TimeSpan.FromSeconds(Math.Max(
+            2,
+            activePlan?.Request.Orchestration.WaitPolicy.CancelAckTimeoutSeconds
+            ?? configuration.CancelAckTimeoutSeconds));
 
     private void LogCoordinatorCancellationTransition(
         string key,

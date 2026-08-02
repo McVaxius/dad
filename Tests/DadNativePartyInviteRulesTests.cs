@@ -211,7 +211,7 @@ public sealed class DadNativePartyInviteRulesTests
     {
         var expected = ExpectedInviter();
         var exact = new DadPendingPartyInvitation(43, expected.CharacterName, expected.WorldId);
-        var hidden = new DadSelectYesnoPromptSnapshot(false, string.Empty, string.Empty);
+        var hidden = new DadSelectYesnoPromptSnapshot(false, false, string.Empty, string.Empty);
 
         Assert.True(DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(exact, expected, hidden));
         Assert.False(DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(
@@ -221,7 +221,7 @@ public sealed class DadNativePartyInviteRulesTests
         Assert.False(DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(
             exact,
             expected,
-            new DadSelectYesnoPromptSnapshot(true, "existing", "Unrelated confirmation")));
+            new DadSelectYesnoPromptSnapshot(true, true, "existing", "Unrelated confirmation")));
     }
 
     [Fact]
@@ -229,19 +229,27 @@ public sealed class DadNativePartyInviteRulesTests
     {
         var expected = ExpectedInviter();
         var exact = new DadPendingPartyInvitation(43, expected.CharacterName, expected.WorldId);
-        var hidden = new DadSelectYesnoPromptSnapshot(false, string.Empty, string.Empty);
-        var surfaced = new DadSelectYesnoPromptSnapshot(true, "surface", "Join the party?");
-        var exactPrompt = new DadSelectYesnoPromptSnapshot(true, "exact", $"Join {expected.CharacterName}'s party?");
-        var unrelated = new DadSelectYesnoPromptSnapshot(true, "unrelated", "Discard this item?");
+        var hidden = new DadSelectYesnoPromptSnapshot(false, false, string.Empty, string.Empty);
+        var surfaced = new DadSelectYesnoPromptSnapshot(true, true, "surface", "Join the party?");
+        var exactPrompt = new DadSelectYesnoPromptSnapshot(true, true, "exact", $"Join {expected.CharacterName}'s party?");
+        var unrelated = new DadSelectYesnoPromptSnapshot(true, true, "unrelated", "Discard this item?");
 
         Assert.True(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
-            exact, exact, expected, hidden, hidden, surfaced, restoreDispatched: true));
+            exact, exact, expected, hidden, hidden, exactPrompt, restoreDispatched: true,
+            currentAttempt: 1, approvedAttempt: 0, soleReadyPrompt: true,
+            allowFreshUnprovenPromptApproval: false, out _));
         Assert.True(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
-            exact, exact, expected, hidden, unrelated, exactPrompt, restoreDispatched: false));
+            exact, exact, expected, hidden, unrelated, exactPrompt, restoreDispatched: false,
+            currentAttempt: 1, approvedAttempt: 0, soleReadyPrompt: true,
+            allowFreshUnprovenPromptApproval: false, out _));
         Assert.False(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
-            exact, exact, expected, hidden, unrelated, unrelated, restoreDispatched: false));
+            exact, exact, expected, hidden, unrelated, unrelated, restoreDispatched: false,
+            currentAttempt: 1, approvedAttempt: 0, soleReadyPrompt: true,
+            allowFreshUnprovenPromptApproval: false, out _));
         Assert.False(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
-            exact, exact, expected, exactPrompt, exactPrompt, exactPrompt, restoreDispatched: false));
+            exact, exact, expected, exactPrompt, exactPrompt, exactPrompt, restoreDispatched: false,
+            currentAttempt: 1, approvedAttempt: 0, soleReadyPrompt: true,
+            allowFreshUnprovenPromptApproval: false, out _));
         Assert.False(DadPartyInvitePromptOwnershipRules.CanUseDirectYes(
             exact,
             new DadPendingPartyInvitation(44, expected.CharacterName, expected.WorldId),
@@ -249,7 +257,12 @@ public sealed class DadNativePartyInviteRulesTests
             hidden,
             hidden,
             surfaced,
-            restoreDispatched: true));
+            restoreDispatched: true,
+            currentAttempt: 1,
+            approvedAttempt: 0,
+            soleReadyPrompt: true,
+            allowFreshUnprovenPromptApproval: true,
+            out _));
     }
 
     [Fact]

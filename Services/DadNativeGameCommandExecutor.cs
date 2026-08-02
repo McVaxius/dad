@@ -7,15 +7,8 @@ internal sealed unsafe class DadNativeGameCommandExecutor : IDadGameCommandExecu
 {
     public bool TryExecute(string command, out string error)
     {
-        error = string.Empty;
-        if (!string.Equals(
-                command,
-                DadAlliancePartyFinderCommandDispatcher.PartyFinderCommand,
-                StringComparison.Ordinal))
-        {
-            error = "The native game-command executor accepts only the exact /pfinder command.";
+        if (!DadNativeChatCommandRules.TryNormalize(command, out var normalized, out error))
             return false;
-        }
 
         Utf8String* entry = null;
         try
@@ -23,14 +16,14 @@ internal sealed unsafe class DadNativeGameCommandExecutor : IDadGameCommandExecu
             var uiModule = UIModule.Instance();
             if (uiModule == null)
             {
-                error = "The native game UI module is unavailable for /pfinder.";
+                error = "The native game UI module is unavailable for chat-command submission.";
                 return false;
             }
 
-            entry = Utf8String.FromString(command);
+            entry = Utf8String.FromString(normalized);
             if (entry == null)
             {
-                error = "The native /pfinder chat entry could not be allocated.";
+                error = "The native chat-command entry could not be allocated.";
                 return false;
             }
 
@@ -39,7 +32,7 @@ internal sealed unsafe class DadNativeGameCommandExecutor : IDadGameCommandExecu
         }
         catch (Exception exception)
         {
-            error = $"The native /pfinder command failed: {exception.Message}";
+            error = $"The native chat command failed: {exception.Message}";
             return false;
         }
         finally

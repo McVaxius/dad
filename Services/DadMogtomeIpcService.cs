@@ -46,26 +46,34 @@ public sealed class DadMogtomeIpcService
         };
         try
         {
-            return DadIpcJson.Deserialize<DadMogtomeRunStatus>(
-                       startRun.InvokeFunc(DadIpcJson.Serialize(request)))
-                   ?? DadMogtomeRunStatus.Failed("MOGTOME returned unreadable start status.");
+            var helper = DadIpcJson.Deserialize<DadMogtomeRunStatus>(
+                             startRun.InvokeFunc(DadIpcJson.Serialize(request)))
+                         ?? DadMogtomeRunStatus.Failed(
+                             "MOGTOME returned unreadable start status.",
+                             request.DadRunId);
+            return ValidateRunCorrelation(helper, request.DadRunId, "start");
         }
         catch (Exception ex)
         {
-            return DadMogtomeRunStatus.Failed($"MOGTOME start IPC failed ({ex.GetType().Name}).");
+            return DadMogtomeRunStatus.Failed(
+                $"MOGTOME start IPC failed ({ex.GetType().Name}).",
+                request.DadRunId);
         }
     }
 
-    public DadMogtomeRunStatus GetStatus()
+    public DadMogtomeRunStatus GetStatus(string runId)
     {
         try
         {
-            return DadIpcJson.Deserialize<DadMogtomeRunStatus>(getRunStatus.InvokeFunc())
-                   ?? DadMogtomeRunStatus.Failed("MOGTOME returned unreadable status.");
+            var helper = DadIpcJson.Deserialize<DadMogtomeRunStatus>(getRunStatus.InvokeFunc())
+                         ?? DadMogtomeRunStatus.Failed("MOGTOME returned unreadable status.", runId);
+            return ValidateRunCorrelation(helper, runId, "status");
         }
         catch (Exception ex)
         {
-            return DadMogtomeRunStatus.Failed($"MOGTOME status IPC failed ({ex.GetType().Name}).");
+            return DadMogtomeRunStatus.Failed(
+                $"MOGTOME status IPC failed ({ex.GetType().Name}).",
+                runId);
         }
     }
 
@@ -73,19 +81,34 @@ public sealed class DadMogtomeIpcService
     {
         try
         {
-            return DadIpcJson.Deserialize<DadMogtomeRunStatus>(stopRun.InvokeFunc(DadIpcJson.Serialize(new
-                   {
-                       schemaVersion = 1,
-                       dadRunId = runId,
-                       reason,
-                   })))
-                   ?? DadMogtomeRunStatus.Failed("MOGTOME returned unreadable stop status.");
+            var helper = DadIpcJson.Deserialize<DadMogtomeRunStatus>(stopRun.InvokeFunc(DadIpcJson.Serialize(new
+                             {
+                                 schemaVersion = 1,
+                                 dadRunId = runId,
+                                 reason,
+                             })))
+                         ?? DadMogtomeRunStatus.Failed("MOGTOME returned unreadable stop status.", runId);
+            return ValidateRunCorrelation(helper, runId, "stop");
         }
         catch (Exception ex)
         {
-            return DadMogtomeRunStatus.Failed($"MOGTOME stop IPC failed ({ex.GetType().Name}).");
+            return DadMogtomeRunStatus.Failed(
+                $"MOGTOME stop IPC failed ({ex.GetType().Name}).",
+                runId);
         }
     }
+
+    private static DadMogtomeRunStatus ValidateRunCorrelation(
+        DadMogtomeRunStatus helper,
+        string expectedRunId,
+        string operation)
+        => DadMogtomeStatusRules.TryValidateRunId(
+            expectedRunId,
+            helper.DadRunId,
+            operation,
+            out var reason)
+            ? helper
+            : DadMogtomeRunStatus.Failed(reason, expectedRunId);
 }
 
 public sealed class DadMogtomeRunRequest
@@ -115,9 +138,10 @@ public sealed class DadMogtomeRunStatus
     public string Summary { get; set; } = string.Empty;
     public string FailureReason { get; set; } = string.Empty;
 
-    public static DadMogtomeRunStatus Failed(string reason)
+    public static DadMogtomeRunStatus Failed(string reason, string runId = "")
         => new()
         {
+            DadRunId = runId,
             IsTerminal = true,
             Summary = reason,
             FailureReason = reason,

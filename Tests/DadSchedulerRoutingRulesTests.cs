@@ -1,4 +1,5 @@
 using dad.Models;
+using dad.Services;
 using Xunit;
 
 namespace dad.Tests;
@@ -403,6 +404,167 @@ public sealed class DadSchedulerRoutingRulesTests
         Assert.Equal("worker-x", clone.MatchedWorkerSessionId.Value);
         Assert.Equal(slot.ResetExecutionUtc, clone.ResetExecutionUtc);
         Assert.Equal(slot.RelogExecutionUtc, clone.RelogExecutionUtc);
+    }
+
+    [Fact]
+    public void SchedulerAdmissionRequiresCoordinatorAndEveryConflictingOwnerToBeIdle()
+    {
+        Assert.Empty(DadSchedulerRoutingRules.GetAdmissionBlocker(
+            isCoordinator: true,
+            schedulerActive: false,
+            crewFormationActive: false,
+            standaloneDisbandActive: false,
+            visibleRunActive: false,
+            schedulerCleanupPending: false,
+            coordinatorCleanupPending: false));
+
+        Assert.Contains("Coordinator", DadSchedulerRoutingRules.GetAdmissionBlocker(false, false, false, false, false, false, false));
+        Assert.Contains("scheduler", DadSchedulerRoutingRules.GetAdmissionBlocker(true, true, false, false, false, false, false), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Crew Formation", DadSchedulerRoutingRules.GetAdmissionBlocker(true, false, true, false, false, false, false));
+        Assert.Contains("disband", DadSchedulerRoutingRules.GetAdmissionBlocker(true, false, false, true, false, false, false), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("visible DAD run", DadSchedulerRoutingRules.GetAdmissionBlocker(true, false, false, false, true, false, false));
+        Assert.Contains("Scheduler cancellation", DadSchedulerRoutingRules.GetAdmissionBlocker(true, false, false, false, false, true, false));
+        Assert.Contains("Coordinator cancellation", DadSchedulerRoutingRules.GetAdmissionBlocker(true, false, false, false, false, false, true));
+    }
+
+    [Fact]
+    public void ScheduleCadenceAdvancesOnlyForAdmissionOrExplicitConsumedSkip()
+    {
+        Assert.False(DadSchedulerRoutingRules.ShouldAdvanceOccurrenceCadence(false, false));
+        Assert.True(DadSchedulerRoutingRules.ShouldAdvanceOccurrenceCadence(true, false));
+        Assert.True(DadSchedulerRoutingRules.ShouldAdvanceOccurrenceCadence(false, true));
+    }
+
+    [Fact]
+    public void CancellationAcknowledgementsRequireExactRunWorkerAndTakeoverIdentity()
+    {
+        var worker = new DadWorkerSessionId("worker-x");
+        var takeoverRequest = new DadWakeTakeoverRequestDto
+        {
+            SchedulerRunId = "scheduler-run",
+            OperationToken = "scheduler-run",
+            SlotId = "Slot2",
+            AccountKey = new DadAccountKey(AccountX),
+            CharacterKey = new DadCharacterKey("target@world"),
+            MessageKind = DadWakeTakeoverMessageKind.Cancel,
+        };
+        var takeoverResult = new DadWakeTakeoverResultDto
+        {
+            SchedulerRunId = takeoverRequest.SchedulerRunId,
+            OperationToken = takeoverRequest.OperationToken,
+            SlotId = takeoverRequest.SlotId,
+            AccountKey = takeoverRequest.AccountKey,
+            CharacterKey = takeoverRequest.CharacterKey,
+            Phase = DadWakeTakeoverPhase.Cancelled,
+            AcknowledgementState = DadWakeAcknowledgementState.Executed,
+            Snapshot = new DadParticipantSnapshot { WorkerSessionId = worker },
+        };
+        Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(takeoverRequest, worker, takeoverResult));
+        takeoverResult.SlotId = "spoofed-slot";
+        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(takeoverRequest, worker, takeoverResult));
+
+        var runAck = new DadCancelAckDto
+        {
+            RunId = "run-a",
+            WorkerSessionId = worker,
+            Acknowledged = true,
+            CancellationState = DadRunCancellationState.Acknowledged,
+        };
+        Assert.True(DadSchedulerRoutingRules.IsRunCancellationAcknowledged("run-a", worker, runAck));
+        runAck.RunId = "run-b";
+        Assert.False(DadSchedulerRoutingRules.IsRunCancellationAcknowledged("run-a", worker, runAck));
+
+        var workerAck = new DadWorkerExecutionAck
+        {
+            RunId = "run-a",
+            WorkerSessionId = worker,
+            Accepted = true,
+        };
+        Assert.True(DadSchedulerRoutingRules.IsWorkerCancellationAcknowledged("run-a", worker, workerAck));
+        workerAck.WorkerSessionId = new DadWorkerSessionId("worker-y");
+        Assert.False(DadSchedulerRoutingRules.IsWorkerCancellationAcknowledged("run-a", worker, workerAck));
+    }
+
+    [Fact]
+    public void RewardProbeCancellationRequiresExactNonPendingResponse()
+    {
+        var now = new DateTime(2026, 8, 2, 6, 0, 0, DateTimeKind.Utc);
+        var request = new DadRouletteRewardProbeRequestDto
+        {
+            OperationId = "probe-a",
+            Operation = DadRouletteRewardProbeOperation.Cancel,
+            SchedulerRunId = "scheduler-a",
+            ScheduleId = "schedule-a",
+            ScheduleRunId = "schedule-run-a",
+            ScheduleEntryId = "entry-a",
+            SlotId = "Slot1",
+            RouteWorkerSessionId = new DadWorkerSessionId("worker-w"),
+            AccountKey = new DadAccountKey(AccountW),
+            CharacterKey = new DadCharacterKey("target@world"),
+            CharacterContentId = 123,
+            RouletteId = 5,
+            RouletteKey = "roulette:5",
+            RequestedAtUtc = now.AddSeconds(-1),
+        };
+        var pending = DadRouletteRewardProbeResultDto.FromRequest(
+            request,
+            DadRouletteRewardProbeOutcome.Pending,
+            "closing",
+            now);
+        var acknowledged = DadRouletteRewardProbeResultDto.FromRequest(
+            request,
+            DadRouletteRewardProbeOutcome.Unknown,
+            "closed",
+            now);
+
+        Assert.False(DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(request, pending, now));
+        Assert.True(DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(request, acknowledged, now));
+        acknowledged.OperationId = "probe-b";
+        Assert.False(DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(request, acknowledged, now));
+    }
+
+    [Fact]
+    public void CancellationDeadlineAndFrozenRequestContractCannotDriftAcrossPolls()
+    {
+        var requested = new DateTime(2026, 8, 2, 6, 0, 0, DateTimeKind.Utc);
+        var originalDeadline = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+            default,
+            requested,
+            TimeSpan.FromSeconds(6));
+        Assert.Equal(
+            originalDeadline,
+            DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
+                originalDeadline,
+                requested.AddMinutes(1),
+                TimeSpan.FromMinutes(1)));
+
+        var frozen = new DadRunRequest
+        {
+            RequestId = "frozen-id",
+            RequestedAtUtc = requested,
+            RequestedBy = "scheduler:original",
+        };
+        frozen.Orchestration.QueueAuthority = DadQueueAuthority.Leader;
+        var strict = DadIpcJson.DeepClone(frozen)!;
+        strict.RequestId = "fresh-id";
+        strict.RequestedAtUtc = requested.AddMinutes(1);
+        strict.RequestedBy = "fresh-preview";
+
+        Assert.True(DadSchedulerRoutingRules.MatchesFrozenRequestContract(frozen, strict, out var exactReason), exactReason);
+        strict.Orchestration.QueueAuthority = DadQueueAuthority.LocalOnly;
+        Assert.False(DadSchedulerRoutingRules.MatchesFrozenRequestContract(frozen, strict, out var mismatch));
+        Assert.Contains("changed", mismatch, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ThrownSchedulerCallbacksBecomeDeterministicFailures()
+    {
+        Assert.False(DadSchedulerRoutingRules.TryInvokeCallback<string>(
+            () => throw new InvalidOperationException("boom"),
+            out var result,
+            out var exception));
+        Assert.Null(result);
+        Assert.Equal("boom", exception!.Message);
     }
 
     private static List<DadSchedulerSlotState> Slots()

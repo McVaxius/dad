@@ -77,6 +77,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
             DetailVisible = true,
             DetailReady = true,
             ConfirmationVisible = true,
+            ConfirmationReady = true,
             ConfirmationIdentity = "stale",
             ConfirmationText = "Leave the party?",
         };
@@ -134,13 +135,14 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             ConfirmationVisible = true,
+            ConfirmationReady = true,
             ConfirmationIdentity = "fresh-danger",
             ConfirmationText = "Disband the alliance?",
         };
 
         var result = fixture.Tick();
 
-        Assert.Equal(DadAlliancePfCreateResultKind.Blocked, result.Kind);
+        Assert.Equal(DadAlliancePfCreateResultKind.Waiting, result.Kind);
         Assert.DoesNotContain(
             DadAlliancePfNativeAction.ConfirmEndRecruitment,
             fixture.Ui.Actions);
@@ -313,6 +315,7 @@ public sealed class DadAlliancePartyFinderCleanupFlowTests
                 DetailVisible = true,
                 DetailReady = true,
                 ConfirmationVisible = true,
+                ConfirmationReady = true,
                 ConfirmationIdentity = "stale",
                 ConfirmationText = "Leave the party?",
             };

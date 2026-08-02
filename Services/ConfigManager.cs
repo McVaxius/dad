@@ -13,6 +13,7 @@ public sealed class ConfigManager
 {
     private readonly IPluginLog log;
     private readonly string configDirectory;
+    private readonly DadAtomicFileStore atomicFileStore = new();
     private readonly Dictionary<string, AccountConfig> accounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> deletedAccountIds = new(StringComparer.OrdinalIgnoreCase);
     private long profileCatalogRevision = 1;
@@ -30,12 +31,15 @@ public sealed class ConfigManager
         LoadAllAccounts();
     }
 
-    public string CurrentAccountId { get; set; } = string.Empty;
+    public string CurrentAccountId { get; private set; } = string.Empty;
     public string SelectedCharacterKey { get; set; } = string.Empty;
     public long ProfileCatalogRevision => Interlocked.Read(ref profileCatalogRevision);
 
     public AccountConfig? GetCurrentAccount()
-        => string.IsNullOrWhiteSpace(CurrentAccountId) ? null : accounts.GetValueOrDefault(CurrentAccountId);
+    {
+        var account = ResolveCurrentAccount();
+        return account == null ? null : CloneAccount(account);
+    }
 
     public string GetCurrentAccountKey()
         => GetCurrentAccount()?.AccountId ?? CurrentAccountId;
@@ -75,11 +79,12 @@ public sealed class ConfigManager
         if (account == null)
             return false;
 
-        NormalizeAccount(account);
-        account.AccountAlias = string.IsNullOrWhiteSpace(alias) ? "Account" : alias.Trim();
-        account.Revision++;
-        SaveAccount(account.AccountId);
-        return true;
+        return TryMutateAccount(account, () =>
+        {
+            NormalizeAccount(account);
+            account.AccountAlias = string.IsNullOrWhiteSpace(alias) ? "Account" : alias.Trim();
+            account.Revision++;
+        });
     }
 
     public DadProfileCatalog BuildLocalProfileCatalog(
@@ -130,9 +135,21 @@ public sealed class ConfigManager
 
         if (request.UpdatePrimaryLaunchProfile)
         {
-            account.PrimaryLaunchProfileId = request.PrimaryLaunchProfileId?.Trim() ?? string.Empty;
-            account.Revision++;
-            SaveAccount(account.AccountId);
+            if (!TryMutateAccount(account, () =>
+                {
+                    account.PrimaryLaunchProfileId = request.PrimaryLaunchProfileId?.Trim() ?? string.Empty;
+                    account.Revision++;
+                }))
+            {
+                return new DadProfileUpdateAck
+                {
+                    RequestId = request.RequestId,
+                    AccountRevision = account.Revision,
+                    ProfileRevision = account.DefaultConfig.Revision,
+                    Summary = $"Failed to persist primary launch profile for {account.AccountAlias}; in-memory changes were rolled back.",
+                    Account = BuildAccountProfileRecord(account),
+                };
+            }
             return new DadProfileUpdateAck
             {
                 RequestId = request.RequestId,
@@ -171,22 +188,46 @@ public sealed class ConfigManager
             };
         }
 
-        var replacement = request.Profile?.Clone() ?? new CharacterConfig();
-        replacement.Revision = target.Revision + 1;
-        NormalizeProfile(replacement);
-        if (request.UpdateAccountDefault)
+        if (request.Profile == null)
         {
-            account.DefaultConfig = replacement;
-        }
-        else
-        {
-            var key = account.Characters.Keys.First(existing =>
-                string.Equals(existing, request.CharacterKey.Value, StringComparison.OrdinalIgnoreCase));
-            account.Characters[key] = replacement;
+            return new DadProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                AccountRevision = account.Revision,
+                ProfileRevision = target.Revision,
+                Summary = "Profile update is missing its required profile payload.",
+                Account = BuildAccountProfileRecord(account),
+            };
         }
 
-        account.Revision++;
-        SaveAccount(account.AccountId);
+        var replacement = request.Profile.Clone();
+        replacement.Revision = target.Revision + 1;
+        NormalizeProfile(replacement);
+        if (!TryMutateAccount(account, () =>
+            {
+                if (request.UpdateAccountDefault)
+                {
+                    account.DefaultConfig = replacement;
+                }
+                else
+                {
+                    var key = account.Characters.Keys.First(existing =>
+                        string.Equals(existing, request.CharacterKey.Value, StringComparison.OrdinalIgnoreCase));
+                    account.Characters[key] = replacement;
+                }
+
+                account.Revision++;
+            }))
+        {
+            return new DadProfileUpdateAck
+            {
+                RequestId = request.RequestId,
+                AccountRevision = account.Revision,
+                ProfileRevision = target.Revision,
+                Summary = $"Failed to persist profile for {account.AccountAlias}; in-memory changes were rolled back.",
+                Account = BuildAccountProfileRecord(account),
+            };
+        }
         return new DadProfileUpdateAck
         {
             RequestId = request.RequestId,
@@ -204,11 +245,12 @@ public sealed class ConfigManager
         if (account == null)
             return false;
 
-        NormalizeAccount(account);
-        account.PrimaryLaunchProfileId = profileId?.Trim() ?? string.Empty;
-        account.Revision++;
-        SaveAccount(account.AccountId);
-        return true;
+        return TryMutateAccount(account, () =>
+        {
+            NormalizeAccount(account);
+            account.PrimaryLaunchProfileId = profileId?.Trim() ?? string.Empty;
+            account.Revision++;
+        });
     }
 
     public bool DeleteAccount(DadAccountKey accountKey)
@@ -298,49 +340,6 @@ public sealed class ConfigManager
         return result;
     }
 
-    public bool MergeAccountInto(DadAccountKey sourceKey, DadAccountKey targetKey)
-    {
-        var source = ResolveAccount(sourceKey);
-        var target = ResolveAccount(targetKey);
-        if (source == null || target == null)
-            return false;
-
-        NormalizeAccount(source);
-        NormalizeAccount(target);
-        if (string.Equals(source.AccountId, target.AccountId, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var changed = false;
-        foreach (var pair in source.Characters)
-        {
-            if (string.IsNullOrWhiteSpace(pair.Key) || target.Characters.ContainsKey(pair.Key))
-                continue;
-
-            target.Characters[pair.Key] = pair.Value.Clone();
-            changed = true;
-        }
-
-        if (changed)
-        {
-            target.Revision++;
-            SaveAccount(target.AccountId);
-        }
-
-        var sourceWasCurrent = string.Equals(CurrentAccountId, source.AccountId, StringComparison.OrdinalIgnoreCase);
-        var selectedBeforeDelete = SelectedCharacterKey;
-        var deleted = DeleteAccount(new DadAccountKey(source.AccountId));
-        if (!deleted)
-            return false;
-
-        if (sourceWasCurrent || string.IsNullOrWhiteSpace(CurrentAccountId))
-            CurrentAccountId = target.AccountId;
-        if (sourceWasCurrent && !string.IsNullOrWhiteSpace(selectedBeforeDelete) && target.Characters.ContainsKey(selectedBeforeDelete))
-            SelectedCharacterKey = selectedBeforeDelete;
-
-        SaveAccount(target.AccountId);
-        return true;
-    }
-
     public bool EnsureCharacterForAccount(
         DadAccountKey accountKey,
         string characterKey,
@@ -359,10 +358,11 @@ public sealed class ConfigManager
         if (account.Characters.ContainsKey(resolvedKey))
             return true;
 
-        account.Characters[resolvedKey] = account.DefaultConfig.Clone();
-        account.Revision++;
-        SaveAccount(account.AccountId);
-        return true;
+        return TryMutateAccount(account, () =>
+        {
+            account.Characters[resolvedKey] = account.DefaultConfig.Clone();
+            account.Revision++;
+        });
     }
 
     public bool RemoveCharacterFromAccount(DadAccountKey accountKey, DadCharacterKey characterKey)
@@ -377,16 +377,16 @@ public sealed class ConfigManager
         if (existingKey == null)
             return false;
 
-        account.Characters.Remove(existingKey);
-        account.Revision++;
-        if (string.Equals(CurrentAccountId, account.AccountId, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(SelectedCharacterKey, existingKey, StringComparison.OrdinalIgnoreCase))
+        return TryMutateAccount(account, () =>
         {
-            SelectedCharacterKey = string.Empty;
-        }
-
-        SaveAccount(account.AccountId);
-        return true;
+            account.Characters.Remove(existingKey);
+            account.Revision++;
+            if (string.Equals(CurrentAccountId, account.AccountId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(SelectedCharacterKey, existingKey, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedCharacterKey = string.Empty;
+            }
+        });
     }
 
     public bool HasCharacterInAccount(DadAccountKey accountKey, DadCharacterKey characterKey)
@@ -402,16 +402,35 @@ public sealed class ConfigManager
 
     public CharacterConfig GetActiveConfig()
     {
-        var account = GetCurrentAccount();
+        var account = ResolveCurrentAccount();
         if (account == null)
             return new CharacterConfig();
 
         if (string.IsNullOrWhiteSpace(SelectedCharacterKey))
-            return account.DefaultConfig;
+            return account.DefaultConfig.Clone();
 
         return account.Characters.TryGetValue(SelectedCharacterKey, out var config)
-            ? config
-            : account.DefaultConfig;
+            ? config.Clone()
+            : account.DefaultConfig.Clone();
+    }
+
+    public bool UpdateActiveConfig(Action<CharacterConfig> mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        var account = ResolveCurrentAccount();
+        if (account == null)
+            return false;
+
+        var profile = string.IsNullOrWhiteSpace(SelectedCharacterKey)
+            ? account.DefaultConfig
+            : ResolveCharacterProfile(account, new DadCharacterKey(SelectedCharacterKey)) ?? account.DefaultConfig;
+        return TryMutateAccount(account, () =>
+        {
+            mutation(profile);
+            NormalizeProfile(profile);
+            profile.Revision++;
+            account.Revision++;
+        });
     }
 
     public IEnumerable<string> GetSortedCharacterKeys()
@@ -435,20 +454,29 @@ public sealed class ConfigManager
             return false;
 
         NormalizeAccount(account);
+        var previousAccountId = CurrentAccountId;
+        var previousCharacterKey = SelectedCharacterKey;
         CurrentAccountId = account.AccountId;
         SelectedCharacterKey = characterKey;
 
         if (!account.Characters.ContainsKey(characterKey))
         {
-            account.Characters[characterKey] = account.DefaultConfig.Clone();
-            account.Revision++;
-            SaveAccount(account.AccountId);
+            if (!TryMutateAccount(account, () =>
+                {
+                    account.Characters[characterKey] = account.DefaultConfig.Clone();
+                    account.Revision++;
+                }))
+            {
+                CurrentAccountId = previousAccountId;
+                SelectedCharacterKey = previousCharacterKey;
+                return false;
+            }
         }
 
         return true;
     }
 
-    public void EnsureAccountSelected(string? preferredAccountId = null, string? aliasHint = null)
+    public bool EnsureAccountSelected(string? preferredAccountId = null, string? aliasHint = null)
     {
         var preferredKey = preferredAccountId?.Trim() ?? string.Empty;
         var account = !string.IsNullOrWhiteSpace(preferredKey)
@@ -457,82 +485,93 @@ public sealed class ConfigManager
                       ?? ResolveSingleAccount()
                       ?? ResolveFirstAccount();
         if (account == null)
-            return;
+            return false;
 
         NormalizeAccount(account);
         CurrentAccountId = account.AccountId;
-        SaveAccount(account.AccountId);
+        return true;
     }
 
-    public void EnsureCharacterExists(string name, string world)
+    public bool EnsureCharacterExists(string name, string world)
     {
-        var account = GetCurrentAccount();
+        var account = ResolveCurrentAccount();
         if (account == null || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(world))
-            return;
+            return false;
 
         var key = $"{name}@{world}";
-        if (!account.Characters.ContainsKey(key))
+        if (account.Characters.ContainsKey(key))
+        {
+            SelectedCharacterKey = key;
+            return true;
+        }
+
+        return TryMutateAccount(account, () =>
         {
             account.Characters[key] = account.DefaultConfig.Clone();
             account.Revision++;
-        }
-
-        SelectedCharacterKey = key;
-        SaveCurrentAccount();
+            SelectedCharacterKey = key;
+        });
     }
 
-    public void SaveCurrentAccount()
+    public bool SaveCurrentAccount()
     {
         if (string.IsNullOrWhiteSpace(CurrentAccountId) ||
             !accounts.TryGetValue(CurrentAccountId, out var account))
         {
-            return;
+            return false;
         }
 
-        NormalizeAccount(account);
-        account.Revision++;
-        var profile = string.IsNullOrWhiteSpace(SelectedCharacterKey)
-            ? account.DefaultConfig
-            : ResolveCharacterProfile(account, new DadCharacterKey(SelectedCharacterKey));
-        if (profile != null)
-            profile.Revision++;
-        SaveAccount(CurrentAccountId);
+        return TryMutateAccount(account, () =>
+        {
+            NormalizeAccount(account);
+            account.Revision++;
+            var profile = string.IsNullOrWhiteSpace(SelectedCharacterKey)
+                ? account.DefaultConfig
+                : ResolveCharacterProfile(account, new DadCharacterKey(SelectedCharacterKey));
+            if (profile != null)
+                profile.Revision++;
+        });
     }
 
     private void LoadAllAccounts()
     {
-        try
+        foreach (var account in DadAccountConfigPersistence.LoadAll(
+                     configDirectory,
+                     JsonOptions,
+                     (path, exception) =>
+                     {
+                         if (string.IsNullOrWhiteSpace(path))
+                         {
+                             log.Error(exception, "[dad] Failed to enumerate account configs.");
+                             return;
+                         }
+
+                         log.Error(
+                             exception,
+                             "[dad] Failed to load account config {ConfigPath}; continuing with later files.",
+                             path);
+                     }))
         {
-            foreach (var path in Directory.GetFiles(configDirectory, "*_dad.json"))
-            {
-                var account = JsonSerializer.Deserialize<AccountConfig>(File.ReadAllText(path), JsonOptions);
-                if (account != null && !string.IsNullOrWhiteSpace(account.AccountId))
-                {
-                    NormalizeAccount(account);
-                    accounts[account.AccountId] = account;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            log.Error(ex, "[dad] Failed to load account configs.");
+            accounts[account.AccountId] = account;
         }
     }
 
-    private void SaveAccount(string accountId)
+    private bool SaveAccount(string accountId)
     {
         if (!accounts.TryGetValue(accountId, out var account))
-            return;
+            return false;
 
         try
         {
             var path = Path.Combine(configDirectory, $"{accountId}_dad.json");
-            File.WriteAllText(path, JsonSerializer.Serialize(account, JsonOptions));
+            atomicFileStore.Write(path, JsonSerializer.Serialize(account, JsonOptions));
             Interlocked.Increment(ref profileCatalogRevision);
+            return true;
         }
         catch (Exception ex)
         {
             log.Error(ex, "[dad] Failed to save account config.");
+            return false;
         }
     }
 
@@ -560,6 +599,9 @@ public sealed class ConfigManager
             string.Equals(account.AccountId, value, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(account.AccountAlias, value, StringComparison.OrdinalIgnoreCase));
     }
+
+    private AccountConfig? ResolveCurrentAccount()
+        => string.IsNullOrWhiteSpace(CurrentAccountId) ? null : accounts.GetValueOrDefault(CurrentAccountId);
 
     private AccountConfig? ResolveAccountById(string accountId)
     {
@@ -602,8 +644,36 @@ public sealed class ConfigManager
         NormalizeAccount(account);
         deletedAccountIds.Remove(account.AccountId);
         accounts[account.AccountId] = account;
-        SaveAccount(account.AccountId);
+        if (!SaveAccount(account.AccountId))
+        {
+            accounts.Remove(account.AccountId);
+            return null;
+        }
         return account;
+    }
+
+    private bool TryMutateAccount(AccountConfig account, Action mutation)
+    {
+        var accountKey = accounts.Keys.FirstOrDefault(key =>
+            ReferenceEquals(accounts[key], account) ||
+            string.Equals(key, account.AccountId, StringComparison.OrdinalIgnoreCase));
+        if (accountKey == null)
+            return false;
+
+        var currentAccountBefore = CurrentAccountId;
+        var selectedCharacterBefore = SelectedCharacterKey;
+        var catalogRevisionBefore = Interlocked.Read(ref profileCatalogRevision);
+        if (DadAccountConfigPersistence.TryApply(
+                account,
+                mutation,
+                () => SaveAccount(account.AccountId)))
+            return true;
+
+        accounts[accountKey] = account;
+        CurrentAccountId = currentAccountBefore;
+        SelectedCharacterKey = selectedCharacterBefore;
+        Interlocked.Exchange(ref profileCatalogRevision, catalogRevisionBefore);
+        return false;
     }
 
     private static string ResolveCharacterKey(string characterKey, string characterName, string worldName)
@@ -618,46 +688,10 @@ public sealed class ConfigManager
     }
 
     private static void NormalizeAccount(AccountConfig account)
-    {
-        account.SchemaVersion = Math.Max(2, account.SchemaVersion);
-        account.Revision = Math.Max(1, account.Revision);
-        account.AccountId = account.AccountId?.Trim() ?? string.Empty;
-        account.AccountAlias = string.IsNullOrWhiteSpace(account.AccountAlias) ? "Account" : account.AccountAlias.Trim();
-        account.PrimaryLaunchProfileId = account.PrimaryLaunchProfileId?.Trim() ?? string.Empty;
-        account.DefaultConfig ??= new CharacterConfig();
-        NormalizeProfile(account.DefaultConfig);
-        var normalizedCharacters = new Dictionary<string, CharacterConfig>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pair in account.Characters ?? new Dictionary<string, CharacterConfig>())
-        {
-            var key = pair.Key?.Trim() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(key) || normalizedCharacters.ContainsKey(key))
-                continue;
-
-            var profile = pair.Value?.Clone() ?? new CharacterConfig();
-            NormalizeProfile(profile);
-            normalizedCharacters[key] = profile;
-        }
-
-        account.Characters = normalizedCharacters;
-    }
+        => DadAccountConfigPersistence.Normalize(account);
 
     private static AccountConfig CloneAccount(AccountConfig account)
-    {
-        NormalizeAccount(account);
-        return new AccountConfig
-        {
-            SchemaVersion = account.SchemaVersion,
-            Revision = account.Revision,
-            AccountId = account.AccountId,
-            AccountAlias = account.AccountAlias,
-            PrimaryLaunchProfileId = account.PrimaryLaunchProfileId,
-            DefaultConfig = account.DefaultConfig.Clone(),
-            Characters = account.Characters.ToDictionary(
-                static pair => pair.Key,
-                static pair => pair.Value.Clone(),
-                StringComparer.OrdinalIgnoreCase),
-        };
-    }
+        => DadAccountConfigPersistence.Clone(account);
 
     private static CharacterConfig? ResolveCharacterProfile(AccountConfig account, DadCharacterKey characterKey)
     {
@@ -692,9 +726,5 @@ public sealed class ConfigManager
     }
 
     private static void NormalizeProfile(CharacterConfig profile)
-    {
-        profile.Revision = Math.Max(1, profile.Revision);
-        profile.TargetNotes = profile.TargetNotes?.Trim() ?? string.Empty;
-        profile.BlundervilleEmoteCommand = profile.BlundervilleEmoteCommand?.Trim() ?? string.Empty;
-    }
+        => DadAccountConfigPersistence.NormalizeProfile(profile);
 }

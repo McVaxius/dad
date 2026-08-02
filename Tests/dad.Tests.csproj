@@ -43,6 +43,12 @@
     <Compile Include="..\Services\DadHubProtocol.cs" Link="DadHubProtocol.cs" />
     <Compile Include="..\Services\DadTransportRuntime.cs" Link="DadTransportRuntime.cs" />
     <Compile Include="..\Services\DadIpcJson.cs" Link="DadIpcJson.cs" />
+    <Compile Include="..\Services\DadWireIngressNormalizer.cs" Link="DadWireIngressNormalizer.cs" />
+    <Compile Include="..\Services\DadAtomicFileStore.cs" Link="DadAtomicFileStore.cs" />
+    <Compile Include="..\Services\DadAccountConfigPersistence.cs" Link="DadAccountConfigPersistence.cs" />
+    <Compile Include="..\Services\DadWorkerRunCommandQueue.cs" Link="DadWorkerRunCommandQueue.cs" />
+    <Compile Include="..\Services\DadLifecycleCleanupRules.cs" Link="DadLifecycleCleanupRules.cs" />
+    <Compile Include="..\Services\DadDutyLifecycleRules.cs" Link="DadDutyLifecycleRules.cs" />
     <Compile Include="..\Services\DadNpcDutyEligibility.cs" Link="DadNpcDutyEligibility.cs" />
     <Compile Include="..\Services\DadPresetTemplateService.cs" Link="DadPresetTemplateService.cs" />
     <Compile Include="..\Services\DadNpcAutoLevelSelector.cs" Link="DadNpcAutoLevelSelector.cs" />
@@ -83,6 +89,7 @@
     <Compile Include="..\Services\DadConfigurationPersistenceCoordinator.cs" Link="DadConfigurationPersistenceCoordinator.cs" />
     <Compile Include="..\Services\DadRunHistoryPersistenceRules.cs" Link="DadRunHistoryPersistenceRules.cs" />
     <Compile Include="..\Services\DadAdsConfigurationPatchRules.cs" Link="DadAdsConfigurationPatchRules.cs" />
+    <Compile Include="..\Services\DadPromptOwnershipRules.cs" Link="DadPromptOwnershipRules.cs" />
     <Compile Include="..\Services\DadPartyTeardownRules.cs" Link="DadPartyTeardownRules.cs" />
     <Compile Include="..\Services\DadParticipantPartyDepartureRules.cs" Link="DadParticipantPartyDepartureRules.cs" />
     <Compile Include="..\Services\DadShareService.cs" Link="DadShareService.cs" />

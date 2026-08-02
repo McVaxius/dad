@@ -13,11 +13,7 @@ public sealed class DadProfileDirectoryService : IDisposable
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
-    private readonly DadBackgroundTaskObserver backgroundTasks;
-    private readonly CancellationTokenSource refreshCancellation = new();
-    private readonly object refreshGate = new();
     private readonly DadOnlineProfileCatalogCache remoteCatalogs = new(RefreshInterval, OfflineAfter);
-    private Task? refreshTask;
     private bool disposed;
     private long projectedLocalRevision = -1;
     private long projectedRemoteRevision = -1;
@@ -36,7 +32,6 @@ public sealed class DadProfileDirectoryService : IDisposable
         this.presenceService = presenceService;
         this.transportService = transportService;
         this.log = log;
-        backgroundTasks = new DadBackgroundTaskObserver(log, "profile directory");
         RebuildCurrentCatalogs(force: true);
     }
 
@@ -46,9 +41,6 @@ public sealed class DadProfileDirectoryService : IDisposable
             return;
 
         disposed = true;
-        refreshCancellation.Cancel();
-        refreshCancellation.Dispose();
-        backgroundTasks.Dispose();
     }
 
     public void Update()
@@ -62,7 +54,7 @@ public sealed class DadProfileDirectoryService : IDisposable
         {
             remoteCatalogs.ObserveTransport(nowUtc, transportService.IsWorkerOnline);
             if (remoteCatalogs.TryBeginRefresh(nowUtc))
-                QueueRefreshRemoteCatalogs();
+                RefreshRemoteCatalogs();
         }
 
         RebuildCurrentCatalogs();
@@ -148,29 +140,6 @@ public sealed class DadProfileDirectoryService : IDisposable
                 CharacterCount = account.Characters.Count,
             }))
             .ToList());
-
-    private void QueueRefreshRemoteCatalogs()
-    {
-        if (disposed)
-            return;
-
-        lock (refreshGate)
-        {
-            if (refreshTask is { IsCompleted: false })
-                return;
-
-            refreshTask = RefreshRemoteCatalogsAsync(refreshCancellation.Token);
-            backgroundTasks.Track(refreshTask, "remote profile catalog refresh");
-        }
-    }
-
-    private async Task RefreshRemoteCatalogsAsync(CancellationToken cancellationToken)
-    {
-        await Task.Yield();
-        cancellationToken.ThrowIfCancellationRequested();
-        RefreshRemoteCatalogs();
-        RebuildCurrentCatalogs();
-    }
 
     private void RefreshRemoteCatalogs()
     {

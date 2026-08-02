@@ -82,6 +82,10 @@ dotnet test .\Tests\dad.Tests.csproj
 - Shared configuration changes are coalesced at the end of the framework update after a 250 ms quiet period, with a
   one-second maximum delay. Storage failures stay outside window drawing, retry on a bounded cadence, and surface a
   memory-only warning with an explicit **Retry save** action; disposal makes one final write attempt.
+- Per-account files load independently, so one corrupt account is reported and skipped without hiding later valid
+  accounts. Required writes use a unique same-directory temporary file and atomic replacement; a failed write restores
+  the prior in-memory account snapshot and revision. Account merge controls and CLR merge surfaces no longer exist;
+  delete, forget remote copies, clear-all, and history behavior remain available.
 - Durable run history keeps at most 50 compact completion snapshots. Status, timing, task/stop progress, step results,
   warnings, and scheduler failure evidence remain visible while requests, participants, leases, executor state, client
   and session IDs, and authority endpoints are removed from saved history.
@@ -162,6 +166,11 @@ dotnet test .\Tests\dad.Tests.csproj
   disappear before final exact subgroup verification, and early subgroup observation cannot bypass either acknowledgement.
   Transient search failures retry at a capped cadence until Stop, and a proven wrong subgroup is repaired only through
   guarded leave/rejoin.
+  PF join, invite acceptance, participant departure, recruitment cleanup, and party teardown share one attempt-bound
+  prompt rule: the prompt must be newly surfaced, visible, ready, operation-relevant, and still attached to unchanged
+  frozen context. Unreadable or unmatched prompts fail closed. The global **Allow one fresh unproven prompt approval
+  (unsafe)** setting is persisted and off by default; when enabled it permits only one fresh sole ready prompt for the
+  current attempt, and every use emits explicit warning and audit evidence.
   Completion verifies every effective character, closes recruitment without disbanding the alliance, and never queues a
   duty. The preset's actual raid remains unchanged for the operator to queue manually afterward.
   Detailed local evidence is appended beneath
@@ -204,6 +213,11 @@ dotnet test .\Tests\dad.Tests.csproj
   owned recruitment through the acknowledged recruitment-only cleanup path; it never disbands or queues. Remote cleanup
   remains pending until the Slot1 host confirms that listing ownership is cleared, including when Stop races the first
   host response.
+  Listing ownership is independent from the displayed PF state and survives Blocked/Stopped presentation until cleanup
+  proves it cleared. Monotonic operation generations reject late asynchronous results; local and remote cleanup keep
+  retrying within one fixed 60-second deadline, then surface terminal partial failure without hiding unresolved ownership.
+  After that deadline DAD performs read-only, bounded-backoff observation only and clears the blocker when exact local or
+  authenticated remote evidence proves that operator cleanup removed the listing.
   Stop and post-formation cleanup open the owned detail window, require a fresh
   recruitment-only confirmation, and acknowledge closure when condition `66` clears. Retained DAD ownership—not the
   diagnostic native owner handle—authorizes that cleanup.
@@ -229,10 +243,24 @@ dotnet test .\Tests\dad.Tests.csproj
   cancellation or an executor/queue-pulse result completes them. Positive worker command values remain finite, begin at
   worker execution start, and clamp to 30–7,200 seconds; coordinator waits, IPC, scheduler advancement, and
   level-target skipping are unchanged.
+- Worker commands are validated before serialization and immutable registration. One run owns all active and pending
+  commands at a time; same-run work stays FIFO, cancellation drains that run completely, and historical duplicate status
+  is returned without replacing the current globally visible worker state.
+- Automatic schedule admission occurs only on the Coordinator and only while every conflicting scheduler/run/worker,
+  queue, PF, formation, takeover, and cleanup owner is idle. Cadence advances only after admission or an explicit consumed
+  skip; DAD performs fresh strict request validation immediately before dispatch. Cancellation and reward-probe cleanup
+  retain their original acknowledgement deadlines and block conflicting admission until resolved.
 - Regular Duty Finder starts from either a direct preset or a Schedule use the same exact-selection executor. Before
   Join, DAD requires the stable mapped row and character, callback ordinal, selected agent type/id, and interface-selected
   duty ID to agree. If API15 publishes the interface value late, DAD waits at most six seconds for two exact observations
   at least 250 milliseconds apart; contradiction or timeout restarts the full safe selection cycle.
+- Regular and roulette queue mutations recapture strict local safety immediately before native writes and require visible,
+  ready addons before callback or list dereference. Local and NPC queue ownership is released on entry and every owned
+  terminal path. Local Duty, Duty Support, Trust, and Premade Duty consume matching `DutyCompleted` evidence before
+  classifying an exit as abandonment. MOGTOME accepts only exact active-run results and preserves failed Stop responses.
+  Durability ignores the soul-crystal slot but still treats zero-condition real gear as broken. Configured completion and
+  AutoRetainer GC slash commands share guarded native chat submission, so native and Dalamud plugin commands can run;
+  empty, non-slash, multiline, and null-containing values are rejected.
 - Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
   targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
   evidence used by execution. After required job changes and exact worker readiness, DAD repeats the frozen evaluation
@@ -278,6 +306,10 @@ dotnet test .\Tests\dad.Tests.csproj
   drains DAD-owned scheduler/run/worker/executor and pre-commit takeover work locally, then sends the same
   operation ID to each snapshotted client. The acknowledgement panel distinguishes acknowledged, rejected,
   disconnected, and timed-out workers.
+- Stop-all, Disable, and unload share one idempotent local cleanup path across scheduler, formation, AutoParty, PF,
+  coordinator, takeover, claims, worker/queue execution, presence ownership, and best-effort VERMAXION release. Disable
+  and unload never broadcast. A remote Stop-all is accepted while idle or only from the authenticated active Coordinator;
+  every other sender is rejected without mutation.
 - Stop-all never broadly stops unrelated AutoRetainer or VERMAXION work. A takeover at or beyond the existing
   reset/relog commit boundary is preserved and reported as a partial result.
 - Client Dad preserves one coordinator-visible wake identity, but assigns every actual VERMAXION v2 reservation epoch
@@ -320,6 +352,13 @@ dotnet test .\Tests\dad.Tests.csproj
   are now replay-resistant (signed nonce + timestamp); peers should keep clocks within ~30s of each other.
 - A configured Coordinator endpoint is not presented as a live authority route until the authenticated handshake
   succeeds. Client liveness is checked from inbound frames, and a stale route is closed and reconnected.
+- Transport dispatch binds authenticated source and target context to wake, claim, assembly, cancellation, PF, worker,
+  roster/profile, and Stop-all mutations. Mutating IPC and roster/plugin state are framework-thread confined; bounded
+  transport admission uses atomic capacity reservation. One production ingress normalizer handles transport requests,
+  responses, and mutating CallGate inputs: optional null collections normalize compatibly, required identity/execution
+  objects reject, malformed notifications drop with bounded diagnostics, and mutable request/status graphs are cloned.
+  Signed AutoParty envelopes, share imports, account files, and helper projections retain their specialized validation
+  paths; protocol/schema version and valid current/legacy wire shapes are unchanged.
 - Remote worker status polling starts only after the worker returns a real acknowledgement matching the exact current
   run, command, worker, role, module, and frozen identity. A live status replaces the cached status only when its run
   and command match that assignment; an older reply is discarded and polled again, while a current-command role,

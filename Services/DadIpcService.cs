@@ -114,14 +114,19 @@ public sealed class DadIpcService : IDisposable
     private void Register<TReturn>(IDalamudPluginInterface pluginInterface, string name, Func<TReturn> func)
     {
         var provider = pluginInterface.GetIpcProvider<TReturn>(name);
-        provider.RegisterFunc(func);
+        provider.RegisterFunc(() => InvokeOnFrameworkThread(func));
         disposeActions.Add(provider.UnregisterFunc);
     }
 
     private void Register<TArg1, TReturn>(IDalamudPluginInterface pluginInterface, string name, Func<TArg1, TReturn> func)
     {
         var provider = pluginInterface.GetIpcProvider<TArg1, TReturn>(name);
-        provider.RegisterFunc(func);
+        provider.RegisterFunc(argument => InvokeOnFrameworkThread(() => func(argument)));
         disposeActions.Add(provider.UnregisterFunc);
     }
+
+    private static T InvokeOnFrameworkThread<T>(Func<T> func)
+        => Plugin.Framework.IsInFrameworkUpdateThread
+            ? func()
+            : Plugin.Framework.RunOnFrameworkThread(func).GetAwaiter().GetResult();
 }

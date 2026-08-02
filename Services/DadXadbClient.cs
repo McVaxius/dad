@@ -104,6 +104,15 @@ public sealed class DadXadbClient
 
             using var doc = JsonDocument.Parse(json);
             PopulateAccountRosterCatalog(catalog, doc.RootElement);
+            if (catalog.XadbContractVersion.GetValueOrDefault() < 6 || !catalog.IsFullRosterAvailable)
+            {
+                rosterSuccessLogTracker.RecordFailure();
+                catalog.Characters.Clear();
+                catalog.IsFullRosterAvailable = false;
+                catalog.Warnings.Add(RosterIpcMissingWarning);
+                catalog.Summary = $"Rejected degraded XADB roster contract v{FormatNullableInt(catalog.XadbContractVersion)}; contract v6 full-roster proof is required.";
+                return catalog;
+            }
             catalog.Summary = catalog.IsFullRosterAvailable
                 ? $"XADB account roster ready: {catalog.XadbPayloadRowCount} row(s), roster v{catalog.Version}, contract v{FormatNullableInt(catalog.XadbContractVersion)}."
                 : catalog.Characters.Count > 0

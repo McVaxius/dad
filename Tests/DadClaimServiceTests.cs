@@ -7,12 +7,19 @@ namespace dad.Tests;
 // Review M20: the lease/claim collision logic is the core guard against two runs claiming one character.
 public sealed class DadClaimServiceTests
 {
-    private static DadClaimRequestDto Request(string runId, string slotId, string account = "", string character = "", System.DateTime? expires = null)
+    private static DadClaimRequestDto Request(
+        string runId,
+        string slotId,
+        string account = "acct1",
+        string character = "Aaa@World",
+        System.DateTime? expires = null)
     {
+        var now = System.DateTime.UtcNow;
         var request = new DadClaimRequestDto
         {
             RunId = runId,
             SlotId = slotId,
+            AuthorityWorkerSessionId = new DadWorkerSessionId("w1"),
             RequiredAccountKey = new DadAccountKey(account),
             RequiredCharacterKey = new DadCharacterKey(character),
         };
@@ -21,8 +28,12 @@ public sealed class DadClaimServiceTests
         // stored lease's RunId), so mirror that here.
         request.Lease.RunId = runId;
         request.Lease.SlotId = slotId;
-        if (expires.HasValue)
-            request.Lease.ExpiresUtc = expires.Value;
+        request.Lease.AssignedAccountKey = request.RequiredAccountKey;
+        request.Lease.AssignedCharacterKey = request.RequiredCharacterKey;
+        request.Lease.OwningWorkerSessionId = request.AuthorityWorkerSessionId;
+        request.Lease.IssuedUtc = now.AddSeconds(-1);
+        request.Lease.RenewedUtc = now;
+        request.Lease.ExpiresUtc = expires ?? now.AddMinutes(5);
 
         return request;
     }
@@ -111,12 +122,37 @@ public sealed class DadClaimServiceTests
     public void SweepExpiredLeasesFreesCharacter()
     {
         var service = new DadClaimService();
-        var past = System.DateTime.UtcNow.AddSeconds(-5);
-        service.TryClaimLocal(Request("run1", "s1", expires: past), Participant("acct1", "Aaa@World"));
+        var expiry = System.DateTime.UtcNow.AddMinutes(1);
+        service.TryClaimLocal(Request("run1", "s1", expires: expiry), Participant("acct1", "Aaa@World"));
 
-        service.SweepExpiredLeases(System.DateTime.UtcNow);
+        service.SweepExpiredLeases(expiry.AddSeconds(1));
 
         var decision = service.TryClaimLocal(Request("run2", "s2"), Participant("acct1", "Aaa@World"));
         Assert.True(decision.Granted);
+    }
+
+    [Fact]
+    public void DeniesExpiredLeaseBeforeMutation()
+    {
+        var decision = new DadClaimService().TryClaimLocal(
+            Request("run1", "s1", expires: System.DateTime.UtcNow.AddSeconds(-1)),
+            Participant("acct1", "Aaa@World"));
+
+        Assert.False(decision.Granted);
+        Assert.Equal(DadClaimState.Denied, decision.ClaimState);
+        Assert.Contains("expired", decision.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DeniesLeaseWhoseIdentityDoesNotMatchRequest()
+    {
+        var request = Request("run1", "s1");
+        request.Lease.SlotId = "spoofed-slot";
+
+        var decision = new DadClaimService().TryClaimLocal(request, Participant("acct1", "Aaa@World"));
+
+        Assert.False(decision.Granted);
+        Assert.Equal(DadClaimState.Denied, decision.ClaimState);
+        Assert.Contains("identity", decision.Reason, StringComparison.OrdinalIgnoreCase);
     }
 }

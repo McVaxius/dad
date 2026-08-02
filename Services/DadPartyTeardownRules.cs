@@ -29,9 +29,15 @@ public sealed record DadPartyTeardownObservation(
     bool PromptVisible,
     string PromptIdentity,
     string PromptText,
-    string InviterName);
+    string InviterName,
+    bool PromptReady = true,
+    bool OtherReadyPromptVisible = false);
 
-public sealed record DadPartyTeardownDecision(DadPartyTeardownAction Action, string Summary);
+public sealed record DadPartyTeardownDecision(
+    DadPartyTeardownAction Action,
+    string Summary,
+    bool PromptOverrideUsed = false,
+    string PromptAudit = "");
 
 /// <summary>
 /// Stateful, runtime-independent safety gate for successful-run party teardown.
@@ -54,11 +60,12 @@ public sealed class DadPartyTeardownController
     private readonly DateTime startedAtUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
-    private bool lastPromptVisible;
+    private DadPromptObservation lastPrompt;
     private bool commandSent;
     private int approvedCommandAttempt;
     private int partyMenuCallbackAttempts;
     private DateTime? soloConfirmedSinceUtc;
+    private readonly bool allowFreshUnprovenPromptApproval;
 
     public DadPartyTeardownController(
         IEnumerable<ulong> expectedMemberContentIds,
@@ -73,7 +80,10 @@ public sealed class DadPartyTeardownController
             DadPartyTeardownMutationMode.DisbandAsLeader,
             startedAtUtc,
             promptVisible,
-            promptIdentity)
+            promptIdentity,
+            promptReady: false,
+            promptText: string.Empty,
+            allowFreshUnprovenPromptApproval: false)
     {
     }
 
@@ -84,14 +94,23 @@ public sealed class DadPartyTeardownController
         DadPartyTeardownMutationMode mutationMode,
         DateTime startedAtUtc,
         bool promptVisible,
-        string promptIdentity)
+        string promptIdentity,
+        bool promptReady = false,
+        string promptText = "",
+        bool allowFreshUnprovenPromptApproval = false)
     {
         expectedMembers = expectedMemberContentIds.Where(static id => id != 0).ToHashSet();
         this.expectedLeaderContentId = expectedLeaderContentId;
         this.expectedLocalContentId = expectedLocalContentId;
         this.mutationMode = mutationMode;
         this.startedAtUtc = startedAtUtc;
-        lastPromptVisible = promptVisible;
+        this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
+        lastPrompt = new DadPromptObservation(
+            promptVisible,
+            promptReady,
+            promptIdentity,
+            promptText,
+            SoleReadyPrompt: promptVisible);
         nextAttemptUtc = startedAtUtc;
     }
 
@@ -151,8 +170,14 @@ public sealed class DadPartyTeardownController
                 $"Party teardown timed out after {commandAttempts} {operation} command attempt(s).");
         }
 
-        var promptJustAppeared = observation.PromptVisible && !lastPromptVisible;
-        lastPromptVisible = observation.PromptVisible;
+        var currentPrompt = new DadPromptObservation(
+            observation.PromptVisible,
+            observation.PromptReady,
+            observation.PromptIdentity,
+            observation.PromptText,
+            observation.PromptVisible && !observation.OtherReadyPromptVisible);
+        var promptBaseline = lastPrompt;
+        lastPrompt = currentPrompt;
 
         if (observation.IsInDuty ||
             observation.IsQueued ||
@@ -190,12 +215,27 @@ public sealed class DadPartyTeardownController
 
         if (observation.PromptVisible)
         {
-            if (!commandSent ||
-                !promptJustAppeared ||
-                approvedCommandAttempt == commandAttempts ||
-                !IsRelevantPrompt(observation.PromptText))
+            var promptOperation = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                ? DadPromptOperationKind.PartyDisbandTeardown
+                : DadPromptOperationKind.PartyLeaveTeardown;
+            var operationKey =
+                $"party-teardown|{mutationMode}|{expectedLocalContentId}|{expectedLeaderContentId}";
+            var promptDecision = DadPromptOwnershipRules.Evaluate(new DadPromptApprovalRequest(
+                promptOperation,
+                operationKey,
+                operationKey,
+                commandAttempts,
+                commandAttempts,
+                approvedCommandAttempt,
+                promptBaseline,
+                currentPrompt,
+                string.Empty,
+                allowFreshUnprovenPromptApproval));
+            if (!commandSent || !promptDecision.CanApprove)
             {
-                return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "A pre-existing or already-handled confirmation is visible; it will not be approved.");
+                return new DadPartyTeardownDecision(
+                    DadPartyTeardownAction.None,
+                    $"The party teardown confirmation will not be approved: {promptDecision.Summary}");
             }
 
             approvedCommandAttempt = commandAttempts;
@@ -204,7 +244,9 @@ public sealed class DadPartyTeardownController
                 : "leave";
             return new DadPartyTeardownDecision(
                 DadPartyTeardownAction.ApprovePrompt,
-                $"Approving the newly appeared {operation} confirmation associated with command attempt {commandAttempts}/{MaximumAttempts}.");
+                $"Approving the newly appeared {operation} confirmation associated with command attempt {commandAttempts}/{MaximumAttempts}.",
+                promptDecision.UsedOverride,
+                promptDecision.Summary);
         }
 
         soloConfirmedSinceUtc = null;
@@ -234,15 +276,4 @@ public sealed class DadPartyTeardownController
             $"Sending guarded party {commandKind} command attempt {commandAttempts}/{MaximumAttempts}.");
     }
 
-    private bool IsRelevantPrompt(string promptText)
-    {
-        if (string.IsNullOrWhiteSpace(promptText))
-            return true;
-
-        return promptText.Contains("party", StringComparison.OrdinalIgnoreCase) &&
-               (mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
-                   ? promptText.Contains("disband", StringComparison.OrdinalIgnoreCase) ||
-                     promptText.Contains("break", StringComparison.OrdinalIgnoreCase)
-                   : promptText.Contains("leave", StringComparison.OrdinalIgnoreCase));
-    }
 }

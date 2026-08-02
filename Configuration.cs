@@ -34,7 +34,7 @@ public sealed class Configuration : IPluginConfiguration
     //     RunHistory, SchedulerQueue/History, RosterCatalog, and the account *identity*
     //     pointers below (ClientAccountId / LastAccountId).
     //   * ConfigManager owns the per-account character roster (one {accountId}_dad.json file per account).
-    //   Account add/delete/merge must update BOTH stores; that scrub logic lives in Plugin (ClearAllDadAccountData
+    //   Account add/delete must update BOTH stores; that scrub logic lives in Plugin (ClearAllDadAccountData
     //   / DeleteDadAccount). Keep this split in mind — do not duplicate character rosters into this blob.
     public string ClientAccountId { get; set; } = string.Empty;
     public string LastAccountId { get; set; } = string.Empty;
@@ -89,6 +89,9 @@ public sealed class Configuration : IPluginConfiguration
     public bool AdvancedModeEnabled { get; set; } = false;
     // AutoDuty-style party validation override — lets a run start despite party-composition validation. Default off.
     public bool PartyValidationOverrideEnabled { get; set; } = false;
+    // Global fail-closed prompt ownership override. When enabled, one fresh sole ready prompt may
+    // be approved for the current command attempt even when localized prompt text cannot be proven.
+    public bool AllowFreshUnprovenPromptApproval { get; set; } = false;
     // Actions to run when a Dad run completes. Legacy kill modes are kept for config compatibility but disabled.
     public DadCompletionActions CompletionActions { get; set; } = new();
 

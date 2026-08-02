@@ -1577,9 +1577,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 if (!draftPluginEnabled || !draftProfileEnabled)
                     return Reject("DAD and this character must both be allowed before the connection workflow can continue.");
                 plugin.SetPluginEnabled(draftPluginEnabled, printStatus: false);
-                var profile = plugin.ConfigManager.GetActiveConfig();
-                profile.Enabled = draftProfileEnabled;
-                plugin.ConfigManager.SaveCurrentAccount();
+                plugin.ConfigManager.UpdateActiveConfig(profile => profile.Enabled = draftProfileEnabled);
                 plugin.UpdateDtrBar();
                 return true;
             case 1:

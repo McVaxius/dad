@@ -1,3 +1,5 @@
+using dad.Services;
+
 namespace dad.Models;
 
 public sealed class DadRunResult
@@ -131,7 +133,7 @@ public sealed class DadRunResult
         FailureReason = FailureReason,
         Summary = Summary,
         ScheduleFailureKind = ScheduleFailureKind,
-        Request = Request,
+        Request = DadIpcJson.DeepClone(Request),
         StopProgress = StopProgress.Clone(),
         CurrentExecutorStatus = CurrentExecutorStatus.Clone(),
         Participants = Participants.Select(static participant => participant.Clone()).ToList(),

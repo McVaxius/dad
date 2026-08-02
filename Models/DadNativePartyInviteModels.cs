@@ -1,3 +1,5 @@
+using dad.Services;
+
 namespace dad.Models;
 
 public enum DadNativePartyInviteType
@@ -239,6 +241,7 @@ public readonly record struct DadPendingPartyInvitation(
 
 internal readonly record struct DadSelectYesnoPromptSnapshot(
     bool Visible,
+    bool Ready,
     string Identity,
     string Text);
 
@@ -257,8 +260,14 @@ internal static class DadPartyInvitePromptOwnershipRules
         DadSelectYesnoPromptSnapshot runBaselinePrompt,
         DadSelectYesnoPromptSnapshot beforePrompt,
         DadSelectYesnoPromptSnapshot afterPrompt,
-        bool restoreDispatched)
+        bool restoreDispatched,
+        int currentAttempt,
+        int approvedAttempt,
+        bool soleReadyPrompt,
+        bool allowFreshUnprovenPromptApproval,
+        out DadPromptApprovalDecision decision)
     {
+        decision = default;
         if (!afterPrompt.Visible ||
             beforeInvitation != afterInvitation ||
             !IsExactPendingInvitation(afterInvitation, expected))
@@ -272,8 +281,30 @@ internal static class DadPartyInvitePromptOwnershipRules
             return false;
         }
 
-        var newlySurfacedByDad = restoreDispatched && !beforePrompt.Visible && afterPrompt.Visible;
-        return newlySurfacedByDad || PromptProvesExpectedInviter(afterPrompt.Text, expected.CharacterName);
+        var operationKey = BuildOperationKey(afterInvitation, expected);
+        decision = DadPromptOwnershipRules.Evaluate(new DadPromptApprovalRequest(
+            DadPromptOperationKind.PartyInvitationAcceptance,
+            operationKey,
+            BuildOperationKey(beforeInvitation, expected),
+            currentAttempt,
+            currentAttempt,
+            approvedAttempt,
+            new DadPromptObservation(
+                beforePrompt.Visible,
+                beforePrompt.Ready,
+                beforePrompt.Identity,
+                beforePrompt.Text,
+                SoleReadyPrompt: !beforePrompt.Visible),
+            new DadPromptObservation(
+                afterPrompt.Visible,
+                afterPrompt.Ready,
+                afterPrompt.Identity,
+                afterPrompt.Text,
+                soleReadyPrompt),
+            expected.CharacterName,
+            allowFreshUnprovenPromptApproval));
+        return decision.CanApprove &&
+               (restoreDispatched || PromptProvesExpectedInviter(afterPrompt.Text, expected.CharacterName));
     }
 
     public static bool IsExactPendingInvitation(
@@ -284,10 +315,18 @@ internal static class DadPartyInvitePromptOwnershipRules
            invitation.InviterWorldId == expected.WorldId;
 
     private static bool PromptProvesExpectedInviter(string promptText, string exactInviterName)
-        => !string.IsNullOrWhiteSpace(promptText) &&
-           !string.IsNullOrWhiteSpace(exactInviterName) &&
-           promptText.Contains(exactInviterName, StringComparison.Ordinal) &&
-           promptText.Contains("party", StringComparison.OrdinalIgnoreCase);
+        => DadPromptOwnershipRules.IsOperationRelevantText(
+            DadPromptOperationKind.PartyInvitationAcceptance,
+            promptText,
+            exactInviterName);
+
+    private static string BuildOperationKey(
+        DadPendingPartyInvitation invitation,
+        DadExpectedPartyInviter expected)
+        => $"{expected.RunId.Trim()}|{expected.WorkerSessionId.Value.Trim()}|" +
+           $"{expected.AccountKey.Value.Trim()}|{expected.CharacterKey.Value.Trim()}|" +
+           $"{expected.ContentId}|{expected.WorldId}|{invitation.InviteTime}|" +
+           $"{invitation.InviterName}|{invitation.InviterWorldId}";
 }
 
 public sealed class DadExpectedPartyInviter
@@ -325,6 +364,8 @@ public sealed class DadPartyInvitationAcceptanceTracker
     private DateTime? firstRealAttemptAtUtc;
     private bool partyConfirmed;
 
+    public int AttemptCount { get; private set; }
+
     public DadExpectedPartyInviter? ExpectedInviter => expectedInviter;
 
     public void BeginRun(string runId, DadPendingPartyInvitation baselineInvitation)
@@ -340,6 +381,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         nextAttemptAtUtc = DateTime.MinValue;
         firstRealAttemptAtUtc = null;
         partyConfirmed = false;
+        AttemptCount = 0;
     }
 
     public bool TryArm(DadExpectedPartyInviter inviter, out string blocker)
@@ -393,6 +435,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
 
     public void RecordAttempt(DadPendingPartyInvitation invitation, DateTime attemptedAtUtc)
     {
+        AttemptCount++;
         firstRealAttemptAtUtc ??= EnsureUtc(attemptedAtUtc);
         lastAttemptedInvitation = invitation;
         nextAttemptAtUtc = EnsureUtc(attemptedAtUtc) + RetryInterval;
@@ -429,6 +472,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         nextAttemptAtUtc = DateTime.MinValue;
         firstRealAttemptAtUtc = null;
         partyConfirmed = false;
+        AttemptCount = 0;
     }
 
     internal static string Validate(DadExpectedPartyInviter inviter)

@@ -358,25 +358,29 @@ public sealed class DadDutySupportExecutor(
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
-        if (enteredDuty && HasExitedRequestedDuty())
-        {
-            if (!dutyCompleted)
-            {
-                Fail($"Duty Support duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
-                return BuildStatusStep(status, DadParticipantState.Failed);
-            }
+        var completionWasObserved = dutyCompleted;
+        var freshCompletionEvidence = enteredDuty &&
+                                      !dutyCompleted &&
+                                      queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc);
+        dutyCompleted = DadDutyLifecycleRules.ObserveDutyCompleted(
+            enteredDuty,
+            dutyCompleted,
+            freshCompletionEvidence);
+        if (!completionWasObserved && dutyCompleted)
+            dutyCompletedAtUtc = now;
 
-            return BeginOrUpdatePostDutyStabilizing(now);
+        var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
+        if (DadDutyLifecycleRules.IsAbandonedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+        {
+            Fail($"Duty Support duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
+            return BuildStatusStep(status, DadParticipantState.Failed);
         }
+
+        if (DadDutyLifecycleRules.IsCompletedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+            return BeginOrUpdatePostDutyStabilizing(now);
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
-
-        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
-        {
-            dutyCompleted = true;
-            dutyCompletedAtUtc = now;
-        }
 
         if (dutyCompleted)
             return UsesAdsDutyFlow()
@@ -960,22 +964,25 @@ public sealed class DadTrustExecutor(
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
-        if (enteredDuty && HasExitedRequestedDuty())
+        var freshCompletionEvidence = enteredDuty &&
+                                      !dutyCompleted &&
+                                      queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc);
+        dutyCompleted = DadDutyLifecycleRules.ObserveDutyCompleted(
+            enteredDuty,
+            dutyCompleted,
+            freshCompletionEvidence);
+        var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
+        if (DadDutyLifecycleRules.IsAbandonedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
         {
-            if (!dutyCompleted)
-            {
-                Fail($"Trust duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
-                return BuildStatusStep(status, DadParticipantState.Failed);
-            }
-
-            return BeginOrUpdatePostDutyStabilizing(now);
+            Fail($"Trust duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
+            return BuildStatusStep(status, DadParticipantState.Failed);
         }
+
+        if (DadDutyLifecycleRules.IsCompletedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+            return BeginOrUpdatePostDutyStabilizing(now);
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
-
-        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
-            dutyCompleted = true;
 
         if (dutyCompleted)
             return UpdateDutyCompletionWaitForExit();
@@ -1382,18 +1389,31 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
     public DadRunStepResultDto Update()
     {
         if (status.IsActive)
-            ApplyHelperStatus(ipc.GetStatus());
+            ApplyHelperStatus(ipc.GetStatus(status.RunId));
         return BuildStep();
     }
 
     public DadRunStepResultDto Cancel(string reason)
     {
-        ApplyHelperStatus(ipc.Stop(status.RunId, reason));
+        var helper = ipc.Stop(status.RunId, reason);
+        ApplyHelperStatus(helper);
+        if (!DadMogtomeStatusRules.IsAcknowledgedStop(
+                helper.Accepted,
+                helper.DadOwned,
+                helper.IsRunning,
+                helper.IsTerminal,
+                helper.FailureReason))
+        {
+            return BuildStep();
+        }
+
         status.Status = DadRunStatus.Cancelled;
         status.Phase = DadRunPhase.Finalizing;
         status.IsActive = false;
         status.CompletedAtUtc = DateTime.UtcNow;
         status.Summary = string.IsNullOrWhiteSpace(reason) ? "MOGTOME helper cancelled." : reason;
+        status.FailureReason = string.Empty;
+        status.BlockedReason = string.Empty;
         return BuildStep();
     }
 

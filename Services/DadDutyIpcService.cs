@@ -934,36 +934,54 @@ public sealed class DadDutyIpcService : IDisposable
     private void RegisterFunc<TReturn>(string name, Func<TReturn> func)
     {
         var provider = pluginInterface.GetIpcProvider<TReturn>(name);
-        provider.RegisterFunc(func);
+        provider.RegisterFunc(() => InvokeOnFrameworkThread(func));
         disposeActions.Add(provider.UnregisterFunc);
     }
 
     private void RegisterFunc<TArg1, TReturn>(string name, Func<TArg1, TReturn> func)
     {
         var provider = pluginInterface.GetIpcProvider<TArg1, TReturn>(name);
-        provider.RegisterFunc(func);
+        provider.RegisterFunc(argument => InvokeOnFrameworkThread(() => func(argument)));
         disposeActions.Add(provider.UnregisterFunc);
     }
 
     private void RegisterAction<TReturn>(string name, Action action)
     {
         var provider = pluginInterface.GetIpcProvider<TReturn>(name);
-        provider.RegisterAction(action);
+        provider.RegisterAction(() => InvokeOnFrameworkThread(action));
         disposeActions.Add(provider.UnregisterAction);
     }
 
     private void RegisterAction<TArg1, TArg2, TReturn>(string name, Action<TArg1, TArg2> action)
     {
         var provider = pluginInterface.GetIpcProvider<TArg1, TArg2, TReturn>(name);
-        provider.RegisterAction(action);
+        provider.RegisterAction((argument1, argument2) =>
+            InvokeOnFrameworkThread(() => action(argument1, argument2)));
         disposeActions.Add(provider.UnregisterAction);
     }
 
     private void RegisterAction<TArg1, TArg2, TArg3, TReturn>(string name, Action<TArg1, TArg2, TArg3> action)
     {
         var provider = pluginInterface.GetIpcProvider<TArg1, TArg2, TArg3, TReturn>(name);
-        provider.RegisterAction(action);
+        provider.RegisterAction((argument1, argument2, argument3) =>
+            InvokeOnFrameworkThread(() => action(argument1, argument2, argument3)));
         disposeActions.Add(provider.UnregisterAction);
+    }
+
+    private static T InvokeOnFrameworkThread<T>(Func<T> func)
+        => Plugin.Framework.IsInFrameworkUpdateThread
+            ? func()
+            : Plugin.Framework.RunOnFrameworkThread(func).GetAwaiter().GetResult();
+
+    private static void InvokeOnFrameworkThread(Action action)
+    {
+        if (Plugin.Framework.IsInFrameworkUpdateThread)
+        {
+            action();
+            return;
+        }
+
+        Plugin.Framework.RunOnFrameworkThread(action).GetAwaiter().GetResult();
     }
 
     private void Unregister()

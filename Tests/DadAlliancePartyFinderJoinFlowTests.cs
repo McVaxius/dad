@@ -73,6 +73,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             YesNoVisible = true,
             YesNoReady = true,
             YesNoIdentity = "fresh-confirmation",
+            YesNoText = $"Join {Target.LeaderName}'s party?",
         };
         AssertEvent(fixture.Advance(), "yesno-acknowledged");
         AssertAction(
@@ -691,7 +692,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
         {
             AssignedAlliance = DadAllianceAssignment.B,
         };
-        var fixture = ReadyAtExactDetail();
+        var fixture = ReadyAtExactDetail(target);
 
         AssertAction(
             fixture.Flow.Advance(target),
@@ -703,6 +704,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             YesNoVisible = true,
             YesNoReady = true,
             YesNoIdentity = "alliance-b-confirmation",
+            YesNoText = $"Join {Target.LeaderName}'s party?",
         };
         AssertEvent(
             fixture.Flow.Advance(target),
@@ -864,6 +866,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
                 YesNoVisible = true,
                 YesNoReady = true,
                 YesNoIdentity = "acknowledged",
+                YesNoText = $"Join {Target.LeaderName}'s party?",
             };
             AssertEvent(
                 fixture.Advance(),
@@ -1201,8 +1204,10 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
 
     private static Fixture ReadyToInspect(
         int numberOfListings,
-        IReadOnlyList<int>? matchingListingIndexes = null)
+        IReadOnlyList<int>? matchingListingIndexes = null,
+        DadAlliancePfJoinTarget? target = null)
     {
+        var activeTarget = target ?? Target;
         var fixture = new Fixture
         {
             Ui =
@@ -1216,10 +1221,10 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
                 },
             },
         };
-        fixture.Advance();
-        fixture.Advance();
-        fixture.Advance();
-        AssertAction(fixture.Advance(), DadAlliancePfJoinAction.Refresh);
+        fixture.Flow.Advance(activeTarget);
+        fixture.Flow.Advance(activeTarget);
+        fixture.Flow.Advance(activeTarget);
+        AssertAction(fixture.Flow.Advance(activeTarget), DadAlliancePfJoinAction.Refresh);
         fixture.Ui.Snapshot = fixture.Ui.Snapshot with
         {
             NumberOfListings = numberOfListings,
@@ -1227,7 +1232,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
                 matchingListingIndexes ??
                 Enumerable.Range(0, numberOfListings).ToArray(),
         };
-        AssertEvent(fixture.Advance(), "refresh-acknowledged");
+        AssertEvent(fixture.Flow.Advance(activeTarget), "refresh-acknowledged");
         return fixture;
     }
 
@@ -1242,15 +1247,16 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             Renderers = renderers,
         };
 
-    private static Fixture ReadyAtExactDetail()
+    private static Fixture ReadyAtExactDetail(DadAlliancePfJoinTarget? target = null)
     {
-        var fixture = ReadyToInspect(numberOfListings: 1);
+        var activeTarget = target ?? Target;
+        var fixture = ReadyToInspect(numberOfListings: 1, target: activeTarget);
         AssertAction(
-            fixture.Advance(),
+            fixture.Flow.Advance(activeTarget),
             DadAlliancePfJoinAction.OpenListing,
             listingIndex: 0);
         fixture.Ui.Snapshot = ExactDetail(fixture.Ui.Snapshot);
-        AssertEvent(fixture.Advance(), "listing-acknowledged");
+        AssertEvent(fixture.Flow.Advance(activeTarget), "listing-acknowledged");
         return fixture;
     }
 
@@ -1267,6 +1273,7 @@ public sealed class DadAlliancePartyFinderJoinFlowTests
             YesNoVisible = true,
             YesNoReady = true,
             YesNoIdentity = "fresh",
+            YesNoText = $"Join {Target.LeaderName}'s party?",
         };
         AssertEvent(fixture.Advance(), "yesno-acknowledged");
         AssertAction(

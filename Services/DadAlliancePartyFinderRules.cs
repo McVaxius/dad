@@ -181,6 +181,69 @@ public static class DadAlliancePartyFinderRules
     public static string BuildDedupeKey(string? recruitmentId, DadCharacterKey targetCharacterKey)
         => $"{(recruitmentId ?? string.Empty).Trim()}|{targetCharacterKey.Value.Trim()}";
 
+    public static bool TryValidateAsyncResult(
+        long dispatchedGeneration,
+        long currentGeneration,
+        DadAllianceRecruitmentInstructionDto instruction,
+        DadAllianceRecruitmentResultDto? result,
+        DadWorkerSessionId expectedCoordinatorWorkerSessionId,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (dispatchedGeneration <= 0 || dispatchedGeneration != currentGeneration)
+            blocker = "The Alliance PF completion belongs to an expired operation generation.";
+        else if (result == null)
+            blocker = "The Alliance PF completion returned no result.";
+        else if (!Same(instruction.RecruitmentId, result.RecruitmentId) ||
+                 !Same(instruction.CoordinatorWorkerSessionId.Value, expectedCoordinatorWorkerSessionId.Value) ||
+                 !Same(instruction.TargetWorkerSessionId.Value, result.WorkerSessionId.Value) ||
+                 !Same(instruction.TargetCharacterKey.Value, result.TargetCharacterKey.Value) ||
+                 !string.Equals(instruction.TargetCharacterName.Trim(), result.TargetCharacterName.Trim(), StringComparison.Ordinal) ||
+                 !string.Equals(instruction.TargetCharacterWorld.Trim(), result.TargetCharacterWorld.Trim(), StringComparison.Ordinal) ||
+                 instruction.TargetContentId == 0 ||
+                 instruction.TargetContentId != result.TargetContentId ||
+                 instruction.AssignedAlliance != result.ExpectedAlliance ||
+                 instruction.Attempt != result.Attempt ||
+                 instruction.StopGeneration != result.StopGeneration)
+        {
+            blocker = "The Alliance PF completion contradicts its recruitment, source/target worker, character/content, alliance, attempt, or stop generation.";
+        }
+
+        return blocker.Length == 0;
+    }
+
+    public static bool TryValidateAsyncCancellationResult(
+        long dispatchedGeneration,
+        long currentGeneration,
+        DadAllianceRecruitmentCancellationDto cancellation,
+        DadAllianceRecruitmentInstructionDto instruction,
+        DadAllianceRecruitmentResultDto? result,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (dispatchedGeneration <= 0 || dispatchedGeneration != currentGeneration)
+            blocker = "The Alliance PF cancellation completion belongs to an expired operation generation.";
+        else if (result == null)
+            blocker = "The Alliance PF cancellation returned no result.";
+        else if (!Same(cancellation.RecruitmentId, instruction.RecruitmentId) ||
+                 !Same(cancellation.RecruitmentId, result.RecruitmentId) ||
+                 !Same(cancellation.CoordinatorWorkerSessionId.Value, instruction.CoordinatorWorkerSessionId.Value) ||
+                 !Same(cancellation.TargetWorkerSessionId.Value, instruction.TargetWorkerSessionId.Value) ||
+                 !Same(cancellation.TargetWorkerSessionId.Value, result.WorkerSessionId.Value) ||
+                 !Same(cancellation.TargetCharacterKey.Value, instruction.TargetCharacterKey.Value) ||
+                 !Same(cancellation.TargetCharacterKey.Value, result.TargetCharacterKey.Value) ||
+                 instruction.TargetContentId == 0 ||
+                 instruction.TargetContentId != result.TargetContentId ||
+                 instruction.AssignedAlliance != result.ExpectedAlliance ||
+                 instruction.Attempt != result.Attempt ||
+                 cancellation.StopGeneration != result.StopGeneration)
+        {
+            blocker = "The Alliance PF cancellation completion contradicts its recruitment, source/target worker, character/content, alliance, attempt, or stop generation.";
+        }
+
+        return blocker.Length == 0;
+    }
+
     private static DadAlliancePresetValidation ValidateAssignments(
         IEnumerable<(string SlotId, DadAllianceAssignment Assignment, bool HasIdentity)> source,
         DadCharacterKey? hostCharacterKey,
@@ -285,6 +348,12 @@ public static class DadAlliancePartyFinderRules
 
     private static string NormalizeIdentity(string? value)
         => value?.Trim() ?? string.Empty;
+
+    private static bool Same(string? left, string? right)
+        => string.Equals(
+            left?.Trim(),
+            right?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class DadAllianceDeliveryDedupe
@@ -317,6 +386,72 @@ public sealed class DadAllianceDeliveryDedupe
     }
 }
 
+internal sealed class DadStableAllianceHydrationTracker
+{
+    private ulong contentId;
+    private DadAllianceAssignment candidate;
+    private DadAllianceAssignment stable;
+    private int observationCount;
+    private long lastObservationGeneration = -1;
+
+    public DadAllianceAssignment Observe(
+        ulong observedContentId,
+        DadAllianceAssignment observedAlliance,
+        long observationGeneration)
+    {
+        if (observedContentId == 0)
+        {
+            Reset();
+            return DadAllianceAssignment.None;
+        }
+
+        if (observedContentId != contentId)
+        {
+            Reset();
+            contentId = observedContentId;
+        }
+
+        if (observationGeneration == lastObservationGeneration)
+            return stable;
+        lastObservationGeneration = observationGeneration;
+
+        if (observedAlliance == DadAllianceAssignment.None)
+        {
+            candidate = DadAllianceAssignment.None;
+            stable = DadAllianceAssignment.None;
+            observationCount = 0;
+            return stable;
+        }
+
+        if (candidate != observedAlliance)
+        {
+            candidate = observedAlliance;
+            stable = DadAllianceAssignment.None;
+            observationCount = 1;
+            return stable;
+        }
+
+        observationCount++;
+        if (observationCount >= 2)
+            stable = candidate;
+        return stable;
+    }
+
+    public DadAllianceAssignment GetStable(ulong observedContentId)
+        => observedContentId != 0 && observedContentId == contentId
+            ? stable
+            : DadAllianceAssignment.None;
+
+    public void Reset()
+    {
+        contentId = 0;
+        candidate = DadAllianceAssignment.None;
+        stable = DadAllianceAssignment.None;
+        observationCount = 0;
+        lastObservationGeneration = -1;
+    }
+}
+
 public enum DadAllianceRemoteHostLifecycleState
 {
     LocalHost,
@@ -329,6 +464,19 @@ public enum DadAllianceRemoteHostLifecycleState
 
 public static class DadAllianceRemoteHostRules
 {
+    public const string StoppedSafeStatusCode = "dad-alliance-stopped";
+
+    private static readonly TimeSpan[] AuditBackoff =
+    [
+        TimeSpan.FromMilliseconds(750),
+        TimeSpan.FromMilliseconds(1500),
+        TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(6),
+        TimeSpan.FromSeconds(10),
+    ];
+
+    public static readonly TimeSpan CleanupDeadline = TimeSpan.FromSeconds(60);
+
     public static DadAllianceRemoteHostLifecycleState Evaluate(
         bool remoteHost,
         bool ownershipPossible,
@@ -339,10 +487,8 @@ public static class DadAllianceRemoteHostRules
             return DadAllianceRemoteHostLifecycleState.LocalHost;
         if (cleanupRequested)
         {
-            if (!ownershipPossible || result?.ResultKind == DadAllianceRecruitmentResultKind.Stopped)
+            if (!ownershipPossible || IsStoppedProof(result))
                 return DadAllianceRemoteHostLifecycleState.CleanupComplete;
-            if (result?.ResultKind == DadAllianceRecruitmentResultKind.Blocked)
-                return DadAllianceRemoteHostLifecycleState.Blocked;
             return DadAllianceRemoteHostLifecycleState.CleanupPending;
         }
 
@@ -360,4 +506,76 @@ public static class DadAllianceRemoteHostRules
 
         return DadAllianceRemoteHostLifecycleState.CreatePending;
     }
+
+    public static TimeSpan GetAuditBackoff(int dispatchedAttempts)
+        => AuditBackoff[Math.Clamp(dispatchedAttempts - 1, 0, AuditBackoff.Length - 1)];
+
+    public static DateTime GetFixedCleanupDeadline(DateTime? existingDeadlineUtc, DateTime nowUtc)
+        => existingDeadlineUtc ?? EnsureUtc(nowUtc) + CleanupDeadline;
+
+    public static bool CleanupExpired(DateTime? deadlineUtc, DateTime nowUtc)
+        => deadlineUtc.HasValue && EnsureUtc(nowUtc) >= EnsureUtc(deadlineUtc.Value);
+
+    public static bool CanClearTerminalPartial(
+        bool cleanupTerminalPartial,
+        bool activeRecruitment)
+        => cleanupTerminalPartial && !activeRecruitment;
+
+    public static bool IsStoppedProof(DadAllianceRecruitmentResultDto? result)
+        => result is
+        {
+            ResultKind: DadAllianceRecruitmentResultKind.Stopped,
+            State: DadAllianceRecruitmentState.Stopped,
+        };
+
+    public static bool TryValidateTerminalCleanupSnapshot(
+        DadAllianceRecruitmentInstructionDto instruction,
+        long expectedStopGeneration,
+        DadAlliancePfUiSnapshotDto? snapshot,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (snapshot == null)
+            blocker = "The remote Slot1 terminal cleanup audit returned no snapshot.";
+        else if (!Same(instruction.RecruitmentId, snapshot.RecruitmentId) ||
+                 !Same(instruction.TargetWorkerSessionId.Value, snapshot.WorkerSessionId.Value) ||
+                 !Same(instruction.TargetCharacterKey.Value, snapshot.TargetCharacterKey.Value) ||
+                 instruction.AssignedAlliance != snapshot.AssignedAlliance ||
+                 instruction.Attempt != snapshot.Attempt ||
+                 expectedStopGeneration < 0 ||
+                 expectedStopGeneration != snapshot.StopGeneration ||
+                 snapshot.State != DadAllianceRecruitmentState.Stopped ||
+                 !string.Equals(
+                     snapshot.SafeStatusCode,
+                     StoppedSafeStatusCode,
+                     StringComparison.Ordinal))
+        {
+            blocker = "The remote Slot1 terminal cleanup snapshot contradicts its recruitment, worker, character assignment, attempt, stop generation, stopped state, or safe status.";
+        }
+
+        return blocker.Length == 0;
+    }
+
+    public static bool HasActiveOperation(
+        DadAlliancePartyFinderStatus status,
+        bool cleanupRequested,
+        bool cleanupTerminalPartial,
+        bool remoteHostUnresolved)
+        => !string.IsNullOrWhiteSpace(status.RecruitmentId) &&
+           (status.OwnsRecruitment ||
+            cleanupRequested ||
+            cleanupTerminalPartial ||
+            remoteHostUnresolved ||
+            status.State is not DadAllianceRecruitmentState.Complete
+                and not DadAllianceRecruitmentState.Stopped
+                and not DadAllianceRecruitmentState.Blocked);
+
+    private static DateTime EnsureUtc(DateTime value)
+        => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+
+    private static bool Same(string? left, string? right)
+        => string.Equals(
+            left?.Trim(),
+            right?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
 }

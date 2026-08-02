@@ -87,6 +87,7 @@ internal sealed record DadAlliancePfJoinSnapshot
     public bool YesNoVisible { get; init; }
     public bool YesNoReady { get; init; }
     public string YesNoIdentity { get; init; } = string.Empty;
+    public string YesNoText { get; init; } = string.Empty;
     public bool PrivatePromptVisible { get; init; }
     public bool PrivatePromptReady { get; init; }
     public DadAllianceAssignment ObservedAlliance { get; init; }
@@ -147,6 +148,25 @@ internal static class DadAlliancePartyFinderListingRowResolver
         => view.Available && view.Visible && view.Ready;
 }
 
+internal static class DadAlliancePartyFinderNativeListingRules
+{
+    public static int GetScanLength(int nativeCapacity, int maximumScan)
+        => Math.Min(Math.Max(0, nativeCapacity), Math.Max(0, maximumScan));
+
+    public static int GetLogicalLength(
+        int reportedCount,
+        int scanLength,
+        IEnumerable<int> populatedIndexes)
+    {
+        var boundedReported = Math.Clamp(reportedCount, 0, Math.Max(0, scanLength));
+        var highestPopulated = (populatedIndexes ?? [])
+            .Where(index => index >= 0 && index < scanLength)
+            .DefaultIfEmpty(-1)
+            .Max();
+        return Math.Max(boundedReported, highestPopulated + 1);
+    }
+}
+
 internal readonly record struct DadAlliancePfJoinActionRequest(
     DadAlliancePfJoinAction Action,
     int ListingIndex = -1,
@@ -172,7 +192,8 @@ internal readonly record struct DadAlliancePfJoinResult(
     int RetryCycle,
     int ListingIndex,
     DadAllianceAssignment ObservedAlliance,
-    bool ShouldAudit);
+    bool ShouldAudit,
+    bool PromptOverrideUsed = false);
 
 internal readonly record struct DadAlliancePfJoinCallback(
     string Addon,
@@ -257,22 +278,29 @@ internal sealed class DadAlliancePartyFinderJoinFlow
 
     private readonly IDadAlliancePartyFinderJoinUi ui;
     private readonly Func<DateTime> utcNow;
+    private readonly bool allowFreshUnprovenPromptApproval;
     private DadAlliancePfJoinStage stage = DadAlliancePfJoinStage.EnsureWindow;
     private DateTime deadlineUtc = DateTime.MinValue;
     private int retryCycle = 1;
     private int listingCursor;
     private int listingCount;
     private string freshYesNoIdentity = string.Empty;
+    private DadPromptObservation yesNoBaseline;
+    private string frozenPromptOperationKey = string.Empty;
+    private int approvedYesNoAttempt;
+    private bool pendingPromptOverride;
     private string retryReason = string.Empty;
     private bool currentDetailCloseDispatched;
     private bool stopped;
 
     public DadAlliancePartyFinderJoinFlow(
         IDadAlliancePartyFinderJoinUi ui,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        bool allowFreshUnprovenPromptApproval = false)
     {
         this.ui = ui ?? throw new ArgumentNullException(nameof(ui));
         this.utcNow = utcNow ?? (() => DateTime.UtcNow);
+        this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
     }
 
     public DadAlliancePfJoinStage Stage => stage;
@@ -376,9 +404,9 @@ internal sealed class DadAlliancePartyFinderJoinFlow
             DadAlliancePfJoinStage.SelectAlliance =>
                 AdvanceSelectAlliance(target, snapshot, now),
             DadAlliancePfJoinStage.WaitYesNo =>
-                AdvanceWaitYesNo(snapshot, now),
+                AdvanceWaitYesNo(target, snapshot, now),
             DadAlliancePfJoinStage.ConfirmYes =>
-                AdvanceConfirmYes(snapshot, now),
+                AdvanceConfirmYes(target, snapshot, now),
             DadAlliancePfJoinStage.WaitPrivatePrompt =>
                 AdvanceWaitPrivatePrompt(snapshot, now),
             DadAlliancePfJoinStage.SubmitPasscode =>
@@ -425,6 +453,13 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
+        if (string.IsNullOrEmpty(frozenPromptOperationKey))
+        {
+            frozenPromptOperationKey = BuildPromptOperationKey(target);
+            yesNoBaseline = BuildYesNoObservation(snapshot);
+            pendingPromptOverride = false;
+        }
+
         if (snapshot.YesNoVisible || snapshot.PrivatePromptVisible)
         {
             return BeginRetry(
@@ -767,6 +802,7 @@ internal sealed class DadAlliancePartyFinderJoinFlow
     }
 
     private DadAlliancePfJoinResult AdvanceWaitYesNo(
+        DadAlliancePfJoinTarget target,
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
@@ -781,18 +817,17 @@ internal sealed class DadAlliancePartyFinderJoinFlow
 
         if (snapshot.YesNoVisible)
         {
-            if (snapshot.YesNoReady &&
-                !string.IsNullOrWhiteSpace(snapshot.YesNoIdentity) &&
-                !string.Equals(
-                    snapshot.YesNoIdentity,
-                    freshYesNoIdentity,
-                    StringComparison.Ordinal))
+            var decision = EvaluateYesNoPrompt(target, snapshot);
+            if (decision.CanApprove)
             {
                 freshYesNoIdentity = snapshot.YesNoIdentity;
+                pendingPromptOverride = decision.UsedOverride;
                 stage = DadAlliancePfJoinStage.ConfirmYes;
                 return Acknowledged(
                     "yesno-acknowledged",
-                    "Acknowledged a fresh subgroup confirmation.",
+                    decision.UsedOverride
+                        ? "WARNING: acknowledged one fresh sole subgroup confirmation through the operator prompt override."
+                        : "Acknowledged a fresh exact subgroup confirmation.",
                     snapshot);
             }
 
@@ -829,16 +864,18 @@ internal sealed class DadAlliancePartyFinderJoinFlow
     }
 
     private DadAlliancePfJoinResult AdvanceConfirmYes(
+        DadAlliancePfJoinTarget target,
         DadAlliancePfJoinSnapshot snapshot,
         DateTime now)
     {
+        var decision = EvaluateYesNoPrompt(target, snapshot);
         if (snapshot.PrivatePromptVisible ||
-            !snapshot.YesNoVisible ||
-            !snapshot.YesNoReady ||
             !string.Equals(
                 snapshot.YesNoIdentity,
                 freshYesNoIdentity,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal) ||
+            !decision.CanApprove ||
+            decision.UsedOverride != pendingPromptOverride)
         {
             return WaitOrRetry(
                 now,
@@ -847,13 +884,24 @@ internal sealed class DadAlliancePartyFinderJoinFlow
                 "The acknowledged subgroup confirmation was not the only ready prompt; DAD will retry without clicking it.");
         }
 
-        return Send(
+        var result = Send(
             new DadAlliancePfJoinActionRequest(
                 DadAlliancePfJoinAction.ConfirmYes),
             DadAlliancePfJoinStage.WaitPrivatePrompt,
             now,
             snapshot,
             "yes-dispatched");
+        if (result.Kind != DadAlliancePfJoinResultKind.Progress)
+            return result;
+
+        approvedYesNoAttempt = retryCycle;
+        return result with
+        {
+            PromptOverrideUsed = decision.UsedOverride,
+            Summary = decision.UsedOverride
+                ? $"{result.Summary} {decision.Summary}"
+                : result.Summary,
+        };
     }
 
     private DadAlliancePfJoinResult AdvanceWaitPrivatePrompt(
@@ -1171,6 +1219,10 @@ internal sealed class DadAlliancePartyFinderJoinFlow
         listingCursor = 0;
         listingCount = 0;
         freshYesNoIdentity = string.Empty;
+        yesNoBaseline = default;
+        frozenPromptOperationKey = string.Empty;
+        approvedYesNoAttempt = 0;
+        pendingPromptOverride = false;
         retryReason = string.Empty;
         currentDetailCloseDispatched = false;
     }
@@ -1201,6 +1253,34 @@ internal sealed class DadAlliancePartyFinderJoinFlow
             listingCursor,
             observedAlliance,
             shouldAudit);
+
+    private DadPromptApprovalDecision EvaluateYesNoPrompt(
+        DadAlliancePfJoinTarget target,
+        DadAlliancePfJoinSnapshot snapshot)
+        => DadPromptOwnershipRules.Evaluate(new DadPromptApprovalRequest(
+            DadPromptOperationKind.AlliancePartyFinderJoin,
+            frozenPromptOperationKey,
+            BuildPromptOperationKey(target),
+            retryCycle,
+            retryCycle,
+            approvedYesNoAttempt,
+            yesNoBaseline,
+            BuildYesNoObservation(snapshot),
+            target.LeaderName,
+            allowFreshUnprovenPromptApproval));
+
+    private static DadPromptObservation BuildYesNoObservation(
+        DadAlliancePfJoinSnapshot snapshot)
+        => new(
+            snapshot.YesNoVisible,
+            snapshot.YesNoReady,
+            snapshot.YesNoIdentity,
+            snapshot.YesNoText,
+            snapshot.YesNoVisible && !snapshot.PrivatePromptVisible);
+
+    private static string BuildPromptOperationKey(DadAlliancePfJoinTarget target)
+        => $"alliance-pf-join|{target.LeaderName.Trim()}|{target.LeaderWorld.Trim()}|" +
+           $"{target.TargetContentId}|{target.AssignedAlliance}|{target.Passcode}";
 
     private static bool HasPrivateMain(DadAlliancePfJoinSnapshot snapshot)
         => snapshot.MainVisible &&

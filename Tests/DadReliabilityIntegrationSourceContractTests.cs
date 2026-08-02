@@ -26,7 +26,7 @@ public sealed class DadReliabilityIntegrationSourceContractTests
             postWakeCheck,
             StringComparison.Ordinal);
         var plannerDispatch = source.IndexOf(
-            "var result = startPlannerRequest",
+            "if (!DadSchedulerRoutingRules.TryInvokeCallback(",
             postWakeCheck,
             StringComparison.Ordinal);
 

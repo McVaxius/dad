@@ -382,6 +382,7 @@ internal sealed class DadBoundedFrameworkEventQueue
 {
     private readonly ConcurrentQueue<Action> queue = new();
     private readonly int maxBacklog;
+    private int reservedCount;
     private long droppedCount;
 
     public DadBoundedFrameworkEventQueue(int maxBacklog)
@@ -389,20 +390,35 @@ internal sealed class DadBoundedFrameworkEventQueue
         this.maxBacklog = Math.Max(1, maxBacklog);
     }
 
-    public int Count => queue.Count;
+    public int Count => Volatile.Read(ref reservedCount);
 
     public long DroppedCount => Interlocked.Read(ref droppedCount);
 
     public bool Enqueue(Action action)
     {
-        if (queue.Count >= maxBacklog)
+        while (true)
         {
-            Interlocked.Increment(ref droppedCount);
-            return false;
+            var observed = Volatile.Read(ref reservedCount);
+            if (observed >= maxBacklog)
+            {
+                Interlocked.Increment(ref droppedCount);
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref reservedCount, observed + 1, observed) == observed)
+                break;
         }
 
-        queue.Enqueue(action);
-        return true;
+        try
+        {
+            queue.Enqueue(action);
+            return true;
+        }
+        catch
+        {
+            Interlocked.Decrement(ref reservedCount);
+            throw;
+        }
     }
 
     public int Drain(int maxCount, Action<Exception>? onException = null)
@@ -410,6 +426,7 @@ internal sealed class DadBoundedFrameworkEventQueue
         var drained = 0;
         while (drained < Math.Max(0, maxCount) && queue.TryDequeue(out var action))
         {
+            Interlocked.Decrement(ref reservedCount);
             try
             {
                 action();
@@ -428,7 +445,39 @@ internal sealed class DadBoundedFrameworkEventQueue
     public void Clear()
     {
         while (queue.TryDequeue(out _))
+            Interlocked.Decrement(ref reservedCount);
+    }
+}
+
+internal sealed class DadBoundedDiagnosticGate
+{
+    private readonly object gate = new();
+    private readonly TimeSpan minimumInterval;
+    private DateTime nextReportUtc = DateTime.MinValue;
+    private long suppressedCount;
+
+    public DadBoundedDiagnosticGate(TimeSpan minimumInterval)
+    {
+        this.minimumInterval = minimumInterval > TimeSpan.Zero
+            ? minimumInterval
+            : TimeSpan.FromSeconds(1);
+    }
+
+    public bool TryReport(DateTime nowUtc, out long suppressedSinceLastReport)
+    {
+        lock (gate)
         {
+            if (nowUtc < nextReportUtc)
+            {
+                suppressedCount++;
+                suppressedSinceLastReport = 0;
+                return false;
+            }
+
+            suppressedSinceLastReport = suppressedCount;
+            suppressedCount = 0;
+            nextReportUtc = nowUtc + minimumInterval;
+            return true;
         }
     }
 }

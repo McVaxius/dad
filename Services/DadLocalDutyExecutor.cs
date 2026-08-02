@@ -104,22 +104,25 @@ public sealed class DadLocalDutyExecutor(
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
-        if (enteredDuty && HasExitedRequestedDuty())
+        var freshCompletionEvidence = enteredDuty &&
+                                      !dutyCompleted &&
+                                      queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc);
+        dutyCompleted = DadDutyLifecycleRules.ObserveDutyCompleted(
+            enteredDuty,
+            dutyCompleted,
+            freshCompletionEvidence);
+        var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
+        if (DadDutyLifecycleRules.IsAbandonedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
         {
-            if (!dutyCompleted)
-            {
-                Fail($"Local Duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
-                return BuildStatusStep(status, DadParticipantState.Failed);
-            }
-
-            return BeginOrUpdatePostDutyStabilizing(now);
+            Fail($"Local Duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
+            return BuildStatusStep(status, DadParticipantState.Failed);
         }
+
+        if (DadDutyLifecycleRules.IsCompletedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+            return BeginOrUpdatePostDutyStabilizing(now);
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
-
-        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
-            dutyCompleted = true;
 
         if (dutyCompleted)
             return UpdateDutyCompletionWaitForExit();

@@ -73,14 +73,21 @@ public sealed class DadVermaxionReservationStatus
         or DadVermaxionReservationState.Released;
 
     public bool IsAuthoritativeFor(string operationToken)
+        => IsAuthoritativeFor(operationToken, DateTime.UtcNow);
+
+    public bool IsAuthoritativeFor(string operationToken, DateTime nowUtc)
         => !string.IsNullOrWhiteSpace(operationToken) &&
            !string.IsNullOrWhiteSpace(OperationToken) &&
            string.Equals(OperationToken, operationToken.Trim(), StringComparison.OrdinalIgnoreCase) &&
            State != DadVermaxionReservationState.Rejected &&
-           State != DadVermaxionReservationState.Released;
+           State != DadVermaxionReservationState.Released &&
+           (!LeaseExpiresUtc.HasValue || LeaseExpiresUtc.Value > EnsureUtc(nowUtc));
 
     public DadVermaxionReservationStatus Clone()
         => (DadVermaxionReservationStatus)MemberwiseClone();
+
+    private static DateTime EnsureUtc(DateTime value)
+        => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
 }
 
 public static class DadVermaxionReleaseProofRules

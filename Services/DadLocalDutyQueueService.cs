@@ -74,7 +74,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private DateTime nextConfirmAttemptUtc = DateTime.MinValue;
     private DateTime lastDutyCompletedUtc = DateTime.MinValue;
     private uint lastDutyCompletedTerritoryId;
-    private string activeRunId = string.Empty;
+    private readonly DadQueueOwnershipGate queueOwnership = new();
     private bool dutyStateSubscribed;
     private bool frameworkUpdateSubscribed;
     private bool unrestrictedRestorePending;
@@ -327,15 +327,19 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     {
         // Review M16: mutual exclusion on the shared queue — refuse a different run while one owns it, so the
         // internal orchestrator and the external dad.Duty.* IPC path can't drive the same queue at once.
-        if (!string.IsNullOrEmpty(activeRunId) && !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        var ownershipClaim = queueOwnership.TryClaim(runId);
+        if (ownershipClaim == DadQueueOwnershipClaim.Rejected)
         {
             return Failed(
                 content,
-                $"Local Duty queue is owned by another run ({activeRunId}).",
+                queueOwnership.IsOwned
+                    ? $"Local Duty queue is owned by another run ({queueOwnership.ActiveRunId})."
+                    : "Local Duty queue requires a non-empty run ID.",
                 cleanup: false);
         }
 
-        ResetForNewRun(runId);
+        if (ownershipClaim == DadQueueOwnershipClaim.Acquired)
+            ResetForNewRun();
 
         var commonPulse = BuildCommonQueuePulse(content);
         if (commonPulse != null)
@@ -463,7 +467,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
     public DadLocalDutyQueuePulse Cancel(string runId, string reason)
     {
-        if (string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        if (queueOwnership.IsOwnedBy(runId))
             ClearRunState();
 
         return new DadLocalDutyQueuePulse
@@ -481,8 +485,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
     public void ResetRun(string runId)
     {
-        if (!string.IsNullOrWhiteSpace(activeRunId) &&
-            !string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
+        if (queueOwnership.IsOwned && !queueOwnership.IsOwnedBy(runId))
         {
             return;
         }
@@ -564,6 +567,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             content.TerritoryType = rouletteTerritoryGate.CapturedTerritoryId;
             dutyEntryEvidenceObserved = true;
             RestoreUnrestrictedParty();
+            queueOwnership.Release();
             return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered Daily Roulette {content.DutyName} territory {content.TerritoryType}.");
         }
 
@@ -572,6 +576,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             dutyEntryEvidenceObserved = true;
             // Review M7: queue purpose fulfilled (in the duty) — restore the Duty Finder unsync flag.
             RestoreUnrestrictedParty();
+            queueOwnership.Release();
             return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty, DadRunPhase.InDutyOrTask, DadParticipantState.Running, $"Entered {content.LaneDisplayName} {content.DutyName}.");
         }
 
@@ -612,6 +617,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             if (contentsFinder == null)
                 return Failed(content, "ContentsFinder runtime state is unavailable.");
 
+            if (!TryGetMutationSafety(out var safetyWait))
+                return RetryableQueueWait(content, safetyWait);
+
             if (!unrestrictedPartyLease.Ensure(
                     content.Unsynced,
                     () => contentsFinder->IsUnrestrictedParty,
@@ -649,6 +657,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 if (DateTime.UtcNow < nextOpenAttemptUtc)
                     return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Finder window for {content.DutyName}.");
 
+                if (!TryGetMutationSafety(out safetyWait))
+                    return RetryableQueueWait(content, safetyWait);
                 log.Debug("[dad] Opening regular Duty Finder for {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
                 agent->OpenRegularDuty(content.ContentFinderConditionId);
                 nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
@@ -658,6 +668,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 hydratedDutyFinderCharacterContentId = Plugin.PlayerState.ContentId;
                 return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening regular Duty Finder for {content.LaneDisplayName} {content.DutyName}.");
             }
+
+            if (!addonBase->IsReady)
+                return RetryableQueueWait(content, $"Waiting for the visible Duty Finder addon to become ready for {content.DutyName}.");
 
             if (dutyListHydrated &&
                 (Plugin.PlayerState.ContentId == 0 ||
@@ -673,6 +686,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 if (DateTime.UtcNow < nextOpenAttemptUtc)
                     return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting to hydrate the live Duty Finder list for {content.DutyName}.");
 
+                if (!TryGetMutationSafety(out safetyWait))
+                    return RetryableQueueWait(content, safetyWait);
                 log.Debug("[dad] Hydrating regular Duty Finder list for {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
                 agent->OpenRegularDuty(content.ContentFinderConditionId);
                 dutyListHydrated = true;
@@ -684,6 +699,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
 
             if (!dutySelectionCleared)
             {
+                if (!TryGetMutationSafety(out safetyWait))
+                    return RetryableQueueWait(content, safetyWait);
                 log.Information("[dad] Clearing regular Duty Finder selection before selecting {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
                 FireAddonIntCallback(addonBase, 12, 1);
                 dutySelectionCleared = true;
@@ -734,6 +751,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                         "The logged-in character changed after the stable regular-duty scan; restarting with a fresh hydration.");
                 }
 
+                if (!TryGetMutationSafety(out safetyWait))
+                    return RetryableQueueWait(content, safetyWait);
                 FireAddonIntCallback(addonBase, 3, resolved.UiRow.CallbackOrdinal);
                 lastSelectionToken = resolved.SelectionToken;
                 var selectionUtc = DateTime.UtcNow;
@@ -793,6 +812,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
             if (DateTime.UtcNow < nextRegisterAttemptUtc)
                 return Active(content, DadLocalDutyQueuePulseKind.Waiting, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Waiting before retrying regular Duty Finder join for {content.DutyName}.");
 
+            if (!TryGetMutationSafety(out safetyWait))
+                return RetryableQueueWait(content, safetyWait);
             log.Information("[dad] Joining regular Duty Finder duty {DutyName} ({ContentFinderConditionId}) unsynced={Unsynced}.", content.DutyName, content.ContentFinderConditionId, content.Unsynced);
             FireAddonIntCallback(addonBase, 12, 0);
             nextRegisterAttemptUtc = DateTime.UtcNow + RegisterThrottle;
@@ -880,6 +901,9 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                 hydratedDutyFinderCharacterContentId = 0;
                 return Active(content, DadLocalDutyQueuePulseKind.OpenedDutyFinder, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Duty Finder before selecting Daily Roulette {content.DutyName}.");
             }
+
+            if (!addonBase->IsReady)
+                return RetryableQueueWait(content, $"Waiting for the visible Duty Finder addon to become ready for Daily Roulette {content.DutyName}.");
 
             var target = new DadDutyFinderLiveTarget(
                 DadDutyFinderLiveContentType.Roulette,
@@ -1038,14 +1062,10 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         return true;
     }
 
-    private void ResetForNewRun(string runId)
+    private void ResetForNewRun()
     {
-        if (string.Equals(activeRunId, runId, StringComparison.OrdinalIgnoreCase))
-            return;
-
         // Review M7: restore any dangling unsync override from the previous run before starting fresh.
         RestoreUnrestrictedParty();
-        activeRunId = runId;
         nextOpenAttemptUtc = DateTime.MinValue;
         nextSelectAttemptUtc = DateTime.MinValue;
         nextRegisterAttemptUtc = DateTime.MinValue;
@@ -1183,7 +1203,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
     private void ClearRunState()
     {
         RestoreUnrestrictedParty();
-        activeRunId = string.Empty;
+        queueOwnership.Release();
         nextOpenAttemptUtc = DateTime.MinValue;
         nextSelectAttemptUtc = DateTime.MinValue;
         nextRegisterAttemptUtc = DateTime.MinValue;
@@ -1226,6 +1246,14 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         if (contentsFinder == null)
         {
             log.Warning("[dad] Cannot restore Duty Finder unrestricted-party setting yet; ContentsFinder is unavailable.");
+            return;
+        }
+
+        if (!TryGetMutationSafety(out var safetyWait))
+        {
+            log.Debug(
+                "[dad] Waiting to restore the DAD-owned Duty Finder unrestricted-party setting: {Reason}",
+                safetyWait);
             return;
         }
 
@@ -1295,7 +1323,8 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
         try
         {
             var addon = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinderConfirm");
-            if (addon == null || !addon->IsVisible)
+            if (addon == null ||
+                !DadDutyLifecycleRules.IsAddonReadyForMutation(addon->IsVisible, addon->IsReady))
                 return false;
 
             if (!TryGetMutationSafety(out var safetyWait))

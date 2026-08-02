@@ -580,9 +580,12 @@ public static class DadScheduleRules
             return DadScheduleRepeatBoundary.Standalone;
 
         entry.Normalize();
+        if (repeatIteration < MinRepeatCount || repeatIteration > entry.RepeatCount)
+            return DadScheduleRepeatBoundary.Standalone;
+
         return new DadScheduleRepeatBoundary(
             IsScheduleRun: true,
-            RepeatIteration: Math.Clamp(repeatIteration, MinRepeatCount, entry.RepeatCount),
+            RepeatIteration: repeatIteration,
             RepeatCount: entry.RepeatCount);
     }
 

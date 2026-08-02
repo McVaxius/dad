@@ -21,9 +21,10 @@ internal static unsafe class DadDutyFinderLiveEntryScanner
             return false;
         }
 
-        if (addonBase == null || !addonBase->IsVisible)
+        if (addonBase == null ||
+            !DadDutyLifecycleRules.IsAddonReadyForMutation(addonBase->IsVisible, addonBase->IsReady))
         {
-            reason = "ContentsFinder addon is unavailable or hidden.";
+            reason = "ContentsFinder addon is unavailable, hidden, or not ready.";
             return false;
         }
 
