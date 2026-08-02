@@ -1,5 +1,16 @@
 # dad — changelog
 
+## 2026-08-02 — P1213 Daily Roulette exit/completion grace (local-only, unpublished)
+- Premade Duty now reads matching `DutyCompleted` evidence before every exit classification and waits up to ten seconds
+  after the first unmatched exit for a delayed completion event. Completion during that bounded window, including at its
+  deadline, uses the existing ten-second post-duty stabilization; exit alone still never counts as success and genuine
+  abandonment retains the existing failure.
+- The grace state clears on re-entry, start, cancellation, failure, and terminal cleanup. Roulette reward detection,
+  schedules/defaults, configuration/schema, party leadership, clock handling, version `0.5.0.4`, packaging,
+  publication, and live acceptance are unchanged. Focused `DadLifecycleHardeningDutyTests` coverage passes 37/37, the
+  complete DAD suite passes 1,623/1,623, and the isolated x64 Debug build succeeds with 0 errors and three established
+  nullable warnings in untouched `DadAlliancePartyFinderService.cs`; runtime acceptance remains operator-controlled.
+
 ## 2026-08-02 — P1217 lifecycle-risk hardening (local-only, unpublished)
 - Validated worker commands before serialization/registration, enforced one active/pending run owner with FIFO same-run
   sequencing, drained whole cancelled runs, retained historical duplicate results without replacing visible current state,

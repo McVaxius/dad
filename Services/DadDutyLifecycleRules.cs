@@ -69,6 +69,11 @@ public static class DadDutyLifecycleRules
         bool exitedRequestedDuty)
         => enteredDuty && exitedRequestedDuty && dutyCompleted;
 
+    public static bool IsExitCompletionGraceExpired(
+        DateTime deadlineUtc,
+        DateTime now)
+        => deadlineUtc != DateTime.MinValue && now >= deadlineUtc;
+
     public static bool IsAddonReadyForMutation(bool visible, bool ready)
         => visible && ready;
 

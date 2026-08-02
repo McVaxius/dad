@@ -9,11 +9,13 @@ public delegate DadLocalDutyResolvedContent? DadFullPartyContentResolver(
 public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
 {
     private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ExitCompletionGraceDuration = TimeSpan.FromSeconds(10);
 
     private DadModuleExecutionStatusDto status = new();
     private DadLocalDutyResolvedContent? resolvedContent;
     private DateTime runStartedAtUtc = DateTime.MinValue;
     private DateTime postDutyStabilizeUntilUtc = DateTime.MinValue;
+    private DateTime exitCompletionGraceUntilUtc = DateTime.MinValue;
     private bool enteredDuty;
     private bool dutyCompleted;
     private DadCombatRotationMode rotationMode = DadCombatRotationMode.UseFrenRider;
@@ -131,19 +133,39 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
-        if (enteredDuty && !dutyCompleted && queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc))
-            dutyCompleted = true;
-
-        if (enteredDuty && HasExitedRequestedDuty())
+        var freshCompletionEvidence = enteredDuty &&
+                                      !dutyCompleted &&
+                                      queueService.HasDutyCompleted(resolvedContent, runStartedAtUtc);
+        dutyCompleted = DadDutyLifecycleRules.ObserveDutyCompleted(
+            enteredDuty,
+            dutyCompleted,
+            freshCompletionEvidence);
+        var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
+        if (DadDutyLifecycleRules.IsCompletedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
         {
-            if (!dutyCompleted)
+            exitCompletionGraceUntilUtc = DateTime.MinValue;
+            return BeginOrUpdatePostDutyStabilizing(now);
+        }
+
+        if (DadDutyLifecycleRules.IsAbandonedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+        {
+            if (exitCompletionGraceUntilUtc == DateTime.MinValue)
+                exitCompletionGraceUntilUtc = now + ExitCompletionGraceDuration;
+
+            if (DadDutyLifecycleRules.IsExitCompletionGraceExpired(exitCompletionGraceUntilUtc, now))
             {
                 Fail($"{configuredDisplayName} {resolvedContent.DutyName} exited before matching DutyCompleted; treating as abandoned.");
                 return BuildStatusStep(status, DadParticipantState.Failed);
             }
 
-            return BeginOrUpdatePostDutyStabilizing(now);
+            SetActiveStatus(
+                DadRunPhase.InDutyOrTask,
+                BuildDelayedCompletionWaitSummary(now));
+            return BuildStatusStep(status, DadParticipantState.Running);
         }
+
+        if (!exitedRequestedDuty)
+            exitCompletionGraceUntilUtc = DateTime.MinValue;
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
@@ -324,6 +346,7 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
     {
         runStartedAtUtc = now;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
+        exitCompletionGraceUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
         entryAutomationSummary = string.Empty;
@@ -333,6 +356,7 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
     {
         runStartedAtUtc = DateTime.MinValue;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
+        exitCompletionGraceUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
         entryAutomationSummary = string.Empty;
@@ -427,6 +451,13 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
             DadCombatRotationMode.DoNothing => $"{configuredDisplayName} {dutyName} completed; waiting for user-owned duty exit.",
             _ => $"{configuredDisplayName} {dutyName} completed; waiting for duty exit.",
         };
+    }
+
+    private string BuildDelayedCompletionWaitSummary(DateTime now)
+    {
+        var dutyName = resolvedContent?.DutyName ?? "requested duty";
+        var remaining = Math.Max(0, (exitCompletionGraceUntilUtc - now).TotalSeconds);
+        return $"{configuredDisplayName} {dutyName} exited without matching DutyCompleted; waiting for delayed completion ({remaining:F0}s).";
     }
 
     private string BuildCompletedSummary()
