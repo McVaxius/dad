@@ -399,6 +399,19 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
+    public void NullProposalIsDeniedWithoutReplayMutation()
+    {
+        var configuration = new DadAutoPartyConfiguration { Enabled = true };
+        var policy = new DadAutoPartyPolicyFacade(configuration, static () => true);
+
+        var denied = policy.AcceptProposal(null!, SessionPermission.All);
+
+        Assert.False(denied.Allowed);
+        Assert.Equal("dad-proposal-invalid", denied.SafeCode);
+        Assert.Equal(0, policy.ReplayEntryCount);
+    }
+
+    [Fact]
     public void RejectedProposalDoesNotPoisonTheValidRetransmitReplaySlot()
     {
         var proposalId = Guid.NewGuid();

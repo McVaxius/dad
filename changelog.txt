@@ -25,8 +25,17 @@
 - Added focused production-linked/pure/source-contract coverage for Discord challenge persistence, expiry, identity binding,
   signature reasons, bounded drain/diagnostics, configuration migration, AutoRetainer generations, command validation/import
   confirmation, lifecycle grace, claim uniqueness, pilot save ownership, task-fault visibility, and legacy completion no-ops.
-  A syntax-only Roslyn pass parsed 364 C# files with zero syntax errors. Build, test, CI, Discord, service, deployment, and FFXIV
+  A syntax-only Roslyn pass parsed 364 C# files with zero syntax errors.
+- Resolved the follow-up compile gate by rejecting a null proposal before replay validation, which keeps `denial` definitely
+  assigned without changing valid proposal/replay/grant ordering. Added a null-proposal/no-replay-mutation regression case.
+- Regenerated `packages.lock.json` with the required `net10.0-windows7.0/win` target. The base target, all 12 dependency
+  versions, and every content hash remain unchanged. The documented `-r win --locked-mode` restore now succeeds.
+- With .NET SDK `10.0.302` and Dalamud API `15.0.3`, fresh Debug x64 and Release x64 builds both succeed with zero errors and
+  the same three nullable warnings in `DadAlliancePartyFinderService.cs`. Tests, CI, Discord, service, deployment, and FFXIV
   execution remain separately gated and were not run. Version `0.5.0.6` and `Dad.AutoParty.Protocol` `0.1.0-preview.2` are unchanged.
+- Backup: `Services/backups/DadAutoPartyPolicyFacade - 2026-08-02_20-57-48.cs`
+- Backup: `Tests/backups/DadAutoPartyIntegrationRulesTests - 2026-08-02_20-57-48.cs`
+- Backup: `backups/packages.lock - 2026-08-02_20-57-48.json`
 
 ## 2026-08-02 — DiscordBot octo supported-runtime remediation (local-only, unpublished)
 - Kept every Dad and AutoParty feature while hardening the retained proposal-policy boundary. `AcceptProposal` now reuses

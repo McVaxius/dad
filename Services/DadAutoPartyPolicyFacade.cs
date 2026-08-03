@@ -103,9 +103,10 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     {
         lock (gate)
         {
-            if (proposal == null ||
-                !TryValidateReplayCandidate(proposal.Header, DateTimeOffset.UtcNow, out var denial))
-                return proposal == null ? Denied("dad-proposal-invalid") : denial;
+            if (proposal == null)
+                return Denied("dad-proposal-invalid");
+            if (!TryValidateReplayCandidate(proposal.Header, DateTimeOffset.UtcNow, out var denial))
+                return denial;
 
             var authorization = IntersectGrantCore(proposal, requiredPermissions);
             if (!authorization.Allowed)

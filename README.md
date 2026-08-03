@@ -43,7 +43,8 @@ refresh function through Dalamud's game-interop service. ECommons is maintained 
 
 The build requires the current API 15 Dalamud development assemblies. Set `DALAMUD_HOME` to that directory when they are
 not installed at the normal XIVLauncher development-hook location. Restore uses the checked-in AutoParty package and the
-public NuGet feed explicitly; it does not require a machine-global AutoParty source.
+public NuGet feed explicitly; it does not require a machine-global AutoParty source. The committed lock file contains both
+the base framework graph and the `win` runtime target required by the locked `-r win` restore.
 
 ## Test
 
