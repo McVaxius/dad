@@ -1,4 +1,5 @@
 using dad.Models;
+using dad.Services;
 using Xunit;
 
 namespace dad.Tests;
@@ -74,5 +75,50 @@ public sealed class DadCompletionActionSnapshotTests
         Assert.False(resolved.RunCommands);
         Assert.Empty(resolved.Commands);
         Assert.Equal(DadCompletionKillMode.None, resolved.KillMode);
+    }
+
+    [Theory]
+    [InlineData("/vmx resume")]
+    [InlineData("/dad status")]
+    public void CustomCompletionCommandsAcceptSingleRegisteredPluginCommandShape(string command)
+    {
+        Assert.True(DadCompletionCommandRules.TryNormalizeCustomCommand(command, out var normalized, out var reason));
+        Assert.Equal(command, normalized);
+        Assert.Empty(reason);
+    }
+
+    [Theory]
+    [InlineData("hello")]
+    [InlineData("/dad status\r")]
+    [InlineData("/dad\tstatus")]
+    [InlineData("/dad\0status")]
+    public void CustomCompletionCommandsRejectNonSlashOrControlCharacters(string command)
+        => Assert.False(DadCompletionCommandRules.TryNormalizeCustomCommand(command, out _, out _));
+
+    [Theory]
+    [InlineData("/ays gc", "/ays gc")]
+    [InlineData("  /AYS gc  ", "/AYS gc")]
+    public void GrandCompanyCommandsRequireExactAysRoot(string command, string expected)
+    {
+        Assert.True(DadCompletionCommandRules.TryNormalizeGrandCompanyHandInCommand(
+            command,
+            out var normalized,
+            out var reason));
+        Assert.Equal(expected, normalized);
+        Assert.Empty(reason);
+    }
+
+    [Theory]
+    [InlineData("/echo /ays gc")]
+    [InlineData("/aysomething gc")]
+    [InlineData("/ays gc\n/dad stop")]
+    public void GrandCompanyCommandsRejectOtherRootsAndControls(string command)
+        => Assert.False(DadCompletionCommandRules.TryNormalizeGrandCompanyHandInCommand(command, out _, out _));
+
+    [Fact]
+    public void LegacyCompletionKillEnumValuesRemainDeserializable()
+    {
+        Assert.Equal(1, (int)DadCompletionKillMode.CloseGameClient);
+        Assert.Equal(2, (int)DadCompletionKillMode.ShutDownPc);
     }
 }

@@ -1,5 +1,58 @@
 # dad — changelog
 
+## 2026-08-02 — P1218 WP9/WP10 Discord and AutoDuty reliability remediation (local-only, unpublished)
+- Hardened the active Dad Discord path, not only the retained AutoParty proposal policy. Pair/Accept now requires an explicit
+  full Ed25519 signing-key fingerprint confirmation and pins Application ID, Bot User ID, DAD identity, endpoint fingerprint,
+  signing key/fingerprint, role, endpoint-key generation, and one persisted five-minute request nonce. `PairAccept` consumes
+  that durable challenge in the same configuration save that commits trust; missing, expired, replayed, already-used, or
+  identity-drifted accepts fail closed with typed/rate-limited diagnostics. Schema 8 revokes pre-confirmation Discord trust for
+  explicit re-pairing, and identity regeneration clears the prior authenticated Discord binding.
+- Kept Discord outside run authority and preserved DPAPI token storage plus Ed25519 signing. Pairing and alliance protocols now
+  distinguish missing, malformed, and invalid signatures, alliance instructions require the operator-confirmed pinned signing
+  fingerprint/generation, and framework updates drain at most eight of the bounded 256 queued Discord messages. Active-run
+  remote Stop-all rejection now returns the exact visible Coordinator-only instruction.
+- Made Questionable reflection ownership transactional across partial writes and per-field restore retries; moved pilot receipt
+  configuration mutation/save back to framework `Update`; promoted unexpected observed task faults to rate-limited warnings;
+  and replaced AutoRetainer postprocess booleans with generation-bound Armed/RequestSent/Owned ownership. Pending or uncertain
+  requests never release AutoRetainer's global finish channel, missing callbacks re-arm only the same operation after timeout,
+  and late named Dad callbacks are released conservatively.
+- Imported `CustomCommand` and `GrandCompanyHandInCommand` values are previewed verbatim and require explicit confirmation.
+  Custom slash commands use Dalamud's registered-plugin command manager; native chat is reserved for an exact `/ays` GC root,
+  with bounded five-second retry and a typed visible result when `UIModule` is unavailable. Unsupported historical close-client
+  and PC-shutdown values remain safe deserialization no-ops and are no longer selectable.
+- Enforced one local character per run across different slots and applied one ten-second delayed-`DutyCompleted` lifecycle rule
+  to Local Duty, Duty Support, Trust, and Premade Duty, with completion winning at the exact deadline.
+- Added focused production-linked/pure/source-contract coverage for Discord challenge persistence, expiry, identity binding,
+  signature reasons, bounded drain/diagnostics, configuration migration, AutoRetainer generations, command validation/import
+  confirmation, lifecycle grace, claim uniqueness, pilot save ownership, task-fault visibility, and legacy completion no-ops.
+  A syntax-only Roslyn pass parsed 364 C# files with zero syntax errors. Build, test, CI, Discord, service, deployment, and FFXIV
+  execution remain separately gated and were not run. Version `0.5.0.6` and `Dad.AutoParty.Protocol` `0.1.0-preview.2` are unchanged.
+
+## 2026-08-02 — DiscordBot octo supported-runtime remediation (local-only, unpublished)
+- Kept every Dad and AutoParty feature while hardening the retained proposal-policy boundary. `AcceptProposal` now reuses
+  the vendored protocol's complete header validator, checks freshness and replay without mutation, intersects the exact
+  pairing/grant policy, and commits the message ID only after authorization succeeds. Invalid headers fail closed, and an
+  unauthorized first delivery can no longer poison a later valid retransmit with the same otherwise-valid header identity.
+- Preserved the separately callable replay and grant methods for compatibility. Added production-linked regressions for
+  sender/recipient identifiers, sequence, generation, key versions, UTC offsets, maximum lifetime, critical fields,
+  replay-cache bounds, rejected-first delivery, valid retransmit, and true duplicate rejection.
+- Made the release workflow verify the exact vendored `Dad.AutoParty.Protocol.0.1.0-preview.2` hash, restore Dad and its
+  test project through explicit repository/public sources, and run the complete Release x64 suite without
+  `continue-on-error` or an implicit restore before artifact upload. A source-contract test protects that ordering and
+  prevents the machine-global NuGet-source dependency from returning.
+- Documented clean restore/build/test commands and the API 15 Dalamud prerequisite. The consumer audit found no Dad call
+  site for the package CBOR codec, package pairing gate, courier batch codec, or package replay store, so their wire-format
+  findings remain versioned package-migration work instead of unsafe in-place Dad changes.
+- Version `0.5.0.6`, manifests, protocol/package versions, configuration/schema, feature behavior outside the repaired
+  proposal gate, packaging, publication, deployment, Discord, services, and live-client state are unchanged. Build and
+  test execution remain separately gated and were not run in this implementation stage.
+- Backup: `.github/workflows/backups/build-release - 2026-08-02_17-33-28.yml`
+- Backup: `Services/backups/DadAutoPartyPolicyFacade - 2026-08-02_17-33-28.cs`
+- Backup: `Services/backups/DadAutoPartyService - 2026-08-02_17-33-28.cs`
+- Backup: `Tests/backups/DadAutoPartyIntegrationRulesTests - 2026-08-02_17-33-28.cs`
+- Backup: `backups/README - 2026-08-02_17-33-28.md`
+- Backup: `backups/changelog - 2026-08-02_17-33-28.txt`
+
 ## 2026-08-02 — P1213 Daily Roulette exit/completion grace (local-only, unpublished)
 - Premade Duty now reads matching `DutyCompleted` evidence before every exit classification and waits up to ten seconds
   after the first unmatched exit for a delayed completion event. Completion during that bounded window, including at its

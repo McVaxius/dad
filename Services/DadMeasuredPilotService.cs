@@ -20,7 +20,7 @@ public sealed class DadMeasuredPilotService
     private readonly string assemblyPath;
     private readonly Action<string> diagnostic;
     private bool receiptDirty;
-    private Task? receiptTask;
+    private Task<DadPilotReceiptWriteResult>? receiptTask;
     private DateTime nextReceiptAttemptUtc = DateTime.MinValue;
     private DadAutoPartyDiscordConnectionState priorDiscordState = DadAutoPartyDiscordConnectionState.Disabled;
     private bool observedDiscordLoss;
@@ -268,12 +268,33 @@ public sealed class DadMeasuredPilotService
     {
         if (receiptTask is { IsCompleted: true })
         {
-            if (receiptTask.IsFaulted)
+            if (receiptTask.IsCompletedSuccessfully)
+            {
+                var result = receiptTask.Result;
+                if (string.Equals(
+                        configuration.MeasuredPilot.CampaignId,
+                        result.CampaignId,
+                        StringComparison.Ordinal))
+                {
+                    // Update() is invoked from the Dalamud framework thread. Async receipt IO
+                    // returns immutable data only; configuration mutation and save stay here.
+                    configuration.MeasuredPilot.ReceiptPath = result.Path;
+                    configuration.StateGeneration++;
+                    saveConfiguration();
+                }
+            }
+            else if (receiptTask.IsFaulted)
             {
                 _ = receiptTask.Exception;
                 receiptDirty = true;
                 nextReceiptAttemptUtc = DateTime.UtcNow + ReceiptRetryDelay;
                 diagnostic("dad-pilot-receipt-write-failed");
+            }
+            else if (receiptTask.IsCanceled)
+            {
+                receiptDirty = true;
+                nextReceiptAttemptUtc = DateTime.UtcNow + ReceiptRetryDelay;
+                diagnostic("dad-pilot-receipt-write-cancelled");
             }
             receiptTask = null;
         }
@@ -281,7 +302,9 @@ public sealed class DadMeasuredPilotService
         {
             receiptDirty = false;
             var snapshot = configuration.MeasuredPilot.Clone();
-            receiptTask = WriteReceiptAsync(snapshot);
+            var receiptRoot = configuration.GetPilotReceiptRoot();
+            var signingPublicKey = configuration.SigningPublicKey;
+            receiptTask = WriteReceiptAsync(snapshot, receiptRoot, signingPublicKey);
         }
     }
 
@@ -313,7 +336,10 @@ public sealed class DadMeasuredPilotService
         return new(state, qualifying.Count, plans, schedules, jobs, switches, missing, campaign.SafetyViolations);
     }
 
-    private async Task WriteReceiptAsync(DadMeasuredPilotCampaign snapshot)
+    private async Task<DadPilotReceiptWriteResult> WriteReceiptAsync(
+        DadMeasuredPilotCampaign snapshot,
+        string receiptRoot,
+        string signingPublicKey)
     {
         var evaluation = Evaluate(snapshot);
         var payload = JsonSerializer.SerializeToUtf8Bytes(new
@@ -353,21 +379,16 @@ public sealed class DadMeasuredPilotService
             {
                 schema = ReceiptSchema,
                 payloadBase64 = Convert.ToBase64String(payload),
-                signingPublicKey = configuration.SigningPublicKey,
+                signingPublicKey,
                 signature = Convert.ToBase64String(signature),
             }, JsonOptions);
-            var root = configuration.GetPilotReceiptRoot();
-            Directory.CreateDirectory(root);
-            var path = Path.Combine(root, $"dad-pilot-evidence-{snapshot.CampaignId}.json");
+            Directory.CreateDirectory(receiptRoot);
+            var path = Path.Combine(receiptRoot, $"dad-pilot-evidence-{snapshot.CampaignId}.json");
             temporary = path + ".tmp";
             await File.WriteAllBytesAsync(temporary, envelope).ConfigureAwait(false);
             File.Move(temporary, path, true);
             temporary = null;
-            if (string.Equals(configuration.MeasuredPilot.CampaignId, snapshot.CampaignId, StringComparison.Ordinal))
-            {
-                configuration.MeasuredPilot.ReceiptPath = path;
-                saveConfiguration();
-            }
+            return new DadPilotReceiptWriteResult(snapshot.CampaignId, path);
         }
         finally
         {
@@ -386,6 +407,8 @@ public sealed class DadMeasuredPilotService
             }
         }
     }
+
+    private sealed record DadPilotReceiptWriteResult(string CampaignId, string Path);
 
     private bool HasSigningIdentity() =>
         !string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) &&

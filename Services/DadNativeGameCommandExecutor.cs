@@ -5,6 +5,9 @@ namespace dad.Services;
 
 internal sealed unsafe class DadNativeGameCommandExecutor : IDadGameCommandExecutor
 {
+    internal const string UiModuleUnavailableError =
+        "The native game UI module is unavailable for chat-command submission.";
+
     public bool TryExecute(string command, out string error)
     {
         if (!DadNativeChatCommandRules.TryNormalize(command, out var normalized, out error))
@@ -16,7 +19,7 @@ internal sealed unsafe class DadNativeGameCommandExecutor : IDadGameCommandExecu
             var uiModule = UIModule.Instance();
             if (uiModule == null)
             {
-                error = "The native game UI module is unavailable for chat-command submission.";
+                error = UiModuleUnavailableError;
                 return false;
             }
 

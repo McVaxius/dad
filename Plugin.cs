@@ -1273,8 +1273,10 @@ public sealed class Plugin : IDalamudPlugin
         out string error)
         => ShareService.TryDecode(encoded, expectedKind, out envelope, out error);
 
-    public DadShareApplyResult ApplyShareImport(DadShareEnvelopeDto envelope)
-        => ApplyShareEnvelope(envelope, DadShareApplyMode.ReplaceMatching);
+    public DadShareApplyResult ApplyShareImport(
+        DadShareEnvelopeDto envelope,
+        bool commandValuesConfirmed)
+        => ApplyShareEnvelope(envelope, DadShareApplyMode.ReplaceMatching, commandValuesConfirmed);
 
     public DadShareApplyResult InstallStarterShareBundle()
     {
@@ -1285,7 +1287,7 @@ public sealed class Plugin : IDalamudPlugin
             return new DadShareApplyResult { Summary = error };
         if (!ShareService.TryDecode(encoded, DadShareConstants.ScheduleKind, out var envelope, out error) || envelope == null)
             return new DadShareApplyResult { Summary = error };
-        return ApplyShareEnvelope(envelope, DadShareApplyMode.SkipExisting);
+        return ApplyShareEnvelope(envelope, DadShareApplyMode.SkipExisting, commandValuesConfirmed: true);
     }
 
     public DadShareRenameResult RenamePlanId(string currentId, string requestedId)
@@ -1332,7 +1334,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private DadShareApplyResult ApplyShareEnvelope(
         DadShareEnvelopeDto envelope,
-        DadShareApplyMode mode)
+        DadShareApplyMode mode,
+        bool commandValuesConfirmed)
     {
         var blocker = GetShareMutationBlocker();
         if (!string.IsNullOrWhiteSpace(blocker))
@@ -1342,7 +1345,8 @@ public sealed class Plugin : IDalamudPlugin
             envelope,
             Configuration.PlannerGroups,
             Configuration.Schedules,
-            mode);
+            mode,
+            commandValuesConfirmed);
         if (!result.Success)
             return result;
 

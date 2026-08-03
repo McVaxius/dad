@@ -37,7 +37,6 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private static readonly Vector2 MinimumWindowSize = new(760f, 600f);
-    private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
     private const string RosterUnassignedAccountFilter = "__unassigned";
     private const string RosterNeedsUpdateFilter = "NeedsUpdate";
     private readonly Plugin plugin;
@@ -56,6 +55,7 @@ public sealed class MainWindow : Window, IDisposable
     private string plannerShareIdEdit = string.Empty;
     private DadShareEnvelopeDto? pendingPlannerShareImport;
     private DadShareImportPreview? pendingPlannerSharePreview;
+    private bool pendingPlannerShareCommandsConfirmed;
     private string selectedScheduleId = string.Empty;
     private string schedulerScheduleNameBuffer = "Dad Schedule";
     private string schedulerAddPresetGroupId = string.Empty;
@@ -68,6 +68,7 @@ public sealed class MainWindow : Window, IDisposable
     private string scheduleShareIdEdit = string.Empty;
     private DadShareEnvelopeDto? pendingScheduleShareImport;
     private DadShareImportPreview? pendingScheduleSharePreview;
+    private bool pendingScheduleShareCommandsConfirmed;
     private string pendingDeleteAccountId = string.Empty;
     private string rosterSearch = string.Empty;
     private string rosterAccountFilter = string.Empty;
@@ -93,6 +94,7 @@ public sealed class MainWindow : Window, IDisposable
     private CharacterConfig profileDraft = new();
     private string profileSaveStatus = string.Empty;
     private string draftPlannerCompletionCommands = string.Empty;
+    private string plannerCompletionCommandValidation = string.Empty;
     private string plannerCompletionDraftOwner = string.Empty;
     private DadMainWindowTab? pendingMainTab;
     private DadPresetsWindowTab? pendingPresetsTab;
@@ -2271,6 +2273,7 @@ public sealed class MainWindow : Window, IDisposable
                     envelope,
                     plugin.Configuration.PlannerGroups,
                     plugin.Configuration.Schedules);
+                pendingScheduleShareCommandsConfirmed = false;
                 scheduleShareStatus = string.Empty;
                 ImGui.OpenPopup("Confirm Schedule import##dad-share-schedule-confirm");
             }
@@ -2366,15 +2369,20 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted($"ID: {preview.Id}");
             ImGui.TextUnformatted($"Bundled Plans: {preview.BundledPlanCount.ToString(CultureInfo.InvariantCulture)}");
             DrawShareReplacementSummary(preview);
+            DrawShareCommandReview(preview, ref pendingScheduleShareCommandsConfirmed);
             ImGui.TextWrapped("Imported crew identities are anonymous placeholders. Remap every row in the Plan crew editor before validation or run.");
             ImGui.TextWrapped("Base64 is not encryption. Finish slash commands are preserved verbatim; review them before running an imported Plan.");
         }
 
         var mutationBlocker = plugin.GetShareMutationBlocker();
-        ImGui.BeginDisabled(preview == null || pendingScheduleShareImport == null || !string.IsNullOrWhiteSpace(mutationBlocker));
+        ImGui.BeginDisabled(preview == null || pendingScheduleShareImport == null ||
+                            preview.RequiresCommandConfirmation && !pendingScheduleShareCommandsConfirmed ||
+                            !string.IsNullOrWhiteSpace(mutationBlocker));
         if (ImGui.SmallButton("Import##dad-share-schedule-confirm-import"))
         {
-            var result = plugin.ApplyShareImport(pendingScheduleShareImport!);
+            var result = plugin.ApplyShareImport(
+                pendingScheduleShareImport!,
+                pendingScheduleShareCommandsConfirmed);
             scheduleShareStatus = result.Summary;
             if (result.Success)
             {
@@ -2385,6 +2393,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             pendingScheduleShareImport = null;
             pendingScheduleSharePreview = null;
+            pendingScheduleShareCommandsConfirmed = false;
             ImGui.CloseCurrentPopup();
         }
         ImGui.EndDisabled();
@@ -2393,6 +2402,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             pendingScheduleShareImport = null;
             pendingScheduleSharePreview = null;
+            pendingScheduleShareCommandsConfirmed = false;
             ImGui.CloseCurrentPopup();
         }
         if (!string.IsNullOrWhiteSpace(mutationBlocker))
@@ -5625,17 +5635,21 @@ public sealed class MainWindow : Window, IDisposable
 
             if (ImGui.InputTextMultiline("Preset commands (one per line)", ref draftPlannerCompletionCommands, 2048, new Vector2(-1f, 90f)))
             {
-                var committedSignature = BuildPlannerCompletionActionSignature(actions);
-                actions.Commands = draftPlannerCompletionCommands
-                    .Split('\n')
-                    .Select(static command => command.Trim())
-                    .Where(static command => command.Length > 0)
-                    .ToList();
-                plugin.QueueDebouncedPlannerOptionsSave(
-                    "planner-completion-commands",
-                    committedSignature,
-                    () => BuildPlannerCompletionActionSignature(plannerOptions.CompletionActions));
+                if (DadCompletionCommandRules.TryNormalizeCustomCommands(
+                        draftPlannerCompletionCommands.Split('\n'),
+                        out var normalizedCommands,
+                        out plannerCompletionCommandValidation))
+                {
+                    var committedSignature = BuildPlannerCompletionActionSignature(actions);
+                    actions.Commands = normalizedCommands;
+                    plugin.QueueDebouncedPlannerOptionsSave(
+                        "planner-completion-commands",
+                        committedSignature,
+                        () => BuildPlannerCompletionActionSignature(plannerOptions.CompletionActions));
+                }
             }
+            if (!string.IsNullOrWhiteSpace(plannerCompletionCommandValidation))
+                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), plannerCompletionCommandValidation);
         }
 
         ImGui.TextUnformatted("Post-run utilities");
@@ -5674,23 +5688,28 @@ public sealed class MainWindow : Window, IDisposable
             var gcCommand = utilities.GrandCompanyHandInCommand;
             if (ImGui.InputText("Preset AutoRetainer GC command", ref gcCommand, 128))
             {
-                utilities.GrandCompanyHandInCommand = gcCommand.Trim();
-                plugin.SavePlannerOptions();
+                if (DadCompletionCommandRules.TryNormalizeGrandCompanyHandInCommand(
+                        gcCommand,
+                        out var normalizedCommand,
+                        out plannerCompletionCommandValidation))
+                {
+                    utilities.GrandCompanyHandInCommand = normalizedCommand;
+                    plugin.SavePlannerOptions();
+                }
             }
+            ImGui.TextDisabled("Only the exact /ays command root is accepted for this native command.");
+            if (!string.IsNullOrWhiteSpace(plannerCompletionCommandValidation))
+                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), plannerCompletionCommandValidation);
         }
 
-        if (plugin.Configuration.AdvancedModeEnabled)
+        if (actions.KillMode != DadCompletionKillMode.None)
         {
-            var killMode = (int)actions.KillMode;
-            if (ImGui.Combo("On completion", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            DrawStatusRow("Legacy preset completion value", $"{actions.KillMode} was loaded for compatibility and is a permanent no-op.");
+            if (ImGui.Button("Clear disabled preset completion value"))
             {
-                actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
+                actions.KillMode = DadCompletionKillMode.None;
                 plugin.SavePlannerOptions();
             }
-        }
-        else if (actions.KillMode != DadCompletionKillMode.None)
-        {
-            DrawStatusRow("Preset kill action", $"{actions.KillMode} configured but hidden; enable Advanced mode (/dad advanced) to view/change.");
         }
 
     }
@@ -5736,7 +5755,7 @@ public sealed class MainWindow : Window, IDisposable
         if (actions.Utilities?.GrandCompanyHandInViaAutoRetainer == true)
             enabled.Add("GC hand-in");
         if (actions.KillMode != DadCompletionKillMode.None)
-            enabled.Add(actions.KillMode.ToString());
+            enabled.Add($"legacy {actions.KillMode} value disabled (no-op)");
 
         return enabled.Count == 0 ? "No completion actions enabled." : string.Join(", ", enabled);
     }
@@ -7474,6 +7493,7 @@ public sealed class MainWindow : Window, IDisposable
                     envelope,
                     plugin.Configuration.PlannerGroups,
                     plugin.Configuration.Schedules);
+                pendingPlannerShareCommandsConfirmed = false;
                 plannerShareStatus = string.Empty;
                 ImGui.OpenPopup("Confirm Plan import##dad-share-plan-confirm");
             }
@@ -7567,15 +7587,20 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted($"ID: {preview.Id}");
             ImGui.TextUnformatted($"Bundled Plans: {preview.BundledPlanCount.ToString(CultureInfo.InvariantCulture)}");
             DrawShareReplacementSummary(preview);
+            DrawShareCommandReview(preview, ref pendingPlannerShareCommandsConfirmed);
             ImGui.TextWrapped("Imported crew identities are anonymous placeholders. Remap every row in the Plan crew editor before validation or run.");
             ImGui.TextWrapped("Base64 is not encryption. Finish slash commands are preserved verbatim; review them before running the imported Plan.");
         }
 
         var mutationBlocker = plugin.GetShareMutationBlocker();
-        ImGui.BeginDisabled(preview == null || pendingPlannerShareImport == null || !string.IsNullOrWhiteSpace(mutationBlocker));
+        ImGui.BeginDisabled(preview == null || pendingPlannerShareImport == null ||
+                            preview.RequiresCommandConfirmation && !pendingPlannerShareCommandsConfirmed ||
+                            !string.IsNullOrWhiteSpace(mutationBlocker));
         if (ImGui.SmallButton("Import##dad-share-plan-confirm-import"))
         {
-            var result = plugin.ApplyShareImport(pendingPlannerShareImport!);
+            var result = plugin.ApplyShareImport(
+                pendingPlannerShareImport!,
+                pendingPlannerShareCommandsConfirmed);
             plannerShareStatus = result.Summary;
             if (result.Success)
             {
@@ -7584,6 +7609,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             pendingPlannerShareImport = null;
             pendingPlannerSharePreview = null;
+            pendingPlannerShareCommandsConfirmed = false;
             ImGui.CloseCurrentPopup();
         }
         ImGui.EndDisabled();
@@ -7592,6 +7618,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             pendingPlannerShareImport = null;
             pendingPlannerSharePreview = null;
+            pendingPlannerShareCommandsConfirmed = false;
             ImGui.CloseCurrentPopup();
         }
         if (!string.IsNullOrWhiteSpace(mutationBlocker))
@@ -7615,6 +7642,29 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.BulletText(replacementId);
         if (useScroll)
             ImGui.EndChild();
+    }
+
+    private static void DrawShareCommandReview(
+        DadShareImportPreview preview,
+        ref bool confirmed)
+    {
+        if (!preview.RequiresCommandConfirmation)
+            return;
+
+        ImGui.Separator();
+        ImGui.TextWrapped("Imported completion commands (shown verbatim):");
+        var useScroll = preview.Commands.Count > 6;
+        if (useScroll)
+            ImGui.BeginChild("dad-share-command-preview", new Vector2(560f, ImGui.GetTextLineHeightWithSpacing() * 9f), true);
+        foreach (var command in preview.Commands)
+        {
+            ImGui.TextDisabled($"{command.PlanName} | {command.CommandKind}");
+            ImGui.TextUnformatted(command.Command);
+            ImGui.Spacing();
+        }
+        if (useScroll)
+            ImGui.EndChild();
+        ImGui.Checkbox("I reviewed every imported command shown above", ref confirmed);
     }
 
     private void DrawPlannerGroupSlotEditor(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroup group)

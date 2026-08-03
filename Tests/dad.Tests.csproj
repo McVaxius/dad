@@ -49,6 +49,8 @@
     <Compile Include="..\Services\DadWorkerRunCommandQueue.cs" Link="DadWorkerRunCommandQueue.cs" />
     <Compile Include="..\Services\DadLifecycleCleanupRules.cs" Link="DadLifecycleCleanupRules.cs" />
     <Compile Include="..\Services\DadDutyLifecycleRules.cs" Link="DadDutyLifecycleRules.cs" />
+    <Compile Include="..\Services\DadCompletionCommandRules.cs" Link="DadCompletionCommandRules.cs" />
+    <Compile Include="..\Services\DadAutoRetainerPostprocessLease.cs" Link="DadAutoRetainerPostprocessLease.cs" />
     <Compile Include="..\Services\DadNpcDutyEligibility.cs" Link="DadNpcDutyEligibility.cs" />
     <Compile Include="..\Services\DadPresetTemplateService.cs" Link="DadPresetTemplateService.cs" />
     <Compile Include="..\Services\DadNpcAutoLevelSelector.cs" Link="DadNpcAutoLevelSelector.cs" />

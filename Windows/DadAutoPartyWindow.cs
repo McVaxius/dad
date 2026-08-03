@@ -15,6 +15,7 @@ public sealed class DadAutoPartyWindow : Window
     private string channelId = string.Empty;
     private string status = "Discord discovery and pairing are disabled.";
     private Task<string>? operationTask;
+    private readonly HashSet<string> confirmedSigningFingerprints = new(StringComparer.Ordinal);
 
     public DadAutoPartyWindow(Plugin plugin)
         : base("DAD AutoParty###DadAutoParty", ImGuiWindowFlags.NoCollapse)
@@ -104,22 +105,42 @@ public sealed class DadAutoPartyWindow : Window
             var age = Math.Max(0, (DateTime.UtcNow - peer.LastSeenUtc).TotalSeconds);
             ImGui.PushID(unchecked((int)peer.ApplicationId));
             ImGui.TextWrapped($"App {peer.ApplicationId} | {peer.Role} | {peer.PairingHealth} | heartbeat {age:0}s | identity {Short(peer.DadIdentity)} | endpoint {Short(peer.EndpointFingerprint)}");
+            ImGui.TextWrapped($"Signing-key fingerprint: {peer.SigningKeyFingerprint}");
             if (!string.IsNullOrWhiteSpace(peer.Blocker)) ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), peer.Blocker);
             var pending = configuration.PendingPairings.Any(pairing => pairing.ApplicationId == peer.ApplicationId);
             var pairing = configuration.Pairings.FirstOrDefault(candidate => candidate.ApplicationId == peer.ApplicationId);
+            var confirmationKey = $"{peer.ApplicationId}:{peer.SigningKeyFingerprint}";
+            var fingerprintConfirmed = confirmedSigningFingerprints.Contains(confirmationKey);
+            if (pending || pairing == null || pairing.RevokedAtUtc != null)
+            {
+                if (ImGui.Checkbox("I confirmed this full signing-key fingerprint", ref fingerprintConfirmed))
+                {
+                    if (fingerprintConfirmed) confirmedSigningFingerprints.Add(confirmationKey);
+                    else confirmedSigningFingerprints.Remove(confirmationKey);
+                }
+            }
             if (pending)
             {
-                if (ImGui.Button("Accept")) StartPolicy(() => discord.AcceptAsync(peer.ApplicationId));
+                ImGui.BeginDisabled(!fingerprintConfirmed);
+                if (ImGui.Button("Accept"))
+                    StartPolicy(() => discord.AcceptAsync(peer.ApplicationId, peer.SigningKeyFingerprint));
+                ImGui.EndDisabled();
                 ImGui.SameLine();
                 if (ImGui.Button("Reject")) StartPolicy(() => discord.RejectAsync(peer.ApplicationId));
             }
             else if (pairing?.RevokedAtUtc != null)
             {
-                if (ImGui.Button("Re-pair")) StartPolicy(() => discord.PairAsync(peer.ApplicationId));
+                ImGui.BeginDisabled(!fingerprintConfirmed);
+                if (ImGui.Button("Re-pair"))
+                    StartPolicy(() => discord.PairAsync(peer.ApplicationId, peer.SigningKeyFingerprint));
+                ImGui.EndDisabled();
             }
             else if (pairing == null)
             {
-                if (ImGui.Button("Pair")) StartPolicy(() => discord.PairAsync(peer.ApplicationId));
+                ImGui.BeginDisabled(!fingerprintConfirmed);
+                if (ImGui.Button("Pair"))
+                    StartPolicy(() => discord.PairAsync(peer.ApplicationId, peer.SigningKeyFingerprint));
+                ImGui.EndDisabled();
             }
             else if (ImGui.Button("Revoke")) StartPolicy(() => discord.RevokeAsync(peer.ApplicationId));
             ImGui.PopID();

@@ -80,6 +80,21 @@ public sealed class DadClaimServiceTests
     }
 
     [Fact]
+    public void SameRunCannotLeaseOneLocalCharacterToDifferentSlots()
+    {
+        var service = new DadClaimService();
+        service.TryClaimLocal(Request("run1", "s1"), Participant("acct1", "Aaa@World"));
+
+        var decision = service.TryClaimLocal(
+            Request("run1", "s2"),
+            Participant("acct1", "Aaa@World"));
+
+        Assert.False(decision.Granted);
+        Assert.Equal(DadClaimState.Collided, decision.ClaimState);
+        Assert.Contains("slot s1", decision.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DeniesWrongAccount()
     {
         var decision = new DadClaimService().TryClaimLocal(Request("run1", "s1", account: "acctX"), Participant("acct1", "Aaa@World"));

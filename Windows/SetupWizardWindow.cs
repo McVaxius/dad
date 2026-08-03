@@ -45,6 +45,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private DadCompletionActions presetCompletionDraft = new();
     private bool presetUseGlobalCompletionDefaults = true;
     private string presetCompletionCommands = string.Empty;
+    private string presetCompletionValidation = string.Empty;
 
     private readonly HashSet<string> crewOwnershipAssignments = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> crewStagedSkips = new(StringComparer.OrdinalIgnoreCase);
@@ -962,7 +963,15 @@ public sealed class SetupWizardWindow : Window, IDisposable
         if (ImGui.Checkbox("Run slash commands", ref runCommands))
             presetCompletionDraft.RunCommands = runCommands;
         if (presetCompletionDraft.RunCommands)
+        {
             ImGui.InputTextMultiline("Commands (one per line)", ref presetCompletionCommands, 2048, new Vector2(-1f, 86f));
+            DadCompletionCommandRules.TryNormalizeCustomCommands(
+                presetCompletionCommands.Split('\n'),
+                out _,
+                out presetCompletionValidation);
+            if (!string.IsNullOrWhiteSpace(presetCompletionValidation))
+                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), presetCompletionValidation);
+        }
         var utilities = presetCompletionDraft.Utilities ??= new DadPostRunUtilities();
         var openCoffers = utilities.OpenGearCoffers;
         if (ImGui.Checkbox("Open gear coffers", ref openCoffers))
@@ -1683,11 +1692,19 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 }
                 else
                 {
-                    presetCompletionDraft.Commands = presetCompletionCommands
-                        .Split('\n')
-                        .Select(static command => command.Trim())
-                        .Where(static command => command.Length > 0)
-                        .ToList();
+                    if (!DadCompletionCommandRules.TryNormalizeCustomCommands(
+                            presetCompletionCommands.Split('\n'),
+                            out var normalizedCommands,
+                            out presetCompletionValidation))
+                        return Reject(presetCompletionValidation);
+                    if (!DadCompletionCommandRules.TryNormalizeGrandCompanyHandInCommand(
+                            presetCompletionDraft.Utilities?.GrandCompanyHandInCommand,
+                            out var normalizedGrandCompanyCommand,
+                            out presetCompletionValidation))
+                        return Reject(presetCompletionValidation);
+                    presetCompletionDraft.Commands = normalizedCommands;
+                    presetCompletionDraft.Utilities ??= new DadPostRunUtilities();
+                    presetCompletionDraft.Utilities.GrandCompanyHandInCommand = normalizedGrandCompanyCommand;
                     target.CompletionActions = presetCompletionDraft.Clone();
                 }
                 plugin.TouchPlannerGroup(target);

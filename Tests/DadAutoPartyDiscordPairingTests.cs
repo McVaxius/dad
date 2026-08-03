@@ -90,7 +90,30 @@ public sealed class DadAutoPartyDiscordPairingTests
     }
 
     [Fact]
-    public async Task PairingProtocolRejectsMissingAndTamperedSignatures()
+    public async Task PairingProtocolRejectsUndefinedMessageKindAndRole()
+    {
+        var undefinedKind = await SignedEnvelopeFixture.CreateAsync();
+        undefinedKind.Envelope.Kind = (DadAutoPartyPairingMessageKind)99;
+        var kindDecision = undefinedKind.Protocol.Validate(
+            undefinedKind.Envelope,
+            undefinedKind.Envelope.BotUserId,
+            DateTime.UtcNow,
+            DadAutoPartyRole.Coordinator);
+
+        var undefinedRole = await SignedEnvelopeFixture.CreateAsync();
+        undefinedRole.Envelope.Role = (DadAutoPartyRole)99;
+        var roleDecision = undefinedRole.Protocol.Validate(
+            undefinedRole.Envelope,
+            undefinedRole.Envelope.BotUserId,
+            DateTime.UtcNow,
+            DadAutoPartyRole.Coordinator);
+
+        Assert.Equal("dad-discord-envelope-invalid", kindDecision.SafeCode);
+        Assert.Equal("dad-discord-envelope-invalid", roleDecision.SafeCode);
+    }
+
+    [Fact]
+    public async Task PairingProtocolRejectsMissingMalformedAndTamperedSignaturesWithTypedReasons()
     {
         var missingFixture = await SignedEnvelopeFixture.CreateAsync();
         missingFixture.Envelope.Signature = null!;
@@ -106,8 +129,16 @@ public sealed class DadAutoPartyDiscordPairingTests
             tamperedFixture.Envelope.BotUserId,
             DateTime.UtcNow,
             DadAutoPartyRole.Coordinator);
+        var malformedFixture = await SignedEnvelopeFixture.CreateAsync();
+        malformedFixture.Envelope.Signature = "not-base64";
+        var malformed = malformedFixture.Protocol.Validate(
+            malformedFixture.Envelope,
+            malformedFixture.Envelope.BotUserId,
+            DateTime.UtcNow,
+            DadAutoPartyRole.Coordinator);
 
-        Assert.Equal("dad-discord-envelope-invalid", missing.SafeCode);
+        Assert.Equal("dad-discord-envelope-signature-missing", missing.SafeCode);
+        Assert.Equal("dad-discord-envelope-signature-malformed", malformed.SafeCode);
         Assert.Equal("dad-discord-envelope-signature-invalid", tampered.SafeCode);
     }
 
@@ -127,6 +158,34 @@ public sealed class DadAutoPartyDiscordPairingTests
         Assert.Equal("first", observedFirst!.Content);
         Assert.Equal("second", observedSecond!.Content);
         Assert.False(queue.TryDequeue(out _));
+    }
+
+    [Fact]
+    public void InboundQueueDrainsAtMostEightFromFullCapacity()
+    {
+        var queue = new DadAutoPartyDiscordInboundQueue();
+        for (var index = 0; index < DadAutoPartyDiscordInboundQueue.DefaultCapacity; index++)
+            Assert.True(queue.TryEnqueue(Message(index.ToString())));
+        Assert.False(queue.TryEnqueue(Message("overflow")));
+
+        var observed = new List<string>();
+        var drained = queue.DrainAtMost(8, message => observed.Add(message.Content));
+
+        Assert.Equal(8, drained);
+        Assert.Equal(248, queue.Count);
+        Assert.Equal(Enumerable.Range(0, 8).Select(static value => value.ToString()), observed);
+    }
+
+    [Fact]
+    public void RepeatedDiagnosticsAreRateLimitedBySafeCode()
+    {
+        var gate = new DadRateLimitedDiagnosticGate();
+        var now = DateTime.UtcNow;
+
+        Assert.True(gate.ShouldEmit("queue-full", now, TimeSpan.FromMinutes(1)));
+        Assert.False(gate.ShouldEmit("queue-full", now.AddSeconds(59), TimeSpan.FromMinutes(1)));
+        Assert.True(gate.ShouldEmit("invalid-signature", now.AddSeconds(1), TimeSpan.FromMinutes(1)));
+        Assert.True(gate.ShouldEmit("queue-full", now.AddMinutes(1), TimeSpan.FromMinutes(1)));
     }
 
     [Theory]
@@ -178,17 +237,24 @@ public sealed class DadAutoPartyDiscordPairingTests
             "island-a",
             new string('A', 64),
             Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            string.Empty,
             3,
             DadAutoPartyRole.Client,
             DateTime.UtcNow,
             DadAutoPartyPairingHealth.Unpaired,
             string.Empty);
+        peer = peer with
+        {
+            SigningKeyFingerprint = DadAutoPartyDiscordPairingRules.ComputeSigningKeyFingerprint(
+                peer.SigningPublicKey),
+        };
         var pending = new DadAutoPartyPairing
         {
             OwnerId = "discord",
             IslandId = peer.DadIdentity,
             PublicKeyFingerprint = peer.EndpointFingerprint,
             SigningPublicKey = peer.SigningPublicKey,
+            SigningKeyFingerprint = peer.SigningKeyFingerprint,
             KeyGeneration = peer.KeyGeneration,
             ApplicationId = peer.ApplicationId,
             BotUserId = peer.BotUserId,
@@ -206,6 +272,87 @@ public sealed class DadAutoPartyDiscordPairingTests
         Assert.False(DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(
             pending,
             peer with { BotUserId = 21 }));
+    }
+
+    [Fact]
+    public void OutboundChallengeSurvivesRestartAndBindsEveryConfirmedIdentityField()
+    {
+        var now = DateTime.UtcNow;
+        var peer = Peer();
+        var challenge = DadAutoPartyDiscordPairingRules.CreateOutboundChallenge(
+            peer,
+            peer.SigningKeyFingerprint,
+            now);
+        var configuration = new DadAutoPartyConfiguration
+        {
+            OutboundPairingChallenges = [challenge],
+        };
+
+        var json = JsonSerializer.Serialize(configuration);
+        var restarted = JsonSerializer.Deserialize<DadAutoPartyConfiguration>(json)!.Normalize();
+        var persisted = Assert.Single(restarted.OutboundPairingChallenges);
+
+        Assert.True(DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            persisted,
+            peer,
+            challenge.RequestNonce,
+            now.AddSeconds(1)));
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            persisted,
+            peer with { KeyGeneration = peer.KeyGeneration + 1 },
+            challenge.RequestNonce,
+            now.AddSeconds(1)));
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            persisted,
+            peer with { BotUserId = peer.BotUserId + 1 },
+            challenge.RequestNonce,
+            now.AddSeconds(1)));
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            persisted,
+            peer with { DadIdentity = "other-island" },
+            challenge.RequestNonce,
+            now.AddSeconds(1)));
+    }
+
+    [Fact]
+    public void OutboundChallengeExpiresAndCanAuthorizeAtMostOneAcceptance()
+    {
+        var now = DateTime.UtcNow;
+        var peer = Peer();
+        var challenge = DadAutoPartyDiscordPairingRules.CreateOutboundChallenge(
+            peer,
+            peer.SigningKeyFingerprint,
+            now);
+        var challenges = new List<DadAutoPartyOutboundPairingChallenge> { challenge };
+
+        Assert.True(DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            challenge,
+            peer,
+            challenge.RequestNonce,
+            now.AddSeconds(1)));
+        Assert.Equal(1, challenges.RemoveAll(item => item.RequestNonce == challenge.RequestNonce));
+        Assert.Empty(challenges);
+        Assert.False(DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            challenge,
+            peer,
+            challenge.RequestNonce,
+            challenge.ExpiresAtUtc));
+    }
+
+    [Fact]
+    public void OutboundChallengeRequiresExactOperatorConfirmedSigningFingerprint()
+    {
+        var peer = Peer();
+
+        Assert.False(DadAutoPartyDiscordPairingRules.OperatorConfirmedFingerprint(peer, new string('0', 64)));
+        Assert.Throws<InvalidOperationException>(() =>
+            DadAutoPartyDiscordPairingRules.CreateOutboundChallenge(
+                peer,
+                new string('0', 64),
+                DateTime.UtcNow));
+        Assert.True(DadAutoPartyDiscordPairingRules.OperatorConfirmedFingerprint(
+            peer,
+            peer.SigningKeyFingerprint));
     }
 
     [Fact]
@@ -244,6 +391,23 @@ public sealed class DadAutoPartyDiscordPairingTests
 
     private static DadAutoPartyDiscordInboundMessage Message(string content)
         => new(1, 2, 3, true, content);
+
+    private static DadAutoPartyDiscoveredClient Peer()
+    {
+        var signingPublicKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        return new DadAutoPartyDiscoveredClient(
+            10,
+            20,
+            "island-a",
+            new string('A', 64),
+            signingPublicKey,
+            DadAutoPartyDiscordPairingRules.ComputeSigningKeyFingerprint(signingPublicKey),
+            3,
+            DadAutoPartyRole.Client,
+            DateTime.UtcNow,
+            DadAutoPartyPairingHealth.Unpaired,
+            string.Empty);
+    }
 
     private sealed record SignedEnvelopeFixture(
         DadAutoPartyPairingProtocol Protocol,

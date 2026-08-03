@@ -11,7 +11,6 @@ namespace dad.Windows;
 public sealed class ConfigWindow : Window, IDisposable
 {
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
-    private static readonly string[] CompletionKillModes = { "None", "Close game client", "Shut down PC" };
     private static readonly string[] PreDutyRepairModes =
     {
         "Self",
@@ -24,6 +23,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private readonly DadConnectionEditor connectionEditor;
     private string draftCompletionCommands = string.Empty;
     private bool completionDraftInitialized;
+    private string completionCommandValidation = string.Empty;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private string pendingDeleteAccountId = string.Empty;
@@ -254,19 +254,23 @@ public sealed class ConfigWindow : Window, IDisposable
 
             if (ImGui.InputTextMultiline("Commands (one per line)", ref draftCompletionCommands, 2048, new Vector2(-1f, 90f)))
             {
-                var committedSignature = BuildCompletionCommandsSignature(configuration);
-                actions.Commands = draftCompletionCommands
-                    .Split('\n')
-                    .Select(static command => command.Trim())
-                    .Where(static command => command.Length > 0)
-                    .ToList();
-                plugin.QueueDebouncedConfigurationSave(
-                    "completion-commands",
-                    committedSignature,
-                    () => BuildCompletionCommandsSignature(configuration));
+                if (DadCompletionCommandRules.TryNormalizeCustomCommands(
+                        draftCompletionCommands.Split('\n'),
+                        out var normalizedCommands,
+                        out completionCommandValidation))
+                {
+                    var committedSignature = BuildCompletionCommandsSignature(configuration);
+                    actions.Commands = normalizedCommands;
+                    plugin.QueueDebouncedConfigurationSave(
+                        "completion-commands",
+                        committedSignature,
+                        () => BuildCompletionCommandsSignature(configuration));
+                }
             }
 
             ImGui.TextDisabled("Runs after the run completes. Example: /vmx resume (or any slash command).");
+            if (!string.IsNullOrWhiteSpace(completionCommandValidation))
+                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), completionCommandValidation);
         }
 
         DrawSectionHeader("Post-run utilities");
@@ -305,28 +309,32 @@ public sealed class ConfigWindow : Window, IDisposable
             var gcCommand = utilities.GrandCompanyHandInCommand;
             if (ImGui.InputText("AutoRetainer GC command", ref gcCommand, 128))
             {
-                utilities.GrandCompanyHandInCommand = gcCommand.Trim();
-                configuration.Save();
+                if (DadCompletionCommandRules.TryNormalizeGrandCompanyHandInCommand(
+                        gcCommand,
+                        out var normalizedCommand,
+                        out completionCommandValidation))
+                {
+                    utilities.GrandCompanyHandInCommand = normalizedCommand;
+                    configuration.Save();
+                }
             }
+            ImGui.TextDisabled("Only the exact /ays command root is accepted for this native command.");
+            if (!string.IsNullOrWhiteSpace(completionCommandValidation))
+                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), completionCommandValidation);
         }
 
         ImGui.Separator();
-        if (configuration.AdvancedModeEnabled)
+        if (actions.KillMode != DadCompletionKillMode.None)
         {
-            ImGui.TextUnformatted("Legacy completion kill actions");
-            var killMode = (int)actions.KillMode;
-            if (ImGui.Combo("On completion", ref killMode, CompletionKillModes, CompletionKillModes.Length))
+            DrawStatusRow("Legacy completion value", $"{actions.KillMode} was loaded for compatibility and is a permanent no-op.");
+            if (ImGui.Button("Clear disabled legacy completion value"))
             {
-                actions.KillMode = (DadCompletionKillMode)Math.Clamp(killMode, 0, CompletionKillModes.Length - 1);
+                actions.KillMode = DadCompletionKillMode.None;
                 configuration.Save();
             }
-
-            ImGui.TextWrapped("Legacy kill actions are preserved for config compatibility but disabled. Dad will not close the game client or schedule OS shutdown.");
         }
-        else if (actions.KillMode != DadCompletionKillMode.None)
-        {
-            DrawStatusRow("Completion kill action", $"{actions.KillMode} configured but disabled. Enable Advanced mode (/dad advanced) only to view/change it.");
-        }
+        var completionStatus = DadCompletionActionRunner.LastStatus;
+        DrawStatusRow("Latest completion action", $"{completionStatus.SafeCode}: {completionStatus.Summary}");
 
         ImGui.Separator();
         DrawStatusRow("Issue report", "Run /dad report to write an anonymized diagnostic dump for GitHub issues.");

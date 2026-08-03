@@ -9,6 +9,8 @@ internal sealed class DadBackgroundTaskObserver : IDisposable
     private readonly ConcurrentDictionary<Task, string> activeTasks = new();
     private readonly IPluginLog log;
     private readonly string componentName;
+    private readonly DadRateLimitedDiagnosticGate warningGate = new();
+    private static readonly TimeSpan WarningInterval = TimeSpan.FromMinutes(1);
     private int disposed;
 
     public DadBackgroundTaskObserver(IPluginLog log, string componentName)
@@ -72,11 +74,14 @@ internal sealed class DadBackgroundTaskObserver : IDisposable
                 return;
             }
 
-            if (Volatile.Read(ref disposed) == 0)
+            if (Volatile.Read(ref disposed) == 0 && warningGate.ShouldEmit(
+                    $"{componentName}:{operationName}",
+                    DateTime.UtcNow,
+                    WarningInterval))
             {
-                log.Debug(
+                log.Warning(
                     new AggregateException(unexpected),
-                    "[dad] {Component} task '{Operation}' ended with an error.",
+                    "[dad] {Component} task '{Operation}' ended with an unexpected error.",
                     componentName,
                     operationName);
             }

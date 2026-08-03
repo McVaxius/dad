@@ -6,6 +6,7 @@ namespace dad.Services;
 public interface IAutoPartyPolicyFacade
 {
     DadAutoPartyPolicyDecision VerifyIdentity(OwnerIdentity owner, IslandIdentity island);
+    DadAutoPartyPolicyDecision AcceptProposal(RunProposal proposal, SessionPermission requiredPermissions);
     DadAutoPartyPolicyDecision VerifyReplay(ContractHeader header);
     DadAutoPartyPolicyDecision IntersectGrant(RunProposal proposal, SessionPermission requiredPermissions);
     DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode);
@@ -89,30 +90,29 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     {
         lock (gate)
         {
-            if (!IsLocallyEnabled())
-                return Denied("dad-autoparty-disabled");
-            var now = DateTimeOffset.UtcNow;
-            if (header.SchemaVersion != AutoPartyProtocol.CurrentVersion ||
-                header.MessageId == Guid.Empty ||
-                string.IsNullOrWhiteSpace(header.IdempotencyKey) ||
-                header.IdempotencyKey.Length > AutoPartyProtocol.MaximumIdentifierLength ||
-                header.Nonce.IsDefaultOrEmpty ||
-                header.Nonce.Length != AutoPartyProtocol.ContractNonceBytes ||
-                header.IssuedAt > now + TimeSpan.FromMinutes(2) ||
-                header.ExpiresAt <= now ||
-                header.ExpiresAt <= header.IssuedAt)
-                return Denied("dad-contract-header-invalid");
-            foreach (var messageId in replayedMessageIds
-                         .Where(pair => pair.Value <= now)
-                         .Select(static pair => pair.Key)
-                         .ToList())
-                replayedMessageIds.Remove(messageId);
-            if (replayedMessageIds.ContainsKey(header.MessageId))
-                return Denied("dad-contract-replay-denied");
-            while (replayedMessageIds.Count >= MaximumReplayEntries)
-                replayedMessageIds.Remove(replayedMessageIds.MinBy(static pair => pair.Value).Key);
-            replayedMessageIds[header.MessageId] = header.ExpiresAt;
+            if (!TryValidateReplayCandidate(header, DateTimeOffset.UtcNow, out var denial))
+                return denial;
+            CommitReplay(header);
             return Allowed("dad-contract-fresh");
+        }
+    }
+
+    public DadAutoPartyPolicyDecision AcceptProposal(
+        RunProposal proposal,
+        SessionPermission requiredPermissions)
+    {
+        lock (gate)
+        {
+            if (proposal == null ||
+                !TryValidateReplayCandidate(proposal.Header, DateTimeOffset.UtcNow, out var denial))
+                return proposal == null ? Denied("dad-proposal-invalid") : denial;
+
+            var authorization = IntersectGrantCore(proposal, requiredPermissions);
+            if (!authorization.Allowed)
+                return authorization;
+
+            CommitReplay(proposal.Header);
+            return authorization;
         }
     }
 
@@ -121,62 +121,67 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         SessionPermission requiredPermissions)
     {
         lock (gate)
+            return IntersectGrantCore(proposal, requiredPermissions);
+    }
+
+    private DadAutoPartyPolicyDecision IntersectGrantCore(
+        RunProposal proposal,
+        SessionPermission requiredPermissions)
+    {
+        if (!IsLocallyEnabled())
+            return Denied("dad-autoparty-disabled");
+        if (proposal == null || proposal.ProposalId == Guid.Empty || proposal.Participants.IsDefaultOrEmpty)
+            return Denied("dad-proposal-invalid");
+        if (vetoedOwners.Contains(proposal.RequesterOwnerId.Value))
+            return Denied("dad-owner-veto");
+        if (revokedTargets.Contains(proposal.ProposalId.ToString("D")))
+            return Denied("dad-proposal-revoked");
+        if (!IsPaired(proposal.RequesterOwnerId.Value, proposal.Header.SenderIslandId.Value))
+            return Denied("dad-proposal-sender-not-paired");
+
+        var now = DateTime.UtcNow;
+        var matchedGrants = new List<DadAutoPartyGrant>();
+        foreach (var participant in proposal.Participants)
         {
-            if (!IsLocallyEnabled())
-                return Denied("dad-autoparty-disabled");
-            if (proposal.ProposalId == Guid.Empty || proposal.Participants.IsDefaultOrEmpty)
-                return Denied("dad-proposal-invalid");
-            if (vetoedOwners.Contains(proposal.RequesterOwnerId.Value))
-                return Denied("dad-owner-veto");
-            if (revokedTargets.Contains(proposal.ProposalId.ToString("D")))
-                return Denied("dad-proposal-revoked");
-            if (!IsPaired(proposal.RequesterOwnerId.Value, proposal.Header.SenderIslandId.Value))
-                return Denied("dad-proposal-sender-not-paired");
-
-            var now = DateTime.UtcNow;
-            var matchedGrants = new List<DadAutoPartyGrant>();
-            foreach (var participant in proposal.Participants)
-            {
-                if (vetoedOwners.Contains(participant.OwnerId.Value))
-                    return Denied("dad-participant-owner-veto");
-                var grant = configuration.Grants.FirstOrDefault(candidate =>
-                    candidate.IsValid &&
-                    candidate.ConsumedAtUtc == null &&
-                    candidate.IssuedAtUtc <= now &&
-                    candidate.ExpiresAtUtc > now &&
-                    string.Equals(candidate.OwnerId, participant.OwnerId.Value, StringComparison.Ordinal) &&
-                    string.Equals(candidate.IslandId, participant.OwnerIslandId.Value, StringComparison.Ordinal) &&
-                    string.Equals(candidate.OpaqueCharacterId, participant.CharacterId.Value, StringComparison.Ordinal) &&
-                    string.Equals(candidate.RequestedJobId, participant.RequestedJob.Value, StringComparison.Ordinal) &&
-                    string.Equals(candidate.ActivityId, proposal.ActivityId.Value, StringComparison.Ordinal) &&
-                    string.Equals(candidate.ProposalId, proposal.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
-                    (candidate.Permissions & requiredPermissions) == requiredPermissions &&
-                    !revokedTargets.Contains(candidate.GrantId));
-                if (grant == null)
-                    return Denied("dad-grant-intersection-empty");
-                matchedGrants.Add(grant);
-            }
-
-            var islandId = proposal.Header.RecipientIslandId.Value;
-            if (string.IsNullOrWhiteSpace(islandId))
-                return Denied("dad-proposal-recipient-island-missing");
-            foreach (var grant in matchedGrants.DistinctBy(static grant => grant.GrantId, StringComparer.Ordinal))
-                grant.ConsumedAtUtc = now;
-            var nextGeneration = NextGeneration();
-            proposals[proposal.ProposalId] = new ProposalState(
-                proposal.ProposalId,
-                islandId,
-                proposal.RequesterOwnerId.Value,
-                proposal.ActivityId.Value,
-                requiredPermissions,
-                DadAutoPartySessionMode.Local,
-                DateTime.MinValue,
-                false,
-                false,
-                nextGeneration);
-            saveConfiguration();
-            return Allowed("dad-grant-intersection-accepted");
+            if (vetoedOwners.Contains(participant.OwnerId.Value))
+                return Denied("dad-participant-owner-veto");
+            var grant = configuration.Grants.FirstOrDefault(candidate =>
+                candidate.IsValid &&
+                candidate.ConsumedAtUtc == null &&
+                candidate.IssuedAtUtc <= now &&
+                candidate.ExpiresAtUtc > now &&
+                string.Equals(candidate.OwnerId, participant.OwnerId.Value, StringComparison.Ordinal) &&
+                string.Equals(candidate.IslandId, participant.OwnerIslandId.Value, StringComparison.Ordinal) &&
+                string.Equals(candidate.OpaqueCharacterId, participant.CharacterId.Value, StringComparison.Ordinal) &&
+                string.Equals(candidate.RequestedJobId, participant.RequestedJob.Value, StringComparison.Ordinal) &&
+                string.Equals(candidate.ActivityId, proposal.ActivityId.Value, StringComparison.Ordinal) &&
+                string.Equals(candidate.ProposalId, proposal.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
+                (candidate.Permissions & requiredPermissions) == requiredPermissions &&
+                !revokedTargets.Contains(candidate.GrantId));
+            if (grant == null)
+                return Denied("dad-grant-intersection-empty");
+            matchedGrants.Add(grant);
         }
+
+        var islandId = proposal.Header.RecipientIslandId.Value;
+        if (string.IsNullOrWhiteSpace(islandId))
+            return Denied("dad-proposal-recipient-island-missing");
+        foreach (var grant in matchedGrants.DistinctBy(static grant => grant.GrantId, StringComparer.Ordinal))
+            grant.ConsumedAtUtc = now;
+        var nextGeneration = NextGeneration();
+        proposals[proposal.ProposalId] = new ProposalState(
+            proposal.ProposalId,
+            islandId,
+            proposal.RequesterOwnerId.Value,
+            proposal.ActivityId.Value,
+            requiredPermissions,
+            DadAutoPartySessionMode.Local,
+            DateTime.MinValue,
+            false,
+            false,
+            nextGeneration);
+        saveConfiguration();
+        return Allowed("dad-grant-intersection-accepted");
     }
 
     public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode)
@@ -414,6 +419,57 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
             pairing.RevokedAtUtc == null &&
             string.Equals(pairing.OwnerId, ownerId, StringComparison.Ordinal) &&
             string.Equals(pairing.IslandId, islandId, StringComparison.Ordinal));
+
+    private bool TryValidateReplayCandidate(
+        ContractHeader? header,
+        DateTimeOffset now,
+        out DadAutoPartyPolicyDecision denial)
+    {
+        if (!IsLocallyEnabled())
+        {
+            denial = Denied("dad-autoparty-disabled");
+            return false;
+        }
+
+        try
+        {
+            if (header == null)
+                throw new ProtocolException(ProtocolFailureCode.InvalidHeader, "invalid-contract-header");
+            ProtocolValidator.ValidateHeader(header);
+        }
+        catch (Exception exception) when (exception is ProtocolException or ArgumentException)
+        {
+            denial = Denied("dad-contract-header-invalid");
+            return false;
+        }
+
+        if (header.IssuedAt > now + TimeSpan.FromMinutes(2) || header.ExpiresAt <= now)
+        {
+            denial = Denied("dad-contract-header-invalid");
+            return false;
+        }
+
+        foreach (var messageId in replayedMessageIds
+                     .Where(pair => pair.Value <= now)
+                     .Select(static pair => pair.Key)
+                     .ToList())
+            replayedMessageIds.Remove(messageId);
+        if (replayedMessageIds.ContainsKey(header.MessageId))
+        {
+            denial = Denied("dad-contract-replay-denied");
+            return false;
+        }
+
+        denial = Allowed("dad-contract-fresh");
+        return true;
+    }
+
+    private void CommitReplay(ContractHeader header)
+    {
+        while (replayedMessageIds.Count >= MaximumReplayEntries)
+            replayedMessageIds.Remove(replayedMessageIds.MinBy(static pair => pair.Value).Key);
+        replayedMessageIds[header.MessageId] = header.ExpiresAt;
+    }
 
     internal int ReplayEntryCount
     {

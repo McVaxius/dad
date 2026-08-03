@@ -100,6 +100,9 @@ public sealed class DadSchedulerStopAllResult
 
 public static class DadStopAllStatusRules
 {
+    public const string ActiveRunCoordinatorOnlySummary =
+        "Stop-all must be issued from the Coordinator while a run is active.";
+
     public static void NormalizeLocalResult(DadStopAllWorkerResult result)
     {
         if (result.LocalCleanupCompleted)

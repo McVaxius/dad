@@ -32,10 +32,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
     private readonly ICallGateSubscriber<string, object> requestPostprocess;
     private readonly ICallGateSubscriber<object> finishPostprocess;
     private readonly object gate = new();
-    private string armedOperationToken = string.Empty;
-    private bool requestSent;
-    private bool postprocessOwned;
-    private bool finishOnReady;
+    private readonly DadAutoRetainerPostprocessLease postprocessLease = new();
     private bool suppressionOwned;
     private bool disposed;
     private DateTime lastFinishAttemptUtc = DateTime.MinValue;
@@ -64,16 +61,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         {
             if (disposed || string.IsNullOrWhiteSpace(operationToken))
                 return false;
-            // A cancelled request that AutoRetainer has accepted but has not yet yielded to Dad
-            // remains an owned cleanup boundary. Do not let a later operation replace its token;
-            // the deferred callback must finish first and cleanup must observe that completion.
-            if (finishOnReady)
-                return false;
-            if (!string.IsNullOrWhiteSpace(armedOperationToken) &&
-                !string.Equals(armedOperationToken, operationToken, StringComparison.OrdinalIgnoreCase))
-                return false;
-            armedOperationToken = operationToken.Trim();
-            return true;
+            return postprocessLease.Arm(operationToken, DateTime.UtcNow).Accepted;
         }
     }
 
@@ -82,19 +70,24 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         try
         {
             var suppressed = getSuppressed.InvokeFunc();
+            var busy = isBusy.InvokeFunc();
+            var multiMode = getMultiModeEnabled.InvokeFunc();
             lock (gate)
             {
+                var expired = postprocessLease.ExpirePending(DateTime.UtcNow);
                 if (suppressionOwned && !suppressed)
                     suppressionOwned = false;
+                if (expired)
+                    log.Warning("[dad][AR] Dad postprocess request timed out without an ownership callback; re-armed only for the same generation.");
                 return new DadAutoRetainerState
                 {
                     Available = true,
-                    IsBusy = isBusy.InvokeFunc(),
-                    MultiModeEnabled = getMultiModeEnabled.InvokeFunc(),
+                    IsBusy = busy,
+                    MultiModeEnabled = multiMode,
                     SuppressionReadable = true,
                     IsSuppressed = suppressed,
                     SuppressionOwnedByDad = suppressionOwned,
-                    CharacterPostprocessOwnedByDad = postprocessOwned,
+                    CharacterPostprocessOwnedByDad = postprocessLease.IsOwned,
                     Summary = "AutoRetainer handoff IPC available.",
                 };
             }
@@ -108,7 +101,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
                     // Preserve conservative local ownership even when AR cannot currently be read.
                     // Wake cleanup must not acknowledge until these DAD-owned markers are released.
                     SuppressionOwnedByDad = suppressionOwned,
-                    CharacterPostprocessOwnedByDad = postprocessOwned,
+                    CharacterPostprocessOwnedByDad = postprocessLease.IsOwned,
                     Summary = $"AutoRetainer handoff IPC unavailable: {ex.Message}",
                 };
             }
@@ -210,35 +203,21 @@ public sealed class DadAutoRetainerIpcService : IDisposable
 
     public bool FinishCharacterPostprocess(bool retryAtNextBoundary)
     {
-        bool shouldFinish;
+        DadAutoRetainerPostprocessLeaseDecision decision;
         lock (gate)
         {
-            shouldFinish = postprocessOwned || requestSent;
-            if (!shouldFinish && !retryAtNextBoundary)
-            {
-                // The request may only be armed locally and not yet sent to AR. Cancellation at
-                // that boundary must disarm it so a later character callback cannot resurrect it.
-                armedOperationToken = string.Empty;
-                finishOnReady = false;
-            }
-            if (requestSent && !postprocessOwned)
-            {
-                // AR's finish channel is a global lock release, not a named cancellation. Never
-                // invoke it while another plugin may own the current callback. Remember the
-                // cancelled Dad request and finish immediately when AR later delivers Dad's turn.
-                if (!retryAtNextBoundary)
-                {
-                    finishOnReady = true;
-                    armedOperationToken = string.Empty;
-                }
-                // The finish has not happened yet. Keep scheduler cancellation cleanup pending
-                // until AR delivers Dad's callback, OnCharacterReadyForPostprocess releases it,
-                // and a later cleanup poll observes requestSent/postprocessOwned both clear.
-                return false;
-            }
+            decision = postprocessLease.RequestFinish(retryAtNextBoundary, DateTime.UtcNow);
         }
-        if (!shouldFinish)
-            return true;
+        if (decision.Pending)
+            return false;
+        if (!decision.ShouldFinish)
+            return decision.Accepted;
+
+        return FinishOwnedGeneration(decision.Generation, retryAtNextBoundary);
+    }
+
+    private bool FinishOwnedGeneration(long generation, bool retryAtNextBoundary)
+    {
 
         var now = DateTime.UtcNow;
         lock (gate)
@@ -253,11 +232,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
             finishPostprocess.InvokeAction();
             lock (gate)
             {
-                postprocessOwned = false;
-                requestSent = false;
-                finishOnReady = false;
-                if (!retryAtNextBoundary)
-                    armedOperationToken = string.Empty;
+                postprocessLease.FinishSucceeded(generation, retryAtNextBoundary);
                 lastFinishAttemptUtc = DateTime.MinValue;
             }
             log.Information("[dad][AR] Finished DAD character postprocess lease (retry={Retry}).", retryAtNextBoundary);
@@ -289,12 +264,14 @@ public sealed class DadAutoRetainerIpcService : IDisposable
 
     private void OnCharacterAdditionalTask()
     {
+        DadAutoRetainerPostprocessLeaseDecision decision;
         lock (gate)
         {
-            if (disposed || string.IsNullOrWhiteSpace(armedOperationToken) || requestSent || postprocessOwned)
+            if (disposed)
                 return;
-            // Set first: status and duplicate callbacks must observe the pending ownership request.
-            requestSent = true;
+            decision = postprocessLease.BeginRequest(DateTime.UtcNow);
+            if (!decision.ShouldRequest)
+                return;
         }
 
         try
@@ -305,7 +282,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         catch (Exception ex)
         {
             lock (gate)
-                requestSent = false;
+                postprocessLease.MarkRequestFault(decision.Generation);
             log.Warning(ex, "[dad][AR] Character postprocess request failed.");
         }
     }
@@ -314,17 +291,16 @@ public sealed class DadAutoRetainerIpcService : IDisposable
     {
         if (!string.Equals(pluginName, PluginName, StringComparison.OrdinalIgnoreCase))
             return;
-        bool finishImmediately;
+        DadAutoRetainerPostprocessLeaseDecision decision;
         lock (gate)
         {
-            if (disposed || !requestSent)
+            if (disposed)
                 return;
-            postprocessOwned = true;
-            finishImmediately = finishOnReady;
+            decision = postprocessLease.MarkReady(DateTime.UtcNow);
         }
-        if (finishImmediately)
+        if (decision.ShouldFinish)
         {
-            FinishCharacterPostprocess(retryAtNextBoundary: false);
+            FinishOwnedGeneration(decision.Generation, retryAtNextBoundary: false);
             return;
         }
         CharacterPostprocessReady?.Invoke();
@@ -332,29 +308,15 @@ public sealed class DadAutoRetainerIpcService : IDisposable
 
     public void Dispose()
     {
+        DadAutoRetainerPostprocessLeaseDecision decision;
         lock (gate)
         {
             disposed = true;
             lastFinishAttemptUtc = DateTime.MinValue;
+            decision = postprocessLease.DisposeDecision();
         }
-        FinishCharacterPostprocess(retryAtNextBoundary: false);
-        bool pendingFinish;
-        lock (gate)
-            pendingFinish = finishOnReady;
-        if (pendingFinish)
-        {
-            try
-            {
-                // AutoRetainer exposes no named cancellation channel. Disposal is the only path
-                // where Dad cannot remain subscribed to finish its later turn, so use the public
-                // finish channel best-effort as required by the handoff contract.
-                finishPostprocess.InvokeAction();
-            }
-            catch (Exception ex)
-            {
-                log.Warning(ex, "[dad][AR] Disposal could not finish the pending Dad postprocess request.");
-            }
-        }
+        if (decision.ShouldFinish)
+            FinishOwnedGeneration(decision.Generation, retryAtNextBoundary: false);
         ReleaseSuppressionIfOwned(force: true);
         onAdditionalTask.Unsubscribe(OnCharacterAdditionalTask);
         onReadyForPostprocess.Unsubscribe(OnCharacterReadyForPostprocess);

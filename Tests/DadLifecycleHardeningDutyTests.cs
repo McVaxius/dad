@@ -19,7 +19,7 @@ public sealed class DadLifecycleHardeningDutyTests
     }
 
     [Fact]
-    public void ExitWithoutCompletionEvidenceIsAbandoned()
+    public void ExitWithoutCompletionEvidenceStartsBoundedGrace()
     {
         var completed = DadDutyLifecycleRules.ObserveDutyCompleted(
             enteredDuty: true,
@@ -27,8 +27,17 @@ public sealed class DadLifecycleHardeningDutyTests
             freshCompletionEvidence: false);
 
         Assert.False(completed);
-        Assert.True(DadDutyLifecycleRules.IsAbandonedExit(true, completed, true));
-        Assert.False(DadDutyLifecycleRules.IsCompletedExit(true, completed, true));
+        var now = DateTime.UtcNow;
+        var decision = DadDutyLifecycleRules.EvaluateExit(
+            true,
+            completed,
+            true,
+            DateTime.MinValue,
+            now,
+            TimeSpan.FromSeconds(10));
+
+        Assert.Equal(DadDutyExitDisposition.WaitingForCompletion, decision.Disposition);
+        Assert.Equal(now.AddSeconds(10), decision.GraceDeadlineUtc);
     }
 
     [Fact]
@@ -40,8 +49,10 @@ public sealed class DadLifecycleHardeningDutyTests
             alreadyCompleted: false,
             freshCompletionEvidence: true);
 
-        Assert.False(DadDutyLifecycleRules.IsExitCompletionGraceExpired(deadline, deadline.AddTicks(-1)));
-        Assert.True(DadDutyLifecycleRules.IsCompletedExit(true, completed, true));
+        var decision = DadDutyLifecycleRules.EvaluateExit(
+            true, completed, true, deadline, deadline.AddTicks(-1), TimeSpan.FromSeconds(10));
+
+        Assert.Equal(DadDutyExitDisposition.Completed, decision.Disposition);
     }
 
     [Fact]
@@ -53,9 +64,10 @@ public sealed class DadLifecycleHardeningDutyTests
             alreadyCompleted: false,
             freshCompletionEvidence: true);
 
-        Assert.True(DadDutyLifecycleRules.IsExitCompletionGraceExpired(deadline, deadline));
-        Assert.True(DadDutyLifecycleRules.IsCompletedExit(true, completed, true));
-        Assert.False(DadDutyLifecycleRules.IsAbandonedExit(true, completed, true));
+        var decision = DadDutyLifecycleRules.EvaluateExit(
+            true, completed, true, deadline, deadline, TimeSpan.FromSeconds(10));
+
+        Assert.Equal(DadDutyExitDisposition.Completed, decision.Disposition);
     }
 
     [Fact]
@@ -67,8 +79,10 @@ public sealed class DadLifecycleHardeningDutyTests
             alreadyCompleted: false,
             freshCompletionEvidence: false);
 
-        Assert.True(DadDutyLifecycleRules.IsExitCompletionGraceExpired(deadline, deadline));
-        Assert.True(DadDutyLifecycleRules.IsAbandonedExit(true, completed, true));
+        var decision = DadDutyLifecycleRules.EvaluateExit(
+            true, completed, true, deadline, deadline, TimeSpan.FromSeconds(10));
+
+        Assert.Equal(DadDutyExitDisposition.Abandoned, decision.Disposition);
     }
 
     [Fact]
@@ -220,30 +234,21 @@ public sealed class DadLifecycleHardeningDutyTests
     }
 
     [Fact]
-    public void PremadeExecutorWaitsForDelayedCompletionAndResetsTheGraceState()
+    public void EveryDutyExecutorUsesTheSameDelayedCompletionLifecycleRule()
     {
-        var source = NormalizeLines(ReadRepositorySource("Services", "DadPremadeDutyExecutor.cs"));
-        var completionEvidence = source.IndexOf("freshCompletionEvidence", StringComparison.Ordinal);
-        var completedExit = source.IndexOf("IsCompletedExit", completionEvidence, StringComparison.Ordinal);
-        var graceDeadline = source.IndexOf("IsExitCompletionGraceExpired", completionEvidence, StringComparison.Ordinal);
+        var premade = ReadRepositorySource("Services", "DadPremadeDutyExecutor.cs");
+        var local = ReadRepositorySource("Services", "DadLocalDutyExecutor.cs");
+        var modules = ReadRepositorySource("Services", "DadModuleExecutors.cs");
+        var dutySupport = Slice(modules, "public sealed class DadDutySupportExecutor", "public sealed class DadTrustExecutor");
+        var trust = Slice(modules, "public sealed class DadTrustExecutor", "public sealed class DadBlundervilleExecutor");
 
-        Assert.True(completionEvidence >= 0);
-        Assert.True(completedExit > completionEvidence);
-        Assert.True(graceDeadline > completedExit);
-        Assert.Contains("ExitCompletionGraceDuration = TimeSpan.FromSeconds(10)", source, StringComparison.Ordinal);
-        Assert.Contains("waiting for delayed completion", source, StringComparison.Ordinal);
-        Assert.Contains(
-            "if (!exitedRequestedDuty)\n            exitCompletionGraceUntilUtc = DateTime.MinValue;",
-            source,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "private void ResetRuntimeState(DateTime now)\n    {\n        runStartedAtUtc = now;\n        postDutyStabilizeUntilUtc = DateTime.MinValue;\n        exitCompletionGraceUntilUtc = DateTime.MinValue;",
-            source,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "private void ClearRuntimeState()\n    {\n        runStartedAtUtc = DateTime.MinValue;\n        postDutyStabilizeUntilUtc = DateTime.MinValue;\n        exitCompletionGraceUntilUtc = DateTime.MinValue;",
-            source,
-            StringComparison.Ordinal);
+        foreach (var source in new[] { premade, local, dutySupport, trust })
+        {
+            Assert.Contains("DadDutyLifecycleRules.EvaluateExit", source, StringComparison.Ordinal);
+            Assert.Contains("ExitCompletionGraceDuration = TimeSpan.FromSeconds(10)", source, StringComparison.Ordinal);
+            Assert.Contains("exitCompletionGraceUntilUtc = DateTime.MinValue", source, StringComparison.Ordinal);
+            Assert.Contains("waiting for delayed completion", source, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -276,12 +281,14 @@ public sealed class DadLifecycleHardeningDutyTests
     }
 
     [Fact]
-    public void CompletionCommandsUseNativeChatPathOnly()
+    public void CompletionCommandsUseRegisteredPluginPathAndReserveNativeForGrandCompany()
     {
         var source = ReadRepositorySource("Services", "DadCompletionActionRunner.cs");
 
         Assert.Contains("NativeCommandExecutor.TryExecute", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("CommandManager.ProcessCommand", source, StringComparison.Ordinal);
+        Assert.Contains("Plugin.CommandManager.ProcessCommand", source, StringComparison.Ordinal);
+        Assert.Contains("TryNormalizeGrandCompanyHandInCommand", source, StringComparison.Ordinal);
+        Assert.Contains("dad-completion-native-command-timeout", source, StringComparison.Ordinal);
     }
 
     private static void AssertCompletionReadPrecedesExit(string source)

@@ -91,10 +91,11 @@ public sealed class DadClaimService
             }
 
             if (localAcceptedLeasesByCharacter.TryGetValue(characterKey, out var existing) &&
-                !string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal))
+                (!string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal) ||
+                 !string.Equals(existing.SlotId, request.SlotId, StringComparison.OrdinalIgnoreCase)))
             {
                 lease.State = DadParticipantLeaseState.Collided;
-                lease.Summary = $"Character {characterKey} already leased by {existing.RunId}.";
+                lease.Summary = $"Character {characterKey} already leased by run {existing.RunId}, slot {existing.SlotId}.";
                 return BuildDecision(request, participant, granted: false, DadClaimState.Collided, DadParticipantLeaseState.Collided, lease.Summary, lease);
             }
 

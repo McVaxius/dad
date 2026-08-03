@@ -268,6 +268,11 @@ public sealed class DadAutoPartyService : IDisposable
             configuration.RegistrationFingerprint = fingerprint;
             configuration.SigningPublicKey = Convert.ToBase64String(signingPublic!);
             configuration.EncryptionPublicKey = Convert.ToBase64String(encryptionPublic!);
+            configuration.EndpointKeyGeneration = registration.KeyGeneration;
+            configuration.DiscordBinding = new DadAutoPartyDiscordBinding();
+            configuration.Pairings.Clear();
+            configuration.PendingPairings.Clear();
+            configuration.OutboundPairingChallenges.Clear();
             configuration.StateGeneration++;
             saveConfiguration();
             if (!string.IsNullOrWhiteSpace(oldReference))
@@ -420,10 +425,7 @@ public sealed class DadAutoPartyService : IDisposable
         SessionPermission requiredPermissions)
     {
         ThrowIfDisposed();
-        var replay = Policy.VerifyReplay(proposal.Header);
-        if (!replay.Allowed)
-            return replay;
-        return Policy.IntersectGrant(proposal, requiredPermissions);
+        return Policy.AcceptProposal(proposal, requiredPermissions);
     }
 
     public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode)
@@ -498,12 +500,14 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.EndpointAlias = string.Empty;
         configuration.SigningPublicKey = string.Empty;
         configuration.EncryptionPublicKey = string.Empty;
+        configuration.EndpointKeyGeneration = 1;
         configuration.EnrollmentReceiptId = string.Empty;
         configuration.PilotArtifactSha256 = string.Empty;
         configuration.OwnerAcceptanceConfirmed = false;
         configuration.PilotCourierProbeVerified = false;
         configuration.RemoteBindings.Clear();
         configuration.PendingPairings.Clear();
+        configuration.OutboundPairingChallenges.Clear();
         configuration.StateGeneration++;
         saveConfiguration();
         return new(true, identityDeleted, "dad-autoparty-purged");

@@ -35,7 +35,7 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         if (configuration.MigrateTransportSettings())
             configuration.Save();
 
-        Assert.Equal(7, configuration.Version);
+        Assert.Equal(8, configuration.Version);
         Assert.False(configuration.AutoParty.Enabled);
         Assert.False(configuration.AutoParty.PairingEnabled);
         Assert.False(configuration.AutoParty.ExecutionEnabled);

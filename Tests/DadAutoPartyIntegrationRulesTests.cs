@@ -354,6 +354,86 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
+    public void ProposalIngressUsesTheCompleteProtocolHeaderValidator()
+    {
+        var proposalId = Guid.NewGuid();
+        var configuration = new DadAutoPartyConfiguration
+        {
+            Enabled = true,
+            RegisteredOwnerId = Owner,
+            RegisteredIslandId = LocalIsland,
+        };
+        configuration.Pairings.Add(Pairing());
+        configuration.Grants.Add(Grant(proposalId));
+        using var service = Service(configuration, new FakeIdentityStore());
+        var proposal = Proposal(proposalId);
+        var header = proposal.Header;
+        var malformed = new[]
+        {
+            header with { SchemaVersion = AutoPartyProtocol.CurrentVersion + 1 },
+            header with { MessageId = Guid.Empty },
+            header with { IdempotencyKey = "idempotency key with spaces" },
+            header with { SenderIslandId = new IslandId("sender with spaces") },
+            header with { RecipientIslandId = new IslandId(string.Empty) },
+            header with { Sequence = 0 },
+            header with { Generation = 0 },
+            header with { SenderKeyVersion = 0 },
+            header with { RecipientKeyVersion = 0 },
+            header with { IssuedAt = header.IssuedAt.ToOffset(TimeSpan.FromHours(1)) },
+            header with { ExpiresAt = header.ExpiresAt.ToOffset(TimeSpan.FromHours(1)) },
+            header with { ExpiresAt = header.IssuedAt },
+            header with { ExpiresAt = header.IssuedAt + TimeSpan.FromHours(25) },
+            header with { Nonce = ImmutableArray<byte>.Empty },
+            header with { CriticalFields = ImmutableArray.Create(999) },
+        };
+
+        foreach (var candidate in malformed)
+        {
+            var denied = service.AcceptProposal(proposal with { Header = candidate }, SessionPermission.All);
+            Assert.False(denied.Allowed);
+            Assert.Equal("dad-contract-header-invalid", denied.SafeCode);
+        }
+
+        Assert.Equal(0, service.Policy.ReplayEntryCount);
+        Assert.Null(configuration.Grants.Single().ConsumedAtUtc);
+    }
+
+    [Fact]
+    public void RejectedProposalDoesNotPoisonTheValidRetransmitReplaySlot()
+    {
+        var proposalId = Guid.NewGuid();
+        var configuration = new DadAutoPartyConfiguration
+        {
+            Enabled = true,
+            RegisteredOwnerId = Owner,
+            RegisteredIslandId = LocalIsland,
+        };
+        configuration.Pairings.Add(Pairing());
+        configuration.Grants.Add(Grant(proposalId));
+        using var service = Service(configuration, new FakeIdentityStore());
+        var valid = Proposal(proposalId);
+        var unauthorized = valid with
+        {
+            Participants = ImmutableArray.Create(new ParticipantRequest(
+                new OwnerId(Owner),
+                new IslandId(SenderIsland),
+                new OpaqueCharacterId(Character),
+                new JobId("job-not-granted"))),
+        };
+
+        var rejected = service.AcceptProposal(unauthorized, SessionPermission.All);
+        var retransmit = service.AcceptProposal(valid, SessionPermission.All);
+        var duplicate = service.AcceptProposal(valid, SessionPermission.All);
+
+        Assert.False(rejected.Allowed);
+        Assert.Equal("dad-grant-intersection-empty", rejected.SafeCode);
+        Assert.True(retransmit.Allowed, retransmit.SafeCode);
+        Assert.False(duplicate.Allowed);
+        Assert.Equal("dad-contract-replay-denied", duplicate.SafeCode);
+        Assert.Equal(1, service.Policy.ReplayEntryCount);
+    }
+
+    [Fact]
     public async Task ReplayAndStrictRequestedJobFailClosed()
     {
         var fixture = AuthorizedFixture();

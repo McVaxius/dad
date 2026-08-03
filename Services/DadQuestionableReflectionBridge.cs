@@ -101,7 +101,9 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         public required PropertyInfo DutyGateProperty { get; init; }
         public required bool PreviousDutyGateValue { get; init; }
         public required string Version { get; init; }
-        public required IReadOnlyList<SubscriberOwnership> Subscribers { get; init; }
+        public required List<SubscriberOwnership> Subscribers { get; init; }
+        public required int ExpectedSubscriberCount { get; init; }
+        public bool DutyGateOwned { get; set; }
     }
 
     private sealed class PreparedCosmeticPatch
@@ -154,8 +156,10 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     {
         framework.Update -= OnFrameworkUpdate;
         pluginInterface.ActivePluginsChanged -= OnActivePluginsChanged;
-        RestoreOwnedCosmeticValue();
-        RestoreOwnedValues();
+        for (var attempt = 0; attempt < 3 && cosmeticOwnership != null; attempt++)
+            RestoreOwnedCosmeticValue();
+        for (var attempt = 0; attempt < 3 && ownership != null; attempt++)
+            RestoreOwnedValues();
     }
 
     private void OnActivePluginsChanged(IActivePluginsChangedEventArgs args)
@@ -247,6 +251,21 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
                 return;
             }
 
+            if (ownership != null)
+            {
+                // Never wait while Questionable is half-patched. Restore each value whose exact
+                // replacement is still owned, retaining only failed restores for the next probe.
+                RestoreOwnedValues();
+                if (ownership != null)
+                {
+                    status.Patched = false;
+                    status.Pending = true;
+                    status.PatchState = "Restoring an incomplete owned patch before retry.";
+                    status.LastBlocker = "Questionable patch rollback remains incomplete.";
+                    return;
+                }
+            }
+
             if (running)
             {
                 status.Patched = false;
@@ -312,6 +331,17 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
                 status.CosmeticLastBlocker = string.Empty;
                 lastLoggedCosmeticBlocker = string.Empty;
                 return;
+            }
+
+            if (cosmeticOwnership != null)
+            {
+                RestoreOwnedCosmeticValue();
+                if (cosmeticOwnership != null)
+                {
+                    status.CosmeticPatched = false;
+                    status.CosmeticPatchState = "Restoring an incomplete owned cosmetic patch before retry.";
+                    return;
+                }
             }
 
             var prepared = PrepareCosmeticPatch(questionableInstance);
@@ -638,15 +668,6 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
     private void ApplyCosmeticPatch(PreparedCosmeticPatch prepared)
     {
-        try
-        {
-            prepared.RecommendedPluginsField.SetValue(prepared.PluginConfigComponent, prepared.ReplacementList);
-        }
-        catch (Exception ex)
-        {
-            throw Incompatible($"Cosmetic patch mutation failed: {FormatException(ex)}.");
-        }
-
         cosmeticOwnership = new CosmeticPatchOwnership
         {
             QuestionableInstance = prepared.QuestionableInstance,
@@ -659,6 +680,19 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             ExpectedEntries = prepared.ExpectedEntries,
         };
 
+        try
+        {
+            prepared.RecommendedPluginsField.SetValue(prepared.PluginConfigComponent, prepared.ReplacementList);
+        }
+        catch (Exception ex)
+        {
+            RestoreOwnedCosmeticValue();
+            var suffix = cosmeticOwnership == null
+                ? string.Empty
+                : " Rollback remains owned and will retry on the next maintenance pass.";
+            throw Incompatible($"Cosmetic patch mutation failed: {FormatException(ex)}.{suffix}");
+        }
+
         log.Information("[dad][QuestionableBridge] Replaced Questionable AutoDuty recommendation with Dad duty bridge.");
     }
 
@@ -668,8 +702,6 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
                                 ReferenceEquals(ownership.QuestionableInstance, prepared.QuestionableInstance)
             ? ownership
             : null;
-        var changedFields = new List<SubscriberTarget>();
-        var gateChanged = false;
         var ownedSubscribers = prepared.Subscribers.Select(subscriber =>
         {
             var prior = previousOwnership?.Subscribers.FirstOrDefault(item =>
@@ -693,68 +725,36 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             PreviousDutyGateValue = previousOwnership?.PreviousDutyGateValue ?? prepared.CurrentDutyGateValue,
             Version = prepared.Version,
             Subscribers = ownedSubscribers,
+            ExpectedSubscriberCount = ownedSubscribers.Count,
+            DutyGateOwned = previousOwnership?.DutyGateOwned == true || !prepared.CurrentDutyGateValue,
         };
+
+        // Establish ownership before the first mutation so every partial success has its exact
+        // pre-image retained even if a later reflected write rejects or throws.
+        ownership = newOwnership;
 
         try
         {
             foreach (var subscriber in prepared.Subscribers)
             {
                 subscriber.Field.SetValue(prepared.AutoDutyIpc, subscriber.Replacement);
-                changedFields.Add(subscriber);
             }
 
             if (!prepared.CurrentDutyGateValue)
             {
                 prepared.DutyGateProperty.SetValue(prepared.Duties, true);
-                gateChanged = true;
             }
         }
         catch (Exception ex)
         {
-            var rollbackFailures = RollBackPartialPatch(prepared, changedFields, gateChanged);
-            var suffix = rollbackFailures.Count == 0
+            RestoreOwnedValues();
+            var suffix = ownership == null
                 ? string.Empty
-                : $" Rollback failed: {string.Join(" | ", rollbackFailures)}";
+                : " Rollback remains owned and will retry on the next maintenance pass.";
             throw Incompatible($"Patch mutation failed: {FormatException(ex)}.{suffix}");
         }
 
-        ownership = newOwnership;
-
         log.Information("[dad][QuestionableBridge] Patched Questionable {Version} to Dad duty IPC.", prepared.Version);
-    }
-
-    private static List<string> RollBackPartialPatch(
-        PreparedPatch prepared,
-        IReadOnlyList<SubscriberTarget> changedFields,
-        bool gateChanged)
-    {
-        var failures = new List<string>();
-        if (gateChanged)
-        {
-            try
-            {
-                prepared.DutyGateProperty.SetValue(prepared.Duties, prepared.CurrentDutyGateValue);
-            }
-            catch (Exception ex)
-            {
-                failures.Add($"gate: {FormatException(ex)}");
-            }
-        }
-
-        for (var i = changedFields.Count - 1; i >= 0; i--)
-        {
-            var subscriber = changedFields[i];
-            try
-            {
-                subscriber.Field.SetValue(prepared.AutoDutyIpc, subscriber.CurrentValue);
-            }
-            catch (Exception ex)
-            {
-                failures.Add($"{subscriber.Field.Name}: {FormatException(ex)}");
-            }
-        }
-
-        return failures;
     }
 
     private bool IsFullyOwned(PatchOwnership patch)
@@ -764,7 +764,8 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             if (!(bool)(patch.DutyGateProperty.GetValue(patch.Duties) ?? false))
                 return false;
 
-            return patch.Subscribers.All(subscriber =>
+            return patch.Subscribers.Count == patch.ExpectedSubscriberCount &&
+                   patch.Subscribers.All(subscriber =>
                 ReferenceEquals(subscriber.Field.GetValue(patch.AutoDutyIpc), subscriber.Replacement));
         }
         catch
@@ -825,39 +826,71 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     private void RestoreOwnedValues()
     {
         var patch = ownership;
-        ownership = null;
         if (patch == null)
             return;
 
+        var failures = new List<string>();
         try
         {
             var exposed = FindLoadedQuestionable();
             if (exposed == null || !ReferenceEquals(ResolveQuestionableInstance(exposed), patch.QuestionableInstance))
-                return;
-
-            foreach (var subscriber in patch.Subscribers)
             {
-                if (ReferenceEquals(subscriber.Field.GetValue(patch.AutoDutyIpc), subscriber.Replacement))
-                    subscriber.Field.SetValue(patch.AutoDutyIpc, subscriber.Original);
+                ownership = null;
+                return;
             }
 
-            var currentGate = patch.DutyGateProperty.GetValue(patch.Duties);
-            if (currentGate is true)
-                patch.DutyGateProperty.SetValue(patch.Duties, patch.PreviousDutyGateValue);
+            foreach (var subscriber in patch.Subscribers.ToList())
+            {
+                try
+                {
+                    if (ReferenceEquals(subscriber.Field.GetValue(patch.AutoDutyIpc), subscriber.Replacement))
+                        subscriber.Field.SetValue(patch.AutoDutyIpc, subscriber.Original);
+                    if (!ReferenceEquals(subscriber.Field.GetValue(patch.AutoDutyIpc), subscriber.Replacement))
+                        patch.Subscribers.Remove(subscriber);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{subscriber.Field.Name}: {FormatException(ex)}");
+                }
+            }
 
-            log.Information("[dad][QuestionableBridge] Restored Questionable subscribers and duty gate.");
+            if (patch.DutyGateOwned)
+            {
+                try
+                {
+                    var currentGate = patch.DutyGateProperty.GetValue(patch.Duties);
+                    if (currentGate is true)
+                        patch.DutyGateProperty.SetValue(patch.Duties, patch.PreviousDutyGateValue);
+                    if (!Equals(patch.DutyGateProperty.GetValue(patch.Duties), true))
+                        patch.DutyGateOwned = false;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"gate: {FormatException(ex)}");
+                }
+            }
+
+            if (patch.Subscribers.Count == 0 && !patch.DutyGateOwned)
+            {
+                ownership = null;
+                log.Information("[dad][QuestionableBridge] Restored Questionable subscribers and duty gate.");
+            }
         }
         catch (Exception ex)
         {
-            status.LastBlocker = $"Restore failed: {FormatException(ex)}";
-            log.Warning(ex, "[dad][QuestionableBridge] Failed to restore owned Questionable values.");
+            failures.Add(FormatException(ex));
+        }
+
+        if (failures.Count > 0)
+        {
+            status.LastBlocker = $"Restore failed: {string.Join(" | ", failures)}";
+            log.Warning("[dad][QuestionableBridge] Failed to restore owned Questionable values: {Failures}", status.LastBlocker);
         }
     }
 
     private void RestoreOwnedCosmeticValue()
     {
         var patch = cosmeticOwnership;
-        cosmeticOwnership = null;
         if (patch == null)
             return;
 
@@ -865,7 +898,10 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         {
             var exposed = FindLoadedQuestionable();
             if (exposed == null || !ReferenceEquals(ResolveQuestionableInstance(exposed), patch.QuestionableInstance))
+            {
+                cosmeticOwnership = null;
                 return;
+            }
 
             if (ReferenceEquals(
                     patch.RecommendedPluginsField.GetValue(patch.PluginConfigComponent),
@@ -874,6 +910,10 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
                 patch.RecommendedPluginsField.SetValue(patch.PluginConfigComponent, patch.OriginalList);
                 log.Information("[dad][QuestionableBridge] Restored Questionable AutoDuty recommendation.");
             }
+            if (!ReferenceEquals(
+                    patch.RecommendedPluginsField.GetValue(patch.PluginConfigComponent),
+                    patch.ReplacementList))
+                cosmeticOwnership = null;
         }
         catch (Exception ex)
         {

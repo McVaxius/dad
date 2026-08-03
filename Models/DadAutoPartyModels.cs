@@ -25,6 +25,7 @@ public sealed class DadAutoPartyConfiguration
     public string EndpointAlias { get; set; } = string.Empty;
     public string SigningPublicKey { get; set; } = string.Empty;
     public string EncryptionPublicKey { get; set; } = string.Empty;
+    public long EndpointKeyGeneration { get; set; } = 1;
     public string EnrollmentReceiptId { get; set; } = string.Empty;
     public string PilotArtifactSha256 { get; set; } = string.Empty;
     public bool OwnerAcceptanceConfirmed { get; set; }
@@ -39,6 +40,7 @@ public sealed class DadAutoPartyConfiguration
     public List<DadAutoPartyListing> Listings { get; set; } = [];
     public List<DadAutoPartyRemoteBinding> RemoteBindings { get; set; } = [];
     public List<DadAutoPartyPairing> PendingPairings { get; set; } = [];
+    public List<DadAutoPartyOutboundPairingChallenge> OutboundPairingChallenges { get; set; } = [];
 
     public DadAutoPartyConfiguration Normalize()
     {
@@ -54,6 +56,7 @@ public sealed class DadAutoPartyConfiguration
         EndpointAlias = NormalizeAlias(EndpointAlias);
         SigningPublicKey = NormalizePublicKey(SigningPublicKey);
         EncryptionPublicKey = NormalizePublicKey(EncryptionPublicKey);
+        EndpointKeyGeneration = Math.Max(1, EndpointKeyGeneration);
         EnrollmentReceiptId = Guid.TryParse(EnrollmentReceiptId, out var receiptId)
             ? receiptId.ToString("D")
             : string.Empty;
@@ -96,6 +99,14 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static pairing => pairing.IslandId, StringComparer.Ordinal)
             .Take(16)
             .ToList();
+        OutboundPairingChallenges = (OutboundPairingChallenges ?? [])
+            .Where(static challenge => challenge != null)
+            .Select(static challenge => challenge!.Normalize())
+            .Where(static challenge => challenge.IsValid)
+            .OrderByDescending(static challenge => challenge.CreatedAtUtc)
+            .DistinctBy(static challenge => challenge.RequestNonce, StringComparer.Ordinal)
+            .Take(16)
+            .ToList();
         return this;
     }
 
@@ -121,6 +132,7 @@ public sealed class DadAutoPartyConfiguration
             EndpointAlias = EndpointAlias,
             SigningPublicKey = SigningPublicKey,
             EncryptionPublicKey = EncryptionPublicKey,
+            EndpointKeyGeneration = EndpointKeyGeneration,
             EnrollmentReceiptId = EnrollmentReceiptId,
             PilotArtifactSha256 = PilotArtifactSha256,
             OwnerAcceptanceConfirmed = OwnerAcceptanceConfirmed,
@@ -135,6 +147,7 @@ public sealed class DadAutoPartyConfiguration
             Listings = Listings.Select(static listing => listing.Clone()).ToList(),
             RemoteBindings = RemoteBindings.Select(static binding => binding.Clone()).ToList(),
             PendingPairings = PendingPairings.Select(static pairing => pairing.Clone()).ToList(),
+            OutboundPairingChallenges = OutboundPairingChallenges.Select(static challenge => challenge.Clone()).ToList(),
         };
 
     internal static string NormalizeIdentifier(string? value)
@@ -290,6 +303,10 @@ public sealed class DadAutoPartyPairing
     public ulong ApplicationId { get; set; }
     public ulong BotUserId { get; set; }
     public string SigningPublicKey { get; set; } = string.Empty;
+    public string SigningKeyFingerprint { get; set; } = string.Empty;
+    public string PairingRequestNonce { get; set; } = string.Empty;
+    public DateTime? PairingRequestExpiresAtUtc { get; set; }
+    public DateTime? OperatorFingerprintConfirmedAtUtc { get; set; }
     public DadAutoPartyRole Role { get; set; }
     public DateTime ConfirmedAtUtc { get; set; }
     public DateTime? RevokedAtUtc { get; set; }
@@ -306,6 +323,10 @@ public sealed class DadAutoPartyPairing
         IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
         PublicKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(PublicKeyFingerprint);
         SigningPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey);
+        SigningKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(SigningKeyFingerprint);
+        PairingRequestNonce = Guid.TryParseExact(PairingRequestNonce, "N", out var requestNonce)
+            ? requestNonce.ToString("N")
+            : string.Empty;
         KeyGeneration = Math.Max(1, KeyGeneration);
         return this;
     }
@@ -320,10 +341,74 @@ public sealed class DadAutoPartyPairing
             ApplicationId = ApplicationId,
             BotUserId = BotUserId,
             SigningPublicKey = SigningPublicKey,
+            SigningKeyFingerprint = SigningKeyFingerprint,
+            PairingRequestNonce = PairingRequestNonce,
+            PairingRequestExpiresAtUtc = PairingRequestExpiresAtUtc,
+            OperatorFingerprintConfirmedAtUtc = OperatorFingerprintConfirmedAtUtc,
             Role = Role,
             ConfirmedAtUtc = ConfirmedAtUtc,
             RevokedAtUtc = RevokedAtUtc,
         };
+}
+
+public sealed class DadAutoPartyOutboundPairingChallenge
+{
+    public string RequestNonce { get; set; } = string.Empty;
+    public ulong ApplicationId { get; set; }
+    public ulong BotUserId { get; set; }
+    public string IslandId { get; set; } = string.Empty;
+    public string EndpointFingerprint { get; set; } = string.Empty;
+    public string SigningPublicKey { get; set; } = string.Empty;
+    public string SigningKeyFingerprint { get; set; } = string.Empty;
+    public long KeyGeneration { get; set; } = 1;
+    public DadAutoPartyRole Role { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime ExpiresAtUtc { get; set; }
+    public DateTime OperatorConfirmedAtUtc { get; set; }
+    public DateTime? UsedAtUtc { get; set; }
+    public DateTime? RevokedAtUtc { get; set; }
+
+    public bool IsValid =>
+        Guid.TryParseExact(RequestNonce, "N", out _) &&
+        ApplicationId != 0 && BotUserId != 0 &&
+        !string.IsNullOrWhiteSpace(IslandId) &&
+        !string.IsNullOrWhiteSpace(EndpointFingerprint) &&
+        !string.IsNullOrWhiteSpace(SigningPublicKey) &&
+        !string.IsNullOrWhiteSpace(SigningKeyFingerprint) &&
+        Enum.IsDefined(typeof(DadAutoPartyRole), Role) &&
+        CreatedAtUtc != default && ExpiresAtUtc > CreatedAtUtc &&
+        OperatorConfirmedAtUtc >= CreatedAtUtc;
+
+    public DadAutoPartyOutboundPairingChallenge Normalize()
+    {
+        RequestNonce = Guid.TryParseExact(RequestNonce, "N", out var nonce)
+            ? nonce.ToString("N")
+            : string.Empty;
+        IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
+        EndpointFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(EndpointFingerprint);
+        SigningPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey);
+        SigningKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(SigningKeyFingerprint);
+        KeyGeneration = Math.Max(1, KeyGeneration);
+        return this;
+    }
+
+    public DadAutoPartyOutboundPairingChallenge Clone() => new()
+    {
+        RequestNonce = RequestNonce,
+        ApplicationId = ApplicationId,
+        BotUserId = BotUserId,
+        IslandId = IslandId,
+        EndpointFingerprint = EndpointFingerprint,
+        SigningPublicKey = SigningPublicKey,
+        SigningKeyFingerprint = SigningKeyFingerprint,
+        KeyGeneration = KeyGeneration,
+        Role = Role,
+        CreatedAtUtc = CreatedAtUtc,
+        ExpiresAtUtc = ExpiresAtUtc,
+        OperatorConfirmedAtUtc = OperatorConfirmedAtUtc,
+        UsedAtUtc = UsedAtUtc,
+        RevokedAtUtc = RevokedAtUtc,
+    };
 }
 
 public enum DadAutoPartyRole
@@ -403,6 +488,7 @@ public sealed record DadAutoPartyDiscoveredClient(
     string DadIdentity,
     string EndpointFingerprint,
     string SigningPublicKey,
+    string SigningKeyFingerprint,
     long KeyGeneration,
     DadAutoPartyRole Role,
     DateTime LastSeenUtc,
@@ -429,6 +515,7 @@ public sealed class DadAutoPartyPairingEnvelope
     public DadAutoPartyPairingMessageKind Kind { get; set; }
     public long TimestampUnixMs { get; set; }
     public string Nonce { get; set; } = string.Empty;
+    public string PairingRequestNonce { get; set; } = string.Empty;
     public long KeyGeneration { get; set; } = 1;
     public ulong ApplicationId { get; set; }
     public ulong BotUserId { get; set; }

@@ -141,31 +141,32 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
             dutyCompleted,
             freshCompletionEvidence);
         var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
-        if (DadDutyLifecycleRules.IsCompletedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+        var exitDecision = DadDutyLifecycleRules.EvaluateExit(
+            enteredDuty,
+            dutyCompleted,
+            exitedRequestedDuty,
+            exitCompletionGraceUntilUtc,
+            now,
+            ExitCompletionGraceDuration);
+        exitCompletionGraceUntilUtc = exitDecision.GraceDeadlineUtc;
+        if (exitDecision.Disposition == DadDutyExitDisposition.Completed)
         {
-            exitCompletionGraceUntilUtc = DateTime.MinValue;
             return BeginOrUpdatePostDutyStabilizing(now);
         }
 
-        if (DadDutyLifecycleRules.IsAbandonedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+        if (exitDecision.Disposition == DadDutyExitDisposition.Abandoned)
         {
-            if (exitCompletionGraceUntilUtc == DateTime.MinValue)
-                exitCompletionGraceUntilUtc = now + ExitCompletionGraceDuration;
+            Fail($"{configuredDisplayName} {resolvedContent.DutyName} exited before matching DutyCompleted; treating as abandoned.");
+            return BuildStatusStep(status, DadParticipantState.Failed);
+        }
 
-            if (DadDutyLifecycleRules.IsExitCompletionGraceExpired(exitCompletionGraceUntilUtc, now))
-            {
-                Fail($"{configuredDisplayName} {resolvedContent.DutyName} exited before matching DutyCompleted; treating as abandoned.");
-                return BuildStatusStep(status, DadParticipantState.Failed);
-            }
-
+        if (exitDecision.Disposition == DadDutyExitDisposition.WaitingForCompletion)
+        {
             SetActiveStatus(
                 DadRunPhase.InDutyOrTask,
                 BuildDelayedCompletionWaitSummary(now));
             return BuildStatusStep(status, DadParticipantState.Running);
         }
-
-        if (!exitedRequestedDuty)
-            exitCompletionGraceUntilUtc = DateTime.MinValue;
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);

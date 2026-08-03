@@ -97,6 +97,22 @@ public sealed class DadAllianceDiscordProtocolTests
         Assert.Equal("dad-alliance-discord-paired-identity-changed", pairing.SafeCode);
     }
 
+    [Theory]
+    [InlineData(null, "dad-alliance-discord-signature-missing")]
+    [InlineData("", "dad-alliance-discord-signature-missing")]
+    [InlineData("not-base64", "dad-alliance-discord-signature-malformed")]
+    [InlineData("AQ==", "dad-alliance-discord-signature-malformed")]
+    public async Task NullAndMalformedSignaturesReturnTypedReasons(string? signature, string expected)
+    {
+        using var fixture = await Fixture.CreateAsync();
+        fixture.Envelope.Signature = signature!;
+
+        var result = fixture.Protocol.Validate(fixture.Envelope, fixture.Context);
+
+        Assert.False(result.Allowed);
+        Assert.Equal(expected, result.SafeCode);
+    }
+
     [Fact]
     public async Task MessageSizeBoundIsEnforcedOnCreateAndDeserialize()
     {
@@ -171,6 +187,7 @@ public sealed class DadAllianceDiscordProtocolTests
                 RegisteredIslandId = "coordinator-fixture",
                 RegistrationFingerprint = fingerprint,
                 SigningPublicKey = Convert.ToBase64String(publicKey),
+                EndpointKeyGeneration = 7,
                 DiscordApplicationId = 100,
                 DiscordBotUserId = 200,
                 DiscordBinding = new DadAutoPartyDiscordBinding
@@ -215,6 +232,9 @@ public sealed class DadAllianceDiscordProtocolTests
                 ApplicationId = 100,
                 BotUserId = 200,
                 SigningPublicKey = Convert.ToBase64String(publicKey),
+                SigningKeyFingerprint = DadAutoPartyDiscordPairingRules.ComputeSigningKeyFingerprint(
+                    Convert.ToBase64String(publicKey)),
+                OperatorFingerprintConfirmedAtUtc = DateTime.UtcNow.AddMinutes(-1),
                 Role = DadAutoPartyRole.Coordinator,
                 ConfirmedAtUtc = DateTime.UtcNow.AddMinutes(-1),
             };

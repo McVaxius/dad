@@ -8,6 +8,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
 {
     private static readonly TimeSpan PresenceInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan PresenceStaleAfter = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan DiagnosticInterval = TimeSpan.FromMinutes(1);
+    private const int MaximumInboundMessagesPerUpdate = 8;
     private readonly DadAutoPartyConfiguration configuration;
     private readonly IDadAutoPartyDiscordTokenStore tokenStore;
     private readonly DadAutoPartyPairingProtocol protocol;
@@ -20,8 +22,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     private readonly DadDiscordReconnectBackoff reconnectBackoff = new();
     private readonly object discoveredGate = new();
     private readonly Dictionary<ulong, DadAutoPartyDiscoveredClient> discovered = [];
-    private readonly Dictionary<ulong, DadAutoPartyPairing> outgoingPairings = [];
     private readonly DadAutoPartyDiscordInboundQueue inboundMessages = new();
+    private readonly DadRateLimitedDiagnosticGate diagnosticGate = new();
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private DiscordSocketClient? client;
     private Task? lifecycleTask;
@@ -212,6 +214,13 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         }
         DrainInboundMessages();
         var now = DateTime.UtcNow;
+        if (DadAutoPartyDiscordPairingRules.PruneOutboundChallenges(
+                configuration.OutboundPairingChallenges,
+                now) > 0)
+        {
+            configuration.StateGeneration++;
+            saveConfiguration();
+        }
         if (health.LastPresenceAtUtc.HasValue && now - health.LastPresenceAtUtc.Value > PresenceStaleAfter &&
             health.State == DadAutoPartyDiscordConnectionState.Ready)
             SetHealth(DadAutoPartyDiscordConnectionState.Stale, "dad-discord-presence-stale", health.PermissionsValid, health.LastPresenceAtUtc);
@@ -229,46 +238,84 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         }
     }
 
-    public async ValueTask<DadAutoPartyPolicyDecision> PairAsync(ulong applicationId, CancellationToken cancellationToken = default)
+    public async ValueTask<DadAutoPartyPolicyDecision> PairAsync(
+        ulong applicationId,
+        string confirmedSigningKeyFingerprint,
+        CancellationToken cancellationToken = default)
     {
         var peer = FindDiscovered(applicationId);
         if (peer == null) return Decision(false, "dad-discord-peer-not-discovered");
+        var existing = configuration.Pairings.FirstOrDefault(pairing => pairing.ApplicationId == applicationId);
+        if (existing != null && IsActiveVerifiedPairing(existing))
+            return Decision(true, "dad-discord-peer-already-paired");
         if (peer.Role == (isCoordinator() ? DadAutoPartyRole.Coordinator : DadAutoPartyRole.Client))
             return Decision(false, "dad-discord-coordinator-star-required");
-        var decision = await SendEnvelopeAsync(
+        if (!DadAutoPartyDiscordPairingRules.OperatorConfirmedFingerprint(peer, confirmedSigningKeyFingerprint))
+            return Decision(false, "dad-discord-signing-fingerprint-confirmation-required");
+
+        var now = DateTime.UtcNow;
+        var challenge = DadAutoPartyDiscordPairingRules.CreateOutboundChallenge(
+            peer,
+            confirmedSigningKeyFingerprint,
+            now);
+        configuration.OutboundPairingChallenges.RemoveAll(item => item.ApplicationId == applicationId);
+        configuration.OutboundPairingChallenges.Add(challenge);
+        DadAutoPartyDiscordPairingRules.PruneOutboundChallenges(configuration.OutboundPairingChallenges, now);
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return await SendEnvelopeAsync(
             DadAutoPartyPairingMessageKind.PairRequest,
             peer,
+            challenge.RequestNonce,
             cancellationToken).ConfigureAwait(false);
-        if (decision.Allowed)
-        {
-            lock (discoveredGate)
-                outgoingPairings[applicationId] = ToPairing(peer, DateTime.UtcNow);
-        }
-        return decision;
     }
 
-    public async ValueTask<DadAutoPartyPolicyDecision> AcceptAsync(ulong applicationId, CancellationToken cancellationToken = default)
+    public async ValueTask<DadAutoPartyPolicyDecision> AcceptAsync(
+        ulong applicationId,
+        string confirmedSigningKeyFingerprint,
+        CancellationToken cancellationToken = default)
     {
         var pending = configuration.PendingPairings.FirstOrDefault(pairing => pairing.ApplicationId == applicationId);
         var peer = FindDiscovered(applicationId);
         if (pending == null || peer == null) return Decision(false, "dad-discord-pair-request-not-pending");
+        if (pending.PairingRequestExpiresAtUtc is not { } expiresAtUtc || DateTime.UtcNow >= expiresAtUtc)
+        {
+            configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == applicationId);
+            configuration.StateGeneration++;
+            saveConfiguration();
+            return Decision(false, "dad-discord-pair-request-expired");
+        }
         if (!DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(pending, peer))
             return Decision(false, "dad-discord-pair-request-identity-changed");
+        if (!DadAutoPartyDiscordPairingRules.OperatorConfirmedFingerprint(peer, confirmedSigningKeyFingerprint))
+            return Decision(false, "dad-discord-signing-fingerprint-confirmation-required");
+        pending.OperatorFingerprintConfirmedAtUtc = DateTime.UtcNow;
         configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == applicationId);
-        SavePairing(pending, peer);
+        if (!SavePairing(pending, peer))
+            return Decision(false, "dad-discord-pairing-confirmation-invalid");
         PairingRestored?.Invoke(applicationId);
-        return await SendEnvelopeAsync(DadAutoPartyPairingMessageKind.PairAccept, peer, cancellationToken).ConfigureAwait(false);
+        return await SendEnvelopeAsync(
+            DadAutoPartyPairingMessageKind.PairAccept,
+            peer,
+            pending.PairingRequestNonce,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<DadAutoPartyPolicyDecision> RejectAsync(ulong applicationId, CancellationToken cancellationToken = default)
     {
         var peer = FindDiscovered(applicationId);
+        var requestNonce = configuration.PendingPairings
+            .FirstOrDefault(pairing => pairing.ApplicationId == applicationId)?.PairingRequestNonce ?? string.Empty;
         configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == applicationId);
         configuration.StateGeneration++;
         saveConfiguration();
-        return peer == null
+        return peer == null || !Guid.TryParseExact(requestNonce, "N", out _)
             ? Decision(true, "dad-discord-pair-request-rejected")
-            : await SendEnvelopeAsync(DadAutoPartyPairingMessageKind.PairReject, peer, cancellationToken).ConfigureAwait(false);
+            : await SendEnvelopeAsync(
+                DadAutoPartyPairingMessageKind.PairReject,
+                peer,
+                requestNonce,
+                cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<DadAutoPartyPolicyDecision> RevokeAsync(ulong applicationId, CancellationToken cancellationToken = default)
@@ -276,13 +323,19 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         var pairing = configuration.Pairings.FirstOrDefault(candidate => candidate.ApplicationId == applicationId);
         if (pairing == null) return Decision(true, "dad-discord-pairing-already-absent");
         pairing.RevokedAtUtc = DateTime.UtcNow;
+        configuration.OutboundPairingChallenges.RemoveAll(item => item.ApplicationId == applicationId);
+        configuration.PendingPairings.RemoveAll(item => item.ApplicationId == applicationId);
         configuration.StateGeneration++;
         saveConfiguration();
         PairingRevoked?.Invoke(applicationId);
         var peer = FindDiscovered(applicationId);
         return peer == null
             ? Decision(true, "dad-discord-pairing-revoked")
-            : await SendEnvelopeAsync(DadAutoPartyPairingMessageKind.Revoke, peer, cancellationToken).ConfigureAwait(false);
+            : await SendEnvelopeAsync(
+                DadAutoPartyPairingMessageKind.Revoke,
+                peer,
+                string.Empty,
+                cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<(bool Sent, ulong MessageId, string SafeCode)> SendAllianceInstructionAsync(
@@ -428,7 +481,8 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             var binding = configuration.DiscordBinding;
             if (binding.IsComplete && (binding.ApplicationId != applicationId || binding.BotUserId != botUserId ||
                 !string.Equals(binding.DadIdentity, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
-                !string.Equals(binding.EndpointFingerprint, configuration.RegistrationFingerprint, StringComparison.Ordinal)))
+                !string.Equals(binding.EndpointFingerprint, configuration.RegistrationFingerprint, StringComparison.Ordinal) ||
+                binding.KeyGeneration != configuration.EndpointKeyGeneration))
             {
                 Block("dad-discord-authenticated-binding-changed");
                 return;
@@ -441,7 +495,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
                 BotUserId = botUserId,
                 DadIdentity = configuration.RegisteredIslandId,
                 EndpointFingerprint = configuration.RegistrationFingerprint,
-                KeyGeneration = Math.Max(1, binding.KeyGeneration),
+                KeyGeneration = Math.Max(1, configuration.EndpointKeyGeneration),
             };
             configuration.StateGeneration++;
             saveConfiguration();
@@ -471,24 +525,29 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             message.Author.Id,
             message.Author.IsBot,
             message.Content ?? string.Empty));
-        if (!accepted)
+        if (!accepted && diagnosticGate.ShouldEmit(
+                "dad-discord-inbound-queue-full",
+                DateTime.UtcNow,
+                DiagnosticInterval))
             diagnostic("dad-discord-inbound-queue-full");
         return Task.CompletedTask;
     }
 
     private void DrainInboundMessages()
     {
-        while (!blockedUntilExplicitReconnect && inboundMessages.TryDequeue(out var message))
+        inboundMessages.DrainAtMost(MaximumInboundMessagesPerUpdate, message =>
         {
+            if (blockedUntilExplicitReconnect)
+                return;
             try
             {
-                ProcessInboundMessage(message!);
+                ProcessInboundMessage(message);
             }
             catch (Exception)
             {
-                diagnostic("dad-discord-inbound-processing-failed");
+                EmitDiagnostic("dad-discord-inbound-processing-failed");
             }
-        }
+        });
     }
 
     private void ProcessInboundMessage(DadAutoPartyDiscordInboundMessage message)
@@ -535,6 +594,10 @@ public sealed class DadAutoPartyDiscordService : IDisposable
                         allianceEnvelope.TimestampUnixMs).UtcDateTime,
                 });
             }
+            else if (allianceDecision.SafeCode.Contains("signature", StringComparison.Ordinal))
+            {
+                EmitDiagnostic(allianceDecision.SafeCode);
+            }
             return;
         }
 
@@ -545,42 +608,69 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             DateTime.UtcNow,
             isCoordinator() ? DadAutoPartyRole.Coordinator : DadAutoPartyRole.Client);
         if (!decision.Allowed || envelope == null)
+        {
+            if (decision.SafeCode.Contains("signature", StringComparison.Ordinal))
+                EmitDiagnostic(decision.SafeCode);
             return;
+        }
         if (envelope.ApplicationId == configuration.DiscordApplicationId)
             return;
+        if ((envelope.TargetApplicationId != 0 && envelope.TargetApplicationId != configuration.DiscordApplicationId) ||
+            (!string.IsNullOrWhiteSpace(envelope.TargetDadIdentity) &&
+             !string.Equals(envelope.TargetDadIdentity, configuration.RegisteredIslandId, StringComparison.Ordinal)))
+            return;
+
+        var signingKeyFingerprint = DadAutoPartyDiscordPairingRules.ComputeSigningKeyFingerprint(
+            envelope.SigningPublicKey);
         var known = configuration.Pairings.FirstOrDefault(pairing => pairing.ApplicationId == envelope.ApplicationId);
-        var drifted = known != null && (known.BotUserId != envelope.BotUserId || known.Role != envelope.Role ||
+        var identityChanged = known != null && (known.BotUserId != envelope.BotUserId || known.Role != envelope.Role ||
+            known.KeyGeneration != envelope.KeyGeneration ||
             !string.Equals(known.IslandId, envelope.DadIdentity, StringComparison.Ordinal) ||
             !string.Equals(known.PublicKeyFingerprint, envelope.EndpointFingerprint, StringComparison.Ordinal) ||
-            !string.Equals(known.SigningPublicKey, envelope.SigningPublicKey, StringComparison.Ordinal));
+            !string.Equals(known.SigningPublicKey, envelope.SigningPublicKey, StringComparison.Ordinal) ||
+            !string.Equals(known.SigningKeyFingerprint, signingKeyFingerprint, StringComparison.Ordinal));
+        var drifted = identityChanged && known?.RevokedAtUtc == null;
         var pairingHealth = drifted ? DadAutoPartyPairingHealth.Blocked :
             known?.RevokedAtUtc != null ? DadAutoPartyPairingHealth.Revoked :
             known != null ? DadAutoPartyPairingHealth.Healthy : DadAutoPartyPairingHealth.Unpaired;
         var discoveredPeer = new DadAutoPartyDiscoveredClient(
             envelope.ApplicationId, envelope.BotUserId, envelope.DadIdentity, envelope.EndpointFingerprint,
-            envelope.SigningPublicKey, envelope.KeyGeneration, envelope.Role, DateTime.UtcNow,
+            envelope.SigningPublicKey, signingKeyFingerprint, envelope.KeyGeneration, envelope.Role, DateTime.UtcNow,
             pairingHealth, drifted ? "dad-discord-paired-identity-changed" : string.Empty);
         lock (discoveredGate) discovered[envelope.ApplicationId] = discoveredPeer;
-        if (drifted || (envelope.TargetApplicationId != 0 && envelope.TargetApplicationId != configuration.DiscordApplicationId) ||
-            (!string.IsNullOrWhiteSpace(envelope.TargetDadIdentity) &&
-             !string.Equals(envelope.TargetDadIdentity, configuration.RegisteredIslandId, StringComparison.Ordinal)))
+        if (drifted)
             return;
         switch (envelope.Kind)
         {
             case DadAutoPartyPairingMessageKind.PairRequest:
-                SavePending(discoveredPeer);
+                SavePending(discoveredPeer, envelope.PairingRequestNonce);
                 break;
             case DadAutoPartyPairingMessageKind.PairAccept:
-                var outgoing = FindOutgoingPairing(envelope.ApplicationId);
-                if (outgoing == null ||
-                    !DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(outgoing, discoveredPeer))
+                var challenge = FindOutgoingChallenge(
+                    envelope.ApplicationId,
+                    envelope.PairingRequestNonce,
+                    discoveredPeer,
+                    DateTime.UtcNow);
+                if (challenge == null)
+                {
+                    EmitDiagnostic("dad-discord-pairaccept-no-matching-durable-request");
                     break;
-                SavePairing(outgoing, discoveredPeer);
-                RemoveOutgoingPairing(envelope.ApplicationId);
+                }
+                if (!SavePairing(ToPairing(challenge), discoveredPeer, challenge.RequestNonce))
+                {
+                    EmitDiagnostic("dad-discord-pairing-confirmation-invalid");
+                    break;
+                }
                 PairingRestored?.Invoke(envelope.ApplicationId);
                 break;
             case DadAutoPartyPairingMessageKind.PairReject:
-                RemoveOutgoingPairing(envelope.ApplicationId);
+                var rejectedChallenge = FindOutgoingChallenge(
+                    envelope.ApplicationId,
+                    envelope.PairingRequestNonce,
+                    discoveredPeer,
+                    DateTime.UtcNow);
+                if (rejectedChallenge != null)
+                    RevokeOutgoingChallenge(rejectedChallenge.RequestNonce);
                 break;
             case DadAutoPartyPairingMessageKind.Revoke:
                 if (known != null)
@@ -639,6 +729,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
     private async ValueTask<DadAutoPartyPolicyDecision> SendEnvelopeAsync(
         DadAutoPartyPairingMessageKind kind,
         DadAutoPartyDiscoveredClient peer,
+        string pairingRequestNonce,
         CancellationToken cancellationToken)
     {
         var socket = client;
@@ -653,31 +744,56 @@ public sealed class DadAutoPartyDiscordService : IDisposable
             signing,
             peer.ApplicationId,
             peer.DadIdentity,
+            pairingRequestNonce,
             cancellationToken).ConfigureAwait(false);
         await channel.SendMessageAsync(DadAutoPartyPairingProtocol.Serialize(envelope)).ConfigureAwait(false);
         return Decision(true, $"dad-discord-{kind.ToString().ToLowerInvariant()}-sent");
     }
 
-    private void SavePending(DadAutoPartyDiscoveredClient peer)
+    private void SavePending(DadAutoPartyDiscoveredClient peer, string pairingRequestNonce)
     {
         configuration.PendingPairings.RemoveAll(pairing => pairing.ApplicationId == peer.ApplicationId);
-        configuration.PendingPairings.Add(ToPairing(peer, DateTime.UtcNow));
+        var now = DateTime.UtcNow;
+        var pending = ToPairing(peer, now);
+        pending.PairingRequestNonce = pairingRequestNonce;
+        pending.PairingRequestExpiresAtUtc = now + DadAutoPartyDiscordPairingRules.PairingChallengeLifetime;
+        configuration.PendingPairings.Add(pending);
         configuration.StateGeneration++;
         saveConfiguration();
     }
 
-    private void SavePairing(DadAutoPartyPairing pending, DadAutoPartyDiscoveredClient peer)
+    private bool SavePairing(
+        DadAutoPartyPairing pending,
+        DadAutoPartyDiscoveredClient peer,
+        string consumeChallengeNonce = "")
     {
+        if (!pending.OperatorFingerprintConfirmedAtUtc.HasValue ||
+            !DadAutoPartyDiscordPairingRules.MatchesPendingIdentity(pending, peer) ||
+            !DadAutoPartyDiscordPairingRules.OperatorConfirmedFingerprint(peer, pending.SigningKeyFingerprint))
+            return false;
         var accepted = pending.Clone();
         accepted.ConfirmedAtUtc = DateTime.UtcNow;
         accepted.RevokedAtUtc = null;
+        accepted.SigningKeyFingerprint = peer.SigningKeyFingerprint;
+        accepted.PairingRequestNonce = string.Empty;
+        accepted.PairingRequestExpiresAtUtc = null;
         configuration.Pairings.RemoveAll(pairing => pairing.ApplicationId == accepted.ApplicationId ||
             string.Equals(pairing.IslandId, accepted.IslandId, StringComparison.Ordinal));
         configuration.Pairings.Add(accepted);
+        if (!string.IsNullOrWhiteSpace(consumeChallengeNonce))
+        {
+            var consumed = configuration.OutboundPairingChallenges.FirstOrDefault(challenge =>
+                string.Equals(challenge.RequestNonce, consumeChallengeNonce, StringComparison.Ordinal));
+            if (consumed != null)
+                consumed.UsedAtUtc = DateTime.UtcNow;
+            configuration.OutboundPairingChallenges.RemoveAll(challenge =>
+                string.Equals(challenge.RequestNonce, consumeChallengeNonce, StringComparison.Ordinal));
+        }
         configuration.StateGeneration++;
         saveConfiguration();
         lock (discoveredGate)
             discovered[peer.ApplicationId] = peer with { PairingHealth = DadAutoPartyPairingHealth.Healthy };
+        return true;
     }
 
     private static DadAutoPartyPairing ToPairing(DadAutoPartyDiscoveredClient peer, DateTime confirmedAtUtc) => new()
@@ -686,6 +802,7 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         IslandId = peer.DadIdentity,
         PublicKeyFingerprint = peer.EndpointFingerprint,
         SigningPublicKey = peer.SigningPublicKey,
+        SigningKeyFingerprint = peer.SigningKeyFingerprint,
         KeyGeneration = peer.KeyGeneration,
         ApplicationId = peer.ApplicationId,
         BotUserId = peer.BotUserId,
@@ -698,20 +815,69 @@ public sealed class DadAutoPartyDiscordService : IDisposable
         lock (discoveredGate) return discovered.GetValueOrDefault(applicationId);
     }
 
-    private DadAutoPartyPairing? FindOutgoingPairing(ulong applicationId)
+    private DadAutoPartyOutboundPairingChallenge? FindOutgoingChallenge(
+        ulong applicationId,
+        string requestNonce,
+        DadAutoPartyDiscoveredClient peer,
+        DateTime nowUtc)
     {
-        lock (discoveredGate)
-            return outgoingPairings.GetValueOrDefault(applicationId)?.Clone();
+        var challenge = configuration.OutboundPairingChallenges.FirstOrDefault(candidate =>
+            candidate.ApplicationId == applicationId &&
+            string.Equals(candidate.RequestNonce, requestNonce, StringComparison.Ordinal));
+        return challenge != null && DadAutoPartyDiscordPairingRules.MatchesActiveChallenge(
+            challenge,
+            peer,
+            requestNonce,
+            nowUtc)
+                ? challenge.Clone()
+                : null;
     }
 
-    private void RemoveOutgoingPairing(ulong applicationId)
+    private void RevokeOutgoingChallenge(string requestNonce)
     {
-        lock (discoveredGate) outgoingPairings.Remove(applicationId);
+        var challenge = configuration.OutboundPairingChallenges.FirstOrDefault(candidate =>
+            string.Equals(candidate.RequestNonce, requestNonce, StringComparison.Ordinal));
+        if (challenge == null)
+            return;
+        challenge.RevokedAtUtc = DateTime.UtcNow;
+        configuration.StateGeneration++;
+        saveConfiguration();
     }
+
+    private static DadAutoPartyPairing ToPairing(DadAutoPartyOutboundPairingChallenge challenge) => new()
+    {
+        OwnerId = "discord",
+        IslandId = challenge.IslandId,
+        PublicKeyFingerprint = challenge.EndpointFingerprint,
+        SigningPublicKey = challenge.SigningPublicKey,
+        SigningKeyFingerprint = challenge.SigningKeyFingerprint,
+        PairingRequestNonce = challenge.RequestNonce,
+        PairingRequestExpiresAtUtc = challenge.ExpiresAtUtc,
+        OperatorFingerprintConfirmedAtUtc = challenge.OperatorConfirmedAtUtc,
+        KeyGeneration = challenge.KeyGeneration,
+        ApplicationId = challenge.ApplicationId,
+        BotUserId = challenge.BotUserId,
+        Role = challenge.Role,
+        ConfirmedAtUtc = challenge.OperatorConfirmedAtUtc,
+    };
 
     private static bool IsActiveVerifiedPairing(DadAutoPartyPairing pairing)
         => pairing.RevokedAtUtc == null && pairing.ApplicationId != 0 &&
-           !string.IsNullOrWhiteSpace(pairing.SigningPublicKey);
+           pairing.OperatorFingerprintConfirmedAtUtc.HasValue &&
+           Enum.IsDefined(typeof(DadAutoPartyRole), pairing.Role) &&
+           !string.IsNullOrWhiteSpace(pairing.SigningPublicKey) &&
+           !string.IsNullOrWhiteSpace(pairing.SigningKeyFingerprint) &&
+           pairing.KeyGeneration >= 1 &&
+           string.Equals(
+               pairing.SigningKeyFingerprint,
+               DadAutoPartyDiscordPairingRules.ComputeSigningKeyFingerprint(pairing.SigningPublicKey),
+               StringComparison.Ordinal);
+
+    private void EmitDiagnostic(string safeCode)
+    {
+        if (diagnosticGate.ShouldEmit(safeCode, DateTime.UtcNow, DiagnosticInterval))
+            diagnostic(safeCode);
+    }
 
     private void Block(string safeCode)
     {

@@ -31,7 +31,7 @@ public sealed class DadAllianceSchemaPropagationTests
         var changed = configuration.MigrateTransportSettings();
 
         Assert.True(changed);
-        Assert.Equal(7, configuration.Version);
+        Assert.Equal(8, configuration.Version);
         var slots = Assert.Single(configuration.PlannerGroups).Slots;
         Assert.All(slots, static slot => Assert.Equal(DadAllianceAssignment.None, slot.AllianceAssignment));
         Assert.False(DadAlliancePartyFinderRules.ValidateSavedRows(slots).IsValid);

@@ -270,6 +270,7 @@ public sealed class DadShareService
                 Id = envelope.Plan.GroupId,
                 BundledPlanCount = 1,
                 ReplacementIds = replacements,
+                Commands = BuildCommandPreview([envelope.Plan]),
             };
         }
 
@@ -291,19 +292,65 @@ public sealed class DadShareService
             Id = envelope.Schedule?.ScheduleId ?? string.Empty,
             BundledPlanCount = envelope.Plans.Count,
             ReplacementIds = replacements,
+            Commands = BuildCommandPreview(envelope.Plans),
         };
+    }
+
+    private static List<DadShareCommandPreviewItem> BuildCommandPreview(
+        IEnumerable<DadSharePlanDto> plans)
+    {
+        var commands = new List<DadShareCommandPreviewItem>();
+        foreach (var plan in plans)
+        {
+            var actions = plan.CompletionActions;
+            if (actions == null)
+                continue;
+            foreach (var command in actions.Commands ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(command))
+                {
+                    commands.Add(new DadShareCommandPreviewItem
+                    {
+                        PlanName = plan.DisplayName,
+                        CommandKind = "CustomCommand",
+                        Command = command,
+                    });
+                }
+            }
+
+            var grandCompanyCommand = actions.Utilities?.GrandCompanyHandInCommand;
+            if (!string.IsNullOrWhiteSpace(grandCompanyCommand))
+            {
+                commands.Add(new DadShareCommandPreviewItem
+                {
+                    PlanName = plan.DisplayName,
+                    CommandKind = "GrandCompanyHandInCommand",
+                    Command = grandCompanyCommand,
+                });
+            }
+        }
+        return commands;
     }
 
     public DadShareApplyResult Apply(
         DadShareEnvelopeDto envelope,
         IEnumerable<DadPlannerGroup>? currentPlans,
         IEnumerable<DadScheduleDefinition>? currentSchedules,
-        DadShareApplyMode mode = DadShareApplyMode.ReplaceMatching)
+        DadShareApplyMode mode = DadShareApplyMode.ReplaceMatching,
+        bool commandValuesConfirmed = false)
     {
         if (envelope == null)
             return new DadShareApplyResult { Summary = "Share payload is empty." };
         if (!TryValidateEnvelope(envelope, envelope.Kind, out var validationError))
             return new DadShareApplyResult { Summary = validationError };
+        if (BuildImportPreview(envelope, currentPlans, currentSchedules).RequiresCommandConfirmation &&
+            !commandValuesConfirmed)
+        {
+            return new DadShareApplyResult
+            {
+                Summary = "Review and explicitly confirm every imported CustomCommand and GrandCompanyHandInCommand value before applying this share.",
+            };
+        }
 
         var sourcePlans = (currentPlans ?? []).Where(static plan => plan != null).ToList();
         var sourceSchedules = (currentSchedules ?? []).Where(static schedule => schedule != null).ToList();
@@ -996,12 +1043,21 @@ public sealed class DadShareService
         {
             if (!ValidateText(command, "Finish command", MaxCommandLength, true, out error))
                 return false;
+            if (!string.IsNullOrWhiteSpace(command) &&
+                !DadCompletionCommandRules.TryNormalizeCustomCommand(command, out _, out error))
+                return false;
         }
         if (actions.Utilities == null ||
             !ValidateText(actions.Utilities.GrandCompanyHandInCommand, "Grand Company command", MaxCommandLength, true, out error))
         {
             return false;
         }
+        if (!string.IsNullOrWhiteSpace(actions.Utilities.GrandCompanyHandInCommand) &&
+            !DadCompletionCommandRules.TryNormalizeGrandCompanyHandInCommand(
+                actions.Utilities.GrandCompanyHandInCommand,
+                out _,
+                out error))
+            return false;
         return true;
     }
 

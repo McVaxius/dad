@@ -6,6 +6,12 @@ namespace dad.Tests;
 public sealed class DadStopAllStatusRulesTests
 {
     [Fact]
+    public void ActiveRunRemoteStopUsesCoordinatorOnlyOperatorText()
+        => Assert.Equal(
+            "Stop-all must be issued from the Coordinator while a run is active.",
+            DadStopAllStatusRules.ActiveRunCoordinatorOnlySummary);
+
+    [Fact]
     public void PendingLocalCleanupCannotReportAcknowledgedOrComplete()
     {
         var status = new DadStopAllStatus

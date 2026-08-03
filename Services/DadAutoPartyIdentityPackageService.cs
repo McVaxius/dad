@@ -67,12 +67,16 @@ public sealed class DadAutoPartyIdentityPackageService
             configuration.EndpointAlias = alias;
             configuration.SigningPublicKey = Convert.ToBase64String(signingPublic);
             configuration.EncryptionPublicKey = Convert.ToBase64String(encryptionPublic);
+            configuration.EndpointKeyGeneration = 1;
+            configuration.DiscordBinding = new DadAutoPartyDiscordBinding();
             configuration.EnrollmentReceiptId = string.Empty;
             configuration.PilotArtifactSha256 = string.Empty;
             configuration.OwnerAcceptanceConfirmed = false;
             configuration.PairingEnabled = false;
             configuration.ExecutionEnabled = false;
             configuration.Pairings.Clear();
+            configuration.PendingPairings.Clear();
+            configuration.OutboundPairingChallenges.Clear();
             configuration.Grants.Clear();
             configuration.StateGeneration++;
             saveConfiguration();
@@ -111,7 +115,7 @@ public sealed class DadAutoPartyIdentityPackageService
             configuration.EndpointAlias,
             configuration.RegisteredOwnerId,
             configuration.RegisteredIslandId,
-            1,
+            configuration.EndpointKeyGeneration,
             configuration.SigningPublicKey,
             configuration.EncryptionPublicKey,
             configuration.RegistrationFingerprint,
@@ -166,7 +170,7 @@ public sealed class DadAutoPartyIdentityPackageService
             !Guid.TryParse(receipt.ReceiptId, out var receiptId) ||
             !string.Equals(receipt.OwnerId, configuration.RegisteredOwnerId, StringComparison.Ordinal) ||
             !string.Equals(receipt.IslandId, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
-            receipt.KeyGeneration != 1 ||
+            receipt.KeyGeneration != configuration.EndpointKeyGeneration ||
             !string.Equals(
                 DadAutoPartyConfiguration.NormalizeFingerprint(receipt.IdentityFingerprint),
                 configuration.RegistrationFingerprint,
@@ -253,8 +257,10 @@ public sealed class DadAutoPartyIdentityPackageService
         configuration.ExecutionEnabled = false;
         configuration.OwnerAcceptanceConfirmed = false;
         configuration.EnrollmentReceiptId = string.Empty;
+        configuration.DiscordBinding = new DadAutoPartyDiscordBinding();
         configuration.Pairings.Clear();
         configuration.PendingPairings.Clear();
+        configuration.OutboundPairingChallenges.Clear();
         configuration.Grants.Clear();
         configuration.PilotCourierProbeVerified = false;
         configuration.StateGeneration++;

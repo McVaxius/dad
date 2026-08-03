@@ -15,7 +15,6 @@ public sealed class DadAutoPartyPairingProtocol
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly object gate = new();
     private readonly Dictionary<string, DateTime> observedNonces = new(StringComparer.Ordinal);
-    private readonly Dictionary<ulong, string> identityByApplication = [];
 
     public async ValueTask<DadAutoPartyPairingEnvelope> CreateAsync(
         DadAutoPartyPairingMessageKind kind,
@@ -24,6 +23,7 @@ public sealed class DadAutoPartyPairingProtocol
         DadAutoPartySigningService signing,
         ulong targetApplicationId = 0,
         string targetDadIdentity = "",
+        string pairingRequestNonce = "",
         CancellationToken cancellationToken = default)
     {
         if (configuration.DiscordApplicationId == 0 || configuration.DiscordBotUserId == 0 ||
@@ -36,7 +36,7 @@ public sealed class DadAutoPartyPairingProtocol
             Kind = kind,
             TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Nonce = Guid.NewGuid().ToString("N"),
-            KeyGeneration = Math.Max(1, configuration.DiscordBinding.KeyGeneration),
+            KeyGeneration = Math.Max(1, configuration.EndpointKeyGeneration),
             ApplicationId = configuration.DiscordApplicationId,
             BotUserId = configuration.DiscordBotUserId,
             Role = role,
@@ -45,6 +45,12 @@ public sealed class DadAutoPartyPairingProtocol
             SigningPublicKey = configuration.SigningPublicKey,
             TargetApplicationId = targetApplicationId,
             TargetDadIdentity = DadAutoPartyConfiguration.NormalizeIdentifier(targetDadIdentity),
+            PairingRequestNonce = kind is DadAutoPartyPairingMessageKind.PairRequest or
+                DadAutoPartyPairingMessageKind.PairAccept or DadAutoPartyPairingMessageKind.PairReject
+                    ? Guid.TryParseExact(pairingRequestNonce, "N", out var requestNonce)
+                        ? requestNonce.ToString("N")
+                        : throw new InvalidOperationException("Pairing messages require a valid request nonce.")
+                    : string.Empty,
         };
         var payload = BuildSigningPayload(envelope);
         try
@@ -68,13 +74,20 @@ public sealed class DadAutoPartyPairingProtocol
         DadAutoPartyRole localRole)
     {
         if (envelope == null || !string.Equals(envelope.Schema, Schema, StringComparison.Ordinal) ||
+            !Enum.IsDefined(typeof(DadAutoPartyPairingMessageKind), envelope.Kind) ||
+            !Enum.IsDefined(typeof(DadAutoPartyRole), envelope.Role) ||
             envelope.ApplicationId == 0 || envelope.BotUserId == 0 || envelope.BotUserId != messageAuthorId ||
             envelope.KeyGeneration < 1 || !Guid.TryParseExact(envelope.Nonce, "N", out _) ||
             string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeIdentifier(envelope.DadIdentity)) ||
             string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeFingerprint(envelope.EndpointFingerprint)) ||
             string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(envelope.SigningPublicKey)) ||
-            string.IsNullOrWhiteSpace(envelope.Signature))
+            ((envelope.Kind is DadAutoPartyPairingMessageKind.PairRequest or
+                DadAutoPartyPairingMessageKind.PairAccept or DadAutoPartyPairingMessageKind.PairReject) &&
+             !Guid.TryParseExact(envelope.PairingRequestNonce, "N", out _)))
             return Denied("dad-discord-envelope-invalid");
+
+        if (string.IsNullOrWhiteSpace(envelope.Signature))
+            return Denied("dad-discord-envelope-signature-missing");
 
         DateTime observedAt;
         try
@@ -89,7 +102,7 @@ public sealed class DadAutoPartyPairingProtocol
             return Denied("dad-discord-envelope-stale");
 
         if (localRole == DadAutoPartyRole.Client &&
-            envelope.Kind is DadAutoPartyPairingMessageKind.PairRequest or DadAutoPartyPairingMessageKind.PairAccept &&
+            (envelope.Kind is DadAutoPartyPairingMessageKind.PairRequest or DadAutoPartyPairingMessageKind.PairAccept) &&
             envelope.Role != DadAutoPartyRole.Coordinator)
             return Denied("dad-discord-coordinator-star-required");
         if (localRole == DadAutoPartyRole.Coordinator && envelope.Kind == DadAutoPartyPairingMessageKind.PairRequest &&
@@ -103,12 +116,14 @@ public sealed class DadAutoPartyPairingProtocol
         {
             publicKey = Convert.FromBase64String(envelope.SigningPublicKey);
             signature = Convert.FromBase64String(envelope.Signature);
+            if (signature.Length != 64)
+                return Denied("dad-discord-envelope-signature-malformed");
             if (!DadAutoPartySigningService.Verify(publicKey, payload, signature))
                 return Denied("dad-discord-envelope-signature-invalid");
         }
         catch (FormatException)
         {
-            return Denied("dad-discord-envelope-signature-invalid");
+            return Denied("dad-discord-envelope-signature-malformed");
         }
         finally
         {
@@ -126,11 +141,6 @@ public sealed class DadAutoPartyPairingProtocol
             if (observedNonces.Count >= MaximumReplayEntries)
                 observedNonces.Remove(observedNonces.MinBy(static pair => pair.Value).Key);
             observedNonces[envelope.Nonce] = observedAt;
-
-            if (identityByApplication.TryGetValue(envelope.ApplicationId, out var priorIdentity) &&
-                !string.Equals(priorIdentity, envelope.DadIdentity, StringComparison.Ordinal))
-                return Denied("dad-discord-application-identity-conflict");
-            identityByApplication[envelope.ApplicationId] = envelope.DadIdentity;
         }
         return new DadAutoPartyPolicyDecision(true, "dad-discord-envelope-verified", envelope.KeyGeneration);
     }
@@ -147,7 +157,9 @@ public sealed class DadAutoPartyPairingProtocol
     }
 
     public static byte[] BuildSigningPayload(DadAutoPartyPairingEnvelope envelope)
-        => Encoding.UTF8.GetBytes(string.Join('\n',
+    {
+        var fields = new List<string>
+        {
             Schema,
             ((int)envelope.Kind).ToString(CultureInfo.InvariantCulture),
             envelope.TimestampUnixMs.ToString(CultureInfo.InvariantCulture),
@@ -160,7 +172,12 @@ public sealed class DadAutoPartyPairingProtocol
             envelope.EndpointFingerprint,
             envelope.SigningPublicKey,
             envelope.TargetApplicationId.ToString(CultureInfo.InvariantCulture),
-            envelope.TargetDadIdentity));
+            envelope.TargetDadIdentity,
+        };
+        if (!string.IsNullOrWhiteSpace(envelope.PairingRequestNonce))
+            fields.Add(envelope.PairingRequestNonce);
+        return Encoding.UTF8.GetBytes(string.Join('\n', fields));
+    }
 
     private static DadAutoPartyPolicyDecision Denied(string safeCode) => new(false, safeCode, 1);
 }

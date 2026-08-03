@@ -68,7 +68,7 @@ public sealed class DadShareServiceTests
         Assert.DoesNotContain("scheduleEnabled", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("nextEligibleTimeUtc", json, StringComparison.OrdinalIgnoreCase);
 
-        var applied = service.Apply(envelope, [], []);
+        var applied = service.Apply(envelope, [], [], commandValuesConfirmed: true);
         Assert.True(applied.Success, applied.Summary);
         var imported = Assert.Single(applied.PlannerGroups);
         Assert.Equal(transfer.DisplayName, imported.DisplayName);
@@ -94,6 +94,49 @@ public sealed class DadShareServiceTests
     }
 
     [Fact]
+    public void ImportPreviewListsCommandsVerbatimAndApplyRequiresExplicitConfirmation()
+    {
+        var service = CreateService();
+        var source = BuildPlan(PlanA, "Plan with commands");
+        Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
+        Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var envelope, out error), error);
+
+        var preview = service.BuildImportPreview(envelope!, [], []);
+        var blocked = service.Apply(envelope!, [], []);
+        var confirmed = service.Apply(envelope!, [], [], commandValuesConfirmed: true);
+
+        Assert.True(preview.RequiresCommandConfirmation);
+        Assert.Equal(3, preview.Commands.Count);
+        Assert.Contains(preview.Commands, item =>
+            item.CommandKind == "CustomCommand" && item.Command == "/echo Alice Example");
+        Assert.Contains(preview.Commands, item =>
+            item.CommandKind == "CustomCommand" && item.Command == "/tell Primary Account exact command");
+        Assert.Contains(preview.Commands, item =>
+            item.CommandKind == "GrandCompanyHandInCommand" && item.Command == "/ays gc Primary Account");
+        Assert.False(blocked.Success);
+        Assert.Contains("explicitly confirm", blocked.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.True(confirmed.Success, confirmed.Summary);
+    }
+
+    [Theory]
+    [InlineData("/echo gc")]
+    [InlineData("/aysomething gc")]
+    [InlineData("/ays gc\n/dad stop")]
+    public void ImportRejectsUnsafeGrandCompanyCommandRoots(string command)
+    {
+        var service = CreateService();
+        var source = BuildPlan(PlanA, "Plan");
+        Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
+        Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var envelope, out error), error);
+        envelope!.Plan!.CompletionActions!.Utilities.GrandCompanyHandInCommand = command;
+
+        var result = service.Apply(envelope, [], [], commandValuesConfirmed: true);
+
+        Assert.False(result.Success);
+        Assert.Contains("Grand Company", result.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void SchemaThreeExportsAllianceAssignmentsWhileOlderSchemasDefaultToNone()
     {
         var service = CreateService();
@@ -113,7 +156,7 @@ public sealed class DadShareServiceTests
         var legacyEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(legacy.ToJsonString()));
 
         Assert.True(service.TryDecode(legacyEncoded, DadShareConstants.PlanKind, out var decoded, out error), error);
-        var imported = Assert.Single(service.Apply(decoded!, [], []).PlannerGroups);
+        var imported = Assert.Single(service.Apply(decoded!, [], [], commandValuesConfirmed: true).PlannerGroups);
         Assert.All(imported.Slots, static slot => Assert.Equal(DadAllianceAssignment.None, slot.AllianceAssignment));
         Assert.False(DadAlliancePartyFinderRules.ValidateSavedRows(imported.Slots).IsValid);
         Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
@@ -161,7 +204,7 @@ public sealed class DadShareServiceTests
         Assert.DoesNotContain("lastRun", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("private run history", json, StringComparison.OrdinalIgnoreCase);
 
-        var applied = service.Apply(envelope, [], []);
+        var applied = service.Apply(envelope, [], [], commandValuesConfirmed: true);
         Assert.True(applied.Success, applied.Summary);
         Assert.Equal(2, applied.PlannerGroups.Count);
         var imported = Assert.Single(applied.Schedules);
@@ -175,7 +218,7 @@ public sealed class DadShareServiceTests
             LastRunStatus = DadScheduleRunStatus.Blocked,
             LastSummary = "keep local history",
         };
-        var replaced = service.Apply(envelope, [], [existing]);
+        var replaced = service.Apply(envelope, [], [existing], commandValuesConfirmed: true);
         Assert.True(replaced.Success, replaced.Summary);
         Assert.Equal("keep local history", Assert.Single(replaced.Schedules).LastSummary);
         Assert.Equal(DadScheduleRunStatus.Blocked, replaced.Schedules[0].LastRunStatus);
@@ -203,7 +246,7 @@ public sealed class DadShareServiceTests
         Assert.Equal(originalAccount, source.Slots[0].RequiredAccountKey);
         Assert.Equal(originalCharacter, source.Slots[0].RequiredCharacterKey);
 
-        var imported = Assert.Single(service.Apply(envelope, [], []).PlannerGroups);
+        var imported = Assert.Single(service.Apply(envelope, [], [], commandValuesConfirmed: true).PlannerGroups);
         Assert.All(imported.Slots, slot =>
         {
             Assert.True(slot.RequiredAccountKey.IsEmpty);
@@ -218,7 +261,7 @@ public sealed class DadShareServiceTests
         var firstService = CreateService();
         Assert.True(firstService.TryExportPlan(BuildPlan(PlanA, "Plan"), KnownIdentities(), out var firstEncoded, out var error), error);
         Assert.True(firstService.TryDecode(firstEncoded, DadShareConstants.PlanKind, out var firstEnvelope, out error), error);
-        var imported = Assert.Single(firstService.Apply(firstEnvelope!, [], []).PlannerGroups);
+        var imported = Assert.Single(firstService.Apply(firstEnvelope!, [], [], commandValuesConfirmed: true).PlannerGroups);
         var firstLabel = imported.Slots[0].SharedIdentity!.CharacterLabel;
 
         var secondService = new DadShareService(
@@ -235,7 +278,7 @@ public sealed class DadShareServiceTests
         var service = CreateService();
         Assert.True(service.TryExportPlan(BuildPlan(PlanA, "Plan"), KnownIdentities(), out var encoded, out var error), error);
         Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var envelope, out error), error);
-        var imported = Assert.Single(service.Apply(envelope!, [], []).PlannerGroups);
+        var imported = Assert.Single(service.Apply(envelope!, [], [], commandValuesConfirmed: true).PlannerGroups);
 
         var ipcJson = JsonSerializer.Serialize(imported, JsonOptions);
         var configJson = Newtonsoft.Json.JsonConvert.SerializeObject(imported);
@@ -270,7 +313,7 @@ public sealed class DadShareServiceTests
 
         Assert.NotNull(envelope!.Plan!.CompletionActions);
         Assert.Equal(fallback.Commands, envelope.Plan.CompletionActions.Commands);
-        Assert.Equal(fallback.Commands, Assert.Single(service.Apply(envelope, [], []).PlannerGroups).CompletionActions!.Commands);
+        Assert.Equal(fallback.Commands, Assert.Single(service.Apply(envelope, [], [], commandValuesConfirmed: true).PlannerGroups).CompletionActions!.Commands);
     }
 
     [Fact]
@@ -292,7 +335,7 @@ public sealed class DadShareServiceTests
         existing.ScheduleCadenceHours = 12;
         var created = existing.CreatedAtUtc;
 
-        var result = service.Apply(envelope!, [existing], []);
+        var result = service.Apply(envelope!, [existing], [], commandValuesConfirmed: true);
         Assert.True(result.Success, result.Summary);
         Assert.Equal(1, result.ReplacedPlanCount);
         var replaced = Assert.Single(result.PlannerGroups);
@@ -319,7 +362,7 @@ public sealed class DadShareServiceTests
 
         var preview = service.BuildImportPreview(envelope!, [existing], []);
         Assert.Empty(preview.ReplacementIds);
-        var result = service.Apply(envelope!, [existing], []);
+        var result = service.Apply(envelope!, [existing], [], commandValuesConfirmed: true);
         Assert.True(result.Success, result.Summary);
         Assert.Equal(1, result.AddedPlanCount);
         Assert.Equal(2, result.PlannerGroups.Count);
@@ -452,7 +495,7 @@ public sealed class DadShareServiceTests
         planEnvelope!.Plan!.ActivityMode = (DadPlannerActivityMode)999;
         Assert.False(service.TryDecode(EncodeUnchecked(planEnvelope), DadShareConstants.PlanKind, out _, out var enumError));
         Assert.Contains("enum", enumError, StringComparison.OrdinalIgnoreCase);
-        var atomic = service.Apply(planEnvelope, [original], []);
+        var atomic = service.Apply(planEnvelope, [original], [], commandValuesConfirmed: true);
         Assert.False(atomic.Success);
         Assert.Equal(PlanC, original.GroupId);
         Assert.Equal("Original", original.DisplayName);
@@ -776,7 +819,7 @@ public sealed class DadStarterShareBundleTests
         Assert.True(DadStarterShareBundle.TryCreateEncoded(service, out var encoded, out var error), error);
         Assert.True(service.TryDecode(encoded, DadShareConstants.ScheduleKind, out var envelope, out error), error);
 
-        var result = service.Apply(envelope!, [], [], DadShareApplyMode.SkipExisting);
+        var result = service.Apply(envelope!, [], [], DadShareApplyMode.SkipExisting, commandValuesConfirmed: true);
         Assert.True(result.Success, result.Summary);
         Assert.Equal(2, result.AddedPlanCount);
         Assert.True(result.ScheduleAdded);
@@ -811,14 +854,14 @@ public sealed class DadStarterShareBundleTests
             DisplayName = "Keep me",
         };
 
-        var partial = service.Apply(envelope!, [existing], [], DadShareApplyMode.SkipExisting);
+        var partial = service.Apply(envelope!, [existing], [], DadShareApplyMode.SkipExisting, commandValuesConfirmed: true);
         Assert.True(partial.Success, partial.Summary);
         Assert.Equal("Keep me", partial.PlannerGroups.Single(plan => plan.GroupId == DadStarterShareBundle.LevelingPlanId).DisplayName);
         Assert.Equal(1, partial.AddedPlanCount);
         Assert.Equal(1, partial.SkippedPlanCount);
         Assert.True(partial.ScheduleAdded);
 
-        var full = service.Apply(envelope!, partial.PlannerGroups, partial.Schedules, DadShareApplyMode.SkipExisting);
+        var full = service.Apply(envelope!, partial.PlannerGroups, partial.Schedules, DadShareApplyMode.SkipExisting, commandValuesConfirmed: true);
         Assert.True(full.Success, full.Summary);
         Assert.Equal(0, full.AddedPlanCount);
         Assert.Equal(2, full.SkippedPlanCount);
@@ -840,7 +883,7 @@ public sealed class DadStarterShareBundleTests
             Cadence = DadScheduleCadence.DailyReset,
         };
 
-        var result = service.Apply(envelope!, [], [existingSchedule], DadShareApplyMode.SkipExisting);
+        var result = service.Apply(envelope!, [], [existingSchedule], DadShareApplyMode.SkipExisting, commandValuesConfirmed: true);
 
         Assert.True(result.Success, result.Summary);
         Assert.Equal(2, result.AddedPlanCount);

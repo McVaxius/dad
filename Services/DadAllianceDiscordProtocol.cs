@@ -48,7 +48,7 @@ public sealed class DadAllianceDiscordProtocol
         {
             TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Nonce = Guid.NewGuid().ToString("N"),
-            KeyGeneration = Math.Max(1, configuration.DiscordBinding.KeyGeneration),
+            KeyGeneration = Math.Max(1, configuration.EndpointKeyGeneration),
             ApplicationId = configuration.DiscordApplicationId,
             BotUserId = configuration.DiscordBotUserId,
             Role = DadAutoPartyRole.Coordinator,
@@ -96,6 +96,7 @@ public sealed class DadAllianceDiscordProtocol
             envelope.BotUserId == 0 ||
             envelope.BotUserId != context.MessageAuthorId ||
             envelope.Role != DadAutoPartyRole.Coordinator ||
+            envelope.KeyGeneration < 1 ||
             envelope.TargetApplicationId == 0 ||
             envelope.TargetApplicationId != context.LocalApplicationId ||
             envelope.CoordinatorWorkerSessionId.IsEmpty ||
@@ -104,6 +105,7 @@ public sealed class DadAllianceDiscordProtocol
             !Guid.TryParseExact(envelope.Nonce, "N", out _) ||
             envelope.Passcode is < 1000 or > 9999 ||
             !DadAlliancePartyFinderRules.IsConcreteAssignment(envelope.AssignedAlliance) ||
+            !Enum.IsDefined(typeof(DadAllianceRecruitmentState), envelope.State) ||
             envelope.Attempt < 0 ||
             envelope.StopGeneration < 0 ||
             envelope.TargetCharacterKey.IsEmpty ||
@@ -119,17 +121,26 @@ public sealed class DadAllianceDiscordProtocol
             return Denied("dad-alliance-discord-envelope-invalid");
         }
 
+        if (string.IsNullOrWhiteSpace(envelope.Signature))
+            return Denied("dad-alliance-discord-signature-missing");
+
         var pairing = context.CoordinatorPairing;
         if (pairing == null || !pairing.IsValid)
             return Denied("dad-alliance-discord-unpaired");
         if (pairing.RevokedAtUtc.HasValue)
             return Denied("dad-alliance-discord-pairing-revoked");
-        if (pairing.Role != DadAutoPartyRole.Coordinator ||
+        if (!pairing.OperatorFingerprintConfirmedAtUtc.HasValue ||
+            pairing.Role != DadAutoPartyRole.Coordinator ||
             pairing.ApplicationId != envelope.ApplicationId ||
             pairing.BotUserId != envelope.BotUserId ||
             pairing.KeyGeneration != envelope.KeyGeneration ||
             !string.Equals(pairing.IslandId, envelope.CoordinatorIdentity, StringComparison.Ordinal) ||
-            !string.Equals(pairing.PublicKeyFingerprint, envelope.EndpointFingerprint, StringComparison.Ordinal))
+            !string.Equals(pairing.PublicKeyFingerprint, envelope.EndpointFingerprint, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(pairing.SigningKeyFingerprint) ||
+            !string.Equals(
+                pairing.SigningKeyFingerprint,
+                DadAutoPartyDiscordPairingRules.ComputeSigningKeyFingerprint(pairing.SigningPublicKey),
+                StringComparison.Ordinal))
         {
             return Denied("dad-alliance-discord-paired-identity-changed");
         }
@@ -156,12 +167,14 @@ public sealed class DadAllianceDiscordProtocol
         {
             publicKey = Convert.FromBase64String(pairing.SigningPublicKey);
             signature = Convert.FromBase64String(envelope.Signature);
+            if (signature.Length != 64)
+                return Denied("dad-alliance-discord-signature-malformed");
             if (!DadAutoPartySigningService.Verify(publicKey, payload, signature))
                 return Denied("dad-alliance-discord-signature-invalid");
         }
         catch (FormatException)
         {
-            return Denied("dad-alliance-discord-signature-invalid");
+            return Denied("dad-alliance-discord-signature-malformed");
         }
         finally
         {

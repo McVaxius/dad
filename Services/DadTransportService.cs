@@ -1817,7 +1817,7 @@ public sealed class DadTransportService : IDisposable
                 ? ResolveAuthorityWorkerSessionId()
                 : active.AuthorityWorkerSessionId;
             if (authority.IsEmpty || !SameWorker(authority, context.AuthenticatedSourceWorkerSessionId))
-                return BuildRejectedStopAll(request, "Stop-all rejected because the authenticated sender does not own the active coordinator authority.");
+                return BuildRejectedStopAll(request, DadStopAllStatusRules.ActiveRunCoordinatorOnlySummary);
         }
 
         if (configuration.RunAsServerDad)

@@ -74,6 +74,25 @@ public static class DadDutyLifecycleRules
         DateTime now)
         => deadlineUtc != DateTime.MinValue && now >= deadlineUtc;
 
+    public static DadDutyExitDecision EvaluateExit(
+        bool enteredDuty,
+        bool dutyCompleted,
+        bool exitedRequestedDuty,
+        DateTime currentGraceDeadlineUtc,
+        DateTime nowUtc,
+        TimeSpan graceDuration)
+    {
+        if (!enteredDuty || !exitedRequestedDuty)
+            return new(DadDutyExitDisposition.None, DateTime.MinValue);
+        if (dutyCompleted)
+            return new(DadDutyExitDisposition.Completed, DateTime.MinValue);
+        if (currentGraceDeadlineUtc == DateTime.MinValue)
+            return new(DadDutyExitDisposition.WaitingForCompletion, nowUtc + graceDuration);
+        return nowUtc >= currentGraceDeadlineUtc
+            ? new(DadDutyExitDisposition.Abandoned, currentGraceDeadlineUtc)
+            : new(DadDutyExitDisposition.WaitingForCompletion, currentGraceDeadlineUtc);
+    }
+
     public static bool IsAddonReadyForMutation(bool visible, bool ready)
         => visible && ready;
 
@@ -91,6 +110,18 @@ public static class DadDutyLifecycleRules
             MinimumPercent: Math.Min(current.MinimumPercent, (int)(condition / 300)));
     }
 }
+
+public enum DadDutyExitDisposition
+{
+    None = 0,
+    Completed = 1,
+    WaitingForCompletion = 2,
+    Abandoned = 3,
+}
+
+public readonly record struct DadDutyExitDecision(
+    DadDutyExitDisposition Disposition,
+    DateTime GraceDeadlineUtc);
 
 public readonly record struct DadEquippedDurabilityMinimum(
     bool Found,

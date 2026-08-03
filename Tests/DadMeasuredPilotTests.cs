@@ -150,6 +150,45 @@ public sealed class DadMeasuredPilotTests
         }
     }
 
+    [Fact]
+    public void SuccessfulReceiptMutatesAndSavesOnlyFromUpdateCallerThread()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "dad-measured-pilot-thread", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var assemblyPath = Path.Combine(root, "dad-test.dll");
+        File.WriteAllBytes(assemblyPath, [1, 2, 3]);
+        var fixture = SigningFixture(root);
+        var frameworkThreadId = Environment.CurrentManagedThreadId;
+        var saveThreadIds = new List<int>();
+        try
+        {
+            var service = new DadMeasuredPilotService(
+                fixture.Configuration,
+                fixture.Signing,
+                static () => true,
+                () => saveThreadIds.Add(Environment.CurrentManagedThreadId),
+                assemblyPath);
+            Assert.True(service.Start().Allowed);
+
+            for (var attempt = 0;
+                 attempt < 20_000 && string.IsNullOrWhiteSpace(fixture.Configuration.MeasuredPilot.ReceiptPath);
+                 attempt++)
+            {
+                service.Update();
+                Thread.Yield();
+            }
+
+            Assert.False(string.IsNullOrWhiteSpace(fixture.Configuration.MeasuredPilot.ReceiptPath));
+            Assert.NotEmpty(saveThreadIds);
+            Assert.All(saveThreadIds, threadId => Assert.Equal(frameworkThreadId, threadId));
+        }
+        finally
+        {
+            fixture.Dispose();
+            Directory.Delete(root, true);
+        }
+    }
+
     private static DadMeasuredPilotCampaign PassingCampaign()
     {
         var runs = Enumerable.Range(0, 10).Select(index =>

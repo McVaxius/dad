@@ -185,6 +185,15 @@ public sealed class DadShareImportPreview
     public string Id { get; set; } = string.Empty;
     public int BundledPlanCount { get; set; }
     public List<string> ReplacementIds { get; set; } = [];
+    public List<DadShareCommandPreviewItem> Commands { get; set; } = [];
+    public bool RequiresCommandConfirmation => Commands.Count > 0;
+}
+
+public sealed class DadShareCommandPreviewItem
+{
+    public string PlanName { get; set; } = string.Empty;
+    public string CommandKind { get; set; } = string.Empty;
+    public string Command { get; set; } = string.Empty;
 }
 
 public sealed class DadShareApplyResult

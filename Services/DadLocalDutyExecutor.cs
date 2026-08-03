@@ -7,11 +7,13 @@ public sealed class DadLocalDutyExecutor(
     DadCombatRotationService combatRotationService) : IDadModuleExecutor
 {
     private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ExitCompletionGraceDuration = TimeSpan.FromSeconds(10);
 
     private DadModuleExecutionStatusDto status = new();
     private DadLocalDutyResolvedContent? resolvedContent;
     private DateTime runStartedAtUtc = DateTime.MinValue;
     private DateTime postDutyStabilizeUntilUtc = DateTime.MinValue;
+    private DateTime exitCompletionGraceUntilUtc = DateTime.MinValue;
     private bool enteredDuty;
     private bool dutyCompleted;
     private DadCombatRotationMode rotationMode = DadCombatRotationMode.UseFrenRider;
@@ -112,14 +114,30 @@ public sealed class DadLocalDutyExecutor(
             dutyCompleted,
             freshCompletionEvidence);
         var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
-        if (DadDutyLifecycleRules.IsAbandonedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+        var exitDecision = DadDutyLifecycleRules.EvaluateExit(
+            enteredDuty,
+            dutyCompleted,
+            exitedRequestedDuty,
+            exitCompletionGraceUntilUtc,
+            now,
+            ExitCompletionGraceDuration);
+        exitCompletionGraceUntilUtc = exitDecision.GraceDeadlineUtc;
+        if (exitDecision.Disposition == DadDutyExitDisposition.Abandoned)
         {
             Fail($"Local Duty {resolvedContent.DutyName} exited before DutyCompleted; treating as abandoned.");
             return BuildStatusStep(status, DadParticipantState.Failed);
         }
 
-        if (DadDutyLifecycleRules.IsCompletedExit(enteredDuty, dutyCompleted, exitedRequestedDuty))
+        if (exitDecision.Disposition == DadDutyExitDisposition.Completed)
             return BeginOrUpdatePostDutyStabilizing(now);
+
+        if (exitDecision.Disposition == DadDutyExitDisposition.WaitingForCompletion)
+        {
+            SetActiveStatus(
+                DadRunPhase.InDutyOrTask,
+                BuildDelayedCompletionWaitSummary(now));
+            return BuildStatusStep(status, DadParticipantState.Running);
+        }
 
         if (enteredDuty && !TryApplyEntryAutomation())
             return BuildStatusStep(status, DadParticipantState.Failed);
@@ -293,6 +311,7 @@ public sealed class DadLocalDutyExecutor(
     {
         runStartedAtUtc = now;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
+        exitCompletionGraceUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
         entryAutomationSummary = string.Empty;
@@ -302,6 +321,7 @@ public sealed class DadLocalDutyExecutor(
     {
         runStartedAtUtc = DateTime.MinValue;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
+        exitCompletionGraceUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
         entryAutomationSummary = string.Empty;
@@ -380,6 +400,13 @@ public sealed class DadLocalDutyExecutor(
             DadCombatRotationMode.DoNothing => $"Local Duty {dutyName} completed; waiting for user-owned duty exit.",
             _ => $"Local Duty {dutyName} completed; waiting for duty exit.",
         };
+    }
+
+    private string BuildDelayedCompletionWaitSummary(DateTime now)
+    {
+        var dutyName = resolvedContent?.DutyName ?? "requested duty";
+        var remaining = Math.Max(0, (exitCompletionGraceUntilUtc - now).TotalSeconds);
+        return $"Local Duty {dutyName} exited without matching DutyCompleted; waiting for delayed completion ({remaining:F0}s).";
     }
 
     private string BuildCompletedSummary()

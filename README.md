@@ -17,7 +17,23 @@ integrations, and everyday commands.
 ## Build
 
 ```powershell
-dotnet build .\dad.csproj -c Debug -p:Platform=x64
+$packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
+$nugetSource = 'https://api.nuget.org/v3/index.json'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.1.0-preview.2.nupkg'
+$expectedHash = '475964fad1a400125b0a80a3ac4ab28e45150d5390d97e992fcf6dfb8dd09ac5'
+
+if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
+    throw 'The vendored Dad.AutoParty.Protocol package is missing.'
+}
+
+if ((Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+    throw 'The vendored Dad.AutoParty.Protocol package hash does not match this source revision.'
+}
+
+dotnet restore .\dad.csproj -r win --locked-mode --source $packageSource --source $nugetSource
+dotnet restore .\Tests\dad.Tests.csproj --source $packageSource --source $nugetSource
+dotnet build .\dad.csproj -c Debug -p:Platform=x64 --no-restore
+dotnet build .\dad.csproj -c Release -p:Platform=x64 --no-restore
 ```
 
 DAD pins [ECommons 3.2.1.15](https://www.nuget.org/packages/ECommons/3.2.1.15) for its stateless Party Finder
@@ -25,11 +41,21 @@ addon-readiness wrappers and UI-input helpers. DAD does not initialize the EComm
 signature-dependent paths. The separate DAD-owned Party Finder preset loader resolves one fail-closed recruitment-editor
 refresh function through Dalamud's game-interop service. ECommons is maintained by NightmareXIV and its contributors.
 
+The build requires the current API 15 Dalamud development assemblies. Set `DALAMUD_HOME` to that directory when they are
+not installed at the normal XIVLauncher development-hook location. Restore uses the checked-in AutoParty package and the
+public NuGet feed explicitly; it does not require a machine-global AutoParty source.
+
 ## Test
 
 ```powershell
-dotnet test .\Tests\dad.Tests.csproj
+$packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
+$nugetSource = 'https://api.nuget.org/v3/index.json'
+dotnet restore .\Tests\dad.Tests.csproj --source $packageSource --source $nugetSource
+dotnet test .\Tests\dad.Tests.csproj -c Release -p:Platform=x64 --no-restore
 ```
+
+The complete unfiltered Release suite is required. CI runs it without `continue-on-error` before any build artifact can be
+uploaded or promoted to a release.
 
 ## Crew and persistence
 
@@ -75,7 +101,7 @@ dotnet test .\Tests\dad.Tests.csproj
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v7 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
+- Configuration schema v8 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
   reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
   Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-4 users
   migrate to an empty, disabled AutoParty configuration without generating an identity or initializing a network route.
@@ -103,6 +129,11 @@ dotnet test .\Tests\dad.Tests.csproj
 - `dad.pairing/v1` messages contain bounded signed public endpoint metadata only. They never contain bot tokens, FFXIV
   identifiers, plans, schedules, requested jobs, Stop, or execution commands. Pairing uses a Coordinator-to-Client star;
   clients do not need to pair with each other. Presence refreshes about every 60 seconds and is stale after three minutes.
+- Pair and Accept require the operator to review and confirm the peer's complete Ed25519 signing-key fingerprint. The exact
+  Application ID, Bot User ID, DAD identity, endpoint fingerprint, signing key/fingerprint, role, and endpoint-key generation
+  are pinned. Outbound requests are persisted as five-minute, single-use challenges, so a restart cannot turn an unsolicited
+  or replayed `PairAccept` into trust. Schema-v8 migration retains older Discord pairing rows for audit but revokes any row
+  that lacks the new operator-confirmation evidence; re-pairing is explicit.
 - Discord discovery and pairing remain separate from DAD execution. DAD LAN hub protocol 4 carries the authenticated public
   Application ID, endpoint fingerprint, pairing health, and typed debug alliance-PF coordination, and rejects mixed builds.
   Optional `dad.alliance-pf/v1` Discord instructions are separately signed, exact-recipient, replay-bounded copies; the authenticated
@@ -256,11 +287,20 @@ dotnet test .\Tests\dad.Tests.csproj
   at least 250 milliseconds apart; contradiction or timeout restarts the full safe selection cycle.
 - Regular and roulette queue mutations recapture strict local safety immediately before native writes and require visible,
   ready addons before callback or list dereference. Local and NPC queue ownership is released on entry and every owned
-  terminal path. Local Duty, Duty Support, Trust, and Premade Duty consume matching `DutyCompleted` evidence before
-  classifying an exit as abandonment. MOGTOME accepts only exact active-run results and preserves failed Stop responses.
-  Durability ignores the soul-crystal slot but still treats zero-condition real gear as broken. Configured completion and
-  AutoRetainer GC slash commands share guarded native chat submission, so native and Dalamud plugin commands can run;
-  empty, non-slash, multiline, and null-containing values are rejected.
+  terminal path. Local Duty, Duty Support, Trust, and Premade Duty use one lifecycle rule: after an unmatched duty exit they
+  wait ten seconds for delayed matching `DutyCompleted` evidence before classifying abandonment, and completion wins even at
+  the exact deadline. MOGTOME accepts only exact active-run results and preserves failed Stop responses.
+  Durability ignores the soul-crystal slot but still treats zero-condition real gear as broken. Imported completion commands
+  are shown verbatim and require explicit confirmation. Custom slash commands use Dalamud's registered-plugin command manager;
+  only the AutoRetainer Grand Company command uses native chat input, and its exact root must be `/ays`. Control characters,
+  plain text, multiline values, and every other GC root are rejected. A temporarily missing game UI module waits for at most
+  five seconds and then exposes a typed failure. Historical close-client/shutdown values deserialize safely but are permanent
+  no-ops and are not selectable.
+- Questionable subscriber/gate reflection changes retain their exact pre-image before the first write and restore each still-
+  owned value independently on failure, disable, reload drift, and disposal. AutoRetainer postprocess handoff now distinguishes
+  Armed, RequestSent, and Owned generations; timeout re-arms only the same operation, late named callbacks are released, and
+  DAD never calls the global finish channel for a merely pending request. Pilot receipt IO returns immutable results and applies
+  its configuration path/save only from the framework update.
 - Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
   targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
   evidence used by execution. After required job changes and exact worker readiness, DAD repeats the frozen evaluation

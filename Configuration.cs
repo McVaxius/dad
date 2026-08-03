@@ -17,7 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     [NonSerialized]
     private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
 
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 8;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -151,6 +151,32 @@ public sealed class Configuration : IPluginConfiguration
         if (Version < 7)
         {
             Version = 7;
+            changed = true;
+        }
+
+        // Version 8 makes active Discord trust explicitly operator-pinned to the signing-key
+        // fingerprint and persists bounded outbound pairing challenges across restarts. Existing
+        // Discord pairings predate that confirmation, so retain them for audit but revoke them;
+        // the operator must review the full fingerprint and re-pair.
+        if (Version < 8)
+        {
+            AutoParty ??= new DadAutoPartyConfiguration();
+            AutoParty.Pairings ??= [];
+            AutoParty.OutboundPairingChallenges ??= [];
+            AutoParty.EndpointKeyGeneration = Math.Max(
+                1,
+                AutoParty.DiscordBinding?.KeyGeneration ?? 1);
+            foreach (var pairing in AutoParty.Pairings.Where(static pairing =>
+                         pairing != null &&
+                         pairing.ApplicationId != 0 &&
+                         (string.IsNullOrWhiteSpace(pairing.SigningKeyFingerprint) ||
+                          !pairing.OperatorFingerprintConfirmedAtUtc.HasValue) &&
+                         pairing.RevokedAtUtc == null))
+            {
+                pairing.RevokedAtUtc = DateTime.UtcNow;
+            }
+            AutoParty.OutboundPairingChallenges.Clear();
+            Version = 8;
             changed = true;
         }
 
