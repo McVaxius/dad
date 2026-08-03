@@ -13,6 +13,7 @@ public sealed class DadCoordinatorService
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
     private readonly DadCharacterIntelligenceService characterIntelligenceService;
+    private readonly DadRosterCatalogService rosterCatalogService;
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
     private readonly DadClaimService claimService;
@@ -79,6 +80,7 @@ public sealed class DadCoordinatorService
         Configuration configuration,
         ConfigManager configManager,
         DadCharacterIntelligenceService characterIntelligenceService,
+        DadRosterCatalogService rosterCatalogService,
         DadPresenceService presenceService,
         DadTransportService transportService,
         DadClaimService claimService,
@@ -93,6 +95,7 @@ public sealed class DadCoordinatorService
         this.configuration = configuration;
         this.configManager = configManager;
         this.characterIntelligenceService = characterIntelligenceService;
+        this.rosterCatalogService = rosterCatalogService;
         this.presenceService = presenceService;
         this.transportService = transportService;
         this.claimService = claimService;
@@ -281,7 +284,8 @@ public sealed class DadCoordinatorService
             return DadRunResult.Rejected(request, "Dad Coordinator did not accept forwarded run start.");
         }
 
-        var pool = characterIntelligenceService.RefreshLocalCharacterPool("run-start", logRefresh: false);
+        var rawPool = characterIntelligenceService.RefreshLocalCharacterPool("run-start", logRefresh: false);
+        var pool = rosterCatalogService.BuildCuratedPool(rawPool);
         var liveCoordinatorTruth = presenceService.BuildLiveSafetySnapshot();
         LogCoordinatorProvenance("run-start", request.RequestId, liveCoordinatorTruth);
         var plan = plannerService.BuildPlan(

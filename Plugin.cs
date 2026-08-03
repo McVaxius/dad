@@ -326,6 +326,7 @@ public sealed class Plugin : IDalamudPlugin
             Configuration,
             ConfigManager,
             CharacterIntelligenceService,
+            RosterCatalogService,
             PresenceService,
             TransportService,
             ClaimService,
@@ -2374,13 +2375,14 @@ public sealed class Plugin : IDalamudPlugin
             pool,
             effectiveOptions,
             effective);
-        var dutyQueueSize = PresetProviderService
-            .GetPlannerDutyOption(effective.DutyContentFinderConditionId)
-            ?.QueueSize ?? 0;
+        var allianceValidation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
+            alliancePreview.SelectedCharacters);
         var expectedPartySize = DadPlannerSlotRules.CountPrimarySlots(effective.Slots);
         var classification = DadCrewToolsRules.Classify(
             effective.ActivityMode,
-            dutyQueueSize,
+            allianceValidation.AllianceACount,
+            allianceValidation.AllianceBCount,
+            allianceValidation.AllianceCCount,
             expectedPartySize);
         selection = new CrewFormationSelection
         {

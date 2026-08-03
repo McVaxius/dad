@@ -15,7 +15,9 @@ internal static class DadCrewToolsRules
 {
     public static DadCrewFormationClassification Classify(
         DadPlannerActivityMode activityMode,
-        int selectedDutyQueueSize,
+        int allianceACount,
+        int allianceBCount,
+        int allianceCCount,
         int expectedPartySize)
     {
         if (IsNpcOnly(activityMode))
@@ -36,11 +38,11 @@ internal static class DadCrewToolsRules
                 blocker);
         }
 
-        if (selectedDutyQueueSize > 8)
+        if (allianceACount > 0 && allianceBCount > 0 && allianceCCount > 0)
         {
             return new DadCrewFormationClassification(
                 DadCrewFormationMode.AlliancePartyFinder,
-                $"Alliance Party Finder ({selectedDutyQueueSize} players)",
+                "Alliance Party Finder (A/B/C populated)",
                 string.Empty);
         }
 
@@ -124,7 +126,7 @@ internal static class DadCrewToolsRules
            !string.IsNullOrWhiteSpace(recruitmentId) &&
            string.Equals(status.RecruitmentId, recruitmentId, StringComparison.Ordinal) &&
            status.State == DadAllianceRecruitmentState.Complete &&
-           !status.OwnsRecruitment;
+           status.OwnsRecruitment;
 
     public static DadPartyDisbandPreflight EvaluateDisband(
         ulong localContentId,

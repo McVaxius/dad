@@ -7,15 +7,37 @@ namespace dad.Tests;
 public sealed class DadCrewToolsRulesTests
 {
     [Fact]
-    public void Classify_UsesDutyFinderQueueSizeForAlliance()
+    public void Classify_UsesPopulatedAllianceRosterForEightPlayerDuty()
     {
         var result = DadCrewToolsRules.Classify(
             DadPlannerActivityMode.DutyPremade,
-            selectedDutyQueueSize: 24,
-            expectedPartySize: 4);
+            allianceACount: 1,
+            allianceBCount: 1,
+            allianceCCount: 1,
+            expectedPartySize: 8);
 
         Assert.True(result.CanCreate);
         Assert.Equal(DadCrewFormationMode.AlliancePartyFinder, result.Mode);
+    }
+
+    [Theory]
+    [InlineData(0, 1, 1)]
+    [InlineData(1, 0, 1)]
+    [InlineData(1, 1, 0)]
+    public void Classify_UsesRegularPartyWhenAnyRequiredAllianceIsEmpty(
+        int allianceACount,
+        int allianceBCount,
+        int allianceCCount)
+    {
+        var result = DadCrewToolsRules.Classify(
+            DadPlannerActivityMode.DutyPremade,
+            allianceACount,
+            allianceBCount,
+            allianceCCount,
+            expectedPartySize: 8);
+
+        Assert.True(result.CanCreate);
+        Assert.Equal(DadCrewFormationMode.RegularParty, result.Mode);
     }
 
     [Theory]
@@ -26,7 +48,12 @@ public sealed class DadCrewToolsRulesTests
     [InlineData(DadPlannerActivityMode.Squadron)]
     public void Classify_RejectsNpcOnlyRegularGroups(DadPlannerActivityMode activityMode)
     {
-        var result = DadCrewToolsRules.Classify(activityMode, selectedDutyQueueSize: 4, expectedPartySize: 4);
+        var result = DadCrewToolsRules.Classify(
+            activityMode,
+            allianceACount: 0,
+            allianceBCount: 0,
+            allianceCCount: 0,
+            expectedPartySize: 4);
 
         Assert.False(result.CanCreate);
         Assert.Equal(DadCrewFormationMode.Unavailable, result.Mode);
@@ -38,7 +65,9 @@ public sealed class DadCrewToolsRulesTests
     {
         var result = DadCrewToolsRules.Classify(
             DadPlannerActivityMode.LocalDuty,
-            selectedDutyQueueSize: 1,
+            allianceACount: 0,
+            allianceBCount: 0,
+            allianceCCount: 0,
             expectedPartySize: 1);
 
         Assert.False(result.CanCreate);
@@ -46,11 +75,13 @@ public sealed class DadCrewToolsRulesTests
     }
 
     [Fact]
-    public void Classify_RejectsSoloRosterEvenWhenDutyCatalogIsAllianceSized()
+    public void Classify_RejectsSoloRosterEvenWhenAllRequiredAlliancesArePopulated()
     {
         var result = DadCrewToolsRules.Classify(
             DadPlannerActivityMode.DutyPremade,
-            selectedDutyQueueSize: 24,
+            allianceACount: 1,
+            allianceBCount: 1,
+            allianceCCount: 1,
             expectedPartySize: 1);
 
         Assert.False(result.CanCreate);
@@ -142,7 +173,7 @@ public sealed class DadCrewToolsRulesTests
     }
 
     [Fact]
-    public void AllianceSequence_GrabsOnceAndCompletesOnlyAfterExactCleanup()
+    public void AllianceSequence_GrabsOnceAndCompletesWithExactOwnedRecruitmentRetained()
     {
         var listing = new DadAlliancePartyFinderStatus
         {
@@ -164,9 +195,10 @@ public sealed class DadCrewToolsRulesTests
             grabAlreadyRequested: false));
 
         listing.State = DadAllianceRecruitmentState.Complete;
-        Assert.False(DadCrewToolsRules.IsExactAllianceComplete(listing, "recruitment-1"));
-        listing.OwnsRecruitment = false;
         Assert.True(DadCrewToolsRules.IsExactAllianceComplete(listing, "recruitment-1"));
+        Assert.True(DadAlliancePartyFinderRules.CanStop(listing));
+        listing.OwnsRecruitment = false;
+        Assert.False(DadCrewToolsRules.IsExactAllianceComplete(listing, "recruitment-1"));
         Assert.False(DadCrewToolsRules.IsExactAllianceComplete(listing, "recruitment-2"));
     }
 

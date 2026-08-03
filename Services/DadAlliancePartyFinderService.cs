@@ -605,6 +605,13 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             return;
         }
 
+        if (!cleanupRequested &&
+            current.State == DadAllianceRecruitmentState.Complete &&
+            current.OwnsRecruitment)
+        {
+            return;
+        }
+
         if (coordinatorHostTarget != null &&
             (cleanupRequested || current.State != DadAllianceRecruitmentState.ListingOpen))
         {
@@ -722,11 +729,11 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             result.ObservedAlliance == target.Assignment);
         if (successful == coordinatorTargets.Count && successful > 0)
         {
-            BeginCoordinatorCleanup(now);
             lock (statusGate)
             {
-                status.State = DadAllianceRecruitmentState.Verifying;
-                status.Summary = $"Verified all {successful} effective characters in their exact A-G subgroups; ending recruitment only.";
+                status.State = DadAllianceRecruitmentState.Complete;
+                status.OwnsRecruitment = true;
+                status.Summary = $"Verified all {successful} effective characters in their exact A-G subgroups; retaining the owned recruitment for operator Stop.";
                 status.Results = BuildCoordinatorResultList();
                 status.UpdatedAtUtc = now;
             }

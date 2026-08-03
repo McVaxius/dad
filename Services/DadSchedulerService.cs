@@ -1863,6 +1863,9 @@ public sealed class DadSchedulerService
             return;
         }
 
+        if (TryStartPreparedCrewFormation())
+            return;
+
         if (!DadSchedulerRoutingRules.TryInvokeCallback(
                 () => plannerPreviewBuilder(currentState.GroupId),
                 out DadPlannerRunRequestPreview? strictPreview,
@@ -1906,9 +1909,6 @@ public sealed class DadSchedulerService
         currentState.UpdatedAtUtc = DateTime.UtcNow;
         LogSchedulerPhaseTransition();
         if (!strictRevalidationTracker.TryClaimStart())
-            return;
-
-        if (TryStartPreparedCrewFormation())
             return;
 
         var strictRequest = CloneRunRequest(frozenPlannerRequest)!;
@@ -2176,7 +2176,7 @@ public sealed class DadSchedulerService
         {
             FinishCrewFormation(
                 DadCrewFormationPhase.Completed,
-                "Alliance group formation completed with exact subgroup verification and PF cleanup.");
+                "Alliance group formation completed with exact subgroup verification; the owned PF listing remains available for operator Stop.");
             return;
         }
 

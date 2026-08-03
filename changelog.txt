@@ -1,5 +1,11 @@
 # dad — changelog
 
+## 2026-08-03 — Crew formation scheduling (local-only, unpublished)
+- Restored prepared Crew Formation dispatch and retained verified alliance PF ownership for explicit operator cleanup.
+
+## 2026-08-03 — Run roster and alliance PF row selection (local-only, unpublished)
+- Coordinator starts now plan and bind manifests from the curated roster; alliance PF joining again reads visible renderer recruiter text from node 28.
+
 ## 2026-08-02 — P1218 WP9/WP10 Discord and AutoDuty reliability remediation (local-only, unpublished)
 - Hardened the active Dad Discord path, not only the retained AutoParty proposal policy. Pair/Accept now requires an explicit
   full Ed25519 signing-key fingerprint confirmation and pins Application ID, Bot User ID, DAD identity, endpoint fingerprint,

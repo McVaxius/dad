@@ -1,6 +1,7 @@
 using System.Text;
 using dad.Models;
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Memory;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -54,7 +55,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     IDadAlliancePartyFinderJoinUi
 {
     public const string FormationDutyName = "The Labyrinth of the Ancients";
-    private const int MaxNativeListingScan = 50;
+    private const int MaxListingRendererScan = 100;
+    private const uint ListingRecruiterTextNodeId = 28;
     private const int MaxDiagnosticNodes = 16_384;
     private const int MaxDiagnosticTreeDepth = 64;
     private const int MaxDiagnosticRendererSlots = 100;
@@ -845,19 +847,16 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 ? yesNo->PromptText->NodeText.ToString().Trim()
                 : string.Empty;
         var joinFlags = detail.JoinConditionFlags;
-        var nativeListingView =
-            agent == null
-                ? new DadAlliancePfListingViewSnapshot()
-                : ReadNativeListingView(agent, mainVisible, mainVisible && mainBase->IsReady);
-        var numberOfListings = nativeListingView.ListLength;
+        var numberOfListings =
+            agent == null ? 0 : agent->NumberOfListingsDisplayed;
         var matchingListingIndexes =
-            agent == null
+            main == null
                 ? []
                 : DadAlliancePartyFinderListingRowResolver.Resolve(
                     target.LeaderName,
                     numberOfListings,
-                    nativeListingView,
-                    new DadAlliancePfListingViewSnapshot());
+                    ReadListingView(main->StandardViewList),
+                    ReadListingView(main->CompactViewList));
 
         return new DadAlliancePfJoinSnapshot
         {
@@ -907,68 +906,88 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         };
     }
 
-    private static DadAlliancePfListingViewSnapshot ReadNativeListingView(
-        AgentLookingForGroup* agent,
-        bool mainVisible,
-        bool mainReady)
+    private static DadAlliancePfListingViewSnapshot ReadListingView(
+        AtkComponentList* list)
     {
-        if (agent == null)
+        if (list == null)
             return new DadAlliancePfListingViewSnapshot();
 
-        var scanLength = DadAlliancePartyFinderNativeListingRules.GetScanLength(
-            agent->Listings.ListingIds.Length,
-            MaxNativeListingScan);
-        var reportedCount = Math.Min(agent->NumberOfListingsDisplayed, scanLength);
-        if (!mainVisible || !mainReady)
+        var root = (AtkResNode*)list->OwnerNode;
+        var visible = root != null && root->IsVisible();
+        var rendererStorageReady =
+            list->AllocatedItemRendererListLength == 0 ||
+            list->ItemRendererList != null;
+        var ready =
+            visible &&
+            list->UldManager.LoadedState == AtkLoadState.Loaded &&
+            list->ListLength >= 0 &&
+            list->AllocatedItemRendererListLength >= 0 &&
+            rendererStorageReady;
+        if (!ready)
         {
             return new DadAlliancePfListingViewSnapshot
             {
                 Available = true,
-                Visible = mainVisible,
+                Visible = visible,
                 Ready = false,
-                ListLength = reportedCount,
+                ListLength = Math.Max(0, list->ListLength),
             };
         }
 
-        var entries =
+        var renderers =
             new List<DadAlliancePfListingRendererSnapshot>();
-        for (var listingIndex = 0; listingIndex < scanLength; listingIndex++)
+        var rendererCount = Math.Min(
+            list->AllocatedItemRendererListLength,
+            MaxListingRendererScan);
+        for (var storageIndex = 0;
+             storageIndex < rendererCount;
+             storageIndex++)
         {
-            var listingId = agent->Listings.ListingIds[listingIndex];
-            if (listingId == 0)
+            var renderer =
+                list->ItemRendererList[storageIndex]
+                    .AtkComponentListItemRenderer;
+            if (renderer == null ||
+                renderer->AtkResNode == null ||
+                !renderer->AtkResNode->IsVisible())
+            {
                 continue;
+            }
 
-            try
-            {
-                var detail = new AgentLookingForGroup.Detailed
-                {
-                    ListingId = listingId,
-                };
-                agent->PopulateListingData(&detail);
-                entries.Add(new DadAlliancePfListingRendererSnapshot(
-                    listingIndex,
-                    detail.LeaderString.Trim()));
-            }
-            catch
-            {
-                entries.Add(new DadAlliancePfListingRendererSnapshot(
-                    listingIndex,
-                    null));
-            }
+            renderers.Add(new DadAlliancePfListingRendererSnapshot(
+                renderer->ListItemIndex,
+                ReadListingRecruiterName(renderer)));
         }
 
-        var listingCount = DadAlliancePartyFinderNativeListingRules.GetLogicalLength(
-            reportedCount,
-            scanLength,
-            entries.Select(static entry => entry.ListItemIndex));
         return new DadAlliancePfListingViewSnapshot
         {
             Available = true,
             Visible = true,
             Ready = true,
-            ListLength = listingCount,
-            Renderers = entries,
+            ListLength = list->ListLength,
+            Renderers = renderers,
         };
+    }
+
+    private static string? ReadListingRecruiterName(
+        AtkComponentListItemRenderer* renderer)
+    {
+        try
+        {
+            var recruiter =
+                renderer->GetTextNodeById(ListingRecruiterTextNodeId);
+            var value = recruiter == null
+                ? null
+                : recruiter->NodeText.StringPtr.Value;
+            return value == null
+                ? null
+                : MemoryHelper
+                    .ReadSeStringNullTerminated((nint)value)
+                    .TextValue;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     DadAlliancePfJoinActionResult IDadAlliancePartyFinderJoinUi.Perform(

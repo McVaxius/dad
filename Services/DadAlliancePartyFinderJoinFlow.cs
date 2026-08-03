@@ -148,25 +148,6 @@ internal static class DadAlliancePartyFinderListingRowResolver
         => view.Available && view.Visible && view.Ready;
 }
 
-internal static class DadAlliancePartyFinderNativeListingRules
-{
-    public static int GetScanLength(int nativeCapacity, int maximumScan)
-        => Math.Min(Math.Max(0, nativeCapacity), Math.Max(0, maximumScan));
-
-    public static int GetLogicalLength(
-        int reportedCount,
-        int scanLength,
-        IEnumerable<int> populatedIndexes)
-    {
-        var boundedReported = Math.Clamp(reportedCount, 0, Math.Max(0, scanLength));
-        var highestPopulated = (populatedIndexes ?? [])
-            .Where(index => index >= 0 && index < scanLength)
-            .DefaultIfEmpty(-1)
-            .Max();
-        return Math.Max(boundedReported, highestPopulated + 1);
-    }
-}
-
 internal readonly record struct DadAlliancePfJoinActionRequest(
     DadAlliancePfJoinAction Action,
     int ListingIndex = -1,

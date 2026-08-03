@@ -72,9 +72,9 @@ uploaded or promoted to a release.
   remain fail-closed. The Coordinator is the orchestration control plane and does not need its account or character in
   the crew. Ordinary Plan and Schedule validation still require their normal duty, roulette, queue, and stop policy fields.
 - A regular crew starts the existing coordinator with only the runtime request's formation-only flag enabled and holds
-  the verified party at `GroupReady`; it never queues. An effective non-PvP Duty Finder entry with a catalog queue size
-  above eight uses the existing private alliance PF path: Create once, wait for the exact owned listing, Grab once, then
-  finish only after exact subgroup verification and recruitment-only cleanup. It never queues or automatically disbands
+  the verified party at `GroupReady`; it never queues. An effective preset with at least one resolved character in each
+  of Alliance A, B, and C uses the existing private alliance PF path: Create once, wait for the exact owned listing,
+  Grab once, then finish only after exact subgroup verification and recruitment-only cleanup. It never queues or automatically disbands
   the alliance.
 - The exact frozen first primary slot is the party leader, inviter, queue executor, alliance PF host, and managed teardown
   authority. A remote Slot1 follows its saved wake/relog policy, receives the authenticated assembly request, and returns

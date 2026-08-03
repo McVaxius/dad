@@ -5,6 +5,93 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void CoordinatorCuratesRunStartPoolBeforePlanningAndManifestBinding()
+    {
+        var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        var rawRefresh = source.IndexOf(
+            "var rawPool = characterIntelligenceService.RefreshLocalCharacterPool(\"run-start\", logRefresh: false);",
+            StringComparison.Ordinal);
+        var curatedPool = source.IndexOf(
+            "var pool = rosterCatalogService.BuildCuratedPool(rawPool);",
+            rawRefresh,
+            StringComparison.Ordinal);
+        var planning = source.IndexOf(
+            "plannerService.BuildPlan(",
+            curatedPool,
+            StringComparison.Ordinal);
+        var manifestBinding = source.IndexOf(
+            "var onlineParticipants = BuildOnlineParticipantSet(pool, liveCoordinatorTruth);",
+            planning,
+            StringComparison.Ordinal);
+        var dependencyBinding = source.IndexOf(
+            "var currentParticipants = BuildOnlineParticipantSet(pool, liveCoordinatorTruth);",
+            manifestBinding,
+            StringComparison.Ordinal);
+
+        Assert.True(rawRefresh >= 0);
+        Assert.True(curatedPool > rawRefresh);
+        Assert.True(planning > curatedPool);
+        Assert.True(manifestBinding > planning);
+        Assert.True(dependencyBinding > manifestBinding);
+        Assert.Contains(
+            "private readonly DadRosterCatalogService rosterCatalogService;",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PartyFinderObservesExactlyOneVisibleRendererListAndNeverScansNativeListingIds()
+    {
+        var source = ReadRepositorySource("Services", "DadAlliancePartyFinderNativeGateway.cs");
+        var standardView = source.IndexOf(
+            "ReadListingView(main->StandardViewList)",
+            StringComparison.Ordinal);
+        var compactView = source.IndexOf(
+            "ReadListingView(main->CompactViewList)",
+            standardView,
+            StringComparison.Ordinal);
+        var reader = source.IndexOf(
+            "private static DadAlliancePfListingViewSnapshot ReadListingView(",
+            compactView,
+            StringComparison.Ordinal);
+        var ownerNode = source.IndexOf(
+            "var root = (AtkResNode*)list->OwnerNode;",
+            reader,
+            StringComparison.Ordinal);
+        var rendererIndex = source.IndexOf(
+            "renderer->ListItemIndex,",
+            ownerNode,
+            StringComparison.Ordinal);
+        var recruiterNode = source.IndexOf(
+            "renderer->GetTextNodeById(ListingRecruiterTextNodeId)",
+            rendererIndex,
+            StringComparison.Ordinal);
+        var seString = source.IndexOf(
+            "ReadSeStringNullTerminated((nint)value)",
+            recruiterNode,
+            StringComparison.Ordinal);
+
+        Assert.True(standardView >= 0);
+        Assert.True(compactView > standardView);
+        Assert.True(reader > compactView);
+        Assert.True(ownerNode > reader);
+        Assert.True(rendererIndex > ownerNode);
+        Assert.True(recruiterNode > rendererIndex);
+        Assert.True(seString > recruiterNode);
+        Assert.Contains(
+            "private const uint ListingRecruiterTextNodeId = 28;",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (standardReady == compactReady)",
+            ReadRepositorySource("Services", "DadAlliancePartyFinderJoinFlow.cs"),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("ListingIds", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PopulateListingData", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadNativeListingView", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SchedulerReevaluatesFrozenLevelSeekAfterReadinessAndJobAcknowledgementBeforeDispatch()
     {
         var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
@@ -48,6 +135,70 @@ public sealed class DadReliabilityIntegrationSourceContractTests
             "DadLevelSeekEvaluationRules.Evaluate(",
             source,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SchedulerDispatchesPreparedCrewBeforeOrdinaryStrictRevalidation()
+    {
+        var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var acknowledgement = source.IndexOf(
+            "if (!assignmentsAcknowledged)",
+            StringComparison.Ordinal);
+        var autoPartyAuthorization = source.IndexOf(
+            "var autoPartyAuthorization = autoPartyAuthorizationGate?.Invoke(frozenPlannerRequest)",
+            acknowledgement,
+            StringComparison.Ordinal);
+        var deniedAuthorization = source.IndexOf(
+            "if (autoPartyAuthorization.State == DadAutoPartyAuthorizationState.Denied)",
+            autoPartyAuthorization,
+            StringComparison.Ordinal);
+        var preparedCrewDispatch = source.IndexOf(
+            "if (TryStartPreparedCrewFormation())",
+            deniedAuthorization,
+            StringComparison.Ordinal);
+        var strictPreview = source.IndexOf(
+            "() => plannerPreviewBuilder(currentState.GroupId)",
+            preparedCrewDispatch,
+            StringComparison.Ordinal);
+        var frozenContract = source.IndexOf(
+            "DadSchedulerRoutingRules.MatchesFrozenRequestContract(",
+            strictPreview,
+            StringComparison.Ordinal);
+        var ordinaryStart = source.IndexOf(
+            "() => startPlannerRequest(strictRequest, repeatBoundary)",
+            frozenContract,
+            StringComparison.Ordinal);
+
+        Assert.True(acknowledgement >= 0);
+        Assert.True(autoPartyAuthorization > acknowledgement);
+        Assert.True(deniedAuthorization > autoPartyAuthorization);
+        Assert.True(preparedCrewDispatch > deniedAuthorization);
+        Assert.True(strictPreview > preparedCrewDispatch);
+        Assert.True(frozenContract > strictPreview);
+        Assert.True(ordinaryStart > frozenContract);
+        Assert.Equal(1, source.Split("if (TryStartPreparedCrewFormation())", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void AlliancePartyFinderRetainsExactOwnedListingAfterCrewVerification()
+    {
+        var source = ReadRepositorySource("Services", "DadAlliancePartyFinderService.cs");
+        var verification = source.IndexOf(
+            "if (successful == coordinatorTargets.Count && successful > 0)",
+            StringComparison.Ordinal);
+        var nextMethod = source.IndexOf(
+            "private void UpdateRemoteHostCoordinator",
+            verification,
+            StringComparison.Ordinal);
+        var verificationBranch = source[verification..nextMethod];
+
+        Assert.True(verification >= 0);
+        Assert.True(nextMethod > verification);
+        Assert.Contains("status.State = DadAllianceRecruitmentState.Complete;", verificationBranch, StringComparison.Ordinal);
+        Assert.Contains("status.OwnsRecruitment = true;", verificationBranch, StringComparison.Ordinal);
+        Assert.Contains("retaining the owned recruitment for operator Stop.", verificationBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("BeginCoordinatorCleanup(", verificationBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueDiscordCleanup()", verificationBranch, StringComparison.Ordinal);
     }
 
     [Fact]

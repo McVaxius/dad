@@ -237,24 +237,6 @@ public sealed class DadLifecycleHardeningPromptPfTests
     }
 
     [Fact]
-    public void NativeListingLengthIncludesPopulatedEntriesBeyondReportedViewport()
-    {
-        Assert.Equal(50, DadAlliancePartyFinderNativeListingRules.GetScanLength(100, 50));
-        Assert.Equal(
-            21,
-            DadAlliancePartyFinderNativeListingRules.GetLogicalLength(
-                reportedCount: 8,
-                scanLength: 50,
-                populatedIndexes: [0, 7, 20]));
-        Assert.Equal(
-            8,
-            DadAlliancePartyFinderNativeListingRules.GetLogicalLength(
-                reportedCount: 8,
-                scanLength: 50,
-                populatedIndexes: [70]));
-    }
-
-    [Fact]
     public void RecoverableCleanupBlockRetriesWithoutDroppingOwnership()
     {
         var now = Now;
