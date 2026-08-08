@@ -936,6 +936,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                     if (!TryGetMutationSafety(out safetyWait))
                         return RetryableQueueWait(content, safetyWait);
                     log.Information("[dad] Clearing stale Duty Finder selection before Daily Roulette {RouletteName} ({RouletteId}).", content.DutyName, content.RouletteId);
+                    rouletteTerritoryGate.ClearVerifiedExactJoin();
                     FireAddonIntCallback(addonBase, 12, 1);
                     ResetLiveEntryMapping();
                     hydratedDutyFinderCharacterContentId = 0;
@@ -995,6 +996,7 @@ public sealed unsafe class DadLocalDutyQueueService : IDisposable
                         return RetryableQueueWait(content, safetyWait);
                     log.Information("[dad] Joining Daily Roulette {RouletteName} ({RouletteId}); unbounded attempt {Attempt}.", content.DutyName, content.RouletteId, rouletteAttemptGate.JoinAttempts);
                     FireAddonIntCallback(addonBase, 12, 0);
+                    rouletteTerritoryGate.MarkVerifiedExactJoin();
                     return Active(content, DadLocalDutyQueuePulseKind.RegisteredForDuty, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Registered Daily Roulette {content.DutyName}; waiting up to eight seconds for queue, commence, or transition evidence.");
 
                 case DadRouletteQueueMutation.Fail:

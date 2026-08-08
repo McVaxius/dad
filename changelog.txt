@@ -1,5 +1,9 @@
 # dad — changelog
 
+## 2026-08-08 — I159 Daily Roulette direct-entry classification (local-only, unpublished)
+- A verified exact mapped Daily Roulette Join callback now permits the territory gate to capture an immediate nonzero bound-duty territory when no queue, commence, or loading-transition observation occurs first.
+- The temporary Join marker clears on run reset and before DAD starts a new roulette selection cycle. Existing duty-entry, completion, exit, repeat, participant-observer, schedule, and requeue behavior are unchanged.
+
 ## 2026-08-03 — Crew formation scheduling (local-only, unpublished)
 - Restored prepared Crew Formation dispatch and retained verified alliance PF ownership for explicit operator cleanup.
 

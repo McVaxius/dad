@@ -144,15 +144,23 @@ public sealed class DadRouletteQueueAttemptGate
 
 public sealed class DadRouletteTerritoryEvidenceGate
 {
+    private bool verifiedExactJoinObserved;
+
     public bool EntryEvidenceObserved { get; private set; }
     public uint CapturedTerritoryId { get; private set; }
 
     public void ObserveEntryEvidence()
         => EntryEvidenceObserved = true;
 
+    public void MarkVerifiedExactJoin()
+        => verifiedExactJoinObserved = true;
+
+    public void ClearVerifiedExactJoin()
+        => verifiedExactJoinObserved = false;
+
     public bool TryCapture(bool boundByDuty, uint territoryId)
     {
-        if (!EntryEvidenceObserved || !boundByDuty || territoryId == 0)
+        if ((!EntryEvidenceObserved && !verifiedExactJoinObserved) || !boundByDuty || territoryId == 0)
             return false;
 
         if (CapturedTerritoryId == 0)
@@ -172,6 +180,7 @@ public sealed class DadRouletteTerritoryEvidenceGate
     public void Reset()
     {
         EntryEvidenceObserved = false;
+        ClearVerifiedExactJoin();
         CapturedTerritoryId = 0;
     }
 }

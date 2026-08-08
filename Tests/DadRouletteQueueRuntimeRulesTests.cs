@@ -258,6 +258,32 @@ public sealed class DadRouletteQueueRuntimeRulesTests
     }
 
     [Fact]
+    public void VerifiedExactJoinAllowsDirectBoundTerritoryCapture()
+    {
+        const uint capturedTerritory = 777;
+        var gate = new DadRouletteTerritoryEvidenceGate();
+
+        gate.MarkVerifiedExactJoin();
+
+        Assert.True(gate.TryCapture(boundByDuty: true, capturedTerritory));
+        Assert.Equal(capturedTerritory, gate.CapturedTerritoryId);
+    }
+
+    [Fact]
+    public void VerifiedExactJoinDoesNotSurviveResetOrNewSelectionCycle()
+    {
+        var gate = new DadRouletteTerritoryEvidenceGate();
+
+        gate.MarkVerifiedExactJoin();
+        gate.Reset();
+        Assert.False(gate.TryCapture(boundByDuty: true, territoryId: 777));
+
+        gate.MarkVerifiedExactJoin();
+        gate.ClearVerifiedExactJoin();
+        Assert.False(gate.TryCapture(boundByDuty: true, territoryId: 777));
+    }
+
+    [Fact]
     public void FirstEvidenceBackedBoundTerritoryIsStableForEntryCompletionAndExit()
     {
         const uint capturedTerritory = 777;
