@@ -54,7 +54,9 @@ internal sealed record DadAutoPartyParticipantSnapshot(
     DateTimeOffset? LeaseExpiresAt,
     DateTimeOffset ObservedAt,
     string SafeCode,
-    IReadOnlyList<ulong> ObservedPartyContentIds)
+    IReadOnlyList<ulong> ObservedPartyContentIds,
+    EndpointExecutionModuleReference? ActiveModuleReference = null,
+    int NextModuleIndex = 0)
 {
     public bool ReservationAccepted => Stage >= DadAutoPartyParticipantStage.PreflightPending &&
                                        Stage < DadAutoPartyParticipantStage.Revoked;
@@ -96,7 +98,8 @@ internal sealed record DadAutoPartyParticipantCommand(
     EndpointExecutionPlan? ExecutionPlan = null,
     EndpointExecutionModuleReference? ExecutionModuleReference = null,
     long RevocationGeneration = 0,
-    string SafeCode = "");
+    string SafeCode = "",
+    bool FormationOnly = false);
 
 internal sealed record DadAutoPartyParticipantCommandBatch(
     Guid DispatchLeaseId,
@@ -283,6 +286,23 @@ internal sealed class DadAutoPartyParticipantBridge
             return TryGetSlot(proposalId, slotId, out _, out var slot)
                 ? ToSnapshot(proposalId, proposals[proposalId], slot)
                 : null;
+        }
+    }
+
+    public bool IsOperationComplete(
+        Guid proposalId,
+        string slotId,
+        ExecutionOperationKind kind,
+        DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            Sweep(now);
+            var matching = operations.Values.Where(operation =>
+                operation.ProposalId == proposalId &&
+                string.Equals(operation.SlotId, slotId, StringComparison.OrdinalIgnoreCase) &&
+                operation.Kind == kind).ToList();
+            return matching.Count > 0 && matching.All(static operation => operation.Completed);
         }
     }
 
@@ -612,6 +632,13 @@ internal sealed class DadAutoPartyParticipantBridge
                 safeCode = "dad-remote-invite-target-invalid";
                 return false;
             }
+            var proposal = proposals[proposalId];
+            if (target.ModuleId != proposal.ModuleId ||
+                proposal.FormationOnly != (target.ModuleId == DadModuleId.None))
+            {
+                safeCode = "dad-remote-invite-target-invalid";
+                return false;
+            }
             slot.InviteTarget = target.Clone();
             slot.InviteTargetExpiresAt = validUntil;
             slot.ObservedAt = now;
@@ -676,7 +703,9 @@ internal sealed class DadAutoPartyParticipantBridge
                         DadAutoPartyParticipantStage.Settled or DadAutoPartyParticipantStage.CancelPending or
                         DadAutoPartyParticipantStage.Cancelled or DadAutoPartyParticipantStage.RestorePending or
                         DadAutoPartyParticipantStage.Restored,
-                ExecutionOperationKind.Cancel => !slot.IsTerminal,
+                ExecutionOperationKind.Cancel => slot.Stage is not DadAutoPartyParticipantStage.Restored and
+                    not DadAutoPartyParticipantStage.Revoked and not DadAutoPartyParticipantStage.Expired and
+                    not DadAutoPartyParticipantStage.Failed,
                 _ => false,
             };
             if (!allowed)
@@ -715,13 +744,20 @@ internal sealed class DadAutoPartyParticipantBridge
                 return true;
             }
 
+            safeCode = string.Empty;
             var frozenPartyInviteTargets = (partyInviteTargets ?? [])
                 .Select(static target => target?.Clone())
                 .ToList();
             if (frozenPartyInviteTargets.Any(static target => target == null) ||
-                (kind == ExecutionOperationKind.Form
-                    ? !ValidateFormLocators(proposal, slot, inviter, frozenPartyInviteTargets!, out safeCode)
-                    : inviter != null || frozenPartyInviteTargets.Count > 0))
+                (kind switch
+                {
+                    ExecutionOperationKind.Form =>
+                        !ValidateFormLocators(proposal, slot, inviter, frozenPartyInviteTargets!, out safeCode),
+                    ExecutionOperationKind.Restore when inviter != null || frozenPartyInviteTargets.Count > 0 =>
+                        !ValidateRestoreLocators(proposal, slot, inviter, frozenPartyInviteTargets!, out safeCode),
+                    ExecutionOperationKind.Restore => false,
+                    _ => inviter != null || frozenPartyInviteTargets.Count > 0,
+                }))
             {
                 if (string.IsNullOrWhiteSpace(safeCode))
                     safeCode = "dad-remote-operation-locator-unexpected";
@@ -759,7 +795,8 @@ internal sealed class DadAutoPartyParticipantBridge
                 now + OperationLifetime,
                 inviter?.Clone(),
                 frozenPartyInviteTargets!,
-                ExecutionModuleReference: moduleReference);
+                ExecutionModuleReference: moduleReference,
+                FormationOnly: proposal.FormationOnly);
             if (!Enqueue(command))
             {
                 slot.Stage = DadAutoPartyParticipantStage.Failed;
@@ -797,7 +834,7 @@ internal sealed class DadAutoPartyParticipantBridge
                 !operations.TryGetValue(receipt.OperationId, out var operation) ||
                 operation.ProposalId != receipt.ProposalId || operation.Kind != receipt.Kind || operation.Completed ||
                 !SameModuleReference(operation.ModuleReference, receipt.ModuleReference) ||
-                !TryGetSlot(receipt.ProposalId, operation.SlotId, out _, out var slot) ||
+                !TryGetSlot(receipt.ProposalId, operation.SlotId, out var proposal, out var slot) ||
                 !string.Equals(receipt.OwnerId.Value, slot.Slot.OwnerId, StringComparison.Ordinal) ||
                 !string.Equals(receipt.Header.SenderIslandId.Value, slot.Slot.IslandId, StringComparison.Ordinal))
             {
@@ -806,11 +843,17 @@ internal sealed class DadAutoPartyParticipantBridge
             }
             var requiresPartyProof = receipt.Kind == ExecutionOperationKind.Form &&
                                      receipt.Outcome == ExecutionOutcome.Completed;
+            var expectedPartyContentIds = proposal.Slots.Values
+                .Select(static candidate => candidate.InviteTarget?.ContentId ?? 0)
+                .ToHashSet();
             if (requiresPartyProof
                     ? receipt.ObservedPartyContentIds.IsDefault ||
                       receipt.ObservedPartyContentIds.Length is < 1 or > 8 ||
                       receipt.ObservedPartyContentIds.Any(static contentId => contentId == 0) ||
-                      receipt.ObservedPartyContentIds.Distinct().Count() != receipt.ObservedPartyContentIds.Length
+                      receipt.ObservedPartyContentIds.Distinct().Count() != receipt.ObservedPartyContentIds.Length ||
+                      expectedPartyContentIds.Count != proposal.Slots.Count ||
+                      expectedPartyContentIds.Contains(0) ||
+                      !expectedPartyContentIds.SetEquals(receipt.ObservedPartyContentIds)
                     : !receipt.ObservedPartyContentIds.IsDefaultOrEmpty)
             {
                 safeCode = "dad-remote-operation-party-proof-invalid";
@@ -840,6 +883,20 @@ internal sealed class DadAutoPartyParticipantBridge
             }
 
             operation.Completed = true;
+            if (requiresPartyProof && slot.Slot.IsInviter)
+            {
+                foreach (var candidate in proposal.Slots.Values.Where(static candidate => !candidate.IsTerminal))
+                {
+                    candidate.Stage = DadAutoPartyParticipantStage.Formed;
+                    candidate.ObservedPartyContentIds = receipt.ObservedPartyContentIds;
+                    candidate.ObservedAt = now;
+                    candidate.SafeCode = "dad-remote-slot1-party-proof-accepted";
+                }
+                foreach (var pending in operations.Values.Where(candidate =>
+                             candidate.ProposalId == operation.ProposalId &&
+                             candidate.Kind == ExecutionOperationKind.Form))
+                    pending.Completed = true;
+            }
             var operationSetComplete = operations.Values
                 .Where(candidate => candidate.ProposalId == operation.ProposalId &&
                                     string.Equals(candidate.SlotId, operation.SlotId, StringComparison.OrdinalIgnoreCase) &&
@@ -1240,7 +1297,8 @@ internal sealed class DadAutoPartyParticipantBridge
                 slot.StateGeneration,
                 now,
                 expiresAt,
-                SafeCode: safeReason)))
+                SafeCode: safeReason,
+                FormationOnly: proposal.FormationOnly)))
             return false;
 
         operations[operationId] = new PendingOperation(
@@ -1336,7 +1394,13 @@ internal sealed class DadAutoPartyParticipantBridge
             slot.LeaseExpiresAt,
             slot.ObservedAt,
             slot.SafeCode,
-            slot.ObservedPartyContentIds);
+            slot.ObservedPartyContentIds,
+            slot.ActiveModuleReference == null
+                ? null
+                : new EndpointExecutionModuleReference(
+                    slot.ActiveModuleReference.ModuleIndex,
+                    slot.ActiveModuleReference.ModuleId),
+            slot.NextModuleIndex);
 
     private static DadParticipantSnapshot BuildParticipant(
         Guid proposalId,
@@ -1728,6 +1792,55 @@ internal sealed class DadAutoPartyParticipantBridge
                 safeCode = "dad-remote-slot1-party-targets-invalid";
                 return false;
             }
+        }
+        return true;
+    }
+
+    private static bool ValidateRestoreLocators(
+        ProposalRuntime proposal,
+        SlotRuntime slot,
+        DadExpectedPartyInviter? inviter,
+        IReadOnlyList<DadNativePartyInviteTarget> partyInviteTargets,
+        out string safeCode)
+    {
+        safeCode = string.Empty;
+        var expectedInviter = proposal.ExecutionPlan.Participants.SingleOrDefault(static participant => participant.IsInviter);
+        var expectedFollowers = proposal.ExecutionPlan.Participants.Where(static participant => !participant.IsInviter).ToArray();
+        if (inviter == null || expectedInviter == null ||
+            DadPartyInvitationAcceptanceTracker.Validate(inviter).Length > 0 ||
+            !string.Equals(inviter.RunId, proposal.RunId, StringComparison.Ordinal) ||
+            partyInviteTargets.Count != expectedFollowers.Length || partyInviteTargets.Count is < 1 or > 7 ||
+            partyInviteTargets.Select(static target => target.ContentId).Distinct().Count() != partyInviteTargets.Count ||
+            partyInviteTargets.Select(static target => target.SlotId)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != partyInviteTargets.Count)
+        {
+            safeCode = "dad-remote-restore-locator-invalid";
+            return false;
+        }
+
+        foreach (var expected in expectedFollowers)
+        {
+            var matches = partyInviteTargets.Where(target =>
+                string.Equals(target.RunId, proposal.RunId, StringComparison.Ordinal) &&
+                string.Equals(target.SlotId, expected.SlotId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches.Count != 1 || matches[0].ContentId == 0 || matches[0].WorldId == 0 ||
+                matches[0].WorkerSessionId.IsEmpty || matches[0].AccountKey.IsEmpty || matches[0].CharacterKey.IsEmpty ||
+                string.IsNullOrWhiteSpace(matches[0].CharacterName))
+            {
+                safeCode = "dad-remote-restore-locator-invalid";
+                return false;
+            }
+        }
+
+        var localIsInviter = slot.Slot.IsInviter;
+        var localTargetCount = localIsInviter
+            ? string.Equals(slot.Slot.SlotId, expectedInviter.SlotId, StringComparison.OrdinalIgnoreCase) ? 1 : 0
+            : partyInviteTargets.Count(target =>
+                string.Equals(target.SlotId, slot.Slot.SlotId, StringComparison.OrdinalIgnoreCase));
+        if (localTargetCount != 1)
+        {
+            safeCode = "dad-remote-restore-local-route-invalid";
+            return false;
         }
         return true;
     }

@@ -6,6 +6,7 @@ namespace dad.Services;
 
 public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAsyncDisposable
 {
+    private readonly DadAutoPartyConfiguration configuration;
     private readonly Func<bool> dadEnabled;
     private IAutoPartyTransportAdapter? innerAdapter;
     private bool disposed;
@@ -14,7 +15,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
         DadAutoPartyConfiguration configuration,
         Func<bool> dadEnabled)
     {
-        ArgumentNullException.ThrowIfNull(configuration);
+        this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.dadEnabled = dadEnabled ?? throw new ArgumentNullException(nameof(dadEnabled));
     }
 
@@ -31,7 +32,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (disposed || !dadEnabled())
+        if (disposed || !IsTransportEnabled())
             return Health(AutoPartyTransportHealthState.Disabled, "dad-autoparty-disabled");
         if (innerAdapter == null)
             return Health(AutoPartyTransportHealthState.NotReady, "dad-courier-not-attached");
@@ -53,7 +54,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
     public async IAsyncEnumerable<OpaqueEnvelope> ReceiveAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (disposed || !dadEnabled() || innerAdapter == null)
+        if (disposed || !IsTransportEnabled() || innerAdapter == null)
             yield break;
 
         await foreach (var delivery in innerAdapter.ReceiveAsync(cancellationToken).ConfigureAwait(false))
@@ -69,7 +70,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (disposed || !dadEnabled())
+        if (disposed || !IsTransportEnabled())
             return Denied(delivery.EnvelopeId, "dad-autoparty-disabled");
         if (innerAdapter == null)
             return Denied(delivery.EnvelopeId, "dad-courier-not-attached");
@@ -95,7 +96,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (disposed || !dadEnabled() || innerAdapter == null)
+        if (disposed || !IsTransportEnabled() || innerAdapter == null)
             return;
         await innerAdapter.AcknowledgeAsync(acknowledgement, cancellationToken).ConfigureAwait(false);
     }
@@ -121,6 +122,9 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
            delivery.PayloadLength is > 0 and <= AutoPartyProtocol.MaximumSemanticEnvelopeBytes &&
            !string.IsNullOrWhiteSpace(delivery.PayloadType) &&
            delivery.PayloadType.Length <= AutoPartyProtocol.MaximumIdentifierLength;
+
+    private bool IsTransportEnabled()
+        => dadEnabled() && (configuration.Enabled || configuration.HasImportedBootstrap);
 
     private static AutoPartyTransportHealth Health(
         AutoPartyTransportHealthState state,

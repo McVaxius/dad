@@ -151,6 +151,87 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
+    public void PersistedReadyOwnedSessionRestoresExactLeaseAuthorization()
+    {
+        const string requesterOwner = "owner-requester";
+        var proposalId = Guid.NewGuid();
+        var configuration = ActiveConfiguration();
+        configuration.Pairings.Add(Pairing(requesterOwner));
+        using var service = Service(configuration, new FakeIdentityStore());
+        var proposal = OwnedProposal(proposalId, requesterOwner);
+        var ownedParticipants = proposal.Participants;
+        const SessionPermission permissions = SessionPermission.Reserve | SessionPermission.Preflight |
+                                              SessionPermission.FormParty | SessionPermission.Queue |
+                                              SessionPermission.Execute | SessionPermission.Cancel |
+                                              SessionPermission.Complete;
+        var reservation = new Reservation(
+            ResponseHeader(proposal.Header, 8),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(Owner),
+            new OpaqueCharacterId(Character),
+            7,
+            8);
+        var preflight = new PreflightResult(
+            ResponseHeader(proposal.Header, 9),
+            proposalId,
+            new OwnerId(Owner),
+            Ready: true,
+            ReadinessGeneration: 1,
+            ExpectedStateGeneration: 8,
+            SafeBlockers: [],
+            ObservedStateGeneration: 9);
+        var lease = new SessionLease(
+            ResponseHeader(proposal.Header, 10),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(Owner),
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            permissions,
+            ExpectedStateGeneration: 9,
+            ObservedStateGeneration: 10);
+        var state = new DadAutoPartyInboundProposalState(
+            proposal,
+            ownedParticipants,
+            DateTimeOffset.UtcNow,
+            [reservation],
+            preflight,
+            lease,
+            [],
+            9,
+            "dad-inbound-admission-ready");
+
+        var restored = service.RestoreOwnedProposalSession(state, permissions);
+        var authorized = service.Policy.AuthorizeExecution(new ExecutionOperation(
+            proposal.Header,
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(Owner),
+            ExecutionOperationKind.Form,
+            new ActivityId(Activity),
+            new OpaqueCharacterId(Character),
+            new JobId(Job),
+            null,
+            lease.ObservedStateGeneration,
+            false));
+
+        Assert.True(restored.Allowed, restored.SafeCode);
+        Assert.Equal(lease.ObservedStateGeneration, restored.StateGeneration);
+        Assert.True(authorized.Allowed, authorized.SafeCode);
+        Assert.Equal(lease.ObservedStateGeneration, authorized.StateGeneration);
+        Assert.Equal(1, service.Policy.ActiveSessionCount);
+
+        var tamperedConfiguration = ActiveConfiguration();
+        tamperedConfiguration.Pairings.Add(Pairing(requesterOwner));
+        using var tamperedService = Service(tamperedConfiguration, new FakeIdentityStore());
+        var denied = tamperedService.RestoreOwnedProposalSession(
+            state with { Lease = lease with { ExpectedStateGeneration = 8 } },
+            permissions);
+        Assert.False(denied.Allowed);
+        Assert.Equal("dad-owned-session-restore-invalid", denied.SafeCode);
+    }
+
+    [Fact]
     public void PolicyReplayCacheNeverExceedsItsBound()
     {
         var configuration = new DadAutoPartyConfiguration { Enabled = true };
@@ -341,7 +422,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
         Assert.Equal(DadRunPhase.GroupReady, formed.Phase);
         Assert.Equal("dad-group-ready", formed.SafeCode);
         Assert.NotNull(formed.PartyReceipt);
-        Assert.Equal([101UL, 102UL, 103UL, 104UL], formed.PartyReceipt.ContentIds);
+        Assert.True(formed.PartyReceipt.ContentIds.SequenceEqual([101UL, 102UL, 103UL, 104UL]));
         Assert.Equal(ExecutionOutcome.Denied, queued.Outcome);
         Assert.Equal("dad-formation-only-queue-denied", queued.SafeCode);
         Assert.Equal(ExecutionOutcome.Denied, settled.Outcome);
@@ -560,6 +641,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
         configuration.Pairings.Add(Pairing());
         configuration.Grants.Add(Grant(proposalId));
         var service = Service(configuration, new FakeIdentityStore(), localSafetyAllowsExecution);
+        service.ConfigureExecutionFacade(new DadAutoPartyFakeExecutionFacade(service.Policy));
         var proposal = Proposal(proposalId);
         var accepted = service.AcceptProposal(proposal, SessionPermission.All);
         Assert.True(accepted.Allowed);
@@ -594,11 +676,11 @@ public sealed class DadAutoPartyIntegrationRulesTests
         return new(service, configuration, proposal, lease.StateGeneration);
     }
 
-    private static DadAutoPartyPairing Pairing()
+    private static DadAutoPartyPairing Pairing(string ownerId = Owner)
         => new()
         {
             PairingId = Guid.NewGuid().ToString("D"),
-            OwnerId = Owner,
+            OwnerId = ownerId,
             IslandId = SenderIsland,
             HomeGuildScope = "guild-peer",
             PublicKeyFingerprint = new string('A', 64),
@@ -687,6 +769,63 @@ public sealed class DadAutoPartyIntegrationRulesTests
                 new OpaqueCharacterId(Character),
                 new JobId(Job))),
             "effective-content-hash");
+
+    private static RunProposal OwnedProposal(Guid proposalId, string requesterOwner)
+        => new(
+            Header(),
+            proposalId,
+            new OwnerId(requesterOwner),
+            new ActivityId(Activity),
+            [
+                new ParticipantRequest(
+                    new OwnerId(Owner),
+                    new IslandId(LocalIsland),
+                    new OpaqueCharacterId(Character),
+                    new JobId(Job)),
+            ],
+            "effective-content-hash",
+            new EndpointExecutionPlan(
+                $"run-{proposalId:N}",
+                FormationOnly: false,
+                RequirePostArReady: true,
+                ParticipantReadyTimeoutSeconds: 120,
+                AssemblyTimeoutSeconds: 90,
+                LeaseDurationSeconds: 300,
+                RepairPolicy: new EndpointRepairPolicy(false, 75, "self"),
+                Participants:
+                [
+                    new EndpointExecutionParticipant(
+                        "Slot1",
+                        new OwnerId(Owner),
+                        new IslandId(LocalIsland),
+                        new OpaqueCharacterId(Character),
+                        new JobId(Job),
+                        EndpointExecutionRole.QueueLeader,
+                        IsInviter: true),
+                ],
+                Modules:
+                [
+                    new EndpointExecutionModule(
+                        0,
+                        nameof(DadModuleId.PremadeDuty),
+                        new ActivityId(Activity),
+                        "Fixture Duty",
+                        "duty-finder-duty",
+                        1,
+                        0,
+                        Unsynced: false,
+                        ExpectedPartySize: 1),
+                ]));
+
+    private static ContractHeader ResponseHeader(ContractHeader proposalHeader, long generation)
+        => proposalHeader with
+        {
+            MessageId = Guid.NewGuid(),
+            IdempotencyKey = Guid.NewGuid().ToString("N"),
+            SenderIslandId = new IslandId(LocalIsland),
+            RecipientIslandId = new IslandId(SenderIsland),
+            Generation = generation,
+        };
 
     private static ExecutionOperation Operation(
         Guid proposalId,

@@ -219,13 +219,28 @@ public sealed class DadPartyAssemblyService
         DadRunSlotManifest manifest,
         DadWorkerSessionId authorityWorkerSessionId,
         out string blocker)
+        => BuildTeardownInstructions(
+            plan,
+            participants,
+            manifest,
+            authorityWorkerSessionId,
+            runtimeInviteTargets: null,
+            out blocker);
+
+    internal List<DadAssemblyInstructionDto> BuildTeardownInstructions(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        DadRunSlotManifest manifest,
+        DadWorkerSessionId authorityWorkerSessionId,
+        IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
+        out string blocker)
     {
         var instructions = BuildInstructions(
             plan,
             participants,
             manifest,
             authorityWorkerSessionId,
-            runtimeInviteTargets: null,
+            runtimeInviteTargets,
             out blocker);
         if (!string.IsNullOrWhiteSpace(blocker) || instructions.Count == 0)
             return [];

@@ -19,7 +19,8 @@ internal sealed record DadAutoPartyRelayPumpSnapshot(
 
 internal sealed record DadAutoPartyFormExecutionContext(
     ExecutionOperation Operation,
-    DadExpectedPartyInviter ExpectedInviter);
+    DadExpectedPartyInviter? ExpectedInviter,
+    IReadOnlyList<DadNativePartyInviteTarget> PartyInviteTargets);
 
 internal sealed record DadAutoPartyTransientRouteSnapshot(
     string RequesterOwnerId,
@@ -69,6 +70,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly IDadAutoPartyPendingOperationStore pendingOperationStore;
     private readonly DadAutoPartyInboundProposalService inboundProposalService;
     private readonly Func<DateTime, DadAutoPartyListingPublication>? inboundListingPublicationProvider;
+    private readonly Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly Action<string> diagnostic;
@@ -85,6 +87,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly Dictionary<Guid, DateTimeOffset> replayedMessages = [];
     private readonly Queue<PendingInboundProposalEvaluation> pendingInboundProposalEvaluations = [];
     private readonly HashSet<Guid> pendingInboundProposalIds = [];
+    private readonly HashSet<Guid> runtimeAdmissionValidatedProposalIds = [];
+    private readonly Dictionary<InboundRuntimeTargetKey, InboundRuntimeTarget> inboundRuntimeTargets = [];
     private readonly CancellationTokenSource shutdown = new();
     private Func<RegistrationReceipt, DadAutoPartyPolicyDecision>? registrationReceiptHandler;
     private Func<DeregistrationReceipt, DadAutoPartyPendingDeregistration, CancellationToken,
@@ -98,6 +102,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private Task? pumpTask;
     private Task<DadAutoPartyExecutionResult>? activeExecution;
     private ExecutionOperation? activeExecutionOperation;
+    private PendingExecution? activeExecutionPending;
     private string loadedIdentityReference = string.Empty;
     private long nextSequence = Math.Max(1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     private bool disposed;
@@ -111,6 +116,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         IDadAutoPartyPendingOperationStore pendingOperationStore,
         IDadAutoPartyInboundProposalStore? inboundProposalStore = null,
         Func<DateTime, DadAutoPartyListingPublication>? inboundListingPublicationProvider = null,
+        Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission = null,
         Func<DateTimeOffset>? utcNow = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Action<string>? diagnostic = null)
@@ -124,6 +130,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         inboundProposalService = new(configuration, inboundProposalStore, this.utcNow);
         this.inboundListingPublicationProvider = inboundListingPublicationProvider;
+        this.inboundAdmission = inboundAdmission;
         this.delay = delay ?? Task.Delay;
         this.diagnostic = diagnostic ?? (_ => { });
         snapshot = new(false, "dad-relay-pump-stopped", this.utcNow(), null, 0, 0, 0);
@@ -132,6 +139,76 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private DadAutoPartyRelayPumpSnapshot snapshot;
 
     public DadAutoPartyRelayPumpSnapshot Snapshot => Volatile.Read(ref snapshot);
+
+    internal bool TryGetInboundRuntimeTarget(
+        Guid proposalId,
+        OpaqueCharacterId characterId,
+        out string slotId,
+        out DadNativePartyInviteTarget target,
+        out string safeCode)
+    {
+        slotId = string.Empty;
+        target = new DadNativePartyInviteTarget();
+        safeCode = "dad-inbound-runtime-target-unavailable";
+        if (proposalId == Guid.Empty ||
+            !IsBoundedLocatorValue(characterId.Value, AutoPartyProtocol.MaximumIdentifierLength))
+            return false;
+        var now = utcNow();
+        lock (gate)
+        {
+            var key = new InboundRuntimeTargetKey(proposalId, characterId.Value);
+            if (!inboundRuntimeTargets.TryGetValue(key, out var retained) || retained.ExpiresAt <= now)
+            {
+                inboundRuntimeTargets.Remove(key);
+                return false;
+            }
+            slotId = retained.SlotId;
+            target = retained.Target.Clone();
+            safeCode = "dad-inbound-runtime-target-ready";
+            return true;
+        }
+    }
+
+    internal bool TryGetInboundExecutionContext(
+        Guid proposalId,
+        OpaqueCharacterId characterId,
+        out DadAutoPartyInboundExecutionContext context,
+        out string safeCode)
+    {
+        context = null!;
+        safeCode = "dad-inbound-runtime-target-unavailable";
+        if (proposalId == Guid.Empty ||
+            !IsBoundedLocatorValue(characterId.Value, AutoPartyProtocol.MaximumIdentifierLength))
+            return false;
+        var now = utcNow();
+        lock (gate)
+        {
+            var key = new InboundRuntimeTargetKey(proposalId, characterId.Value);
+            if (!inboundRuntimeTargets.TryGetValue(key, out var retained) || retained.ExpiresAt <= now)
+            {
+                inboundRuntimeTargets.Remove(key);
+                return false;
+            }
+            context = new DadAutoPartyInboundExecutionContext(
+                retained.ExecutionPlan,
+                retained.Target.Clone(),
+                retained.SenderIslandId,
+                retained.OwnerId,
+                retained.ExpiresAt,
+                retained.FrozenInviter?.Clone(),
+                retained.PartyInviteTargets?.Select(static target => target.Clone()).ToArray());
+            safeCode = "dad-inbound-runtime-target-ready";
+            return true;
+        }
+    }
+
+    internal void RemoveInboundExecutionContext(Guid proposalId, OpaqueCharacterId characterId)
+    {
+        if (proposalId == Guid.Empty || string.IsNullOrWhiteSpace(characterId.Value))
+            return;
+        lock (gate)
+            inboundRuntimeTargets.Remove(new InboundRuntimeTargetKey(proposalId, characterId.Value));
+    }
 
     public DadAutoPartyPairingChallenge? LastPairingChallenge { get; private set; }
 
@@ -197,7 +274,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 now) ||
             executionPlan == null ||
             !IsBoundedLocatorValue(characterId.Value, AutoPartyProtocol.MaximumIdentifierLength) ||
-            !IsValidNativeInviteTarget(target) ||
+            !IsValidNativeInviteTarget(target, executionPlan.FormationOnly) ||
             !string.Equals(target.RunId, executionPlan.RunId, StringComparison.Ordinal) ||
             executionPlan.Participants.Count(participant =>
                 string.Equals(participant.OwnerId.Value, configuration.RegisteredOwnerId, StringComparison.Ordinal) &&
@@ -750,6 +827,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var generation = Math.Max(1, configuration.RevocationGeneration);
         participantBridge.DeauthenticateIsland(islandId, generation, reason, utcNow());
         inboundProposalService.RemoveSender(islandId);
+        RemoveInboundRuntimeTargets((_, target) =>
+            string.Equals(target.SenderIslandId, islandId, StringComparison.Ordinal));
         RemoveTransientRoutes((route, _) =>
             string.Equals(route.FirstIslandId, islandId, StringComparison.Ordinal) ||
             string.Equals(route.SecondIslandId, islandId, StringComparison.Ordinal));
@@ -810,6 +889,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return;
         var operation = pending.Operation;
         activeExecutionOperation = operation;
+        activeExecutionPending = pending;
         try
         {
             var execution = ExecuteAsync(pending);
@@ -964,6 +1044,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 awaitingRelayReceipts.Remove(messageId);
             pendingAllianceOutbound.Clear();
             pendingAllianceInbound.Clear();
+            inboundRuntimeTargets.Clear();
         }
         keyResolver?.Dispose();
         keyResolver = null;
@@ -1018,8 +1099,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     private void PrepareInboundResponsesFramework()
     {
-        var retained = inboundProposalService.Retained(MaximumInboundPerCycle);
-        if (retained.Count == 0 || inboundListingPublicationProvider == null)
+        var active = inboundProposalService.Active(MaximumInboundPerCycle);
+        if (active.Count == 0 || inboundListingPublicationProvider == null)
             return;
 
         DadAutoPartyListingPublication publication;
@@ -1035,22 +1116,44 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return;
         }
 
-        foreach (var state in retained)
+        foreach (var state in active)
         {
             lock (gate)
             {
+                if (state.AdmissionReady && runtimeAdmissionValidatedProposalIds.Contains(state.Proposal.ProposalId))
+                    continue;
                 if (pendingInboundProposalIds.Contains(state.Proposal.ProposalId))
                     continue;
                 if (pendingInboundProposalEvaluations.Count >= MaximumPendingExecutions)
                     return;
             }
 
-            var allowed = TryValidateInboundPublication(state, publication, now, out var safeCode);
+            var authorized = TryValidateInboundPublication(state, publication, now, out var safeCode);
+            var admission = DadAutoPartyInboundAdmissionResult.Blocked(
+                state.Proposal.ExecutionPlan?.RunId ?? string.Empty,
+                authorized ? "dad-inbound-execution-admission-not-wired" : safeCode);
+            if (authorized && inboundAdmission != null)
+            {
+                try
+                {
+                    admission = inboundAdmission(state.Proposal) ??
+                                DadAutoPartyInboundAdmissionResult.Blocked(
+                                    state.Proposal.ExecutionPlan?.RunId ?? string.Empty,
+                                    DadAutoPartyInboundAdmissionService.InvalidProposal);
+                }
+                catch
+                {
+                    admission = DadAutoPartyInboundAdmissionResult.Blocked(
+                        state.Proposal.ExecutionPlan?.RunId ?? string.Empty,
+                        "dad-inbound-admission-runtime-failed");
+                }
+            }
             var evaluation = new PendingInboundProposalEvaluation(
                 state.Proposal.ProposalId,
                 Math.Max(1, configuration.StateGeneration),
-                allowed,
-                allowed ? "dad-inbound-execution-admission-not-wired" : safeCode);
+                authorized,
+                authorized ? admission.SafeBlocker : safeCode,
+                admission);
             lock (gate)
             {
                 if (pendingInboundProposalIds.Add(state.Proposal.ProposalId))
@@ -1154,7 +1257,9 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 continue;
             }
 
-            var responseCount = state.OwnedParticipants.Length + 1;
+            var admission = evaluation.Admission;
+            var responseCount = state.OwnedParticipants.Length + 1 +
+                                (admission.Ready ? 1 + admission.InviteTargets.Length : 0);
             lock (gate)
             {
                 if (pendingOutbound.Count + responseCount > MaximumPendingOutbound)
@@ -1170,6 +1275,29 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                                       SessionPermission.Complete;
             if (state.Proposal.ExecutionPlan is { FormationOnly: false })
                 requiredPermissions |= SessionPermission.Queue | SessionPermission.Execute;
+
+            if (state.AdmissionReady)
+            {
+                var restored = service.RestoreOwnedProposalSession(state, requiredPermissions);
+                var locatorSafeCode = DadAutoPartyInboundAdmissionService.InvalidProposal;
+                if (!restored.Allowed || !admission.Ready || state.Lease == null ||
+                    restored.StateGeneration != state.Lease.ObservedStateGeneration ||
+                    !TryQueueInboundInviteLocators(
+                        state,
+                        admission,
+                        restored.StateGeneration,
+                        out locatorSafeCode))
+                {
+                    diagnostic(!restored.Allowed
+                        ? restored.SafeCode
+                        : admission.Ready ? locatorSafeCode : admission.SafeBlocker);
+                    continue;
+                }
+                lock (gate)
+                    runtimeAdmissionValidatedProposalIds.Add(evaluation.ProposalId);
+                continue;
+            }
+
             var accepted = service.AcceptOwnedProposal(
                 state.Proposal,
                 state.OwnedParticipants,
@@ -1200,46 +1328,125 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             }
 
             var responseExpiry = Min(state.Proposal.Header.ExpiresAt, now + ParticipantLifetime);
-            var reservations = state.OwnedParticipants.Select((participant, index) =>
+            IReadOnlyList<Reservation> reservations = state.ResponsesPrepared
+                ? state.Reservations
+                : state.OwnedParticipants.Select((participant, index) =>
+                {
+                    var routeKey = $"{participant.CharacterId.Value}:{participant.RequestedJob.Value}";
+                    var messageId = DeriveGuid(
+                        evaluation.ProposalId.ToString("N"),
+                        $"reservation-message:{routeKey}");
+                    return new Reservation(
+                        CreateHeader(
+                            state.Proposal.Header.SenderIslandId,
+                            $"inbound-reservation-{evaluation.ProposalId:N}-{index}",
+                            responseExpiry,
+                            messageId,
+                            reserved.StateGeneration),
+                        DeriveGuid(evaluation.ProposalId.ToString("N"), $"reservation:{routeKey}"),
+                        evaluation.ProposalId,
+                        new OwnerId(configuration.RegisteredOwnerId),
+                        participant.CharacterId,
+                        accepted.StateGeneration,
+                        reserved.StateGeneration);
+                }).ToArray();
+
+            PreflightResult preflight;
+            SessionLease? lease = null;
+            long responseStateGeneration;
+            string responseSafeCode;
+            if (admission.Ready)
             {
-                var routeKey = $"{participant.CharacterId.Value}:{participant.RequestedJob.Value}";
-                var messageId = DeriveGuid(evaluation.ProposalId.ToString("N"), $"reservation-message:{routeKey}");
-                return new Reservation(
+                var expectedGeneration = state.ResponsesPrepared
+                    ? state.StateGeneration
+                    : reserved.StateGeneration;
+                var preflightMessageId = DeriveGuid(
+                    evaluation.ProposalId.ToString("N"),
+                    $"ready-preflight-message:{expectedGeneration}");
+                var candidate = new PreflightResult(
                     CreateHeader(
                         state.Proposal.Header.SenderIslandId,
-                        $"inbound-reservation-{evaluation.ProposalId:N}-{index}",
+                        $"inbound-ready-preflight-{evaluation.ProposalId:N}",
                         responseExpiry,
-                        messageId,
-                        reserved.StateGeneration),
-                    DeriveGuid(evaluation.ProposalId.ToString("N"), $"reservation:{routeKey}"),
+                        preflightMessageId,
+                        expectedGeneration),
                     evaluation.ProposalId,
                     new OwnerId(configuration.RegisteredOwnerId),
-                    participant.CharacterId,
-                    accepted.StateGeneration,
-                    reserved.StateGeneration);
-            }).ToArray();
-            var preflightMessageId = DeriveGuid(evaluation.ProposalId.ToString("N"), "preflight-message");
-            var preflight = new PreflightResult(
-                CreateHeader(
-                    state.Proposal.Header.SenderIslandId,
-                    $"inbound-preflight-{evaluation.ProposalId:N}",
+                    Ready: true,
+                    ReadinessGeneration: evaluation.ConfigurationGeneration,
+                    ExpectedStateGeneration: expectedGeneration,
+                    SafeBlockers: [],
+                    ObservedStateGeneration: expectedGeneration);
+                var verified = service.VerifyPreflight(candidate);
+                if (!verified.Allowed)
+                {
+                    diagnostic(verified.SafeCode);
+                    continue;
+                }
+                preflight = candidate with { ObservedStateGeneration = verified.StateGeneration };
+
+                var leaseMessageId = DeriveGuid(
+                    evaluation.ProposalId.ToString("N"),
+                    $"lease-message:{verified.StateGeneration}");
+                var leaseExpiry = Min(
                     responseExpiry,
-                    preflightMessageId,
-                    reserved.StateGeneration),
-                evaluation.ProposalId,
-                new OwnerId(configuration.RegisteredOwnerId),
-                Ready: false,
-                ReadinessGeneration: evaluation.ConfigurationGeneration,
-                ExpectedStateGeneration: reserved.StateGeneration,
-                SafeBlockers: [evaluation.SafeCode],
-                ObservedStateGeneration: reserved.StateGeneration);
+                    now + TimeSpan.FromSeconds(state.Proposal.ExecutionPlan!.LeaseDurationSeconds));
+                var leaseCandidate = new SessionLease(
+                    CreateHeader(
+                        state.Proposal.Header.SenderIslandId,
+                        $"inbound-lease-{evaluation.ProposalId:N}",
+                        responseExpiry,
+                        leaseMessageId,
+                        verified.StateGeneration),
+                    DeriveGuid(evaluation.ProposalId.ToString("N"), $"lease:{verified.StateGeneration}"),
+                    evaluation.ProposalId,
+                    new OwnerId(configuration.RegisteredOwnerId),
+                    leaseExpiry,
+                    requiredPermissions,
+                    verified.StateGeneration,
+                    verified.StateGeneration);
+                var acquired = service.AcquireLease(leaseCandidate);
+                if (!acquired.Allowed)
+                {
+                    diagnostic(acquired.SafeCode);
+                    continue;
+                }
+                lease = leaseCandidate with { ObservedStateGeneration = acquired.StateGeneration };
+                responseStateGeneration = verified.StateGeneration;
+                responseSafeCode = "dad-inbound-admission-ready";
+            }
+            else
+            {
+                if (state.ResponsesPrepared)
+                {
+                    diagnostic(admission.SafeBlocker);
+                    continue;
+                }
+                var preflightMessageId = DeriveGuid(evaluation.ProposalId.ToString("N"), "preflight-message");
+                preflight = new PreflightResult(
+                    CreateHeader(
+                        state.Proposal.Header.SenderIslandId,
+                        $"inbound-preflight-{evaluation.ProposalId:N}",
+                        responseExpiry,
+                        preflightMessageId,
+                        reserved.StateGeneration),
+                    evaluation.ProposalId,
+                    new OwnerId(configuration.RegisteredOwnerId),
+                    Ready: false,
+                    ReadinessGeneration: evaluation.ConfigurationGeneration,
+                    ExpectedStateGeneration: reserved.StateGeneration,
+                    SafeBlockers: [admission.SafeBlocker],
+                    ObservedStateGeneration: reserved.StateGeneration);
+                responseStateGeneration = reserved.StateGeneration;
+                responseSafeCode = admission.SafeBlocker;
+            }
             if (!inboundProposalService.TryPrepareResponses(
                     evaluation.ProposalId,
                     reservations,
                     preflight,
-                    null,
-                    reserved.StateGeneration,
-                    evaluation.SafeCode,
+                    lease,
+                    responseStateGeneration,
+                    responseSafeCode,
                     out var prepared))
             {
                 lock (gate)
@@ -1251,12 +1458,125 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 continue;
             }
 
+            var responsesQueued = true;
             lock (gate)
             {
                 foreach (var response in prepared.Responses())
-                    _ = TryEnqueueControl(response);
+                {
+                    if (TryEnqueueControl(response))
+                        continue;
+                    responsesQueued = false;
+                    break;
+                }
+            }
+            if (!responsesQueued)
+            {
+                diagnostic("dad-relay-outbound-full");
+                continue;
+            }
+            if (!admission.Ready)
+                continue;
+            var inviteSafeCode = DadAutoPartyInboundAdmissionService.InvalidProposal;
+            if (lease == null || !TryQueueInboundInviteLocators(
+                    prepared,
+                    admission,
+                    lease.ObservedStateGeneration,
+                    out inviteSafeCode))
+            {
+                diagnostic(inviteSafeCode);
+                continue;
+            }
+            lock (gate)
+                runtimeAdmissionValidatedProposalIds.Add(evaluation.ProposalId);
+        }
+    }
+
+    private bool TryQueueInboundInviteLocators(
+        DadAutoPartyInboundProposalState state,
+        DadAutoPartyInboundAdmissionResult admission,
+        long observedStateGeneration,
+        out string safeCode)
+    {
+        safeCode = DadAutoPartyInboundAdmissionService.InvalidProposal;
+        var plan = state.Proposal.ExecutionPlan;
+        if (!admission.Ready || plan == null ||
+            !string.Equals(admission.RunId, plan.RunId, StringComparison.Ordinal) ||
+            admission.InviteTargets.Length != state.OwnedParticipants.Length ||
+            admission.OwnedSlotIds.Length != admission.InviteTargets.Length ||
+            admission.OwnedSlotIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            admission.OwnedSlotIds.Length)
+            return false;
+
+        var bindings = new List<(ParticipantRequest Participant, DadNativePartyInviteTarget Target)>(
+            admission.InviteTargets.Length);
+        for (var index = 0; index < admission.InviteTargets.Length; index++)
+        {
+            var target = admission.InviteTargets[index];
+            if (!string.Equals(target.SlotId, admission.OwnedSlotIds[index], StringComparison.OrdinalIgnoreCase))
+                return false;
+            var matches = plan.Participants.Where(participant =>
+                    string.Equals(participant.OwnerId.Value, configuration.RegisteredOwnerId, StringComparison.Ordinal) &&
+                    string.Equals(participant.OwnerIslandId.Value, configuration.RegisteredIslandId, StringComparison.Ordinal) &&
+                    string.Equals(participant.SlotId, target.SlotId, StringComparison.OrdinalIgnoreCase))
+                .Take(2)
+                .ToArray();
+            if (matches.Length != 1 || !state.OwnedParticipants.Any(participant =>
+                    string.Equals(participant.CharacterId.Value, matches[0].CharacterId.Value, StringComparison.Ordinal)))
+                return false;
+            bindings.Add((
+                state.OwnedParticipants.Single(participant => string.Equals(
+                    participant.CharacterId.Value,
+                    matches[0].CharacterId.Value,
+                    StringComparison.Ordinal)),
+                target));
+        }
+
+        var runtimeExpiry = state.Lease == null
+            ? state.Proposal.Header.ExpiresAt
+            : Min(state.Proposal.Header.ExpiresAt, state.Lease.LeaseExpiresAt);
+        if (runtimeExpiry <= utcNow())
+            return false;
+        lock (gate)
+        {
+            foreach (var binding in bindings)
+            {
+                inboundRuntimeTargets[
+                    new InboundRuntimeTargetKey(state.Proposal.ProposalId, binding.Participant.CharacterId.Value)] =
+                    new InboundRuntimeTarget(
+                        binding.Target.SlotId,
+                        binding.Target.Clone(),
+                        plan,
+                        state.Proposal.Header.SenderIslandId.Value,
+                        state.Proposal.RequesterOwnerId.Value,
+                        runtimeExpiry);
             }
         }
+
+        foreach (var binding in bindings)
+        {
+            var queued = QueueParticipantInviteLocator(
+                state.Proposal,
+                binding.Participant.CharacterId,
+                binding.Target,
+                observedStateGeneration);
+            if (!queued.Allowed)
+            {
+                lock (gate)
+                {
+                    foreach (var retained in bindings)
+                    {
+                        inboundRuntimeTargets.Remove(new InboundRuntimeTargetKey(
+                            state.Proposal.ProposalId,
+                            retained.Participant.CharacterId.Value));
+                    }
+                }
+                safeCode = queued.SafeCode;
+                return false;
+            }
+        }
+
+        safeCode = "dad-inbound-invite-locators-queued";
+        return true;
     }
 
     private void EnsureInboundResponsesQueued()
@@ -1663,6 +1983,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             pendingAllianceInbound.Clear();
             pendingInboundProposalEvaluations.Clear();
             pendingInboundProposalIds.Clear();
+            inboundRuntimeTargets.Clear();
         }
         ResetSecurity();
         return DispatchResult.Allow(result.SafeCode);
@@ -1917,6 +2238,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 notice.SafeReason,
                 utcNow());
             inboundProposalService.RemoveSender(notice.PeerIslandId.Value);
+            RemoveInboundRuntimeTargets((_, target) =>
+                string.Equals(target.SenderIslandId, notice.PeerIslandId.Value, StringComparison.Ordinal));
             return ValueTask.FromResult(DispatchResult.Allow("dad-deauthentication-applied"));
         }
         var decision = service.Deauthenticate(pairing.IslandId, notice.SafeReason);
@@ -1926,6 +2249,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             notice.SafeReason,
             utcNow());
         inboundProposalService.RemoveSender(pairing.IslandId);
+        RemoveInboundRuntimeTargets((_, target) =>
+            string.Equals(target.SenderIslandId, pairing.IslandId, StringComparison.Ordinal));
         RemoveTransientRoutes((route, _) =>
             string.Equals(route.FirstIslandId, pairing.IslandId, StringComparison.Ordinal) ||
             string.Equals(route.SecondIslandId, pairing.IslandId, StringComparison.Ordinal));
@@ -1988,7 +2313,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var decision = service.Revoke(revocation);
         if (revocation.TargetKind == RevocationTargetKind.Session &&
             Guid.TryParse(revocation.TargetId, out var revokedProposalId))
+        {
             inboundProposalService.Remove(revokedProposalId);
+            RemoveInboundRuntimeTargets((key, _) => key.ProposalId == revokedProposalId);
+        }
         if (revocation.TargetKind == RevocationTargetKind.Identity)
         {
             RemoveTransientRoutes((_, route) =>
@@ -2005,6 +2333,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     revocation.SafeReason,
                     utcNow());
                 inboundProposalService.RemoveSender(pairing.IslandId);
+                RemoveInboundRuntimeTargets((_, target) =>
+                    string.Equals(target.OwnerId, revocation.OwnerId.Value, StringComparison.Ordinal));
             }
         }
         return ValueTask.FromResult(decision.Allowed
@@ -2085,8 +2415,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 !IsBoundedLocatorValue(payload.CharacterKey, AutoPartyProtocol.MaximumIdentifierLength) ||
                 !IsBoundedLocatorValue(payload.CharacterName, AutoPartyProtocol.MaximumDisplayLabelLength) ||
                 payload.ContentId == 0 || payload.WorldId == 0 ||
-                !Enum.TryParse<DadModuleId>(payload.ModuleId, ignoreCase: false, out var moduleId) ||
-                moduleId == DadModuleId.None)
+                !Enum.TryParse<DadModuleId>(payload.ModuleId, ignoreCase: false, out var moduleId))
                 return ValueTask.FromResult(DispatchResult.Deny("dad-participant-invite-locator-invalid"));
 
             var target = new DadNativePartyInviteTarget
@@ -2131,12 +2460,27 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         if (!configuration.Enabled)
             return ValueTask.FromResult(DispatchResult.Deny("dad-execution-disabled"));
         DadExpectedPartyInviter? expectedInviter = null;
+        IReadOnlyList<DadNativePartyInviteTarget> partyInviteTargets = [];
         if (operation.Kind == ExecutionOperationKind.Form)
         {
-            if (!TryOpenExpectedInviter(operation, out expectedInviter, out var safeCode))
+            if (operation.InviteLocator != null && !operation.PartyInviteTargets.IsDefaultOrEmpty)
+                return ValueTask.FromResult(DispatchResult.Deny("dad-relay-form-locator-mode-invalid"));
+            if (operation.InviteLocator != null &&
+                !TryOpenExpectedInviter(operation, out expectedInviter, out var safeCode))
+                return ValueTask.FromResult(DispatchResult.Deny(safeCode));
+            if (!operation.PartyInviteTargets.IsDefaultOrEmpty &&
+                !TryOpenPartyInviteTargets(operation, out partyInviteTargets, out safeCode))
                 return ValueTask.FromResult(DispatchResult.Deny(safeCode));
         }
-        else if (operation.InviteLocator != null)
+        else if (operation.Kind == ExecutionOperationKind.Restore)
+        {
+            if (!operation.PartyInviteTargets.IsDefaultOrEmpty)
+                return ValueTask.FromResult(DispatchResult.Deny("dad-relay-restore-locator-mode-invalid"));
+            if (operation.InviteLocator != null &&
+                !TryOpenPartyTeardownContext(operation, out expectedInviter, out partyInviteTargets, out var safeCode))
+                return ValueTask.FromResult(DispatchResult.Deny(safeCode));
+        }
+        else if (operation.InviteLocator != null || !operation.PartyInviteTargets.IsDefaultOrEmpty)
         {
             return ValueTask.FromResult(DispatchResult.Deny("dad-relay-invite-locator-unexpected"));
         }
@@ -2144,7 +2488,21 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             if (pendingExecutions.Count >= MaximumPendingExecutions)
                 return ValueTask.FromResult(DispatchResult.Deny("dad-relay-execution-queue-full"));
-            pendingExecutions.Enqueue(new(operation, expectedInviter));
+            if (operation.Kind == ExecutionOperationKind.Restore && expectedInviter != null)
+            {
+                var key = new InboundRuntimeTargetKey(operation.ProposalId, operation.CharacterId.Value);
+                if (!inboundRuntimeTargets.TryGetValue(key, out var retained) ||
+                    retained.ExpiresAt <= utcNow() ||
+                    !string.Equals(retained.SenderIslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
+                    !string.Equals(retained.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal))
+                    return ValueTask.FromResult(DispatchResult.Deny("dad-relay-restore-runtime-route-invalid"));
+                inboundRuntimeTargets[key] = retained with
+                {
+                    FrozenInviter = expectedInviter.Clone(),
+                    PartyInviteTargets = partyInviteTargets.Select(static target => target.Clone()).ToArray(),
+                };
+            }
+            pendingExecutions.Enqueue(new(operation, expectedInviter, partyInviteTargets));
         }
         return ValueTask.FromResult(DispatchResult.Allow("dad-relay-execution-queued"));
     }
@@ -2271,9 +2629,12 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             ExecutionOperationKind.Prepare => service.Execution.PrepareAsync(operation, profile),
             ExecutionOperationKind.Reserve => service.Execution.ReserveAsync(operation),
-            ExecutionOperationKind.Form when pending.ExpectedInviter != null && formExecutionHandler != null =>
+            ExecutionOperationKind.Form when formExecutionHandler != null =>
                 formExecutionHandler(
-                    new DadAutoPartyFormExecutionContext(operation, pending.ExpectedInviter.Clone()),
+                    new DadAutoPartyFormExecutionContext(
+                        operation,
+                        pending.ExpectedInviter?.Clone(),
+                        pending.PartyInviteTargets.Select(static target => target.Clone()).ToArray()),
                     shutdown.Token),
             ExecutionOperationKind.Form => ValueTask.FromResult(new DadAutoPartyExecutionResult(
                 operation.OperationId,
@@ -2303,6 +2664,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         if (activeExecution is not { IsCompleted: true } completed || activeExecutionOperation == null)
             return;
         var operation = activeExecutionOperation;
+        var pending = activeExecutionPending;
         DadAutoPartyExecutionResult result;
         if (completed.IsCompletedSuccessfully)
         {
@@ -2322,15 +2684,47 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
         activeExecution = null;
         activeExecutionOperation = null;
+        activeExecutionPending = null;
+        if (result.Outcome == ExecutionOutcome.Accepted && pending != null)
+        {
+            if (operation.Header.ExpiresAt > utcNow())
+            {
+                lock (gate)
+                    pendingExecutions.Enqueue(pending);
+                UpdateSnapshot(result.SafeCode);
+                return;
+            }
+            result = new DadAutoPartyExecutionResult(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                ExecutionOutcome.Denied,
+                DadRunPhase.Idle,
+                $"dad-inbound-{operation.Kind.ToString().ToLowerInvariant()}-expired",
+                operation.ExpectedStateGeneration);
+        }
         try
         {
             var messageId = DeriveGuid(operation.OperationId.ToString("N"), "receipt");
             var outcome = result.Outcome;
             var resultSafeCode = result.SafeCode;
+            var observedPartyContentIds = ImmutableArray<ulong>.Empty;
             if (operation.Kind == ExecutionOperationKind.Form && outcome == ExecutionOutcome.Completed)
             {
-                outcome = ExecutionOutcome.Denied;
-                resultSafeCode = "dad-partylist-proof-required";
+                if (result.PartyReceipt == null ||
+                    result.PartyReceipt.MemberCount != result.PartyReceipt.ContentIds.Length ||
+                    result.PartyReceipt.ContentIds.IsDefaultOrEmpty ||
+                    result.PartyReceipt.ContentIds.Length > 8 ||
+                    result.PartyReceipt.ContentIds.Any(static contentId => contentId == 0) ||
+                    result.PartyReceipt.ContentIds.Distinct().Count() != result.PartyReceipt.ContentIds.Length)
+                {
+                    outcome = ExecutionOutcome.Denied;
+                    resultSafeCode = "dad-partylist-proof-required";
+                }
+                else
+                {
+                    observedPartyContentIds = result.PartyReceipt.ContentIds;
+                }
             }
             var receipt = new ExecutionOperationReceipt(
                 CreateHeader(
@@ -2347,7 +2741,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 DadAutoPartyConfiguration.NormalizeSafeCode(resultSafeCode) is { Length: > 0 } safeCode
                     ? safeCode
                     : "dad-relay-execution-complete",
-                ImmutableArray<ulong>.Empty,
+                observedPartyContentIds,
                 operation.ModuleReference);
             lock (gate)
                 _ = TryEnqueueControl(receipt);
@@ -2432,6 +2826,193 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
     }
 
+    private bool TryOpenPartyTeardownContext(
+        ExecutionOperation operation,
+        out DadExpectedPartyInviter? expectedInviter,
+        out IReadOnlyList<DadNativePartyInviteTarget> partyInviteTargets,
+        out string safeCode)
+    {
+        expectedInviter = null;
+        partyInviteTargets = [];
+        safeCode = "dad-relay-restore-locator-invalid";
+        var locator = operation.InviteLocator;
+        var now = utcNow();
+        var pairings = configuration.Pairings.Where(item =>
+                item.IsActive &&
+                string.Equals(item.IslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal))
+            .Take(2)
+            .ToArray();
+        if (locator == null || pairings.Length != 1 ||
+            !string.Equals(operation.OwnerId.Value, configuration.RegisteredOwnerId, StringComparison.Ordinal) ||
+            !string.Equals(locator.OwnerId.Value, pairings[0].OwnerId, StringComparison.Ordinal) ||
+            !string.Equals(locator.IslandId.Value, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
+            !IsBoundedLocatorValue(locator.LocatorId, AutoPartyProtocol.MaximumIdentifierLength) ||
+            locator.ValidUntil <= now || locator.ValidUntil > operation.Header.ExpiresAt ||
+            locator.ValidUntil > now + ParticipantLifetime || locator.OpaqueLocator.IsDefaultOrEmpty ||
+            locator.OpaqueLocator.Length > AutoPartyProtocol.MaximumTextValueLength)
+            return false;
+
+        var encoded = locator.OpaqueLocator.ToArray();
+        try
+        {
+            var payload = JsonSerializer.Deserialize<PartyTeardownLocatorPayload>(encoded);
+            if (payload == null || payload.InviteTargets.IsDefaultOrEmpty || payload.InviteTargets.Length > 7 ||
+                !TryMapExpectedInviter(payload.FrozenInviter, out var inviter) ||
+                payload.InviteTargets.Any(target => !TryMapInviteTarget(target, operation.FormationOnly, out _)))
+                return false;
+
+            var targets = new List<DadNativePartyInviteTarget>(payload.InviteTargets.Length);
+            foreach (var targetPayload in payload.InviteTargets)
+            {
+                if (!TryMapInviteTarget(targetPayload, operation.FormationOnly, out var target))
+                    return false;
+                targets.Add(target);
+            }
+            if (!string.Equals(inviter.RunId, targets[0].RunId, StringComparison.Ordinal) ||
+                targets.Any(target => !string.Equals(target.RunId, inviter.RunId, StringComparison.Ordinal)) ||
+                targets.Select(static target => target.ContentId).Distinct().Count() != targets.Count ||
+                targets.Select(static target => target.SlotId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count ||
+                targets.Any(target => target.ContentId == inviter.ContentId ||
+                                      string.Equals(target.CharacterKey.Value, inviter.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            expectedInviter = inviter;
+            partyInviteTargets = targets;
+            safeCode = "dad-relay-restore-locator-ready";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encoded);
+        }
+    }
+
+    private static bool TryMapExpectedInviter(
+        InviteLocatorPayload payload,
+        out DadExpectedPartyInviter inviter)
+    {
+        inviter = new DadExpectedPartyInviter();
+        if (payload == null ||
+            !IsBoundedLocatorValue(payload.RunId, AutoPartyProtocol.MaximumIdentifierLength) ||
+            !IsBoundedLocatorValue(payload.WorkerSessionId, AutoPartyProtocol.MaximumIdentifierLength) ||
+            !IsBoundedLocatorValue(payload.AccountKey, AutoPartyProtocol.MaximumIdentifierLength) ||
+            !IsBoundedLocatorValue(payload.CharacterKey, AutoPartyProtocol.MaximumIdentifierLength) ||
+            !IsBoundedLocatorValue(payload.CharacterName, AutoPartyProtocol.MaximumDisplayLabelLength))
+            return false;
+        inviter = new DadExpectedPartyInviter
+        {
+            RunId = payload.RunId,
+            WorkerSessionId = new DadWorkerSessionId(payload.WorkerSessionId),
+            AccountKey = new DadAccountKey(payload.AccountKey),
+            CharacterKey = new DadCharacterKey(payload.CharacterKey),
+            ContentId = payload.ContentId,
+            CharacterName = payload.CharacterName,
+            WorldId = payload.WorldId,
+        };
+        return DadPartyInvitationAcceptanceTracker.Validate(inviter).Length == 0;
+    }
+
+    private static bool TryMapInviteTarget(
+        InviteLocatorPayload payload,
+        bool formationOnly,
+        out DadNativePartyInviteTarget target)
+    {
+        target = new DadNativePartyInviteTarget();
+        if (payload == null || !Enum.TryParse<DadModuleId>(payload.ModuleId, ignoreCase: false, out var moduleId))
+            return false;
+        target = new DadNativePartyInviteTarget
+        {
+            RunId = payload.RunId,
+            ModuleId = moduleId,
+            SlotId = payload.SlotId,
+            WorkerSessionId = new DadWorkerSessionId(payload.WorkerSessionId),
+            AccountKey = new DadAccountKey(payload.AccountKey),
+            CharacterKey = new DadCharacterKey(payload.CharacterKey),
+            ContentId = payload.ContentId,
+            CharacterName = payload.CharacterName,
+            WorldId = payload.WorldId,
+        };
+        return IsValidNativeInviteTarget(target, formationOnly);
+    }
+
+    private bool TryOpenPartyInviteTargets(
+        ExecutionOperation operation,
+        out IReadOnlyList<DadNativePartyInviteTarget> partyInviteTargets,
+        out string safeCode)
+    {
+        partyInviteTargets = [];
+        safeCode = "dad-relay-party-invite-targets-invalid";
+        var locators = operation.PartyInviteTargets;
+        var now = utcNow();
+        var pairings = configuration.Pairings.Where(item =>
+                item.IsActive &&
+                string.Equals(item.IslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal))
+            .Take(2)
+            .ToArray();
+        if (pairings.Length != 1 ||
+            !string.Equals(operation.OwnerId.Value, configuration.RegisteredOwnerId, StringComparison.Ordinal) ||
+            locators.IsDefaultOrEmpty || locators.Length > 7 ||
+            locators.Select(static locator => locator.LocatorId).Distinct(StringComparer.Ordinal).Count() !=
+            locators.Length)
+            return false;
+
+        var targets = new List<DadNativePartyInviteTarget>(locators.Length);
+        foreach (var locator in locators)
+        {
+            if (!string.Equals(locator.OwnerId.Value, pairings[0].OwnerId, StringComparison.Ordinal) ||
+                !string.Equals(locator.IslandId.Value, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
+                !IsBoundedLocatorValue(locator.LocatorId, AutoPartyProtocol.MaximumIdentifierLength) ||
+                locator.ValidUntil <= now || locator.ValidUntil > operation.Header.ExpiresAt ||
+                locator.ValidUntil > now + ParticipantLifetime ||
+                locator.OpaqueLocator.IsDefaultOrEmpty || locator.OpaqueLocator.Length > 1024)
+                return false;
+
+            var encoded = locator.OpaqueLocator.ToArray();
+            try
+            {
+                var payload = JsonSerializer.Deserialize<InviteLocatorPayload>(encoded);
+                if (payload == null ||
+                    !Enum.TryParse<DadModuleId>(payload.ModuleId, ignoreCase: false, out var moduleId))
+                    return false;
+                var target = new DadNativePartyInviteTarget
+                {
+                    RunId = payload.RunId,
+                    ModuleId = moduleId,
+                    SlotId = payload.SlotId,
+                    WorkerSessionId = new DadWorkerSessionId(payload.WorkerSessionId),
+                    AccountKey = new DadAccountKey(payload.AccountKey),
+                    CharacterKey = new DadCharacterKey(payload.CharacterKey),
+                    ContentId = payload.ContentId,
+                    CharacterName = payload.CharacterName,
+                    WorldId = payload.WorldId,
+                };
+                if (!IsValidNativeInviteTarget(target, operation.FormationOnly))
+                    return false;
+                targets.Add(target);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(encoded);
+            }
+        }
+
+        if (targets.Select(static target => target.ContentId).Distinct().Count() != targets.Count ||
+            targets.Select(static target => target.SlotId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count ||
+            targets.Select(static target => target.RunId).Distinct(StringComparer.Ordinal).Count() != 1)
+            return false;
+        partyInviteTargets = targets;
+        safeCode = "dad-relay-party-invite-targets-ready";
+        return true;
+    }
+
     private DirectoryQuery BuildDirectoryQuery(PendingDirectoryQuery query, string continuation)
     {
         var messageId = Guid.NewGuid();
@@ -2499,24 +3080,107 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         if (command.OperationKind == null)
             throw new InvalidOperationException("dad-relay-execution-kind-missing");
         InviteLocator? locator = null;
-        if (command.OperationKind == ExecutionOperationKind.Form && command.Inviter != null)
+        var partyInviteTargets = ImmutableArray<InviteLocator>.Empty;
+        var validUntil = Min(command.ExpiresAt, utcNow() + ParticipantLifetime);
+        if (command.OperationKind == ExecutionOperationKind.Form)
         {
-            var encoded = JsonSerializer.SerializeToUtf8Bytes(new InviteLocatorPayload(
-                command.Inviter.RunId,
-                command.Inviter.WorkerSessionId.Value,
-                command.Inviter.AccountKey.Value,
-                command.Inviter.CharacterKey.Value,
-                command.Inviter.ContentId,
-                command.Inviter.CharacterName,
-                command.Inviter.WorldId));
-            if (encoded.Length > 1024)
-                throw new InvalidOperationException("dad-relay-invite-locator-too-large");
-            locator = new InviteLocator(
-                $"invite-{command.CommandId:N}",
-                new OwnerId(configuration.RegisteredOwnerId),
-                new IslandId(configuration.RegisteredIslandId),
-                Min(command.ExpiresAt, utcNow() + ParticipantLifetime),
-                ImmutableArray.CreateRange(encoded));
+            var targets = command.PartyInviteTargets ?? [];
+            if (command.Inviter != null && targets.Count > 0 || targets.Count > 7)
+                throw new InvalidOperationException("dad-relay-form-locator-mode-invalid");
+            if (command.Inviter != null)
+            {
+                var encoded = JsonSerializer.SerializeToUtf8Bytes(new InviteLocatorPayload(
+                    command.Inviter.RunId,
+                    command.Inviter.WorkerSessionId.Value,
+                    command.Inviter.AccountKey.Value,
+                    command.Inviter.CharacterKey.Value,
+                    command.Inviter.ContentId,
+                    command.Inviter.CharacterName,
+                    command.Inviter.WorldId));
+                try
+                {
+                    if (encoded.Length > 1024)
+                        throw new InvalidOperationException("dad-relay-invite-locator-too-large");
+                    locator = new InviteLocator(
+                        $"invite-{command.CommandId:N}",
+                        new OwnerId(configuration.RegisteredOwnerId),
+                        new IslandId(configuration.RegisteredIslandId),
+                        validUntil,
+                        ImmutableArray.CreateRange(encoded));
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(encoded);
+                }
+            }
+            else if (targets.Count > 0)
+            {
+                var builder = ImmutableArray.CreateBuilder<InviteLocator>(targets.Count);
+                for (var index = 0; index < targets.Count; index++)
+                {
+                    var target = targets[index];
+                    if (target == null || !IsValidNativeInviteTarget(target, command.FormationOnly))
+                        throw new InvalidOperationException("dad-relay-party-invite-target-invalid");
+                    var encoded = JsonSerializer.SerializeToUtf8Bytes(new InviteLocatorPayload(
+                        target.RunId,
+                        target.WorkerSessionId.Value,
+                        target.AccountKey.Value,
+                        target.CharacterKey.Value,
+                        target.ContentId,
+                        target.CharacterName,
+                        target.WorldId,
+                        target.ModuleId.ToString(),
+                        target.SlotId));
+                    try
+                    {
+                        if (encoded.Length > 1024)
+                            throw new InvalidOperationException("dad-relay-party-invite-target-too-large");
+                        builder.Add(new InviteLocator(
+                            $"party-invite-{command.CommandId:N}-{index}",
+                            new OwnerId(configuration.RegisteredOwnerId),
+                            new IslandId(configuration.RegisteredIslandId),
+                            validUntil,
+                            ImmutableArray.CreateRange(encoded)));
+                    }
+                    finally
+                    {
+                        CryptographicOperations.ZeroMemory(encoded);
+                    }
+                }
+                partyInviteTargets = builder.MoveToImmutable();
+            }
+        }
+        else if (command.OperationKind == ExecutionOperationKind.Restore &&
+                 (command.Inviter != null || command.PartyInviteTargets is { Count: > 0 }))
+        {
+            var targets = command.PartyInviteTargets ?? [];
+            if (command.Inviter == null || targets.Count is < 1 or > 7 ||
+                DadPartyInvitationAcceptanceTracker.Validate(command.Inviter).Length > 0 ||
+                targets.Any(target => target == null || !IsValidNativeInviteTarget(target, command.FormationOnly)))
+                throw new InvalidOperationException("dad-relay-restore-locator-invalid");
+            var payload = new PartyTeardownLocatorPayload(
+                ToInviteLocatorPayload(command.Inviter),
+                targets.Select(ToInviteLocatorPayload).ToImmutableArray());
+            var encoded = JsonSerializer.SerializeToUtf8Bytes(payload);
+            try
+            {
+                if (encoded.Length > AutoPartyProtocol.MaximumTextValueLength)
+                    throw new InvalidOperationException("dad-relay-restore-locator-too-large");
+                locator = new InviteLocator(
+                    $"restore-{command.CommandId:N}",
+                    new OwnerId(configuration.RegisteredOwnerId),
+                    new IslandId(configuration.RegisteredIslandId),
+                    validUntil,
+                    ImmutableArray.CreateRange(encoded));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(encoded);
+            }
+        }
+        else if (command.Inviter != null || command.PartyInviteTargets is { Count: > 0 })
+        {
+            throw new InvalidOperationException("dad-relay-invite-locator-unexpected");
         }
         return new ExecutionOperation(
             CreateHeader(
@@ -2534,10 +3198,32 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             new JobId(command.RequestedJobId.ToString(System.Globalization.CultureInfo.InvariantCulture)),
             locator,
             Math.Max(1, command.ExpectedStateGeneration),
-            false,
-            ImmutableArray<InviteLocator>.Empty,
+            command.FormationOnly,
+            partyInviteTargets,
             command.ExecutionModuleReference);
     }
+
+    private static InviteLocatorPayload ToInviteLocatorPayload(DadExpectedPartyInviter inviter)
+        => new(
+            inviter.RunId,
+            inviter.WorkerSessionId.Value,
+            inviter.AccountKey.Value,
+            inviter.CharacterKey.Value,
+            inviter.ContentId,
+            inviter.CharacterName,
+            inviter.WorldId);
+
+    private static InviteLocatorPayload ToInviteLocatorPayload(DadNativePartyInviteTarget target)
+        => new(
+            target.RunId,
+            target.WorkerSessionId.Value,
+            target.AccountKey.Value,
+            target.CharacterKey.Value,
+            target.ContentId,
+            target.CharacterName,
+            target.WorldId,
+            target.ModuleId.ToString(),
+            target.SlotId);
 
     private Revocation BuildRevocation(DadAutoPartyParticipantCommand command)
         => new(
@@ -2830,6 +3516,21 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
     }
 
+    private int RemoveInboundRuntimeTargets(
+        Func<InboundRuntimeTargetKey, InboundRuntimeTarget, bool> predicate)
+    {
+        lock (gate)
+        {
+            var keys = inboundRuntimeTargets
+                .Where(pair => predicate(pair.Key, pair.Value))
+                .Select(static pair => pair.Key)
+                .ToList();
+            foreach (var key in keys)
+                inboundRuntimeTargets.Remove(key);
+            return keys.Count;
+        }
+    }
+
     private void CommitReplay(ContractHeader header)
     {
         while (replayedMessages.Count >= MaximumReplayEntries)
@@ -2875,6 +3576,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                          .Select(static pair => pair.Key)
                          .ToList())
                 pendingAllianceInbound.Remove(operationId);
+            foreach (var key in inboundRuntimeTargets
+                         .Where(pair => pair.Value.ExpiresAt <= now)
+                         .Select(static pair => pair.Key)
+                         .ToList())
+                inboundRuntimeTargets.Remove(key);
             if (LastPairingChallenge is { } challenge && challenge.ExpiresAtUtc <= now.UtcDateTime)
                 LastPairingChallenge = null;
             while (pendingOutbound.Count > 0 && pendingOutbound.Peek().Contract.Header.ExpiresAt <= now)
@@ -2994,8 +3700,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         => !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength && value == value.Trim() &&
            value.All(static character => !char.IsControl(character));
 
-    private static bool IsValidNativeInviteTarget(DadNativePartyInviteTarget target)
-        => target.ModuleId != DadModuleId.None && target.ContentId != 0 && target.WorldId != 0 &&
+    private static bool IsValidNativeInviteTarget(DadNativePartyInviteTarget target, bool allowNoModule = false)
+        => (allowNoModule || target.ModuleId != DadModuleId.None) && target.ContentId != 0 && target.WorldId != 0 &&
            IsBoundedLocatorValue(target.RunId, AutoPartyProtocol.MaximumIdentifierLength) &&
            IsBoundedLocatorValue(target.ModuleId.ToString(), AutoPartyProtocol.MaximumIdentifierLength) &&
            IsBoundedLocatorValue(target.SlotId, AutoPartyProtocol.MaximumIdentifierLength) &&
@@ -3022,7 +3728,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     private sealed record PendingExecution(
         ExecutionOperation Operation,
-        DadExpectedPartyInviter? ExpectedInviter);
+        DadExpectedPartyInviter? ExpectedInviter,
+        IReadOnlyList<DadNativePartyInviteTarget> PartyInviteTargets);
 
     private sealed record PendingDirectoryQuery(
         Guid QueryId,
@@ -3047,7 +3754,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         Guid ProposalId,
         long ConfigurationGeneration,
         bool Allowed,
-        string SafeCode);
+        string SafeCode,
+        DadAutoPartyInboundAdmissionResult Admission);
 
     private readonly record struct AttestedRoute(
         string RequesterOwnerId,
@@ -3057,6 +3765,18 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         string PolicyHash,
         ImmutableArray<string> AuthorizedCharacters,
         DateTimeOffset ValidUntil);
+
+    private readonly record struct InboundRuntimeTargetKey(Guid ProposalId, string OpaqueCharacterId);
+
+    private sealed record InboundRuntimeTarget(
+        string SlotId,
+        DadNativePartyInviteTarget Target,
+        EndpointExecutionPlan ExecutionPlan,
+        string SenderIslandId,
+        string OwnerId,
+        DateTimeOffset ExpiresAt,
+        DadExpectedPartyInviter? FrozenInviter = null,
+        IReadOnlyList<DadNativePartyInviteTarget>? PartyInviteTargets = null);
 
     private sealed record InviteLocatorPayload(
         string RunId,
@@ -3068,4 +3788,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         ushort WorldId,
         string ModuleId = "",
         string SlotId = "");
+
+    private sealed record PartyTeardownLocatorPayload(
+        InviteLocatorPayload FrozenInviter,
+        ImmutableArray<InviteLocatorPayload> InviteTargets);
 }

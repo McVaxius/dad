@@ -298,22 +298,13 @@ public sealed class DadAutoPartyParticipantBridgeTests
             now,
             out _));
 
-        var inviter = new DadExpectedPartyInviter
-        {
-            RunId = plan.Request.RequestId,
-            WorkerSessionId = new DadWorkerSessionId("local-worker"),
-            AccountKey = new DadAccountKey("local-account"),
-            CharacterKey = new DadCharacterKey("local-character"),
-            ContentId = 2002,
-            CharacterName = "Local Character",
-            WorldId = 22,
-        };
         Assert.True(bridge.RequestOperation(
             proposalId,
             "Slot1",
             ExecutionOperationKind.Form,
             null,
-            inviter,
+            inviter: null,
+            partyInviteTargets: [],
             now,
             out _));
         var form = LeaseAndAcknowledgeSingle(bridge, now);
@@ -338,6 +329,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
                  {
                      (ExecutionOperationKind.Queue, (int?)0, DadAutoPartyParticipantStage.Queued),
                      (ExecutionOperationKind.Settle, (int?)0, DadAutoPartyParticipantStage.Settled),
+                     (ExecutionOperationKind.Cancel, (int?)null, DadAutoPartyParticipantStage.Cancelled),
                      (ExecutionOperationKind.Restore, (int?)null, DadAutoPartyParticipantStage.Restored),
                  })
         {
@@ -459,7 +451,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
         var (bridge, proposalId, form) = FormedBridge(now, DadModuleId.PremadeDuty);
         Assert.Null(form.ExecutionModuleReference);
         Assert.Equal(
-            new ulong[] { 1001, 2002 },
+            new ulong[] { 1001 },
             bridge.GetSnapshot(proposalId, "Slot1", now)!.ObservedPartyContentIds);
 
         Assert.False(bridge.RequestOperation(
@@ -530,7 +522,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
         Assert.True(bridge.ObserveOperationReceipt(
             Receipt(restore, ExecutionOutcome.Completed, 5, now), now, out _));
         Assert.Equal(
-            new ulong[] { 1001, 2002 },
+            new ulong[] { 1001 },
             bridge.GetSnapshot(proposalId, "Slot1", now)!.ObservedPartyContentIds);
     }
 
@@ -743,18 +735,15 @@ public sealed class DadAutoPartyParticipantBridgeTests
             now.AddMinutes(2),
             now,
             out _));
-        var inviter = new DadExpectedPartyInviter
-        {
-            RunId = plan.Request.RequestId,
-            WorkerSessionId = new DadWorkerSessionId("local-worker"),
-            AccountKey = new DadAccountKey("local-account"),
-            CharacterKey = new DadCharacterKey("local-character"),
-            ContentId = 2002,
-            CharacterName = "Local Character",
-            WorldId = 22,
-        };
         Assert.True(bridge.RequestOperation(
-            proposalId, "Slot1", ExecutionOperationKind.Form, null, inviter, now, out _));
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            null,
+            inviter: null,
+            partyInviteTargets: [],
+            now,
+            out _));
         var form = LeaseAndAcknowledgeSingle(bridge, now);
         Assert.True(bridge.ObserveOperationReceipt(
             Receipt(form, ExecutionOutcome.Completed, 2, now), now, out _));
@@ -787,7 +776,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
             "dad-test-operation",
             ObservedPartyContentIds: outcome == ExecutionOutcome.Completed &&
                 command.OperationKind == ExecutionOperationKind.Form
-                    ? [1001, 2002]
+                    ? [1001]
                     : ImmutableArray<ulong>.Empty,
             ModuleReference: command.ExecutionModuleReference);
 

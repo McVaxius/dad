@@ -113,6 +113,8 @@
     <Compile Include="..\Services\DadAutoPartySemanticKeyResolver.cs" Link="DadAutoPartySemanticKeyResolver.cs" />
     <Compile Include="..\Services\DadAutoPartyPendingOperationStore.cs" Link="DadAutoPartyPendingOperationStore.cs" />
     <Compile Include="..\Services\DadAutoPartyInboundProposalService.cs" Link="DadAutoPartyInboundProposalService.cs" />
+    <Compile Include="..\Services\DadAutoPartyInboundAdmissionService.cs" Link="DadAutoPartyInboundAdmissionService.cs" />
+    <Compile Include="..\Services\DadAutoPartyInboundExecutionRules.cs" Link="DadAutoPartyInboundExecutionRules.cs" />
     <Compile Include="..\Services\DadAutoPartyRelayPump.cs" Link="DadAutoPartyRelayPump.cs" />
     <Compile Include="..\Services\DadAutoPartyRuntimeRequestRules.cs" Link="DadAutoPartyRuntimeRequestRules.cs" />
     <Compile Include="..\Services\DadAutoPartySigningService.cs" Link="DadAutoPartySigningService.cs" />

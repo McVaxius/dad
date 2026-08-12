@@ -42,6 +42,102 @@ public interface IAutoPartyExecutionFacade
     void StopAll(string safeReason);
 }
 
+public sealed class DadAutoPartyRuntimeExecutionFacade : IAutoPartyExecutionFacade
+{
+    private readonly IAutoPartyPolicyFacade policy;
+    private readonly Func<ExecutionOperation, IntegrationProfile?, DadAutoPartyObservedPartyReceipt?, CancellationToken,
+        ValueTask<DadAutoPartyExecutionResult>> execute;
+    private readonly Action<string> stopAll;
+
+    public DadAutoPartyRuntimeExecutionFacade(
+        IAutoPartyPolicyFacade policy,
+        Func<ExecutionOperation, IntegrationProfile?, DadAutoPartyObservedPartyReceipt?, CancellationToken,
+            ValueTask<DadAutoPartyExecutionResult>> execute,
+        Action<string>? stopAll = null)
+    {
+        this.policy = policy ?? throw new ArgumentNullException(nameof(policy));
+        this.execute = execute ?? throw new ArgumentNullException(nameof(execute));
+        this.stopAll = stopAll ?? (_ => { });
+    }
+
+    public static DadAutoPartyRuntimeExecutionFacade CreateUnavailable(IAutoPartyPolicyFacade policy)
+        => new(
+            policy,
+            static (operation, _, _, _) => ValueTask.FromResult(Denied(
+                operation,
+                "dad-runtime-execution-not-configured",
+                operation.ExpectedStateGeneration)));
+
+    public ValueTask<DadAutoPartyExecutionResult> PrepareAsync(
+        ExecutionOperation operation,
+        IntegrationProfile? profile,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Prepare, profile, null, cancellationToken);
+
+    public ValueTask<DadAutoPartyExecutionResult> ReserveAsync(
+        ExecutionOperation operation,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Reserve, null, null, cancellationToken);
+
+    public ValueTask<DadAutoPartyExecutionResult> FormAsync(
+        ExecutionOperation operation,
+        DadAutoPartyObservedPartyReceipt observedParty,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Form, null, observedParty, cancellationToken);
+
+    public ValueTask<DadAutoPartyExecutionResult> QueueAsync(
+        ExecutionOperation operation,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Queue, null, null, cancellationToken);
+
+    public ValueTask<DadAutoPartyExecutionResult> CancelAsync(
+        ExecutionOperation operation,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Cancel, null, null, cancellationToken);
+
+    public ValueTask<DadAutoPartyExecutionResult> SettleAsync(
+        ExecutionOperation operation,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Settle, null, null, cancellationToken);
+
+    public ValueTask<DadAutoPartyExecutionResult> RestoreAsync(
+        ExecutionOperation operation,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(operation, ExecutionOperationKind.Restore, null, null, cancellationToken);
+
+    public void StopAll(string safeReason)
+        => stopAll(safeReason);
+
+    private async ValueTask<DadAutoPartyExecutionResult> ExecuteAsync(
+        ExecutionOperation operation,
+        ExecutionOperationKind expectedKind,
+        IntegrationProfile? profile,
+        DadAutoPartyObservedPartyReceipt? observedParty,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (operation.Kind != expectedKind || operation.OperationId == Guid.Empty)
+            return Denied(operation, "dad-typed-operation-kind-mismatch", operation.ExpectedStateGeneration);
+        var authorization = policy.AuthorizeExecution(operation);
+        if (!authorization.Allowed)
+            return Denied(operation, authorization.SafeCode, authorization.StateGeneration);
+        return await execute(operation, profile, observedParty, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static DadAutoPartyExecutionResult Denied(
+        ExecutionOperation operation,
+        string safeCode,
+        long generation)
+        => new(
+            operation.OperationId,
+            operation.ProposalId,
+            operation.Kind,
+            ExecutionOutcome.Denied,
+            DadRunPhase.Idle,
+            safeCode,
+            generation);
+}
+
 public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
 {
     private readonly object gate = new();
@@ -339,128 +435,4 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
         bool ProfileVerified = false,
         bool ProfileRestored = false,
         DadAutoPartyObservedPartyReceipt? ObservedParty = null);
-}
-
-public sealed class DadAutoPartyCoordinatorExecutionFacade : IAutoPartyExecutionFacade
-{
-    private readonly IAutoPartyExecutionFacade inner;
-    private readonly Func<Guid, bool> isActiveProposal;
-    private readonly Func<DadRunResult> getCoordinatorResult;
-    private readonly Func<DadRunResult> cancelCoordinator;
-
-    public DadAutoPartyCoordinatorExecutionFacade(
-        IAutoPartyExecutionFacade inner,
-        Func<Guid, bool> isActiveProposal,
-        Func<DadRunResult> getCoordinatorResult,
-        Func<DadRunResult> cancelCoordinator)
-    {
-        this.inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.isActiveProposal = isActiveProposal ?? throw new ArgumentNullException(nameof(isActiveProposal));
-        this.getCoordinatorResult = getCoordinatorResult ?? throw new ArgumentNullException(nameof(getCoordinatorResult));
-        this.cancelCoordinator = cancelCoordinator ?? throw new ArgumentNullException(nameof(cancelCoordinator));
-    }
-
-    public ValueTask<DadAutoPartyExecutionResult> PrepareAsync(
-        ExecutionOperation operation,
-        IntegrationProfile? profile,
-        CancellationToken cancellationToken = default)
-        => ExecuteAgainstCoordinatorAsync(
-            operation,
-            () => inner.PrepareAsync(operation, profile, cancellationToken),
-            cancellationToken);
-
-    public ValueTask<DadAutoPartyExecutionResult> ReserveAsync(
-        ExecutionOperation operation,
-        CancellationToken cancellationToken = default)
-        => ExecuteAgainstCoordinatorAsync(
-            operation,
-            () => inner.ReserveAsync(operation, cancellationToken),
-            cancellationToken);
-
-    public ValueTask<DadAutoPartyExecutionResult> FormAsync(
-        ExecutionOperation operation,
-        DadAutoPartyObservedPartyReceipt observedParty,
-        CancellationToken cancellationToken = default)
-        => ExecuteAgainstCoordinatorAsync(
-            operation,
-            () => inner.FormAsync(operation, observedParty, cancellationToken),
-            cancellationToken);
-
-    public ValueTask<DadAutoPartyExecutionResult> QueueAsync(
-        ExecutionOperation operation,
-        CancellationToken cancellationToken = default)
-        => ExecuteAgainstCoordinatorAsync(
-            operation,
-            () => inner.QueueAsync(operation, cancellationToken),
-            cancellationToken);
-
-    public async ValueTask<DadAutoPartyExecutionResult> CancelAsync(
-        ExecutionOperation operation,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var result = await inner.CancelAsync(operation, cancellationToken).ConfigureAwait(false);
-        if (result.Outcome != ExecutionOutcome.Denied && isActiveProposal(operation.ProposalId))
-            _ = cancelCoordinator();
-        return ProjectCoordinatorPhase(result);
-    }
-
-    public ValueTask<DadAutoPartyExecutionResult> SettleAsync(
-        ExecutionOperation operation,
-        CancellationToken cancellationToken = default)
-        => ExecuteAgainstCoordinatorAsync(
-            operation,
-            () => inner.SettleAsync(operation, cancellationToken),
-            cancellationToken);
-
-    public ValueTask<DadAutoPartyExecutionResult> RestoreAsync(
-        ExecutionOperation operation,
-        CancellationToken cancellationToken = default)
-        => ExecuteAgainstCoordinatorAsync(
-            operation,
-            () => inner.RestoreAsync(operation, cancellationToken),
-            cancellationToken);
-
-    public void StopAll(string safeReason)
-    {
-        inner.StopAll(safeReason);
-        var current = getCoordinatorResult();
-        if (!current.IsTerminal && current.Status != DadRunStatus.Idle)
-            _ = cancelCoordinator();
-    }
-
-    private async ValueTask<DadAutoPartyExecutionResult> ExecuteAgainstCoordinatorAsync(
-        ExecutionOperation operation,
-        Func<ValueTask<DadAutoPartyExecutionResult>> execute,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!isActiveProposal(operation.ProposalId))
-            return Denied(operation, "dad-coordinator-proposal-not-active");
-        var result = await execute().ConfigureAwait(false);
-        return ProjectCoordinatorPhase(result);
-    }
-
-    private DadAutoPartyExecutionResult ProjectCoordinatorPhase(DadAutoPartyExecutionResult result)
-    {
-        if (result.Outcome == ExecutionOutcome.Denied)
-            return result;
-        var coordinator = getCoordinatorResult();
-        return result with
-        {
-            Phase = coordinator.Phase,
-            SafeCode = coordinator.Phase == DadRunPhase.GroupReady
-                ? "dad-coordinator-group-ready"
-                : result.SafeCode,
-        };
-    }
-
-    private static DadAutoPartyExecutionResult Denied(ExecutionOperation operation, string safeCode) => new(
-        operation.OperationId,
-        operation.ProposalId,
-        operation.Kind,
-        ExecutionOutcome.Denied,
-        DadRunPhase.Idle,
-        safeCode,
-        operation.ExpectedStateGeneration);
 }

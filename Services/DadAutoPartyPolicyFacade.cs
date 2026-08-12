@@ -348,6 +348,103 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         }
     }
 
+    internal DadAutoPartyPolicyDecision RestoreOwnedProposalSession(
+        RunProposal proposal,
+        IReadOnlyList<ParticipantRequest> ownedParticipants,
+        IReadOnlyList<Reservation> reservations,
+        PreflightResult preflight,
+        SessionLease lease,
+        SessionPermission requiredPermissions)
+    {
+        lock (gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (!IsLocallyEnabled() || !configuration.IsRegistrationActive ||
+                proposal == null || proposal.ExecutionPlan == null || proposal.ProposalId == Guid.Empty ||
+                proposal.Header.ExpiresAt <= now || ownedParticipants.Count is < 1 or > 8 ||
+                reservations.Count != ownedParticipants.Count || requiredPermissions == SessionPermission.None ||
+                (requiredPermissions & ~SessionPermission.All) != 0 ||
+                !IsPaired(proposal.RequesterOwnerId.Value, proposal.Header.SenderIslandId.Value))
+                return Denied("dad-owned-session-restore-invalid");
+
+            var localOwner = configuration.RegisteredOwnerId;
+            var localIsland = configuration.RegisteredIslandId;
+            var requesterIsland = proposal.Header.SenderIslandId.Value;
+            var ownedCharacters = ownedParticipants.Select(static participant => participant.CharacterId.Value)
+                .ToHashSet(StringComparer.Ordinal);
+            var reservationExpectedGeneration = reservations[0].ExpectedStateGeneration;
+            var reservationObservedGeneration = reservations[0].ObservedStateGeneration;
+            var responses = reservations.Cast<IAutoPartyContract>().Append(preflight).Append(lease).ToArray();
+            if (string.IsNullOrWhiteSpace(localOwner) || string.IsNullOrWhiteSpace(localIsland) ||
+                ownedCharacters.Count != ownedParticipants.Count ||
+                ownedParticipants.Any(participant =>
+                    !string.Equals(participant.OwnerId.Value, localOwner, StringComparison.Ordinal) ||
+                    !string.Equals(participant.OwnerIslandId.Value, localIsland, StringComparison.Ordinal)) ||
+                reservations.Select(static reservation => reservation.CharacterId.Value)
+                    .ToHashSet(StringComparer.Ordinal).SetEquals(ownedCharacters) == false ||
+                reservations.Any(reservation =>
+                    reservation.ProposalId != proposal.ProposalId ||
+                    !string.Equals(reservation.OwnerId.Value, localOwner, StringComparison.Ordinal) ||
+                    reservation.ExpectedStateGeneration != reservationExpectedGeneration ||
+                    reservation.ObservedStateGeneration != reservationObservedGeneration) ||
+                reservationExpectedGeneration < 1 || reservationObservedGeneration <= reservationExpectedGeneration ||
+                preflight.ProposalId != proposal.ProposalId ||
+                !string.Equals(preflight.OwnerId.Value, localOwner, StringComparison.Ordinal) ||
+                !preflight.Ready || !preflight.SafeBlockers.IsDefaultOrEmpty ||
+                preflight.ExpectedStateGeneration != reservationObservedGeneration ||
+                preflight.ObservedStateGeneration <= preflight.ExpectedStateGeneration ||
+                lease.ProposalId != proposal.ProposalId ||
+                !string.Equals(lease.OwnerId.Value, localOwner, StringComparison.Ordinal) ||
+                lease.Permissions != requiredPermissions ||
+                lease.ExpectedStateGeneration != preflight.ObservedStateGeneration ||
+                lease.ObservedStateGeneration <= lease.ExpectedStateGeneration ||
+                lease.LeaseExpiresAt <= now || lease.LeaseExpiresAt > now + TimeSpan.FromMinutes(30) ||
+                lease.LeaseExpiresAt > lease.Header.ExpiresAt ||
+                responses.Select(static response => response.Header.MessageId).Distinct().Count() != responses.Length ||
+                responses.Any(response =>
+                    !string.Equals(response.Header.SenderIslandId.Value, localIsland, StringComparison.Ordinal) ||
+                    !string.Equals(response.Header.RecipientIslandId.Value, requesterIsland, StringComparison.Ordinal) ||
+                    response.Header.ExpiresAt <= now || response.Header.ExpiresAt > proposal.Header.ExpiresAt))
+                return Denied("dad-owned-session-restore-invalid");
+
+            ExpireSessions(now.UtcDateTime);
+            if (activeIslandSessions.TryGetValue(localIsland, out var activeProposal) &&
+                activeProposal != proposal.ProposalId)
+                return Denied("dad-island-session-already-active");
+            if (proposals.TryGetValue(proposal.ProposalId, out var existing))
+                return existing.OwnedProposal && existing.StateGeneration == lease.ObservedStateGeneration &&
+                       existing.LeaseExpiresAtUtc == lease.LeaseExpiresAt.UtcDateTime
+                    ? AllowedAt("dad-owned-session-restore-idempotent", existing.StateGeneration)
+                    : Denied("dad-owned-session-restore-conflict");
+
+            proposals[proposal.ProposalId] = new ProposalState(
+                proposal.ProposalId,
+                localIsland,
+                localOwner,
+                proposal.ActivityId.Value,
+                requiredPermissions,
+                DadAutoPartySessionMode.MultiOwner,
+                lease.LeaseExpiresAt.UtcDateTime,
+                true,
+                true,
+                lease.ObservedStateGeneration,
+                proposal.Header.ExpiresAt.UtcDateTime,
+                true,
+                ownedParticipants.Select(static participant => new AuthorizedParticipant(
+                        participant.CharacterId.Value,
+                        participant.RequestedJob.Value))
+                    .ToImmutableArray());
+            activeIslandSessions[localIsland] = proposal.ProposalId;
+            if (configuration.StateGeneration < lease.ObservedStateGeneration)
+            {
+                configuration.StateGeneration = lease.ObservedStateGeneration;
+                saveConfiguration();
+            }
+            stateGeneration = Math.Max(stateGeneration, lease.ObservedStateGeneration);
+            return AllowedAt("dad-owned-session-restored", lease.ObservedStateGeneration);
+        }
+    }
+
     public DadAutoPartyPolicyDecision Revoke(Revocation revocation)
     {
         lock (gate)

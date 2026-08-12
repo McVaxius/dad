@@ -1,5 +1,23 @@
 # dad — changelog
 
+## 2026-08-12 — P1219 central AutoParty production runtime completion (local-only, unpublished)
+- Replaced synthetic production execution authority with the existing DAD runtime. Authenticated inbound admission now owns
+  exact worker wake, readiness, dependency, claim, and lease barriers; Form requires authoritative PartyList membership;
+  Queue dispatches the exact frozen module to the exact worker; and Settle waits for that worker's terminal result.
+- Preserved Slot 1 authority and carried exact follower invite targets through endpoint-encrypted, memory-only relay state.
+  Registered-island participants remain outside LAN worker dispatch/counts, and formation-only runs stop at `GroupReady`.
+- Routed successful, failed, timed-out, Stop-all, and operator-cancelled registered-island runs through authenticated Cancel
+  and Restore acknowledgements, including immutable manifest slots not yet projected into the active participant list.
+  Restore no longer claims that an integration profile was restored when production did not apply one.
+- Kept the fake execution facade as explicit unit-test support only and removed the unreferenced former coordinator wrapper.
+  A disabled but bootstrapped endpoint continues its registration/control plane while execution remains denied; an
+  unbootstrapped disabled endpoint never touches its adapter.
+- Fresh local validation: locked AutoParty and DAD restores passed; AutoParty Debug/Release builds passed with zero errors
+  and zero warnings; 76 focused central-service tests passed; DAD Debug/Release builds passed with zero errors; and all 137
+  DAD AutoParty tests passed. The broader DAD suite passed 1,713/1,715; its two failures are unrelated installed API-binary
+  pin checks after local Dalamud/ClientStructs drift. No Discord, service, remote-PC, publication, or live-client action ran.
+- Public version `0.5.0.9`, DAD `main`, manifests, packaging, publication, and live state are unchanged.
+
 ## 2026-08-08 — I159 Daily Roulette direct-entry classification (local-only, unpublished)
 - A verified exact mapped Daily Roulette Join callback now permits the territory gate to capture an immediate nonzero bound-duty territory when no queue, commence, or loading-transition observation occurs first.
 - The temporary Join marker clears on run reset and before DAD starts a new roulette selection cycle. Existing duty-entry, completion, exit, repeat, participant-observer, schedule, and requeue behavior are unchanged.

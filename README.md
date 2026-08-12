@@ -144,10 +144,16 @@ uploaded or promoted to a release.
   registered-island participants through reservation, preflight, lease, operation, and receipt barriers while local slots
   stay on the LAN worker path. Both barriers must be ready before assembly or queueing. Slot 1 remains inviter and queue
   authority, and existing PartyList proof remains authoritative.
+- Endpoint operations now use production runtime truth throughout: Prepare/Reserve use authenticated admission, Form waits
+  for exact PartyList membership, Queue dispatches the frozen module to the exact local worker, and Settle waits for that
+  worker's terminal result. The retained synthetic execution facade is constructed only by unit tests.
 - **Create party** builds one in-memory formation-only group from selected local characters and current paired/promiscuous
   listings and submits it through existing Crew Formation. **Disband party** uses the guarded teardown for that exact active
   AutoParty formation, then settles/restores remote participants. Plans and Schedules use the same proposal/session path and
   continue through the normal duty lifecycle; no third scheduler or saved crew is created.
+- Successful, failed, timed-out, and operator-cancelled registered-island runs all pass through authenticated endpoint Cancel
+  and Restore acknowledgement barriers before final completion. Teardown locators remain encrypted and memory-only. Restore
+  reports profile restoration only when a profile was actually applied; the current production path does not apply one.
 - Local deauthentication immediately vetoes new work, ends affected sessions, removes peer routes, and sends a signed
   monotonic revocation. Deregistration is a signed receipt-first exchange before local mailbox cleanup. **Owner Stop** remains
   the immediate local veto, and delayed relay traffic cannot restore trust.

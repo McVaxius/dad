@@ -219,6 +219,19 @@ internal sealed class DadAutoPartyInboundProposalService
         }
     }
 
+    public IReadOnlyList<DadAutoPartyInboundProposalState> Active(int maximum)
+    {
+        lock (gate)
+        {
+            var now = utcNow();
+            return states.Values
+                .Where(state => state.Proposal.Header.ExpiresAt > now)
+                .OrderBy(static state => state.RetainedAt)
+                .Take(Math.Clamp(maximum, 1, 8))
+                .ToArray();
+        }
+    }
+
     public bool TryGetRetained(Guid proposalId, out DadAutoPartyInboundProposalState state)
     {
         lock (gate)

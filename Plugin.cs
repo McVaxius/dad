@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Collections.Immutable;
+using AutoParty.Contracts;
 using Dalamud.Game.Command;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Gui.Dtr;
@@ -270,6 +272,53 @@ public sealed class Plugin : IDalamudPlugin
                 Configuration.AutoPartyFleet,
                 Configuration.PlannerGroups,
                 utcNow));
+        var autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
+            Configuration.AutoParty.RegisteredOwnerId,
+            Configuration.AutoParty.RegisteredIslandId,
+            PresenceService.WorkerSessionId,
+            row =>
+            {
+                var candidates = new List<DadParticipantSnapshot>();
+                var local = PresenceService.BuildLiveSafetySnapshot();
+                if (string.Equals(local.ManagedAccountKey.Value, row.AccountKey, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(local.ActiveCharacterKey.Value, row.CharacterKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    candidates.Add(local);
+                }
+                candidates.AddRange(TransportService.CurrentTransport.KnownParticipants.Where(participant =>
+                    string.Equals(
+                        participant.ManagedAccountKey.Value,
+                        row.AccountKey,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        participant.ActiveCharacterKey.Value,
+                        row.CharacterKey,
+                        StringComparison.OrdinalIgnoreCase)));
+                return candidates;
+            },
+            (participant, request) => string.Equals(
+                    participant.WorkerSessionId.Value,
+                    PresenceService.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase)
+                ? PresenceService.HandleWakeRequest(request)
+                : TransportService.SendWakeRequest(participant, request),
+            ClaimService.IssueLease,
+            (participant, request) =>
+            {
+                if (!string.Equals(
+                        participant.WorkerSessionId.Value,
+                        PresenceService.WorkerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase))
+                    return TransportService.RequestClaim(participant, request);
+                var decision = ClaimService.TryClaimLocal(request, participant);
+                PresenceService.ApplyClaimState(
+                    request.RunId,
+                    decision.ClaimState,
+                    decision.LeaseState,
+                    decision.Lease,
+                    decision.Reason);
+                return decision;
+            });
         autoPartyRelayPump = new DadAutoPartyRelayPump(
             Configuration.AutoParty,
             autoPartyIdentityStore,
@@ -285,6 +334,9 @@ public sealed class Plugin : IDalamudPlugin
                 Configuration.AutoPartyFleet,
                 Configuration.PlannerGroups,
                 utcNow),
+            inboundAdmission: proposal => autoPartyInboundAdmissionService.Admit(
+                proposal,
+                Configuration.AutoPartyFleet.Rows),
             diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode));
         PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyEndpointService.GetLanPresence);
         PresenceService.ConfigureParticipantResolver(workerSessionId =>
@@ -370,6 +422,7 @@ public sealed class Plugin : IDalamudPlugin
             Log,
             GetCurrentAutoPartyRemoteBindings,
             AutoPartyParticipantBridge);
+        autoPartyRelayPump.ConfigureFormExecutionHandler(ExecuteInboundAutoPartyForm);
         AlliancePartyFinderService = new DadAlliancePartyFinderService(
             PresenceService,
             TransportService,
@@ -399,12 +452,10 @@ public sealed class Plugin : IDalamudPlugin
                 .Where(static row => row is { Enabled: true, IsRemote: false })
                 .Select(static row => row.Clone())
                 .ToList());
-        AutoPartyService.ConfigureExecutionFacade(
-            new DadAutoPartyCoordinatorExecutionFacade(
-                AutoPartyService.Execution,
-                RunCoordinatorService.IsActiveAutoPartyProposal,
-                RunCoordinatorService.GetLocalResult,
-                RunCoordinatorService.CancelActiveRun));
+        AutoPartyService.ConfigureExecutionFacade(new DadAutoPartyRuntimeExecutionFacade(
+            AutoPartyService.Policy,
+            ExecuteInboundAutoPartyOperation,
+            safeReason => WorkerExecutionService.CancelAll(safeReason)));
         AutoPartyService.ConfigureOwnerStop(_ => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureLevelingMode(
             BuildLevelingChild,
@@ -2394,6 +2445,386 @@ public sealed class Plugin : IDalamudPlugin
 
     private IReadOnlyList<DadAutoPartyRemoteBinding> GetCurrentAutoPartyRemoteBindings()
         => autoPartyRuntimeBindingStore.Snapshot(Configuration.AutoParty.RemoteBindings);
+
+    private ValueTask<DadAutoPartyExecutionResult> ExecuteInboundAutoPartyOperation(
+        ExecutionOperation operation,
+        IntegrationProfile? profile,
+        DadAutoPartyObservedPartyReceipt? observedParty,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        DadAutoPartyExecutionResult Result(
+            ExecutionOutcome outcome,
+            DadRunPhase phase,
+            string safeCode,
+            bool profileRestored = false)
+            => new(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                outcome,
+                phase,
+                safeCode,
+                operation.ExpectedStateGeneration,
+                ProfileRestored: profileRestored);
+        DadAutoPartyExecutionResult Denied(string safeCode)
+            => Result(ExecutionOutcome.Denied, DadRunPhase.Idle, safeCode);
+        DadAutoPartyExecutionResult Accepted(DadRunPhase phase, string safeCode)
+            => Result(ExecutionOutcome.Accepted, phase, safeCode);
+        DadAutoPartyExecutionResult Completed(DadRunPhase phase, string safeCode, bool profileRestored = false)
+            => Result(ExecutionOutcome.Completed, phase, safeCode, profileRestored);
+
+        if (!autoPartyRelayPump.TryGetInboundExecutionContext(
+                operation.ProposalId,
+                operation.CharacterId,
+                out var context,
+                out var routeSafeCode) ||
+            !string.Equals(context.SenderIslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
+            !string.Equals(context.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal))
+            return ValueTask.FromResult(Denied(routeSafeCode));
+
+        var local = PresenceService.BuildLiveSafetySnapshot();
+        if (!MatchesInboundRuntimeTarget(local, context.Target))
+            return ValueTask.FromResult(Denied("dad-inbound-worker-route-mismatch"));
+
+        if (operation.Kind == ExecutionOperationKind.Prepare)
+        {
+            if (profile != null &&
+                (profile.ProposalId != operation.ProposalId ||
+                 profile.OwnerId != operation.OwnerId ||
+                 profile.ExpectedStateGeneration != operation.ExpectedStateGeneration))
+                return ValueTask.FromResult(Denied("dad-profile-contract-mismatch"));
+            return ValueTask.FromResult(Completed(DadRunPhase.Planning, "dad-inbound-prepare-authorized"));
+        }
+        if (operation.Kind == ExecutionOperationKind.Reserve)
+            return ValueTask.FromResult(Completed(DadRunPhase.ClaimingSlots, "dad-inbound-reserve-authorized"));
+
+        if (operation.Kind is ExecutionOperationKind.Queue or ExecutionOperationKind.Settle)
+        {
+            if (!DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(
+                    operation,
+                    context,
+                    local,
+                    out var command,
+                    out var commandParticipant,
+                    out var blocker))
+                return ValueTask.FromResult(Denied(blocker));
+
+            if (operation.Kind == ExecutionOperationKind.Queue)
+            {
+                var ack = WorkerExecutionService.Accept(command);
+                if (!ack.Accepted ||
+                    !DadWorkerStatusPollingRules.MatchesExactAcknowledgement(commandParticipant, command, ack))
+                    return ValueTask.FromResult(Denied("dad-inbound-queue-acknowledgement-invalid"));
+            }
+
+            var workerStatus = WorkerExecutionService.GetStatus();
+            if (!DadDroppedPeerContinuationRules.MatchesExactCommand(commandParticipant, command, workerStatus))
+                return ValueTask.FromResult(Denied("dad-inbound-worker-status-mismatch"));
+            if (workerStatus.IsTerminal && !workerStatus.Success)
+                return ValueTask.FromResult(Denied("dad-inbound-worker-terminal-failure"));
+            if (operation.Kind == ExecutionOperationKind.Queue)
+            {
+                return ValueTask.FromResult(workerStatus.State is
+                        DadWorkerExecutionState.WaitingForQueue or DadWorkerExecutionState.Running ||
+                    workerStatus is { IsTerminal: true, Success: true }
+                        ? Completed(DadRunPhase.QueueStarting, "dad-inbound-queue-ready")
+                        : Accepted(DadRunPhase.QueuePreparing, "dad-inbound-queue-preparing"));
+            }
+            return ValueTask.FromResult(workerStatus is { IsTerminal: true, Success: true }
+                ? Completed(DadRunPhase.Finalizing, "dad-inbound-worker-settled")
+                : Accepted(workerStatus.State == DadWorkerExecutionState.Running
+                    ? DadRunPhase.InDutyOrTask
+                    : DadRunPhase.WaitingForQueuePop, "dad-inbound-worker-settlement-pending"));
+        }
+
+        if (operation.Kind == ExecutionOperationKind.Cancel)
+        {
+            var ack = WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
+            {
+                RunId = context.ExecutionPlan.RunId,
+                Reason = "Authenticated AutoParty cancellation.",
+            });
+            return ValueTask.FromResult(ack.Accepted
+                ? Completed(DadRunPhase.Finalizing, "dad-inbound-cancel-complete")
+                : Denied("dad-inbound-cancel-rejected"));
+        }
+
+        if (operation.Kind == ExecutionOperationKind.Restore)
+        {
+            WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
+            {
+                RunId = context.ExecutionPlan.RunId,
+                Reason = "Authenticated AutoParty restoration.",
+            });
+            if (context.FrozenInviter != null || context.PartyInviteTargets is { Count: > 0 })
+            {
+                if (!TryBuildInboundAutoPartyTeardownInstruction(context, out var instruction, out var blocker))
+                    return ValueTask.FromResult(Denied(blocker));
+                var teardown = PresenceService.HandleAssemblyInstruction(instruction);
+                if (!teardown.Success && !teardown.Deferred)
+                    return ValueTask.FromResult(Denied("dad-inbound-restore-teardown-failed"));
+                if (teardown.Deferred)
+                    return ValueTask.FromResult(Accepted(DadRunPhase.TearingDownParty, "dad-inbound-restore-pending"));
+            }
+
+            _ = PresenceService.HandleCancelRun(new DadCancelCommandDto
+            {
+                RunId = context.ExecutionPlan.RunId,
+                AuthorityWorkerSessionId = PresenceService.WorkerSessionId,
+                CancellationState = DadRunCancellationState.Finalized,
+                Reason = "Authenticated AutoParty restoration complete.",
+            });
+            autoPartyRelayPump.RemoveInboundExecutionContext(operation.ProposalId, operation.CharacterId);
+            return ValueTask.FromResult(Completed(
+                DadRunPhase.Finalizing,
+                "dad-inbound-restore-complete",
+                profileRestored: false));
+        }
+
+        return ValueTask.FromResult(Denied("dad-inbound-operation-unsupported"));
+    }
+
+    private static bool TryBuildInboundAutoPartyTeardownInstruction(
+        DadAutoPartyInboundExecutionContext context,
+        out DadAssemblyInstructionDto instruction,
+        out string blocker)
+    {
+        instruction = new DadAssemblyInstructionDto();
+        blocker = "dad-inbound-restore-locator-invalid";
+        var inviter = context.FrozenInviter;
+        var targets = context.PartyInviteTargets?.Select(static target => target.Clone()).ToList() ?? [];
+        var inviterRows = context.ExecutionPlan.Participants.Where(static participant => participant.IsInviter).ToList();
+        var localRows = context.ExecutionPlan.Participants.Where(participant =>
+            string.Equals(participant.SlotId, context.Target.SlotId, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (inviter == null || inviterRows.Count != 1 || localRows.Count != 1 ||
+            targets.Count != context.ExecutionPlan.Participants.Length - 1 ||
+            targets.Count is < 1 or > 7 ||
+            !string.Equals(inviter.RunId, context.ExecutionPlan.RunId, StringComparison.Ordinal) ||
+            targets.Any(target => !string.Equals(target.RunId, context.ExecutionPlan.RunId, StringComparison.Ordinal)) ||
+            targets.Select(static target => target.SlotId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count)
+            return false;
+
+        var localIsInviter = localRows[0].IsInviter;
+        if (localIsInviter
+                ? !MatchesInboundRuntimeTarget(inviter, context.Target)
+                : targets.Count(target => MatchesInboundRuntimeTarget(target, context.Target)) != 1)
+        {
+            blocker = "dad-inbound-restore-worker-route-mismatch";
+            return false;
+        }
+        var expectedFollowerSlots = context.ExecutionPlan.Participants
+            .Where(static participant => !participant.IsInviter)
+            .Select(static participant => participant.SlotId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!expectedFollowerSlots.SetEquals(targets.Select(static target => target.SlotId)))
+            return false;
+
+        instruction = new DadAssemblyInstructionDto
+        {
+            RunId = context.ExecutionPlan.RunId,
+            AuthorityWorkerSessionId = context.Target.WorkerSessionId,
+            ModuleId = context.Target.ModuleId,
+            SlotId = context.Target.SlotId,
+            RequiredCharacterKey = context.Target.CharacterKey,
+            InstructionKind = localIsInviter
+                ? DadAssemblyInstructionKind.DisbandParty
+                : DadAssemblyInstructionKind.LeaveParty,
+            FrozenInviter = inviter.Clone(),
+            InviteTargets = targets,
+            Summary = localIsInviter
+                ? "Authenticated AutoParty Slot1 is performing guarded teardown."
+                : "Authenticated AutoParty follower is performing guarded teardown.",
+        };
+        blocker = string.Empty;
+        return true;
+    }
+
+    private ValueTask<DadAutoPartyExecutionResult> ExecuteInboundAutoPartyForm(
+        DadAutoPartyFormExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var operation = context.Operation;
+        DadAutoPartyExecutionResult Denied(string safeCode) => new(
+            operation.OperationId,
+            operation.ProposalId,
+            operation.Kind,
+            ExecutionOutcome.Denied,
+            DadRunPhase.Idle,
+            safeCode,
+            operation.ExpectedStateGeneration);
+        var authorization = AutoPartyService.Policy.AuthorizeExecution(operation);
+        if (!authorization.Allowed)
+            return ValueTask.FromResult(Denied(authorization.SafeCode));
+        if (!autoPartyRelayPump.TryGetInboundExecutionContext(
+                operation.ProposalId,
+                operation.CharacterId,
+                out var runtimeContext,
+                out var routeSafeCode) ||
+            !string.Equals(runtimeContext.SenderIslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
+            !string.Equals(runtimeContext.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal))
+            return ValueTask.FromResult(Denied(routeSafeCode));
+        var localTarget = runtimeContext.Target;
+        if (
+            !string.Equals(localTarget.RunId, context.ExpectedInviter?.RunId ??
+                context.PartyInviteTargets.FirstOrDefault()?.RunId ?? localTarget.RunId, StringComparison.Ordinal))
+            return ValueTask.FromResult(Denied(routeSafeCode));
+
+        var candidates = new List<DadParticipantSnapshot>();
+        var local = PresenceService.BuildLiveSafetySnapshot();
+        if (MatchesInboundRuntimeTarget(local, localTarget))
+            candidates.Add(local);
+        candidates.AddRange(TransportService.CurrentTransport.KnownParticipants.Where(participant =>
+            MatchesInboundRuntimeTarget(participant, localTarget)));
+        var participant = candidates
+            .DistinctBy(static candidate => candidate.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
+            .SingleOrDefault();
+        if (participant == null)
+            return ValueTask.FromResult(Denied("dad-inbound-form-worker-route-mismatch"));
+
+        var slotOne = context.ExpectedInviter == null;
+        if (!slotOne && context.PartyInviteTargets.Count != 0)
+            return ValueTask.FromResult(Denied("dad-inbound-form-locator-mode-invalid"));
+        var inviter = context.ExpectedInviter?.Clone() ?? new DadExpectedPartyInviter
+        {
+            RunId = localTarget.RunId,
+            WorkerSessionId = localTarget.WorkerSessionId,
+            AccountKey = localTarget.AccountKey,
+            CharacterKey = localTarget.CharacterKey,
+            ContentId = localTarget.ContentId,
+            CharacterName = localTarget.CharacterName,
+            WorldId = localTarget.WorldId,
+        };
+        var inviteTargets = slotOne
+            ? context.PartyInviteTargets.Select(static target => target.Clone()).ToList()
+            : new List<DadNativePartyInviteTarget> { localTarget.Clone() };
+        var instruction = new DadAssemblyInstructionDto
+        {
+            RunId = localTarget.RunId,
+            AuthorityWorkerSessionId = PresenceService.WorkerSessionId,
+            ModuleId = localTarget.ModuleId,
+            SlotId = localTarget.SlotId,
+            RequiredCharacterKey = localTarget.CharacterKey,
+            InstructionKind = slotOne
+                ? DadAssemblyInstructionKind.FormParty
+                : DadAssemblyInstructionKind.JoinParty,
+            FrozenInviter = inviter,
+            InviteTargets = inviteTargets,
+            Summary = slotOne
+                ? "Authenticated AutoParty Slot1 is forming the frozen party."
+                : "Authenticated AutoParty follower is joining frozen Slot1.",
+        };
+        var result = string.Equals(
+                participant.WorkerSessionId.Value,
+                PresenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase)
+            ? PresenceService.HandleAssemblyInstruction(instruction)
+            : TransportService.SendAssemblyInstruction(participant, instruction);
+        if (result == null || !result.Success && !result.Deferred)
+            return ValueTask.FromResult(Denied(result?.FailureReason ?? "dad-inbound-form-acknowledgement-missing"));
+        if (!slotOne)
+        {
+            var followerObservedContentIds = PartyInviteGateway.ReadAuthoritativePartyMembers()
+                .Select(static member => member.ContentId)
+                .Where(static contentId => contentId != 0)
+                .Distinct()
+                .ToImmutableArray();
+            if (followerObservedContentIds.Length == runtimeContext.ExecutionPlan.Participants.Length &&
+                followerObservedContentIds.Contains(inviter.ContentId) &&
+                followerObservedContentIds.Contains(localTarget.ContentId))
+            {
+                return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                    operation.OperationId,
+                    operation.ProposalId,
+                    operation.Kind,
+                    ExecutionOutcome.Completed,
+                    operation.FormationOnly ? DadRunPhase.GroupReady : DadRunPhase.AssemblingParty,
+                    "dad-inbound-follower-party-proof-complete",
+                    operation.ExpectedStateGeneration,
+                    new DadAutoPartyObservedPartyReceipt(
+                        followerObservedContentIds.Length,
+                        followerObservedContentIds,
+                        "partylist-authoritative",
+                        DateTime.UtcNow)));
+            }
+            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                ExecutionOutcome.Accepted,
+                DadRunPhase.AssemblingParty,
+                "dad-inbound-follower-form-accepted",
+                operation.ExpectedStateGeneration));
+        }
+
+        var expectedContentIds = inviteTargets.Select(static target => target.ContentId)
+            .Append(localTarget.ContentId)
+            .ToHashSet();
+        var observedContentIds = result.AuthoritativePartyMembers
+            .Select(static member => member.ContentId)
+            .Where(static contentId => contentId != 0)
+            .ToImmutableArray();
+        if (observedContentIds.Length != expectedContentIds.Count ||
+            observedContentIds.Distinct().Count() != observedContentIds.Length ||
+            !expectedContentIds.SetEquals(observedContentIds))
+        {
+            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                ExecutionOutcome.Accepted,
+                DadRunPhase.AssemblingParty,
+                "dad-inbound-slot1-party-proof-pending",
+                operation.ExpectedStateGeneration));
+        }
+
+        return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+            operation.OperationId,
+            operation.ProposalId,
+            operation.Kind,
+            ExecutionOutcome.Completed,
+            operation.FormationOnly ? DadRunPhase.GroupReady : DadRunPhase.AssemblingParty,
+            operation.FormationOnly ? "dad-inbound-group-ready" : "dad-inbound-form-complete",
+            operation.ExpectedStateGeneration,
+            new DadAutoPartyObservedPartyReceipt(
+                observedContentIds.Length,
+                observedContentIds,
+                "partylist-authoritative",
+                DateTime.UtcNow)));
+    }
+
+    private static bool MatchesInboundRuntimeTarget(
+        DadParticipantSnapshot participant,
+        DadNativePartyInviteTarget target)
+        => string.Equals(
+               participant.WorkerSessionId.Value,
+               target.WorkerSessionId.Value,
+               StringComparison.OrdinalIgnoreCase) &&
+           DadRosterIdentity.SameAccount(participant.ManagedAccountKey, target.AccountKey) &&
+           DadRosterIdentity.SameCharacter(
+               participant.ActiveCharacterKey,
+               participant.Character.ContentId,
+               target.CharacterKey,
+               target.ContentId) &&
+           string.Equals(participant.AssignedSlotId, target.SlotId, StringComparison.OrdinalIgnoreCase);
+
+    private static bool MatchesInboundRuntimeTarget(
+        DadExpectedPartyInviter inviter,
+        DadNativePartyInviteTarget target)
+        => string.Equals(inviter.RunId, target.RunId, StringComparison.Ordinal) &&
+           string.Equals(inviter.WorkerSessionId.Value, target.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+           DadRosterIdentity.SameAccount(inviter.AccountKey, target.AccountKey) &&
+           DadRosterIdentity.SameCharacter(inviter.CharacterKey, inviter.ContentId, target.CharacterKey, target.ContentId);
+
+    private static bool MatchesInboundRuntimeTarget(
+        DadNativePartyInviteTarget candidate,
+        DadNativePartyInviteTarget target)
+        => string.Equals(candidate.RunId, target.RunId, StringComparison.Ordinal) &&
+           string.Equals(candidate.SlotId, target.SlotId, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(candidate.WorkerSessionId.Value, target.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+           DadRosterIdentity.SameAccount(candidate.AccountKey, target.AccountKey) &&
+           DadRosterIdentity.SameCharacter(candidate.CharacterKey, candidate.ContentId, target.CharacterKey, target.ContentId);
 
     private void ReconcileAutoPartyRuntimeBindings()
     {

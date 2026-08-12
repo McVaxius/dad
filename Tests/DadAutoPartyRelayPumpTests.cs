@@ -779,6 +779,58 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task ReadyInboundAdmissionRetainsExactRuntimeTargetOnlyInMemory()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        var listing = new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = "opaque-local",
+            DisplayLabel = "Shared local character",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = ["dad-duty-1"],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10),
+        };
+        var policy = Assert.Single(fixture.Configuration.Pairings).LocalSharePolicy.Clone();
+        var proposalId = Guid.NewGuid();
+        var runId = $"run-{Guid.NewGuid():N}";
+        var proposal = PeerProposalForLocalParticipant(fixture, proposalId, runId);
+        var expectedTarget = NativeInviteTarget(runId, "Slot2", "Private Local", 1001);
+        await using var pump = fixture.CreatePump(
+            _ => new DadAutoPartyListingPublication(policy, [listing]),
+            inboundAdmission: _ => new DadAutoPartyInboundAdmissionResult(
+                runId,
+                true,
+                "dad-inbound-admission-ready",
+                ["Slot2"],
+                [expectedTarget]));
+        var delivery = fixture.SealPeer(proposal);
+        fixture.Transport.Inbound.Enqueue(delivery);
+
+        await pump.ProcessOnceAsync();
+        pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        Assert.True(pump.TryGetInboundRuntimeTarget(
+            proposalId,
+            new OpaqueCharacterId("opaque-local"),
+            out var slotId,
+            out var retainedTarget,
+            out var safeCode), safeCode);
+        Assert.Equal("Slot2", slotId);
+        AssertNativeInviteTarget(expectedTarget, retainedTarget);
+        Assert.Contains(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<SessionLease>());
+        Assert.Contains(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<ParticipantInviteLocator>());
+        Assert.Equal(0, fixture.PendingStore.SaveCount);
+    }
+
+    [Fact]
     public async Task AllianceInstructionWaitsForInitializedRelaySecurity()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
@@ -1249,9 +1301,10 @@ public sealed class DadAutoPartyRelayPumpTests
         await pump.ProcessOnceAsync();
 
         Assert.NotNull(observed);
-        Assert.Equal("run-one", observed!.ExpectedInviter.RunId);
-        Assert.Equal((ulong)1234, observed.ExpectedInviter.ContentId);
-        Assert.Equal("Peer Character", observed.ExpectedInviter.CharacterName);
+        var expectedInviter = Assert.IsType<DadExpectedPartyInviter>(observed!.ExpectedInviter);
+        Assert.Equal("run-one", expectedInviter.RunId);
+        Assert.Equal((ulong)1234, expectedInviter.ContentId);
+        Assert.Equal("Peer Character", expectedInviter.CharacterName);
         Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == delivery.EnvelopeId);
         var receiptEnvelope = Assert.Single(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
@@ -1259,6 +1312,190 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(ExecutionOutcome.Denied, receipt.Outcome);
         Assert.Equal("dad-partylist-proof-required", receipt.SafeCode);
         Assert.True(receipt.ObservedPartyContentIds.IsDefaultOrEmpty);
+    }
+
+    [Fact]
+    public async Task SlotOneFollowerTargetsSerializeAndDecodeExactly()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        DadAutoPartyFormExecutionContext? observed = null;
+        pump.ConfigureLifecycleHandlers(
+            static _ => new(false, "unused", 1),
+            static (_, _, _) => ValueTask.FromResult(new DadAutoPartyPrivacyResult(false, false, "unused")));
+        pump.ConfigureFormExecutionHandler((context, _) =>
+        {
+            observed = context;
+            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                context.Operation.OperationId,
+                context.Operation.ProposalId,
+                context.Operation.Kind,
+                ExecutionOutcome.Denied,
+                DadRunPhase.Idle,
+                "dad-test-form-observed",
+                context.Operation.ExpectedStateGeneration));
+        });
+        var first = NativeInviteTarget("run-follower-targets", "Slot2", "Private Two", 2002);
+        var second = new DadNativePartyInviteTarget
+        {
+            RunId = "run-follower-targets",
+            ModuleId = DadModuleId.PremadeDuty,
+            SlotId = "Slot3",
+            WorkerSessionId = new DadWorkerSessionId("private-worker-three"),
+            AccountKey = new DadAccountKey("private-account-three"),
+            CharacterKey = new DadCharacterKey("private-character-three"),
+            ContentId = 3003,
+            CharacterName = "Private Three",
+            WorldId = 31,
+        };
+        var command = new DadAutoPartyParticipantCommand(
+            Guid.NewGuid(),
+            DadAutoPartyParticipantCommandKind.Execution,
+            Guid.NewGuid(),
+            first.RunId,
+            "Slot1",
+            PumpFixture.PeerOwner,
+            PumpFixture.PeerIsland,
+            "opaque-remote",
+            24,
+            "dad-duty-1",
+            ExecutionOperationKind.Form,
+            3,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            PartyInviteTargets: [first, second]);
+        var method = typeof(DadAutoPartyRelayPump).GetMethod(
+            "BuildExecutionOperation",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        var outgoing = Assert.IsType<ExecutionOperation>(method.Invoke(pump, [command]));
+
+        Assert.Null(outgoing.InviteLocator);
+        Assert.Equal(2, outgoing.PartyInviteTargets.Length);
+        var expectedTargets = new[] { first, second };
+        for (var index = 0; index < expectedTargets.Length; index++)
+        {
+            var encoded = outgoing.PartyInviteTargets[index].OpaqueLocator.ToArray();
+            try
+            {
+                using var payload = JsonDocument.Parse(encoded);
+                var expected = expectedTargets[index];
+                Assert.Equal(expected.RunId, payload.RootElement.GetProperty("RunId").GetString());
+                Assert.Equal(expected.WorkerSessionId.Value, payload.RootElement.GetProperty("WorkerSessionId").GetString());
+                Assert.Equal(expected.AccountKey.Value, payload.RootElement.GetProperty("AccountKey").GetString());
+                Assert.Equal(expected.CharacterKey.Value, payload.RootElement.GetProperty("CharacterKey").GetString());
+                Assert.Equal(expected.ContentId, payload.RootElement.GetProperty("ContentId").GetUInt64());
+                Assert.Equal(expected.CharacterName, payload.RootElement.GetProperty("CharacterName").GetString());
+                Assert.Equal(expected.WorldId, payload.RootElement.GetProperty("WorldId").GetUInt16());
+                Assert.Equal(expected.ModuleId.ToString(), payload.RootElement.GetProperty("ModuleId").GetString());
+                Assert.Equal(expected.SlotId, payload.RootElement.GetProperty("SlotId").GetString());
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(encoded);
+            }
+        }
+
+        var inbound = outgoing with
+        {
+            Header = fixture.PeerHeader("form-with-follower-targets"),
+            OwnerId = new OwnerId(PumpFixture.LocalOwner),
+            PartyInviteTargets = outgoing.PartyInviteTargets.Select(locator => locator with
+            {
+                OwnerId = new OwnerId(PumpFixture.PeerOwner),
+                IslandId = new IslandId(PumpFixture.PeerIsland),
+            }).ToImmutableArray(),
+        };
+        var delivery = fixture.SealPeer(inbound);
+        fixture.Transport.Inbound.Enqueue(delivery);
+
+        await pump.ProcessOnceAsync();
+        pump.UpdateFramework();
+        pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        Assert.NotNull(observed);
+        Assert.Null(observed!.ExpectedInviter);
+        Assert.Equal(2, observed.PartyInviteTargets.Count);
+        AssertNativeInviteTarget(first, observed.PartyInviteTargets[0]);
+        AssertNativeInviteTarget(second, observed.PartyInviteTargets[1]);
+        Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == delivery.EnvelopeId);
+    }
+
+    [Fact]
+    public async Task FormWithInviterAndFollowerTargetsIsDenied()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        var operation = new ExecutionOperation(
+            fixture.PeerHeader("form-with-contradictory-locators"),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new OwnerId(PumpFixture.LocalOwner),
+            ExecutionOperationKind.Form,
+            new ActivityId("dad-duty-1"),
+            new OpaqueCharacterId("opaque-local"),
+            new JobId("19"),
+            PeerExpectedInviterLocator("run-contradictory"),
+            1,
+            false,
+            PeerPartyInviteLocators(NativeInviteTarget("run-contradictory", "Slot2", "Private Two", 2002)));
+        var delivery = fixture.SealPeer(operation);
+        fixture.Transport.Inbound.Enqueue(delivery);
+
+        await pump.ProcessOnceAsync();
+
+        Assert.DoesNotContain(fixture.Transport.Acknowledged, item => item.EnvelopeId == delivery.EnvelopeId);
+        Assert.Equal(0, pump.Snapshot.PendingExecutionCount);
+        Assert.Equal("dad-relay-form-locator-mode-invalid", pump.Snapshot.SafeCode);
+    }
+
+    [Fact]
+    public async Task AuthoritativeFormReceiptPropagatesContentIds()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        pump.ConfigureLifecycleHandlers(
+            static _ => new(false, "unused", 1),
+            static (_, _, _) => ValueTask.FromResult(new DadAutoPartyPrivacyResult(false, false, "unused")));
+        pump.ConfigureFormExecutionHandler((context, _) => ValueTask.FromResult(new DadAutoPartyExecutionResult(
+            context.Operation.OperationId,
+            context.Operation.ProposalId,
+            context.Operation.Kind,
+            ExecutionOutcome.Completed,
+            DadRunPhase.GroupReady,
+            "dad-form-complete",
+            context.Operation.ExpectedStateGeneration,
+            new DadAutoPartyObservedPartyReceipt(
+                2,
+                [1001UL, 2002UL],
+                "partylist-authoritative",
+                DateTime.UtcNow))));
+        var operation = new ExecutionOperation(
+            fixture.PeerHeader("form-with-authoritative-receipt"),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new OwnerId(PumpFixture.LocalOwner),
+            ExecutionOperationKind.Form,
+            new ActivityId("dad-duty-1"),
+            new OpaqueCharacterId("opaque-local"),
+            new JobId("19"),
+            null,
+            1,
+            false,
+            PeerPartyInviteLocators(NativeInviteTarget("run-authoritative", "Slot2", "Private Two", 2002)));
+        fixture.Transport.Inbound.Enqueue(fixture.SealPeer(operation));
+
+        await pump.ProcessOnceAsync();
+        pump.UpdateFramework();
+        pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        var receiptEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
+        var receipt = fixture.Open<ExecutionOperationReceipt>(receiptEnvelope);
+        Assert.Equal(ExecutionOutcome.Completed, receipt.Outcome);
+        Assert.Equal(new ulong[] { 1001, 2002 }, receipt.ObservedPartyContentIds);
     }
 
     [Fact]
@@ -1322,6 +1559,51 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task RestoreCommandCarriesOneBoundedEncryptedTeardownLocator()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        var follower = NativeInviteTarget("run-restore-locator", "Slot2", "Private Follower", 2002);
+        var command = new DadAutoPartyParticipantCommand(
+            Guid.NewGuid(),
+            DadAutoPartyParticipantCommandKind.Execution,
+            Guid.NewGuid(),
+            "run-restore-locator",
+            "Slot1",
+            PumpFixture.PeerOwner,
+            PumpFixture.PeerIsland,
+            "opaque-remote",
+            19,
+            "dad-duty-1",
+            ExecutionOperationKind.Restore,
+            1,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            Inviter: new DadExpectedPartyInviter
+            {
+                RunId = "run-restore-locator",
+                WorkerSessionId = new DadWorkerSessionId("worker-slot1"),
+                AccountKey = new DadAccountKey("account-slot1"),
+                CharacterKey = new DadCharacterKey("Private Leader@Alpha"),
+                ContentId = 1001,
+                CharacterName = "Private Leader",
+                WorldId = 21,
+            },
+            PartyInviteTargets: [follower]);
+        var method = typeof(DadAutoPartyRelayPump).GetMethod(
+            "BuildExecutionOperation",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        var operation = Assert.IsType<ExecutionOperation>(method.Invoke(pump, [command]));
+
+        Assert.Equal(ExecutionOperationKind.Restore, operation.Kind);
+        Assert.NotNull(operation.InviteLocator);
+        Assert.True(operation.InviteLocator.OpaqueLocator.Length is > 0 and <= AutoPartyProtocol.MaximumTextValueLength);
+        Assert.True(operation.PartyInviteTargets.IsDefaultOrEmpty);
+        Assert.Null(operation.ModuleReference);
+    }
+
+    [Fact]
     public async Task ExecutionReceiptEchoesExactModuleReferenceWithoutPartyProof()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
@@ -1353,6 +1635,44 @@ public sealed class DadAutoPartyRelayPumpTests
         var receipt = fixture.Open<ExecutionOperationReceipt>(envelope);
         Assert.Equal(module, receipt.ModuleReference);
         Assert.True(receipt.ObservedPartyContentIds.IsDefaultOrEmpty);
+    }
+
+    [Fact]
+    public async Task AcceptedQueueIsPolledUntilCompletedBeforeReceipt()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        var execution = new AcceptedThenCompletedExecutionFacade();
+        fixture.Service.ConfigureExecutionFacade(execution);
+        await using var pump = fixture.CreatePump();
+        var module = new EndpointExecutionModuleReference(0, nameof(DadModuleId.PremadeDuty));
+        var operation = new ExecutionOperation(
+            fixture.PeerHeader("queue-accepted-then-complete"),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new OwnerId(PumpFixture.LocalOwner),
+            ExecutionOperationKind.Queue,
+            new ActivityId("dad-duty-1"),
+            new OpaqueCharacterId("opaque-local"),
+            new JobId("19"),
+            null,
+            1,
+            false,
+            ImmutableArray<InviteLocator>.Empty,
+            module);
+        fixture.Transport.Inbound.Enqueue(fixture.SealPeer(operation));
+
+        await pump.ProcessOnceAsync();
+        for (var attempt = 0; attempt < 4; attempt++)
+            pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        Assert.Equal(2, execution.QueueCalls);
+        var envelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
+        var receipt = fixture.Open<ExecutionOperationReceipt>(envelope);
+        Assert.Equal(ExecutionOutcome.Completed, receipt.Outcome);
+        Assert.Equal("dad-test-queue-complete", receipt.SafeCode);
+        Assert.Equal(module, receipt.ModuleReference);
     }
 
     [Fact]
@@ -1580,6 +1900,83 @@ public sealed class DadAutoPartyRelayPumpTests
             WorldId = 21,
         };
 
+    private static void AssertNativeInviteTarget(
+        DadNativePartyInviteTarget expected,
+        DadNativePartyInviteTarget actual)
+    {
+        Assert.Equal(expected.RunId, actual.RunId);
+        Assert.Equal(expected.ModuleId, actual.ModuleId);
+        Assert.Equal(expected.SlotId, actual.SlotId);
+        Assert.Equal(expected.WorkerSessionId, actual.WorkerSessionId);
+        Assert.Equal(expected.AccountKey, actual.AccountKey);
+        Assert.Equal(expected.CharacterKey, actual.CharacterKey);
+        Assert.Equal(expected.ContentId, actual.ContentId);
+        Assert.Equal(expected.CharacterName, actual.CharacterName);
+        Assert.Equal(expected.WorldId, actual.WorldId);
+    }
+
+    private static InviteLocator PeerExpectedInviterLocator(string runId)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            RunId = runId,
+            WorkerSessionId = "peer-worker",
+            AccountKey = "peer-account",
+            CharacterKey = "peer-character",
+            ContentId = 1001UL,
+            CharacterName = "Peer Inviter",
+            WorldId = (ushort)21,
+        });
+        try
+        {
+            return new InviteLocator(
+                $"invite-{Guid.NewGuid():N}",
+                new OwnerId(PumpFixture.PeerOwner),
+                new IslandId(PumpFixture.PeerIsland),
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                ImmutableArray.CreateRange(payload));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(payload);
+        }
+    }
+
+    private static ImmutableArray<InviteLocator> PeerPartyInviteLocators(
+        params DadNativePartyInviteTarget[] targets)
+    {
+        var builder = ImmutableArray.CreateBuilder<InviteLocator>(targets.Length);
+        foreach (var target in targets)
+        {
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                target.RunId,
+                WorkerSessionId = target.WorkerSessionId.Value,
+                AccountKey = target.AccountKey.Value,
+                CharacterKey = target.CharacterKey.Value,
+                target.ContentId,
+                target.CharacterName,
+                target.WorldId,
+                ModuleId = target.ModuleId.ToString(),
+                target.SlotId,
+            });
+            try
+            {
+                builder.Add(new InviteLocator(
+                    $"party-invite-{Guid.NewGuid():N}",
+                    new OwnerId(PumpFixture.PeerOwner),
+                    new IslandId(PumpFixture.PeerIsland),
+                    DateTimeOffset.UtcNow.AddMinutes(2),
+                    ImmutableArray.CreateRange(payload)));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(payload);
+            }
+        }
+        return builder.MoveToImmutable();
+    }
+
     private static ParticipantInviteLocator PeerParticipantInviteLocator(
         ContractHeader header,
         Guid proposalId,
@@ -1746,7 +2143,8 @@ public sealed class DadAutoPartyRelayPumpTests
         public DadAutoPartyRelayPump CreatePump(
             Func<DateTime, DadAutoPartyListingPublication>? inboundListingPublicationProvider = null,
             IDadAutoPartyInboundProposalStore? inboundProposalStore = null,
-            Action<string>? diagnostic = null)
+            Action<string>? diagnostic = null,
+            Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission = null)
             => new(
                 Configuration,
                 IdentityStore,
@@ -1756,6 +2154,7 @@ public sealed class DadAutoPartyRelayPumpTests
                 PendingStore,
                 inboundProposalStore: inboundProposalStore,
                 inboundListingPublicationProvider: inboundListingPublicationProvider,
+                inboundAdmission: inboundAdmission,
                 delay: static (_, _) => Task.CompletedTask,
                 diagnostic: diagnostic);
 
@@ -1966,6 +2365,72 @@ public sealed class DadAutoPartyRelayPumpTests
                 return false;
             }
         }
+    }
+
+    private sealed class AcceptedThenCompletedExecutionFacade : IAutoPartyExecutionFacade
+    {
+        public int QueueCalls { get; private set; }
+
+        public ValueTask<DadAutoPartyExecutionResult> PrepareAsync(
+            ExecutionOperation operation,
+            IntegrationProfile? profile,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Completed(operation, "dad-test-prepare-complete"));
+
+        public ValueTask<DadAutoPartyExecutionResult> ReserveAsync(
+            ExecutionOperation operation,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Completed(operation, "dad-test-reserve-complete"));
+
+        public ValueTask<DadAutoPartyExecutionResult> FormAsync(
+            ExecutionOperation operation,
+            DadAutoPartyObservedPartyReceipt observedParty,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Completed(operation, "dad-test-form-complete"));
+
+        public ValueTask<DadAutoPartyExecutionResult> QueueAsync(
+            ExecutionOperation operation,
+            CancellationToken cancellationToken = default)
+        {
+            QueueCalls++;
+            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                QueueCalls == 1 ? ExecutionOutcome.Accepted : ExecutionOutcome.Completed,
+                DadRunPhase.QueueStarting,
+                QueueCalls == 1 ? "dad-test-queue-pending" : "dad-test-queue-complete",
+                operation.ExpectedStateGeneration));
+        }
+
+        public ValueTask<DadAutoPartyExecutionResult> CancelAsync(
+            ExecutionOperation operation,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Completed(operation, "dad-test-cancel-complete"));
+
+        public ValueTask<DadAutoPartyExecutionResult> SettleAsync(
+            ExecutionOperation operation,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Completed(operation, "dad-test-settle-complete"));
+
+        public ValueTask<DadAutoPartyExecutionResult> RestoreAsync(
+            ExecutionOperation operation,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Completed(operation, "dad-test-restore-complete"));
+
+        public void StopAll(string safeReason)
+        {
+        }
+
+        private static DadAutoPartyExecutionResult Completed(ExecutionOperation operation, string safeCode)
+            => new(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                ExecutionOutcome.Completed,
+                DadRunPhase.Finalizing,
+                safeCode,
+                operation.ExpectedStateGeneration);
     }
 
     private sealed class MemoryIdentityStore(byte[] material) : IDadAutoPartyEndpointIdentityStore, IDisposable

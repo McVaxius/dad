@@ -19,7 +19,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
 
         Assert.True(result.Ready, result.SafeBlocker);
         Assert.Equal("run-inbound-admission", result.RunId);
-        Assert.Equal(["Slot2"], result.OwnedSlotIds);
+        Assert.Equal(["Slot2"], result.OwnedSlotIds.ToArray());
         var target = Assert.Single(result.InviteTargets);
         Assert.Equal("Slot2", target.SlotId);
         Assert.Equal(1, fixture.WakeCalls);
@@ -176,6 +176,76 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         Assert.Equal(DadAutoPartyInboundAdmissionService.InvalidProposal, oversizedResult.SafeBlocker);
         Assert.Equal(0, fixture.WakeCalls);
         Assert.Equal(0, fixture.ClaimCalls);
+    }
+
+    [Fact]
+    public void QueueAndSettleBuildOnlyTheExactLocalWorkerCommand()
+    {
+        var fixture = new Fixture();
+        var proposal = Proposal();
+        var plan = Assert.IsType<EndpointExecutionPlan>(proposal.ExecutionPlan);
+        var live = fixture.Routes.Single().Clone();
+        live.RunId = plan.RunId;
+        live.AssignedSlotId = "Slot2";
+        live.ClaimState = DadClaimState.Granted;
+        live.LeaseState = DadParticipantLeaseState.Granted;
+        live.RequestedJobPreparation = new DadRequestedJobPreparationProof
+        {
+            Key = new DadRequestedJobPreparationKey(
+                plan.RunId,
+                live.WorkerSessionId,
+                "Slot2",
+                live.ManagedAccountKey,
+                live.ActiveCharacterKey,
+                live.Character.ContentId,
+                19),
+            Status = DadRequestedJobPreparationStatus.AlreadyMatched,
+            UpdatedAtUtc = DateTime.UtcNow,
+        };
+        var target = new DadNativePartyInviteTarget
+        {
+            RunId = plan.RunId,
+            ModuleId = DadModuleId.PremadeDuty,
+            SlotId = "Slot2",
+            WorkerSessionId = live.WorkerSessionId,
+            AccountKey = live.ManagedAccountKey,
+            CharacterKey = live.ActiveCharacterKey,
+            ContentId = live.Character.ContentId,
+            CharacterName = live.Character.CharacterName,
+            WorldId = checked((ushort)live.Character.WorldId),
+        };
+        var context = new DadAutoPartyInboundExecutionContext(
+            plan,
+            target,
+            "island-peer",
+            Fixture.LocalOwner,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        ExecutionOperation Operation(ExecutionOperationKind kind) => new(
+            Header(DateTimeOffset.UtcNow.AddMinutes(5)),
+            Guid.NewGuid(),
+            proposal.ProposalId,
+            new OwnerId(Fixture.LocalOwner),
+            kind,
+            proposal.ActivityId,
+            new OpaqueCharacterId("opaque-local"),
+            new JobId("19"),
+            null,
+            3,
+            FormationOnly: false,
+            PartyInviteTargets: default,
+            ModuleReference: new EndpointExecutionModuleReference(0, nameof(DadModuleId.PremadeDuty)));
+
+        Assert.True(DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(
+            Operation(ExecutionOperationKind.Queue), context, live, out var queue, out var queueParticipant, out var queueBlocker), queueBlocker);
+        Assert.True(DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(
+            Operation(ExecutionOperationKind.Settle), context, live, out var settle, out var settleParticipant, out var settleBlocker), settleBlocker);
+        Assert.Equal(2, queue.Participants.Count);
+        Assert.Single(queue.Participants, static participant => participant.IsLocalClient);
+        Assert.Equal(live.WorkerSessionId, queueParticipant.WorkerSessionId);
+        Assert.Equal(queue.CommandId, settle.CommandId);
+        Assert.Equal(queueParticipant.WorkerSessionId, settleParticipant.WorkerSessionId);
+        Assert.DoesNotContain(queue.Participants, participant =>
+            participant.IsLocalClient && !string.Equals(participant.AssignedSlotId, "Slot2", StringComparison.OrdinalIgnoreCase));
     }
 
     private static RunProposal Proposal()

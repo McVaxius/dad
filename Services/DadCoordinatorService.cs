@@ -1,5 +1,6 @@
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
+using AutoParty.Contracts;
 using dad.Models;
 
 namespace dad.Services;
@@ -36,6 +37,7 @@ public sealed class DadCoordinatorService
     private DateTime nextParticipantPollUtc = DateTime.MinValue;
     private int activeModuleIndex = -1;
     private int activeStepResultIndex = -1;
+    private bool activeModuleCompleted;
     private bool loggedSingleWorkerSeed;
     private bool loggedSingleWorkerAssemblyConfirmed;
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
@@ -57,6 +59,14 @@ public sealed class DadCoordinatorService
     private string inviteRetryContinuationRunId = string.Empty;
     private bool persistentStartup;
     private bool crewFormationTeardownRequested;
+    private bool autoPartyCancellationPending;
+    private DadRunStatus autoPartyFinalizationStatus = DadRunStatus.Cancelled;
+    private string autoPartyCancellationSummary = string.Empty;
+    private string autoPartyCancellationReason = string.Empty;
+    private readonly Dictionary<string, DadAssemblyInstructionDto> autoPartyCancellationTeardowns =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> autoPartyCancellationCancelRequestedSlots =
+        new(StringComparer.OrdinalIgnoreCase);
     private List<DadAssemblyInstructionDto> activePartyTeardownInstructions = [];
     private readonly Dictionary<string, DadRunStepResultDto> partyTeardownTerminalResults =
         new(StringComparer.OrdinalIgnoreCase);
@@ -137,6 +147,11 @@ public sealed class DadCoordinatorService
             return;
 
         LogCoordinatorPhaseTransition();
+        if (autoPartyCancellationPending)
+        {
+            UpdateAutoPartyCancellation();
+            return;
+        }
 
         switch (CurrentResult.Phase)
         {
@@ -388,6 +403,12 @@ public sealed class DadCoordinatorService
         activePlan = plan;
         this.persistentStartup = persistentStartup;
         crewFormationTeardownRequested = false;
+        autoPartyCancellationPending = false;
+        autoPartyFinalizationStatus = DadRunStatus.Cancelled;
+        autoPartyCancellationSummary = string.Empty;
+        autoPartyCancellationReason = string.Empty;
+        autoPartyCancellationTeardowns.Clear();
+        autoPartyCancellationCancelRequestedSlots.Clear();
         activeScheduleRepeatBoundary = repeatBoundary;
         coordinatorContradictionTracker.Reset();
         activeSlotManifest = acceptedManifest;
@@ -395,6 +416,7 @@ public sealed class DadCoordinatorService
         stepResults.Clear();
         stopProgress = DadRunStopProgress.FromPolicy(plan.Request.StopPolicy);
         activeModuleIndex = -1;
+        activeModuleCompleted = false;
         activeStepResultIndex = -1;
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
@@ -502,6 +524,8 @@ public sealed class DadCoordinatorService
 
         if (!IsBusy || activePlan == null)
             return CurrentResult.Clone();
+        if (autoPartyCancellationPending)
+            return CurrentResult.Clone();
 
         var command = new DadCancelCommandDto
         {
@@ -550,7 +574,7 @@ public sealed class DadCoordinatorService
             participant.ClaimState = DadClaimState.Released;
         }
 
-        return FinalizeRun(DadRunStatus.Cancelled, "Dad run cancelled.", "Cancelled by operator.");
+        return BeginAutoPartyCancellationOrFinalize("Dad run cancelled.", "Cancelled by operator.");
     }
 
     public DadRunResult CancelAllLocal(string reason)
@@ -566,6 +590,8 @@ public sealed class DadCoordinatorService
             presenceService.ResetToIdle();
             return CurrentResult.Clone();
         }
+        if (autoPartyCancellationPending)
+            return CurrentResult.Clone();
 
         workerExecutionService.Cancel(new DadWorkerExecutionCancel
         {
@@ -609,7 +635,185 @@ public sealed class DadCoordinatorService
         }
 
         CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
-        return FinalizeRun(DadRunStatus.Cancelled, "Dad run stopped by Stop-all.", reason);
+        return BeginAutoPartyCancellationOrFinalize("Dad run stopped by Stop-all.", reason);
+    }
+
+    private DadRunResult BeginAutoPartyCancellationOrFinalize(string summary, string reason)
+        => FinalizeRun(DadRunStatus.Cancelled, summary, reason);
+
+    private bool TryBeginAutoPartyFinalization(DadRunStatus status, string summary, string reason)
+    {
+        if (autoPartyCancellationPending)
+            return true;
+        var registeredSlotIds = GetRegisteredIslandSlotIds();
+        if (activePlan == null || registeredSlotIds.Count == 0)
+            return false;
+        if (TryGetActiveAutoPartyProposalId(out var completedProposalId) && autoPartyParticipantBridge != null &&
+            registeredSlotIds.All(slotId =>
+                autoPartyParticipantBridge.GetSnapshot(
+                    completedProposalId,
+                    slotId,
+                    DateTimeOffset.UtcNow)?.Stage == DadAutoPartyParticipantStage.Restored))
+            return false;
+        autoPartyCancellationPending = true;
+        autoPartyFinalizationStatus = status;
+        autoPartyCancellationSummary = summary;
+        autoPartyCancellationReason = reason;
+        autoPartyCancellationTeardowns.Clear();
+        autoPartyCancellationCancelRequestedSlots.Clear();
+        if (activeSlotManifest != null &&
+            activeParticipants.Count == activeSlotManifest.Slots.Count &&
+            TryBuildAutoPartyRuntimeInviteTargets(out var runtimeInviteTargets, out _) &&
+            partyAssemblyService.BuildTeardownInstructions(
+                activePlan,
+                activeParticipants,
+                activeSlotManifest,
+                presenceService.WorkerSessionId,
+                runtimeInviteTargets,
+                out _) is { Count: > 0 } instructions)
+        {
+            foreach (var instruction in instructions)
+            {
+                if (registeredSlotIds.Contains(instruction.SlotId, StringComparer.OrdinalIgnoreCase))
+                    autoPartyCancellationTeardowns[instruction.SlotId] = instruction;
+            }
+        }
+        CurrentResult.ActiveTaskStatus = "Waiting for authenticated endpoint Cancel and Restore acknowledgements.";
+        CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+        UpdateAutoPartyCancellation();
+        return true;
+    }
+
+    private void UpdateAutoPartyCancellation()
+    {
+        if (!autoPartyCancellationPending || activePlan == null)
+            return;
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+        {
+            CompleteAutoPartyFinalization(
+                cleanupFailed: true,
+                "Authenticated endpoint cancellation route became unavailable.");
+            return;
+        }
+
+        var pendingSlots = new List<string>();
+        var failedSlots = new List<string>();
+        foreach (var slotId in GetRegisteredIslandSlotIds())
+        {
+            var participant = activeParticipants.FirstOrDefault(candidate =>
+                string.Equals(candidate.AssignedSlotId, slotId, StringComparison.OrdinalIgnoreCase));
+            var snapshot = autoPartyParticipantBridge.GetSnapshot(proposalId, slotId, DateTimeOffset.UtcNow);
+            if (snapshot == null || snapshot.Stage is DadAutoPartyParticipantStage.Revoked or DadAutoPartyParticipantStage.Failed)
+            {
+                failedSlots.Add(slotId);
+                continue;
+            }
+            if (snapshot.Stage == DadAutoPartyParticipantStage.Restored)
+            {
+                if (participant != null)
+                {
+                    participant.CancellationState = DadRunCancellationState.Acknowledged;
+                    participant.State = DadParticipantState.Cancelled;
+                    participant.StatusText = snapshot.SafeCode;
+                }
+                continue;
+            }
+            if (!autoPartyCancellationCancelRequestedSlots.Contains(slotId))
+            {
+                if (!autoPartyParticipantBridge.RequestOperation(
+                        proposalId,
+                        slotId,
+                        ExecutionOperationKind.Cancel,
+                        moduleIndex: null,
+                        inviter: null,
+                        DateTimeOffset.UtcNow,
+                        out _))
+                {
+                    failedSlots.Add(slotId);
+                    continue;
+                }
+                autoPartyCancellationCancelRequestedSlots.Add(slotId);
+            }
+
+            var restoreRequested = autoPartyCancellationTeardowns.TryGetValue(slotId, out var instruction)
+                ? autoPartyParticipantBridge.RequestOperation(
+                    proposalId,
+                    slotId,
+                    ExecutionOperationKind.Restore,
+                    moduleIndex: null,
+                    instruction.FrozenInviter,
+                    instruction.InviteTargets,
+                    DateTimeOffset.UtcNow,
+                    out _)
+                : autoPartyParticipantBridge.RequestOperation(
+                    proposalId,
+                    slotId,
+                    ExecutionOperationKind.Restore,
+                    moduleIndex: null,
+                    inviter: null,
+                    DateTimeOffset.UtcNow,
+                    out _);
+            if (!restoreRequested)
+            {
+                failedSlots.Add(slotId);
+                continue;
+            }
+
+            snapshot = autoPartyParticipantBridge.GetSnapshot(proposalId, slotId, DateTimeOffset.UtcNow);
+            var cancelComplete = autoPartyParticipantBridge.IsOperationComplete(
+                proposalId,
+                slotId,
+                ExecutionOperationKind.Cancel,
+                DateTimeOffset.UtcNow);
+            var restoreComplete = autoPartyParticipantBridge.IsOperationComplete(
+                proposalId,
+                slotId,
+                ExecutionOperationKind.Restore,
+                DateTimeOffset.UtcNow);
+            if (cancelComplete && restoreComplete && snapshot?.Stage == DadAutoPartyParticipantStage.Restored)
+            {
+                if (participant != null)
+                {
+                    participant.CancellationState = DadRunCancellationState.Acknowledged;
+                    participant.State = DadParticipantState.Cancelled;
+                    participant.StatusText = snapshot.SafeCode;
+                }
+            }
+            else
+            {
+                pendingSlots.Add(slotId);
+            }
+        }
+
+        if (pendingSlots.Count > 0)
+        {
+            CurrentResult.ActiveTaskStatus =
+                $"Waiting for authenticated endpoint Cancel and Restore acknowledgements from {string.Join(", ", pendingSlots)}.";
+            CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+            CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
+            Publish();
+            return;
+        }
+
+        CompleteAutoPartyFinalization(
+            failedSlots.Count > 0,
+            failedSlots.Count == 0
+                ? string.Empty
+                : $"Authenticated endpoint cancellation/restore failed for {string.Join(", ", failedSlots)}.");
+    }
+
+    private void CompleteAutoPartyFinalization(bool cleanupFailed, string cleanupDetail)
+    {
+        var status = cleanupFailed && autoPartyFinalizationStatus == DadRunStatus.Completed
+            ? DadRunStatus.PartialFailure
+            : autoPartyFinalizationStatus;
+        var summary = cleanupFailed && autoPartyFinalizationStatus == DadRunStatus.Completed
+            ? $"{autoPartyCancellationSummary} Authenticated endpoint cleanup partially failed.".Trim()
+            : autoPartyCancellationSummary;
+        var failure = string.Join(" ", new[] { autoPartyCancellationReason, cleanupDetail }
+            .Where(static value => !string.IsNullOrWhiteSpace(value)));
+        autoPartyCancellationPending = false;
+        FinalizeRun(status, summary, failure, autoPartyCleanupComplete: true);
     }
 
     private void UpdateParticipantDiscovery()
@@ -1065,11 +1269,20 @@ public sealed class DadCoordinatorService
             return;
         }
 
+        if (!TryBuildAutoPartyRuntimeInviteTargets(out var runtimeInviteTargets, out var runtimeTargetBlocker))
+        {
+            CurrentResult.ActiveTaskStatus = runtimeTargetBlocker;
+            CurrentResult.BlockedReason = runtimeTargetBlocker;
+            Publish();
+            return;
+        }
+
         var instructions = partyAssemblyService.BuildInstructions(
             activePlan,
             activeParticipants,
             activeSlotManifest,
             presenceService.WorkerSessionId,
+            runtimeInviteTargets,
             out var blocker);
         if (!string.IsNullOrWhiteSpace(blocker))
         {
@@ -1094,6 +1307,29 @@ public sealed class DadCoordinatorService
                 continue;
 
             participant.State = DadParticipantState.AssemblyPending;
+            if (!string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            {
+                if (!TryRequestAutoPartyFormOperation(instruction, participant, out var remoteBlocker))
+                    blockers.Add(remoteBlocker);
+                else if (TryGetActiveAutoPartyProposalId(out var proposalId) &&
+                         autoPartyParticipantBridge?.GetSnapshot(
+                             proposalId,
+                             instruction.SlotId,
+                             DateTimeOffset.UtcNow) is { } remoteSnapshot &&
+                         remoteSnapshot.Stage == DadAutoPartyParticipantStage.Formed)
+                {
+                    participant.State = DadParticipantState.AssemblyConfirmed;
+                    participant.StatusText = remoteSnapshot.SafeCode;
+                    partyMembers = remoteSnapshot.ObservedPartyContentIds
+                        .Select(static contentId => new DadPartyMemberSnapshot { ContentId = contentId })
+                        .ToList();
+                }
+                else
+                {
+                    blockers.Add($"{instruction.SlotId} is waiting for authenticated AutoParty Form proof.");
+                }
+                continue;
+            }
             DadRunStepResultDto? result = participant.IsLocalClient
                 ? presenceService.HandleAssemblyInstruction(instruction)
                 : transportService.SendAssemblyInstruction(participant, instruction);
@@ -1116,7 +1352,32 @@ public sealed class DadCoordinatorService
             if (participant == null)
                 continue;
 
-            if (!DadPartyAssemblyService.ShouldDispatchJoinInstruction(participant, partyMembers))
+            if (!string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            {
+                if (!TryRequestAutoPartyFormOperation(instruction, participant, out var remoteBlocker))
+                    blockers.Add(remoteBlocker);
+                else if (TryGetActiveAutoPartyProposalId(out var proposalId) &&
+                         autoPartyParticipantBridge?.GetSnapshot(
+                             proposalId,
+                             instruction.SlotId,
+                             DateTimeOffset.UtcNow) is { } remoteSnapshot &&
+                         remoteSnapshot.Stage == DadAutoPartyParticipantStage.Formed)
+                {
+                    participant.State = DadParticipantState.AssemblyConfirmed;
+                    participant.StatusText = remoteSnapshot.SafeCode;
+                }
+                else
+                {
+                    participant.State = DadParticipantState.AssemblyPending;
+                    blockers.Add($"{instruction.SlotId} is waiting for authenticated AutoParty Form proof.");
+                }
+                continue;
+            }
+
+            if (!DadPartyAssemblyService.IsParticipantInParty(
+                    participant,
+                    partyMembers,
+                    runtimeInviteTargets.GetValueOrDefault(instruction.SlotId)))
             {
                 participant.State = DadParticipantState.AssemblyConfirmed;
                 participant.StatusText = $"Slot1 authoritative PartyList confirms {participant.ActiveCharacterKey}.";
@@ -1179,7 +1440,11 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        var membership = partyAssemblyService.EvaluatePartyMembership(activePlan, activeParticipants, partyMembers);
+        var membership = partyAssemblyService.EvaluatePartyMembership(
+            activePlan,
+            activeParticipants,
+            partyMembers,
+            runtimeInviteTargets);
         if (membership.Disposition == DadPartyMembershipDisposition.Reject)
         {
             FinalizeRun(
@@ -1530,12 +1795,13 @@ public sealed class DadCoordinatorService
 
         if (activeModuleIndex >= 0 &&
             activeModuleIndex < activePlan.Modules.Count &&
-            workerCommands.Count > 0)
+            !activeModuleCompleted)
         {
-            if (workerStatuses.Count < workerCommands.Count)
-                DispatchWorkerExecution(activePlan.Modules[activeModuleIndex]);
+            var activeModule = activePlan.Modules[activeModuleIndex];
+            if (!IsCurrentModuleQueueDispatchReady(activeModule))
+                DispatchWorkerExecution(activeModule);
             else
-                UpdateWorkerExecution(activePlan.Modules[activeModuleIndex]);
+                UpdateWorkerExecution(activeModule);
             return;
         }
 
@@ -1559,12 +1825,178 @@ public sealed class DadCoordinatorService
         workerCommands.Clear();
         workerStatuses.Clear();
         missingWorkerSinceUtc.Clear();
+        activeModuleCompleted = false;
         finalizationCancellationScopeOverride = null;
         activeStepResultIndex = -1;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         MarkStopPolicyAttemptStarted(activePlan);
         DispatchWorkerExecution(module);
     }
+
+    private List<DadParticipantSnapshot> GetLanWorkerParticipants()
+        => activeParticipants
+            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            .ToList();
+
+    private List<DadParticipantSnapshot> GetRegisteredIslandParticipants()
+        => activeParticipants
+            .Where(static participant => !string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            .ToList();
+
+    private List<string> GetRegisteredIslandSlotIds()
+    {
+        var manifestSlots = activeSlotManifest?.Slots
+            .Where(static slot => slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            .Select(static slot => slot.SlotId) ?? [];
+        return manifestSlots
+            .Concat(activeParticipants
+                .Where(static participant => !string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+                .Select(static participant => participant.AssignedSlotId))
+            .Where(static slotId => !string.IsNullOrWhiteSpace(slotId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(DadPlannerSlotRules.GetSlotSortKey)
+            .ThenBy(static slotId => slotId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private bool IsCurrentModuleQueueDispatchReady(DadPlannedModuleExecution module)
+    {
+        var lanParticipants = GetLanWorkerParticipants();
+        if (workerCommands.Count != lanParticipants.Count || workerStatuses.Count != lanParticipants.Count)
+            return false;
+        return GetRegisteredIslandParticipants().All(participant => IsAutoPartyModuleQueued(participant, module));
+    }
+
+    private bool TryResolveModuleDispatchTargets(
+        DadPlannedModuleExecution module,
+        bool barrierRequired,
+        List<string> pending,
+        out List<DadParticipantSnapshot> dispatchTargets,
+        out string blocker)
+    {
+        dispatchTargets = [];
+        blocker = string.Empty;
+        if (activePlan == null)
+            return false;
+        var lanParticipants = GetLanWorkerParticipants();
+        var registeredParticipants = GetRegisteredIslandParticipants();
+        if (!barrierRequired)
+        {
+            if (!TryRequestAutoPartyQueueOperations(module, registeredParticipants, pending, out blocker))
+                return false;
+            dispatchTargets = lanParticipants
+                .Where(participant => !workerStatuses.ContainsKey(participant.WorkerSessionId.Value))
+                .ToList();
+            return true;
+        }
+
+        var leaders = activeParticipants.Where(participant => IsQueueLeaderParticipant(activePlan, participant)).ToList();
+        if (leaders.Count != 1)
+        {
+            blocker = $"ADS prequeue barrier requires exactly one queue leader; found {leaders.Count}.";
+            return false;
+        }
+        var leader = leaders[0];
+        var lanNonLeaders = lanParticipants.Where(participant => !ReferenceEquals(participant, leader)).ToList();
+        var registeredNonLeaders = registeredParticipants.Where(participant => !ReferenceEquals(participant, leader)).ToList();
+        if (!TryRequestAutoPartyQueueOperations(module, registeredNonLeaders, pending, out blocker))
+            return false;
+        dispatchTargets = lanNonLeaders
+            .Where(participant => !workerStatuses.ContainsKey(participant.WorkerSessionId.Value))
+            .ToList();
+        if (dispatchTargets.Count > 0)
+            return true;
+
+        var lanNonLeadersReady = lanNonLeaders.All(participant =>
+            workerStatuses.TryGetValue(participant.WorkerSessionId.Value, out var status) &&
+            status.State == DadWorkerExecutionState.WaitingForQueue && !status.IsTerminal);
+        var registeredNonLeadersReady = registeredNonLeaders.All(participant =>
+            IsAutoPartyModuleQueued(participant, module));
+        if (!lanNonLeadersReady || !registeredNonLeadersReady)
+        {
+            pending.Add("ADS prequeue barrier is waiting for every LAN and authenticated-endpoint non-leader to reach exact queue-ready state.");
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(leader.RegisteredIslandId))
+            return TryRequestAutoPartyQueueOperations(module, [leader], pending, out blocker);
+        if (!workerStatuses.ContainsKey(leader.WorkerSessionId.Value))
+            dispatchTargets.Add(leader);
+        return true;
+    }
+
+    private bool TryRequestAutoPartyQueueOperations(
+        DadPlannedModuleExecution module,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        List<string> pending,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (participants.Count == 0)
+            return true;
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+        {
+            blocker = "Authenticated endpoint Queue routing lost its active AutoParty proposal.";
+            return false;
+        }
+        foreach (var participant in participants)
+        {
+            var snapshot = autoPartyParticipantBridge.GetSnapshot(
+                proposalId,
+                participant.AssignedSlotId,
+                DateTimeOffset.UtcNow);
+            if (snapshot == null || snapshot.Stage is DadAutoPartyParticipantStage.Failed or
+                DadAutoPartyParticipantStage.Revoked or DadAutoPartyParticipantStage.Cancelled or
+                DadAutoPartyParticipantStage.Restored)
+            {
+                blocker = $"{participant.AssignedSlotId} authenticated endpoint Queue route is terminal or unavailable.";
+                return false;
+            }
+            if (IsAutoPartyModuleQueued(snapshot, module))
+            {
+                participant.State = DadParticipantState.QueuePending;
+                participant.StatusText = snapshot.SafeCode;
+                continue;
+            }
+            if (!autoPartyParticipantBridge.RequestOperation(
+                    proposalId,
+                    participant.AssignedSlotId,
+                    ExecutionOperationKind.Queue,
+                    activeModuleIndex,
+                    inviter: null,
+                    DateTimeOffset.UtcNow,
+                    out var safeCode))
+            {
+                blocker = $"{participant.AssignedSlotId} authenticated endpoint Queue is blocked ({safeCode}).";
+                return false;
+            }
+            participant.State = DadParticipantState.QueuePending;
+            participant.StatusText = safeCode;
+            pending.Add($"{participant.AssignedSlotId} is waiting for its exact authenticated Queue receipt.");
+        }
+        return true;
+    }
+
+    private bool IsAutoPartyModuleQueued(
+        DadParticipantSnapshot participant,
+        DadPlannedModuleExecution module)
+    {
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+            return false;
+        var snapshot = autoPartyParticipantBridge.GetSnapshot(
+            proposalId,
+            participant.AssignedSlotId,
+            DateTimeOffset.UtcNow);
+        return snapshot != null && IsAutoPartyModuleQueued(snapshot, module);
+    }
+
+    private bool IsAutoPartyModuleQueued(
+        DadAutoPartyParticipantSnapshot snapshot,
+        DadPlannedModuleExecution module)
+        => snapshot.NextModuleIndex > activeModuleIndex && snapshot.ActiveModuleReference == null ||
+           snapshot.Stage is DadAutoPartyParticipantStage.Queued or DadAutoPartyParticipantStage.SettlementPending &&
+           snapshot.ActiveModuleReference?.ModuleIndex == activeModuleIndex &&
+           string.Equals(snapshot.ActiveModuleReference.ModuleId, module.ModuleId.ToString(), StringComparison.Ordinal);
 
     private void DispatchWorkerExecution(DadPlannedModuleExecution module)
     {
@@ -1577,11 +2009,10 @@ public sealed class DadCoordinatorService
             activeParticipants);
         var failures = new List<string>();
         var pending = new List<string>();
-        if (!DadWorkerPrequeueBarrierRules.TryResolveDispatchTargets(
-                activePlan,
+        if (!TryResolveModuleDispatchTargets(
                 module,
-                activeParticipants,
-                workerStatuses,
+                barrierRequired,
+                pending,
                 out var dispatchTargets,
                 out var barrierBlocker))
         {
@@ -1714,14 +2145,15 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        if (pending.Count > 0 || workerStatuses.Count < workerCommands.Count)
+        var lanParticipantCount = GetLanWorkerParticipants().Count;
+        if (pending.Count > 0 || workerStatuses.Count < lanParticipantCount || workerCommands.Count < lanParticipantCount)
         {
             var summary = string.Join(" | ", pending.Distinct(StringComparer.OrdinalIgnoreCase));
             ApplyModuleRoutingResult(
                 module,
                 BuildWorkerProgressResult(
                     module,
-                    $"Worker command acknowledgements {workerStatuses.Count}/{workerCommands.Count}; retrying without timeout. {summary}".Trim()),
+                    $"LAN worker command acknowledgements {workerStatuses.Count}/{lanParticipantCount}; authenticated endpoint Queue receipts remain fail-closed until exact. {summary}".Trim()),
                 replaceExisting: activeStepResultIndex >= 0);
             return;
         }
@@ -1731,13 +2163,17 @@ public sealed class DadCoordinatorService
             BuildWorkerProgressResult(
                 module,
                 barrierRequired && !workerStatuses.Values.Any(static status => status.Role == DadWorkerExecutionRole.QueueLeader)
-                    ? $"ADS prequeue barrier dispatched {workerStatuses.Count}/{Math.Max(1, activeParticipants.Count - 1)} non-leader worker(s); waiting for every worker to reach WaitingForQueue."
-                    : $"Assigned {workerStatuses.Count} worker(s); waiting for execution status."),
+                    ? $"ADS prequeue barrier dispatched {workerStatuses.Count}/{Math.Max(1, lanParticipantCount - 1)} LAN non-leader worker(s); waiting for every worker and authenticated endpoint to reach queue-ready."
+                    : $"Assigned {workerStatuses.Count} LAN worker(s) and received exact Queue receipts from authenticated endpoints; waiting for execution status."),
             replaceExisting: activeStepResultIndex >= 0);
     }
 
-    private static bool IsQueueLeaderParticipant(DadRunPlan plan, DadParticipantSnapshot participant)
-        => DadWorkerPrequeueBarrierRules.IsLeader(plan, participant);
+    private bool IsQueueLeaderParticipant(DadRunPlan plan, DadParticipantSnapshot participant)
+    {
+        var frozenSlot = activeSlotManifest?.Slots.SingleOrDefault(slot =>
+            string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
+        return frozenSlot?.IsLeader ?? DadWorkerPrequeueBarrierRules.IsLeader(plan, participant);
+    }
 
     private void ScopeFinalizationToAcknowledgedWorkers(bool barrierRequired)
     {
@@ -1905,7 +2341,8 @@ public sealed class DadCoordinatorService
             }
             else
             {
-                foreach (var participant in activeParticipants.Where(static participant => !participant.IsLocalClient))
+                foreach (var participant in activeParticipants.Where(static participant =>
+                             string.IsNullOrWhiteSpace(participant.RegisteredIslandId) && !participant.IsLocalClient))
                 {
                     transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
                     {
@@ -1926,7 +2363,9 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        if (barrierRequired &&
+        var lanQueueLeaderExpected = dispatchedParticipants.Any(participant =>
+            IsQueueLeaderParticipant(activePlan, participant));
+        if (barrierRequired && lanQueueLeaderExpected &&
             !workerStatuses.Values.Any(static worker => worker.Role == DadWorkerExecutionRole.QueueLeader))
         {
             if (DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(
@@ -1948,19 +2387,39 @@ public sealed class DadCoordinatorService
         }
 
         var statuses = workerStatuses.Values.ToList();
+        var lanParticipantCount = GetLanWorkerParticipants().Count;
         var leaderStatus = statuses.FirstOrDefault(static worker => worker.Role == DadWorkerExecutionRole.QueueLeader);
-        if (statuses.Count == activeParticipants.Count && statuses.All(static worker => worker.IsTerminal && worker.Success))
+        if (statuses.Count == lanParticipantCount && statuses.All(static worker => worker.IsTerminal && worker.Success))
         {
+            if (!TrySettleAutoPartyModule(module, out var settlementPending, out var settlementBlocker))
+            {
+                ApplyModuleRoutingResult(
+                    module,
+                    BuildWorkerFailureResult(module, settlementBlocker),
+                    replaceExisting: true);
+                return;
+            }
+            if (settlementPending)
+            {
+                ApplyModuleRoutingResult(
+                    module,
+                    BuildWorkerProgressResult(
+                        module,
+                        $"All {lanParticipantCount} LAN worker(s) are terminal; waiting for exact authenticated endpoint Settle receipts."),
+                    replaceExisting: true);
+                return;
+            }
             var result = leaderStatus?.StepResult.Clone() ?? BuildWorkerProgressResult(module, $"All {statuses.Count} workers completed.");
             result.Success = true;
             result.Deferred = false;
             result.ParticipantState = DadParticipantState.Completed;
-            result.Summary = $"All {statuses.Count} workers completed {module.DisplayName}. {result.Summary}".Trim();
+            result.Summary = $"All {activeParticipants.Count} workers completed and settled {module.DisplayName}. {result.Summary}".Trim();
             result.ExecutorStatus.IsActive = false;
             result.ExecutorStatus.Status = DadRunStatus.Completed;
             result.ExecutorStatus.Phase = DadRunPhase.Finalizing;
             result.ExecutorStatus.CompletedAtUtc ??= DateTime.UtcNow;
             result.ExecutorStatus.UpdatedAtUtc = DateTime.UtcNow;
+            activeModuleCompleted = true;
             ApplyModuleRoutingResult(module, result, replaceExisting: true);
             workerStatuses.Clear();
             workerCommands.Clear();
@@ -1974,10 +2433,69 @@ public sealed class DadCoordinatorService
                 module,
                 $"Workers: {statuses.Count(static worker => worker.State == DadWorkerExecutionState.Running)} running, " +
                 $"{statuses.Count(static worker => worker.State == DadWorkerExecutionState.WaitingForQueue)} waiting, " +
-                $"{statuses.Count(static worker => worker.IsTerminal)} complete.");
+                $"{statuses.Count(static worker => worker.IsTerminal)} LAN complete; authenticated endpoint settlement pending.");
         progress.ExecutorStatus.IsActive = true;
         progress.ExecutorStatus.Status = DadRunStatus.Running;
         ApplyModuleRoutingResult(module, progress, replaceExisting: true);
+    }
+
+    private bool TrySettleAutoPartyModule(
+        DadPlannedModuleExecution module,
+        out bool pending,
+        out string blocker)
+    {
+        pending = false;
+        blocker = string.Empty;
+        var registeredParticipants = GetRegisteredIslandParticipants();
+        if (registeredParticipants.Count == 0)
+            return true;
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+        {
+            blocker = "Authenticated endpoint settlement lost its active AutoParty proposal.";
+            return false;
+        }
+
+        foreach (var participant in registeredParticipants)
+        {
+            var snapshot = autoPartyParticipantBridge.GetSnapshot(
+                proposalId,
+                participant.AssignedSlotId,
+                DateTimeOffset.UtcNow);
+            if (snapshot == null || snapshot.Stage is DadAutoPartyParticipantStage.Failed or
+                DadAutoPartyParticipantStage.Revoked or DadAutoPartyParticipantStage.Cancelled or
+                DadAutoPartyParticipantStage.Restored)
+            {
+                blocker = $"{participant.AssignedSlotId} authenticated endpoint settlement failed or became unavailable.";
+                return false;
+            }
+            if (snapshot.NextModuleIndex > activeModuleIndex && snapshot.ActiveModuleReference == null)
+            {
+                participant.State = DadParticipantState.Completed;
+                participant.StatusText = snapshot.SafeCode;
+                continue;
+            }
+            if (!IsAutoPartyModuleQueued(snapshot, module))
+            {
+                blocker = $"{participant.AssignedSlotId} authenticated endpoint settlement contradicted the exact active module.";
+                return false;
+            }
+            if (!autoPartyParticipantBridge.RequestOperation(
+                    proposalId,
+                    participant.AssignedSlotId,
+                    ExecutionOperationKind.Settle,
+                    activeModuleIndex,
+                    inviter: null,
+                    DateTimeOffset.UtcNow,
+                    out var safeCode))
+            {
+                blocker = $"{participant.AssignedSlotId} authenticated endpoint Settle is blocked ({safeCode}).";
+                return false;
+            }
+            participant.State = DadParticipantState.Running;
+            participant.StatusText = safeCode;
+            pending = true;
+        }
+        return true;
     }
 
     private DadRunStepResultDto BuildWorkerProgressResult(DadPlannedModuleExecution module, string summary)
@@ -2136,6 +2654,7 @@ public sealed class DadCoordinatorService
         activePlan = nextPlan;
         activeParticipants.Clear();
         activeModuleIndex = -1;
+        activeModuleCompleted = false;
         activeStepResultIndex = -1;
         loggedSingleWorkerSeed = false;
         loggedSingleWorkerAssemblyConfirmed = false;
@@ -2357,12 +2876,20 @@ public sealed class DadCoordinatorService
         {
             if (!TryRefreshStrictMutationBoundary("managed party teardown"))
                 return;
+            if (!TryBuildAutoPartyRuntimeInviteTargets(out var runtimeInviteTargets, out var runtimeTargetBlocker))
+            {
+                CurrentResult.ActiveTaskStatus = runtimeTargetBlocker;
+                CurrentResult.BlockedReason = runtimeTargetBlocker;
+                Publish();
+                return;
+            }
 
             activePartyTeardownInstructions = partyAssemblyService.BuildTeardownInstructions(
                 activePlan,
                 activeParticipants,
                 activeSlotManifest,
                 presenceService.WorkerSessionId,
+                runtimeInviteTargets,
                 out var blocker);
             partyTeardownTerminalResults.Clear();
             if (activePartyTeardownInstructions.Count == 0)
@@ -2439,6 +2966,10 @@ public sealed class DadCoordinatorService
                             FailureReason = reason,
                             BlockedReason = reason,
                         };
+                    }
+                    else if (!string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+                    {
+                        result = RequestAutoPartyRestoreOperation(instruction, participant);
                     }
                     else
                     {
@@ -2532,6 +3063,55 @@ public sealed class DadCoordinatorService
                 Publish();
                 break;
         }
+    }
+
+    private DadRunStepResultDto? RequestAutoPartyRestoreOperation(
+        DadAssemblyInstructionDto instruction,
+        DadParticipantSnapshot participant)
+    {
+        DadRunStepResultDto Failure(string reason) => new()
+        {
+            RunId = instruction.RunId,
+            ModuleId = instruction.ModuleId,
+            StepName = "PartyTeardown",
+            ParticipantState = DadParticipantState.Failed,
+            Summary = reason,
+            FailureReason = reason,
+            BlockedReason = reason,
+        };
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+            return Failure($"{instruction.SlotId} lost its authenticated AutoParty Restore route.");
+        var snapshot = autoPartyParticipantBridge.GetSnapshot(
+            proposalId,
+            instruction.SlotId,
+            DateTimeOffset.UtcNow);
+        if (snapshot?.Stage == DadAutoPartyParticipantStage.Restored)
+        {
+            return new DadRunStepResultDto
+            {
+                RunId = instruction.RunId,
+                ModuleId = instruction.ModuleId,
+                StepName = "PartyTeardown",
+                ParticipantState = DadParticipantState.Completed,
+                Success = true,
+                Summary = snapshot.SafeCode,
+            };
+        }
+        if (snapshot == null || snapshot.Stage is DadAutoPartyParticipantStage.Failed or DadAutoPartyParticipantStage.Revoked)
+            return Failure($"{instruction.SlotId} authenticated AutoParty Restore route is terminal or unavailable.");
+        if (!autoPartyParticipantBridge.RequestOperation(
+                proposalId,
+                instruction.SlotId,
+                ExecutionOperationKind.Restore,
+                moduleIndex: null,
+                instruction.FrozenInviter,
+                instruction.InviteTargets,
+                DateTimeOffset.UtcNow,
+                out var safeCode))
+            return Failure($"{instruction.SlotId} authenticated AutoParty Restore is blocked ({safeCode}).");
+        participant.State = DadParticipantState.AssemblyPending;
+        participant.StatusText = safeCode;
+        return null;
     }
 
     private void CompleteRun()
@@ -2751,6 +3331,72 @@ public sealed class DadCoordinatorService
         return activePlan != null &&
                Guid.TryParse(activePlan.Orchestration.AutoPartyProposalId, out proposalId) &&
                proposalId != Guid.Empty;
+    }
+
+    private bool TryBuildAutoPartyRuntimeInviteTargets(
+        out IReadOnlyDictionary<string, DadNativePartyInviteTarget> targets,
+        out string blocker)
+    {
+        var resolved = new Dictionary<string, DadNativePartyInviteTarget>(StringComparer.OrdinalIgnoreCase);
+        targets = resolved;
+        blocker = string.Empty;
+        if (activeSlotManifest == null ||
+            !activeSlotManifest.Slots.Any(static slot => slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland))
+            return true;
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+        {
+            blocker = "Registered-island party assembly is waiting for its active AutoParty proposal.";
+            return false;
+        }
+
+        foreach (var slot in activeSlotManifest.Slots.Where(static slot =>
+                     slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland))
+        {
+            if (!autoPartyParticipantBridge.TryGetInviteTarget(
+                    proposalId,
+                    slot.SlotId,
+                    DateTimeOffset.UtcNow,
+                    out var target,
+                    out blocker))
+                return false;
+            resolved.Add(slot.SlotId, target);
+        }
+        return true;
+    }
+
+    private bool TryRequestAutoPartyFormOperation(
+        DadAssemblyInstructionDto instruction,
+        DadParticipantSnapshot participant,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (!TryGetActiveAutoPartyProposalId(out var proposalId) || autoPartyParticipantBridge == null)
+        {
+            blocker = $"{instruction.SlotId} is waiting for its active AutoParty proposal.";
+            return false;
+        }
+        var slotOne = instruction.InstructionKind == DadAssemblyInstructionKind.FormParty;
+        if (instruction.InstructionKind is not DadAssemblyInstructionKind.FormParty and
+            not DadAssemblyInstructionKind.JoinParty)
+        {
+            blocker = $"{instruction.SlotId} received an unsupported AutoParty assembly instruction.";
+            return false;
+        }
+        if (!autoPartyParticipantBridge.RequestOperation(
+                proposalId,
+                instruction.SlotId,
+                ExecutionOperationKind.Form,
+                moduleIndex: null,
+                slotOne ? null : instruction.FrozenInviter,
+                slotOne ? instruction.InviteTargets : [],
+                DateTimeOffset.UtcNow,
+                out var safeCode))
+        {
+            blocker = $"{instruction.SlotId} AutoParty Form is blocked ({safeCode}).";
+            return false;
+        }
+        participant.StatusText = safeCode;
+        return true;
     }
 
     private DadParticipantSnapshot? ResolveRegisteredIslandMutationParticipant(
@@ -3312,9 +3958,16 @@ public sealed class DadCoordinatorService
         Publish();
     }
 
-    private DadRunResult FinalizeRun(DadRunStatus status, string summary, string failureReason)
+    private DadRunResult FinalizeRun(
+        DadRunStatus status,
+        string summary,
+        string failureReason,
+        bool autoPartyCleanupComplete = false)
     {
-        if (activePlan != null && status != DadRunStatus.Cancelled)
+        if (!autoPartyCleanupComplete && autoPartyCancellationPending)
+            return CurrentResult.Clone();
+
+        if (!autoPartyCleanupComplete && activePlan != null && status != DadRunStatus.Cancelled)
         {
             var exactCancellationScope = finalizationCancellationScopeOverride;
             var finalizationCommand = new DadCancelCommandDto
@@ -3340,8 +3993,11 @@ public sealed class DadCoordinatorService
             }
         }
 
-        if (activePlan != null && status != DadRunStatus.Cancelled)
+        if (!autoPartyCleanupComplete && activePlan != null && status != DadRunStatus.Cancelled)
             claimService.ReleaseClaims(activePlan.Request.RequestId);
+
+        if (!autoPartyCleanupComplete && TryBeginAutoPartyFinalization(status, summary, failureReason))
+            return CurrentResult.Clone();
 
         CurrentResult.Status = status;
         if (status == DadRunStatus.Cancelled)
@@ -3375,10 +4031,14 @@ public sealed class DadCoordinatorService
 
         LogCoordinatorPhaseTransition();
 
+        if (TryGetActiveAutoPartyProposalId(out var completedProposalId))
+            autoPartyParticipantBridge?.CompleteProposal(completedProposalId, DateTimeOffset.UtcNow);
+
         activePlan = null;
         activeSlotManifest = null;
         activeParticipants.Clear();
         activeModuleIndex = -1;
+        activeModuleCompleted = false;
         activeStepResultIndex = -1;
         workerStatuses.Clear();
         workerCommands.Clear();
@@ -3398,6 +4058,12 @@ public sealed class DadCoordinatorService
         inviteRetryContinuationRunId = string.Empty;
         persistentStartup = false;
         crewFormationTeardownRequested = false;
+        autoPartyCancellationPending = false;
+        autoPartyFinalizationStatus = DadRunStatus.Cancelled;
+        autoPartyCancellationSummary = string.Empty;
+        autoPartyCancellationReason = string.Empty;
+        autoPartyCancellationTeardowns.Clear();
+        autoPartyCancellationCancelRequestedSlots.Clear();
         activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
         coordinatorContradictionTracker.Reset();
         remoteAssignmentTracker.Clear();
@@ -3417,12 +4083,15 @@ public sealed class DadCoordinatorService
         IReadOnlyCollection<DadParticipantSnapshot>? exactTargets = null)
     {
         var targets = (exactTargets ?? activeParticipants)
-            .Where(static participant => !participant.IsLocalClient && !participant.WorkerSessionId.IsEmpty)
+            .Where(static participant => !participant.IsLocalClient &&
+                                         string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                                         !participant.WorkerSessionId.IsEmpty)
             .Select(static participant => participant.Clone())
             .ToList();
         if (exactTargets == null && activeSlotManifest != null)
         {
             foreach (var slot in activeSlotManifest.Slots.Where(slot =>
+                         slot.RouteKind != DadRunSlotRouteKind.RegisteredIsland &&
                          !slot.WorkerSessionId.IsEmpty &&
                          !string.Equals(
                              slot.WorkerSessionId.Value,

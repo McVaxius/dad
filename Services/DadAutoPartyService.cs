@@ -29,7 +29,7 @@ public sealed class DadAutoPartyService : IDisposable
         this.saveConfiguration = saveConfiguration ?? throw new ArgumentNullException(nameof(saveConfiguration));
         Connector = new DadDiscordCourierConnector(configuration, dadEnabled);
         Policy = new DadAutoPartyPolicyFacade(configuration, dadEnabled, localSafetyAllowsExecution, saveConfiguration);
-        Execution = new DadAutoPartyFakeExecutionFacade(Policy);
+        Execution = DadAutoPartyRuntimeExecutionFacade.CreateUnavailable(Policy);
         IdentityPackages = new DadAutoPartyIdentityPackageService(configuration, identityStore, saveConfiguration);
     }
 
@@ -520,6 +520,21 @@ public sealed class DadAutoPartyService : IDisposable
 
     public DadAutoPartyPolicyDecision AcquireLease(SessionLease lease) =>
         Policy.AcquireLease(lease);
+
+    internal DadAutoPartyPolicyDecision RestoreOwnedProposalSession(
+        DadAutoPartyInboundProposalState state,
+        SessionPermission requiredPermissions)
+    {
+        if (!state.AdmissionReady || state.Preflight == null || state.Lease == null)
+            return new(false, "dad-owned-session-restore-invalid", Math.Max(1, configuration.StateGeneration));
+        return Policy.RestoreOwnedProposalSession(
+            state.Proposal,
+            state.OwnedParticipants,
+            state.Reservations,
+            state.Preflight,
+            state.Lease,
+            requiredPermissions);
+    }
 
     public DadAutoPartyPolicyDecision Revoke(Revocation revocation) =>
         Policy.Revoke(revocation);
