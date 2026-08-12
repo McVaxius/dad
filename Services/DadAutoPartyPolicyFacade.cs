@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using AutoParty.Contracts;
 using dad.Models;
 
@@ -7,6 +8,10 @@ public interface IAutoPartyPolicyFacade
 {
     DadAutoPartyPolicyDecision VerifyIdentity(OwnerIdentity owner, IslandIdentity island);
     DadAutoPartyPolicyDecision AcceptProposal(RunProposal proposal, SessionPermission requiredPermissions);
+    DadAutoPartyPolicyDecision AcceptOwnedProposal(
+        RunProposal proposal,
+        IReadOnlyList<ParticipantRequest> ownedParticipants,
+        SessionPermission requiredPermissions);
     DadAutoPartyPolicyDecision VerifyReplay(ContractHeader header);
     DadAutoPartyPolicyDecision IntersectGrant(RunProposal proposal, SessionPermission requiredPermissions);
     DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode);
@@ -117,6 +122,31 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         }
     }
 
+    public DadAutoPartyPolicyDecision AcceptOwnedProposal(
+        RunProposal proposal,
+        IReadOnlyList<ParticipantRequest> ownedParticipants,
+        SessionPermission requiredPermissions)
+    {
+        lock (gate)
+        {
+            if (proposal == null || ownedParticipants == null)
+                return Denied("dad-owned-proposal-invalid");
+            if (!TryValidateReplayCandidate(proposal.Header, DateTimeOffset.UtcNow, out var denial))
+            {
+                if (proposals.TryGetValue(proposal.ProposalId, out var existing) &&
+                    existing.OwnedProposal &&
+                    MatchesOwnedProposal(existing, proposal, ownedParticipants, requiredPermissions))
+                    return AllowedAt("dad-owned-proposal-idempotent", existing.StateGeneration);
+                return denial;
+            }
+
+            var authorization = AcceptOwnedProposalCore(proposal, ownedParticipants, requiredPermissions);
+            if (authorization.Allowed)
+                CommitReplay(proposal.Header);
+            return authorization;
+        }
+    }
+
     public DadAutoPartyPolicyDecision IntersectGrant(
         RunProposal proposal,
         SessionPermission requiredPermissions)
@@ -180,9 +210,69 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
             DateTime.MinValue,
             false,
             false,
-            nextGeneration);
+            nextGeneration,
+            proposal.Header.ExpiresAt.UtcDateTime,
+            false,
+            proposal.Participants.Select(static participant => new AuthorizedParticipant(
+                    participant.CharacterId.Value,
+                    participant.RequestedJob.Value))
+                .ToImmutableArray());
         saveConfiguration();
         return Allowed("dad-grant-intersection-accepted");
+    }
+
+    private DadAutoPartyPolicyDecision AcceptOwnedProposalCore(
+        RunProposal proposal,
+        IReadOnlyList<ParticipantRequest> ownedParticipants,
+        SessionPermission requiredPermissions)
+    {
+        if (!IsLocallyEnabled() || !configuration.IsRegistrationActive)
+            return Denied("dad-autoparty-disabled");
+        if (proposal.ProposalId == Guid.Empty || proposal.ExecutionPlan == null ||
+            ownedParticipants.Count is < 1 or > 8 || requiredPermissions == SessionPermission.None ||
+            (requiredPermissions & ~SessionPermission.All) != 0)
+            return Denied("dad-owned-proposal-invalid");
+        if (vetoedOwners.Contains(proposal.RequesterOwnerId.Value) ||
+            revokedTargets.Contains(proposal.ProposalId.ToString("D")))
+            return Denied("dad-owner-veto");
+
+        var localOwner = configuration.RegisteredOwnerId;
+        var localIsland = configuration.RegisteredIslandId;
+        if (string.IsNullOrWhiteSpace(localOwner) || string.IsNullOrWhiteSpace(localIsland) ||
+            ownedParticipants.Any(participant =>
+                !string.Equals(participant.OwnerId.Value, localOwner, StringComparison.Ordinal) ||
+                !string.Equals(participant.OwnerIslandId.Value, localIsland, StringComparison.Ordinal)) ||
+            ownedParticipants.Select(static participant =>
+                    $"{participant.CharacterId.Value}\n{participant.RequestedJob.Value}")
+                .Distinct(StringComparer.Ordinal).Count() != ownedParticipants.Count)
+            return Denied("dad-owned-proposal-route-invalid");
+
+        var proposalRoutes = proposal.Participants.Select(static participant =>
+                $"{participant.OwnerId.Value}\n{participant.OwnerIslandId.Value}\n{participant.CharacterId.Value}\n{participant.RequestedJob.Value}")
+            .ToHashSet(StringComparer.Ordinal);
+        if (ownedParticipants.Any(participant => !proposalRoutes.Contains(
+                $"{participant.OwnerId.Value}\n{participant.OwnerIslandId.Value}\n{participant.CharacterId.Value}\n{participant.RequestedJob.Value}")))
+            return Denied("dad-owned-proposal-route-invalid");
+
+        var nextGeneration = NextGeneration();
+        proposals[proposal.ProposalId] = new ProposalState(
+            proposal.ProposalId,
+            localIsland,
+            localOwner,
+            proposal.ActivityId.Value,
+            requiredPermissions,
+            DadAutoPartySessionMode.MultiOwner,
+            DateTime.MinValue,
+            false,
+            false,
+            nextGeneration,
+            proposal.Header.ExpiresAt.UtcDateTime,
+            true,
+            ownedParticipants.Select(static participant => new AuthorizedParticipant(
+                    participant.CharacterId.Value,
+                    participant.RequestedJob.Value))
+                .ToImmutableArray());
+        return AllowedAt("dad-owned-proposal-accepted", nextGeneration);
     }
 
     public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode)
@@ -191,10 +281,15 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         {
             if (!TryGetProposal(reservation.ProposalId, reservation.OwnerId.Value, out var state, out var denial))
                 return denial;
+            if (state.OwnedProposal && !state.AuthorizedParticipants.Any(participant =>
+                    string.Equals(participant.CharacterId, reservation.CharacterId.Value, StringComparison.Ordinal)))
+                return Denied("dad-reservation-character-mismatch");
             ExpireSessions(DateTime.UtcNow);
             if (activeIslandSessions.TryGetValue(state.IslandId, out var activeProposal) &&
                 activeProposal != reservation.ProposalId)
                 return Denied("dad-island-session-already-active");
+            if (state.Reserved && reservation.ExpectedStateGeneration <= state.StateGeneration)
+                return AllowedAt("dad-reservation-idempotent", state.StateGeneration);
             if (reservation.ExpectedStateGeneration != state.StateGeneration)
                 return Denied("dad-reservation-generation-mismatch");
 
@@ -301,7 +396,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     {
         lock (gate)
         {
-            if (!IsLocallyEnabled() || !configuration.ExecutionEnabled)
+            if (!IsLocallyEnabled() || !configuration.IsRegistrationActive)
                 return Denied("dad-autoparty-execution-disabled");
             if (stopped)
                 return Denied("dad-owner-stop-active");
@@ -323,17 +418,21 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
             if (!string.Equals(operation.ActivityId.Value, state.ActivityId, StringComparison.Ordinal))
                 return Denied("dad-execution-activity-mismatch");
 
-            var participantGrant = configuration.Grants.Any(grant =>
-                grant.IsValid &&
-                grant.ExpiresAtUtc > DateTime.UtcNow &&
-                string.Equals(grant.ProposalId, operation.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
-                !revokedTargets.Contains(grant.GrantId) &&
-                string.Equals(grant.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal) &&
-                string.Equals(grant.OpaqueCharacterId, operation.CharacterId.Value, StringComparison.Ordinal) &&
-                string.Equals(grant.RequestedJobId, operation.RequestedJob.Value, StringComparison.Ordinal) &&
-                string.Equals(grant.ActivityId, operation.ActivityId.Value, StringComparison.Ordinal) &&
-                (grant.Permissions & required) == required);
-            return participantGrant
+            var participantAuthorized = state.OwnedProposal
+                ? state.AuthorizedParticipants.Any(participant =>
+                    string.Equals(participant.CharacterId, operation.CharacterId.Value, StringComparison.Ordinal) &&
+                    string.Equals(participant.RequestedJobId, operation.RequestedJob.Value, StringComparison.Ordinal))
+                : configuration.Grants.Any(grant =>
+                    grant.IsValid &&
+                    grant.ExpiresAtUtc > DateTime.UtcNow &&
+                    string.Equals(grant.ProposalId, operation.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
+                    !revokedTargets.Contains(grant.GrantId) &&
+                    string.Equals(grant.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal) &&
+                    string.Equals(grant.OpaqueCharacterId, operation.CharacterId.Value, StringComparison.Ordinal) &&
+                    string.Equals(grant.RequestedJobId, operation.RequestedJob.Value, StringComparison.Ordinal) &&
+                    string.Equals(grant.ActivityId, operation.ActivityId.Value, StringComparison.Ordinal) &&
+                    (grant.Permissions & required) == required);
+            return participantAuthorized
                 ? Allowed("dad-execution-authorized")
                 : Denied("dad-execution-strict-job-grant-denied");
         }
@@ -485,9 +584,29 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     {
         foreach (var state in proposals.Values.Where(state =>
                      !state.Revoked &&
-                     state.LeaseExpiresAtUtc != DateTime.MinValue &&
-                     state.LeaseExpiresAtUtc <= now).ToList())
+                     (state.ProposalExpiresAtUtc <= now ||
+                      state.LeaseExpiresAtUtc != DateTime.MinValue && state.LeaseExpiresAtUtc <= now)).ToList())
             activeIslandSessions.Remove(state.IslandId);
+    }
+
+    private static bool MatchesOwnedProposal(
+        ProposalState existing,
+        RunProposal proposal,
+        IReadOnlyList<ParticipantRequest> ownedParticipants,
+        SessionPermission requiredPermissions)
+    {
+        if (!string.Equals(existing.ActivityId, proposal.ActivityId.Value, StringComparison.Ordinal) ||
+            existing.Permissions != requiredPermissions ||
+            existing.ProposalExpiresAtUtc != proposal.Header.ExpiresAt.UtcDateTime ||
+            existing.AuthorizedParticipants.Length != ownedParticipants.Count)
+            return false;
+        var expected = existing.AuthorizedParticipants
+            .Select(static participant => $"{participant.CharacterId}\n{participant.RequestedJobId}")
+            .Order(StringComparer.Ordinal);
+        var observed = ownedParticipants
+            .Select(static participant => $"{participant.CharacterId.Value}\n{participant.RequestedJob.Value}")
+            .Order(StringComparer.Ordinal);
+        return expected.SequenceEqual(observed, StringComparer.Ordinal);
     }
 
     private long NextGeneration()
@@ -499,6 +618,9 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
 
     private DadAutoPartyPolicyDecision Allowed(string safeCode)
         => new(true, safeCode, stateGeneration);
+
+    private static DadAutoPartyPolicyDecision AllowedAt(string safeCode, long generation)
+        => new(true, safeCode, Math.Max(1, generation));
 
     private DadAutoPartyPolicyDecision Denied(string safeCode)
         => new(false, safeCode, stateGeneration);
@@ -527,5 +649,10 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         bool Reserved,
         bool PreflightReady,
         long StateGeneration,
+        DateTime ProposalExpiresAtUtc,
+        bool OwnedProposal,
+        ImmutableArray<AuthorizedParticipant> AuthorizedParticipants,
         bool Revoked = false);
+
+    private sealed record AuthorizedParticipant(string CharacterId, string RequestedJobId);
 }

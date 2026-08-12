@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using AutoParty.Contracts;
@@ -109,9 +111,7 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
                     return Denied(operation, "dad-form-prerequisites-missing", state.Generation);
                 if (!IsValidInviteLocator(operation.InviteLocator))
                     return Denied(operation, "dad-invite-locator-invalid", state.Generation);
-                if (observedParty.MemberCount is < 1 or > 8 ||
-                    string.IsNullOrWhiteSpace(observedParty.ObservedStateHash) ||
-                    observedParty.ObservedStateHash.Length > 128)
+                if (!IsValidObservedPartyReceipt(operation, observedParty))
                     return Denied(operation, "dad-observed-party-receipt-invalid", state.Generation);
 
                 state = state with
@@ -206,12 +206,16 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
 
     public static DadAutoPartyObservedPartyReceipt CreateObservedPartyReceipt(
         Guid proposalId,
-        int memberCount,
+        ImmutableArray<ulong> contentIds,
         long stateGeneration)
     {
-        var material = Encoding.UTF8.GetBytes($"{proposalId:D}:{memberCount}:{stateGeneration}");
-        var hash = Convert.ToHexString(SHA256.HashData(material));
-        return new(memberCount, hash, DateTime.UtcNow);
+        if (!HasValidContentIds(contentIds))
+            throw new ArgumentException("Party Content IDs must contain 1-8 unique nonzero values.", nameof(contentIds));
+        return new(
+            contentIds.Length,
+            contentIds,
+            ComputeObservedStateHash(proposalId, stateGeneration, contentIds),
+            DateTime.UtcNow);
     }
 
     private ValueTask<DadAutoPartyExecutionResult> Execute(
@@ -249,6 +253,37 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
                locator.ValidUntil <= now + TimeSpan.FromMinutes(5) &&
                !locator.OpaqueLocator.IsDefaultOrEmpty &&
                locator.OpaqueLocator.Length <= 256;
+    }
+
+    private static bool IsValidObservedPartyReceipt(
+        ExecutionOperation operation,
+        DadAutoPartyObservedPartyReceipt receipt)
+        => receipt.MemberCount == receipt.ContentIds.Length &&
+           HasValidContentIds(receipt.ContentIds) &&
+           string.Equals(
+               receipt.ObservedStateHash,
+               ComputeObservedStateHash(
+                   operation.ProposalId,
+                   operation.ExpectedStateGeneration,
+                   receipt.ContentIds),
+               StringComparison.Ordinal);
+
+    private static bool HasValidContentIds(ImmutableArray<ulong> contentIds)
+        => !contentIds.IsDefault &&
+           contentIds.Length is >= 1 and <= 8 &&
+           contentIds.All(static contentId => contentId != 0) &&
+           contentIds.Distinct().Count() == contentIds.Length;
+
+    private static string ComputeObservedStateHash(
+        Guid proposalId,
+        long stateGeneration,
+        ImmutableArray<ulong> contentIds)
+    {
+        var orderedIds = string.Join(",", contentIds.Select(static contentId =>
+            contentId.ToString(CultureInfo.InvariantCulture)));
+        var material = Encoding.UTF8.GetBytes(FormattableString.Invariant(
+            $"{proposalId:D}:{stateGeneration}:{orderedIds}"));
+        return Convert.ToHexString(SHA256.HashData(material));
     }
 
     private static FakeSessionState RestoreState(FakeSessionState state)

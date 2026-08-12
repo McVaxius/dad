@@ -115,16 +115,25 @@ public sealed class DadP1218AutoDutyContractTests
     }
 
     [Fact]
-    public void PilotAsyncReceiptWriterReturnsDataWithoutSavingConfiguration()
+    public void PerDadDiscordPilotAndFileCourierRuntimeAreRemoved()
     {
-        var source = ReadRepositorySource("Services", "DadMeasuredPilotService.cs");
-        var writer = Slice(source, "private async Task<DadPilotReceiptWriteResult> WriteReceiptAsync", "private sealed record DadPilotReceiptWriteResult");
-        var update = Slice(source, "public void Update()", "public static DadMeasuredPilotEvaluation Evaluate");
+        Assert.False(File.Exists(RepositoryPath("Services", "DadMeasuredPilotService.cs")));
+        Assert.False(File.Exists(RepositoryPath("Services", "DadAutoPartyFileCourierAdapter.cs")));
+        Assert.False(File.Exists(RepositoryPath("Services", "DadAutoPartyPilotFixtureService.cs")));
 
-        Assert.DoesNotContain("configuration.", writer, StringComparison.Ordinal);
-        Assert.DoesNotContain("saveConfiguration", writer, StringComparison.Ordinal);
-        Assert.Contains("configuration.MeasuredPilot.ReceiptPath = result.Path", update, StringComparison.Ordinal);
-        Assert.Contains("saveConfiguration();", update, StringComparison.Ordinal);
+        var project = ReadRepositorySource("dad.csproj");
+        var plugin = ReadRepositorySource("Plugin.cs");
+        var window = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
+        Assert.DoesNotContain("Discord.Net.WebSocket", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("BouncyCastle.Cryptography.PowerShell51.dll", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("PowerShell51Verifier", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\lib\\net461\\BouncyCastle.Cryptography.dll", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("<PackageReference Include=\"BouncyCastle.Cryptography\"", project, StringComparison.Ordinal);
+        Assert.Contains("<PluginRuntimeFiles Include=\"$(TargetDir)BouncyCastle.Cryptography.dll\"", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("DadMeasuredPilotService", plugin, StringComparison.Ordinal);
+        Assert.DoesNotContain("DadAutoPartyDiscordService", plugin, StringComparison.Ordinal);
+        Assert.DoesNotContain("DadAutoPartyFileCourierAdapter", plugin, StringComparison.Ordinal);
+        Assert.DoesNotContain("Start measured pilot", window, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -170,5 +179,15 @@ public sealed class DadP1218AutoDutyContractTests
         var repositoryRoot = directory?.FullName ?? throw new DirectoryNotFoundException(
             "Could not locate the Dad repository root from the test output directory.");
         return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
+    }
+
+    private static string RepositoryPath(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "dad.csproj")))
+            directory = directory.Parent;
+        var repositoryRoot = directory?.FullName ?? throw new DirectoryNotFoundException(
+            "Could not locate the Dad repository root from the test output directory.");
+        return Path.Combine([repositoryRoot, .. pathParts]);
     }
 }

@@ -24,6 +24,8 @@ public sealed class DadCoordinatorService
     private readonly DadWorkerExecutionService workerExecutionService;
     private readonly DadPlannerService plannerService;
     private readonly IPluginLog log;
+    private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
+    private readonly DadAutoPartyParticipantBridge? autoPartyParticipantBridge;
 
     private DadRunPlan? activePlan;
     private DadRunSlotManifest? activeSlotManifest;
@@ -90,7 +92,9 @@ public sealed class DadCoordinatorService
         DadQueueExecutionService queueExecutionService,
         DadWorkerExecutionService workerExecutionService,
         DadPlannerService plannerService,
-        IPluginLog log)
+        IPluginLog log,
+        Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null,
+        DadAutoPartyParticipantBridge? autoPartyParticipantBridge = null)
     {
         this.configuration = configuration;
         this.configManager = configManager;
@@ -106,6 +110,9 @@ public sealed class DadCoordinatorService
         this.workerExecutionService = workerExecutionService;
         this.plannerService = plannerService;
         this.log = log;
+        this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ??
+            (() => configuration.AutoParty.RemoteBindings);
+        this.autoPartyParticipantBridge = autoPartyParticipantBridge;
         RecoverAbandonedRun();
     }
 
@@ -257,9 +264,18 @@ public sealed class DadCoordinatorService
             return DadRunResult.Rejected(request, DadDependencyRules.DependencyBlocker);
 
         ApplyConfigurationDefaults(request);
+        var registeredIslandAdmission = DadAutoPartyRuntimeRequestRules.RequiresRegisteredIslandRoute(request);
+        if (registeredIslandAdmission)
+            request = DadAutoPartyRuntimeRequestRules.CloneForAdmission(request);
 
         if (!IsServerDad && RequiresServerDadAuthority(request))
         {
+            if (registeredIslandAdmission)
+            {
+                return DadRunResult.Rejected(
+                    request,
+                    "Registered-island runtime identities require local Dad Coordinator admission and cannot be forwarded over DAD IPC.");
+            }
             var authorityEndpoint = ResolveAuthorityEndpoint(forceRefresh: true);
             if (string.IsNullOrWhiteSpace(authorityEndpoint))
                 return DadRunResult.Rejected(request, "No Dad Coordinator hub connection is available.");
@@ -297,9 +313,14 @@ public sealed class DadCoordinatorService
             return DadRunResult.Rejected(request, rejectionReason);
 
         DadRunSlotManifest? acceptedManifest = null;
+        var admittedAutoPartyProposalId = Guid.Empty;
         if (DadRunSlotManifestRules.RequiresFrozenRoster(plan))
         {
-            if (!DadRunSlotManifestRules.TryCreate(plan, out var unboundManifest, out rejectionReason))
+            if (!DadRunSlotManifestRules.TryCreate(
+                    plan,
+                    currentRemoteBindingsProvider(),
+                    out var unboundManifest,
+                    out rejectionReason))
                 return DadRunResult.Rejected(request, rejectionReason);
 
             var onlineParticipants = BuildOnlineParticipantSet(pool, liveCoordinatorTruth);
@@ -312,6 +333,22 @@ public sealed class DadCoordinatorService
                 return DadRunResult.Rejected(request, rejectionReason);
             }
 
+            if (acceptedManifest.Slots.Any(static slot =>
+                    slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland))
+            {
+                if (autoPartyParticipantBridge == null)
+                    return DadRunResult.Rejected(request, "AutoParty participant runtime is unavailable.");
+
+                admittedAutoPartyProposalId = DadAutoPartyRuntimeRequestRules.BindNewProposal(plan.Request);
+                if (!autoPartyParticipantBridge.TryBindRun(
+                        plan,
+                        acceptedManifest,
+                        DateTimeOffset.UtcNow,
+                        out rejectionReason))
+                {
+                    return DadRunResult.Rejected(request, rejectionReason);
+                }
+            }
         }
 
         var selectedDependencyParticipants = new List<DadParticipantSnapshot?>();
@@ -342,6 +379,8 @@ public sealed class DadCoordinatorService
             TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds)));
         if (!dependencyGate.Ready)
         {
+            if (admittedAutoPartyProposalId != Guid.Empty)
+                autoPartyParticipantBridge?.CompleteProposal(admittedAutoPartyProposalId, DateTimeOffset.UtcNow);
             log.Information("[dad][Dependencies] Rejected new run {RequestId}: {Summary}", request.RequestId, dependencyGate.Summary);
             return DadRunResult.Rejected(request, DadDependencyRules.DependencyBlocker);
         }
@@ -385,6 +424,8 @@ public sealed class DadCoordinatorService
         presenceService.MarkCoordinator(plan.Request.RequestId, plan.Orchestration.AuthorityMode, $"Dad Coordinator planned {plan.Modules.Count} Dad module(s).");
         if (!TryBeginLocalRequestedJobPreparation(plan, acceptedManifest, out var preparationBlocker))
         {
+            if (admittedAutoPartyProposalId != Guid.Empty)
+                autoPartyParticipantBridge?.CompleteProposal(admittedAutoPartyProposalId, DateTimeOffset.UtcNow);
             activePlan = null;
             activeSlotManifest = null;
             activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
@@ -623,11 +664,39 @@ public sealed class DadCoordinatorService
         var resolutionBlockers = new List<string>();
         foreach (var slot in activeSlotManifest.Slots)
         {
-            var participant = DadRunSlotManifestRules.ResolveSlot(
-                slot,
-                runtimeParticipants,
-                activePlan.Orchestration.RequirePostArReady,
-                out var blocker);
+            DadParticipantSnapshot participant;
+            string blocker;
+            if (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            {
+                if (!TryGetActiveAutoPartyProposalId(out var proposalId) ||
+                    autoPartyParticipantBridge == null)
+                {
+                    blocker = $"{slot.SlotId} is waiting for its AutoParty runtime proposal.";
+                    participant = new DadParticipantSnapshot
+                    {
+                        AssignedSlotId = slot.SlotId,
+                        RegisteredIslandId = slot.IslandId,
+                        State = DadParticipantState.Stale,
+                        StatusText = blocker,
+                    };
+                }
+                else
+                {
+                    participant = autoPartyParticipantBridge.ResolveParticipant(
+                        proposalId,
+                        slot,
+                        DateTimeOffset.UtcNow,
+                        out blocker);
+                }
+            }
+            else
+            {
+                participant = DadRunSlotManifestRules.ResolveSlot(
+                    slot,
+                    runtimeParticipants,
+                    activePlan.Orchestration.RequirePostArReady,
+                    out blocker);
+            }
             activeParticipants.Add(participant);
             LogSlotResolutionTransition(activePlan, slot, participant, blocker);
             if (!string.IsNullOrWhiteSpace(blocker))
@@ -641,6 +710,12 @@ public sealed class DadCoordinatorService
             var slotOne = activeSlotManifest.Slots.SingleOrDefault(static slot =>
                 slot.IsLeader &&
                 string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase));
+            if (slotOne?.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            {
+                // A registered-island Slot1 owns formation and queue authority. Its short-lived
+                // encrypted locator replaces the LAN travel target; it is never frozen to config.
+                goto SkipCoordinatorTravelTarget;
+            }
             var slotOneParticipant = slotOne == null
                 ? null
                 : activeParticipants.SingleOrDefault(participant =>
@@ -686,7 +761,10 @@ public sealed class DadCoordinatorService
             }
         }
 
+        SkipCoordinatorTravelTarget:
+
         foreach (var participant in activeParticipants.Where(participant =>
+                     string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
                      runtimeParticipants.Count(runtime => string.Equals(
                          runtime.WorkerSessionId.Value,
                          participant.WorkerSessionId.Value,
@@ -694,6 +772,8 @@ public sealed class DadCoordinatorService
         {
             var frozenSlot = activeSlotManifest.Slots.Single(slot =>
                 string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
+            if (frozenSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+                continue;
             var needsTravelTargetDelivery =
                 activeSlotManifest.CoordinatorTravelTarget != null &&
                 !deliveredTravelAssignmentSlots.Contains(frozenSlot.SlotId);
@@ -754,6 +834,9 @@ public sealed class DadCoordinatorService
             if (participant.State != DadParticipantState.Discovered)
                 continue;
 
+            if (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+                continue;
+
             if (!participant.IsLocalClient &&
                 !remoteAssignmentTracker.IsAccepted(activePlan.Request.RequestId, slot))
             {
@@ -798,6 +881,7 @@ public sealed class DadCoordinatorService
             {
                 var neverAcknowledged = activeSlotManifest.Slots
                     .Where(slot =>
+                        slot.RouteKind == DadRunSlotRouteKind.LanWorker &&
                         !string.Equals(
                             slot.WorkerSessionId.Value,
                             presenceService.WorkerSessionId.Value,
@@ -868,6 +952,20 @@ public sealed class DadCoordinatorService
 
             var frozenSlot = activeSlotManifest.Slots.Single(slot =>
                 string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
+            if (frozenSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            {
+                if (!TryGetActiveAutoPartyProposalId(out var proposalId) ||
+                    autoPartyParticipantBridge?.GetSnapshot(
+                        proposalId,
+                        frozenSlot.SlotId,
+                        DateTimeOffset.UtcNow) is not { } remoteSnapshot ||
+                    !remoteSnapshot.LeaseActive(DateTimeOffset.UtcNow))
+                {
+                    blockers.Add($"{frozenSlot.SlotId} is waiting for its active AutoParty lease.");
+                }
+                continue;
+            }
+
             var request = new DadClaimRequestDto
             {
                 RunId = activePlan.Request.RequestId,
@@ -918,7 +1016,7 @@ public sealed class DadCoordinatorService
         }
 
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
-        CurrentResult.Leases = claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
+        CurrentResult.Leases = GetCurrentLeaseSnapshots();
 
         if (blockers.Count > 0)
         {
@@ -1964,7 +2062,7 @@ public sealed class DadCoordinatorService
 
         presenceService.SetLeaderState(activePlan.Request.RequestId, participantState, result.Summary);
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
-        CurrentResult.Leases = claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
+        CurrentResult.Leases = GetCurrentLeaseSnapshots();
 
         if (!result.Success)
         {
@@ -2070,7 +2168,7 @@ public sealed class DadCoordinatorService
         CurrentResult.ActiveTaskName = string.Empty;
         CurrentResult.ActiveTaskStatus = CurrentResult.Summary;
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
-        CurrentResult.Leases = [];
+        CurrentResult.Leases = GetCurrentLeaseSnapshots();
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
 
         var requiresDiscovery = RequiresParticipantDiscovery(nextPlan, activeSlotManifest);
@@ -2480,7 +2578,8 @@ public sealed class DadCoordinatorService
                 coordinatorAccountKey,
                 liveCoordinatorTruth,
                 out var refreshedParticipants,
-                out var blocker))
+                out var blocker,
+                ResolveRegisteredIslandMutationParticipant))
         {
             if (HasImmutableBoundaryMismatch(activePlan, activeSlotManifest))
             {
@@ -2574,6 +2673,9 @@ public sealed class DadCoordinatorService
     {
         foreach (var slot in manifest.Slots.OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.SlotId)))
         {
+            if (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+                continue;
+
             var runtime = runtimeParticipants.FirstOrDefault(participant =>
                 string.Equals(
                     participant.WorkerSessionId.Value,
@@ -2641,6 +2743,51 @@ public sealed class DadCoordinatorService
             pool.PeerTransport.KnownParticipants,
             frozenSessions,
             transportService.IsWorkerOnline);
+    }
+
+    private bool TryGetActiveAutoPartyProposalId(out Guid proposalId)
+    {
+        proposalId = Guid.Empty;
+        return activePlan != null &&
+               Guid.TryParse(activePlan.Orchestration.AutoPartyProposalId, out proposalId) &&
+               proposalId != Guid.Empty;
+    }
+
+    private DadParticipantSnapshot? ResolveRegisteredIslandMutationParticipant(
+        Guid proposalId,
+        DadFrozenRunSlot slot)
+    {
+        if (autoPartyParticipantBridge == null ||
+            slot.RouteKind != DadRunSlotRouteKind.RegisteredIsland)
+        {
+            return null;
+        }
+
+        return autoPartyParticipantBridge.ResolveParticipant(
+            proposalId,
+            slot,
+            DateTimeOffset.UtcNow,
+            out _);
+    }
+
+    private List<DadParticipantLeaseRecord> GetCurrentLeaseSnapshots()
+    {
+        if (activePlan == null)
+            return [];
+
+        var leases = claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
+        if (TryGetActiveAutoPartyProposalId(out var proposalId) && autoPartyParticipantBridge != null)
+        {
+            leases.AddRange(autoPartyParticipantBridge.GetLeaseSnapshots(
+                proposalId,
+                DateTimeOffset.UtcNow));
+        }
+
+        return leases
+            .DistinctBy(
+                static lease => $"{lease.RunId}|{lease.SlotId}|{lease.OwningWorkerSessionId.Value}",
+                StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private void LogAcceptedSlotManifest(DadRunPlan plan, DadRunSlotManifest? manifest)
@@ -3159,7 +3306,7 @@ public sealed class DadCoordinatorService
         CurrentResult.LocalOnlyEnabled = activePlan?.Orchestration.LocalOnlyOverride ?? configuration.LocalOnlyModeEnabled;
         CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
-        CurrentResult.Leases = activePlan == null ? [] : claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
+        CurrentResult.Leases = GetCurrentLeaseSnapshots();
         phaseChangedAtUtc = DateTime.UtcNow;
         LogCoordinatorPhaseTransition();
         Publish();
@@ -3210,7 +3357,7 @@ public sealed class DadCoordinatorService
         CurrentResult.FailureReason = failureReason;
         CurrentResult.CompletedAtUtc = DateTime.UtcNow;
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
-        CurrentResult.Leases = activePlan == null ? [] : claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
+        CurrentResult.Leases = GetCurrentLeaseSnapshots();
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
         CurrentResult.StopProgress = stopProgress.Clone();
         CurrentResult.ActiveTaskName = string.Empty;

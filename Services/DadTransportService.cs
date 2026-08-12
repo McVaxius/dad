@@ -4092,7 +4092,7 @@ public sealed class DadTransportService : IDisposable
             participant.WorkerSessionId.Value,
             participant.ClientInstanceId,
             participant.ProcessId,
-            participant.DiscordApplicationId,
+            participant.RegisteredIslandId,
             participant.AutoPartyEndpointFingerprint,
             participant.AutoPartyPairingHealth,
             participant.AuthorityMode,

@@ -43,6 +43,179 @@ public sealed class DadRunSlotManifestRulesTests
     private const string XCharacter = "X Character@Alpha";
     private const ulong WContentId = 1001;
     private const ulong XContentId = 2002;
+    private const string RemoteIdentityToken = "remote-opaque-001";
+    private const string RemoteOwnerId = "remote-owner-001";
+    private const string RemoteIslandId = "remote-island-001";
+
+    [Fact]
+    public void MixedManifestFreezesOpaqueRegisteredIslandRouteAndBindsOnlyLanWorkers()
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[1] = RemoteRosterRef(RemoteIdentityToken, 19);
+
+        Assert.True(
+            DadRunSlotManifestRules.TryCreate(
+                plan,
+                [RemoteBinding(RemoteIdentityToken, 19)],
+                out var manifest,
+                out var createBlocker),
+            createBlocker);
+
+        Assert.Collection(
+            manifest.Slots,
+            slot =>
+            {
+                Assert.Equal(DadRunSlotRouteKind.LanWorker, slot.RouteKind);
+                Assert.Equal(WAccount, slot.AccountKey.Value);
+                Assert.Equal(WCharacter, slot.CharacterKey.Value);
+                Assert.Equal(WContentId, slot.ContentId);
+                Assert.True(slot.IsLeader);
+                Assert.True(slot.IsInviter);
+            },
+            slot =>
+            {
+                Assert.Equal(DadRunSlotRouteKind.RegisteredIsland, slot.RouteKind);
+                Assert.Equal(RemoteIdentityToken, slot.OpaqueCharacterId);
+                Assert.Equal(RemoteOwnerId, slot.OwnerId);
+                Assert.Equal(RemoteIslandId, slot.IslandId);
+                Assert.Equal((uint?)19, slot.RequiredJobId);
+                Assert.True(slot.AccountKey.IsEmpty);
+                Assert.True(slot.CharacterKey.IsEmpty);
+                Assert.Equal((ulong)0, slot.ContentId);
+                Assert.True(slot.WorkerSessionId.IsEmpty);
+                Assert.False(slot.IsLeader);
+                Assert.False(slot.IsInviter);
+            });
+
+        Assert.True(
+            DadRunSlotManifestRules.TryBindWorkerSessions(
+                manifest,
+                [Participant(WAccount, WCharacter, WContentId, "worker-w")],
+                out var bound,
+                out var bindBlocker),
+            bindBlocker);
+        Assert.Equal("worker-w", bound.Slots[0].WorkerSessionId.Value);
+        Assert.True(bound.Slots[1].WorkerSessionId.IsEmpty);
+
+        var remoteSnapshot = DadRunSlotManifestRules.ResolveSlot(bound.Slots[1], [], true, out var remoteBlocker);
+        Assert.Equal(DadParticipantState.Stale, remoteSnapshot.State);
+        Assert.Contains("AutoParty", remoteBlocker, StringComparison.Ordinal);
+
+        var clone = bound.Clone();
+        Assert.Equal(DadRunSlotRouteKind.RegisteredIsland, clone.Slots[1].RouteKind);
+        Assert.Equal(RemoteIdentityToken, clone.Slots[1].OpaqueCharacterId);
+        Assert.Equal(RemoteOwnerId, clone.Slots[1].OwnerId);
+        Assert.Equal(RemoteIslandId, clone.Slots[1].IslandId);
+    }
+
+    [Fact]
+    public void RegisteredIslandSlotOneRetainsInviterAndQueueAuthority()
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[0] = RemoteRosterRef(RemoteIdentityToken, 19);
+        plan.Request.Orchestration.RequiredRosterCharacters[0] = RemoteRosterRef(RemoteIdentityToken, 19);
+        plan.LeaderCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority;
+        plan.InviterCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority;
+        var binding = RemoteBinding(RemoteIdentityToken, 19);
+        binding.OwnsQueueAuthority = true;
+
+        Assert.True(
+            DadRunSlotManifestRules.TryCreate(
+                plan,
+                [binding],
+                out var manifest,
+                out var blocker),
+            blocker);
+        Assert.Equal(DadRunSlotRouteKind.RegisteredIsland, manifest.Slots[0].RouteKind);
+        Assert.True(manifest.Slots[0].IsLeader);
+        Assert.True(manifest.Slots[0].IsInviter);
+        Assert.Equal(DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority, manifest.LeaderCharacterKey);
+
+        binding.OwnsQueueAuthority = false;
+        Assert.False(DadRunSlotManifestRules.TryCreate(plan, [binding], out _, out var authorityBlocker));
+        Assert.Contains("queue-authority", authorityBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RegisteredIslandBindingFailuresRemainFailClosed()
+    {
+        var missing = BuildMixedRegisteredIslandPlan();
+        Assert.False(DadRunSlotManifestRules.TryCreate(missing, [], out _, out var missingBlocker));
+        Assert.Contains("no current valid", missingBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var invalidBinding = RemoteBinding(RemoteIdentityToken, 19);
+        invalidBinding.OwnerConsentConfirmed = false;
+        Assert.False(
+            DadRunSlotManifestRules.TryCreate(
+                BuildMixedRegisteredIslandPlan(),
+                [invalidBinding],
+                out _,
+                out var invalidBlocker));
+        Assert.Contains("no current valid", invalidBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var first = RemoteBinding(RemoteIdentityToken, 19);
+        var second = RemoteBinding(RemoteIdentityToken, 19);
+        second.FleetRowId = "remote-row-002";
+        Assert.False(
+            DadRunSlotManifestRules.TryCreate(
+                BuildMixedRegisteredIslandPlan(),
+                [first, second],
+                out _,
+                out var ambiguousBlocker));
+        Assert.Contains("ambiguous", ambiguousBlocker, StringComparison.OrdinalIgnoreCase);
+
+        var queueAuthority = RemoteBinding(RemoteIdentityToken, 19);
+        queueAuthority.OwnsQueueAuthority = true;
+        Assert.False(
+            DadRunSlotManifestRules.TryCreate(
+                BuildMixedRegisteredIslandPlan(),
+                [queueAuthority],
+                out _,
+                out var queueBlocker));
+        Assert.Contains("queue authority", queueBlocker, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(
+            DadRunSlotManifestRules.TryCreate(
+                BuildMixedRegisteredIslandPlan(),
+                [RemoteBinding(RemoteIdentityToken, 20)],
+                out _,
+                out var jobMismatchBlocker));
+        Assert.Contains("requested job", jobMismatchBlocker, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(
+            DadRunSlotManifestRules.TryCreate(
+                BuildMixedRegisteredIslandPlan(),
+                [RemoteBinding(RemoteIdentityToken, 8)],
+                out _,
+                out var invalidJobBlocker));
+        Assert.Contains("combat job", invalidJobBlocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RuntimeSharedIdentityMetadataStaysOutsideDadIpcJson()
+    {
+        var reference = RemoteRosterRef(RemoteIdentityToken, 19);
+        var clone = reference.Clone();
+
+        Assert.False(reference.IsEmpty);
+        Assert.Equal(RemoteIdentityToken, clone.SharedIdentityToken);
+        Assert.Equal(DadRosterIdentity.BuildKey(reference), DadRosterIdentity.BuildKey(clone));
+
+        var referenceJson = DadIpcJson.Serialize(reference);
+        Assert.DoesNotContain(nameof(DadRosterCharacterRef.SharedIdentityToken), referenceJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(RemoteIdentityToken, referenceJson, StringComparison.Ordinal);
+        var roundTrip = DadIpcJson.Deserialize<DadRosterCharacterRef>(referenceJson)!;
+        Assert.True(roundTrip.IsEmpty);
+        Assert.Equal(string.Empty, roundTrip.SharedIdentityToken);
+
+        var previewSlotJson = DadIpcJson.Serialize(new DadPresetCharacterSlot
+        {
+            SlotId = "Slot2",
+            SharedIdentityToken = RemoteIdentityToken,
+        });
+        Assert.DoesNotContain(nameof(DadPresetCharacterSlot.SharedIdentityToken), previewSlotJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(RemoteIdentityToken, previewSlotJson, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void ReversedRuntimeOrderingPreservesWSlot1AndXSlot2()
@@ -652,6 +825,31 @@ public sealed class DadRunSlotManifestRulesTests
             bindBlocker);
         return bound.Slots[1];
     }
+
+    private static DadRunPlan BuildMixedRegisteredIslandPlan()
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[1] = RemoteRosterRef(RemoteIdentityToken, 19);
+        return plan;
+    }
+
+    private static DadRosterCharacterRef RemoteRosterRef(string identityToken, uint? requiredJobId)
+        => new()
+        {
+            SharedIdentityToken = identityToken,
+            RequiredJobId = requiredJobId,
+        };
+
+    private static DadAutoPartyRemoteBinding RemoteBinding(string identityToken, uint requestedJobId)
+        => new()
+        {
+            FleetRowId = "remote-row-001",
+            OpaqueCharacterId = identityToken,
+            OwnerId = RemoteOwnerId,
+            IslandId = RemoteIslandId,
+            RequestedJobId = requestedJobId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            OwnerConsentConfirmed = true,
+        };
 
     private static DadRunPlan BuildPremadeDutyPlan()
         => BuildPlan(

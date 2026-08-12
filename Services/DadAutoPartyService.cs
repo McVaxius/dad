@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
-using System.Text.Json;
+using System.Text;
 using AutoParty.Contracts;
-using AutoParty.Core.Cryptography;
 using dad.Models;
 
 namespace dad.Services;
@@ -10,8 +9,8 @@ public sealed class DadAutoPartyService : IDisposable
 {
     private readonly DadAutoPartyConfiguration configuration;
     private readonly IDadAutoPartyEndpointIdentityStore identityStore;
+    private readonly IDadAutoPartyWebhookCredentialStore? credentialStore;
     private readonly Action saveConfiguration;
-    private readonly Dictionary<Guid, DadAutoPartyPairingChallenge> pairingChallenges = [];
     private Action<string>? ownerStop;
     private DateTime nextMaintenanceUtc = DateTime.MinValue;
     private bool disposed;
@@ -21,10 +20,12 @@ public sealed class DadAutoPartyService : IDisposable
         IDadAutoPartyEndpointIdentityStore identityStore,
         Func<bool> dadEnabled,
         Action saveConfiguration,
-        Func<bool>? localSafetyAllowsExecution = null)
+        Func<bool>? localSafetyAllowsExecution = null,
+        IDadAutoPartyWebhookCredentialStore? credentialStore = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.identityStore = identityStore ?? throw new ArgumentNullException(nameof(identityStore));
+        this.credentialStore = credentialStore;
         this.saveConfiguration = saveConfiguration ?? throw new ArgumentNullException(nameof(saveConfiguration));
         Connector = new DadDiscordCourierConnector(configuration, dadEnabled);
         Policy = new DadAutoPartyPolicyFacade(configuration, dadEnabled, localSafetyAllowsExecution, saveConfiguration);
@@ -69,110 +70,380 @@ public sealed class DadAutoPartyService : IDisposable
         saveConfiguration();
     }
 
-    public DadAutoPartyPolicyDecision SetPairingEnabled(bool enabled)
+    public DadAutoPartyPolicyDecision ReceivePairingNotice(
+        Guid pairingId,
+        string peerOwnerId,
+        string peerIslandId,
+        string peerHomeGuildScope,
+        EndpointPublicKeys peerPublicKeys,
+        string peerFingerprint,
+        string transcriptHash,
+        string confirmationCodeHash,
+        DateTime expiresAtUtc)
     {
         ThrowIfDisposed();
-        if (enabled && (!configuration.OwnerAcceptanceConfirmed ||
-                        string.IsNullOrWhiteSpace(configuration.EnrollmentReceiptId) ||
-                        string.IsNullOrWhiteSpace(configuration.PilotArtifactSha256)))
-            return Decision(false, "dad-pairing-registration-pending");
-        if (configuration.PairingEnabled == enabled)
-            return Decision(true, enabled ? "dad-pairing-enabled" : "dad-pairing-disabled");
-        configuration.PairingEnabled = enabled;
-        if (!enabled)
+        var ownerId = DadAutoPartyConfiguration.NormalizeIdentifier(peerOwnerId);
+        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(peerIslandId);
+        var guildScope = DadAutoPartyConfiguration.NormalizeIdentifier(peerHomeGuildScope);
+        var fingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(peerFingerprint);
+        var transcript = DadAutoPartyConfiguration.NormalizeFingerprint(transcriptHash);
+        var codeHash = DadAutoPartyConfiguration.NormalizeFingerprint(confirmationCodeHash);
+        var hasPeerKeys = peerPublicKeys != null &&
+            peerPublicKeys.KeyVersion >= 1 &&
+            !string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeIdentifier(peerPublicKeys.SigningKeyId)) &&
+            !peerPublicKeys.Ed25519PublicKey.IsDefault &&
+            peerPublicKeys.Ed25519PublicKey.Length == AutoPartyProtocol.Ed25519PublicKeyBytes &&
+            !string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeIdentifier(peerPublicKeys.AgreementKeyId)) &&
+            !peerPublicKeys.X25519PublicKey.IsDefault &&
+            peerPublicKeys.X25519PublicKey.Length == AutoPartyProtocol.X25519KeyBytes;
+        var signingPublicKey = hasPeerKeys
+            ? DadAutoPartyConfiguration.NormalizePublicKey(
+                Convert.ToBase64String(peerPublicKeys!.Ed25519PublicKey.AsSpan()))
+            : string.Empty;
+        var agreementPublicKey = hasPeerKeys
+            ? DadAutoPartyConfiguration.NormalizePublicKey(
+                Convert.ToBase64String(peerPublicKeys!.X25519PublicKey.AsSpan()))
+            : string.Empty;
+        var expectedFingerprint = hasPeerKeys
+            ? DadAutoPartyIdentityPackageService.BuildFingerprint(
+                ownerId,
+                islandId,
+                peerPublicKeys!.KeyVersion,
+                peerPublicKeys.Ed25519PublicKey.ToArray(),
+                peerPublicKeys.X25519PublicKey.ToArray())
+            : string.Empty;
+        if (!configuration.IsRegistrationActive || pairingId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(ownerId) || string.IsNullOrWhiteSpace(islandId) ||
+            string.Equals(islandId, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
+            !hasPeerKeys || string.IsNullOrWhiteSpace(signingPublicKey) ||
+            string.IsNullOrWhiteSpace(agreementPublicKey) || !FixedEquals(fingerprint, expectedFingerprint) ||
+            string.IsNullOrWhiteSpace(fingerprint) || string.IsNullOrWhiteSpace(transcript) ||
+            string.IsNullOrWhiteSpace(codeHash) || expiresAtUtc <= DateTime.UtcNow ||
+            expiresAtUtc > DateTime.UtcNow + TimeSpan.FromMinutes(15) ||
+            configuration.Deauthentications.Any(item =>
+                string.Equals(item.PeerIslandId, islandId, StringComparison.Ordinal) &&
+                item.RevocationGeneration >= configuration.RevocationGeneration))
+            return Decision(false, "dad-pairing-notice-invalid");
+
+        var pairingIdText = pairingId.ToString("D");
+        var existing = configuration.PendingPairings
+            .Concat(configuration.Pairings)
+            .FirstOrDefault(item =>
+                string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal) ||
+                string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
+        if (existing != null && (existing.LocalApproved || existing.PeerApproved || existing.IsActive))
         {
-            configuration.ExecutionEnabled = false;
-            StopAll("dad-pairing-disabled-by-owner");
+            var unchanged = string.Equals(existing.PairingId, pairingIdText, StringComparison.Ordinal) &&
+                            string.Equals(existing.OwnerId, ownerId, StringComparison.Ordinal) &&
+                            string.Equals(existing.IslandId, islandId, StringComparison.Ordinal) &&
+                            string.Equals(existing.HomeGuildScope, guildScope, StringComparison.Ordinal) &&
+                            FixedEquals(existing.PublicKeyFingerprint, fingerprint) &&
+                            FixedEquals(existing.TranscriptHash, transcript) &&
+                            FixedEquals(existing.ConfirmationCodeHash, codeHash) &&
+                            existing.KeyGeneration == peerPublicKeys!.KeyVersion &&
+                            string.Equals(existing.SigningPublicKey, signingPublicKey, StringComparison.Ordinal) &&
+                            string.Equals(existing.AgreementPublicKey, agreementPublicKey, StringComparison.Ordinal);
+            return Decision(unchanged, unchanged
+                ? "dad-pairing-notice-idempotent"
+                : "dad-pairing-notice-conflict");
         }
+
+        configuration.PendingPairings.RemoveAll(item =>
+            string.Equals(item.IslandId, islandId, StringComparison.Ordinal) ||
+            string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal));
+        configuration.PendingPairings.Add(new DadAutoPartyPairing
+        {
+            PairingId = pairingIdText,
+            OwnerId = ownerId,
+            IslandId = islandId,
+            HomeGuildScope = guildScope,
+            PublicKeyFingerprint = fingerprint,
+            LocalFingerprint = configuration.RegistrationFingerprint,
+            TranscriptHash = transcript,
+            ConfirmationCodeHash = codeHash,
+            ExpiresAtUtc = expiresAtUtc,
+            KeyGeneration = peerPublicKeys!.KeyVersion,
+            SigningPublicKey = signingPublicKey,
+            AgreementPublicKey = agreementPublicKey,
+        });
         configuration.StateGeneration++;
         saveConfiguration();
-        return Decision(true, enabled ? "dad-pairing-enabled" : "dad-pairing-disabled");
+        return Decision(true, "dad-pairing-notice-pending");
     }
 
-    public DadAutoPartyPolicyDecision SetExecutionEnabled(bool enabled)
+    public DadAutoPartyPolicyDecision ApprovePairing(
+        Guid pairingId,
+        string displayedPeerFingerprint,
+        string confirmationCode,
+        DadAutoPartySharePolicy localSharePolicy)
     {
         ThrowIfDisposed();
-        if (enabled && (!configuration.Enabled || !configuration.PairingEnabled ||
-                        !configuration.OwnerAcceptanceConfirmed ||
-                        !configuration.Pairings.Any(static pairing => pairing.RevokedAtUtc == null) ||
-                        string.IsNullOrWhiteSpace(configuration.PilotPlannerGroupId) ||
-                        string.IsNullOrWhiteSpace(configuration.PilotQueueAuthorityFingerprint) ||
-                        !configuration.PilotCourierProbeVerified))
-            return Decision(false, "dad-execution-prerequisites-pending");
-        if (configuration.ExecutionEnabled == enabled)
-            return Decision(true, enabled ? "dad-execution-enabled" : "dad-execution-disabled");
-        configuration.ExecutionEnabled = enabled;
-        if (!enabled)
-            StopAll("dad-execution-disabled-by-owner");
+        var pairingIdText = pairingId.ToString("D");
+        var pending = configuration.PendingPairings.FirstOrDefault(item =>
+            string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal));
+        var pairing = pending ?? configuration.Pairings.FirstOrDefault(item =>
+            string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal));
+        var policy = localSharePolicy?.Clone().Normalize();
+        if (pairing == null || (pending != null && pairing.ExpiresAtUtc <= DateTime.UtcNow) ||
+            !string.Equals(
+                pairing.PublicKeyFingerprint,
+                DadAutoPartyConfiguration.NormalizeFingerprint(displayedPeerFingerprint),
+                StringComparison.Ordinal) ||
+            !FixedEquals(pairing.ConfirmationCodeHash, HashConfirmationCode(confirmationCode)) ||
+            policy is not { IsValid: true })
+            return Decision(false, "dad-pairing-approval-mismatch");
+        var messageId = DerivePairingApprovalMessageId(pairingId, configuration.RegisteredIslandId);
+        if (pairing.LocalApproved)
+        {
+            var unchanged = SamePolicy(pairing.LocalSharePolicy, policy) &&
+                            Guid.TryParse(pairing.LocalApprovalRelayMessageId, out var storedMessageId) &&
+                            storedMessageId == messageId;
+            return Decision(unchanged, unchanged
+                ? pairing.LocalApprovalRelayAcceptedAtUtc == null
+                    ? "dad-pairing-approval-idempotent"
+                    : "dad-pairing-approval-relayed"
+                : "dad-pairing-approval-conflict");
+        }
+        pairing.LocalApproved = true;
+        pairing.LocalSharePolicy = policy;
+        pairing.LocalApprovalRelayMessageId = messageId.ToString("D");
+        pairing.LocalApprovalRelayAcceptedAtUtc = null;
+        ActivateIfComplete(pairing);
         configuration.StateGeneration++;
         saveConfiguration();
-        return Decision(true, enabled ? "dad-execution-enabled" : "dad-execution-disabled");
+        return Decision(true, "dad-pairing-local-approved");
     }
 
-    public DadAutoPartyPolicyDecision ApplyPilotExchangeRoot(string? requestedRoot)
+    public DadAutoPartyPolicyDecision ConfirmPeerApproval(
+        Guid pairingId,
+        string transcriptHash,
+        string confirmationCodeHash,
+        string approvingFingerprint,
+        string peerObservedLocalFingerprint,
+        DadAutoPartySharePolicy peerSharePolicy)
     {
         ThrowIfDisposed();
-        if (configuration.Enabled || configuration.PairingEnabled || configuration.ExecutionEnabled)
-            return Decision(false, "dad-pilot-exchange-root-gates-enabled");
-        if (!DadAutoPartyConfiguration.TryNormalizePilotExchangeRoot(requestedRoot, out var normalizedRoot))
-            return Decision(false, "dad-pilot-exchange-root-invalid");
+        var pairingIdText = pairingId.ToString("D");
+        var pending = configuration.PendingPairings.FirstOrDefault(item =>
+            string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal));
+        var pairing = pending ?? configuration.Pairings.FirstOrDefault(item =>
+            string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal));
+        var policy = peerSharePolicy?.Clone().Normalize();
+        if (pairing == null || (pending != null && pairing.ExpiresAtUtc <= DateTime.UtcNow) ||
+            !FixedEquals(pairing.TranscriptHash, DadAutoPartyConfiguration.NormalizeFingerprint(transcriptHash)) ||
+            !FixedEquals(pairing.ConfirmationCodeHash, DadAutoPartyConfiguration.NormalizeFingerprint(confirmationCodeHash)) ||
+            !FixedEquals(pairing.PublicKeyFingerprint, DadAutoPartyConfiguration.NormalizeFingerprint(approvingFingerprint)) ||
+            !FixedEquals(pairing.LocalFingerprint, DadAutoPartyConfiguration.NormalizeFingerprint(peerObservedLocalFingerprint)) ||
+            policy is not { IsValid: true })
+            return Decision(false, "dad-pairing-peer-approval-mismatch");
+        if (pairing.PeerApproved)
+            return Decision(SamePolicy(pairing.PeerSharePolicy, policy),
+                SamePolicy(pairing.PeerSharePolicy, policy)
+                    ? "dad-pairing-peer-approval-idempotent"
+                    : "dad-pairing-peer-approval-conflict");
+        pairing.PeerApproved = true;
+        pairing.PeerSharePolicy = policy;
+        ActivateIfComplete(pairing);
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, pairing.IsActive ? "dad-pairing-active" : "dad-pairing-peer-approved");
+    }
 
-        var probePath = Path.Combine(normalizedRoot, $".dad-write-probe-{Guid.NewGuid():N}");
+    internal bool TryApplyPairingApprovalRelayReceipt(
+        Guid relatedMessageId,
+        bool accepted,
+        out DadAutoPartyPolicyDecision decision)
+    {
+        ThrowIfDisposed();
+        var matches = configuration.PendingPairings
+            .Concat(configuration.Pairings)
+            .Where(item =>
+                Guid.TryParse(item.LocalApprovalRelayMessageId, out var messageId) &&
+                messageId == relatedMessageId)
+            .Take(2)
+            .ToList();
+        if (matches.Count != 1)
+        {
+            decision = Decision(false, "dad-pairing-approval-relay-unmatched");
+            return false;
+        }
+        var pairing = matches[0];
+        if (!accepted)
+        {
+            decision = Decision(true, "dad-pairing-approval-relay-rejected");
+            return true;
+        }
+        if (pairing.LocalApprovalRelayAcceptedAtUtc != null)
+        {
+            decision = Decision(true, "dad-pairing-approval-relay-idempotent");
+            return true;
+        }
+        if (!pairing.LocalApproved || pairing.ExpiresAtUtc <= DateTime.UtcNow)
+        {
+            decision = Decision(false, "dad-pairing-approval-relay-invalid");
+            return true;
+        }
+        pairing.LocalApprovalRelayAcceptedAtUtc = DateTime.UtcNow;
+        ActivateIfComplete(pairing);
+        configuration.StateGeneration++;
+        saveConfiguration();
+        decision = Decision(true, pairing.IsActive
+            ? "dad-pairing-active"
+            : "dad-pairing-approval-relayed");
+        return true;
+    }
+
+    internal static Guid DerivePairingApprovalMessageId(Guid pairingId, string localIslandId)
+    {
+        var bytes = Encoding.UTF8.GetBytes(
+            $"dad.autoparty.pairing-approval/v1|{pairingId:N}|{DadAutoPartyConfiguration.NormalizeIdentifier(localIslandId)}");
         try
         {
-            Directory.CreateDirectory(normalizedRoot);
-            foreach (var managedFolder in new[] { "pilot-input", "pilot-receipts", "pilot-courier", "plugin" })
-                Directory.CreateDirectory(Path.Combine(normalizedRoot, managedFolder));
-            File.WriteAllBytes(probePath, []);
-            File.Delete(probePath);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Decision(false, "dad-pilot-exchange-root-unwritable");
-        }
-        catch (System.Security.SecurityException)
-        {
-            return Decision(false, "dad-pilot-exchange-root-unwritable");
-        }
-        catch (Exception exception) when (exception is IOException or ArgumentException or NotSupportedException)
-        {
-            return Decision(false, "dad-pilot-exchange-root-unavailable");
+            var digest = SHA256.HashData(bytes);
+            try
+            {
+                return new Guid(digest.AsSpan(0, 16));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(digest);
+            }
         }
         finally
         {
-            try
-            {
-                if (File.Exists(probePath))
-                    File.Delete(probePath);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-            {
-            }
+            CryptographicOperations.ZeroMemory(bytes);
         }
-
-        configuration.PilotExchangeRoot = normalizedRoot;
-        configuration.CourierRootPath = Path.Combine(normalizedRoot, "pilot-courier");
-        configuration.StateGeneration++;
-        saveConfiguration();
-        return Decision(true, "dad-pilot-exchange-root-applied");
     }
 
-    public DadAutoPartyPolicyDecision ConfirmEnrollmentPairings()
+    public DadAutoPartyPolicyDecision SetSharePolicy(
+        string peerIslandId,
+        DadAutoPartySharePolicy sharePolicy)
     {
         ThrowIfDisposed();
-        if (!configuration.PairingEnabled || !configuration.OwnerAcceptanceConfirmed ||
-            configuration.PendingPairings.Count == 0)
-            return Decision(false, "dad-pairing-confirmation-pending");
-        foreach (var pairing in configuration.PendingPairings)
-        {
-            configuration.Pairings.RemoveAll(existing =>
-                string.Equals(existing.IslandId, pairing.IslandId, StringComparison.Ordinal));
-            configuration.Pairings.Add(WithConfirmedNow(pairing));
-        }
-        configuration.PendingPairings.Clear();
+        var pairing = configuration.Pairings.FirstOrDefault(item =>
+            item.IsActive && string.Equals(item.IslandId, peerIslandId?.Trim(), StringComparison.Ordinal));
+        var normalized = sharePolicy?.Clone().Normalize();
+        if (pairing == null || normalized is not { IsValid: true })
+            return Decision(false, "dad-share-policy-invalid");
+        pairing.LocalSharePolicy = normalized;
         configuration.StateGeneration++;
         saveConfiguration();
-        return Decision(true, "dad-pairing-locally-confirmed");
+        return Decision(true, "dad-share-policy-updated");
+    }
+
+    public DadAutoPartyPolicyDecision Deauthenticate(string peerIslandId, string safeReason)
+    {
+        ThrowIfDisposed();
+        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(peerIslandId);
+        var reason = DadAutoPartyConfiguration.NormalizeSafeCode(safeReason);
+        var pairing = configuration.Pairings.FirstOrDefault(item =>
+            item.RevokedAtUtc == null && string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
+        if (pairing == null)
+            return Decision(true, "dad-deauthentication-already-applied");
+        if (string.IsNullOrWhiteSpace(reason))
+            reason = "dad-owner-deauthenticated";
+        pairing.RevokedAtUtc = DateTime.UtcNow;
+        configuration.RevocationGeneration++;
+        configuration.Deauthentications.RemoveAll(item =>
+            string.Equals(item.PeerIslandId, islandId, StringComparison.Ordinal));
+        configuration.Deauthentications.Add(new DadAutoPartyDeauthentication
+        {
+            DeauthenticationId = Guid.NewGuid().ToString("D"),
+            PeerIslandId = islandId,
+            PairingTranscriptHash = pairing.TranscriptHash,
+            RevocationGeneration = configuration.RevocationGeneration,
+            SafeReason = reason,
+            RevokedAtUtc = DateTime.UtcNow,
+        });
+        configuration.PendingPairings.RemoveAll(item =>
+            string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
+        configuration.Listings.RemoveAll(item =>
+            string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal));
+        configuration.RemoteBindings.RemoveAll(item =>
+            string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
+        configuration.Grants.RemoveAll(item =>
+            string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
+        Policy.SetOwnerVeto(new OwnerId(pairing.OwnerId), true, reason);
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, "dad-deauthentication-applied");
+    }
+
+    public DadAutoPartyPolicyDecision AddListing(DadAutoPartyListing listing)
+    {
+        ThrowIfDisposed();
+        var normalized = listing?.Clone();
+        if (normalized != null && string.IsNullOrWhiteSpace(normalized.SharingIslandId))
+            normalized.SharingIslandId = configuration.RegisteredIslandId;
+        normalized?.Normalize();
+        if (!configuration.Enabled || !configuration.IsRegistrationActive ||
+            normalized is not { IsValid: true } ||
+            !string.Equals(normalized.SharingIslandId, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
+            normalized.ExpiresAtUtc <= DateTime.UtcNow ||
+            normalized.ExpiresAtUtc > DateTime.UtcNow + TimeSpan.FromHours(24))
+            return Decision(false, "dad-listing-invalid");
+        configuration.Listings.RemoveAll(candidate =>
+            string.Equals(candidate.ListingId, normalized.ListingId, StringComparison.Ordinal));
+        configuration.Listings.Add(normalized);
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, "dad-listing-saved");
+    }
+
+    public DadAutoPartyPolicyDecision ApplyRemoteListings(
+        string sharingIslandId,
+        string sharingHomeGuildScope,
+        DadAutoPartySharePolicy standingPolicy,
+        IEnumerable<DadAutoPartyListing> listings,
+        bool registeredRequesterAttested)
+    {
+        ThrowIfDisposed();
+        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(sharingIslandId);
+        var guildScope = DadAutoPartyConfiguration.NormalizeIdentifier(sharingHomeGuildScope);
+        var policy = standingPolicy?.Clone().Normalize();
+        var pairing = configuration.Pairings.FirstOrDefault(item =>
+            item.IsActive && string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
+        var paired = pairing != null;
+        var sameGuild = !string.IsNullOrWhiteSpace(guildScope) &&
+            string.Equals(guildScope, configuration.HomeGuildScope, StringComparison.Ordinal);
+        if (policy is not { Enabled: true, IsValid: true } ||
+            (!paired && (policy.Mode != DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild ||
+                         !registeredRequesterAttested || !sameGuild)))
+            return Decision(false, "dad-listing-share-denied");
+
+        var now = DateTime.UtcNow;
+        var accepted = (listings ?? [])
+            .Select(static item => item?.Clone().Normalize())
+            .Where(item => item is { IsValid: true, Available: true } &&
+                           item.ExpiresAtUtc > now && item.ExpiresAtUtc <= now + TimeSpan.FromHours(24) &&
+                           DadAutoPartyShareRules.Allows(policy, item.OpaqueCharacterId, paired, sameGuild))
+            .Select(item =>
+            {
+                item!.SharingIslandId = islandId;
+                return item;
+            })
+            .Take(256)
+            .ToList();
+        configuration.Listings.RemoveAll(item =>
+            string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal));
+        configuration.Listings.AddRange(accepted!);
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, "dad-listings-applied");
+    }
+
+    public DadAutoPartyDirectorySnapshot GetDirectorySnapshot()
+    {
+        ThrowIfDisposed();
+        var now = DateTime.UtcNow;
+        return new(
+            configuration.StateGeneration,
+            configuration.Listings
+                .Where(item => item.Available && item.ExpiresAtUtc > now)
+                .Select(static item => item.Clone())
+                .OrderBy(static item => item.DisplayLabel, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(static item => item.OpaqueCharacterId, StringComparer.Ordinal)
+                .ToList());
     }
 
     public void Update(bool dadPluginEnabled)
@@ -184,15 +455,9 @@ public sealed class DadAutoPartyService : IDisposable
         if (now < nextMaintenanceUtc)
             return;
         nextMaintenanceUtc = now + TimeSpan.FromMinutes(1);
-
-        var changed = false;
-        changed |= configuration.Grants.RemoveAll(grant => grant.ExpiresAtUtc <= now) > 0;
+        var changed = configuration.Grants.RemoveAll(grant => grant.ExpiresAtUtc <= now) > 0;
         changed |= configuration.Listings.RemoveAll(listing => listing.ExpiresAtUtc <= now) > 0;
-        foreach (var challengeId in pairingChallenges
-                     .Where(pair => pair.Value.ExpiresAtUtc <= now)
-                     .Select(static pair => pair.Key)
-                     .ToList())
-            pairingChallenges.Remove(challengeId);
+        changed |= configuration.PendingPairings.RemoveAll(pairing => pairing.ExpiresAtUtc <= now) > 0;
         if (changed)
         {
             configuration.StateGeneration++;
@@ -200,194 +465,11 @@ public sealed class DadAutoPartyService : IDisposable
         }
     }
 
-    public async ValueTask<DadAutoPartyIdentityOperationResult> SendPilotCourierProbeAsync(
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        await Task.CompletedTask;
-        cancellationToken.ThrowIfCancellationRequested();
-        return new(false, "dad-file-courier-retired");
-    }
-
-    public async ValueTask<DadAutoPartyPolicyDecision> ImportRegistrationAsync(
-        DadAutoPartyRegistrationImport registration,
-        bool confirmReplacement,
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        if (!configuration.PairingEnabled || !configuration.OwnerAcceptanceConfirmed ||
-            string.IsNullOrWhiteSpace(configuration.EnrollmentReceiptId))
-            return Decision(false, "dad-registration-disabled-pending-review");
-        var ownerId = DadAutoPartyConfiguration.NormalizeIdentifier(registration.OwnerId);
-        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(registration.IslandId);
-        var fingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(registration.PublicKeyFingerprint);
-        if (string.IsNullOrWhiteSpace(ownerId) || string.IsNullOrWhiteSpace(islandId) ||
-            string.IsNullOrWhiteSpace(fingerprint) || registration.KeyGeneration < 1 ||
-            registration.ProtectedIdentityMaterial is not { Length: > 0 and <= AutoPartyProtocol.PreallocationDefensiveCeilingBytes })
-            return Decision(false, "dad-registration-import-invalid");
-        if (!string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) && !confirmReplacement)
-            return Decision(false, "dad-registration-replacement-confirmation-required");
-
-        DadAutoPartyPrivateIdentityPackage? privateIdentity;
-        byte[]? signingPrivate = null;
-        byte[]? encryptionPrivate = null;
-        byte[]? signingPublic = null;
-        byte[]? encryptionPublic = null;
-        try
-        {
-            privateIdentity = JsonSerializer.Deserialize<DadAutoPartyPrivateIdentityPackage>(registration.ProtectedIdentityMaterial);
-            if (privateIdentity == null ||
-                !string.Equals(privateIdentity.OwnerId, ownerId, StringComparison.Ordinal) ||
-                !string.Equals(privateIdentity.IslandId, islandId, StringComparison.Ordinal) ||
-                privateIdentity.KeyGeneration != registration.KeyGeneration ||
-                string.IsNullOrWhiteSpace(privateIdentity.SigningPrivateKey) ||
-                string.IsNullOrWhiteSpace(privateIdentity.EncryptionPrivateKey))
-                return Decision(false, "dad-registration-private-identity-mismatch");
-            signingPrivate = Convert.FromBase64String(privateIdentity.SigningPrivateKey);
-            encryptionPrivate = Convert.FromBase64String(privateIdentity.EncryptionPrivateKey);
-            if (signingPrivate.Length != AutoPartyProtocol.X25519KeyBytes ||
-                encryptionPrivate.Length != AutoPartyProtocol.X25519KeyBytes)
-                return Decision(false, "dad-registration-private-identity-invalid");
-            signingPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(signingPrivate);
-            encryptionPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(encryptionPrivate);
-            var derivedFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
-                ownerId,
-                islandId,
-                registration.KeyGeneration,
-                signingPublic,
-                encryptionPublic);
-            if (!string.Equals(derivedFingerprint, fingerprint, StringComparison.Ordinal))
-                return Decision(false, "dad-registration-fingerprint-mismatch");
-            var oldReference = configuration.EndpointIdentityReference;
-            var newReference = await identityStore.StoreAsync(
-                registration.ProtectedIdentityMaterial,
-                cancellationToken).ConfigureAwait(false);
-            configuration.EndpointIdentityReference = newReference;
-            configuration.RegisteredOwnerId = ownerId;
-            configuration.RegisteredIslandId = islandId;
-            configuration.RegistrationFingerprint = fingerprint;
-            configuration.SigningPublicKey = Convert.ToBase64String(signingPublic!);
-            configuration.EncryptionPublicKey = Convert.ToBase64String(encryptionPublic!);
-            configuration.EndpointKeyGeneration = registration.KeyGeneration;
-            configuration.DiscordBinding = new DadAutoPartyDiscordBinding();
-            configuration.Pairings.Clear();
-            configuration.PendingPairings.Clear();
-            configuration.OutboundPairingChallenges.Clear();
-            configuration.StateGeneration++;
-            saveConfiguration();
-            if (!string.IsNullOrWhiteSpace(oldReference))
-                await identityStore.DeleteAsync(oldReference, cancellationToken).ConfigureAwait(false);
-            return Decision(true, "dad-registration-imported");
-        }
-        catch (Exception exception) when (exception is JsonException or FormatException or CryptographicException or ArgumentException)
-        {
-            return Decision(false, "dad-registration-private-identity-invalid");
-        }
-        finally
-        {
-            if (signingPrivate != null) CryptographicOperations.ZeroMemory(signingPrivate);
-            if (encryptionPrivate != null) CryptographicOperations.ZeroMemory(encryptionPrivate);
-            if (signingPublic != null) CryptographicOperations.ZeroMemory(signingPublic);
-            if (encryptionPublic != null) CryptographicOperations.ZeroMemory(encryptionPublic);
-        }
-    }
-
-    public DadAutoPartyPairingChallenge? BeginPairing(
-        OwnerIdentity owner,
-        IslandIdentity island)
-    {
-        ThrowIfDisposed();
-        if (!configuration.PairingEnabled || !configuration.OwnerAcceptanceConfirmed ||
-            string.IsNullOrWhiteSpace(configuration.EnrollmentReceiptId) || !configuration.Enabled ||
-            owner.OwnerId != island.OwnerId || owner.HomeIslandId != island.IslandId ||
-            owner.KeyGeneration != island.KeyGeneration || owner.KeyGeneration < 1 ||
-            !string.Equals(owner.PublicKeyId, island.PublicKeyId, StringComparison.Ordinal))
-            return null;
-        var fingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(owner.PublicKeyId);
-        if (string.IsNullOrWhiteSpace(fingerprint))
-            return null;
-
-        var challenge = new DadAutoPartyPairingChallenge(
-            Guid.NewGuid(),
-            owner.OwnerId.Value,
-            island.IslandId.Value,
-            fingerprint,
-            island.KeyGeneration,
-            RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6"),
-            DateTime.UtcNow + TimeSpan.FromMinutes(5));
-        pairingChallenges[challenge.ChallengeId] = challenge;
-        return challenge;
-    }
-
-    public DadAutoPartyPolicyDecision ConfirmPairing(
-        Guid challengeId,
-        string displayedFingerprint,
-        string confirmationCode)
-    {
-        ThrowIfDisposed();
-        if (!configuration.PairingEnabled)
-            return Decision(false, "dad-pairing-disabled-pending-review");
-        if (!pairingChallenges.Remove(challengeId, out var challenge) || challenge.ExpiresAtUtc <= DateTime.UtcNow)
-            return Decision(false, "dad-pairing-challenge-expired");
-        if (!CryptographicOperations.FixedTimeEquals(
-                System.Text.Encoding.UTF8.GetBytes(challenge.ConfirmationCode),
-                System.Text.Encoding.UTF8.GetBytes((confirmationCode ?? string.Empty).Trim())) ||
-            !string.Equals(
-                challenge.PublicKeyFingerprint,
-                DadAutoPartyConfiguration.NormalizeFingerprint(displayedFingerprint),
-                StringComparison.Ordinal))
-            return Decision(false, "dad-pairing-confirmation-mismatch");
-
-        configuration.Pairings.RemoveAll(pairing =>
-            string.Equals(pairing.IslandId, challenge.IslandId, StringComparison.Ordinal));
-        configuration.Pairings.Add(new DadAutoPartyPairing
-        {
-            OwnerId = challenge.OwnerId,
-            IslandId = challenge.IslandId,
-            PublicKeyFingerprint = challenge.PublicKeyFingerprint,
-            KeyGeneration = challenge.KeyGeneration,
-            ConfirmedAtUtc = DateTime.UtcNow,
-        });
-        configuration.StateGeneration++;
-        saveConfiguration();
-        return Decision(true, "dad-pairing-confirmed");
-    }
-
-    public DadAutoPartyPolicyDecision Unpair(string islandId)
-    {
-        ThrowIfDisposed();
-        var pairing = configuration.Pairings.FirstOrDefault(candidate =>
-            candidate.RevokedAtUtc == null &&
-            string.Equals(candidate.IslandId, islandId?.Trim(), StringComparison.Ordinal));
-        if (pairing == null)
-            return Decision(true, "dad-pairing-already-absent");
-        pairing.RevokedAtUtc = DateTime.UtcNow;
-        Policy.SetOwnerVeto(new OwnerId(pairing.OwnerId), true, "dad-unpair");
-        configuration.StateGeneration++;
-        saveConfiguration();
-        return Decision(true, "dad-pairing-revoked");
-    }
-
-    public DadAutoPartyPolicyDecision AddListing(DadAutoPartyListing listing)
-    {
-        ThrowIfDisposed();
-        var normalized = listing?.Clone().Normalize();
-        if (!configuration.Enabled || normalized is not { IsValid: true } ||
-            normalized.ExpiresAtUtc <= DateTime.UtcNow ||
-            normalized.ExpiresAtUtc > DateTime.UtcNow + TimeSpan.FromDays(30))
-            return Decision(false, "dad-listing-invalid");
-        configuration.Listings.RemoveAll(candidate =>
-            string.Equals(candidate.ListingId, normalized.ListingId, StringComparison.Ordinal));
-        configuration.Listings.Add(normalized);
-        configuration.StateGeneration++;
-        saveConfiguration();
-        return Decision(true, "dad-listing-saved");
-    }
-
     public DadAutoPartyPolicyDecision AddImmutableGrant(CapabilityGrant grant)
     {
         ThrowIfDisposed();
-        if (!configuration.Enabled || grant.GrantId == Guid.Empty || grant.ProposalId == Guid.Empty ||
+        if (!configuration.Enabled || !configuration.IsRegistrationActive ||
+            grant.GrantId == Guid.Empty || grant.ProposalId == Guid.Empty ||
             grant.ValidFrom >= grant.ValidUntil || grant.ValidUntil <= DateTimeOffset.UtcNow ||
             grant.ValidUntil > DateTimeOffset.UtcNow + TimeSpan.FromDays(30) ||
             grant.Scope.Permissions == SessionPermission.None || grant.Scope.MaximumUses != 1 ||
@@ -400,7 +482,6 @@ public sealed class DadAutoPartyService : IDisposable
         var grantId = grant.GrantId.ToString("D");
         if (configuration.Grants.Any(candidate => string.Equals(candidate.GrantId, grantId, StringComparison.Ordinal)))
             return Decision(true, "dad-grant-already-present");
-
         configuration.Grants.Add(new DadAutoPartyGrant
         {
             GrantId = grantId,
@@ -422,26 +503,29 @@ public sealed class DadAutoPartyService : IDisposable
 
     public DadAutoPartyPolicyDecision AcceptProposal(
         RunProposal proposal,
-        SessionPermission requiredPermissions)
-    {
-        ThrowIfDisposed();
-        return Policy.AcceptProposal(proposal, requiredPermissions);
-    }
+        SessionPermission requiredPermissions) =>
+        Policy.AcceptProposal(proposal, requiredPermissions);
 
-    public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode)
-        => Policy.Reserve(reservation, mode);
+    public DadAutoPartyPolicyDecision AcceptOwnedProposal(
+        RunProposal proposal,
+        IReadOnlyList<ParticipantRequest> ownedParticipants,
+        SessionPermission requiredPermissions) =>
+        Policy.AcceptOwnedProposal(proposal, ownedParticipants, requiredPermissions);
 
-    public DadAutoPartyPolicyDecision VerifyPreflight(PreflightResult preflight)
-        => Policy.VerifyPreflight(preflight);
+    public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode) =>
+        Policy.Reserve(reservation, mode);
 
-    public DadAutoPartyPolicyDecision AcquireLease(SessionLease lease)
-        => Policy.AcquireLease(lease);
+    public DadAutoPartyPolicyDecision VerifyPreflight(PreflightResult preflight) =>
+        Policy.VerifyPreflight(preflight);
 
-    public DadAutoPartyPolicyDecision Revoke(Revocation revocation)
-        => Policy.Revoke(revocation);
+    public DadAutoPartyPolicyDecision AcquireLease(SessionLease lease) =>
+        Policy.AcquireLease(lease);
 
-    public DadAutoPartyAuthorizationDecision EvaluateSchedulerAuthorization(DadRunRequest request)
-        => DadAutoPartySchedulerAuthorizationRules.Evaluate(request, Policy.GetProposalAuthorization);
+    public DadAutoPartyPolicyDecision Revoke(Revocation revocation) =>
+        Policy.Revoke(revocation);
+
+    public DadAutoPartyAuthorizationDecision EvaluateSchedulerAuthorization(DadRunRequest request) =>
+        DadAutoPartySchedulerAuthorizationRules.Evaluate(request, Policy.GetProposalAuthorization);
 
     public async ValueTask<DadAutoPartyStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
@@ -457,24 +541,41 @@ public sealed class DadAutoPartyService : IDisposable
         var now = DateTime.UtcNow;
         var policyState = !configuration.Enabled
             ? DadAutoPartyComponentState.Disabled
-            : string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) ||
-              !configuration.OwnerAcceptanceConfirmed ||
-              string.IsNullOrWhiteSpace(configuration.EnrollmentReceiptId)
-                ? DadAutoPartyComponentState.NotReady
-                : DadAutoPartyComponentState.Ready;
-        var executionState = !configuration.ExecutionEnabled
-            ? DadAutoPartyComponentState.Disabled
-            : policyState == DadAutoPartyComponentState.Ready
+            : configuration.IsRegistrationActive
                 ? DadAutoPartyComponentState.Ready
                 : DadAutoPartyComponentState.NotReady;
         return new(
             new(transportState, transportHealth.SafeCode, transportHealth.ObservedAt.UtcDateTime),
             new(policyState, policyState == DadAutoPartyComponentState.Ready ? "dad-policy-ready" : "dad-policy-not-ready", now),
-            new(executionState, executionState == DadAutoPartyComponentState.Ready ? "dad-execution-ready" : "dad-execution-disabled", now),
+            new(policyState, policyState == DadAutoPartyComponentState.Ready ? "dad-execution-ready" : "dad-execution-not-ready", now),
             configuration.RegisteredIslandId,
             configuration.Listings.Count,
             configuration.Grants.Count,
             Policy.ActiveSessionCount);
+    }
+
+    public async ValueTask<DadAutoPartyPrivacyResult> DeregisterAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        StopAll("dad-deregistered");
+        var reference = configuration.WebhookCredentialReference;
+        if (credentialStore != null && !string.IsNullOrWhiteSpace(reference))
+        {
+            try
+            {
+                await credentialStore.DeleteAsync(reference, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return new(false, false, "dad-deregister-credential-cleanup-retry");
+            }
+        }
+        ClearRegistrationAndTrust();
+        configuration.Enabled = false;
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return new(true, false, "dad-deregistered");
     }
 
     public async ValueTask<DadAutoPartyPrivacyResult> PurgeAsync(
@@ -482,34 +583,27 @@ public sealed class DadAutoPartyService : IDisposable
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        StopAll("dad-privacy-purge");
-        configuration.Enabled = false;
-        configuration.PairingEnabled = false;
-        configuration.ExecutionEnabled = false;
-        pairingChallenges.Clear();
-        configuration.Pairings.Clear();
-        configuration.Grants.Clear();
-        configuration.Listings.Clear();
+        var deregistered = await DeregisterAsync(cancellationToken).ConfigureAwait(false);
+        if (!deregistered.Purged)
+            return deregistered;
         var identityDeleted = false;
         if (deleteEndpointIdentity && !string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference))
-            identityDeleted = await identityStore.DeleteAsync(configuration.EndpointIdentityReference, cancellationToken).ConfigureAwait(false);
-        configuration.EndpointIdentityReference = string.Empty;
-        configuration.RegisteredOwnerId = string.Empty;
-        configuration.RegisteredIslandId = string.Empty;
-        configuration.RegistrationFingerprint = string.Empty;
-        configuration.EndpointAlias = string.Empty;
-        configuration.SigningPublicKey = string.Empty;
-        configuration.EncryptionPublicKey = string.Empty;
-        configuration.EndpointKeyGeneration = 1;
-        configuration.EnrollmentReceiptId = string.Empty;
-        configuration.PilotArtifactSha256 = string.Empty;
-        configuration.OwnerAcceptanceConfirmed = false;
-        configuration.PilotCourierProbeVerified = false;
-        configuration.RemoteBindings.Clear();
-        configuration.PendingPairings.Clear();
-        configuration.OutboundPairingChallenges.Clear();
-        configuration.StateGeneration++;
-        saveConfiguration();
+            identityDeleted = await identityStore.DeleteAsync(
+                configuration.EndpointIdentityReference,
+                cancellationToken).ConfigureAwait(false);
+        if (deleteEndpointIdentity)
+        {
+            configuration.EndpointIdentityReference = string.Empty;
+            configuration.RegisteredOwnerId = string.Empty;
+            configuration.RegisteredIslandId = string.Empty;
+            configuration.RegistrationFingerprint = string.Empty;
+            configuration.EndpointAlias = string.Empty;
+            configuration.SigningPublicKey = string.Empty;
+            configuration.EncryptionPublicKey = string.Empty;
+            configuration.EndpointKeyGeneration = 1;
+            configuration.StateGeneration++;
+            saveConfiguration();
+        }
         return new(true, identityDeleted, "dad-autoparty-purged");
     }
 
@@ -529,17 +623,106 @@ public sealed class DadAutoPartyService : IDisposable
         disposed = true;
     }
 
-    private DadAutoPartyPolicyDecision Decision(bool allowed, string safeCode)
-        => new(allowed, safeCode, Math.Max(1, configuration.StateGeneration));
-
-    private static DadAutoPartyPairing WithConfirmedNow(DadAutoPartyPairing pairing)
+    private void ActivateIfComplete(DadAutoPartyPairing pending)
     {
-        var clone = pairing.Clone();
-        clone.ConfirmedAtUtc = DateTime.UtcNow;
-        clone.RevokedAtUtc = null;
-        return clone;
+        if (!pending.LocalApproved || !pending.PeerApproved ||
+            pending.LocalApprovalRelayAcceptedAtUtc == null)
+            return;
+        pending.ConfirmedAtUtc = DateTime.UtcNow;
+        pending.RevokedAtUtc = null;
+        configuration.Pairings.RemoveAll(item =>
+            string.Equals(item.IslandId, pending.IslandId, StringComparison.Ordinal));
+        configuration.Pairings.Add(pending.Clone());
+        configuration.PendingPairings.Remove(pending);
     }
 
-    private void ThrowIfDisposed()
-        => ObjectDisposedException.ThrowIf(disposed, this);
+    private void ClearRegistrationAndTrust()
+    {
+        configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        configuration.RegistrationId = string.Empty;
+        configuration.RouteId = string.Empty;
+        configuration.CentralBotApplicationId = string.Empty;
+        configuration.HomeGuildScope = string.Empty;
+        configuration.WebhookCredentialReference = string.Empty;
+        configuration.UplinkEpochId = string.Empty;
+        configuration.DownlinkEpochId = string.Empty;
+        configuration.MailboxEpochGeneration = 0;
+        configuration.RelayKeyGeneration = 1;
+        configuration.RelaySigningPublicKey = string.Empty;
+        configuration.RelayAgreementPublicKey = string.Empty;
+        configuration.BootstrapExpiresAtUtc = default;
+        configuration.Pairings.Clear();
+        configuration.PendingPairings.Clear();
+        configuration.Grants.Clear();
+        configuration.Listings.Clear();
+        configuration.RemoteBindings.Clear();
+        configuration.Deauthentications.Clear();
+    }
+
+    private DadAutoPartyPolicyDecision Decision(bool allowed, string safeCode) =>
+        new(allowed, safeCode, Math.Max(1, configuration.StateGeneration));
+
+    private static string HashConfirmationCode(string? confirmationCode)
+    {
+        var normalized = (confirmationCode ?? string.Empty).Trim();
+        if (normalized.Length is < 4 or > 32)
+            return string.Empty;
+        var bytes = Encoding.UTF8.GetBytes(normalized);
+        try
+        {
+            return Convert.ToHexString(SHA256.HashData(bytes));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    private static bool FixedEquals(string expected, string observed)
+    {
+        if (expected.Length != observed.Length || expected.Length == 0)
+            return false;
+        var left = Encoding.ASCII.GetBytes(expected);
+        var right = Encoding.ASCII.GetBytes(observed);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(left, right);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(left);
+            CryptographicOperations.ZeroMemory(right);
+        }
+    }
+
+    internal static bool SamePolicy(DadAutoPartySharePolicy left, DadAutoPartySharePolicy right)
+        => left.Enabled == right.Enabled && left.Mode == right.Mode && left.Revision == right.Revision &&
+           left.CharacterHandles.SequenceEqual(right.CharacterHandles, StringComparer.Ordinal);
+
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(disposed, this);
+}
+
+public static class DadAutoPartyShareRules
+{
+    public static bool Allows(
+        DadAutoPartySharePolicy policy,
+        string opaqueCharacterHandle,
+        bool paired,
+        bool sameHomeGuild)
+    {
+        if (policy is not { Enabled: true, IsValid: true } ||
+            string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizeIdentifier(opaqueCharacterHandle)))
+            return false;
+        return policy.Mode switch
+        {
+            DadAutoPartyCharacterShareMode.SpecificCharacter =>
+                paired && policy.CharacterHandles.Count == 1 &&
+                policy.CharacterHandles.Contains(opaqueCharacterHandle, StringComparer.Ordinal),
+            DadAutoPartyCharacterShareMode.CharacterList =>
+                paired && policy.CharacterHandles.Contains(opaqueCharacterHandle, StringComparer.Ordinal),
+            DadAutoPartyCharacterShareMode.AllCharactersForPeer => paired,
+            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild => sameHomeGuild,
+            _ => false,
+        };
+    }
 }

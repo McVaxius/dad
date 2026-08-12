@@ -132,7 +132,7 @@ public sealed class DadPresenceService
             MachineName = Environment.MachineName,
             ProcessId = Environment.ProcessId,
             Endpoint = endpoint,
-            DiscordApplicationId = autoPartyPresence.ApplicationId,
+            RegisteredIslandId = autoPartyPresence.RegisteredIslandId,
             AutoPartyEndpointFingerprint = autoPartyPresence.EndpointFingerprint,
             AutoPartyPairingHealth = autoPartyPresence.PairingHealth,
             RunId = currentRunId,

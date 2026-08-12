@@ -60,10 +60,9 @@ public sealed class Plugin : IDalamudPlugin
     public DadClaimService ClaimService { get; }
     public DadTransportService TransportService { get; }
     public DadAutoPartyService AutoPartyService { get; }
-    public DadAutoPartyDiscordService AutoPartyDiscordService { get; }
+    public DadAutoPartyEndpointService AutoPartyEndpointService { get; }
+    internal DadAutoPartyParticipantBridge AutoPartyParticipantBridge { get; }
     public DadAlliancePartyFinderService AlliancePartyFinderService { get; }
-    public DadMeasuredPilotService MeasuredPilotService { get; }
-    public DadAutoPartyPilotFixtureService AutoPartyPilotFixtureService { get; }
     public DadAutoPartyFleetMatrixService AutoPartyFleetMatrixService { get; }
     public DadPresetBatchWizardService PresetBatchWizardService { get; }
     public DadCharacterIntelligenceService CharacterIntelligenceService { get; }
@@ -148,6 +147,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRuntimeReadinessTracker localRuntimeReadinessTracker = new();
+    private readonly DadAutoPartyRuntimeBindingStore autoPartyRuntimeBindingStore = new();
+    private readonly DadAutoPartyRelayPump autoPartyRelayPump;
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
     private bool standaloneCrewDisbandActive;
     private string standaloneCrewDisbandSummary = "No standalone disband is active.";
@@ -241,28 +242,51 @@ public sealed class Plugin : IDalamudPlugin
             Log);
         var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(
             Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity"));
-        var autoPartySigning = new DadAutoPartySigningService(Configuration.AutoParty, autoPartyIdentityStore);
+        var autoPartyWebhookStore = new DadAutoPartyDpapiWebhookCredentialStore(
+            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "mailbox"));
+        var autoPartyLegacyTokenStore = new DadAutoPartyDpapiDiscordTokenStore(
+            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "discord"));
         AutoPartyService = new DadAutoPartyService(
             Configuration.AutoParty,
             autoPartyIdentityStore,
             () => Configuration.PluginEnabled,
             Configuration.Save,
-            () => Configuration.PluginEnabled);
-        AutoPartyDiscordService = new DadAutoPartyDiscordService(
+            () => Configuration.PluginEnabled,
+            autoPartyWebhookStore);
+        AutoPartyParticipantBridge = new DadAutoPartyParticipantBridge(
             Configuration.AutoParty,
-            new DadAutoPartyDpapiDiscordTokenStore(
-                Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "discord")),
-            new DadAutoPartyPairingProtocol(),
-            new DadAllianceDiscordProtocol(),
-            autoPartySigning,
-            () => Configuration.RunAsServerDad,
-            () => PresenceService.BuildLiveSafetySnapshot().ActiveCharacterKey,
+            GetCurrentAutoPartyRemoteBindings,
+            () => Configuration.AutoPartyFleet.Rows);
+        AutoPartyEndpointService = new DadAutoPartyEndpointService(
+            Configuration.AutoParty,
+            autoPartyWebhookStore,
+            autoPartyLegacyTokenStore,
+            AutoPartyService.Connector,
             Configuration.Save,
-            safeCode => Log.Warning("[dad] AutoParty Discord transition {SafeCode}.", safeCode));
-        PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyDiscordService.GetLanPresence);
-        AutoPartyPilotFixtureService = new DadAutoPartyPilotFixtureService(
-            Configuration,
-            Configuration.Save);
+            safeCode => Log.Warning("[dad] AutoParty endpoint transition {SafeCode}.", safeCode),
+            identityStore: autoPartyIdentityStore,
+            listingPublicationProvider: utcNow => DadAutoPartyListingPublicationRules.Build(
+                Configuration.AutoParty,
+                Configuration.AutoPartyFleet,
+                Configuration.PlannerGroups,
+                utcNow));
+        autoPartyRelayPump = new DadAutoPartyRelayPump(
+            Configuration.AutoParty,
+            autoPartyIdentityStore,
+            AutoPartyService.Connector,
+            AutoPartyService,
+            AutoPartyParticipantBridge,
+            new DadAutoPartyFilePendingOperationStore(
+                Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "pending")),
+            inboundProposalStore: new DadAutoPartyFileInboundProposalStore(
+                Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "pending")),
+            inboundListingPublicationProvider: utcNow => DadAutoPartyListingPublicationRules.Build(
+                Configuration.AutoParty,
+                Configuration.AutoPartyFleet,
+                Configuration.PlannerGroups,
+                utcNow),
+            diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode));
+        PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyEndpointService.GetLanPresence);
         PresenceService.ConfigureParticipantResolver(workerSessionId =>
             TransportService.CurrentTransport.KnownParticipants
                 .SingleOrDefault(participant => string.Equals(
@@ -277,8 +301,15 @@ public sealed class Plugin : IDalamudPlugin
         KrangleService = new DadKrangleService(Configuration);
         ShareService = new DadShareService(forceKrangle: KrangleService.KrangleName);
         ModuleRegistry = new DadModuleRegistry();
-        PresetProviderService = new DadPresetProviderService(ModuleRegistry, () => RosterCatalogService.GetAccountDirectory());
-        PlannerService = new DadPlannerService(PresetProviderService, ModuleRegistry, Configuration);
+        PresetProviderService = new DadPresetProviderService(
+            ModuleRegistry,
+            () => RosterCatalogService.GetAccountDirectory(),
+            GetCurrentAutoPartyRemoteBindings);
+        PlannerService = new DadPlannerService(
+            PresetProviderService,
+            ModuleRegistry,
+            Configuration,
+            GetCurrentAutoPartyRemoteBindings);
         PartyAssemblyService = new DadPartyAssemblyService();
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
         DutySupportAdsService = new DadDutySupportAdsService(PluginInterface, Log);
@@ -336,11 +367,13 @@ public sealed class Plugin : IDalamudPlugin
             QueueExecutionService,
             WorkerExecutionService,
             PlannerService,
-            Log);
+            Log,
+            GetCurrentAutoPartyRemoteBindings,
+            AutoPartyParticipantBridge);
         AlliancePartyFinderService = new DadAlliancePartyFinderService(
             PresenceService,
             TransportService,
-            AutoPartyDiscordService,
+            AutoPartyEndpointService,
             new DadAlliancePartyFinderNativeGateway(
                 Configuration,
                 Framework,
@@ -360,14 +393,12 @@ public sealed class Plugin : IDalamudPlugin
             () => string.IsNullOrWhiteSpace(Configuration.AutoParty.RegisteredIslandId)
                 ? PresenceService.WorkerSessionId.Value
                 : Configuration.AutoParty.RegisteredIslandId,
-            Log);
-        MeasuredPilotService = new DadMeasuredPilotService(
-            Configuration.AutoParty,
-            autoPartySigning,
-            () => Configuration.RunAsServerDad,
-            Configuration.Save);
-        AutoPartyDiscordService.PairingRevoked += MeasuredPilotService.ObservePairingRevoked;
-        AutoPartyDiscordService.PairingRestored += MeasuredPilotService.ObservePairingRestored;
+            Log,
+            GetCurrentAutoPartyRemoteBindings,
+            () => Configuration.AutoPartyFleet.Rows
+                .Where(static row => row is { Enabled: true, IsRemote: false })
+                .Select(static row => row.Clone())
+                .ToList());
         AutoPartyService.ConfigureExecutionFacade(
             new DadAutoPartyCoordinatorExecutionFacade(
                 AutoPartyService.Execution,
@@ -392,10 +423,7 @@ public sealed class Plugin : IDalamudPlugin
             () => RunCoordinatorService.GetLocalResult(),
             request =>
             {
-                var result = RunCoordinatorService.StartTasks(request);
-                if (result.Status != DadRunStatus.Rejected)
-                    MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Unknown);
-                return result;
+                return RunCoordinatorService.StartTasks(request);
             },
             _ => RunCoordinatorService.CancelActiveRun());
         TransportService.ConfigureRosterHandlers(
@@ -507,10 +535,9 @@ public sealed class Plugin : IDalamudPlugin
         configurationPersistence.ForceFlush();
         // After persistence is forced, close/cancel transport work without synchronously waiting on the framework thread.
         // Its observer continues consuming late completions with Dalamud logging suppressed.
-        AutoPartyDiscordService.PairingRevoked -= MeasuredPilotService.ObservePairingRevoked;
-        AutoPartyDiscordService.PairingRestored -= MeasuredPilotService.ObservePairingRestored;
         AlliancePartyFinderService.Dispose();
-        AutoPartyDiscordService.Dispose();
+        AutoPartyEndpointService.Dispose();
+        _ = autoPartyRelayPump.DisposeAsync();
         AutoPartyService.Dispose();
         TransportService.Dispose();
         RouletteRewardProbeService.Dispose();
@@ -2115,8 +2142,6 @@ public sealed class Plugin : IDalamudPlugin
             return DadIpcJson.Serialize(DadRunResult.Rejected(preview.Request, preview.BlockedReason));
 
         var result = RunCoordinatorService.StartTasks(preview.Request);
-        if (result.Status != DadRunStatus.Rejected)
-            MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Plans);
         return DadIpcJson.Serialize(result);
     }
 
@@ -2268,6 +2293,122 @@ public sealed class Plugin : IDalamudPlugin
         PrintStatus(status.Summary);
         InvalidatePlannerPreviewCache("Crew Formation started");
         return status;
+    }
+
+    internal DadCrewFormationStatus StartAutoPartyFreeformFormation(
+        DadAutoPartyFreeformFormation formation)
+    {
+        ArgumentNullException.ThrowIfNull(formation);
+        if (!autoPartyRuntimeBindingStore.TryStage(formation, out var blocker))
+            return BlockFreeformFormation(formation.Group, blocker);
+
+        var source = DadCrewToolsRules.BuildRuntimeFormationGroup(formation.Group);
+        var pool = BuildPlannerPool();
+        var options = BuildPlannerOptionsForGroup(source, null);
+        var activity = PresetProviderService.BuildPlannerPreview(pool, options, source);
+        var requestPreview = ApplyPlannerRuntimeTruth(
+            PresetProviderService.BuildPlannerRunRequestPreview(
+                pool,
+                options,
+                plannerPreviewOverride: activity,
+                selectedGroup: source,
+                completionFallback: Configuration.CompletionActions),
+            pool,
+            source);
+        var allianceValidation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
+            activity.SelectedCharacters);
+        var expectedPartySize = DadPlannerSlotRules.CountPrimarySlots(source.Slots);
+        var classification = DadCrewToolsRules.Classify(
+            source.ActivityMode,
+            allianceValidation.AllianceACount,
+            allianceValidation.AllianceBCount,
+            allianceValidation.AllianceCCount,
+            expectedPartySize);
+        var selection = new CrewFormationSelection
+        {
+            SourceGroup = source,
+            EffectiveGroup = source,
+            RequestPreview = requestPreview,
+            AlliancePreview = activity,
+            Classification = classification,
+        };
+        blocker = FirstNonEmpty(
+            BuildCrewSelectionBlocker(selection),
+            BuildCrewFormationOperationalBlocker(classification.Mode));
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            autoPartyRuntimeBindingStore.Clear(source.GroupId);
+            return BlockFreeformFormation(source, blocker, classification.Mode);
+        }
+
+        var status = SchedulerService.StartCrewFormation(
+            source,
+            source,
+            requestPreview,
+            activity,
+            classification);
+        if (!status.IsActive)
+            autoPartyRuntimeBindingStore.Clear(source.GroupId);
+        PrintStatus(status.Summary);
+        InvalidatePlannerPreviewCache("AutoParty freeform Crew Formation started");
+        return status;
+    }
+
+    internal string RequestAutoPartyFormationDisband()
+    {
+        var formation = SchedulerService.GetCrewFormationStatus();
+        var stagedGroupId = autoPartyRuntimeBindingStore.StagedGroupId;
+        if (!formation.IsActive ||
+            !DadAutoPartyFreeformRules.IsFreeformGroupId(formation.SourceGroupId) ||
+            !string.Equals(formation.SourceGroupId, formation.EffectiveGroupId, StringComparison.Ordinal) ||
+            !string.Equals(formation.SourceGroupId, stagedGroupId, StringComparison.Ordinal))
+        {
+            const string unavailable = "No exact AutoParty freeform formation is active for guarded disband.";
+            PrintStatus(unavailable);
+            return unavailable;
+        }
+        return RequestCrewToolsDisband();
+    }
+
+    private DadCrewFormationStatus BlockFreeformFormation(
+        DadPlannerGroup group,
+        string blocker,
+        DadCrewFormationMode mode = DadCrewFormationMode.RegularParty)
+    {
+        blocker = FirstNonEmpty(blocker, "AutoParty freeform formation is unavailable.");
+        PrintStatus(blocker);
+        return new DadCrewFormationStatus
+        {
+            SourceGroupId = group.GroupId,
+            SourcePresetName = group.DisplayName,
+            EffectiveGroupId = group.GroupId,
+            EffectivePresetName = group.DisplayName,
+            Mode = mode,
+            Phase = DadCrewFormationPhase.Blocked,
+            Summary = blocker,
+            BlockedReason = blocker,
+            CompletedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+        };
+    }
+
+    private IReadOnlyList<DadAutoPartyRemoteBinding> GetCurrentAutoPartyRemoteBindings()
+        => autoPartyRuntimeBindingStore.Snapshot(Configuration.AutoParty.RemoteBindings);
+
+    private void ReconcileAutoPartyRuntimeBindings()
+    {
+        var stagedGroupId = autoPartyRuntimeBindingStore.StagedGroupId;
+        if (string.IsNullOrWhiteSpace(stagedGroupId))
+            return;
+
+        var formation = SchedulerService.GetCrewFormationStatus();
+        if (formation.IsActive &&
+            string.Equals(formation.SourceGroupId, stagedGroupId, StringComparison.Ordinal))
+            return;
+        if (RunCoordinatorService.IsBusy)
+            return;
+        if (autoPartyRuntimeBindingStore.Clear(stagedGroupId))
+            InvalidatePlannerPreviewCache("AutoParty freeform runtime bindings cleared");
     }
 
     internal string RequestCrewToolsDisband()
@@ -2462,8 +2603,6 @@ public sealed class Plugin : IDalamudPlugin
     private DadRunResult StartCrewRegularParty(DadRunRequest request)
     {
         var result = RunCoordinatorService.StartTasks(request);
-        if (result.Status != DadRunStatus.Rejected)
-            MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Plans);
         PrimeAuthorityCacheFromRun(request, result);
         if (result.Status != DadRunStatus.Rejected)
             InvalidatePlannerPreviewCache("Crew Formation coordinator started");
@@ -3282,7 +3421,6 @@ public sealed class Plugin : IDalamudPlugin
         var startResult = StartDemoRunFromShell("Planner run", requestPreview.Request);
         if (startResult.Status != DadRunStatus.Rejected)
         {
-            MeasuredPilotService.RegisterRun(startResult.RequestId, DadMeasuredPilotOrigin.Plans);
             InvalidatePlannerPreviewCache("planner run started");
         }
 
@@ -3412,8 +3550,6 @@ public sealed class Plugin : IDalamudPlugin
         DadScheduleRepeatBoundary repeatBoundary)
     {
         var result = RunCoordinatorService.StartScheduledTasks(request, repeatBoundary);
-        if (result.Status != DadRunStatus.Rejected)
-            MeasuredPilotService.RegisterRun(result.RequestId, DadMeasuredPilotOrigin.Schedules);
         PrimeAuthorityCacheFromRun(request, result);
         if (result.Status != DadRunStatus.Rejected)
             InvalidatePlannerPreviewCache("scheduled planner started");
@@ -5317,6 +5453,16 @@ public sealed class Plugin : IDalamudPlugin
         RosterCatalogService.LearnRetainedTransportKnowledge(pool);
     }
 
+    private void AttachAutoPartyRelayAfterValidatedBootstrap()
+    {
+        if (AutoPartyEndpointService.RelayStatus.Attached ||
+            !Configuration.AutoParty.HasImportedBootstrap ||
+            (Configuration.AutoParty.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
+             Configuration.AutoParty.BootstrapExpiresAtUtc <= DateTime.UtcNow))
+            return;
+        AutoPartyEndpointService.AttachRelayPump(autoPartyRelayPump, AutoPartyService);
+    }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         RunFrameworkStep("FlushDebouncedUiWrites", () => FlushDebouncedUiWrites(force: false));
@@ -5357,7 +5503,8 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
-        RunFrameworkStep("AutoPartyDiscord", () => AutoPartyDiscordService.Update(Configuration.PluginEnabled));
+        RunFrameworkStep("AutoPartyRelayAttach", AttachAutoPartyRelayAfterValidatedBootstrap);
+        RunFrameworkStep("AutoPartyEndpoint", () => AutoPartyEndpointService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("AlliancePartyFinder", AlliancePartyFinderService.Update);
         RunFrameworkStep("AutoParty", () => AutoPartyService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
@@ -5392,31 +5539,8 @@ public sealed class Plugin : IDalamudPlugin
             }
         });
         RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
+        RunFrameworkStep("AutoPartyRuntimeBindings", ReconcileAutoPartyRuntimeBindings);
         RunFrameworkStep("CrewToolsDisband", UpdateStandaloneCrewDisband);
-        RunFrameworkStep("MeasuredPilot", () =>
-        {
-            var run = RunCoordinatorService.GetLocalResult();
-            var scheduler = SchedulerService.GetQueueSnapshot();
-            var schedulerClear = scheduler.ActiveState.PlannerRequestId.Length == 0 ||
-                                 !string.Equals(scheduler.ActiveState.PlannerRequestId, run.RequestId, StringComparison.Ordinal);
-            var healthyApplications = run.Participants
-                .Where(static participant => participant.AutoPartyPairingHealth == DadAutoPartyPairingHealth.Healthy)
-                .Select(static participant => participant.DiscordApplicationId)
-                .Where(static applicationId => applicationId != 0)
-                .Distinct()
-                .ToList();
-            MeasuredPilotService.ObserveRun(
-                run,
-                !ClaimService.HasClaimsForRun(run.RequestId),
-                schedulerClear,
-                healthyApplications);
-            MeasuredPilotService.ObserveStopAll(
-                TransportService.LatestStopAllStatus,
-                TransportService.CurrentTransport.KnownParticipants.Count(static participant =>
-                    participant.State != DadParticipantState.Stale));
-            MeasuredPilotService.ObserveDiscordHealth(AutoPartyDiscordService.Health);
-            MeasuredPilotService.Update();
-        });
         RunFrameworkStep("CompletionActions", () => DadCompletionActionRunner.Update(Configuration, Log));
         RunFrameworkStep("DutyIpc", () => DutyIpcService.Update());
         RunFrameworkStep("DutyIpcRegister", () => DutyIpcService.EnsureRegistered());

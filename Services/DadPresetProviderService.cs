@@ -301,16 +301,19 @@ public sealed class DadPresetProviderService
 
     private readonly DadModuleRegistry moduleRegistry;
     private readonly Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider;
+    private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
     private IReadOnlyList<DadPlannerDutyOption>? plannerDutyCatalog;
     private IReadOnlyDictionary<uint, DadPlannerDutyOption>? plannerDutyCatalogById;
     private IReadOnlyList<DadPlannerRouletteOption>? plannerRouletteCatalog;
 
     public DadPresetProviderService(
         DadModuleRegistry moduleRegistry,
-        Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider)
+        Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider,
+        Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null)
     {
         this.moduleRegistry = moduleRegistry;
         this.accountDirectoryProvider = accountDirectoryProvider;
+        this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ?? (static () => []);
     }
 
     public IReadOnlyList<string> GetLanPartyPresets()
@@ -548,7 +551,9 @@ public sealed class DadPresetProviderService
                                         ?? string.Empty;
         var slot1Blockers = BuildSlot1LeaderBlockers(leaderSlot, availableCharacters);
         var missingRoleSlots = selectedCharacters
-            .Where(static slot => string.IsNullOrWhiteSpace(slot.CharacterKey))
+            .Where(static slot =>
+                string.IsNullOrWhiteSpace(slot.CharacterKey) &&
+                string.IsNullOrWhiteSpace(slot.SharedIdentityToken))
             .Select(static slot => slot.SlotId)
             .ToList();
         var missingDutySelector = !string.IsNullOrWhiteSpace(dutySelectorBlocker);
@@ -561,7 +566,7 @@ public sealed class DadPresetProviderService
         var staticBlockers = new List<string>();
         var readinessBlockers = new List<string>();
         var runOnlyBlockers = new List<string>();
-        staticBlockers.AddRange(DadSharedPlanRules.BuildBlockers(selectedGroup));
+        staticBlockers.AddRange(BuildSharedIdentityBlockers(selectedGroup));
         var legacyActivityBlocker = DadLegacyActivityRules.GetValidationBlocker(options.ActivityMode);
         if (!string.IsNullOrWhiteSpace(legacyActivityBlocker))
         {
@@ -1439,6 +1444,12 @@ public sealed class DadPresetProviderService
             DadAcquiredCharacter? assignedCharacter = null;
             foreach (var candidateSlot in DadPlannerSlotRules.GetRowsForSlot(normalizedSlots, primarySlot.SlotId))
             {
+                if (TryGetRegisteredIslandIdentityToken(candidateSlot, out _))
+                {
+                    resolvedSlot = candidateSlot;
+                    break;
+                }
+
                 assignedCharacter = SelectGroupSlotAssignment(remaining, candidateSlot);
                 if (assignedCharacter == null)
                     continue;
@@ -1478,6 +1489,25 @@ public sealed class DadPresetProviderService
 
     private static DadPresetCharacterSlot BuildGroupSlot(DadPlannerGroupSlot groupSlot, DadAcquiredCharacter? character, bool isSubstitution)
     {
+        if (TryGetRegisteredIslandIdentityToken(groupSlot, out var sharedIdentityToken))
+        {
+            return new DadPresetCharacterSlot
+            {
+                SlotId = groupSlot.SlotId,
+                AllianceAssignment = groupSlot.AllianceAssignment,
+                RequiredRole = groupSlot.RequiredRole,
+                RequiredJobId = groupSlot.RequiredJobId,
+                AdsLootMode = groupSlot.AdsLootMode,
+                LevelSeekTarget = groupSlot.LevelSeekTarget,
+                AssignmentMode = DadSlotAssignmentMode.SpecificCharacter,
+                SharedIdentityToken = sharedIdentityToken,
+                AllowSubstitution = false,
+                IsSubstitution = isSubstitution,
+                AssignmentSummary = "Registered-island assignment",
+                StatusText = "Registered island",
+            };
+        }
+
         if (character == null)
         {
             var requirement = !groupSlot.RequiredCharacterKey.IsEmpty
@@ -2384,19 +2414,7 @@ public sealed class DadPresetProviderService
             .Select(static character => new DadCharacterKey(character.CharacterKey))
             .Where(static key => !key.IsEmpty)
             .ToList();
-        var selectedRosterCharacters = plannerPreview.SelectedCharacters
-            .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
-            .Select(static slot => new DadRosterCharacterRef
-            {
-                AccountKey = slot.RequiredAccountKey,
-                CharacterKey = new DadCharacterKey(slot.CharacterKey),
-                ContentId = slot.ContentId ?? 0,
-                RequiredJobId = slot.RequiredJobId,
-                AdsLootMode = slot.AdsLootMode,
-            })
-            .Where(static reference => !reference.IsEmpty)
-            .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var selectedRosterCharacters = BuildPlannerRosterCharacters(plannerPreview, selectedGroup);
         List<DadAccountKey> requiredAccountKeys = selectedGroup == null
             ? [..options.IncludedAccountKeys]
             : selectedRosterCharacters
@@ -2408,7 +2426,6 @@ public sealed class DadPresetProviderService
             ? []
             : selectedRosterCharacters
                 .Where(static reference => !reference.IsEmpty)
-                .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         List<DadCharacterKey> groupRequiredCharacterKeys = selectedGroup == null
             ? []
@@ -2466,9 +2483,70 @@ public sealed class DadPresetProviderService
                 RequireExactCharacters = selectedGroup != null || !previewOnly,
             },
             ExecutionConstraintSummary = BuildPlannerExecutionConstraint(options),
-            AutoPartyProposalId = selectedGroup?.AutoPartyProposalId ?? string.Empty,
+            // Proposal ids are created at run admission and never copied from saved planner state.
+            AutoPartyProposalId = string.Empty,
             AutoPartyFormationOnly = selectedGroup?.AutoPartyFormationOnly ?? false,
         };
+    }
+
+    private static List<DadRosterCharacterRef> BuildPlannerRosterCharacters(
+        DadActivityPreset plannerPreview,
+        DadPlannerGroup? selectedGroup)
+    {
+        if (selectedGroup == null)
+        {
+            return plannerPreview.SelectedCharacters
+                .Where(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey))
+                .Select(static slot => new DadRosterCharacterRef
+                {
+                    AccountKey = slot.RequiredAccountKey,
+                    CharacterKey = new DadCharacterKey(slot.CharacterKey),
+                    ContentId = slot.ContentId ?? 0,
+                    RequiredJobId = slot.RequiredJobId,
+                    AdsLootMode = slot.AdsLootMode,
+                })
+                .Where(static reference => !reference.IsEmpty)
+                .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        var normalizedRows = DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots);
+        var primaryRows = DadPlannerSlotRules.GetPrimaryRows(normalizedRows);
+        var roster = new List<DadRosterCharacterRef>(primaryRows.Count);
+        foreach (var primaryRow in primaryRows)
+        {
+            var selectedSlot = plannerPreview.SelectedCharacters.FirstOrDefault(slot =>
+                string.Equals(
+                    DadPlannerSlotRules.NormalizeStrictSlotId(slot.SlotId),
+                    primaryRow.SlotId,
+                    StringComparison.OrdinalIgnoreCase));
+            if (TryGetRegisteredIslandIdentityToken(primaryRow, out var sharedIdentityToken) ||
+                !string.IsNullOrWhiteSpace(selectedSlot?.SharedIdentityToken))
+            {
+                roster.Add(new DadRosterCharacterRef
+                {
+                    RequiredJobId = selectedSlot?.RequiredJobId ?? primaryRow.RequiredJobId,
+                    SharedIdentityToken = string.IsNullOrWhiteSpace(sharedIdentityToken)
+                        ? selectedSlot!.SharedIdentityToken.Trim()
+                        : sharedIdentityToken,
+                });
+                continue;
+            }
+
+            if (selectedSlot == null || string.IsNullOrWhiteSpace(selectedSlot.CharacterKey))
+                continue;
+
+            roster.Add(new DadRosterCharacterRef
+            {
+                AccountKey = selectedSlot.RequiredAccountKey,
+                CharacterKey = new DadCharacterKey(selectedSlot.CharacterKey),
+                ContentId = selectedSlot.ContentId ?? 0,
+                RequiredJobId = selectedSlot.RequiredJobId,
+                AdsLootMode = selectedSlot.AdsLootMode,
+            });
+        }
+
+        return roster;
     }
 
     private static string BuildPlannerExecutionConstraint(DadPresetPlannerOptions options)
@@ -2510,6 +2588,9 @@ public sealed class DadPresetProviderService
 
     private static bool MatchesGroupSlot(DadAcquiredCharacter character, DadPlannerGroupSlot slot)
     {
+        if (TryGetRegisteredIslandIdentityToken(slot, out _))
+            return false;
+
         if (!slot.RequiredCharacterKey.IsEmpty &&
             !string.Equals(character.CharacterKey, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
         {
@@ -2520,6 +2601,14 @@ public sealed class DadPresetProviderService
             return false;
 
         return true;
+    }
+
+    private static bool TryGetRegisteredIslandIdentityToken(
+        DadPlannerGroupSlot slot,
+        out string identityToken)
+    {
+        identityToken = slot.SharedIdentity?.IdentityToken?.Trim() ?? string.Empty;
+        return identityToken.Length > 0;
     }
 
     private static List<string> BuildSlot1LeaderBlockers(
@@ -2574,6 +2663,9 @@ public sealed class DadPresetProviderService
         var result = new WakePolicyValidation();
         foreach (var selectedSlot in selectedSlots)
         {
+            if (!string.IsNullOrWhiteSpace(selectedSlot.SharedIdentityToken))
+                continue;
+
             var wakePolicy = selectedGroup == null
                 ? DadSchedulerWakePolicy.LaunchIfOffline
                 : ResolveSelectedWakePolicy(selectedGroup, selectedSlot);
@@ -2673,12 +2765,24 @@ public sealed class DadPresetProviderService
             blockers.Add($"Planner group '{selectedGroup.DisplayName}' uses account '{duplicateAccount}' in multiple slots; one account can only satisfy one planned slot.");
         }
 
-        foreach (var slot in normalizedSlots.Where(static slot => slot.RequiredAccountKey.IsEmpty))
+        foreach (var slot in normalizedSlots.Where(slot =>
+                     slot.RequiredAccountKey.IsEmpty &&
+                     !TryGetRegisteredIslandIdentityToken(slot, out _)))
             blockers.Add($"Planner group slot '{slot.SlotId}' is missing a required account key.");
 
         foreach (var slot in selectedSlots.Where(static slot => slot.RequiredJobId.HasValue))
         {
             var requiredJobId = slot.RequiredJobId!.Value;
+            if (!string.IsNullOrWhiteSpace(slot.SharedIdentityToken))
+            {
+                if (!DadRosterCharacterMerge.IsCombatJob(requiredJobId))
+                {
+                    blockers.Add(
+                        $"Planner group slot '{slot.SlotId}' requests class/job {requiredJobId}, which is not a supported combat job.");
+                }
+                continue;
+            }
+
             var characterLabel = !string.IsNullOrWhiteSpace(slot.CharacterKey)
                 ? slot.CharacterKey
                 : !slot.RequiredCharacterKey.IsEmpty
@@ -2714,6 +2818,28 @@ public sealed class DadPresetProviderService
         }
 
         return blockers;
+    }
+
+    private List<string> BuildSharedIdentityBlockers(DadPlannerGroup? selectedGroup)
+    {
+        if (selectedGroup == null)
+            return [];
+
+        var bindings = currentRemoteBindingsProvider()
+            .Where(static binding => binding != null)
+            .Select(static binding => binding.Clone().Normalize())
+            .Where(static binding => binding.IsValid)
+            .ToList();
+        var hasInvalidSharedSlot = selectedGroup.Slots.Any(slot =>
+            slot.SharedIdentity != null &&
+            (!TryGetRegisteredIslandIdentityToken(slot, out var token) ||
+             bindings.Count(binding => string.Equals(
+                 binding.OpaqueCharacterId,
+                 token,
+                 StringComparison.Ordinal)) != 1));
+        return hasInvalidSharedSlot || !string.IsNullOrWhiteSpace(selectedGroup.SharedStopTargetIdentityToken)
+            ? DadSharedPlanRules.BuildBlockers(selectedGroup)
+            : [];
     }
 
     private static int GetPlanningPriority(DadAcquiredCharacter character, DadPresetPlannerOptions options)

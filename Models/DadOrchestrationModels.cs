@@ -216,7 +216,9 @@ public sealed class DadOrchestrationIntent
     public List<DadCharacterKey> RequiredCharacterKeys { get; set; } = [];
     public DadRunWaitPolicy WaitPolicy { get; set; } = new();
     public string ExecutionConstraintSummary { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore]
     public string AutoPartyProposalId { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool AutoPartyFormationOnly { get; set; }
 }
 
@@ -237,7 +239,7 @@ public sealed class DadParticipantSnapshot
     public string MachineName { get; set; } = string.Empty;
     public int ProcessId { get; set; }
     public string Endpoint { get; set; } = string.Empty;
-    public ulong DiscordApplicationId { get; set; }
+    public string RegisteredIslandId { get; set; } = string.Empty;
     public string AutoPartyEndpointFingerprint { get; set; } = string.Empty;
     public DadAutoPartyPairingHealth AutoPartyPairingHealth { get; set; }
     public string RunId { get; set; } = string.Empty;
@@ -289,7 +291,7 @@ public sealed class DadParticipantSnapshot
         MachineName = MachineName,
         ProcessId = ProcessId,
         Endpoint = Endpoint,
-        DiscordApplicationId = DiscordApplicationId,
+        RegisteredIslandId = RegisteredIslandId,
         AutoPartyEndpointFingerprint = AutoPartyEndpointFingerprint,
         AutoPartyPairingHealth = AutoPartyPairingHealth,
         RunId = RunId,

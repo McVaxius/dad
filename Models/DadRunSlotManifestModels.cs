@@ -1,5 +1,11 @@
 namespace dad.Models;
 
+internal enum DadRunSlotRouteKind
+{
+    LanWorker = 0,
+    RegisteredIsland = 1,
+}
+
 // Internal execution contract built when a coordinator accepts a multiplayer run or a
 // single-worker run that needs an exact requested-job preparation assignment.
 // It is deliberately not part of the IPC schema; the existing ordered
@@ -30,9 +36,13 @@ internal sealed class DadRunSlotManifest
 internal sealed class DadFrozenRunSlot
 {
     public string SlotId { get; set; } = string.Empty;
+    public DadRunSlotRouteKind RouteKind { get; set; } = DadRunSlotRouteKind.LanWorker;
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
     public ulong ContentId { get; set; }
+    public string OpaqueCharacterId { get; set; } = string.Empty;
+    public string OwnerId { get; set; } = string.Empty;
+    public string IslandId { get; set; } = string.Empty;
     public uint? RequiredJobId { get; set; }
     public DadAdsLootMode? AdsLootMode { get; set; }
     public bool IsLeader { get; set; }
@@ -43,9 +53,13 @@ internal sealed class DadFrozenRunSlot
         => new()
         {
             SlotId = SlotId,
+            RouteKind = RouteKind,
             AccountKey = AccountKey,
             CharacterKey = CharacterKey,
             ContentId = ContentId,
+            OpaqueCharacterId = OpaqueCharacterId,
+            OwnerId = OwnerId,
+            IslandId = IslandId,
             RequiredJobId = RequiredJobId,
             AdsLootMode = AdsLootMode,
             IsLeader = IsLeader,

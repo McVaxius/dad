@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.1.0-preview.2.nupkg'
-$expectedHash = '475964fad1a400125b0a80a3ac4ab28e45150d5390d97e992fcf6dfb8dd09ac5'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.1.nupkg'
+$expectedHash = '643fd347833d33606fbee796c4288007a3050aaeca810fd8c027f33096026e8e'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'
@@ -102,10 +102,11 @@ uploaded or promoted to a release.
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v8 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are session-only and
-  reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON files.
-  Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-4 users
-  migrate to an empty, disabled AutoParty configuration without generating an identity or initializing a network route.
+- Configuration schema v9 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are
+  session-only and reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON
+  files. Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-9
+  migration preserves valid endpoint keys, ordinary Plans/Schedules, Fleet Matrix, LAN, and unrelated DAD behavior while
+  clearing incompatible pre-central AutoParty trust and scheduling retryable DPAPI cleanup of the former bot token.
 - Shared configuration changes are coalesced at the end of the framework update after a 250 ms quiet period, with a
   one-second maximum delay. Storage failures stay outside window drawing, retry on a bounded cadence, and surface a
   memory-only warning with an explicit **Retry save** action; disposal makes one final write attempt.
@@ -117,34 +118,41 @@ uploaded or promoted to a release.
   warnings, and scheduler failure evidence remain visible while requests, participants, leases, executor state, client
   and session IDs, and authority endpoints are removed from saved history.
 
-## AutoParty Discord pairing and measured pilot
+## Central AutoParty bridge
 
-- AutoParty remains disabled by default. Configuration schema 6 preserves historical courier fields but does not attach,
-  poll, or send through the file courier at runtime. Every installation connects its own bot directly from the plugin with
-  pinned `Discord.Net.WebSocket` 3.20.1.
-- In `/dad autoparty`, generate the immutable DAD endpoint identity, enter only that bot's token plus the shared Guild and
-  private `#dad-pairing` Channel IDs, then use **Save & Connect**. The token is masked and stored only through Windows
-  CurrentUser DPAPI; configuration contains an opaque token reference and authenticated Application/Bot User IDs.
-- Invite each bot with zero server-wide permissions. In the private channel grant only View Channel, Send Messages, and
-  Read Message History. Enable Message Content Intent; leave Presence and Server Members intents disabled.
-- `dad.pairing/v1` messages contain bounded signed public endpoint metadata only. They never contain bot tokens, FFXIV
-  identifiers, plans, schedules, requested jobs, Stop, or execution commands. Pairing uses a Coordinator-to-Client star;
-  clients do not need to pair with each other. Presence refreshes about every 60 seconds and is stale after three minutes.
-- Pair and Accept require the operator to review and confirm the peer's complete Ed25519 signing-key fingerprint. The exact
-  Application ID, Bot User ID, DAD identity, endpoint fingerprint, signing key/fingerprint, role, and endpoint-key generation
-  are pinned. Outbound requests are persisted as five-minute, single-use challenges, so a restart cannot turn an unsolicited
-  or replayed `PairAccept` into trust. Schema-v8 migration retains older Discord pairing rows for audit but revokes any row
-  that lacks the new operator-confirmation evidence; re-pairing is explicit.
-- Discord discovery and pairing remain separate from DAD execution. DAD LAN hub protocol 4 carries the authenticated public
-  Application ID, endpoint fingerprint, pairing health, and typed debug alliance-PF coordination, and rejects mixed builds.
-  Optional `dad.alliance-pf/v1` Discord instructions are separately signed, exact-recipient, replay-bounded copies; the authenticated
-  LAN hub remains authoritative. Existing plans, schedules, Stop, claims, leases, queues, and execution stay on the LAN path.
-- The Coordinator exposes **Start measured pilot**, **Stop & Evaluate**, and **Resume pilot**. Evidence persists across reloads,
-  counts unique terminal non-dry-run plan IDs, retains ordinary failures, hard-fails safety violations, and continues recording
-  beyond minimum coverage until evaluation. Profile restoration is `not-applicable` for ordinary LAN plans.
-- DAD continuously writes an atomic Ed25519-signed `dad.pilot-evidence/v1` receipt beneath
-  `<PilotExchangeRoot>\pilot-receipts`, bound to the immutable Coordinator identity and exact `dad.dll` SHA-256. The legacy
-  wizard consumes this receipt; Guild/Channel IDs and tokens never enter the wizard.
+- AutoParty remains explicit local opt-in. One centrally operated service owns the Discord application, commands, Gateway,
+  and webhook provisioning. DAD users create no bot, enter no token, and supply no Application ID. Local, LAN, public IPC,
+  Plan, Schedule, Crew Formation, queue, and teardown behavior continues normally while AutoParty is disabled or unavailable.
+- `/dad autoparty` generates a signed, encrypted registration challenge. Submit it with the central bot's
+  `/autoparty register` command, then import the endpoint-encrypted bootstrap returned by the bot. The bootstrap pins the
+  relay identity and bot-provisioned UPLINK/DOWNLINK webhook mailbox; the route remains fail-closed until DAD and the relay
+  complete the first signed epoch exchange.
+- A background REST adapter performs exact webhook-message fetch/edit, bounded `AP2` fragments, acknowledgements, retry,
+  expiry, and epoch rotation. Network work stays off the Dalamud framework thread; framework updates consume bounded
+  immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC contracts are unchanged.
+- Ordinary pairing may cross allowlisted guilds and activates only after both DAD endpoints approve the same transcript,
+  confirmation code, and fingerprints. Each endpoint independently shares a specific character, a character list, all
+  characters for that peer, or promiscuous-all for active nonblocked islands in the same home guild.
+- Private directory rows carry registered route identity, the effective share mode and policy hash, plus opaque character
+  handles, display labels, permitted jobs/activities, availability, revision, and expiry. Player invite names, Content IDs,
+  and native invite locators appear only in short-lived endpoint-encrypted proposal traffic and remain in memory; they are
+  never saved into Plans, Schedules, Fleet Matrix, logs, or public IPC.
+- A same-guild promiscuous row can be displayed before authorization, but it cannot be selected, bound, or executed until
+  the requester signs an exact policy access request and the relay returns the same short-lived endpoint identity
+  attestation to both DAD islands. Listing ownership and guild membership alone never establish a route.
+- Saved remote slots keep opaque shared-identity tokens. At run admission DAD creates a new runtime-only proposal and sends
+  registered-island participants through reservation, preflight, lease, operation, and receipt barriers while local slots
+  stay on the LAN worker path. Both barriers must be ready before assembly or queueing. Slot 1 remains inviter and queue
+  authority, and existing PartyList proof remains authoritative.
+- **Create party** builds one in-memory formation-only group from selected local characters and current paired/promiscuous
+  listings and submits it through existing Crew Formation. **Disband party** uses the guarded teardown for that exact active
+  AutoParty formation, then settles/restores remote participants. Plans and Schedules use the same proposal/session path and
+  continue through the normal duty lifecycle; no third scheduler or saved crew is created.
+- Local deauthentication immediately vetoes new work, ends affected sessions, removes peer routes, and sends a signed
+  monotonic revocation. Deregistration is a signed receipt-first exchange before local mailbox cleanup. **Owner Stop** remains
+  the immediate local veto, and delayed relay traffic cannot restore trust.
+- P1219 is implemented and verified offline at public DAD version `0.5.0.9`. This work does not claim a Discord smoke test,
+  service operation, publication, or live FFXIV-client verification.
 - `/dad fleet` opens the local Fleet/Crew Matrix. Its exact-schema TSV inventory is capped at 160 rows and protects
   spreadsheet formula prefixes; ordered Crew Sets are capped at 40 parties with eight members each. Reusable blueprints
   generate deterministic ordinary DAD Plans and manual or daily-reset Schedules through a non-mutating preview.

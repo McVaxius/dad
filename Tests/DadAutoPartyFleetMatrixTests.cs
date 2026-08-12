@@ -259,7 +259,7 @@ public sealed class DadAutoPartyFleetMatrixTests
         var wrongJob = Assert.Single(service.BuildPreview(FixtureTime).PlannerGroups);
 
         Assert.True(matched.AutoPartyFormationOnly);
-        Assert.NotEmpty(matched.AutoPartyProposalId);
+        Assert.Empty(matched.AutoPartyProposalId);
         Assert.False(wrongJob.AutoPartyFormationOnly);
         Assert.Equal(string.Empty, wrongJob.AutoPartyProposalId);
     }
@@ -273,7 +273,7 @@ public sealed class DadAutoPartyFleetMatrixTests
         var group = Assert.Single(service.BuildPreview(FixtureTime).PlannerGroups);
 
         Assert.True(group.AutoPartyFormationOnly);
-        Assert.NotEmpty(group.AutoPartyProposalId);
+        Assert.Empty(group.AutoPartyProposalId);
     }
 
     [Theory]
