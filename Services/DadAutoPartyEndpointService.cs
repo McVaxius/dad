@@ -399,6 +399,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             string.IsNullOrWhiteSpace(configuration.RegisteredOwnerId) ||
             string.IsNullOrWhiteSpace(configuration.RegisteredIslandId))
             return Decision(false, "dad-bootstrap-identity-not-ready");
+        if (configuration.RegistrationState != DadAutoPartyRegistrationState.Unregistered)
+            return Decision(false, "dad-bootstrap-replayed");
 
         byte[]? identityMaterial = null;
         byte[]? signingPrivateKey = null;

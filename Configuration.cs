@@ -17,7 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     [NonSerialized]
     private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
 
-    public int Version { get; set; } = 9;
+    public int Version { get; set; } = DadAutoPartyConfigurationMigration.CurrentVersion;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -283,4 +283,64 @@ public sealed class Configuration : IPluginConfiguration
 
     public void Save()
         => persistenceCoordinator?.MarkDirty();
+}
+
+internal static class DadAutoPartyConfigurationMigration
+{
+    internal const int CurrentVersion = 10;
+
+    internal static bool Migrate(
+        Configuration configuration,
+        IDadAutoPartyEndpointIdentityStore identityStore,
+        IDadAutoPartyWebhookCredentialStore webhookStore)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(identityStore);
+        ArgumentNullException.ThrowIfNull(webhookStore);
+
+        if (configuration.Version >= CurrentVersion)
+            return configuration.MigrateTransportSettings();
+
+        var autoParty = configuration.AutoParty;
+        DiscardReferencedFile(
+            autoParty?.EndpointIdentityReference,
+            identityStore.DeleteAsync);
+        DiscardReferencedFile(
+            autoParty?.WebhookCredentialReference,
+            webhookStore.DeleteAsync);
+
+        configuration.AutoParty = new DadAutoPartyConfiguration();
+        configuration.MigrateTransportSettings();
+        configuration.AutoParty = new DadAutoPartyConfiguration();
+        configuration.Version = CurrentVersion;
+        return true;
+    }
+
+    private static void DiscardReferencedFile(
+        string? reference,
+        Func<string, CancellationToken, ValueTask<bool>> deleteAsync)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+            return;
+
+        try
+        {
+            _ = deleteAsync(reference, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        catch (ArgumentException)
+        {
+            // Malformed references are untrusted configuration data, not filesystem targets.
+        }
+        catch (IOException)
+        {
+            throw ResetFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw ResetFailure();
+        }
+    }
+
+    private static InvalidOperationException ResetFailure()
+        => new("AutoParty schema-10 protected-state reset could not complete.");
 }

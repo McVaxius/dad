@@ -96,7 +96,7 @@ public sealed class DadAutoPartyIdentityPackageService
                         ImmutableArray.CreateRange(encryptionPublic)),
                     configuration.RegistrationFingerprint,
                     now + ChallengeLifetime);
-                canonical = CanonicalCborCodec.EncodeUnsigned(challenge);
+                canonical = RegistrationCborCodec.EncodeUnsignedChallenge(challenge);
                 signature = await signing.SignAsync(canonical, cancellationToken).ConfigureAwait(false);
                 var encoded = RegistrationCopyPasteCodec.EncodeChallenge(
                     AuthenticatedContract<RegistrationChallenge>.Create(challenge, signature));

@@ -91,8 +91,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
             static () => { },
             identityStore: identityStore);
 
+        var bootstrapToken = crypto.CreateBootstrapCopyPaste(registrationId);
         var imported = await endpoint.ImportBootstrapCopyPasteAsync(
-            crypto.CreateBootstrapCopyPaste(registrationId));
+            RegistrationCopyPasteCodec.FormatBootstrapResponse(bootstrapToken));
 
         Assert.True(imported.Allowed, imported.SafeCode);
         Assert.Equal(DadAutoPartyRegistrationState.BootstrapImported, configuration.RegistrationState);
@@ -115,6 +116,92 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         Assert.True(activated.Allowed, activated.SafeCode);
         Assert.True(configuration.IsRegistrationActive);
+
+        var replayed = await endpoint.ImportBootstrapCopyPasteAsync(bootstrapToken);
+        Assert.False(replayed.Allowed);
+        Assert.Equal("dad-bootstrap-replayed", replayed.SafeCode);
+    }
+
+    [Fact]
+    public async Task BootstrapCopyPasteRejectsTamperedTruncatedExpiredWrongRecipientLegacyAndAmbiguousInput()
+    {
+        using var crypto = new CryptoFixture();
+        using var identityStore = new MemoryIdentityStore();
+        var registrationId = Guid.NewGuid();
+        var identityMaterial = JsonSerializer.SerializeToUtf8Bytes(new DadAutoPartyPrivateIdentityPackage(
+            crypto.OwnerId.Value,
+            crypto.IslandId.Value,
+            crypto.EndpointKeyVersion,
+            Convert.ToBase64String(crypto.EndpointSigningPrivateKey),
+            Convert.ToBase64String(crypto.EndpointAgreementPrivateKey)));
+        var identityReference = await identityStore.StoreAsync(identityMaterial);
+        CryptographicOperations.ZeroMemory(identityMaterial);
+        var configuration = new DadAutoPartyConfiguration
+        {
+            RegistrationState = DadAutoPartyRegistrationState.Unregistered,
+            RegistrationId = registrationId.ToString("D"),
+            EndpointIdentityReference = identityReference,
+            RegisteredOwnerId = crypto.OwnerId.Value,
+            RegisteredIslandId = crypto.IslandId.Value,
+            RegistrationFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                crypto.OwnerId.Value,
+                crypto.IslandId.Value,
+                crypto.EndpointKeyVersion,
+                crypto.EndpointSigningPublicKey,
+                crypto.EndpointAgreementPublicKey),
+            EndpointAlias = "local",
+            SigningPublicKey = Convert.ToBase64String(crypto.EndpointSigningPublicKey),
+            EncryptionPublicKey = Convert.ToBase64String(crypto.EndpointAgreementPublicKey),
+            EndpointKeyGeneration = crypto.EndpointKeyVersion,
+        }.Normalize();
+        var webhookStore = new MemoryWebhookStore();
+        await using var connector = new DadDiscordCourierConnector(configuration, static () => true);
+        using var endpoint = new DadAutoPartyEndpointService(
+            configuration,
+            webhookStore,
+            new MemoryLegacyTokenStore(),
+            connector,
+            static () => { },
+            identityStore: identityStore);
+        var token = crypto.CreateBootstrapCopyPaste(registrationId);
+        var envelope = RegistrationCopyPasteCodec.DecodeBootstrap(token);
+        var legacy = Convert.ToBase64String(SealedContractCodec.Encode(envelope))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var wrongRecipient = crypto.CreateBootstrapCopyPaste(
+            registrationId,
+            recipient: new IslandId("island-wrong-recipient"));
+        var expiredIssuedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var expired = crypto.CreateBootstrapCopyPaste(
+            registrationId,
+            issuedAt: expiredIssuedAt,
+            expiresAt: expiredIssuedAt.AddMinutes(5));
+        var tampered = token[..^1] + (token[^1] == 'A' ? "B" : "A");
+        var inputs = new[]
+        {
+            tampered,
+            token[..^1],
+            expired,
+            wrongRecipient,
+            crypto.CreateBootstrapCopyPaste(Guid.NewGuid()),
+            legacy,
+            "APB1.not-base64!",
+            RegistrationCopyPasteCodec.FormatBootstrapResponse(token) + "\n" + token,
+            token + "\n" + token,
+        };
+
+        foreach (var input in inputs)
+        {
+            var rejected = await endpoint.ImportBootstrapCopyPasteAsync(input);
+            Assert.False(rejected.Allowed);
+            Assert.Contains(
+                rejected.SafeCode,
+                new[] { "dad-bootstrap-open-rejected", "dad-bootstrap-invalid" });
+            Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.RegistrationState);
+            Assert.Null(webhookStore.StoredCredential);
+        }
+
+        var accepted = await endpoint.ImportBootstrapCopyPasteAsync(token);
+        Assert.True(accepted.Allowed, accepted.SafeCode);
     }
 
     [Fact]
@@ -789,13 +876,20 @@ public sealed class DadAutoPartyWebhookEndpointTests
             return (envelope, CourierTextCodec.EncodePage(authenticator.Sign(page)));
         }
 
-        public string CreateBootstrapCopyPaste(Guid registrationId)
+        public string CreateBootstrapCopyPaste(
+            Guid registrationId,
+            IslandId? recipient = null,
+            DateTimeOffset? issuedAt = null,
+            DateTimeOffset? expiresAt = null)
         {
-            var expiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+            var observedAt = issuedAt ?? DateTimeOffset.UtcNow;
+            var bootstrapExpiresAt = expiresAt ?? observedAt.AddMinutes(5);
             var header = CreateHeader(
                 $"bootstrap-{registrationId:N}",
                 1,
-                expiresAt);
+                bootstrapExpiresAt,
+                recipient,
+                observedAt);
             var bootstrap = new RegistrationBootstrap(
                 header,
                 registrationId,
@@ -811,10 +905,12 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 UplinkEpoch,
                 DownlinkEpoch,
                 RelayPublicKeys,
-                expiresAt);
-            var authenticator = new ProductionContractAuthenticator(keyResolver);
+                bootstrapExpiresAt);
             return RegistrationCopyPasteCodec.EncodeBootstrap(
-                authenticator.Seal(authenticator.Sign(bootstrap)));
+                InitialRegistrationBootstrapSealer.Seal(
+                    bootstrap,
+                    RelaySigningPrivateKey,
+                    EndpointAgreementPublicKey));
         }
 
         private CourierEpochDescriptor CreateEpoch(
@@ -836,7 +932,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
         private ContractHeader CreateHeader(
             string idempotencyKey,
             long generation,
-            DateTimeOffset expiresAt)
+            DateTimeOffset expiresAt,
+            IslandId? recipient = null,
+            DateTimeOffset? issuedAt = null)
         {
             var nonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
             try
@@ -846,8 +944,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
                     Guid.NewGuid(),
                     idempotencyKey,
                     new IslandId(DadAutoPartyIdentityPackageService.RegistrationRecipient),
-                    IslandId,
-                    DateTimeOffset.UtcNow,
+                    recipient ?? IslandId,
+                    issuedAt ?? DateTimeOffset.UtcNow,
                     expiresAt,
                     Math.Max(1, generation),
                     Math.Max(1, generation),

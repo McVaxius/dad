@@ -29,10 +29,13 @@ public sealed class DadAllianceSchemaPropagationTests
             """;
         var configuration = JsonConvert.DeserializeObject<Configuration>(legacyJson)!;
 
-        var changed = configuration.MigrateTransportSettings();
+        var changed = DadAutoPartyConfigurationMigration.Migrate(
+            configuration,
+            new MissingAutoPartyIdentityStore(),
+            new MissingAutoPartyWebhookStore());
 
         Assert.True(changed);
-        Assert.Equal(9, configuration.Version);
+        Assert.Equal(10, configuration.Version);
         var slots = Assert.Single(configuration.PlannerGroups).Slots;
         Assert.All(slots, static slot => Assert.Equal(DadAllianceAssignment.None, slot.AllianceAssignment));
         Assert.False(DadAlliancePartyFinderRules.ValidateSavedRows(slots).IsValid);

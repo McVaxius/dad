@@ -32,10 +32,12 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             () => now);
         configuration!.AttachPersistenceCoordinator(persistence);
 
-        if (configuration.MigrateTransportSettings())
+        var identityStore = new MissingAutoPartyIdentityStore();
+        var webhookStore = new MissingAutoPartyWebhookStore();
+        if (DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore))
             configuration.Save();
 
-        Assert.Equal(9, configuration.Version);
+        Assert.Equal(10, configuration.Version);
         Assert.False(configuration.AutoParty.Enabled);
         Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.AutoParty.RegistrationState);
         Assert.Equal(string.Empty, configuration.AutoParty.EndpointIdentityReference);
@@ -51,7 +53,7 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         Assert.True(persistence.Update());
         Assert.Equal(1, saveCount);
         Assert.DoesNotContain("ProfileCatalogCache", JsonSerializer.Serialize(configuration), StringComparison.Ordinal);
-        Assert.False(configuration.MigrateTransportSettings());
+        Assert.False(DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore));
         Assert.False(persistence.Update());
         Assert.Equal(1, saveCount);
     }

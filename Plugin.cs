@@ -175,13 +175,21 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
-        backgroundTasks = new DadBackgroundTaskObserver(Log, "plugin");
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(
+            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity"));
+        var autoPartyWebhookStore = new DadAutoPartyDpapiWebhookCredentialStore(
+            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "mailbox"));
+        var configurationChanged = DadAutoPartyConfigurationMigration.Migrate(
+            Configuration,
+            autoPartyIdentityStore,
+            autoPartyWebhookStore);
+        backgroundTasks = new DadBackgroundTaskObserver(Log, "plugin");
         configurationPersistence = new DadConfigurationPersistenceCoordinator(
             () => PluginInterface.SavePluginConfig(Configuration),
             onFailure: OnConfigurationPersistenceFailure);
         Configuration.AttachPersistenceCoordinator(configurationPersistence);
-        if (Configuration.MigrateTransportSettings())
+        if (configurationChanged)
             Configuration.Save();
         var historyChanged = Configuration.RunHistory == null;
         Configuration.RunHistory ??= [];
@@ -242,10 +250,6 @@ public sealed class Plugin : IDalamudPlugin
             WakeTakeoverService,
             RouletteRewardProbeService,
             Log);
-        var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(
-            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity"));
-        var autoPartyWebhookStore = new DadAutoPartyDpapiWebhookCredentialStore(
-            Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "mailbox"));
         var autoPartyLegacyTokenStore = new DadAutoPartyDpapiDiscordTokenStore(
             Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "discord"));
         AutoPartyService = new DadAutoPartyService(

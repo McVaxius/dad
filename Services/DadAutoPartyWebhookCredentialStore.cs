@@ -117,10 +117,16 @@ public sealed partial class DadAutoPartyDpapiWebhookCredentialStore : IDadAutoPa
     {
         cancellationToken.ThrowIfCancellationRequested();
         var path = ResolvePath(credentialReference);
-        if (!File.Exists(path))
+        var existed = File.Exists(path);
+        try
+        {
+            File.Delete(path);
+        }
+        catch (DirectoryNotFoundException)
+        {
             return ValueTask.FromResult(false);
-        File.Delete(path);
-        return ValueTask.FromResult(true);
+        }
+        return ValueTask.FromResult(existed);
     }
 
     private string ResolvePath(string credentialReference)

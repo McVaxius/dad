@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.1.nupkg'
-$expectedHash = '643fd347833d33606fbee796c4288007a3050aaeca810fd8c027f33096026e8e'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.2.nupkg'
+$expectedHash = 'afc4c7fd1f40bc8dd1c4dc252ae8c03c8d9201a6af3e24bcd6e4e2b037452b5a'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'
@@ -123,10 +123,12 @@ uploaded or promoted to a release.
 - AutoParty remains explicit local opt-in. One centrally operated service owns the Discord application, commands, Gateway,
   and webhook provisioning. DAD users create no bot, enter no token, and supply no Application ID. Local, LAN, public IPC,
   Plan, Schedule, Crew Formation, queue, and teardown behavior continues normally while AutoParty is disabled or unavailable.
-- `/dad autoparty` generates a signed, encrypted registration challenge. Submit it with the central bot's
-  `/autoparty register` command, then import the endpoint-encrypted bootstrap returned by the bot. The bootstrap pins the
-  relay identity and bot-provisioned UPLINK/DOWNLINK webhook mailbox; the route remains fail-closed until DAD and the relay
-  complete the first signed epoch exchange.
+- `/dad autoparty` generates a signed `APR1` registration challenge. Submit the complete token with the central bot's
+  `/autoparty register` command, then paste either the raw endpoint-encrypted `APB1` bootstrap or the bot's exact complete
+  `registration-bootstrap-ready` code-block response into DAD. The one private Discord response has no attachment. The
+  bootstrap pins the relay identity and bot-provisioned UPLINK/DOWNLINK webhook mailbox; the route remains fail-closed
+  until DAD and the relay complete the first signed epoch exchange. Extra prose, partial or multiple tokens, legacy
+  registration packages, replay, expiry, tamper, and wrong-recipient input are rejected.
 - A background REST adapter performs exact webhook-message fetch/edit, bounded `AP2` fragments, acknowledgements, retry,
   expiry, and epoch rotation. Network work stays off the Dalamud framework thread; framework updates consume bounded
   immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC contracts are unchanged.

@@ -30,7 +30,7 @@
     <None Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.1]" />
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.2]" />
     <PackageReference Include="ECommons" Version="[3.2.1.15]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
   </ItemGroup>
@@ -52,6 +52,7 @@
       <PluginRuntimeFiles Include="$(TargetDir)AutoParty.Contracts.dll" Condition="Exists('$(TargetDir)AutoParty.Contracts.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)AutoParty.Core.dll" Condition="Exists('$(TargetDir)AutoParty.Core.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)ECommons.dll" Condition="Exists('$(TargetDir)ECommons.dll')" />
+      <PluginRuntimeFiles Include="$(TargetDir)System.Formats.Cbor.dll" Condition="Exists('$(TargetDir)System.Formats.Cbor.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)System.Interactive.Async.dll" Condition="Exists('$(TargetDir)System.Interactive.Async.dll')" />
     </ItemGroup>
 

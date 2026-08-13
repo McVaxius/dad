@@ -1,5 +1,36 @@
 # dad — changelog
 
+## 2026-08-13 — compact one-message AutoParty registration (local-only, unpublished)
+- Updated the exact local protocol consumer to `Dad.AutoParty.Protocol 0.2.0-preview.2` with its checked package SHA-256,
+  both locked content hashes, and explicit `System.Formats.Cbor.dll` ownership in packaged and developer runtime copies.
+- DAD now emits signed `APR1` challenges and imports either a raw endpoint-encrypted `APB1` bootstrap or the exact complete
+  `registration-bootstrap-ready` Discord code-block response. Extra prose, partial or multiple tokens, legacy packages,
+  malformed data, tamper, expiry, replay, and wrong recipients fail closed.
+- Kept schema 10 and Pascal-case private identity JSON unchanged. Registration cryptography, key sizes, expiry/recipient
+  binding, replay protection, and the `AP2` mailbox protocol remain unchanged; credential-bearing plaintext is not
+  compressed.
+- Focused schema/identity/bootstrap/package-workflow Debug tests pass, the DAD AutoParty aggregate passes 144/144, and the
+  complete Debug suite passes 1720/1722; only the two known installed Dalamud/ClientStructs identity pins fail. The x64
+  Debug no-deploy build succeeds with zero errors and three unchanged nullable warnings. Version `0.5.0.9`, Discord,
+  services, clients, Release artifacts, publication, commit, and push remain unchanged.
+
+## 2026-08-13 — AutoParty schema-10 development-state reset (local-only, unpublished)
+- Bumped new DAD configurations to schema 10. Loading schema 9 or earlier now removes the two protected AutoParty files
+  referenced by the prior endpoint and mailbox settings before any AutoParty service is initialized, then replaces the
+  complete AutoParty configuration with disabled, unregistered defaults. Plans, schedules, account pointers, ordinary DAD
+  settings, and AutoParty Fleet data remain intact.
+- Missing and malformed references are accepted as already discarded. A valid referenced file that Windows refuses to
+  remove aborts plugin startup before the version can be saved, so the next load retries; no protected file is backed up.
+- Kept current Pascal-case private identity JSON and signed registration-challenge behavior unchanged. Legacy camel-case
+  private identity JSON remains invalid. No compatibility codec, reset UI, protocol change, public API change, or README
+  workflow change was added.
+- Fresh local validation: both locked restores passed from the checked-in package through an isolated cache, and all 12
+  focused schema/identity tests passed. The AutoParty aggregate passed 142/143 and the known webhook timing test passed on
+  isolated rerun. The complete Debug suite passed 1,718/1,721; apart from the same timing test, its two failures were the
+  unrelated installed Dalamud and ClientStructs pin checks. The final Debug x64 build with an empty development-copy
+  destination succeeded with zero warnings and zero errors.
+- Version `0.5.0.9`, Release artifacts, packaging, publication, Discord, `W:\`, and live clients are unchanged.
+
 ## 2026-08-12 — P1219 central AutoParty production runtime completion (local-only, unpublished)
 - Replaced synthetic production execution authority with the existing DAD runtime. Authenticated inbound admission now owns
   exact worker wake, readiness, dependency, claim, and lease barriers; Form requires authoritative PartyList membership;

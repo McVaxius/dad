@@ -16,11 +16,11 @@ public sealed class DadBuildReleaseWorkflowContractTests
         Assert.True(test > restore);
         Assert.True(upload > test);
         Assert.Contains(
-            "Dad.AutoParty.Protocol.0.2.0-preview.1.nupkg",
+            "Dad.AutoParty.Protocol.0.2.0-preview.2.nupkg",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "643fd347833d33606fbee796c4288007a3050aaeca810fd8c027f33096026e8e",
+            "afc4c7fd1f40bc8dd1c4dc252ae8c03c8d9201a6af3e24bcd6e4e2b037452b5a",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -33,7 +33,7 @@ public sealed class DadBuildReleaseWorkflowContractTests
             StringComparison.Ordinal);
         var testLock = ReadRepositorySource("Tests", "packages.lock.json");
         Assert.Contains(
-            "3PO2b/sHLQD4fnPi+OZkX+XscmqsEbL1Y+R/EgXwaH5eraX5cdJbZwWtHyXohkbFLWB9UdQvny3oiUJV6pDsWw==",
+            "JuFA0EiRfZXGWUmpRtSataENN5BGV7V2pIuCHKvSD8fpmvdo0lbqrfK+tT5XRG+Mi0zI0FnwdHlA7z6C/+ZMkQ==",
             testLock,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -43,6 +43,12 @@ public sealed class DadBuildReleaseWorkflowContractTests
         Assert.Contains("-p:DadDevPluginOutput=", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("continue-on-error", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("dotnet nuget add source", workflow, StringComparison.Ordinal);
+
+        var project = ReadRepositorySource("dad.csproj");
+        Assert.Contains(
+            "<PluginRuntimeFiles Include=\"$(TargetDir)System.Formats.Cbor.dll\"",
+            project,
+            StringComparison.Ordinal);
     }
 
     private static string ReadRepositorySource(params string[] pathParts)
