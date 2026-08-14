@@ -882,4 +882,5 @@ public sealed record DadAutoPartyEndpointSnapshot(
 
 public sealed record DadAutoPartyDirectorySnapshot(
     long StateGeneration,
-    IReadOnlyList<DadAutoPartyListing> Listings);
+    IReadOnlyList<DadAutoPartyListing> Listings,
+    IReadOnlySet<string> OnlineIslandIds);

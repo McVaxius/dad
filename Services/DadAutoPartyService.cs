@@ -7,12 +7,14 @@ namespace dad.Services;
 
 public sealed class DadAutoPartyService : IDisposable
 {
+    private readonly object directoryPresenceGate = new();
     private readonly DadAutoPartyConfiguration configuration;
     private readonly IDadAutoPartyEndpointIdentityStore identityStore;
     private readonly IDadAutoPartyWebhookCredentialStore? credentialStore;
     private readonly Action saveConfiguration;
     private Action<string>? ownerStop;
     private DateTime nextMaintenanceUtc = DateTime.MinValue;
+    private readonly HashSet<string> onlineDirectoryIslands = new(StringComparer.Ordinal);
     private bool disposed;
 
     public DadAutoPartyService(
@@ -359,6 +361,8 @@ public sealed class DadAutoPartyService : IDisposable
             string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
         configuration.Listings.RemoveAll(item =>
             string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal));
+        lock (directoryPresenceGate)
+            onlineDirectoryIslands.Remove(islandId);
         configuration.RemoteBindings.RemoveAll(item =>
             string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
         configuration.Grants.RemoveAll(item =>
@@ -432,18 +436,50 @@ public sealed class DadAutoPartyService : IDisposable
         return Decision(true, "dad-listings-applied");
     }
 
+    internal void ApplyDirectoryPresence(string sharingIslandId, bool online)
+    {
+        ThrowIfDisposed();
+        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(sharingIslandId);
+        if (string.IsNullOrWhiteSpace(islandId) ||
+            string.Equals(islandId, configuration.RegisteredIslandId, StringComparison.Ordinal))
+            return;
+
+        lock (directoryPresenceGate)
+        {
+            if (online)
+                onlineDirectoryIslands.Add(islandId);
+            else
+                onlineDirectoryIslands.Remove(islandId);
+        }
+
+        if (online || configuration.Listings.RemoveAll(item =>
+                string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal)) == 0)
+            return;
+        configuration.StateGeneration++;
+        saveConfiguration();
+    }
+
     public DadAutoPartyDirectorySnapshot GetDirectorySnapshot()
     {
         ThrowIfDisposed();
         var now = DateTime.UtcNow;
+        HashSet<string> onlineIslands;
+        lock (directoryPresenceGate)
+            onlineIslands = new HashSet<string>(onlineDirectoryIslands, StringComparer.Ordinal);
         return new(
             configuration.StateGeneration,
             configuration.Listings
-                .Where(item => item.Available && item.ExpiresAtUtc > now)
+                .Where(item => item.Available && item.ExpiresAtUtc > now &&
+                               (string.Equals(
+                                    item.SharingIslandId,
+                                    configuration.RegisteredIslandId,
+                                    StringComparison.Ordinal) ||
+                                onlineIslands.Contains(item.SharingIslandId)))
                 .Select(static item => item.Clone())
                 .OrderBy(static item => item.DisplayLabel, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(static item => item.OpaqueCharacterId, StringComparer.Ordinal)
-                .ToList());
+                .ToList(),
+            onlineIslands);
     }
 
     public void Update(bool dadPluginEnabled)
@@ -672,6 +708,8 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.Listings.Clear();
         configuration.RemoteBindings.Clear();
         configuration.Deauthentications.Clear();
+        lock (directoryPresenceGate)
+            onlineDirectoryIslands.Clear();
     }
 
     private DadAutoPartyPolicyDecision Decision(bool allowed, string safeCode) =>

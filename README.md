@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.2.nupkg'
-$expectedHash = 'afc4c7fd1f40bc8dd1c4dc252ae8c03c8d9201a6af3e24bcd6e4e2b037452b5a'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.3.nupkg'
+$expectedHash = '398dc012459d67507cdc652ae27ed290f4495722c09ed9814dea0841097b8510'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'
@@ -133,8 +133,11 @@ uploaded or promoted to a release.
   the window keeps pairing and directory requests disabled while relay acknowledgement is pending. Extra prose, partial
   or multiple tokens, legacy registration packages, replay, expiry, tamper, and wrong-recipient input are rejected.
 - A background REST adapter performs exact webhook-message fetch/edit, bounded `AP2` fragments, acknowledgements, retry,
-  expiry, and epoch rotation. Network work stays off the Dalamud framework thread; framework updates consume bounded
-  immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC contracts are unchanged.
+  expiry, epoch rotation, and signed presence. It polls distinct UPLINK and DOWNLINK slots every 10 seconds, consumes
+  UPLINK acknowledgements before publishing, writes acknowledgements back to the slot matching their direction, and sends
+  presence immediately at startup and every idle 10-second cycle. Network work stays off the Dalamud framework thread;
+  framework updates consume bounded immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC
+  contracts are unchanged.
 - The Discord transport channel is private machine infrastructure and explicitly denies `View Channel` to `@everyone`;
   the central service validates bot access before provisioning and never changes permissions. DAD neither reads nor
   depends on channel visibility. Its AutoParty window reports registration/connection state, last mailbox exchange,
@@ -142,8 +145,11 @@ uploaded or promoted to a release.
   notifications or an audit trail.
 - Each DAD displays a copyable island ID and accepts another island ID for direct bilateral pairing. Pairing may cross
   allowlisted guilds and activates only after both endpoints approve the same transcript, confirmation code, and
-  fingerprints. Each endpoint independently shares one checked local character, selected checked characters, or all
-  characters for that peer.
+  fingerprints. Registration and active pairing survive ordinary DAD and central-service restarts. Current reachability
+  does not: each DAD starts offline until the central service accepts genuinely new authenticated activity, and more than
+  60 seconds without accepted activity means offline. Active paired islands remain visible as online or offline; an
+  offline island exposes no cached usable listings or route choices. Each endpoint independently shares one checked local
+  character, selected checked characters, or all characters for that peer.
 - Private directory rows carry registered route identity, the effective share mode and policy hash, plus opaque character
   handles, display labels, permitted jobs/activities, availability, revision, and expiry. Player invite names, Content IDs,
   and native invite locators appear only in short-lived endpoint-encrypted proposal traffic and remain in memory; they are

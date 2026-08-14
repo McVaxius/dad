@@ -450,6 +450,7 @@ public sealed class DadAutoPartyRelayPumpTests
                 "guild-home",
                 CharacterShareMode.CharacterList,
                 policyHash,
+                true,
                 ImmutableArray.Create(new PrivateCharacterListing(
                     new OpaqueCharacterId("opaque-one"),
                     "Peer character",
@@ -536,6 +537,79 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Empty(pump.GetTransientRoutes());
         Assert.False(listing.HasCurrentTransientRoute);
         Assert.False(pump.IsListingRouteCurrent(listing));
+    }
+
+    [Fact]
+    public async Task OfflinePairedDirectoryEntryClearsListingsAndPresenceResetsOnRestart()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        Assert.True((await pump.RequestDirectoryAsync(string.Empty, false)).Allowed);
+        await pump.ProcessOnceAsync();
+        var firstQuery = fixture.Open<DirectoryQuery>(fixture.Transport.Sent.Last(item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
+        var listingExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(BuildDirectoryPage(firstQuery.QueryId, true, listingExpiresAt)));
+
+        await pump.ProcessOnceAsync();
+
+        var online = fixture.Service.GetDirectorySnapshot();
+        Assert.Contains(PumpFixture.PeerIsland, online.OnlineIslandIds);
+        Assert.Single(online.Listings);
+        using (var restarted = new DadAutoPartyService(
+                   fixture.Configuration,
+                   fixture.IdentityStore,
+                   static () => true,
+                   static () => { }))
+        {
+            Assert.True(fixture.Configuration.IsRegistrationActive);
+            Assert.True(Assert.Single(fixture.Configuration.Pairings).IsActive);
+            Assert.DoesNotContain(PumpFixture.PeerIsland, restarted.GetDirectorySnapshot().OnlineIslandIds);
+            Assert.Empty(restarted.GetDirectorySnapshot().Listings);
+        }
+
+        Assert.True((await pump.RequestDirectoryAsync(string.Empty, false)).Allowed);
+        await pump.ProcessOnceAsync();
+        var secondQuery = fixture.Open<DirectoryQuery>(fixture.Transport.Sent.Last(item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(BuildDirectoryPage(secondQuery.QueryId, false, listingExpiresAt)));
+
+        await pump.ProcessOnceAsync();
+
+        var offline = fixture.Service.GetDirectorySnapshot();
+        Assert.DoesNotContain(PumpFixture.PeerIsland, offline.OnlineIslandIds);
+        Assert.Empty(offline.Listings);
+        Assert.DoesNotContain(fixture.Configuration.Listings, item =>
+            item.SharingIslandId == PumpFixture.PeerIsland);
+        Assert.True(Assert.Single(fixture.Configuration.Pairings).IsActive);
+
+        DirectoryPage BuildDirectoryPage(Guid queryId, bool online, DateTimeOffset expiresAt) => new(
+            fixture.RelayHeader($"directory-peer-{online}"),
+            queryId,
+            1,
+            false,
+            string.Empty,
+            ImmutableArray.Create(new PrivateDirectoryEntry(
+                new OwnerId(PumpFixture.PeerOwner),
+                new IslandId(PumpFixture.PeerIsland),
+                "peer-endpoint",
+                "guild-home",
+                CharacterShareMode.AllCharactersForPeer,
+                "paired-policy-hash",
+                online,
+                online
+                    ? ImmutableArray.Create(new PrivateCharacterListing(
+                        new OpaqueCharacterId("opaque-peer"),
+                        "Peer character",
+                        ImmutableArray.Create(new JobId("19")),
+                        ImmutableArray.Create(new ActivityId("dad-duty-1")),
+                        true,
+                        1,
+                        expiresAt))
+                    : ImmutableArray<PrivateCharacterListing>.Empty,
+                1,
+                expiresAt)),
+            1);
     }
 
     [Fact]

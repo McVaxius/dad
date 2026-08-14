@@ -2049,6 +2049,12 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 item.IsActive && string.Equals(item.IslandId, entry.IslandId.Value, StringComparison.Ordinal));
             if (pairing != null && string.IsNullOrWhiteSpace(pairing.HomeGuildScope))
                 pairing.HomeGuildScope = entry.HomeGuildScope;
+            if (!entry.Online)
+            {
+                if (pairing != null)
+                    service.ApplyDirectoryPresence(entry.IslandId.Value, false);
+                continue;
+            }
             var effectiveMode = (DadAutoPartyCharacterShareMode)(int)entry.EffectiveShareMode;
             var effectivePolicyHash = DadAutoPartyConfiguration.NormalizeIdentifier(entry.EffectivePolicyHash);
             if (!Enum.IsDefined(effectiveMode) ||
@@ -2090,6 +2096,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     registeredRequesterAttested: false);
                 if (!decision.Allowed)
                     return ValueTask.FromResult(DispatchResult.Deny(decision.SafeCode));
+                service.ApplyDirectoryPresence(entry.IslandId.Value, true);
             }
             else
             {
@@ -2109,6 +2116,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     configuration.Listings.Add(listing);
                 }
                 configuration.StateGeneration++;
+                service.ApplyDirectoryPresence(entry.IslandId.Value, true);
             }
         }
 

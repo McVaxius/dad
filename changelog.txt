@@ -1,5 +1,22 @@
 # dad — changelog
 
+## 2026-08-14 — AutoParty presence and mailbox repair (local-only, unpublished)
+- Preserved active central registration and bilateral pairing across ordinary DAD and central-service restarts while keeping
+  current reachability process-only. DAD now starts peers offline until new authenticated activity arrives; paired peers
+  remain visible as online or offline, and an offline directory entry clears cached usable listings.
+- Repaired the AP2 mailbox direction boundary: DAD polls distinct UPLINK and DOWNLINK message slots every 10 seconds,
+  processes UPLINK acknowledgements before publishing the next fragment, and writes acknowledgements back to the epoch
+  slot matching their direction. Acknowledgements are bound to the exact page generation, including current-epoch
+  announcements repeated after restart.
+- Added signed, epoch-bound presence immediately after adapter startup and every idle 10-second cycle without queuing
+  keep-alives behind unresolved traffic. More than 60 seconds without central acceptance of authenticated application or
+  presence traffic means offline.
+- Advanced only the unpublished exact local package dependency to `Dad.AutoParty.Protocol 0.2.0-preview.3`. Public DAD
+  version `0.5.0.9`, protocol schema v3, configuration schema 10, registration formats, database state, LAN/public IPC,
+  deployment, Discord, services, and clients remain unchanged.
+- Vendored preview.3 with SHA-256 `398dc012459d67507cdc652ae27ed290f4495722c09ed9814dea0841097b8510`,
+  refreshed both exact lock files, and verified the focused DAD AutoParty/mailbox scope 66/66.
+
 ## 2026-08-13 — narrow AutoParty pairing and Community Available correction (local-only, unpublished)
 - The AutoParty window now shows and copies this DAD's island ID, accepts a peer island ID for direct bilateral pairing,
   explains the two-sided approval, and keeps pairing/directory controls disabled until relay acknowledgement makes the
@@ -10,8 +27,8 @@
 - Normal configuration loading converts the legacy `PromiscuousAllSameGuild` standing policy to disabled `CharacterList`
   without a schema bump or protected-state reset. Selected same-guild community characters still require a current relay
   attestation, and an active private pairing has exclusive policy precedence.
-- APR1/APB1/AP2, schema 10, package/version state, public IPC, registration format, courier handshake behavior, clients,
-  deployment, and services are unchanged.
+- APR1/APB1 registration formats, schema 10, public DAD version `0.5.0.9`, public IPC, clients, deployment, and services
+  remain unchanged; the later presence/mailbox repair above advances the unpublished package and AP2 courier behavior.
 
 ## 2026-08-13 — DM registration and private AP2 transport guidance (local-only, unpublished)
 - DAD's AutoParty window and README now instruct owners to enable bot DMs, expect only

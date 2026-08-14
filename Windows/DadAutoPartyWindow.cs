@@ -262,10 +262,14 @@ public sealed class DadAutoPartyWindow : Window
             ImGui.EndDisabled();
         }
 
+        var directory = plugin.AutoPartyService.GetDirectorySnapshot();
         foreach (var pairing in configuration.Pairings.OrderBy(static item => item.IslandId))
         {
+            var pairingState = pairing.IsActive
+                ? directory.OnlineIslandIds.Contains(pairing.IslandId) ? "active, online" : "active, offline"
+                : "revoked";
             ImGui.TextUnformatted(
-                $"{pairing.IslandId}: {(pairing.IsActive ? "active" : "revoked")} | " +
+                $"{pairing.IslandId}: {pairingState} | " +
                 $"share {pairing.LocalSharePolicy.Mode}");
             ImGui.SameLine();
             if (pairing.IsActive && ImGui.SmallButton($"Deauthenticate##{pairing.PairingId}"))
@@ -291,7 +295,6 @@ public sealed class DadAutoPartyWindow : Window
             });
         }
         ImGui.Checkbox("Include same-guild Community Available listings", ref includePromiscuous);
-        var directory = plugin.AutoPartyService.GetDirectorySnapshot();
         DrawDirectory(configuration, directory);
         ImGui.EndDisabled();
 

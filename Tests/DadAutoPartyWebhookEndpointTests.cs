@@ -228,6 +228,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("endpoint.SafeCode", source, StringComparison.Ordinal);
         Assert.Contains("Last mailbox exchange", source, StringComparison.Ordinal);
         Assert.Contains("Mailbox queues:", source, StringComparison.Ordinal);
+        Assert.Contains("active, online", source, StringComparison.Ordinal);
+        Assert.Contains("active, offline", source, StringComparison.Ordinal);
+        Assert.Contains("directory.OnlineIslandIds.Contains", source, StringComparison.Ordinal);
         Assert.Contains("Status: {status}", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TransportChannelIds", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewChannel", source, StringComparison.Ordinal);
@@ -336,12 +339,17 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
-    public async Task AdapterQueuesOffCallerRetriesPublishAndPollsExactKnownMessage()
+    public async Task AdapterPollsDistinctSlotsBeforePublishingAndAcknowledgesInMatchingDirection()
     {
         using var crypto = new CryptoFixture();
-        var outbound = Envelope("island-local", "central-autoparty", [1, 2, 3, 4]);
+        var outbound = Envelope(
+            "island-local",
+            "central-autoparty",
+            Enumerable.Range(0, AutoPartyProtocol.MaximumCourierFragmentBytes + 32)
+                .Select(static value => (byte)value)
+                .ToArray());
         var (downlink, downlinkPage) = crypto.CreateDownlink([5, 6, 7, 8]);
-        var handler = new ScriptedWebhookHandler(downlinkPage);
+        var handler = new ScriptedWebhookHandler(downlinkPage, failFirstPatch: true);
         using var client = new HttpClient(handler);
         await using var adapter = new DadAutoPartyWebhookTransportAdapter(
             crypto.Credential(),
@@ -370,23 +378,113 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Equal(downlink.PayloadType, received.PayloadType);
         Assert.True(downlink.Ciphertext.AsSpan().SequenceEqual(received.Ciphertext.AsSpan()));
         Assert.Equal(0, handler.PostAttempts);
-        for (var attempt = 0; attempt < 100 && handler.PatchAttempts < 2; attempt++)
+        for (var attempt = 0; attempt < 100 && handler.UplinkPages.Count < 1; attempt++)
             await Task.Delay(10);
         Assert.True(handler.PatchAttempts >= 2);
-        Assert.True(handler.GetAttempts >= 1);
+        Assert.Contains("10001", handler.GetMessageReferences);
+        Assert.Contains("10002", handler.GetMessageReferences);
         Assert.DoesNotContain(callerThread, handler.RequestThreadIds.Take(1));
+
+        var firstPage = CourierTextCodec.DecodePage(handler.UplinkPages.First()).Contract;
+        Assert.True(firstPage.Fragments.Length == 1);
+        Assert.True(firstPage.Fragments[0].FragmentCount > 1);
+        var getsBeforeWrongGeneration = handler.GetAttempts;
+        handler.SetContent(
+            "10001",
+            crypto.CreateUplinkAcknowledgement(
+                firstPage,
+                acknowledgedPageGeneration: firstPage.PageGeneration + 1));
+        for (var attempt = 0; attempt < 100 && handler.GetAttempts < getsBeforeWrongGeneration + 2; attempt++)
+            await Task.Delay(10);
+        Assert.All(handler.UplinkPages, content =>
+            Assert.Equal(1, CourierTextCodec.DecodePage(content).Contract.Fragments[0].FragmentNumber));
+        handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(firstPage));
+        for (var attempt = 0; attempt < 100 && !handler.UplinkPages.Any(content =>
+                 CourierTextCodec.DecodePage(content).Contract.Fragments[0].FragmentNumber == 2); attempt++)
+            await Task.Delay(10);
+        var uplinkPages = handler.UplinkPages
+            .Select(content => CourierTextCodec.DecodePage(content).Contract)
+            .ToList();
+        Assert.Contains(uplinkPages, page => page.Fragments[0].FragmentNumber == 1);
+        Assert.Contains(uplinkPages, page => page.Fragments[0].FragmentNumber == 2);
 
         await adapter.AcknowledgeAsync(new AutoPartyTransportAcknowledgement(
             downlink.EnvelopeId,
             "dad-downlink-consumed"));
-        var priorPatchAttempts = handler.PatchAttempts;
-        for (var attempt = 0; attempt < 100 && handler.PatchAttempts == priorPatchAttempts; attempt++)
+        for (var attempt = 0; attempt < 100 && !handler.DownlinkAcknowledgements.Any(content =>
+                 CourierTextCodec.DecodeAcknowledgement(content).Contract.AcceptedMessageIds.Contains(downlink.EnvelopeId)); attempt++)
             await Task.Delay(10);
-        Assert.True(handler.PatchAttempts > priorPatchAttempts);
-        Assert.Contains(handler.PatchedContents, content =>
-            CourierTextCodec.GetKind(content) == CourierTextKind.Page);
-        Assert.Contains(handler.PatchedContents, content =>
-            CourierTextCodec.GetKind(content) == CourierTextKind.Acknowledgement);
+        var downlinkAcknowledgement = handler.DownlinkAcknowledgements
+            .Select(content => CourierTextCodec.DecodeAcknowledgement(content).Contract)
+            .Single(item => item.AcceptedMessageIds.Contains(downlink.EnvelopeId));
+        Assert.Equal(CourierDirection.Downlink, downlinkAcknowledgement.Direction);
+        Assert.Contains(downlink.EnvelopeId, downlinkAcknowledgement.AcceptedMessageIds);
+        Assert.DoesNotContain(handler.PatchedMessages, item =>
+            item.MessageReference == "10001" &&
+            CourierTextCodec.GetKind(item.Content) == CourierTextKind.Acknowledgement &&
+            CourierTextCodec.DecodeAcknowledgement(item.Content).Contract.Direction == CourierDirection.Downlink);
+    }
+
+    [Fact]
+    public async Task AdapterPublishesImmediateAndIdlePresenceOnTenSecondCadence()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(10), DadAutoPartyWebhookTransportAdapter.DefaultPollInterval);
+        using var crypto = new CryptoFixture();
+        var handler = new ScriptedWebhookHandler(CourierTextCodec.EmptySlotContent);
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-one",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+
+        for (var attempt = 0; attempt < 100 && handler.Presences.Count < 2; attempt++)
+            await Task.Delay(10);
+
+        var presences = handler.Presences
+            .Take(2)
+            .Select(crypto.OpenPresence)
+            .ToList();
+        Assert.Equal(2, presences.Count);
+        Assert.All(presences, presence =>
+        {
+            Assert.Equal(crypto.UplinkEpoch.EpochId, presence.EpochId);
+            Assert.Equal(CourierDirection.Uplink, presence.Direction);
+            Assert.Equal(crypto.UplinkEpoch.EpochGeneration, presence.EpochGeneration);
+        });
+        Assert.True(presences[1].Header.Generation > presences[0].Header.Generation);
+    }
+
+    [Fact]
+    public async Task AdapterAcknowledgesCurrentEpochAnnouncementAfterRestart()
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new ScriptedWebhookHandler(
+            CourierTextCodec.EmptySlotContent,
+            uplinkContent: crypto.CreateEpochAnnouncement(crypto.UplinkEpoch));
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-one",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+
+        for (var attempt = 0; attempt < 100 && handler.UplinkAcknowledgements.Count < 1; attempt++)
+            await Task.Delay(10);
+
+        var acknowledgement = CourierTextCodec.DecodeAcknowledgement(
+            Assert.Single(handler.UplinkAcknowledgements)).Contract;
+        Assert.Equal(crypto.UplinkEpoch.EpochId, acknowledgement.EpochId);
+        Assert.Equal(CourierDirection.Uplink, acknowledgement.Direction);
+        Assert.Equal(crypto.UplinkEpoch.EpochGeneration, acknowledgement.PageGeneration);
     }
 
     [Theory]
@@ -765,24 +863,67 @@ public sealed class DadAutoPartyWebhookEndpointTests
         return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
     }
 
-    private sealed class ScriptedWebhookHandler(string downlinkContent) : HttpMessageHandler
+    private sealed class ScriptedWebhookHandler(
+        string downlinkContent,
+        bool failFirstPatch = false,
+        string? uplinkContent = null) : HttpMessageHandler
     {
         private int postAttempts;
         private int getAttempts;
         private int patchAttempts;
-        private readonly object patchedContentsGate = new();
-        private readonly List<string> patchedContents = [];
+        private readonly object gate = new();
+        private readonly Dictionary<string, string> messageContents = new(StringComparer.Ordinal)
+        {
+            ["10001"] = uplinkContent ?? CourierTextCodec.EmptySlotContent,
+            ["10002"] = downlinkContent,
+        };
+        private readonly List<(string MessageReference, string Content)> patchedMessages = [];
+        private readonly List<string> getMessageReferences = [];
         public int PostAttempts => Volatile.Read(ref postAttempts);
         public int GetAttempts => Volatile.Read(ref getAttempts);
         public int PatchAttempts => Volatile.Read(ref patchAttempts);
         public List<int> RequestThreadIds { get; } = [];
-        public IReadOnlyList<string> PatchedContents
+        public IReadOnlyList<(string MessageReference, string Content)> PatchedMessages
         {
             get
             {
-                lock (patchedContentsGate)
-                    return patchedContents.ToArray();
+                lock (gate)
+                    return patchedMessages.ToArray();
             }
+        }
+        public IReadOnlyList<string> GetMessageReferences
+        {
+            get
+            {
+                lock (gate)
+                    return getMessageReferences.ToArray();
+            }
+        }
+        public IReadOnlyList<string> UplinkPages => PatchedMessages
+            .Where(static item => item.MessageReference == "10001" &&
+                                  CourierTextCodec.GetKind(item.Content) == CourierTextKind.Page)
+            .Select(static item => item.Content)
+            .ToArray();
+        public IReadOnlyList<string> DownlinkAcknowledgements => PatchedMessages
+            .Where(static item => item.MessageReference == "10002" &&
+                                  CourierTextCodec.GetKind(item.Content) == CourierTextKind.Acknowledgement)
+            .Select(static item => item.Content)
+            .ToArray();
+        public IReadOnlyList<string> UplinkAcknowledgements => PatchedMessages
+            .Where(static item => item.MessageReference == "10001" &&
+                                  CourierTextCodec.GetKind(item.Content) == CourierTextKind.Acknowledgement)
+            .Select(static item => item.Content)
+            .ToArray();
+        public IReadOnlyList<string> Presences => PatchedMessages
+            .Where(static item => item.MessageReference == "10001" &&
+                                  CourierTextCodec.GetKind(item.Content) == CourierTextKind.Presence)
+            .Select(static item => item.Content)
+            .ToArray();
+
+        public void SetContent(string messageReference, string content)
+        {
+            lock (gate)
+                messageContents[messageReference] = content;
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -808,7 +949,13 @@ public sealed class DadAutoPartyWebhookEndpointTests
             {
                 Interlocked.Increment(ref getAttempts);
                 var messageReference = request.RequestUri!.Segments[^1];
-                return Json(HttpStatusCode.OK, new { id = messageReference, content = downlinkContent });
+                string content;
+                lock (gate)
+                {
+                    getMessageReferences.Add(messageReference);
+                    content = messageContents[messageReference];
+                }
+                return Json(HttpStatusCode.OK, new { id = messageReference, content });
             }
             if (request.Method == HttpMethod.Patch)
             {
@@ -816,11 +963,14 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 var payload = await request.Content!.ReadAsStringAsync(cancellationToken);
                 using var document = JsonDocument.Parse(payload);
                 var content = document.RootElement.GetProperty("content").GetString()!;
-                lock (patchedContentsGate)
-                    patchedContents.Add(content);
-                if (attempt == 1)
-                    return new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 var messageReference = request.RequestUri!.Segments[^1];
+                if (failFirstPatch && attempt == 1)
+                    return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+                lock (gate)
+                {
+                    patchedMessages.Add((messageReference, content));
+                    messageContents[messageReference] = content;
+                }
                 return Json(HttpStatusCode.OK, new { id = messageReference, content });
             }
             return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
@@ -917,6 +1067,60 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 ImmutableArray.Create(fragment));
             var authenticator = new ProductionContractAuthenticator(keyResolver);
             return (envelope, CourierTextCodec.EncodePage(authenticator.Sign(page)));
+        }
+
+        public string CreateUplinkAcknowledgement(
+            CourierPage page,
+            long? acknowledgedPageGeneration = null)
+        {
+            var fragment = Assert.Single(page.Fragments);
+            var pageGeneration = acknowledgedPageGeneration ?? page.PageGeneration;
+            var header = CreateHeader(
+                $"uplink-ack-{page.Header.MessageId:N}",
+                pageGeneration,
+                DateTimeOffset.UtcNow.AddMinutes(2));
+            var acknowledgement = new CourierAcknowledgement(
+                header,
+                UplinkEpoch.EpochId,
+                CourierDirection.Uplink,
+                page.PageNumber,
+                pageGeneration,
+                ImmutableArray.Create(new CourierFragmentReceipt(
+                    fragment.DeliveryId,
+                    fragment.FragmentNumber)),
+                ImmutableArray<Guid>.Empty,
+                "relay-uplink-fragment-accepted");
+            var authenticator = new ProductionContractAuthenticator(keyResolver);
+            return CourierTextCodec.EncodeAcknowledgement(authenticator.Sign(acknowledgement));
+        }
+
+        public string CreateEpochAnnouncement(CourierEpochDescriptor epoch)
+        {
+            var header = CreateHeader(
+                $"epoch-{epoch.EpochId:N}-{epoch.EpochGeneration}",
+                epoch.EpochGeneration,
+                DateTimeOffset.UtcNow.AddMinutes(2));
+            var announcement = new CourierEpoch(
+                header,
+                epoch.EpochId,
+                epoch.IslandId,
+                epoch.Direction,
+                epoch.StartsAt,
+                epoch.RotatesAt,
+                epoch.OverlapEndsAt,
+                epoch.PageCount,
+                epoch.PageReferences,
+                epoch.EpochGeneration);
+            var authenticator = new ProductionContractAuthenticator(keyResolver);
+            return CourierTextCodec.EncodeEpoch(authenticator.Sign(announcement));
+        }
+
+        public CourierPresence OpenPresence(string content)
+        {
+            var presence = CourierTextCodec.DecodePresence(content);
+            var authenticator = new ProductionContractAuthenticator(keyResolver);
+            Assert.True(authenticator.Verify(presence).Succeeded);
+            return presence.Contract;
         }
 
         public string CreateBootstrapCopyPaste(
