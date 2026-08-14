@@ -715,7 +715,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var matchingListings = configuration.Listings
             .Where(listing =>
                 listing is { IsValid: true, Available: true } &&
-                listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild &&
+                listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.CharacterList &&
                 string.Equals(listing.SharingIslandId, sharing, StringComparison.Ordinal) &&
                 string.Equals(listing.EffectivePolicyHash, policyHash, StringComparison.Ordinal) &&
                 handles.Any(handle => string.Equals(
@@ -1171,7 +1171,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var proposal = state.Proposal;
         var pairings = configuration.Pairings.Where(pairing =>
                 pairing.IsActive &&
-                string.Equals(pairing.OwnerId, proposal.RequesterOwnerId.Value, StringComparison.Ordinal) &&
                 string.Equals(pairing.IslandId, proposal.Header.SenderIslandId.Value, StringComparison.Ordinal))
             .Take(2)
             .ToArray();
@@ -1181,8 +1180,16 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return false;
         }
         var paired = pairings.Length == 1;
+        if (paired && !string.Equals(
+                pairings[0].OwnerId,
+                proposal.RequesterOwnerId.Value,
+                StringComparison.Ordinal))
+        {
+            safeCode = "dad-inbound-sharing-route-denied";
+            return false;
+        }
         var policy = paired ? pairings[0].LocalSharePolicy : publication.StandingPolicy;
-        if (!paired && (policy.Mode != DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild ||
+        if (!paired && (policy.Mode != DadAutoPartyCharacterShareMode.CharacterList ||
                         !IsDirectSenderAllowed(
                             proposal.Header.SenderIslandId,
                             proposal.Header.SenderKeyVersion,
@@ -2046,7 +2053,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             var effectivePolicyHash = DadAutoPartyConfiguration.NormalizeIdentifier(entry.EffectivePolicyHash);
             if (!Enum.IsDefined(effectiveMode) ||
                 (pairing == null &&
-                 (effectiveMode != DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild ||
+                 (effectiveMode != DadAutoPartyCharacterShareMode.CharacterList ||
                   string.IsNullOrWhiteSpace(effectivePolicyHash))))
                 return ValueTask.FromResult(DispatchResult.Deny("dad-directory-entry-policy-invalid"));
             var policy = new DadAutoPartySharePolicy
@@ -2054,7 +2061,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 Enabled = true,
                 Mode = pairing != null
                     ? DadAutoPartyCharacterShareMode.AllCharactersForPeer
-                    : DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+                    : DadAutoPartyCharacterShareMode.CharacterList,
                 Revision = Math.Max(1, entry.DirectoryGeneration),
                 UpdatedAtUtc = page.Header.IssuedAt.UtcDateTime,
             };
@@ -3373,7 +3380,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 listing.IsValid && listing.Available && listing.ExpiresAtUtc > now.UtcDateTime &&
                 string.Equals(listing.OwnerId, configuration.RegisteredOwnerId, StringComparison.Ordinal) &&
                 string.Equals(listing.SharingIslandId, configuration.RegisteredIslandId, StringComparison.Ordinal) &&
-                listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild &&
+                listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.CharacterList &&
                 string.Equals(listing.EffectivePolicyHash, route.Value.PolicyHash, StringComparison.Ordinal) &&
                 string.Equals(listing.OpaqueCharacterId, handle, StringComparison.Ordinal));
         }
@@ -3443,7 +3450,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     private DateTimeOffset? GetListingRouteExpiry(DadAutoPartyListing listing, DateTimeOffset now)
     {
-        if (listing.EffectiveShareMode != DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild ||
+        if (listing.EffectiveShareMode != DadAutoPartyCharacterShareMode.CharacterList ||
             string.IsNullOrWhiteSpace(listing.OwnerId) ||
             string.IsNullOrWhiteSpace(listing.SharingIslandId) ||
             string.IsNullOrWhiteSpace(listing.EffectivePolicyHash))

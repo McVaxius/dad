@@ -205,6 +205,35 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
+    public void AutoPartyWindowShowsDirectBilateralPairingAndUnmaskedBootstrapInput()
+    {
+        var source = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
+        var bootstrapStart = source.IndexOf("\"Encrypted bootstrap DM\"", StringComparison.Ordinal);
+        var bootstrapEnd = source.IndexOf("\"Import bootstrap\"", bootstrapStart, StringComparison.Ordinal);
+
+        Assert.Contains("Enable bot DMs before registering", source, StringComparison.Ordinal);
+        Assert.Contains("transport-channel traffic is private machine traffic", source, StringComparison.Ordinal);
+        Assert.Contains("relay acknowledgement is pending", source, StringComparison.Ordinal);
+        Assert.Contains("ImGui.BeginDisabled(!registrationReady)", source, StringComparison.Ordinal);
+        Assert.Contains("This DAD island ID", source, StringComparison.Ordinal);
+        Assert.Contains("Copy island ID", source, StringComparison.Ordinal);
+        Assert.Contains("Peer island ID", source, StringComparison.Ordinal);
+        Assert.Contains("Initiate bilateral pairing by island ID", source, StringComparison.Ordinal);
+        Assert.Contains("Pairing is bilateral", source, StringComparison.Ordinal);
+        Assert.Contains("One character\\0Selected characters\\0All characters for this peer", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Opaque handles (comma-separated)", source, StringComparison.Ordinal);
+        Assert.True(bootstrapStart >= 0);
+        Assert.True(bootstrapEnd > bootstrapStart);
+        Assert.DoesNotContain("Password", source[bootstrapStart..bootstrapEnd], StringComparison.Ordinal);
+        Assert.Contains("endpoint.SafeCode", source, StringComparison.Ordinal);
+        Assert.Contains("Last mailbox exchange", source, StringComparison.Ordinal);
+        Assert.Contains("Mailbox queues:", source, StringComparison.Ordinal);
+        Assert.Contains("Status: {status}", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TransportChannelIds", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewChannel", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task BootstrapImportRejectsMailboxThatDoesNotMatchPinnedEpochs()
     {
         using var crypto = new CryptoFixture();
@@ -364,9 +393,12 @@ public sealed class DadAutoPartyWebhookEndpointTests
     [InlineData(DadAutoPartyCharacterShareMode.SpecificCharacter, true, false, true)]
     [InlineData(DadAutoPartyCharacterShareMode.SpecificCharacter, false, true, false)]
     [InlineData(DadAutoPartyCharacterShareMode.CharacterList, true, false, true)]
+    [InlineData(DadAutoPartyCharacterShareMode.CharacterList, false, true, true)]
+    [InlineData(DadAutoPartyCharacterShareMode.CharacterList, false, false, false)]
     [InlineData(DadAutoPartyCharacterShareMode.AllCharactersForPeer, true, false, true)]
     [InlineData(DadAutoPartyCharacterShareMode.AllCharactersForPeer, false, true, false)]
-    [InlineData(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, false, true, true)]
+    [InlineData(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, true, true, true)]
+    [InlineData(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, false, true, false)]
     [InlineData(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, false, false, false)]
     public void EveryShareModeHonorsPairingOrSameGuildBoundary(
         DadAutoPartyCharacterShareMode mode,
@@ -607,7 +639,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         var decision = endpoint.SetStandingSharePolicy(new DadAutoPartySharePolicy
         {
-            Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["opaque-community"],
             Enabled = true,
             Revision = 2,
         });
@@ -721,6 +754,16 @@ public sealed class DadAutoPartyWebhookEndpointTests
             1,
             "test-envelope",
             ImmutableArray.CreateRange(payload));
+
+    private static string ReadRepositorySource(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "dad.csproj")))
+            directory = directory.Parent;
+        var repositoryRoot = directory?.FullName ?? throw new DirectoryNotFoundException(
+            "Could not locate the DAD repository root from the test output directory.");
+        return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
+    }
 
     private sealed class ScriptedWebhookHandler(string downlinkContent) : HttpMessageHandler
     {

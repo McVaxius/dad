@@ -425,7 +425,7 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
-    public async Task DirectoryProjectsPromiscuousMetadataAndRequesterRouteNeedsExactAttestation()
+    public async Task DirectoryProjectsCommunityMetadataAndRequesterRouteNeedsExactAttestation()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
         await using var pump = fixture.CreatePump();
@@ -448,7 +448,7 @@ public sealed class DadAutoPartyRelayPumpTests
                 new IslandId(PumpFixture.PeerIsland),
                 "peer-endpoint",
                 "guild-home",
-                CharacterShareMode.PromiscuousAllSameGuild,
+                CharacterShareMode.CharacterList,
                 policyHash,
                 ImmutableArray.Create(new PrivateCharacterListing(
                     new OpaqueCharacterId("opaque-one"),
@@ -467,7 +467,7 @@ public sealed class DadAutoPartyRelayPumpTests
 
         var listing = Assert.Single(fixture.Configuration.Listings);
         Assert.Equal(PumpFixture.PeerOwner, listing.OwnerId);
-        Assert.Equal(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, listing.EffectiveShareMode);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, listing.EffectiveShareMode);
         Assert.Equal(policyHash, listing.EffectivePolicyHash);
         Assert.False(listing.HasCurrentTransientRoute);
         Assert.False(pump.IsListingRouteCurrent(listing));

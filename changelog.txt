@@ -1,5 +1,32 @@
 # dad — changelog
 
+## 2026-08-13 — narrow AutoParty pairing and Community Available correction (local-only, unpublished)
+- The AutoParty window now shows and copies this DAD's island ID, accepts a peer island ID for direct bilateral pairing,
+  explains the two-sided approval, and keeps pairing/directory controls disabled until relay acknowledgement makes the
+  registration Active. The bootstrap DM input is no longer password-masked.
+- Pairing approval now uses local-character checkboxes and offers only one character, selected characters, or all
+  characters for that peer. The old full-roster standing toggle is replaced by a default-empty **Community Available**
+  selector with an explicit Save action.
+- Normal configuration loading converts the legacy `PromiscuousAllSameGuild` standing policy to disabled `CharacterList`
+  without a schema bump or protected-state reset. Selected same-guild community characters still require a current relay
+  attestation, and an active private pairing has exclusive policy precedence.
+- APR1/APB1/AP2, schema 10, package/version state, public IPC, registration format, courier handshake behavior, clients,
+  deployment, and services are unchanged.
+
+## 2026-08-13 — DM registration and private AP2 transport guidance (local-only, unpublished)
+- DAD's AutoParty window and README now instruct owners to enable bot DMs, expect only
+  `registration-bootstrap-sent-check-dms` in the guild, and import the raw `APB1` token or exact
+  `registration-bootstrap-ready` wrapper from the bot's single DM.
+- Closed-DM feedback and clean retry are explicit. The window keeps registration/connection, last-exchange, queue/epoch,
+  and operation safe codes visible without relying on Discord transport-channel access; that channel is documented as
+  private encrypted machine traffic rather than notifications or an audit record.
+- Fresh locked restores pass; focused importer/UI tests pass 21/21; all DAD AutoParty tests pass 145/145; and the complete
+  Debug suite passes 1721/1723 with only the known installed Dalamud/ClientStructs identity-pin drift. The no-deploy x64
+  Debug build succeeds with zero errors and three unchanged nullable warnings.
+- The existing strict raw/wrapped APB1 importer is unchanged, as are schema 10, public version `0.5.0.9`, APR1/APB1/AP2,
+  `IAutoPartyTransportAdapter`, Pascal-case private identity JSON, and protocol package `0.2.0-preview.2`. No Discord,
+  service, client, Release, publication, commit, or push action occurred.
+
 ## 2026-08-13 — compact one-message AutoParty registration (local-only, unpublished)
 - Updated the exact local protocol consumer to `Dad.AutoParty.Protocol 0.2.0-preview.2` with its checked package SHA-256,
   both locked content hashes, and explicit `System.Formats.Cbor.dll` ownership in packaged and developer runtime copies.

@@ -193,6 +193,47 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
+    public void LegacyFullRosterStandingPolicyBecomesDisabledCharacterListWithoutProtectedStateReset()
+    {
+        var configuration = new Configuration
+        {
+            Version = DadAutoPartyConfigurationMigration.CurrentVersion,
+            AutoParty = new DadAutoPartyConfiguration
+            {
+                RegistrationState = DadAutoPartyRegistrationState.Active,
+                RegistrationId = "11111111-1111-4111-8111-111111111111",
+                RouteId = "route-current",
+                WebhookCredentialReference = "webhook-mailbox-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                UplinkEpochId = "22222222-2222-4222-8222-222222222222",
+                DownlinkEpochId = "33333333-3333-4333-8333-333333333333",
+                MailboxEpochGeneration = 4,
+                RelaySigningPublicKey = Convert.ToBase64String(new byte[32]),
+                RelayAgreementPublicKey = Convert.ToBase64String(new byte[32]),
+                EndpointIdentityReference = "endpoint-identity-current",
+                RegisteredOwnerId = "owner-current",
+                RegisteredIslandId = "island-current",
+                StandingSharePolicy = new DadAutoPartySharePolicy
+                {
+                    Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+                    Enabled = true,
+                    Revision = 7,
+                },
+            },
+        };
+
+        configuration.MigrateTransportSettings();
+
+        Assert.Equal(DadAutoPartyRegistrationState.Active, configuration.AutoParty.RegistrationState);
+        Assert.Equal("11111111-1111-4111-8111-111111111111", configuration.AutoParty.RegistrationId);
+        Assert.Equal("endpoint-identity-current", configuration.AutoParty.EndpointIdentityReference);
+        Assert.Equal("island-current", configuration.AutoParty.RegisteredIslandId);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, configuration.AutoParty.StandingSharePolicy.Mode);
+        Assert.False(configuration.AutoParty.StandingSharePolicy.Enabled);
+        Assert.Empty(configuration.AutoParty.StandingSharePolicy.CharacterHandles);
+        Assert.Equal(7, configuration.AutoParty.StandingSharePolicy.Revision);
+    }
+
+    [Fact]
     public async Task CurrentIdentityUsesPascalCaseAndCreatesVerifiableChallenge()
     {
         var configuration = new DadAutoPartyConfiguration();
@@ -454,7 +495,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         Assert.Equal(1, autoParty.StateGeneration);
         Assert.False(autoParty.StandingSharePolicy.Enabled);
         Assert.Equal(
-            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+            DadAutoPartyCharacterShareMode.CharacterList,
             autoParty.StandingSharePolicy.Mode);
         Assert.True(autoParty.StandingSharePolicy.IsValid);
         Assert.Empty(autoParty.Pairings);

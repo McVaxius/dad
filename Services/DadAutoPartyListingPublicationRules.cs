@@ -41,12 +41,12 @@ internal static class DadAutoPartyListingPublicationRules
         return policy is
         {
             IsValid: true,
-            Mode: DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+            Mode: DadAutoPartyCharacterShareMode.CharacterList,
         }
             ? policy
             : new DadAutoPartySharePolicy
             {
-                Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+                Mode = DadAutoPartyCharacterShareMode.CharacterList,
                 Enabled = false,
                 Revision = Math.Max(1, configuration.StateGeneration),
             };

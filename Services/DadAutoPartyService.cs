@@ -407,7 +407,7 @@ public sealed class DadAutoPartyService : IDisposable
         var sameGuild = !string.IsNullOrWhiteSpace(guildScope) &&
             string.Equals(guildScope, configuration.HomeGuildScope, StringComparison.Ordinal);
         if (policy is not { Enabled: true, IsValid: true } ||
-            (!paired && (policy.Mode != DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild ||
+            (!paired && (policy.Mode != DadAutoPartyCharacterShareMode.CharacterList ||
                          !registeredRequesterAttested || !sameGuild)))
             return Decision(false, "dad-listing-share-denied");
 
@@ -734,9 +734,10 @@ public static class DadAutoPartyShareRules
                 paired && policy.CharacterHandles.Count == 1 &&
                 policy.CharacterHandles.Contains(opaqueCharacterHandle, StringComparer.Ordinal),
             DadAutoPartyCharacterShareMode.CharacterList =>
-                paired && policy.CharacterHandles.Contains(opaqueCharacterHandle, StringComparer.Ordinal),
+                (paired || sameHomeGuild) &&
+                policy.CharacterHandles.Contains(opaqueCharacterHandle, StringComparer.Ordinal),
             DadAutoPartyCharacterShareMode.AllCharactersForPeer => paired,
-            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild => sameHomeGuild,
+            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild => paired && sameHomeGuild,
             _ => false,
         };
     }

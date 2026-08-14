@@ -48,7 +48,7 @@ public sealed class DadAutoPartyConfiguration
     public long StateGeneration { get; set; } = 1;
     public DadAutoPartySharePolicy StandingSharePolicy { get; set; } = new()
     {
-        Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+        Mode = DadAutoPartyCharacterShareMode.CharacterList,
         Enabled = false,
     };
     public List<DadAutoPartyPairing> Pairings { get; set; } = [];
@@ -115,12 +115,12 @@ public sealed class DadAutoPartyConfiguration
         StateGeneration = Math.Max(1, StateGeneration);
         StandingSharePolicy = (StandingSharePolicy ?? new DadAutoPartySharePolicy
         {
-            Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
             Enabled = false,
         }).Normalize();
-        if (StandingSharePolicy.Mode != DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild)
+        if (StandingSharePolicy.Mode != DadAutoPartyCharacterShareMode.CharacterList)
         {
-            StandingSharePolicy.Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild;
+            StandingSharePolicy.Mode = DadAutoPartyCharacterShareMode.CharacterList;
             StandingSharePolicy.CharacterHandles.Clear();
             StandingSharePolicy.Enabled = false;
         }

@@ -68,12 +68,13 @@ public sealed class DadAutoPartyListingPublicationRulesTests
     }
 
     [Fact]
-    public void PromiscuousStandingPolicyPublishesWithoutAPairing()
+    public void CommunityStandingPolicyPublishesSelectedCharactersWithoutAPairing()
     {
         var now = new DateTime(2026, 8, 11, 21, 0, 0, DateTimeKind.Utc);
         var policy = new DadAutoPartySharePolicy
         {
-            Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["opaque-community"],
             Enabled = true,
             Revision = 4,
             UpdatedAtUtc = now.AddMinutes(-1),
@@ -92,7 +93,8 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         Assert.Empty(configuration.Pairings);
         Assert.True(publication.StandingPolicy.Enabled);
-        Assert.Equal(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, publication.StandingPolicy.Mode);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, publication.StandingPolicy.Mode);
+        Assert.Equal(["opaque-community"], publication.StandingPolicy.CharacterHandles);
     }
 
     [Fact]
@@ -111,7 +113,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             StateGeneration = 5,
             StandingSharePolicy = new DadAutoPartySharePolicy
             {
-                Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+                Mode = DadAutoPartyCharacterShareMode.CharacterList,
                 Enabled = false,
                 Revision = 3,
                 UpdatedAtUtc = now,
@@ -156,12 +158,12 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             DateTime.UtcNow);
 
         Assert.False(publication.StandingPolicy.Enabled);
-        Assert.Equal(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, publication.StandingPolicy.Mode);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, publication.StandingPolicy.Mode);
 
         configuration.Normalize();
 
         Assert.False(configuration.StandingSharePolicy.Enabled);
-        Assert.Equal(DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild, configuration.StandingSharePolicy.Mode);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, configuration.StandingSharePolicy.Mode);
         Assert.True(configuration.StandingSharePolicy.IsValid);
         Assert.Same(pairPolicy, configuration.Pairings[0].LocalSharePolicy);
         Assert.True(pairPolicy.Enabled);
@@ -173,7 +175,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
     {
         var source = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
         var control = source.IndexOf(
-            "Share all local characters with attested same-guild requesters",
+            "Save Community Available characters",
             StringComparison.Ordinal);
         var pendingBranch = source.IndexOf(
             "var pending = configuration.PendingPairings",

@@ -13,13 +13,17 @@ public sealed class DadAutoPartyWindow : Window
     private string challengeCopy = string.Empty;
     private string bootstrapCopy = string.Empty;
     private string directorySearch = string.Empty;
+    private string peerIslandId = string.Empty;
     private string pairingFingerprint = string.Empty;
     private string pairingCode = string.Empty;
-    private string shareHandles = string.Empty;
     private DadAutoPartyCharacterShareMode shareMode = DadAutoPartyCharacterShareMode.SpecificCharacter;
     private bool includePromiscuous = true;
     private string initiatedPeerIslandId = string.Empty;
     private List<DadAcquiredCharacter> localCandidates = [];
+    private List<DadAcquiredCharacter> localShareCandidates = [];
+    private readonly HashSet<string> pairingShareHandles = new(StringComparer.Ordinal);
+    private readonly HashSet<string> communityShareHandles = new(StringComparer.Ordinal);
+    private string pairingSelectionId = string.Empty;
     private readonly List<string> freeformSelectionOrder = [];
     private readonly Dictionary<string, uint> remoteRequestedJobs = new(StringComparer.Ordinal);
     private string status = "AutoParty is disabled.";
@@ -48,7 +52,17 @@ public sealed class DadAutoPartyWindow : Window
     {
         endpointAlias = plugin.Configuration.AutoParty.EndpointAlias;
         bootstrapCopy = string.Empty;
+        peerIslandId = string.Empty;
         pairingCode = string.Empty;
+        pairingSelectionId = string.Empty;
+        pairingShareHandles.Clear();
+        communityShareHandles.Clear();
+        if (plugin.Configuration.AutoParty.StandingSharePolicy.Mode ==
+            DadAutoPartyCharacterShareMode.CharacterList)
+        {
+            communityShareHandles.UnionWith(
+                plugin.Configuration.AutoParty.StandingSharePolicy.CharacterHandles);
+        }
         RefreshLocalCandidates();
     }
 
@@ -60,10 +74,11 @@ public sealed class DadAutoPartyWindow : Window
 
         DadUi.Heading(
             "Central AutoParty bridge",
-            "One centrally operated Discord bot; this DAD uses only its encrypted webhook mailbox.");
+            "One centrally operated Discord bot; this DAD uses only its private encrypted webhook mailbox.");
         ImGui.TextWrapped(
-            "No bot token or Application ID is entered here. Registration is one encrypted copy/paste; " +
-            "pairing and fingerprint approval remain local.");
+            "Enable bot DMs before registering. Submit this DAD's APR1 challenge in the guild, then paste the raw APB1 " +
+            "token or exact wrapper from the bot's single DM here. The guild shows only safe registration feedback; " +
+            "transport-channel traffic is private machine traffic. Pairing and fingerprint approval remain local.");
         if (!string.IsNullOrWhiteSpace(configuration.LegacyDiscordTokenCleanupWarning))
             ImGui.TextColored(
                 new Vector4(1f, .7f, .2f, 1f),
@@ -81,6 +96,12 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.TextDisabled(
             $"Mailbox queues: outbound {endpoint.PendingOutboundCount}, acknowledgements {endpoint.PendingAcknowledgementCount}, " +
             $"inbound {endpoint.BufferedInboundCount}, epoch {endpoint.EpochGeneration}.");
+        if (configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported)
+        {
+            ImGui.TextColored(
+                new Vector4(1f, .7f, .2f, 1f),
+                "Bootstrap imported; relay acknowledgement is pending. Pairing and directory requests unlock when registration is Active.");
+        }
 
         ImGui.SetNextItemWidth(300f);
         ImGui.InputText("DAD endpoint alias", ref endpointAlias, 48);
@@ -106,11 +127,10 @@ public sealed class DadAutoPartyWindow : Window
             ImGui.SetClipboardText(challengeCopy);
 
         ImGui.InputTextMultiline(
-            "Encrypted bootstrap response",
+            "Encrypted bootstrap DM",
             ref bootstrapCopy,
             4096,
-            new Vector2(-1f, 90f),
-            ImGuiInputTextFlags.Password);
+            new Vector2(-1f, 90f));
         if (ImGui.Button("Import bootstrap"))
         {
             var copy = bootstrapCopy;
@@ -125,23 +145,54 @@ public sealed class DadAutoPartyWindow : Window
         }
 
         ImGui.Separator();
-        DadUi.Heading("Pairing and sharing", "Both endpoints approve the same transcript, code, and fingerprints.");
-        var standingShareEnabled = configuration.StandingSharePolicy is
+        DadUi.Heading(
+            "Pairing and sharing",
+            "Pairing is bilateral: both DAD owners verify the same code and fingerprints, then approve their own private character scope.");
+        var localIslandId = configuration.RegisteredIslandId;
+        ImGui.TextUnformatted($"This DAD island ID: {(string.IsNullOrWhiteSpace(localIslandId) ? "not registered" : localIslandId)}");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(string.IsNullOrWhiteSpace(localIslandId));
+        if (ImGui.SmallButton("Copy island ID"))
+            ImGui.SetClipboardText(localIslandId);
+        ImGui.EndDisabled();
+
+        var registrationReady = configuration.IsRegistrationActive;
+        ImGui.BeginDisabled(!registrationReady);
+        ImGui.InputText("Peer island ID", ref peerIslandId, 128);
+        if (ImGui.Button("Initiate bilateral pairing by island ID"))
         {
-            Enabled: true,
-            Mode: DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
-        };
-        if (ImGui.Checkbox("Share all local characters with attested same-guild requesters", ref standingShareEnabled))
+            var requestedPeerIslandId = peerIslandId.Trim();
+            Start(async () =>
+            {
+                var result = await plugin.AutoPartyEndpointService
+                    .InitiatePairingAsync(requestedPeerIslandId)
+                    .ConfigureAwait(false);
+                return new UiOperationResult(
+                    result.SafeCode,
+                    InitiatedPeerIslandId: result.Allowed ? requestedPeerIslandId : string.Empty);
+            });
+        }
+
+        DadUi.Heading(
+            "Community Available",
+            "Only checked characters are listed to attested requesters in this DAD's home guild. The default is none.");
+        DrawShareCharacterSelector("community", communityShareHandles, singleSelection: false);
+        if (ImGui.Button("Save Community Available characters"))
         {
+            var availableHandles = GetLocalShareRows()
+                .Select(static row => row.OpaqueCharacterId)
+                .ToHashSet(StringComparer.Ordinal);
+            communityShareHandles.IntersectWith(availableHandles);
             status = plugin.AutoPartyEndpointService.SetStandingSharePolicy(new DadAutoPartySharePolicy
             {
-                Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
-                Enabled = standingShareEnabled,
+                Mode = DadAutoPartyCharacterShareMode.CharacterList,
+                CharacterHandles = communityShareHandles.Order(StringComparer.Ordinal).ToList(),
+                Enabled = communityShareHandles.Count > 0,
                 Revision = Math.Max(1, configuration.StandingSharePolicy.Revision + 1),
                 UpdatedAtUtc = DateTime.UtcNow,
             }).SafeCode;
         }
-        ImGui.TextDisabled("This endpoint-wide listing policy is independent of every pairing policy.");
+        ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
         var initiated = plugin.AutoPartyEndpointService.LastPairingChallenge;
         if (initiated != null && initiated.ExpiresAtUtc > DateTime.UtcNow)
         {
@@ -153,6 +204,13 @@ public sealed class DadAutoPartyWindow : Window
                 ImGui.SetClipboardText(initiated.ConfirmationCode);
         }
         var pending = configuration.PendingPairings.OrderBy(static item => item.ExpiresAtUtc).FirstOrDefault();
+        var currentPairingSelectionId = pending?.PairingId ?? string.Empty;
+        if (!string.Equals(pairingSelectionId, currentPairingSelectionId, StringComparison.Ordinal))
+        {
+            pairingSelectionId = currentPairingSelectionId;
+            pairingShareHandles.Clear();
+            shareMode = DadAutoPartyCharacterShareMode.SpecificCharacter;
+        }
         if (pending == null)
         {
             ImGui.TextDisabled("No pairing approval is pending.");
@@ -168,21 +226,40 @@ public sealed class DadAutoPartyWindow : Window
             if (ImGui.Combo(
                     "What this endpoint shares",
                     ref selectedMode,
-                    "Specific character\0Character list\0All characters for peer\0Promiscuous all (same guild only)\0"))
+                    "One character\0Selected characters\0All characters for this peer\0"))
+            {
                 shareMode = (DadAutoPartyCharacterShareMode)(selectedMode + 1);
+                if (shareMode == DadAutoPartyCharacterShareMode.SpecificCharacter && pairingShareHandles.Count > 1)
+                {
+                    var first = pairingShareHandles.Order(StringComparer.Ordinal).First();
+                    pairingShareHandles.Clear();
+                    pairingShareHandles.Add(first);
+                }
+            }
             if (shareMode is DadAutoPartyCharacterShareMode.SpecificCharacter or
                 DadAutoPartyCharacterShareMode.CharacterList)
-                ImGui.InputText("Opaque handles (comma-separated)", ref shareHandles, 2048);
+                DrawShareCharacterSelector(
+                    "pairing",
+                    pairingShareHandles,
+                    singleSelection: shareMode == DadAutoPartyCharacterShareMode.SpecificCharacter);
+            var pairingSelectionValid = shareMode == DadAutoPartyCharacterShareMode.AllCharactersForPeer ||
+                shareMode == DadAutoPartyCharacterShareMode.SpecificCharacter && pairingShareHandles.Count == 1 ||
+                shareMode == DadAutoPartyCharacterShareMode.CharacterList && pairingShareHandles.Count > 0;
+            ImGui.BeginDisabled(!pairingSelectionValid);
             if (ImGui.Button("Approve pairing locally"))
             {
                 var policy = BuildSharePolicy();
-                status = plugin.AutoPartyEndpointService.ApprovePairing(
+                var decision = plugin.AutoPartyEndpointService.ApprovePairing(
                     Guid.Parse(pending.PairingId),
                     pairingFingerprint,
                     pairingCode,
-                    policy).SafeCode;
+                    policy);
+                status = decision.SafeCode;
                 pairingCode = string.Empty;
+                if (decision.Allowed)
+                    pairingShareHandles.Clear();
             }
+            ImGui.EndDisabled();
         }
 
         foreach (var pairing in configuration.Pairings.OrderBy(static item => item.IslandId))
@@ -213,9 +290,10 @@ public sealed class DadAutoPartyWindow : Window
                 return new UiOperationResult(result.SafeCode);
             });
         }
-        ImGui.Checkbox("Include same-guild promiscuous listings", ref includePromiscuous);
+        ImGui.Checkbox("Include same-guild Community Available listings", ref includePromiscuous);
         var directory = plugin.AutoPartyService.GetDirectorySnapshot();
         DrawDirectory(configuration, directory);
+        ImGui.EndDisabled();
 
         ImGui.Separator();
         DadUi.Heading(
@@ -300,7 +378,7 @@ public sealed class DadAutoPartyWindow : Window
                 var pairedRouteAvailable = ownerAvailable && pairing != null &&
                     string.Equals(pairing.OwnerId, listing.OwnerId, StringComparison.Ordinal);
                 var transientRouteAvailable = ownerAvailable &&
-                    listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild &&
+                    listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.CharacterList &&
                     listing.HasCurrentTransientRoute;
                 var routeAvailable = pairedRouteAvailable || transientRouteAvailable;
                 var selectionKey = RemoteSelectionKey(listing);
@@ -429,7 +507,7 @@ public sealed class DadAutoPartyWindow : Window
             var pairedRouteAvailable = pairing != null &&
                 string.Equals(pairing.OwnerId, listing.OwnerId, StringComparison.Ordinal);
             var transientRouteAvailable =
-                listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild &&
+                listing.EffectiveShareMode == DadAutoPartyCharacterShareMode.CharacterList &&
                 listing.HasCurrentTransientRoute;
             if (!pairedRouteAvailable && !transientRouteAvailable)
                 return "dad-autoparty-freeform-route-not-authorized";
@@ -469,21 +547,78 @@ public sealed class DadAutoPartyWindow : Window
 
     private void RefreshLocalCandidates()
     {
-        localCandidates = plugin.BuildPlannerPool().Characters
-            .Where(static character => character.IsLiveConnected &&
-                                       character.ContentId != 0 &&
-                                       !string.IsNullOrWhiteSpace(character.CharacterKey) &&
-                                       character.CurrentJobId.HasValue &&
-                                       DadRosterCharacterMerge.IsCombatJob(character.CurrentJobId.Value))
+        localShareCandidates = plugin.BuildPlannerPool().Characters
+            .Where(static character => character.ContentId != 0 &&
+                                       !string.IsNullOrWhiteSpace(character.CharacterKey))
             .DistinctBy(DadRosterIdentity.BuildKey, StringComparer.OrdinalIgnoreCase)
             .OrderBy(static character => character.CharacterName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.WorldName, StringComparer.OrdinalIgnoreCase)
+            .Take(256)
+            .Select(static character => character.Clone())
+            .ToList();
+        localCandidates = localShareCandidates
+            .Where(static character => character.IsLiveConnected &&
+                                       character.CurrentJobId.HasValue &&
+                                       DadRosterCharacterMerge.IsCombatJob(character.CurrentJobId.Value))
             .Take(64)
             .Select(static character => character.Clone())
             .ToList();
         var currentKeys = localCandidates.Select(LocalSelectionKey).ToHashSet(StringComparer.Ordinal);
         freeformSelectionOrder.RemoveAll(key =>
             key.StartsWith("local:", StringComparison.Ordinal) && !currentKeys.Contains(key));
+    }
+
+    private List<DadAutoPartyFleetRow> GetLocalShareRows()
+        => plugin.Configuration.AutoPartyFleet.Rows
+            .Where(static row => row is { Enabled: true, IsRemote: false } &&
+                                 !string.IsNullOrWhiteSpace(row.OpaqueCharacterId))
+            .DistinctBy(static row => row.OpaqueCharacterId, StringComparer.Ordinal)
+            .Take(DadAutoPartyFleetLimits.MaxFleetRows)
+            .ToList();
+
+    private void DrawShareCharacterSelector(
+        string selectorId,
+        HashSet<string> selectedHandles,
+        bool singleSelection)
+    {
+        var rows = GetLocalShareRows()
+            .OrderBy(ResolveLocalShareLabel, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (rows.Count == 0)
+        {
+            ImGui.TextDisabled("No enabled local Fleet Matrix characters are available.");
+            return;
+        }
+
+        foreach (var row in rows)
+        {
+            var selected = selectedHandles.Contains(row.OpaqueCharacterId);
+            if (!ImGui.Checkbox(
+                    $"{ResolveLocalShareLabel(row)}##{selectorId}-{row.RowId}",
+                    ref selected))
+                continue;
+            if (!selected)
+            {
+                selectedHandles.Remove(row.OpaqueCharacterId);
+                continue;
+            }
+            if (singleSelection)
+                selectedHandles.Clear();
+            selectedHandles.Add(row.OpaqueCharacterId);
+        }
+    }
+
+    private string ResolveLocalShareLabel(DadAutoPartyFleetRow row)
+    {
+        var character = localShareCandidates.FirstOrDefault(candidate =>
+            string.Equals(
+                DadRosterIdentity.ResolveAccountKey(candidate.AccountId, candidate.AccountAlias),
+                row.AccountKey,
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(candidate.CharacterKey, row.CharacterKey, StringComparison.OrdinalIgnoreCase));
+        return character == null
+            ? row.CharacterKey
+            : $"{character.CharacterName}@{character.WorldName}";
     }
 
     private static List<uint> ParsePermittedJobs(DadAutoPartyListing listing)
@@ -514,12 +649,9 @@ public sealed class DadAutoPartyWindow : Window
     private DadAutoPartySharePolicy BuildSharePolicy() => new DadAutoPartySharePolicy
     {
         Mode = shareMode,
-        CharacterHandles = shareMode is DadAutoPartyCharacterShareMode.AllCharactersForPeer or
-            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild
-                ? []
-                : shareHandles
-                    .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                    .ToList(),
+        CharacterHandles = shareMode == DadAutoPartyCharacterShareMode.AllCharactersForPeer
+            ? []
+            : pairingShareHandles.Order(StringComparer.Ordinal).ToList(),
         Enabled = true,
         Revision = DateTime.UtcNow.Ticks,
         UpdatedAtUtc = DateTime.UtcNow,

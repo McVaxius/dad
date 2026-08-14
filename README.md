@@ -123,25 +123,36 @@ uploaded or promoted to a release.
 - AutoParty remains explicit local opt-in. One centrally operated service owns the Discord application, commands, Gateway,
   and webhook provisioning. DAD users create no bot, enter no token, and supply no Application ID. Local, LAN, public IPC,
   Plan, Schedule, Crew Formation, queue, and teardown behavior continues normally while AutoParty is disabled or unavailable.
-- `/dad autoparty` generates a signed `APR1` registration challenge. Submit the complete token with the central bot's
-  `/autoparty register` command, then paste either the raw endpoint-encrypted `APB1` bootstrap or the bot's exact complete
-  `registration-bootstrap-ready` code-block response into DAD. The one private Discord response has no attachment. The
+- `/dad autoparty` generates a signed `APR1` registration challenge. Enable bot DMs, submit the complete token with the
+  central bot's `/autoparty register` command, then paste either the raw endpoint-encrypted `APB1` bootstrap or the bot's
+  exact complete `registration-bootstrap-ready` code-block DM into DAD. The guild response is only
+  `registration-bootstrap-sent-check-dms`; the single DM has no attachment. If DMs are closed, enable them after
+  `registration-dm-unavailable-enable-dms-and-retry` and retry; central provisioning is fully rolled back first. The
   bootstrap pins the relay identity and bot-provisioned UPLINK/DOWNLINK webhook mailbox; the route remains fail-closed
-  until DAD and the relay complete the first signed epoch exchange. Extra prose, partial or multiple tokens, legacy
-  registration packages, replay, expiry, tamper, and wrong-recipient input are rejected.
+  until DAD and the relay complete the first signed epoch exchange. The bootstrap DM input is ordinary visible text, and
+  the window keeps pairing and directory requests disabled while relay acknowledgement is pending. Extra prose, partial
+  or multiple tokens, legacy registration packages, replay, expiry, tamper, and wrong-recipient input are rejected.
 - A background REST adapter performs exact webhook-message fetch/edit, bounded `AP2` fragments, acknowledgements, retry,
   expiry, and epoch rotation. Network work stays off the Dalamud framework thread; framework updates consume bounded
   immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC contracts are unchanged.
-- Ordinary pairing may cross allowlisted guilds and activates only after both DAD endpoints approve the same transcript,
-  confirmation code, and fingerprints. Each endpoint independently shares a specific character, a character list, all
-  characters for that peer, or promiscuous-all for active nonblocked islands in the same home guild.
+- The Discord transport channel is private machine infrastructure and explicitly denies `View Channel` to `@everyone`;
+  the central service validates bot access before provisioning and never changes permissions. DAD neither reads nor
+  depends on channel visibility. Its AutoParty window reports registration/connection state, last mailbox exchange,
+  queue/epoch health, and operation results. Discord administrators may retain access, but encrypted AP2 frames are not
+  notifications or an audit trail.
+- Each DAD displays a copyable island ID and accepts another island ID for direct bilateral pairing. Pairing may cross
+  allowlisted guilds and activates only after both endpoints approve the same transcript, confirmation code, and
+  fingerprints. Each endpoint independently shares one checked local character, selected checked characters, or all
+  characters for that peer.
 - Private directory rows carry registered route identity, the effective share mode and policy hash, plus opaque character
   handles, display labels, permitted jobs/activities, availability, revision, and expiry. Player invite names, Content IDs,
   and native invite locators appear only in short-lived endpoint-encrypted proposal traffic and remain in memory; they are
   never saved into Plans, Schedules, Fleet Matrix, logs, or public IPC.
-- A same-guild promiscuous row can be displayed before authorization, but it cannot be selected, bound, or executed until
-  the requester signs an exact policy access request and the relay returns the same short-lived endpoint identity
-  attestation to both DAD islands. Listing ownership and guild membership alone never establish a route.
+- **Community Available** is a separate, default-empty selector for specific local characters. Its selected rows can be
+  displayed to same-guild requesters, but cannot be selected, bound, or executed until the requester signs an exact
+  policy access request and the relay returns the same short-lived endpoint identity attestation to both DAD islands.
+  An active bilateral pairing always uses its private character policy instead of this community scope. Listing ownership
+  and guild membership alone never establish a route.
 - Saved remote slots keep opaque shared-identity tokens. At run admission DAD creates a new runtime-only proposal and sends
   registered-island participants through reservation, preflight, lease, operation, and receipt barriers while local slots
   stay on the LAN worker path. Both barriers must be ready before assembly or queueing. Slot 1 remains inviter and queue
@@ -149,7 +160,7 @@ uploaded or promoted to a release.
 - Endpoint operations now use production runtime truth throughout: Prepare/Reserve use authenticated admission, Form waits
   for exact PartyList membership, Queue dispatches the frozen module to the exact local worker, and Settle waits for that
   worker's terminal result. The retained synthetic execution facade is constructed only by unit tests.
-- **Create party** builds one in-memory formation-only group from selected local characters and current paired/promiscuous
+- **Create party** builds one in-memory formation-only group from selected local characters and current paired/community
   listings and submits it through existing Crew Formation. **Disband party** uses the guarded teardown for that exact active
   AutoParty formation, then settles/restores remote participants. Plans and Schedules use the same proposal/session path and
   continue through the normal duty lifecycle; no third scheduler or saved crew is created.

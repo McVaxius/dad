@@ -103,7 +103,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         if (normalized is not
             {
                 IsValid: true,
-                Mode: DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+                Mode: DadAutoPartyCharacterShareMode.CharacterList,
             })
             return Decision(false, "dad-standing-share-policy-invalid");
         configuration.StandingSharePolicy = normalized;
