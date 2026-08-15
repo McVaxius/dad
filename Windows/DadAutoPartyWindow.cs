@@ -28,6 +28,7 @@ public sealed class DadAutoPartyWindow : Window
     private readonly Dictionary<string, uint> remoteRequestedJobs = new(StringComparer.Ordinal);
     private string status = "AutoParty is disabled.";
     private Task<UiOperationResult>? operationTask;
+    private bool forgetLostIdentityConfirmed;
 
     private sealed record UiOperationResult(
         string SafeCode,
@@ -55,6 +56,7 @@ public sealed class DadAutoPartyWindow : Window
         peerIslandId = string.Empty;
         pairingCode = string.Empty;
         pairingSelectionId = string.Empty;
+        forgetLostIdentityConfirmed = false;
         pairingShareHandles.Clear();
         communityShareHandles.Clear();
         if (plugin.Configuration.AutoParty.StandingSharePolicy.Mode ==
@@ -88,24 +90,57 @@ public sealed class DadAutoPartyWindow : Window
         var enabled = configuration.Enabled;
         if (ImGui.Checkbox("Enable AutoParty", ref enabled))
             plugin.AutoPartyService.SetEnabled(enabled);
-        ImGui.SameLine();
-        ImGui.TextDisabled(
-            $"Registration {configuration.RegistrationState} | connection {endpoint.State} | {endpoint.SafeCode}");
-        if (endpoint.LastSuccessfulExchangeAtUtc.HasValue)
-            ImGui.TextDisabled($"Last mailbox exchange: {endpoint.LastSuccessfulExchangeAtUtc.Value:u}");
-        ImGui.TextDisabled(
-            $"Mailbox queues: outbound {endpoint.PendingOutboundCount}, acknowledgements {endpoint.PendingAcknowledgementCount}, " +
-            $"inbound {endpoint.BufferedInboundCount}, epoch {endpoint.EpochGeneration}.");
-        if (configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported)
+        var relayStatus = plugin.AutoPartyEndpointService.RelayStatus;
+        var registrationProgress = DadAutoPartyProgressProjection.Registration(
+            configuration,
+            endpoint,
+            DateTime.UtcNow);
+        var mailboxActivity = DadAutoPartyProgressProjection.MailboxActivity(
+            endpoint,
+            relayStatus,
+            plugin.AutoPartyEndpointService.TransferSnapshot);
+        DrawRegistrationProgressCard(registrationProgress);
+        DrawMailboxActivityCard(mailboxActivity, endpoint.LastSuccessfulExchangeAtUtc);
+        var activationPending = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
+            configuration.BootstrapExpiresAtUtc > DateTime.UtcNow;
+
+        var identityLost = configuration.RegistrationRecoveryState ==
+            DadAutoPartyRegistrationRecoveryState.IdentityLost;
+        if (identityLost)
         {
             ImGui.TextColored(
-                new Vector4(1f, .7f, .2f, 1f),
-                "Bootstrap imported; relay acknowledgement is pending. Pairing and directory requests unlock when registration is Active.");
+                new Vector4(1f, .45f, .3f, 1f),
+                "The protected endpoint identity is missing or no longer matches this DAD. Trust cannot be transferred to a replacement identity.");
+            ImGui.TextWrapped(
+                $"First run /autoparty deregister island:{configuration.RegisteredIslandId} confirm:true as the Discord owner.");
+            ImGui.Checkbox("I confirm the owner deregistration completed", ref forgetLostIdentityConfirmed);
+            ImGui.BeginDisabled(!forgetLostIdentityConfirmed || operationTask is { IsCompleted: false });
+            if (ImGui.Button("Forget old identity and register as new"))
+            {
+                Start(async () =>
+                {
+                    var result = await plugin.AutoPartyService
+                        .PurgeAsync(deleteEndpointIdentity: true)
+                        .ConfigureAwait(false);
+                    return new UiOperationResult(result.SafeCode);
+                });
+            }
+            ImGui.EndDisabled();
         }
 
+        var registrationLocked = identityLost ||
+            activationPending ||
+            operationTask is { IsCompleted: false };
+        ImGui.BeginDisabled(registrationLocked);
         ImGui.SetNextItemWidth(300f);
         ImGui.InputText("DAD endpoint alias", ref endpointAlias, 48);
-        if (ImGui.Button("Generate registration challenge"))
+        var challengeButtonLabel = configuration.RegistrationRecoveryState ==
+            DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
+            configuration.RegistrationState is DadAutoPartyRegistrationState.Active or
+                DadAutoPartyRegistrationState.BootstrapImported
+                ? "Recover registration"
+                : "Generate registration challenge";
+        if (ImGui.Button(challengeButtonLabel))
         {
             Start(async () =>
             {
@@ -143,11 +178,22 @@ public sealed class DadAutoPartyWindow : Window
                 return new UiOperationResult(result.SafeCode);
             });
         }
+        ImGui.EndDisabled();
 
         ImGui.Separator();
         DadUi.Heading(
             "Pairing and sharing",
             "Pairing is bilateral: both DAD owners verify the same code and fingerprints, then approve their own private character scope.");
+        var pairingChallenge = plugin.AutoPartyEndpointService.LastPairingChallenge;
+        var pairingProgress = DadAutoPartyProgressProjection.Pairing(
+            configuration,
+            endpoint,
+            pairingChallenge,
+            plugin.AutoPartyEndpointService.LastPairingAttemptResult,
+            pairingChallenge != null ? initiatedPeerIslandId : peerIslandId,
+            status,
+            DateTime.UtcNow);
+        DrawPairingProgressCard(pairingProgress);
         var localIslandId = configuration.RegisteredIslandId;
         ImGui.TextUnformatted($"This DAD island ID: {(string.IsNullOrWhiteSpace(localIslandId) ? "not registered" : localIslandId)}");
         ImGui.SameLine();
@@ -156,7 +202,8 @@ public sealed class DadAutoPartyWindow : Window
             ImGui.SetClipboardText(localIslandId);
         ImGui.EndDisabled();
 
-        var registrationReady = configuration.IsRegistrationActive;
+        var registrationReady = configuration.IsRegistrationActive &&
+            endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
         ImGui.BeginDisabled(!registrationReady);
         ImGui.InputText("Peer island ID", ref peerIslandId, 128);
         if (ImGui.Button("Initiate bilateral pairing by island ID"))
@@ -193,7 +240,7 @@ public sealed class DadAutoPartyWindow : Window
             }).SafeCode;
         }
         ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
-        var initiated = plugin.AutoPartyEndpointService.LastPairingChallenge;
+        var initiated = pairingChallenge;
         if (initiated != null && initiated.ExpiresAtUtc > DateTime.UtcNow)
         {
             ImGui.TextUnformatted($"Pairing initiated for: {initiatedPeerIslandId}");
@@ -328,6 +375,123 @@ public sealed class DadAutoPartyWindow : Window
             status = "dad-owner-stop-active";
         }
         ImGui.TextWrapped($"Status: {status}");
+    }
+
+    private static void DrawRegistrationProgressCard(DadAutoPartyRegistrationProgress progress)
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, .03f));
+        if (ImGui.BeginChild("dad-registration-progress-card", new Vector2(0f, 205f), true))
+        {
+            ImGui.TextUnformatted("Registration & mailbox");
+            DrawChecklistRow(
+                "Endpoint identity ready",
+                progress.EndpointIdentityReady
+                    ? DadAutoPartyProgressState.Complete
+                    : progress.ActivationReceipt == DadAutoPartyProgressState.Blocked
+                        ? DadAutoPartyProgressState.Blocked
+                        : DadAutoPartyProgressState.Pending);
+            DrawChecklistRow("Challenge generated", CompleteOrPending(progress.ChallengeGenerated));
+            DrawChecklistRow(
+                "Bootstrap imported and protected",
+                CompleteOrPending(progress.BootstrapImportedAndProtected));
+            DrawChecklistRow(
+                progress.ActivationReceipt == DadAutoPartyProgressState.NotRequired
+                    ? "Activation receipt not required - Active recovery"
+                    : progress.RegistrationActive
+                        ? "Registration already Active"
+                        : "Activation receipt received",
+                progress.ActivationReceipt);
+            DrawChecklistRow("Registration Active", CompleteOrPending(progress.RegistrationActive));
+            DrawChecklistRow("Current mailbox Ready", CompleteOrPending(progress.MailboxReady));
+            ImGui.TextWrapped($"Next: {progress.NextAction}");
+        }
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private static void DrawMailboxActivityCard(
+        DadAutoPartyMailboxActivityProgress activity,
+        DateTime? lastSuccessfulExchangeAtUtc)
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, .03f));
+        if (ImGui.BeginChild("dad-mailbox-activity-card", new Vector2(0f, 145f), true))
+        {
+            ImGui.TextUnformatted("Mailbox activity");
+            ImGui.TextUnformatted($"Payload: {activity.FriendlyPayloadName}");
+            if (!activity.Idle)
+            {
+                ImGui.TextUnformatted(
+                    $"Accepted fragments: {activity.AcceptedFragmentCount} / {activity.TotalFragmentCount}");
+                ImGui.TextUnformatted(
+                    $"Current fragment: {activity.CurrentFragmentNumber} / {activity.TotalFragmentCount} - " +
+                    (activity.AwaitingCentralAcknowledgement
+                        ? "waiting for central acknowledgement"
+                        : "ready to publish"));
+            }
+            ImGui.TextDisabled(
+                $"Relay: pending {activity.RelayPendingCount}, awaiting semantic receipt {activity.RelayAwaitingCount}.");
+            if (lastSuccessfulExchangeAtUtc.HasValue)
+                ImGui.TextDisabled($"Last mailbox exchange: {lastSuccessfulExchangeAtUtc.Value:u}");
+            ImGui.TextDisabled($"Raw safe code: {activity.RawSafeCode}");
+        }
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private static void DrawPairingProgressCard(DadAutoPartyPairingProgress progress)
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, .03f));
+        if (ImGui.BeginChild("dad-pairing-progress-card", new Vector2(0f, 250f), true))
+        {
+            ImGui.TextUnformatted("Island pairing");
+            DrawChecklistRow("Registration Active prerequisite", CompleteOrPending(progress.RegistrationActive));
+            DrawChecklistRow("Current mailbox Ready prerequisite", CompleteOrPending(progress.MailboxReady));
+            DrawChecklistRow("Peer island ID validated", progress.PeerIdValidated);
+            DrawChecklistRow(
+                progress.NoticeQueued == DadAutoPartyProgressState.NotRequired
+                    ? "Notice queued - not required, peer initiated"
+                    : "Notice queued",
+                progress.NoticeQueued);
+            DrawChecklistRow(
+                "Notice accepted and pending pairing received",
+                CompleteOrPending(progress.NoticeAcceptedAndPendingPairingReceived));
+            DrawChecklistRow(
+                "Local fingerprint, code, and share approval saved",
+                CompleteOrPending(progress.LocalApprovalSaved));
+            DrawChecklistRow(
+                "Local approval accepted by central",
+                CompleteOrPending(progress.LocalApprovalAcceptedByCentral));
+            DrawChecklistRow("Peer approval received", CompleteOrPending(progress.PeerApprovalReceived));
+            DrawChecklistRow("Pairing Active", CompleteOrPending(progress.PairingActive));
+            if (progress.ExpiredOrRejected)
+                DrawChecklistRow("Attempt expired or rejected", DadAutoPartyProgressState.Blocked);
+            ImGui.TextWrapped($"Next: {progress.NextAction}");
+            ImGui.TextDisabled($"Safe code: {progress.SafeCode}");
+        }
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private static DadAutoPartyProgressState CompleteOrPending(bool complete) =>
+        complete ? DadAutoPartyProgressState.Complete : DadAutoPartyProgressState.Pending;
+
+    private static void DrawChecklistRow(string label, DadAutoPartyProgressState state)
+    {
+        var marker = state switch
+        {
+            DadAutoPartyProgressState.Complete => "[x]",
+            DadAutoPartyProgressState.NotRequired => "[-]",
+            DadAutoPartyProgressState.Blocked => "[!]",
+            _ => "[ ]",
+        };
+        var color = state switch
+        {
+            DadAutoPartyProgressState.Complete => new Vector4(.45f, .9f, .55f, 1f),
+            DadAutoPartyProgressState.NotRequired => new Vector4(.55f, .75f, .95f, 1f),
+            DadAutoPartyProgressState.Blocked => new Vector4(1f, .45f, .3f, 1f),
+            _ => ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled],
+        };
+        ImGui.TextColored(color, $"{marker} {label}");
     }
 
     private void DrawDirectory(
@@ -689,6 +853,12 @@ public sealed class DadAutoPartyWindow : Window
             status = operationTask.IsCanceled
                 ? "dad-autoparty-operation-cancelled"
                 : "dad-autoparty-operation-failed";
+        }
+        if (string.Equals(status, "dad-autoparty-purged", StringComparison.Ordinal))
+        {
+            challengeCopy = string.Empty;
+            bootstrapCopy = string.Empty;
+            forgetLostIdentityConfirmed = false;
         }
         endpointAlias = plugin.Configuration.AutoParty.EndpointAlias;
         operationTask = null;

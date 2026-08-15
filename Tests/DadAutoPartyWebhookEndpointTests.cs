@@ -65,8 +65,146 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var configuration = new DadAutoPartyConfiguration
         {
             Enabled = true,
-            RegistrationState = DadAutoPartyRegistrationState.Unregistered,
+            RegistrationState = DadAutoPartyRegistrationState.Active,
             RegistrationId = registrationId.ToString("D"),
+            RouteId = $"route-{registrationId:N}",
+            CentralBotApplicationId = "123456789012345678",
+            HomeGuildScope = "223456789012345678",
+            WebhookCredentialReference = "webhook-mailbox-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            UplinkEpochId = "11111111-1111-4111-8111-111111111111",
+            DownlinkEpochId = "22222222-2222-4222-8222-222222222222",
+            MailboxEpochGeneration = 1,
+            RelayKeyGeneration = 1,
+            RelaySigningPublicKey = Convert.ToBase64String(Enumerable.Repeat((byte)0x11, 32).ToArray()),
+            RelayAgreementPublicKey = Convert.ToBase64String(Enumerable.Repeat((byte)0x22, 32).ToArray()),
+            EndpointIdentityReference = identityReference,
+            RegisteredOwnerId = crypto.OwnerId.Value,
+            RegisteredIslandId = crypto.IslandId.Value,
+            RegistrationFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                crypto.OwnerId.Value,
+                crypto.IslandId.Value,
+                crypto.EndpointKeyVersion,
+                crypto.EndpointSigningPublicKey,
+                crypto.EndpointAgreementPublicKey),
+            EndpointAlias = "local",
+            SigningPublicKey = Convert.ToBase64String(crypto.EndpointSigningPublicKey),
+            EncryptionPublicKey = Convert.ToBase64String(crypto.EndpointAgreementPublicKey),
+            EndpointKeyGeneration = crypto.EndpointKeyVersion,
+        }.Normalize();
+        configuration.Pairings.Add(new DadAutoPartyPairing { PairingId = Guid.NewGuid().ToString("D") });
+        configuration.PendingPairings.Add(new DadAutoPartyPairing { PairingId = Guid.NewGuid().ToString("D") });
+        configuration.StandingSharePolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["character-one"],
+            Enabled = true,
+        };
+        var webhookStore = new MemoryWebhookStore();
+        await using var connector = new DadDiscordCourierConnector(configuration, static () => true);
+        using var endpoint = new DadAutoPartyEndpointService(
+            configuration,
+            webhookStore,
+            new MemoryLegacyTokenStore(),
+            connector,
+            static () => { },
+            identityStore: identityStore);
+
+        var bootstrapToken = crypto.CreateBootstrapCopyPaste(
+            registrationId,
+            routeId: configuration.RouteId);
+        var imported = await endpoint.ImportBootstrapCopyPasteAsync(
+            RegistrationCopyPasteCodec.FormatBootstrapResponse(bootstrapToken));
+
+        Assert.True(imported.Allowed, imported.SafeCode);
+        Assert.Equal(DadAutoPartyRegistrationState.Active, configuration.RegistrationState);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.Active, configuration.RegistrationRecoveryState);
+        Assert.True(configuration.HasImportedBootstrap);
+        Assert.True(configuration.IsRegistrationActive);
+        Assert.Single(configuration.Pairings);
+        Assert.Single(configuration.PendingPairings);
+        Assert.True(configuration.StandingSharePolicy.Enabled);
+        Assert.Equal(crypto.UplinkEpoch.EpochId.ToString("D"), configuration.UplinkEpochId);
+        Assert.Equal(crypto.DownlinkEpoch.EpochId.ToString("D"), configuration.DownlinkEpochId);
+        Assert.Equal(crypto.RelayKeyVersion, configuration.RelayKeyGeneration);
+        Assert.Equal(Convert.ToBase64String(crypto.RelaySigningPublicKey),
+            configuration.RelaySigningPublicKey);
+        Assert.Equal(Convert.ToBase64String(crypto.RelayAgreementPublicKey),
+            configuration.RelayAgreementPublicKey);
+        Assert.NotNull(webhookStore.StoredCredential);
+        Assert.Equal(crypto.UplinkEpoch.EpochId, webhookStore.StoredCredential!.UplinkEpoch!.EpochId);
+        Assert.Equal(crypto.DownlinkEpoch.EpochId, webhookStore.StoredCredential.DownlinkEpoch!.EpochId);
+
+        using (var service = new DadAutoPartyService(
+                   configuration,
+                   identityStore,
+                   static () => true,
+                   static () => { }))
+        await using (var pump = new DadAutoPartyRelayPump(
+                         configuration,
+                         identityStore,
+                         connector,
+                         service,
+                         new DadAutoPartyParticipantBridge(configuration),
+                         new MemoryPendingOperationStore()))
+        {
+            var pairing = await pump.InitiatePairingAsync("island-22222222222222222222222222222222");
+            Assert.True(pairing.Allowed, pairing.SafeCode);
+            Assert.Equal("dad-pairing-notice-queued", pairing.SafeCode);
+        }
+
+        var refreshed = await endpoint.ImportBootstrapCopyPasteAsync(bootstrapToken);
+        Assert.True(refreshed.Allowed, refreshed.SafeCode);
+        Assert.True(configuration.IsRegistrationActive);
+
+        configuration.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.RecoveryAvailable;
+        configuration.BootstrapExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
+        var recoveredInProcess = await endpoint.ImportBootstrapCopyPasteAsync(
+            crypto.CreateBootstrapCopyPaste(registrationId, routeId: configuration.RouteId));
+        Assert.True(recoveredInProcess.Allowed, recoveredInProcess.SafeCode);
+        Assert.Equal(DadAutoPartyRegistrationState.BootstrapImported, configuration.RegistrationState);
+        Assert.False(configuration.IsRegistrationActive);
+        Assert.Single(configuration.Pairings);
+        Assert.Single(configuration.PendingPairings);
+        Assert.True(configuration.StandingSharePolicy.Enabled);
+
+        var activated = endpoint.MarkRegistrationActive(
+            registrationId,
+            crypto.UplinkEpoch.EpochId,
+            crypto.UplinkEpoch.EpochGeneration);
+
+        Assert.True(activated.Allowed, activated.SafeCode);
+        Assert.True(configuration.IsRegistrationActive);
+    }
+
+    [Fact]
+    public async Task ActiveBootstrapRecoveryRejectsRouteAndProtectedIdentityConflictsBeforeStorageOrMutation()
+    {
+        using var crypto = new CryptoFixture();
+        using var identityStore = new MemoryIdentityStore();
+        var registrationId = Guid.NewGuid();
+        var identityMaterial = JsonSerializer.SerializeToUtf8Bytes(new DadAutoPartyPrivateIdentityPackage(
+            crypto.OwnerId.Value,
+            crypto.IslandId.Value,
+            crypto.EndpointKeyVersion,
+            Convert.ToBase64String(crypto.EndpointSigningPrivateKey),
+            Convert.ToBase64String(crypto.EndpointAgreementPrivateKey)));
+        var identityReference = await identityStore.StoreAsync(identityMaterial);
+        CryptographicOperations.ZeroMemory(identityMaterial);
+        var configuration = new DadAutoPartyConfiguration
+        {
+            RegistrationState = DadAutoPartyRegistrationState.Active,
+            RegistrationId = registrationId.ToString("D"),
+            RouteId = $"route-{registrationId:N}",
+            CentralBotApplicationId = "123456789012345678",
+            HomeGuildScope = "223456789012345678",
+            WebhookCredentialReference = "webhook-mailbox-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            UplinkEpochId = Guid.NewGuid().ToString("D"),
+            DownlinkEpochId = Guid.NewGuid().ToString("D"),
+            MailboxEpochGeneration = 1,
+            RelayKeyGeneration = 1,
+            RelaySigningPublicKey = Convert.ToBase64String(new byte[32]),
+            RelayAgreementPublicKey = Convert.ToBase64String(new byte[32]),
             EndpointIdentityReference = identityReference,
             RegisteredOwnerId = crypto.OwnerId.Value,
             RegisteredIslandId = crypto.IslandId.Value,
@@ -91,35 +229,268 @@ public sealed class DadAutoPartyWebhookEndpointTests
             static () => { },
             identityStore: identityStore);
 
-        var bootstrapToken = crypto.CreateBootstrapCopyPaste(registrationId);
+        var routeConflictSnapshot = JsonSerializer.Serialize(configuration);
+        var routeConflict = await endpoint.ImportBootstrapCopyPasteAsync(
+            crypto.CreateBootstrapCopyPaste(registrationId, routeId: "route-conflict"));
+        Assert.False(routeConflict.Allowed);
+        Assert.Equal("dad-bootstrap-recovery-mismatch", routeConflict.SafeCode);
+        Assert.Equal(routeConflictSnapshot, JsonSerializer.Serialize(configuration));
+        Assert.Null(webhookStore.StoredCredential);
+
+        configuration.SigningPublicKey = Convert.ToBase64String(new byte[32]);
+        var identityConflictSnapshot = JsonSerializer.Serialize(configuration);
+        var identityConflict = await endpoint.ImportBootstrapCopyPasteAsync(
+            crypto.CreateBootstrapCopyPaste(registrationId, routeId: configuration.RouteId));
+        Assert.False(identityConflict.Allowed);
+        Assert.Equal("dad-bootstrap-recovery-mismatch", identityConflict.SafeCode);
+        Assert.Equal(identityConflictSnapshot, JsonSerializer.Serialize(configuration));
+        Assert.Null(webhookStore.StoredCredential);
+    }
+
+    [Fact]
+    public async Task ActiveRecoveryRebindsRunningMailboxPreservesTrustAndSendsQueuedPairingOnlyThroughReplacement()
+    {
+        const string ownerId = "owner-11111111111111111111111111111111";
+        const string islandId = "island-11111111111111111111111111111111";
+        const string peerIslandId = "island-22222222222222222222222222222222";
+        const string queuedPeerIslandId = "island-33333333333333333333333333333333";
+        const string oldReference = "webhook-mailbox-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string newReference = "webhook-mailbox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string oldWebhookId = "333333333333333333";
+        const string newWebhookId = "323456789012345678";
+        using var crypto = new CryptoFixture(ownerId, islandId);
+        using var identityStore = new MemoryIdentityStore();
+        var identityMaterial = JsonSerializer.SerializeToUtf8Bytes(new DadAutoPartyPrivateIdentityPackage(
+            ownerId,
+            islandId,
+            crypto.EndpointKeyVersion,
+            Convert.ToBase64String(crypto.EndpointSigningPrivateKey),
+            Convert.ToBase64String(crypto.EndpointAgreementPrivateKey)));
+        var identityReference = await identityStore.StoreAsync(identityMaterial);
+        CryptographicOperations.ZeroMemory(identityMaterial);
+        var registrationId = Guid.Parse("44444444-4444-4444-8444-444444444444");
+        var routeId = $"route-{registrationId:N}";
+        var now = DateTimeOffset.UtcNow;
+        var oldUplink = new CourierEpochDescriptor(
+            Guid.Parse("55555555-5555-4555-8555-555555555555"),
+            crypto.IslandId,
+            CourierDirection.Uplink,
+            now.AddMinutes(-1),
+            now.AddMinutes(30),
+            now.AddMinutes(35),
+            1,
+            [new CourierPageReference(1, "10001")],
+            1);
+        var oldDownlink = new CourierEpochDescriptor(
+            Guid.Parse("66666666-6666-4666-8666-666666666666"),
+            crypto.IslandId,
+            CourierDirection.Downlink,
+            now.AddMinutes(-1),
+            now.AddMinutes(30),
+            now.AddMinutes(35),
+            1,
+            [new CourierPageReference(1, "10002")],
+            1);
+        var oldCredential = new DadAutoPartyWebhookCredential(
+            oldWebhookId,
+            new string('b', 64),
+            "433333333333333333")
+        {
+            UplinkEpoch = oldUplink,
+            DownlinkEpoch = oldDownlink,
+            RelayPublicKeys = crypto.RelayPublicKeys,
+        };
+        var credentialStore = new RotatingMemoryWebhookStore(
+            oldReference,
+            oldCredential,
+            newReference);
+        var savedStandingPolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = [],
+            Enabled = false,
+            Revision = 3,
+            UpdatedAtUtc = now.UtcDateTime,
+        };
+        var activePairing = new DadAutoPartyPairing
+        {
+            PairingId = Guid.Parse("77777777-7777-4777-8777-777777777777").ToString("D"),
+            OwnerId = "owner-22222222222222222222222222222222",
+            IslandId = peerIslandId,
+            HomeGuildScope = "223456789012345678",
+            PublicKeyFingerprint = new string('1', 64),
+            LocalFingerprint = new string('2', 64),
+            TranscriptHash = new string('3', 64),
+            ConfirmationCodeHash = new string('4', 64),
+            LocalApproved = true,
+            PeerApproved = true,
+            LocalApprovalRelayMessageId = Guid.Parse("88888888-8888-4888-8888-888888888888").ToString("D"),
+            LocalApprovalRelayAcceptedAtUtc = now.UtcDateTime,
+            LocalSharePolicy = new DadAutoPartySharePolicy
+            {
+                Mode = DadAutoPartyCharacterShareMode.CharacterList,
+                CharacterHandles = ["opaque-local"],
+                Enabled = true,
+                UpdatedAtUtc = now.UtcDateTime,
+            },
+            PeerSharePolicy = new DadAutoPartySharePolicy
+            {
+                Mode = DadAutoPartyCharacterShareMode.CharacterList,
+                CharacterHandles = ["opaque-peer"],
+                Enabled = true,
+                UpdatedAtUtc = now.UtcDateTime,
+            },
+            ExpiresAtUtc = now.AddHours(1).UtcDateTime,
+            KeyGeneration = 1,
+            SigningPublicKey = Convert.ToBase64String(Enumerable.Repeat((byte)0x51, 32).ToArray()),
+            AgreementPublicKey = Convert.ToBase64String(Enumerable.Repeat((byte)0x61, 32).ToArray()),
+            ConfirmedAtUtc = now.UtcDateTime,
+        };
+        var configuration = new DadAutoPartyConfiguration
+        {
+            Enabled = true,
+            RegistrationState = DadAutoPartyRegistrationState.Active,
+            RegistrationId = registrationId.ToString("D"),
+            RouteId = routeId,
+            CentralBotApplicationId = "123456789012345678",
+            HomeGuildScope = "223456789012345678",
+            WebhookCredentialReference = oldReference,
+            UplinkEpochId = oldUplink.EpochId.ToString("D"),
+            DownlinkEpochId = oldDownlink.EpochId.ToString("D"),
+            MailboxEpochGeneration = oldUplink.EpochGeneration,
+            RelayKeyGeneration = crypto.RelayKeyVersion,
+            RelaySigningPublicKey = Convert.ToBase64String(crypto.RelaySigningPublicKey),
+            RelayAgreementPublicKey = Convert.ToBase64String(crypto.RelayAgreementPublicKey),
+            EndpointIdentityReference = identityReference,
+            RegisteredOwnerId = ownerId,
+            RegisteredIslandId = islandId,
+            RegistrationFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                ownerId,
+                islandId,
+                crypto.EndpointKeyVersion,
+                crypto.EndpointSigningPublicKey,
+                crypto.EndpointAgreementPublicKey),
+            EndpointAlias = "recovery-endpoint",
+            SigningPublicKey = Convert.ToBase64String(crypto.EndpointSigningPublicKey),
+            EncryptionPublicKey = Convert.ToBase64String(crypto.EndpointAgreementPublicKey),
+            EndpointKeyGeneration = crypto.EndpointKeyVersion,
+            StandingSharePolicy = savedStandingPolicy,
+            Pairings = [activePairing],
+        }.Normalize();
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
+        using var handler = new RecoveryWebhookHandler(newWebhookId);
+        using var service = new DadAutoPartyService(
+            configuration,
+            identityStore,
+            static () => true,
+            static () => { },
+            credentialStore: credentialStore);
+        using var endpoint = new DadAutoPartyEndpointService(
+            configuration,
+            credentialStore,
+            new MemoryLegacyTokenStore(),
+            service.Connector,
+            static () => { },
+            httpClientFactory: () => new HttpClient(handler, disposeHandler: false),
+            identityStore: identityStore);
+        var pumpSleeping = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pump = new DadAutoPartyRelayPump(
+            configuration,
+            identityStore,
+            service.Connector,
+            service,
+            new DadAutoPartyParticipantBridge(configuration),
+            new MemoryPendingOperationStore(),
+            delay: (_, cancellationToken) =>
+            {
+                pumpSleeping.TrySetResult(true);
+                return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            });
+
+        for (var attempt = 0; attempt < 200 &&
+             endpoint.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready; attempt++)
+        {
+            endpoint.Update(dadEnabled: true);
+            await Task.Delay(5);
+        }
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, endpoint.Snapshot.State);
+        endpoint.AttachRelayPump(pump, service);
+        await pumpSleeping.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var queued = await endpoint.InitiatePairingAsync(queuedPeerIslandId);
+        Assert.True(queued.Allowed, queued.SafeCode);
+        Assert.Equal(1, pump.Snapshot.PendingOutboundCount);
+
         var imported = await endpoint.ImportBootstrapCopyPasteAsync(
-            RegistrationCopyPasteCodec.FormatBootstrapResponse(bootstrapToken));
+            crypto.CreateBootstrapCopyPaste(registrationId, routeId: routeId));
 
         Assert.True(imported.Allowed, imported.SafeCode);
-        Assert.Equal(DadAutoPartyRegistrationState.BootstrapImported, configuration.RegistrationState);
-        Assert.True(configuration.HasImportedBootstrap);
-        Assert.Equal(crypto.UplinkEpoch.EpochId.ToString("D"), configuration.UplinkEpochId);
-        Assert.Equal(crypto.DownlinkEpoch.EpochId.ToString("D"), configuration.DownlinkEpochId);
-        Assert.Equal(crypto.RelayKeyVersion, configuration.RelayKeyGeneration);
-        Assert.Equal(Convert.ToBase64String(crypto.RelaySigningPublicKey),
-            configuration.RelaySigningPublicKey);
-        Assert.Equal(Convert.ToBase64String(crypto.RelayAgreementPublicKey),
-            configuration.RelayAgreementPublicKey);
-        Assert.NotNull(webhookStore.StoredCredential);
-        Assert.Equal(crypto.UplinkEpoch.EpochId, webhookStore.StoredCredential!.UplinkEpoch!.EpochId);
-        Assert.Equal(crypto.DownlinkEpoch.EpochId, webhookStore.StoredCredential.DownlinkEpoch!.EpochId);
+        Assert.Equal(DadAutoPartyRegistrationState.Active, configuration.RegistrationState);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.Active, configuration.RegistrationRecoveryState);
+        Assert.True(Assert.Single(configuration.Pairings).IsActive);
+        Assert.Same(savedStandingPolicy, configuration.StandingSharePolicy);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, savedStandingPolicy.Mode);
+        Assert.False(savedStandingPolicy.Enabled);
+        Assert.Empty(savedStandingPolicy.CharacterHandles);
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Connecting, endpoint.Snapshot.State);
+        Assert.Equal("dad-webhook-refreshing", endpoint.Snapshot.SafeCode);
+        Assert.Same(DadAutoPartyAdapterTransferSnapshot.Idle, endpoint.TransferSnapshot);
+        var refreshingRegistration = DadAutoPartyProgressProjection.Registration(
+            configuration,
+            endpoint.Snapshot,
+            DateTime.UtcNow);
+        Assert.True(refreshingRegistration.RegistrationActive);
+        Assert.False(refreshingRegistration.MailboxReady);
+        Assert.Equal(DadAutoPartyProgressState.NotRequired, refreshingRegistration.ActivationReceipt);
+        var refreshingPairing = DadAutoPartyProgressProjection.Pairing(
+            configuration,
+            endpoint.Snapshot,
+            endpoint.LastPairingChallenge,
+            endpoint.LastPairingAttemptResult,
+            queuedPeerIslandId,
+            null,
+            DateTime.UtcNow);
+        Assert.True(refreshingPairing.RegistrationActive);
+        Assert.False(refreshingPairing.MailboxReady);
+        Assert.Equal("dad-pairing-mailbox-refreshing", refreshingPairing.SafeCode);
+        var gated = await endpoint.InitiatePairingAsync(peerIslandId);
+        Assert.False(gated.Allowed);
+        Assert.Equal("dad-pairing-mailbox-refreshing", gated.SafeCode);
 
-        var activated = endpoint.MarkRegistrationActive(
-            registrationId,
-            crypto.UplinkEpoch.EpochId,
-            crypto.UplinkEpoch.EpochGeneration);
+        await pump.ProcessOnceAsync();
+        Assert.Equal(1, pump.Snapshot.PendingOutboundCount);
+        Assert.DoesNotContain(handler.Pages, page =>
+            page.WebhookId == oldWebhookId &&
+            page.PayloadTypes.Contains(ProtocolContractRegistry.GetTypeId<PairingNotice>()));
 
-        Assert.True(activated.Allowed, activated.SafeCode);
-        Assert.True(configuration.IsRegistrationActive);
+        for (var attempt = 0; attempt < 400 &&
+             endpoint.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready; attempt++)
+        {
+            endpoint.Update(dadEnabled: true);
+            await Task.Delay(5);
+        }
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, endpoint.Snapshot.State);
+        var recoveredReady = DadAutoPartyProgressProjection.Registration(
+            configuration,
+            endpoint.Snapshot,
+            DateTime.UtcNow);
+        Assert.True(recoveredReady.RegistrationActive);
+        Assert.True(recoveredReady.MailboxReady);
+        await handler.NewMailboxReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var replayed = await endpoint.ImportBootstrapCopyPasteAsync(bootstrapToken);
-        Assert.False(replayed.Allowed);
-        Assert.Equal("dad-bootstrap-replayed", replayed.SafeCode);
+        await pump.ProcessOnceAsync();
+        Assert.Equal(0, pump.Snapshot.PendingOutboundCount);
+        handler.ReleaseNewMailbox();
+        for (var attempt = 0; attempt < 400 &&
+             handler.Pages.Count(page => page.PayloadTypes.Contains(
+                 ProtocolContractRegistry.GetTypeId<PairingNotice>())) < 1; attempt++)
+            await Task.Delay(5);
+
+        var pairingPage = Assert.Single(handler.Pages, page =>
+            page.PayloadTypes.Contains(ProtocolContractRegistry.GetTypeId<PairingNotice>()));
+        Assert.Equal(newWebhookId, pairingPage.WebhookId);
+        Assert.DoesNotContain(handler.Pages, page =>
+            page.PayloadTypes.Contains(ProtocolContractRegistry.GetTypeId<RegistrationHello>()));
+        Assert.Equal(1, pump.Snapshot.AwaitingRelayReceiptCount);
     }
 
     [Fact]
@@ -202,10 +573,12 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         var accepted = await endpoint.ImportBootstrapCopyPasteAsync(token);
         Assert.True(accepted.Allowed, accepted.SafeCode);
+        Assert.Equal(DadAutoPartyRegistrationState.BootstrapImported, configuration.RegistrationState);
+        Assert.False(configuration.IsRegistrationActive);
     }
 
     [Fact]
-    public void AutoPartyWindowShowsDirectBilateralPairingAndUnmaskedBootstrapInput()
+    public void AutoPartyWindowShowsProgressCardsDirectBilateralPairingAndUnmaskedBootstrapInput()
     {
         var source = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
         var bootstrapStart = source.IndexOf("\"Encrypted bootstrap DM\"", StringComparison.Ordinal);
@@ -213,7 +586,24 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         Assert.Contains("Enable bot DMs before registering", source, StringComparison.Ordinal);
         Assert.Contains("transport-channel traffic is private machine traffic", source, StringComparison.Ordinal);
-        Assert.Contains("relay acknowledgement is pending", source, StringComparison.Ordinal);
+        Assert.Contains("Registration & mailbox", source, StringComparison.Ordinal);
+        Assert.Contains("Mailbox activity", source, StringComparison.Ordinal);
+        Assert.Contains("Island pairing", source, StringComparison.Ordinal);
+        Assert.Contains("Accepted fragments:", source, StringComparison.Ordinal);
+        Assert.Contains("awaiting semantic receipt", source, StringComparison.Ordinal);
+        Assert.Contains("Raw safe code:", source, StringComparison.Ordinal);
+        Assert.Contains("Activation receipt not required - Active recovery", source, StringComparison.Ordinal);
+        Assert.Contains("Local approval accepted by central", source, StringComparison.Ordinal);
+        Assert.Contains("Recover registration", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "configuration.RegistrationState is DadAutoPartyRegistrationState.Active or",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("var registrationLocked = identityLost ||", source, StringComparison.Ordinal);
+        Assert.Contains("activationPending ||", source, StringComparison.Ordinal);
+        Assert.Contains("Forget old identity and register as new", source, StringComparison.Ordinal);
+        Assert.Contains("/autoparty deregister island:", source, StringComparison.Ordinal);
+        Assert.Contains("I confirm the owner deregistration completed", source, StringComparison.Ordinal);
         Assert.Contains("ImGui.BeginDisabled(!registrationReady)", source, StringComparison.Ordinal);
         Assert.Contains("This DAD island ID", source, StringComparison.Ordinal);
         Assert.Contains("Copy island ID", source, StringComparison.Ordinal);
@@ -225,15 +615,241 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.True(bootstrapStart >= 0);
         Assert.True(bootstrapEnd > bootstrapStart);
         Assert.DoesNotContain("Password", source[bootstrapStart..bootstrapEnd], StringComparison.Ordinal);
-        Assert.Contains("endpoint.SafeCode", source, StringComparison.Ordinal);
         Assert.Contains("Last mailbox exchange", source, StringComparison.Ordinal);
-        Assert.Contains("Mailbox queues:", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Registration {configuration.RegistrationState}", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Mailbox queues:", source, StringComparison.Ordinal);
         Assert.Contains("active, online", source, StringComparison.Ordinal);
         Assert.Contains("active, offline", source, StringComparison.Ordinal);
         Assert.Contains("directory.OnlineIslandIds.Contains", source, StringComparison.Ordinal);
         Assert.Contains("Status: {status}", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TransportChannelIds", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewChannel", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegistrationProgressProjectsLifecycleRecoveryAndIdentityLossWithoutActivityRegression()
+    {
+        var now = DateTime.UtcNow;
+        var notRegistered = EndpointSnapshot(
+            DadAutoPartyEndpointConnectionState.NotRegistered,
+            "dad-webhook-not-registered");
+        var ready = EndpointSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-ready");
+
+        var fresh = DadAutoPartyProgressProjection.Registration(
+            new DadAutoPartyConfiguration { Enabled = true },
+            notRegistered,
+            now);
+        Assert.False(fresh.EndpointIdentityReady);
+        Assert.False(fresh.ChallengeGenerated);
+        Assert.False(fresh.BootstrapImportedAndProtected);
+        Assert.False(fresh.RegistrationActive);
+        Assert.False(fresh.MailboxReady);
+
+        var activatingConfiguration = ActiveConfiguration();
+        activatingConfiguration.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
+        activatingConfiguration.BootstrapExpiresAtUtc = now.AddMinutes(5);
+        var activating = DadAutoPartyProgressProjection.Registration(
+            activatingConfiguration,
+            ready,
+            now);
+        Assert.True(activating.EndpointIdentityReady);
+        Assert.True(activating.ChallengeGenerated);
+        Assert.True(activating.BootstrapImportedAndProtected);
+        Assert.Equal(DadAutoPartyProgressState.Pending, activating.ActivationReceipt);
+        Assert.False(activating.RegistrationActive);
+        Assert.True(activating.MailboxReady);
+
+        activatingConfiguration.BootstrapExpiresAtUtc = now.AddSeconds(-1);
+        var expired = DadAutoPartyProgressProjection.Registration(
+            activatingConfiguration,
+            notRegistered,
+            now);
+        Assert.True(expired.BootstrapImportedAndProtected);
+        Assert.Contains("Recover this registration", expired.NextAction, StringComparison.Ordinal);
+
+        var recoveryAvailableConfiguration = ActiveConfiguration();
+        recoveryAvailableConfiguration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        recoveryAvailableConfiguration.RegistrationRecoveryState =
+            DadAutoPartyRegistrationRecoveryState.RecoveryAvailable;
+        var recoveryAvailable = DadAutoPartyProgressProjection.Registration(
+            recoveryAvailableConfiguration,
+            notRegistered,
+            now);
+        Assert.True(recoveryAvailable.EndpointIdentityReady);
+        Assert.True(recoveryAvailable.ChallengeGenerated);
+        Assert.False(recoveryAvailable.BootstrapImportedAndProtected);
+        Assert.Contains("Recover this registration", recoveryAvailable.NextAction, StringComparison.Ordinal);
+
+        var activeConfiguration = ActiveConfiguration();
+        activeConfiguration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
+        var refreshing = DadAutoPartyProgressProjection.Registration(
+            activeConfiguration,
+            EndpointSnapshot(DadAutoPartyEndpointConnectionState.Connecting, "dad-webhook-refreshing"),
+            now);
+        Assert.True(refreshing.RegistrationActive);
+        Assert.False(refreshing.MailboxReady);
+        Assert.Equal(DadAutoPartyProgressState.NotRequired, refreshing.ActivationReceipt);
+        Assert.Contains("replacement mailbox", refreshing.NextAction, StringComparison.Ordinal);
+
+        var activeReady = DadAutoPartyProgressProjection.Registration(activeConfiguration, ready, now);
+        Assert.True(activeReady.EndpointIdentityReady);
+        Assert.True(activeReady.ChallengeGenerated);
+        Assert.True(activeReady.BootstrapImportedAndProtected);
+        Assert.Equal(DadAutoPartyProgressState.Complete, activeReady.ActivationReceipt);
+        Assert.True(activeReady.RegistrationActive);
+        Assert.True(activeReady.MailboxReady);
+
+        var afterListing = DadAutoPartyProgressProjection.Registration(
+            activeConfiguration,
+            ready with { SafeCode = "dad-webhook-uplink-fragment-published" },
+            now);
+        Assert.Equal(activeReady.EndpointIdentityReady, afterListing.EndpointIdentityReady);
+        Assert.Equal(activeReady.ChallengeGenerated, afterListing.ChallengeGenerated);
+        Assert.Equal(activeReady.BootstrapImportedAndProtected, afterListing.BootstrapImportedAndProtected);
+        Assert.Equal(activeReady.ActivationReceipt, afterListing.ActivationReceipt);
+        Assert.Equal(activeReady.RegistrationActive, afterListing.RegistrationActive);
+        Assert.Equal(activeReady.MailboxReady, afterListing.MailboxReady);
+        Assert.Equal(activeReady.NextAction, afterListing.NextAction);
+
+        var identityLostConfiguration = ActiveConfiguration();
+        identityLostConfiguration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        identityLostConfiguration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.IdentityLost;
+        var identityLost = DadAutoPartyProgressProjection.Registration(
+            identityLostConfiguration,
+            notRegistered,
+            now);
+        Assert.False(identityLost.EndpointIdentityReady);
+        Assert.False(identityLost.RegistrationActive);
+        Assert.Equal(DadAutoPartyProgressState.Blocked, identityLost.ActivationReceipt);
+        Assert.Contains("Owner deregistration", identityLost.NextAction, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PairingProgressProjectsInitiatorPeerApprovalOrdersExpiryRejectionAndActivation()
+    {
+        const string localIsland = "island-11111111111111111111111111111111";
+        const string peerIsland = "island-22222222222222222222222222222222";
+        var now = DateTime.UtcNow;
+        var ready = EndpointSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-ready");
+        var initiatorConfiguration = ActiveConfiguration();
+        initiatorConfiguration.RegisteredIslandId = localIsland;
+        var pairingId = Guid.NewGuid();
+        var challenge = new DadAutoPartyPairingChallenge(
+            pairingId,
+            initiatorConfiguration.RegisteredOwnerId,
+            localIsland,
+            initiatorConfiguration.RegistrationFingerprint,
+            1,
+            "123456",
+            now.AddMinutes(10));
+        var initiator = DadAutoPartyProgressProjection.Pairing(
+            initiatorConfiguration,
+            ready,
+            challenge,
+            null,
+            peerIsland,
+            "dad-pairing-notice-queued",
+            now);
+        Assert.Equal(DadAutoPartyProgressState.Complete, initiator.PeerIdValidated);
+        Assert.Equal(DadAutoPartyProgressState.Complete, initiator.NoticeQueued);
+        Assert.False(initiator.NoticeAcceptedAndPendingPairingReceived);
+        Assert.False(initiator.PairingActive);
+
+        var peerConfiguration = ActiveConfiguration();
+        peerConfiguration.RegisteredIslandId = localIsland;
+        var pairing = ProgressPairing(pairingId, peerIsland, now.AddMinutes(10));
+        peerConfiguration.PendingPairings.Add(pairing);
+        var peerPending = DadAutoPartyProgressProjection.Pairing(
+            peerConfiguration,
+            ready,
+            null,
+            null,
+            null,
+            null,
+            now);
+        Assert.Equal(DadAutoPartyProgressState.NotRequired, peerPending.NoticeQueued);
+        Assert.True(peerPending.NoticeAcceptedAndPendingPairingReceived);
+        Assert.False(peerPending.LocalApprovalSaved);
+
+        pairing.PeerApproved = true;
+        var peerFirst = DadAutoPartyProgressProjection.Pairing(
+            peerConfiguration, ready, null, null, null, null, now);
+        Assert.True(peerFirst.PeerApprovalReceived);
+        Assert.False(peerFirst.PairingActive);
+
+        pairing.LocalApproved = true;
+        pairing.LocalApprovalRelayMessageId = Guid.NewGuid().ToString("D");
+        pairing.LocalSharePolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            Enabled = false,
+            CharacterHandles = [],
+            Revision = 2,
+            UpdatedAtUtc = now,
+        };
+        var locallyApproved = DadAutoPartyProgressProjection.Pairing(
+            peerConfiguration, ready, null, null, null, null, now);
+        Assert.True(locallyApproved.LocalApprovalSaved);
+        Assert.False(locallyApproved.LocalApprovalAcceptedByCentral);
+        Assert.False(locallyApproved.PairingActive);
+
+        pairing.LocalApprovalRelayAcceptedAtUtc = now;
+        pairing.ConfirmedAtUtc = now;
+        var allFieldsStillPending = DadAutoPartyProgressProjection.Pairing(
+            peerConfiguration, ready, null, null, null, null, now);
+        Assert.True(allFieldsStillPending.LocalApprovalAcceptedByCentral);
+        Assert.True(allFieldsStillPending.PeerApprovalReceived);
+        Assert.False(allFieldsStillPending.PairingActive);
+
+        peerConfiguration.PendingPairings.Clear();
+        pairing.ExpiresAtUtc = now.AddMinutes(-1);
+        peerConfiguration.Pairings.Add(pairing);
+        var active = DadAutoPartyProgressProjection.Pairing(
+            peerConfiguration, ready, null, null, null, null, now);
+        Assert.True(active.PairingActive);
+        Assert.False(active.ExpiredOrRejected);
+        Assert.Equal("dad-pairing-active", active.SafeCode);
+
+        var rejectedConfiguration = ActiveConfiguration();
+        rejectedConfiguration.RegisteredIslandId = localIsland;
+        var rejected = DadAutoPartyProgressProjection.Pairing(
+            rejectedConfiguration,
+            ready,
+            null,
+            new DadAutoPartyPairingAttemptResult(
+                Guid.NewGuid(),
+                peerIsland,
+                "central-pairing-peer-offline",
+                new DateTimeOffset(now, TimeSpan.Zero)),
+            peerIsland,
+            null,
+            now);
+        Assert.True(rejected.ExpiredOrRejected);
+        Assert.Equal("central-pairing-peer-offline", rejected.SafeCode);
+
+        var expiredConfiguration = ActiveConfiguration();
+        expiredConfiguration.RegisteredIslandId = localIsland;
+        expiredConfiguration.PendingPairings.Add(
+            ProgressPairing(Guid.NewGuid(), peerIsland, now.AddSeconds(-1)));
+        var expired = DadAutoPartyProgressProjection.Pairing(
+            expiredConfiguration, ready, null, null, null, null, now);
+        Assert.True(expired.ExpiredOrRejected);
+        Assert.False(expired.PairingActive);
+        Assert.Equal("dad-pairing-expired", expired.SafeCode);
+    }
+
+    [Fact]
+    public void MailboxActivityUsesFriendlyPayloadNames()
+    {
+        Assert.Equal("Registration hello", DadAutoPartyProgressProjection.FriendlyPayloadName(
+            ProtocolContractRegistry.GetTypeId<RegistrationHello>()));
+        Assert.Equal("Listing update", DadAutoPartyProgressProjection.FriendlyPayloadName(
+            ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>()));
+        Assert.Equal("Pairing notice", DadAutoPartyProgressProjection.FriendlyPayloadName(
+            ProtocolContractRegistry.GetTypeId<PairingNotice>()));
+        Assert.Equal("Pairing approval", DadAutoPartyProgressProjection.FriendlyPayloadName(
+            ProtocolContractRegistry.GetTypeId<PairingApproval>()));
+        Assert.Equal("Mailbox message", DadAutoPartyProgressProjection.FriendlyPayloadName("unknown-payload"));
     }
 
     [Fact]
@@ -345,7 +961,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var outbound = Envelope(
             "island-local",
             "central-autoparty",
-            Enumerable.Range(0, AutoPartyProtocol.MaximumCourierFragmentBytes + 32)
+            Enumerable.Range(0, AutoPartyProtocol.MaximumCourierFragmentBytes * 3 + 32)
                 .Select(static value => (byte)value)
                 .ToArray());
         var (downlink, downlinkPage) = crypto.CreateDownlink([5, 6, 7, 8]);
@@ -387,7 +1003,15 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         var firstPage = CourierTextCodec.DecodePage(handler.UplinkPages.First()).Contract;
         Assert.True(firstPage.Fragments.Length == 1);
-        Assert.True(firstPage.Fragments[0].FragmentCount > 1);
+        Assert.Equal(4, firstPage.Fragments[0].FragmentCount);
+        for (var attempt = 0; attempt < 100 && !adapter.TransferSnapshot.AwaitingCentralAcknowledgement; attempt++)
+            await Task.Delay(10);
+        Assert.Equal(new DadAutoPartyAdapterTransferSnapshot(
+            "test-envelope",
+            0,
+            1,
+            4,
+            true), adapter.TransferSnapshot);
         var getsBeforeWrongGeneration = handler.GetAttempts;
         handler.SetContent(
             "10001",
@@ -398,15 +1022,44 @@ public sealed class DadAutoPartyWebhookEndpointTests
             await Task.Delay(10);
         Assert.All(handler.UplinkPages, content =>
             Assert.Equal(1, CourierTextCodec.DecodePage(content).Contract.Fragments[0].FragmentNumber));
-        handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(firstPage));
-        for (var attempt = 0; attempt < 100 && !handler.UplinkPages.Any(content =>
-                 CourierTextCodec.DecodePage(content).Contract.Fragments[0].FragmentNumber == 2); attempt++)
-            await Task.Delay(10);
-        var uplinkPages = handler.UplinkPages
-            .Select(content => CourierTextCodec.DecodePage(content).Contract)
-            .ToList();
-        Assert.Contains(uplinkPages, page => page.Fragments[0].FragmentNumber == 1);
-        Assert.Contains(uplinkPages, page => page.Fragments[0].FragmentNumber == 2);
+        Assert.Equal(0, adapter.TransferSnapshot.AcceptedFragmentCount);
+        Assert.Equal(1, adapter.TransferSnapshot.CurrentFragmentNumber);
+
+        for (var fragmentNumber = 1; fragmentNumber <= 4; fragmentNumber++)
+        {
+            CourierPage? publishedPage = null;
+            for (var attempt = 0; attempt < 100 && publishedPage == null; attempt++)
+            {
+                publishedPage = handler.UplinkPages
+                    .Select(content => CourierTextCodec.DecodePage(content).Contract)
+                    .LastOrDefault(page => page.Fragments[0].FragmentNumber == fragmentNumber);
+                if (publishedPage == null)
+                    await Task.Delay(10);
+            }
+            Assert.NotNull(publishedPage);
+            Assert.Equal(fragmentNumber - 1, adapter.TransferSnapshot.AcceptedFragmentCount);
+            Assert.Equal(fragmentNumber, adapter.TransferSnapshot.CurrentFragmentNumber);
+            Assert.Equal(4, adapter.TransferSnapshot.TotalFragmentCount);
+            Assert.True(adapter.TransferSnapshot.AwaitingCentralAcknowledgement);
+
+            handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(publishedPage!));
+            if (fragmentNumber < 4)
+            {
+                for (var attempt = 0; attempt < 100 &&
+                     (adapter.TransferSnapshot.AcceptedFragmentCount != fragmentNumber ||
+                      adapter.TransferSnapshot.CurrentFragmentNumber != fragmentNumber + 1 ||
+                      !adapter.TransferSnapshot.AwaitingCentralAcknowledgement); attempt++)
+                    await Task.Delay(10);
+                Assert.Equal(fragmentNumber, adapter.TransferSnapshot.AcceptedFragmentCount);
+                Assert.Equal(fragmentNumber + 1, adapter.TransferSnapshot.CurrentFragmentNumber);
+            }
+            else
+            {
+                for (var attempt = 0; attempt < 100 && !adapter.TransferSnapshot.IsIdle; attempt++)
+                    await Task.Delay(10);
+                Assert.Same(DadAutoPartyAdapterTransferSnapshot.Idle, adapter.TransferSnapshot);
+            }
+        }
 
         await adapter.AcknowledgeAsync(new AutoPartyTransportAcknowledgement(
             downlink.EnvelopeId,
@@ -805,6 +1458,30 @@ public sealed class DadAutoPartyWebhookEndpointTests
         EncryptionPublicKey = Convert.ToBase64String(new byte[32]),
     }.Normalize();
 
+    private static DadAutoPartyEndpointSnapshot EndpointSnapshot(
+        DadAutoPartyEndpointConnectionState state,
+        string safeCode) =>
+        new(state, safeCode, DateTime.UtcNow, null, 0, 0, 0, 1);
+
+    private static DadAutoPartyPairing ProgressPairing(
+        Guid pairingId,
+        string peerIslandId,
+        DateTime expiresAtUtc) => new()
+    {
+        PairingId = pairingId.ToString("D"),
+        OwnerId = "owner-peer",
+        IslandId = peerIslandId,
+        HomeGuildScope = "home-guild",
+        PublicKeyFingerprint = new string('1', 64),
+        LocalFingerprint = new string('2', 64),
+        TranscriptHash = new string('3', 64),
+        ConfirmationCodeHash = new string('4', 64),
+        ExpiresAtUtc = expiresAtUtc,
+        KeyGeneration = 1,
+        SigningPublicKey = Convert.ToBase64String(Enumerable.Repeat((byte)0x51, 32).ToArray()),
+        AgreementPublicKey = Convert.ToBase64String(Enumerable.Repeat((byte)0x61, 32).ToArray()),
+    };
+
     private static DadAutoPartySharePolicy Policy(DadAutoPartyCharacterShareMode mode) => new()
     {
         Mode = mode,
@@ -861,6 +1538,130 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var repositoryRoot = directory?.FullName ?? throw new DirectoryNotFoundException(
             "Could not locate the DAD repository root from the test output directory.");
         return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
+    }
+
+    private sealed record RecoveryWebhookPage(
+        string WebhookId,
+        IReadOnlyList<string> PayloadTypes);
+
+    private sealed class RecoveryWebhookHandler(string blockedWebhookId) : HttpMessageHandler
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<string, string> contents = new(StringComparer.Ordinal);
+        private readonly List<RecoveryWebhookPage> pages = [];
+        private readonly TaskCompletionSource<bool> releaseNewMailbox =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int blockNextNewMailboxRead = 1;
+
+        public TaskCompletionSource<bool> NewMailboxReadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<RecoveryWebhookPage> Pages
+        {
+            get
+            {
+                lock (gate)
+                    return pages.ToArray();
+            }
+        }
+
+        public void ReleaseNewMailbox() => releaseNewMailbox.TrySetResult(true);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath.Trim('/').Split('/');
+            var webhookId = path[3];
+            var messageReference = path[^1];
+            var key = $"{webhookId}/{messageReference}";
+            if (request.Method == HttpMethod.Get)
+            {
+                if (string.Equals(webhookId, blockedWebhookId, StringComparison.Ordinal) &&
+                    Interlocked.Exchange(ref blockNextNewMailboxRead, 0) == 1)
+                {
+                    NewMailboxReadStarted.TrySetResult(true);
+                    await releaseNewMailbox.Task.WaitAsync(cancellationToken);
+                }
+                string content;
+                lock (gate)
+                    content = contents.GetValueOrDefault(key, CourierTextCodec.EmptySlotContent);
+                return Json(HttpStatusCode.OK, new { id = messageReference, content });
+            }
+            if (request.Method == HttpMethod.Patch)
+            {
+                var payload = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var document = JsonDocument.Parse(payload);
+                var content = document.RootElement.GetProperty("content").GetString()!;
+                lock (gate)
+                {
+                    contents[key] = content;
+                    if (CourierTextCodec.GetKind(content) == CourierTextKind.Page)
+                    {
+                        var page = CourierTextCodec.DecodePage(content).Contract;
+                        pages.Add(new RecoveryWebhookPage(
+                            webhookId,
+                            page.Fragments.Select(static fragment => fragment.PayloadType).ToArray()));
+                    }
+                }
+                return Json(HttpStatusCode.OK, new { id = messageReference, content });
+            }
+            return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
+        }
+
+        private static HttpResponseMessage Json(HttpStatusCode status, object payload) => new(status)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(payload),
+                Encoding.UTF8,
+                "application/json"),
+        };
+    }
+
+    private sealed class RotatingMemoryWebhookStore : IDadAutoPartyWebhookCredentialStore
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<string, DadAutoPartyWebhookCredential> credentials = new(StringComparer.Ordinal);
+        private readonly string importedReference;
+
+        public RotatingMemoryWebhookStore(
+            string existingReference,
+            DadAutoPartyWebhookCredential existingCredential,
+            string importedReference)
+        {
+            credentials[existingReference] = existingCredential;
+            this.importedReference = importedReference;
+        }
+
+        public ValueTask<string> StoreAsync(
+            DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (gate)
+                credentials[importedReference] = credential;
+            return ValueTask.FromResult(importedReference);
+        }
+
+        public ValueTask<DadAutoPartyWebhookCredential> LoadAsync(
+            string credentialReference,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (gate)
+                return ValueTask.FromResult(credentials.TryGetValue(credentialReference, out var credential)
+                    ? credential
+                    : throw new InvalidOperationException("missing-test-credential"));
+        }
+
+        public ValueTask<bool> DeleteAsync(
+            string credentialReference,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (gate)
+                return ValueTask.FromResult(credentials.Remove(credentialReference));
+        }
     }
 
     private sealed class ScriptedWebhookHandler(
@@ -988,8 +1789,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
     private sealed class CryptoFixture : IDisposable
     {
         private readonly FixtureKeyResolver keyResolver;
-        public OwnerId OwnerId { get; } = new("owner-local");
-        public IslandId IslandId { get; } = new("island-local");
+        public OwnerId OwnerId { get; }
+        public IslandId IslandId { get; }
         public int EndpointKeyVersion { get; } = 1;
         public int RelayKeyVersion { get; } = 1;
         public byte[] EndpointSigningPrivateKey { get; } = RandomNumberGenerator.GetBytes(32);
@@ -1004,8 +1805,12 @@ public sealed class DadAutoPartyWebhookEndpointTests
         public CourierEpochDescriptor DownlinkEpoch { get; }
         public EndpointPublicKeys RelayPublicKeys { get; }
 
-        public CryptoFixture()
+        public CryptoFixture(
+            string ownerId = "owner-local",
+            string islandId = "island-local")
         {
+            OwnerId = new OwnerId(ownerId);
+            IslandId = new IslandId(islandId);
             EndpointSigningPublicKey = BouncyCastlePrimitives.DeriveEd25519PublicKey(
                 EndpointSigningPrivateKey);
             EndpointAgreementPublicKey = BouncyCastlePrimitives.DeriveX25519PublicKey(
@@ -1127,7 +1932,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
             Guid registrationId,
             IslandId? recipient = null,
             DateTimeOffset? issuedAt = null,
-            DateTimeOffset? expiresAt = null)
+            DateTimeOffset? expiresAt = null,
+            string routeId = "route-one")
         {
             var observedAt = issuedAt ?? DateTimeOffset.UtcNow;
             var bootstrapExpiresAt = expiresAt ?? observedAt.AddMinutes(5);
@@ -1144,7 +1950,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 IslandId,
                 "123456789012345678",
                 "223456789012345678",
-                "route-one",
+                routeId,
                 new WebhookMailboxCredential(
                     "323456789012345678",
                     new string('a', 64),
@@ -1292,6 +2098,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
     private sealed class MemoryWebhookStore : IDadAutoPartyWebhookCredentialStore
     {
         public DadAutoPartyWebhookCredential? StoredCredential { get; private set; }
+        public string StoredReference { get; private set; } = string.Empty;
 
         public ValueTask<string> StoreAsync(
             DadAutoPartyWebhookCredential credential,
@@ -1299,7 +2106,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             StoredCredential = credential;
-            return ValueTask.FromResult("webhook-mailbox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            StoredReference = "webhook-mailbox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            return ValueTask.FromResult(StoredReference);
         }
 
         public ValueTask<DadAutoPartyWebhookCredential> LoadAsync(
@@ -1307,7 +2115,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return StoredCredential is { } credential
+            return StoredCredential is { } credential &&
+                   string.Equals(credentialReference, StoredReference, StringComparison.Ordinal)
                 ? ValueTask.FromResult(credential)
                 : throw new InvalidOperationException("missing-test-credential");
         }
@@ -1317,8 +2126,13 @@ public sealed class DadAutoPartyWebhookEndpointTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var existed = StoredCredential != null;
-            StoredCredential = null;
+            var existed = StoredCredential != null &&
+                string.Equals(credentialReference, StoredReference, StringComparison.Ordinal);
+            if (existed)
+            {
+                StoredCredential = null;
+                StoredReference = string.Empty;
+            }
             return ValueTask.FromResult(existed);
         }
     }
@@ -1339,6 +2153,19 @@ public sealed class DadAutoPartyWebhookEndpointTests
             string tokenReference,
             CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(true);
+    }
+
+    private sealed class MemoryPendingOperationStore : IDadAutoPartyPendingOperationStore
+    {
+        public DadAutoPartyPendingDeregistration? LoadDeregistration() => null;
+
+        public void SaveDeregistration(DadAutoPartyPendingDeregistration pending)
+        {
+        }
+
+        public void ClearDeregistration(Guid deregistrationId)
+        {
+        }
     }
 
     private sealed class MemoryIdentityStore : IDadAutoPartyEndpointIdentityStore, IDisposable

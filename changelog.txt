@@ -1,6 +1,31 @@
 # dad — changelog
 
 ## 2026-08-14 — AutoParty presence and mailbox repair (local-only, unpublished)
+- An exact same-identity bootstrap refresh for an already-Active registration now keeps both registration and recovery
+  Active while replacing the protected mailbox credential, detaches the obsolete runtime adapter, and rebinds through
+  the existing stop/start lifecycle. Pairing remains gated while the replacement mailbox reports refreshing, queued
+  relay work survives the handoff, and no registration hello or receipt is required. Provisional, expired, and
+  recovery-available imports remain receipt-gated.
+- Replaced the rotating registration/connection status line with separate Registration & mailbox, Mailbox activity, and
+  Island pairing checklist cards derived only from current protected configuration and runtime snapshots. Courier
+  fragment progress and raw activity codes remain technical mailbox detail; registration stays complete from Active plus
+  Ready, and pairing becomes complete only from the saved local approval, central acceptance, peer approval, and active
+  pairing record. Closing or restarting the window creates no checklist state.
+- A disabled Community Available `CharacterList` with zero selected characters now remains unchanged in saved state while
+  transport canonicalizes it to a disabled, empty, wire-valid policy and publishes no listings, so recovery and initial
+  pre-pairing publication cannot widen sharing.
+- Recovered same-identity registrations from validated protected identity and mailbox material at startup, treating the
+  registration ID encoded in the saved route as authoritative without discarding pairings, pending pairings, or share
+  policy. Missing or inconsistent protected material remains unregistered and never silently creates a new identity.
+- Registration challenge generation now permits exact-identity Active recovery without changing registration or trust state,
+  refuses activation-pending state, reuses the original routed ID for recovery, and reuses a first-registration pending ID
+  across repeated copies. Bootstrap recovery validates the saved route, owner, island, fingerprint, public keys, and protected
+  identity before replacing mailbox material while preserving pairing and sharing state. The window distinguishes new
+  registration, recovery, and genuinely lost identity; identity replacement requires the owner deregistration command plus
+  an explicit local confirmation and intentionally clears the old trust state.
+- A negative relay receipt for an initiated `PairingNotice` now completes that process-local pairing attempt, removes it from
+  the awaiting set, and never requeues or retransmits the notice. The exact returned safe code is shown beside the pairing
+  controls; accepted notices still follow the existing bilateral pending-approval path.
 - Preserved active central registration and bilateral pairing across ordinary DAD and central-service restarts while keeping
   current reachability process-only. DAD now starts peers offline until new authenticated activity arrives; paired peers
   remain visible as online or offline, and an offline directory entry clears cached usable listings.

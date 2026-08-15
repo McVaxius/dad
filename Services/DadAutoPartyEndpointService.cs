@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using AutoParty.Contracts;
 using AutoParty.Core.Authentication;
+using AutoParty.Core.Cryptography;
 using dad.Models;
 
 namespace dad.Services;
@@ -36,6 +37,9 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     private Task<LegacyCleanupResult>? legacyCleanupTask;
     private Task? adapterStopTask;
     private DadAutoPartyWebhookTransportAdapter? adapter;
+    private long desiredAdapterGeneration;
+    private long attachedAdapterGeneration = -1;
+    private long readyAdapterGeneration;
     private DadAutoPartyRelayPump? relayPump;
     private DadAutoPartyService? autoPartyService;
     private DateTime nextLegacyCleanupAttemptUtc = DateTime.MinValue;
@@ -67,6 +71,18 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     public DadAutoPartyEndpointSnapshot Snapshot { get; private set; } =
         DadAutoPartyEndpointSnapshot.Disabled("dad-webhook-not-registered");
 
+    internal DadAutoPartyAdapterTransferSnapshot TransferSnapshot
+    {
+        get
+        {
+            var currentAdapter = adapter;
+            return currentAdapter != null &&
+                   attachedAdapterGeneration == Volatile.Read(ref desiredAdapterGeneration)
+                ? currentAdapter.TransferSnapshot
+                : DadAutoPartyAdapterTransferSnapshot.Idle;
+        }
+    }
+
     public DadAutoPartyRelayStatus RelayStatus
     {
         get
@@ -95,6 +111,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     }
 
     public DadAutoPartyPairingChallenge? LastPairingChallenge => relayPump?.LastPairingChallenge;
+
+    internal DadAutoPartyPairingAttemptResult? LastPairingAttemptResult => relayPump?.LastPairingAttemptResult;
 
     public DadAutoPartyPolicyDecision SetStandingSharePolicy(DadAutoPartySharePolicy sharePolicy)
     {
@@ -156,6 +174,11 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        if (configuration.IsRegistrationActive &&
+            Volatile.Read(ref desiredAdapterGeneration) != Volatile.Read(ref readyAdapterGeneration))
+            return ValueTask.FromResult(Decision(false, "dad-pairing-mailbox-refreshing"));
+        if (configuration.IsRegistrationActive && Snapshot.State != DadAutoPartyEndpointConnectionState.Ready)
+            return ValueTask.FromResult(Decision(false, "dad-pairing-mailbox-not-ready"));
         return relayPump?.InitiatePairingAsync(peerIslandId, cancellationToken) ??
             ValueTask.FromResult(Decision(false, "dad-relay-pump-not-attached"));
     }
@@ -300,8 +323,42 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         var now = DateTime.UtcNow;
-        if (bootstrap == null || bootstrap.RegistrationId == Guid.Empty ||
-            !string.Equals(bootstrap.RegistrationId.ToString("D"), configuration.RegistrationId, StringComparison.Ordinal) ||
+        if (bootstrap == null)
+            return Decision(false, "dad-bootstrap-invalid");
+        var expiredBootstrap = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
+            configuration.BootstrapExpiresAtUtc <= now;
+        if (configuration.RegistrationState is not (
+                DadAutoPartyRegistrationState.Unregistered or DadAutoPartyRegistrationState.Active) &&
+            !expiredBootstrap)
+            return Decision(false, "dad-bootstrap-replayed");
+
+        var recoveryImport = configuration.RegistrationState == DadAutoPartyRegistrationState.Active ||
+            expiredBootstrap ||
+            configuration.RegistrationRecoveryState == DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
+            !string.IsNullOrWhiteSpace(configuration.RouteId);
+        var expectedRegistrationId = Guid.TryParse(configuration.RegistrationId, out var configuredRegistrationId)
+            ? configuredRegistrationId
+            : Guid.Empty;
+        Guid routedRegistrationId = default;
+        var sameIdentityRecovery = recoveryImport &&
+            identityStore != null &&
+            DadAutoPartyRegistrationRecovery.TryGetRegistrationIdFromRoute(
+                configuration.RouteId,
+                out routedRegistrationId) &&
+            routedRegistrationId == bootstrap.RegistrationId &&
+            string.Equals(configuration.RouteId, bootstrap.RouteId, StringComparison.Ordinal) &&
+            string.Equals(configuration.RegisteredOwnerId, bootstrap.OwnerId, StringComparison.Ordinal) &&
+            string.Equals(configuration.RegisteredIslandId, bootstrap.IslandId, StringComparison.Ordinal) &&
+            DadAutoPartyRegistrationRecovery.HasValidProtectedIdentity(configuration, identityStore);
+        if (recoveryImport && !sameIdentityRecovery)
+            return Decision(false, "dad-bootstrap-recovery-mismatch");
+        if (sameIdentityRecovery)
+            expectedRegistrationId = routedRegistrationId;
+        var preserveActiveRegistration = sameIdentityRecovery &&
+            configuration.RegistrationState == DadAutoPartyRegistrationState.Active;
+
+        if (bootstrap.RegistrationId == Guid.Empty ||
+            bootstrap.RegistrationId != expectedRegistrationId ||
             !string.Equals(
                 DadAutoPartyConfiguration.NormalizeIdentifier(bootstrap.OwnerId),
                 configuration.RegisteredOwnerId,
@@ -361,16 +418,26 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             bootstrap.RelayPublicKeys.Ed25519PublicKey.AsSpan());
         configuration.RelayAgreementPublicKey = Convert.ToBase64String(
             bootstrap.RelayPublicKeys.X25519PublicKey.AsSpan());
-        configuration.BootstrapExpiresAtUtc = bootstrap.BootstrapExpiresAtUtc;
-        configuration.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
-        configuration.Pairings.Clear();
-        configuration.PendingPairings.Clear();
-        configuration.Grants.Clear();
-        configuration.Listings.Clear();
-        configuration.RemoteBindings.Clear();
-        configuration.Deauthentications.Clear();
+        configuration.BootstrapExpiresAtUtc = preserveActiveRegistration
+            ? default
+            : bootstrap.BootstrapExpiresAtUtc;
+        configuration.RegistrationState = preserveActiveRegistration
+            ? DadAutoPartyRegistrationState.Active
+            : DadAutoPartyRegistrationState.BootstrapImported;
+        if (preserveActiveRegistration)
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
+        if (!sameIdentityRecovery)
+        {
+            configuration.Pairings.Clear();
+            configuration.PendingPairings.Clear();
+            configuration.Grants.Clear();
+            configuration.Listings.Clear();
+            configuration.RemoteBindings.Clear();
+            configuration.Deauthentications.Clear();
+        }
         configuration.StateGeneration++;
         saveConfiguration();
+        RequestAdapterRefresh();
 
         if (!string.IsNullOrWhiteSpace(oldReference) &&
             !string.Equals(oldReference, newReference, StringComparison.Ordinal))
@@ -394,13 +461,28 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(disposed, this);
         if (identityStore == null ||
-            !Guid.TryParse(configuration.RegistrationId, out var registrationId) ||
             string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) ||
             string.IsNullOrWhiteSpace(configuration.RegisteredOwnerId) ||
             string.IsNullOrWhiteSpace(configuration.RegisteredIslandId))
             return Decision(false, "dad-bootstrap-identity-not-ready");
-        if (configuration.RegistrationState != DadAutoPartyRegistrationState.Unregistered)
+        var expiredBootstrap = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
+            configuration.BootstrapExpiresAtUtc <= DateTime.UtcNow;
+        if (configuration.RegistrationState is not (
+                DadAutoPartyRegistrationState.Unregistered or DadAutoPartyRegistrationState.Active) &&
+            !expiredBootstrap)
             return Decision(false, "dad-bootstrap-replayed");
+
+        var recoveryImport = configuration.RegistrationState == DadAutoPartyRegistrationState.Active ||
+            expiredBootstrap ||
+            configuration.RegistrationRecoveryState == DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
+            !string.IsNullOrWhiteSpace(configuration.RouteId);
+        var hasRegistrationId = recoveryImport
+            ? DadAutoPartyRegistrationRecovery.TryGetRegistrationIdFromRoute(
+                configuration.RouteId,
+                out var registrationId)
+            : Guid.TryParse(configuration.RegistrationId, out registrationId);
+        if (!hasRegistrationId)
+            return Decision(false, "dad-bootstrap-identity-not-ready");
 
         byte[]? identityMaterial = null;
         byte[]? signingPrivateKey = null;
@@ -490,6 +572,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             configuration.MailboxEpochGeneration != epochGeneration)
             return Decision(false, "dad-registration-hello-mismatch");
         configuration.RegistrationState = DadAutoPartyRegistrationState.Active;
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
         configuration.BootstrapExpiresAtUtc = default;
         configuration.StateGeneration++;
         saveConfiguration();
@@ -528,6 +611,10 @@ public sealed class DadAutoPartyEndpointService : IDisposable
 
         PublishListingsIfDue(now);
 
+        var desiredGeneration = Volatile.Read(ref desiredAdapterGeneration);
+        if (adapter != null && attachedAdapterGeneration != desiredGeneration)
+            StopAdapter();
+
         if (adapter == null && adapterStartTask == null && adapterStopTask == null)
         {
             var credentialReference = configuration.WebhookCredentialReference;
@@ -535,6 +622,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             var identityReference = configuration.EndpointIdentityReference;
             var endpointKeyGeneration = configuration.EndpointKeyGeneration;
             var expected = configuration.Clone();
+            var startGeneration = desiredGeneration;
             adapterStartTask = Task.Run(async () =>
             {
                 byte[]? identityMaterial = null;
@@ -545,9 +633,9 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                         credentialReference,
                         shutdown.Token).ConfigureAwait(false);
                     if (!CredentialMatchesConfiguration(credential, expected))
-                        return new AdapterStartResult(null, "dad-webhook-bootstrap-binding-mismatch");
+                        return new AdapterStartResult(null, "dad-webhook-bootstrap-binding-mismatch", startGeneration);
                     if (identityStore == null)
-                        return new AdapterStartResult(null, "dad-webhook-identity-store-unavailable");
+                        return new AdapterStartResult(null, "dad-webhook-identity-store-unavailable", startGeneration);
                     identityMaterial = await identityStore.LoadAsync(
                         identityReference,
                         shutdown.Token).ConfigureAwait(false);
@@ -556,10 +644,10 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                     if (!string.Equals(identity.OwnerId, expected.RegisteredOwnerId, StringComparison.Ordinal) ||
                         !string.Equals(identity.IslandId, expected.RegisteredIslandId, StringComparison.Ordinal) ||
                         identity.KeyGeneration != endpointKeyGeneration)
-                        return new AdapterStartResult(null, "dad-webhook-identity-mismatch");
+                        return new AdapterStartResult(null, "dad-webhook-identity-mismatch", startGeneration);
                     signingPrivateKey = Convert.FromBase64String(identity.SigningPrivateKey);
                     if (signingPrivateKey.Length != AutoPartyProtocol.Ed25519SignatureBytes / 2)
-                        return new AdapterStartResult(null, "dad-webhook-identity-invalid");
+                        return new AdapterStartResult(null, "dad-webhook-identity-invalid", startGeneration);
                     return new AdapterStartResult(
                         new DadAutoPartyWebhookTransportAdapter(
                             credential,
@@ -568,15 +656,16 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                             signingPrivateKey,
                             httpClientFactory(),
                             ownsHttpClient: true),
-                        "dad-webhook-adapter-created");
+                        "dad-webhook-adapter-created",
+                        startGeneration);
                 }
                 catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
                 {
-                    return new AdapterStartResult(null, "dad-webhook-adapter-start-cancelled");
+                    return new AdapterStartResult(null, "dad-webhook-adapter-start-cancelled", startGeneration);
                 }
                 catch
                 {
-                    return new AdapterStartResult(null, "dad-webhook-credential-load-failed");
+                    return new AdapterStartResult(null, "dad-webhook-credential-load-failed", startGeneration);
                 }
                 finally
                 {
@@ -587,7 +676,27 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         }
 
         if (adapter != null)
-            Snapshot = adapter.Snapshot;
+        {
+            var adapterSnapshot = adapter.Snapshot;
+            if (attachedAdapterGeneration == desiredGeneration &&
+                adapterSnapshot.State == DadAutoPartyEndpointConnectionState.Ready)
+            {
+                Volatile.Write(ref readyAdapterGeneration, desiredGeneration);
+                Snapshot = adapterSnapshot;
+            }
+            else if (desiredGeneration != Volatile.Read(ref readyAdapterGeneration))
+            {
+                Snapshot = RefreshingSnapshot();
+            }
+            else
+            {
+                Snapshot = adapterSnapshot;
+            }
+        }
+        else if (desiredGeneration != Volatile.Read(ref readyAdapterGeneration))
+        {
+            Snapshot = RefreshingSnapshot();
+        }
     }
 
     private void PublishListingsIfDue(DateTime utcNow)
@@ -639,9 +748,18 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 configuration.MailboxEpochGeneration);
             return;
         }
+        if (completed.Result.Generation != Volatile.Read(ref desiredAdapterGeneration))
+        {
+            adapterStopTask = completed.Result.Adapter.DisposeAsync().AsTask();
+            Snapshot = RefreshingSnapshot();
+            return;
+        }
         adapter = completed.Result.Adapter;
+        attachedAdapterGeneration = completed.Result.Generation;
         connector.AttachVerifiedAdapter(adapter);
-        Snapshot = adapter.Snapshot;
+        Snapshot = completed.Result.Generation == Volatile.Read(ref readyAdapterGeneration)
+            ? adapter.Snapshot
+            : RefreshingSnapshot();
     }
 
     private void StopAdapter()
@@ -651,7 +769,29 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         connector.DetachAdapter();
         var stopping = adapter;
         adapter = null;
+        attachedAdapterGeneration = -1;
         adapterStopTask = stopping.DisposeAsync().AsTask();
+    }
+
+    private void RequestAdapterRefresh()
+    {
+        _ = Interlocked.Increment(ref desiredAdapterGeneration);
+        connector.DetachAdapter();
+        Snapshot = RefreshingSnapshot();
+    }
+
+    private DadAutoPartyEndpointSnapshot RefreshingSnapshot()
+    {
+        var prior = Snapshot;
+        return new(
+            DadAutoPartyEndpointConnectionState.Connecting,
+            "dad-webhook-refreshing",
+            DateTime.UtcNow,
+            prior.LastSuccessfulExchangeAtUtc,
+            prior.PendingOutboundCount,
+            prior.PendingAcknowledgementCount,
+            prior.BufferedInboundCount,
+            configuration.MailboxEpochGeneration);
     }
 
     private void ObserveAdapterStop()
@@ -731,7 +871,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         EpochsMatch(mailbox.DownlinkEpoch, bootstrap.DownlinkEpoch) &&
         PublicKeysMatch(mailbox.RelayPublicKeys, bootstrap.RelayPublicKeys);
 
-    private static bool CredentialMatchesConfiguration(
+    internal static bool CredentialMatchesConfiguration(
         DadAutoPartyWebhookCredential credential,
         DadAutoPartyConfiguration expected) =>
         credential.HasProvisionedMailbox &&
@@ -752,6 +892,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             expected.RegisteredIslandId,
             StringComparison.Ordinal) &&
         credential.UplinkEpoch.EpochGeneration == expected.MailboxEpochGeneration &&
+        credential.DownlinkEpoch.EpochGeneration == expected.MailboxEpochGeneration &&
         credential.RelayPublicKeys!.KeyVersion == expected.RelayKeyGeneration &&
         EncodedKeyMatches(credential.RelayPublicKeys.Ed25519PublicKey, expected.RelaySigningPublicKey) &&
         EncodedKeyMatches(credential.RelayPublicKeys.X25519PublicKey, expected.RelayAgreementPublicKey);
@@ -774,7 +915,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         left.Ed25519PublicKey.AsSpan().SequenceEqual(right.Ed25519PublicKey.AsSpan()) &&
         left.X25519PublicKey.AsSpan().SequenceEqual(right.X25519PublicKey.AsSpan());
 
-    private static bool EncodedKeyMatches(ImmutableArray<byte> expected, string encoded)
+    internal static bool EncodedKeyMatches(ImmutableArray<byte> expected, string encoded)
     {
         byte[]? observed = null;
         try
@@ -862,7 +1003,186 @@ public sealed class DadAutoPartyEndpointService : IDisposable
 
     private sealed record AdapterStartResult(
         DadAutoPartyWebhookTransportAdapter? Adapter,
-        string SafeCode);
+        string SafeCode,
+        long Generation);
 
     private sealed record LegacyCleanupResult(bool Succeeded, string SafeCode);
+}
+
+internal static class DadAutoPartyRegistrationRecovery
+{
+    internal static bool ReconcileAtStartup(
+        DadAutoPartyConfiguration configuration,
+        IDadAutoPartyEndpointIdentityStore identityStore,
+        IDadAutoPartyWebhookCredentialStore credentialStore)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(identityStore);
+        ArgumentNullException.ThrowIfNull(credentialStore);
+
+        var priorState = configuration.RegistrationState;
+        var priorRegistrationId = configuration.RegistrationId;
+        var priorBootstrapExpiry = configuration.BootstrapExpiresAtUtc;
+
+        if (!HasConfiguredIdentity(configuration))
+        {
+            configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
+            return PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
+        }
+
+        if (!HasValidProtectedIdentity(configuration, identityStore))
+        {
+            configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.IdentityLost;
+            return PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
+        }
+
+        if (!configuration.HasDurableRegistrationMaterial ||
+            !TryGetRegistrationIdFromRoute(configuration.RouteId, out var routedRegistrationId) ||
+            !HasMatchingProtectedMailbox(configuration, credentialStore))
+        {
+            configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+            configuration.RegistrationRecoveryState =
+                !string.IsNullOrWhiteSpace(configuration.RouteId) ||
+                !string.IsNullOrWhiteSpace(configuration.WebhookCredentialReference)
+                    ? DadAutoPartyRegistrationRecoveryState.RecoveryAvailable
+                    : DadAutoPartyRegistrationRecoveryState.NewRegistration;
+            return PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
+        }
+
+        configuration.RegistrationId = routedRegistrationId.ToString("D");
+        if (priorState == DadAutoPartyRegistrationState.BootstrapImported &&
+            priorBootstrapExpiry > DateTime.UtcNow)
+        {
+            configuration.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
+        }
+        else if (priorState == DadAutoPartyRegistrationState.BootstrapImported)
+        {
+            configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.RecoveryAvailable;
+            configuration.BootstrapExpiresAtUtc = default;
+        }
+        else
+        {
+            configuration.RegistrationState = DadAutoPartyRegistrationState.Active;
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
+            configuration.BootstrapExpiresAtUtc = default;
+        }
+        return PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
+    }
+
+    internal static bool TryGetRegistrationIdFromRoute(string? routeId, out Guid registrationId)
+    {
+        registrationId = Guid.Empty;
+        var normalized = (routeId ?? string.Empty).Trim();
+        return normalized.Length == 38 &&
+               normalized.StartsWith("route-", StringComparison.Ordinal) &&
+               Guid.TryParseExact(normalized.AsSpan(6), "N", out registrationId) &&
+               string.Equals(normalized, $"route-{registrationId:N}", StringComparison.Ordinal);
+    }
+
+    private static bool HasConfiguredIdentity(DadAutoPartyConfiguration configuration) =>
+        !string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) ||
+        !string.IsNullOrWhiteSpace(configuration.RegisteredOwnerId) ||
+        !string.IsNullOrWhiteSpace(configuration.RegisteredIslandId) ||
+        !string.IsNullOrWhiteSpace(configuration.RegistrationFingerprint) ||
+        !string.IsNullOrWhiteSpace(configuration.SigningPublicKey) ||
+        !string.IsNullOrWhiteSpace(configuration.EncryptionPublicKey);
+
+    internal static bool HasValidProtectedIdentity(
+        DadAutoPartyConfiguration configuration,
+        IDadAutoPartyEndpointIdentityStore identityStore)
+    {
+        if (string.IsNullOrWhiteSpace(configuration.EndpointIdentityReference) ||
+            string.IsNullOrWhiteSpace(configuration.RegisteredOwnerId) ||
+            string.IsNullOrWhiteSpace(configuration.RegisteredIslandId) ||
+            string.IsNullOrWhiteSpace(configuration.RegistrationFingerprint))
+            return false;
+
+        byte[]? material = null;
+        byte[]? signingPrivate = null;
+        byte[]? encryptionPrivate = null;
+        byte[]? signingPublic = null;
+        byte[]? encryptionPublic = null;
+        try
+        {
+            material = identityStore.LoadAsync(
+                configuration.EndpointIdentityReference,
+                CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            var identity = JsonSerializer.Deserialize<DadAutoPartyPrivateIdentityPackage>(material);
+            if (identity == null ||
+                !string.Equals(identity.OwnerId, configuration.RegisteredOwnerId, StringComparison.Ordinal) ||
+                !string.Equals(identity.IslandId, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
+                identity.KeyGeneration != configuration.EndpointKeyGeneration)
+                return false;
+
+            signingPrivate = Convert.FromBase64String(identity.SigningPrivateKey);
+            encryptionPrivate = Convert.FromBase64String(identity.EncryptionPrivateKey);
+            if (signingPrivate.Length != AutoPartyProtocol.Ed25519SignatureBytes / 2 ||
+                encryptionPrivate.Length != AutoPartyProtocol.X25519KeyBytes)
+                return false;
+
+            signingPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(signingPrivate);
+            encryptionPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(encryptionPrivate);
+            return DadAutoPartyEndpointService.EncodedKeyMatches(
+                       ImmutableArray.CreateRange(signingPublic),
+                       configuration.SigningPublicKey) &&
+                   DadAutoPartyEndpointService.EncodedKeyMatches(
+                       ImmutableArray.CreateRange(encryptionPublic),
+                       configuration.EncryptionPublicKey) &&
+                   string.Equals(
+                       DadAutoPartyIdentityPackageService.BuildFingerprint(
+                           identity.OwnerId,
+                           identity.IslandId,
+                           identity.KeyGeneration,
+                           signingPublic,
+                           encryptionPublic),
+                       configuration.RegistrationFingerprint,
+                       StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or FormatException or CryptographicException or InvalidOperationException or
+                IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (material != null) CryptographicOperations.ZeroMemory(material);
+            if (signingPrivate != null) CryptographicOperations.ZeroMemory(signingPrivate);
+            if (encryptionPrivate != null) CryptographicOperations.ZeroMemory(encryptionPrivate);
+            if (signingPublic != null) CryptographicOperations.ZeroMemory(signingPublic);
+            if (encryptionPublic != null) CryptographicOperations.ZeroMemory(encryptionPublic);
+        }
+    }
+
+    private static bool HasMatchingProtectedMailbox(
+        DadAutoPartyConfiguration configuration,
+        IDadAutoPartyWebhookCredentialStore credentialStore)
+    {
+        try
+        {
+            var credential = credentialStore.LoadAsync(
+                configuration.WebhookCredentialReference,
+                CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return DadAutoPartyEndpointService.CredentialMatchesConfiguration(credential, configuration);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or FormatException or CryptographicException or InvalidOperationException or
+                IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool PersistedStateChanged(
+        DadAutoPartyConfiguration configuration,
+        DadAutoPartyRegistrationState priorState,
+        string priorRegistrationId,
+        DateTime priorBootstrapExpiry) =>
+        configuration.RegistrationState != priorState ||
+        !string.Equals(configuration.RegistrationId, priorRegistrationId, StringComparison.Ordinal) ||
+        configuration.BootstrapExpiresAtUtc != priorBootstrapExpiry;
 }

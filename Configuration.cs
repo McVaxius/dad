@@ -299,7 +299,14 @@ internal static class DadAutoPartyConfigurationMigration
         ArgumentNullException.ThrowIfNull(webhookStore);
 
         if (configuration.Version >= CurrentVersion)
-            return configuration.MigrateTransportSettings();
+        {
+            var changed = configuration.MigrateTransportSettings();
+            changed |= DadAutoPartyRegistrationRecovery.ReconcileAtStartup(
+                configuration.AutoParty,
+                identityStore,
+                webhookStore);
+            return changed;
+        }
 
         var autoParty = configuration.AutoParty;
         DiscardReferencedFile(

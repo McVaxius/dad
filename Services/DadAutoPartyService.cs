@@ -690,6 +690,7 @@ public sealed class DadAutoPartyService : IDisposable
     private void ClearRegistrationAndTrust()
     {
         configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
         configuration.RegistrationId = string.Empty;
         configuration.RouteId = string.Empty;
         configuration.CentralBotApplicationId = string.Empty;

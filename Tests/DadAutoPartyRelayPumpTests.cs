@@ -666,6 +666,85 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task PairingNoticeNegativeReceiptCompletesAttemptWithoutRetransmission()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump();
+        var initiated = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
+        Assert.True(initiated.Allowed, initiated.SafeCode);
+        var challenge = Assert.IsType<DadAutoPartyPairingChallenge>(pump.LastPairingChallenge);
+
+        await pump.ProcessOnceAsync();
+
+        var sentNoticeEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>());
+        var sentNotice = fixture.Open<PairingNotice>(sentNoticeEnvelope);
+        Assert.Equal(challenge.ChallengeId, sentNotice.PairingId);
+        Assert.Equal(1, pump.Snapshot.AwaitingRelayReceiptCount);
+
+        var receipt = new RelayReceipt(
+            fixture.RelayHeader("pairing-notice-identity-mismatch"),
+            Guid.NewGuid(),
+            sentNotice.Header.MessageId,
+            false,
+            "pairing-notice-identity-mismatch");
+        var receiptEnvelope = fixture.SealRelay(receipt);
+        fixture.Transport.Inbound.Enqueue(receiptEnvelope);
+
+        await pump.ProcessOnceAsync();
+
+        Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == receiptEnvelope.EnvelopeId);
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        Assert.Null(pump.LastPairingChallenge);
+        var attempt = Assert.IsType<DadAutoPartyPairingAttemptResult>(pump.LastPairingAttemptResult);
+        Assert.Equal(challenge.ChallengeId, attempt.PairingId);
+        Assert.Equal(PumpFixture.PeerIsland, attempt.PeerIslandId);
+        Assert.Equal("pairing-notice-identity-mismatch", attempt.SafeCode);
+        Assert.Empty(fixture.Configuration.PendingPairings);
+        Assert.Empty(fixture.Configuration.Pairings);
+
+        for (var cycle = 0; cycle < 3; cycle++)
+            await pump.ProcessOnceAsync();
+
+        Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>());
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        Assert.Equal("pairing-notice-identity-mismatch", pump.LastPairingAttemptResult?.SafeCode);
+    }
+
+    [Fact]
+    public async Task PairingInitiationReportsExactLocalValidationFailure()
+    {
+        using (var inactiveFixture = new PumpFixture(DadAutoPartyRegistrationState.Unregistered))
+        await using (var inactivePump = inactiveFixture.CreatePump())
+        {
+            var inactive = await inactivePump.InitiatePairingAsync(PumpFixture.PeerIsland);
+            Assert.False(inactive.Allowed);
+            Assert.Equal("dad-pairing-registration-not-active", inactive.SafeCode);
+        }
+
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump();
+
+        var blank = await pump.InitiatePairingAsync("   ");
+        Assert.False(blank.Allowed);
+        Assert.Equal("dad-pairing-peer-blank", blank.SafeCode);
+
+        var self = await pump.InitiatePairingAsync(PumpFixture.LocalIsland);
+        Assert.False(self.Allowed);
+        Assert.Equal("dad-pairing-self-not-allowed", self.SafeCode);
+
+        var malformed = await pump.InitiatePairingAsync("island-peer");
+        Assert.False(malformed.Allowed);
+        Assert.Equal("dad-pairing-peer-invalid", malformed.SafeCode);
+
+        fixture.Configuration.RegisteredOwnerId = string.Empty;
+        var invalidContract = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
+        Assert.False(invalidContract.Allowed);
+        Assert.Equal("dad-pairing-contract-invalid", invalidContract.SafeCode);
+    }
+
+    [Fact]
     public async Task RestartAmbiguityReceiptActivatesWithoutAwaitingEntryAndDuplicateIsIdempotent()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
@@ -740,6 +819,51 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(PumpFixture.LocalIsland, update.SharingIslandId.Value);
         Assert.Equal(CharacterShareMode.SpecificCharacter, update.SharePolicy.Mode);
         Assert.Equal("opaque-local", Assert.Single(update.Listings).CharacterHandle.Value);
+    }
+
+    [Fact]
+    public async Task DisabledEmptyCharacterListPublishesWireValidEmptyPolicyWithoutChangingSavedSelection()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var savedPolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = [],
+            Enabled = false,
+            Revision = 4,
+            UpdatedAtUtc = DateTime.UtcNow,
+        };
+        fixture.Configuration.StandingSharePolicy = savedPolicy;
+        var listing = new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = "opaque-local",
+            DisplayLabel = "Shared character 1234abcd",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15),
+        };
+        await using var pump = fixture.CreatePump();
+
+        var queued = pump.QueueListingUpdate(savedPolicy, [listing]);
+        await pump.ProcessOnceAsync();
+
+        Assert.True(queued.Allowed, queued.SafeCode);
+        Assert.Same(savedPolicy, fixture.Configuration.StandingSharePolicy);
+        Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, savedPolicy.Mode);
+        Assert.False(savedPolicy.Enabled);
+        Assert.Empty(savedPolicy.CharacterHandles);
+        var envelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>());
+        var update = fixture.Open<PrivateListingUpdate>(envelope);
+        Assert.Equal(CharacterShareMode.AllCharactersForPeer, update.SharePolicy.Mode);
+        Assert.False(update.SharePolicy.Enabled);
+        Assert.Empty(update.SharePolicy.CharacterHandles);
+        Assert.Empty(update.Listings);
     }
 
     [Fact]
@@ -2136,7 +2260,7 @@ public sealed class DadAutoPartyRelayPumpTests
         public const string LocalOwner = "owner-local";
         public const string LocalIsland = "island-local";
         public const string PeerOwner = "owner-peer";
-        public const string PeerIsland = "island-peer";
+        public const string PeerIsland = "island-22222222222222222222222222222222";
         private readonly byte[] relaySigningPrivate = RandomNumberGenerator.GetBytes(32);
         private readonly byte[] relayAgreementPrivate = RandomNumberGenerator.GetBytes(32);
         private readonly byte[] relaySigningPublic;

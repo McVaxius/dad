@@ -58,9 +58,10 @@ public sealed class DadAutoPartyConfiguration
     public List<DadAutoPartyPairing> PendingPairings { get; set; } = [];
     public List<DadAutoPartyDeauthentication> Deauthentications { get; set; } = [];
 
-    public bool HasImportedBootstrap =>
-        (RegistrationState is DadAutoPartyRegistrationState.BootstrapImported or DadAutoPartyRegistrationState.Active) &&
-        Guid.TryParse(RegistrationId, out _) &&
+    [JsonIgnore]
+    public DadAutoPartyRegistrationRecoveryState RegistrationRecoveryState { get; internal set; }
+
+    public bool HasDurableRegistrationMaterial =>
         !string.IsNullOrWhiteSpace(RouteId) &&
         !string.IsNullOrWhiteSpace(WebhookCredentialReference) &&
         Guid.TryParse(UplinkEpochId, out _) &&
@@ -70,6 +71,11 @@ public sealed class DadAutoPartyConfiguration
         RelayKeyGeneration >= 1 &&
         !string.IsNullOrWhiteSpace(RelaySigningPublicKey) &&
         !string.IsNullOrWhiteSpace(RelayAgreementPublicKey);
+
+    public bool HasImportedBootstrap =>
+        (RegistrationState is DadAutoPartyRegistrationState.BootstrapImported or DadAutoPartyRegistrationState.Active) &&
+        Guid.TryParse(RegistrationId, out _) &&
+        HasDurableRegistrationMaterial;
 
     public bool IsRegistrationActive =>
         RegistrationState == DadAutoPartyRegistrationState.Active && HasImportedBootstrap;
@@ -305,6 +311,14 @@ public enum DadAutoPartyRegistrationState
     BootstrapImported = 1,
     Active = 2,
     Quarantined = 3,
+}
+
+public enum DadAutoPartyRegistrationRecoveryState
+{
+    NewRegistration = 0,
+    Active = 1,
+    RecoveryAvailable = 2,
+    IdentityLost = 3,
 }
 
 public sealed class DadAutoPartyRemoteBinding

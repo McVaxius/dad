@@ -12,6 +12,18 @@ using dad.Models;
 
 namespace dad.Services;
 
+internal sealed record DadAutoPartyAdapterTransferSnapshot(
+    string PayloadType,
+    int AcceptedFragmentCount,
+    int CurrentFragmentNumber,
+    int TotalFragmentCount,
+    bool AwaitingCentralAcknowledgement)
+{
+    internal static DadAutoPartyAdapterTransferSnapshot Idle { get; } = new(string.Empty, 0, 0, 0, false);
+
+    internal bool IsIdle => TotalFragmentCount == 0;
+}
+
 public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAdapter, IAsyncDisposable
 {
     internal const int MaximumDiscordContentCharacters = AutoPartyProtocol.MaximumCourierTextCharacters;
@@ -63,6 +75,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private CourierEpochDescriptor downlinkEpoch;
     private OutboundDeliveryState? activeOutbound;
     private DadAutoPartyEndpointSnapshot snapshot;
+    private DadAutoPartyAdapterTransferSnapshot transferSnapshot = DadAutoPartyAdapterTransferSnapshot.Idle;
     private long nextUplinkPageGeneration = Math.Max(1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     private DateTime nextPresencePublishUtc = DateTime.MinValue;
     private int pendingOutboundCount;
@@ -118,6 +131,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     }
 
     public DadAutoPartyEndpointSnapshot Snapshot => Volatile.Read(ref snapshot);
+    internal DadAutoPartyAdapterTransferSnapshot TransferSnapshot => Volatile.Read(ref transferSnapshot);
     public CourierEpochDescriptor UplinkEpochSnapshot => Volatile.Read(ref uplinkEpoch);
     public CourierEpochDescriptor DownlinkEpochSnapshot => Volatile.Read(ref downlinkEpoch);
 
@@ -390,6 +404,8 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                         activeOutbound.PublishedContent = string.Empty;
                         if (activeOutbound.NextFragmentIndex >= activeOutbound.Fragments.Length)
                             CompleteActiveOutbound();
+                        else
+                            UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
                     }
                 }
             }
@@ -445,6 +461,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                     {
                         activeOutbound.AwaitingAcknowledgement = false;
                         activeOutbound.PublishedContent = string.Empty;
+                        UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
                     }
                 }
             }
@@ -529,6 +546,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                         delivery.PayloadType,
                         delivery.Ciphertext.AsSpan(),
                         delivery.ExpiresAt));
+                UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
             }
             catch (ProtocolException)
             {
@@ -588,10 +606,12 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-uplink-fragment-published",
                 DateTime.UtcNow);
+            UpdateTransferSnapshot(awaitingCentralAcknowledgement: true);
         }
         else
         {
             UpdateSnapshot(DadAutoPartyEndpointConnectionState.Degraded, "dad-webhook-publish-failed", null);
+            UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
         }
     }
 
@@ -818,7 +838,24 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         if (activeOutbound == null)
             return;
         activeOutbound = null;
+        Volatile.Write(ref transferSnapshot, DadAutoPartyAdapterTransferSnapshot.Idle);
         Interlocked.Decrement(ref pendingOutboundCount);
+    }
+
+    private void UpdateTransferSnapshot(bool awaitingCentralAcknowledgement)
+    {
+        var outboundState = activeOutbound;
+        if (outboundState == null)
+        {
+            Volatile.Write(ref transferSnapshot, DadAutoPartyAdapterTransferSnapshot.Idle);
+            return;
+        }
+        Volatile.Write(ref transferSnapshot, new DadAutoPartyAdapterTransferSnapshot(
+            outboundState.Delivery.PayloadType,
+            Math.Clamp(outboundState.NextFragmentIndex, 0, outboundState.Fragments.Length),
+            Math.Min(outboundState.NextFragmentIndex + 1, outboundState.Fragments.Length),
+            outboundState.Fragments.Length,
+            awaitingCentralAcknowledgement));
     }
 
     private async Task<WebhookMessage?> FetchKnownMessageAsync(
@@ -999,6 +1036,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         inboundDeliveries.Clear();
         inboundAcknowledgementContexts.Clear();
         completedInboundIds.Clear();
+        Volatile.Write(ref transferSnapshot, DadAutoPartyAdapterTransferSnapshot.Idle);
         UpdateSnapshot(DadAutoPartyEndpointConnectionState.Disabled, "dad-webhook-disposed", null);
     }
 

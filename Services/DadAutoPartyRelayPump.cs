@@ -42,6 +42,12 @@ internal sealed record DadAllianceCentralReceiptContext(
     DadAllianceRecruitmentCancellationDto? Cancellation,
     DadAllianceRecruitmentResultDto Result);
 
+internal sealed record DadAutoPartyPairingAttemptResult(
+    Guid PairingId,
+    string PeerIslandId,
+    string SafeCode,
+    DateTimeOffset ObservedAt);
+
 internal readonly record struct DadAllianceCentralSendResult(
     bool Sent,
     Guid MessageId,
@@ -211,6 +217,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     }
 
     public DadAutoPartyPairingChallenge? LastPairingChallenge { get; private set; }
+
+    public DadAutoPartyPairingAttemptResult? LastPairingAttemptResult { get; private set; }
 
     internal IReadOnlyList<DadAutoPartyTransientRouteSnapshot> GetTransientRoutes()
     {
@@ -546,10 +554,15 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!configuration.IsRegistrationActive)
+            return ValueTask.FromResult(Decision(false, "dad-pairing-registration-not-active"));
+        if (string.IsNullOrWhiteSpace(peerIslandId))
+            return ValueTask.FromResult(Decision(false, "dad-pairing-peer-blank"));
         var peer = DadAutoPartyConfiguration.NormalizeIdentifier(peerIslandId);
-        if (!configuration.IsRegistrationActive || string.IsNullOrWhiteSpace(peer) ||
-            string.Equals(peer, configuration.RegisteredIslandId, StringComparison.Ordinal))
-            return ValueTask.FromResult(Decision(false, "dad-pairing-initiation-invalid"));
+        if (string.Equals(peer, configuration.RegisteredIslandId, StringComparison.Ordinal))
+            return ValueTask.FromResult(Decision(false, "dad-pairing-self-not-allowed"));
+        if (!IsGeneratedIslandId(peer))
+            return ValueTask.FromResult(Decision(false, "dad-pairing-peer-invalid"));
 
         var now = utcNow();
         var pairingId = Guid.NewGuid();
@@ -578,7 +591,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
         catch (Exception exception) when (exception is ProtocolException or ArgumentException or FormatException)
         {
-            return ValueTask.FromResult(Decision(false, "dad-pairing-initiation-invalid"));
+            return ValueTask.FromResult(Decision(false, "dad-pairing-contract-invalid"));
         }
 
         lock (gate)
@@ -593,6 +606,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 configuration.EndpointKeyGeneration,
                 code,
                 expiresAt.UtcDateTime);
+            LastPairingAttemptResult = null;
         }
         UpdateSnapshot("dad-pairing-notice-queued");
         return ValueTask.FromResult(Decision(true, "dad-pairing-notice-queued"));
@@ -660,7 +674,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return Decision(false, "dad-listing-update-invalid");
         var now = utcNow();
         var protocolListings = (listings ?? [])
-            .Where(listing => listing is { IsValid: true } &&
+            .Where(listing => policy.Enabled &&
+                              listing is { IsValid: true } &&
                               listing.ExpiresAtUtc > now.UtcDateTime &&
                               listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
             .Take(AutoPartyProtocol.MaximumCollectionItems)
@@ -959,6 +974,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         ResetSecurity();
         shutdown.Dispose();
         LastPairingChallenge = null;
+        LastPairingAttemptResult = null;
         UpdateSnapshot("dad-relay-pump-disposed", running: false);
     }
 
@@ -2277,11 +2293,28 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private ValueTask<DispatchResult> DispatchRelayReceiptAsync(RelayReceipt receipt)
     {
         PendingOutboundContract? related;
+        PairingNotice? rejectedPairingNotice = null;
         lock (gate)
         {
             _ = awaitingRelayReceipts.Remove(receipt.RelatedMessageId, out related);
-            if (!receipt.Accepted && related != null && related.Contract.Header.ExpiresAt > utcNow())
+            if (!receipt.Accepted && related?.Contract is PairingNotice notice)
+            {
+                rejectedPairingNotice = notice;
+                LastPairingAttemptResult = new(
+                    notice.PairingId,
+                    notice.PeerIslandId.Value,
+                    receipt.SafeCode,
+                    utcNow());
+                if (LastPairingChallenge?.ChallengeId == notice.PairingId)
+                    LastPairingChallenge = null;
+            }
+            else if (!receipt.Accepted && related != null && related.Contract.Header.ExpiresAt > utcNow())
                 _ = TryEnqueueControl(related.Contract);
+        }
+        if (rejectedPairingNotice != null)
+        {
+            UpdateSnapshot(receipt.SafeCode);
+            return ValueTask.FromResult(DispatchResult.Allow(receipt.SafeCode));
         }
         try
         {
@@ -3625,12 +3658,24 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         => new(allowed, safeCode, Math.Max(1, configuration.StateGeneration));
 
     private static CharacterSharePolicy ToProtocolPolicy(DadAutoPartySharePolicy policy)
-        => new(
-            (CharacterShareMode)(int)policy.Mode,
+    {
+        var mode = !policy.Enabled &&
+                   policy.Mode == DadAutoPartyCharacterShareMode.CharacterList &&
+                   policy.CharacterHandles.Count == 0
+            ? CharacterShareMode.AllCharactersForPeer
+            : (CharacterShareMode)(int)policy.Mode;
+        return new(
+            mode,
             policy.CharacterHandles.Select(static value => new OpaqueCharacterId(value)).ToImmutableArray(),
             policy.Enabled,
             policy.Revision,
             new DateTimeOffset(DateTime.SpecifyKind(policy.UpdatedAtUtc, DateTimeKind.Utc)));
+    }
+
+    private static bool IsGeneratedIslandId(string value) =>
+        value.Length == 39 &&
+        value.StartsWith("island-", StringComparison.Ordinal) &&
+        value[7..].All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static DadAutoPartySharePolicy ToDadPolicy(CharacterSharePolicy policy)
         => new()

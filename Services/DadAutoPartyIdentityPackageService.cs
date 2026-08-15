@@ -39,15 +39,44 @@ public sealed class DadAutoPartyIdentityPackageService
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var activationPending = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
+            configuration.BootstrapExpiresAtUtc > DateTime.UtcNow;
+        if (activationPending)
+            return Failure("dad-registration-activation-pending");
+
+        var recoveryChallenge = configuration.RegistrationState == DadAutoPartyRegistrationState.Active ||
+            configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported ||
+            configuration.RegistrationRecoveryState == DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
+            !string.IsNullOrWhiteSpace(configuration.RouteId);
+        Guid routedRegistrationId = default;
+        if (configuration.RegistrationRecoveryState == DadAutoPartyRegistrationRecoveryState.IdentityLost)
+            return Failure("dad-registration-identity-lost");
+        if (recoveryChallenge &&
+            (!DadAutoPartyRegistrationRecovery.TryGetRegistrationIdFromRoute(
+                 configuration.RouteId,
+                 out routedRegistrationId) ||
+             !DadAutoPartyRegistrationRecovery.HasValidProtectedIdentity(configuration, identityStore)))
+            return Failure("dad-registration-recovery-identity-mismatch");
+
         var alias = DadAutoPartyConfiguration.NormalizeAlias(requestedAlias);
         if (string.IsNullOrWhiteSpace(alias))
             return Failure("dad-registration-alias-invalid");
 
-        if (!HasCompletePublicIdentity())
+        var challengeAlias = configuration.EndpointAlias;
+        if (recoveryChallenge)
+        {
+            if (!string.IsNullOrWhiteSpace(challengeAlias) &&
+                !string.Equals(challengeAlias, alias, StringComparison.Ordinal))
+                return Failure("dad-registration-alias-identity-mismatch");
+            if (string.IsNullOrWhiteSpace(challengeAlias))
+                challengeAlias = alias;
+        }
+        else if (!HasCompletePublicIdentity())
         {
             var generated = await GenerateIdentityAsync(alias, cancellationToken).ConfigureAwait(false);
             if (!generated.Succeeded)
                 return generated;
+            challengeAlias = configuration.EndpointAlias;
         }
         else if (!string.Equals(configuration.EndpointAlias, alias, StringComparison.Ordinal))
         {
@@ -57,7 +86,11 @@ public sealed class DadAutoPartyIdentityPackageService
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var registrationId = Guid.NewGuid();
+            var registrationId = recoveryChallenge
+                ? routedRegistrationId
+                : Guid.TryParse(configuration.RegistrationId, out var pendingRegistrationId)
+                    ? pendingRegistrationId
+                    : Guid.NewGuid();
             var messageId = Guid.NewGuid();
             var nonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
             byte[]? signingPublic = null;
@@ -87,7 +120,7 @@ public sealed class DadAutoPartyIdentityPackageService
                     registrationId,
                     new OwnerId(configuration.RegisteredOwnerId),
                     new IslandId(configuration.RegisteredIslandId),
-                    configuration.EndpointAlias,
+                    challengeAlias,
                     new EndpointPublicKeys(
                         configuration.EndpointKeyGeneration,
                         $"ed25519:{configuration.RegistrationFingerprint[..16].ToLowerInvariant()}",
@@ -101,10 +134,13 @@ public sealed class DadAutoPartyIdentityPackageService
                 var encoded = RegistrationCopyPasteCodec.EncodeChallenge(
                     AuthenticatedContract<RegistrationChallenge>.Create(challenge, signature));
 
-                configuration.RegistrationId = registrationId.ToString("D");
-                configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
-                configuration.StateGeneration++;
-                saveConfiguration();
+                if (!recoveryChallenge)
+                {
+                    configuration.RegistrationId = registrationId.ToString("D");
+                    configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+                    configuration.StateGeneration++;
+                    saveConfiguration();
+                }
                 return new(true, "dad-registration-challenge-created", encoded);
             }
             finally
@@ -153,6 +189,7 @@ public sealed class DadAutoPartyIdentityPackageService
         configuration.Listings.Clear();
         configuration.RemoteBindings.Clear();
         configuration.Deauthentications.Clear();
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
         configuration.StateGeneration++;
         saveConfiguration();
         return new(true, "dad-identity-rotation-requires-generate");
@@ -195,6 +232,7 @@ public sealed class DadAutoPartyIdentityPackageService
             configuration.SigningPublicKey = Convert.ToBase64String(signingPublic);
             configuration.EncryptionPublicKey = Convert.ToBase64String(encryptionPublic);
             configuration.EndpointKeyGeneration = keyGeneration;
+            configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
             configuration.StateGeneration++;
             saveConfiguration();
             return new(true, "dad-endpoint-identity-generated");

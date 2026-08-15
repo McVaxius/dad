@@ -1,7 +1,9 @@
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AutoParty.Contracts;
+using AutoParty.Core.Cryptography;
 using dad.Models;
 using dad.Services;
 using Xunit;
@@ -288,6 +290,195 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
+    public async Task ChallengeGenerationReusesIdsAllowsReadOnlyActiveRecoveryAndLocksPendingOrLostIdentity()
+    {
+        var configuration = new DadAutoPartyConfiguration();
+        using var identityStore = new MemoryIdentityStore();
+        var saves = 0;
+        var service = new DadAutoPartyIdentityPackageService(configuration, identityStore, () => saves++);
+
+        var first = await service.GenerateChallengeAsync("recovery-endpoint");
+        var firstId = RegistrationCopyPasteCodec.DecodeChallenge(first.OutputPath).Contract.RegistrationId;
+        var repeated = await service.GenerateChallengeAsync("recovery-endpoint");
+        Assert.Equal(
+            firstId,
+            RegistrationCopyPasteCodec.DecodeChallenge(repeated.OutputPath).Contract.RegistrationId);
+
+        configuration.RouteId = $"route-{firstId:N}";
+        configuration.RegistrationId = Guid.NewGuid().ToString("D");
+        var recovered = await service.GenerateChallengeAsync("recovery-endpoint");
+        Assert.Equal(
+            firstId,
+            RegistrationCopyPasteCodec.DecodeChallenge(recovered.OutputPath).Contract.RegistrationId);
+
+        configuration.RegistrationState = DadAutoPartyRegistrationState.Active;
+        configuration.EndpointAlias = string.Empty;
+        configuration.Pairings.Add(Pairing("peer-active", DateTime.UtcNow, active: true));
+        configuration.StandingSharePolicy.Enabled = true;
+        var activeSnapshot = JsonSerializer.Serialize(configuration);
+        var activeRecoveryState = configuration.RegistrationRecoveryState;
+        var savesBeforeActive = saves;
+        var active = await service.GenerateChallengeAsync("recovery-endpoint");
+        Assert.True(active.Succeeded, active.SafeCode);
+        var activeChallenge = RegistrationCopyPasteCodec.DecodeChallenge(active.OutputPath).Contract;
+        Assert.Equal(firstId, activeChallenge.RegistrationId);
+        Assert.Equal("recovery-endpoint", activeChallenge.EndpointAlias);
+        Assert.Equal(activeSnapshot, JsonSerializer.Serialize(configuration));
+        Assert.Equal(activeRecoveryState, configuration.RegistrationRecoveryState);
+        Assert.Equal(savesBeforeActive, saves);
+
+        configuration.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
+        configuration.BootstrapExpiresAtUtc = DateTime.UtcNow.AddMinutes(5);
+        var pendingSnapshot = JsonSerializer.Serialize(configuration);
+        var pending = await service.GenerateChallengeAsync("recovery-endpoint");
+        Assert.False(pending.Succeeded);
+        Assert.Equal("dad-registration-activation-pending", pending.SafeCode);
+        Assert.Equal(pendingSnapshot, JsonSerializer.Serialize(configuration));
+        Assert.Equal(savesBeforeActive, saves);
+
+        configuration.BootstrapExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
+        var expiredSnapshot = JsonSerializer.Serialize(configuration);
+        var expired = await service.GenerateChallengeAsync("recovery-endpoint");
+        Assert.True(expired.Succeeded, expired.SafeCode);
+        Assert.Equal(
+            firstId,
+            RegistrationCopyPasteCodec.DecodeChallenge(expired.OutputPath).Contract.RegistrationId);
+        Assert.Equal(expiredSnapshot, JsonSerializer.Serialize(configuration));
+        Assert.Equal(savesBeforeActive, saves);
+
+        _ = await identityStore.DeleteAsync(configuration.EndpointIdentityReference);
+        configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.IdentityLost;
+        var lostSnapshot = JsonSerializer.Serialize(configuration);
+        var lost = await service.GenerateChallengeAsync("recovery-endpoint");
+        Assert.False(lost.Succeeded);
+        Assert.Equal("dad-registration-identity-lost", lost.SafeCode);
+        Assert.Equal(lostSnapshot, JsonSerializer.Serialize(configuration));
+        Assert.Equal(savesBeforeActive, saves);
+    }
+
+    [Fact]
+    public async Task StartupReloadRestoresValidatedRegistrationAndPreservesTrustState()
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        var serialized = JsonSerializer.Serialize(fixture.Configuration);
+        var reloaded = JsonSerializer.Deserialize<Configuration>(serialized)!;
+
+        _ = DadAutoPartyConfigurationMigration.Migrate(
+            reloaded,
+            identityStore,
+            fixture.WebhookStore);
+
+        Assert.Equal(DadAutoPartyRegistrationState.Active, reloaded.AutoParty.RegistrationState);
+        Assert.Equal(fixture.RegistrationId.ToString("D"), reloaded.AutoParty.RegistrationId);
+        Assert.Equal($"route-{fixture.RegistrationId:N}", reloaded.AutoParty.RouteId);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.Active, reloaded.AutoParty.RegistrationRecoveryState);
+        Assert.Single(reloaded.AutoParty.Pairings);
+        Assert.Single(reloaded.AutoParty.PendingPairings);
+        Assert.True(reloaded.AutoParty.StandingSharePolicy.Enabled);
+        Assert.Equal(["character-one"], reloaded.AutoParty.StandingSharePolicy.CharacterHandles);
+    }
+
+    [Fact]
+    public async Task StartupKeepsValidatedBootstrapImportPendingUntilAuthenticatedReceipt()
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        var expiresAt = DateTime.UtcNow.AddMinutes(5);
+        fixture.Configuration.AutoParty.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
+        fixture.Configuration.AutoParty.BootstrapExpiresAtUtc = expiresAt;
+
+        _ = DadAutoPartyConfigurationMigration.Migrate(
+            fixture.Configuration,
+            identityStore,
+            fixture.WebhookStore);
+
+        Assert.Equal(
+            DadAutoPartyRegistrationState.BootstrapImported,
+            fixture.Configuration.AutoParty.RegistrationState);
+        Assert.Equal(expiresAt, fixture.Configuration.AutoParty.BootstrapExpiresAtUtc);
+        Assert.Single(fixture.Configuration.AutoParty.Pairings);
+        Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
+    }
+
+    [Fact]
+    public async Task StartupMakesExpiredBootstrapImportRecoverableWithoutDiscardingTrust()
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        fixture.Configuration.AutoParty.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
+        fixture.Configuration.AutoParty.BootstrapExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            fixture.Configuration,
+            identityStore,
+            fixture.WebhookStore));
+
+        Assert.Equal(DadAutoPartyRegistrationState.Unregistered, fixture.Configuration.AutoParty.RegistrationState);
+        Assert.Equal(
+            DadAutoPartyRegistrationRecoveryState.RecoveryAvailable,
+            fixture.Configuration.AutoParty.RegistrationRecoveryState);
+        Assert.Equal(default, fixture.Configuration.AutoParty.BootstrapExpiresAtUtc);
+        Assert.Single(fixture.Configuration.AutoParty.Pairings);
+        Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
+        Assert.True(fixture.Configuration.AutoParty.StandingSharePolicy.Enabled);
+    }
+
+    [Fact]
+    public async Task StartupRepairsOverwrittenRegistrationIdFromValidatedRoute()
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        fixture.Configuration.AutoParty.RegistrationId = Guid.NewGuid().ToString("D");
+        fixture.Configuration.AutoParty.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            fixture.Configuration,
+            identityStore,
+            fixture.WebhookStore));
+
+        Assert.Equal(DadAutoPartyRegistrationState.Active, fixture.Configuration.AutoParty.RegistrationState);
+        Assert.Equal(fixture.RegistrationId.ToString("D"), fixture.Configuration.AutoParty.RegistrationId);
+        Assert.Single(fixture.Configuration.AutoParty.Pairings);
+        Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
+    }
+
+    [Fact]
+    public async Task StartupLeavesMissingProtectedIdentityOrMailboxUnregistered()
+    {
+        var missingIdentity = await CreateRegistrationFixtureAsync();
+        using (missingIdentity.IdentityStore)
+        {
+            _ = await missingIdentity.IdentityStore.DeleteAsync(
+                missingIdentity.Configuration.AutoParty.EndpointIdentityReference);
+            _ = DadAutoPartyConfigurationMigration.Migrate(
+                missingIdentity.Configuration,
+                missingIdentity.IdentityStore,
+                missingIdentity.WebhookStore);
+            Assert.Equal(DadAutoPartyRegistrationState.Unregistered, missingIdentity.Configuration.AutoParty.RegistrationState);
+            Assert.Equal(
+                DadAutoPartyRegistrationRecoveryState.IdentityLost,
+                missingIdentity.Configuration.AutoParty.RegistrationRecoveryState);
+        }
+
+        var missingMailbox = await CreateRegistrationFixtureAsync();
+        using (missingMailbox.IdentityStore)
+        {
+            _ = DadAutoPartyConfigurationMigration.Migrate(
+                missingMailbox.Configuration,
+                missingMailbox.IdentityStore,
+                new MemoryWebhookStore());
+        }
+        Assert.Equal(DadAutoPartyRegistrationState.Unregistered, missingMailbox.Configuration.AutoParty.RegistrationState);
+        Assert.Equal(
+            DadAutoPartyRegistrationRecoveryState.RecoveryAvailable,
+            missingMailbox.Configuration.AutoParty.RegistrationRecoveryState);
+        Assert.Single(missingMailbox.Configuration.AutoParty.Pairings);
+        Assert.Single(missingMailbox.Configuration.AutoParty.PendingPairings);
+    }
+
+    [Fact]
     public async Task LegacyCamelCaseIdentityMaterialIsRejected()
     {
         var privateKey = RandomNumberGenerator.GetBytes(32);
@@ -464,6 +655,128 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             },
         };
 
+    private static async Task<RegistrationFixture> CreateRegistrationFixtureAsync()
+    {
+        var identityStore = new MemoryIdentityStore();
+        var autoParty = new DadAutoPartyConfiguration { Enabled = true };
+        var identityService = new DadAutoPartyIdentityPackageService(autoParty, identityStore, static () => { });
+        var challenge = await identityService.GenerateChallengeAsync("reload-endpoint");
+        var registrationId = RegistrationCopyPasteCodec.DecodeChallenge(challenge.OutputPath).Contract.RegistrationId;
+        var now = new DateTimeOffset(2026, 8, 14, 10, 0, 0, TimeSpan.Zero);
+        var island = new IslandId(autoParty.RegisteredIslandId);
+        var relaySigning = Enumerable.Repeat((byte)0x31, AutoPartyProtocol.Ed25519PublicKeyBytes).ToArray();
+        var relayAgreement = Enumerable.Repeat((byte)0x41, AutoPartyProtocol.X25519KeyBytes).ToArray();
+        var relayKeys = new EndpointPublicKeys(
+            1,
+            "relay-signing",
+            ImmutableArray.CreateRange(relaySigning),
+            "relay-agreement",
+            ImmutableArray.CreateRange(relayAgreement));
+        var uplink = new CourierEpochDescriptor(
+            Guid.Parse("11111111-1111-4111-8111-111111111111"),
+            island,
+            CourierDirection.Uplink,
+            now,
+            now.AddMinutes(30),
+            now.AddMinutes(35),
+            1,
+            [new CourierPageReference(1, "500000000000000001")],
+            4);
+        var downlink = new CourierEpochDescriptor(
+            Guid.Parse("22222222-2222-4222-8222-222222222222"),
+            island,
+            CourierDirection.Downlink,
+            now,
+            now.AddMinutes(30),
+            now.AddMinutes(35),
+            1,
+            [new CourierPageReference(1, "500000000000000002")],
+            4);
+        var credential = new DadAutoPartyWebhookCredential(
+            "300000000000000001",
+            new string('a', 64),
+            "400000000000000001")
+        {
+            UplinkEpoch = uplink,
+            DownlinkEpoch = downlink,
+            RelayPublicKeys = relayKeys,
+        };
+
+        autoParty.RegistrationState = DadAutoPartyRegistrationState.Active;
+        autoParty.RegistrationId = registrationId.ToString("D");
+        autoParty.RouteId = $"route-{registrationId:N}";
+        autoParty.CentralBotApplicationId = "600000000000000001";
+        autoParty.HomeGuildScope = "200000000000000001";
+        autoParty.WebhookCredentialReference = "webhook-mailbox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        autoParty.UplinkEpochId = uplink.EpochId.ToString("D");
+        autoParty.DownlinkEpochId = downlink.EpochId.ToString("D");
+        autoParty.MailboxEpochGeneration = uplink.EpochGeneration;
+        autoParty.RelayKeyGeneration = relayKeys.KeyVersion;
+        autoParty.RelaySigningPublicKey = Convert.ToBase64String(relaySigning);
+        autoParty.RelayAgreementPublicKey = Convert.ToBase64String(relayAgreement);
+        autoParty.StandingSharePolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["character-one"],
+            Enabled = true,
+            Revision = 3,
+            UpdatedAtUtc = now.UtcDateTime,
+        };
+        autoParty.Pairings = [Pairing("peer-active", now.UtcDateTime, active: true)];
+        autoParty.PendingPairings = [Pairing("peer-pending", now.UtcDateTime, active: false)];
+
+        return new(
+            new Configuration
+            {
+                Version = DadAutoPartyConfigurationMigration.CurrentVersion,
+                AutoParty = autoParty,
+            },
+            identityStore,
+            new MemoryWebhookStore(credential),
+            registrationId);
+    }
+
+    private static DadAutoPartyPairing Pairing(string islandId, DateTime now, bool active) => new()
+    {
+        PairingId = Guid.NewGuid().ToString("D"),
+        OwnerId = "owner-peer",
+        IslandId = islandId,
+        HomeGuildScope = "200000000000000001",
+        PublicKeyFingerprint = new string('1', 64),
+        LocalFingerprint = new string('2', 64),
+        TranscriptHash = new string('3', 64),
+        ConfirmationCodeHash = new string('4', 64),
+        LocalApproved = active,
+        PeerApproved = active,
+        LocalApprovalRelayMessageId = active ? Guid.NewGuid().ToString("D") : string.Empty,
+        LocalApprovalRelayAcceptedAtUtc = active ? now : null,
+        LocalSharePolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["character-one"],
+            Enabled = true,
+            UpdatedAtUtc = now,
+        },
+        PeerSharePolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["character-two"],
+            Enabled = true,
+            UpdatedAtUtc = now,
+        },
+        ExpiresAtUtc = now.AddHours(1),
+        KeyGeneration = 1,
+        SigningPublicKey = Convert.ToBase64String(new byte[32]),
+        AgreementPublicKey = Convert.ToBase64String(new byte[32]),
+        ConfirmedAtUtc = active ? now : default,
+    };
+
+    private sealed record RegistrationFixture(
+        Configuration Configuration,
+        MemoryIdentityStore IdentityStore,
+        MemoryWebhookStore WebhookStore,
+        Guid RegistrationId);
+
     private static void AssertInert(DadAutoPartyConfiguration autoParty)
     {
         Assert.False(autoParty.Enabled);
@@ -609,6 +922,13 @@ public sealed class DadAutoPartyConfigurationMigrationTests
 
     private sealed class MemoryWebhookStore : IDadAutoPartyWebhookCredentialStore
     {
+        private readonly DadAutoPartyWebhookCredential? credential;
+
+        public MemoryWebhookStore(DadAutoPartyWebhookCredential? credential = null)
+        {
+            this.credential = credential;
+        }
+
         public ValueTask<string> StoreAsync(
             DadAutoPartyWebhookCredential credential,
             CancellationToken cancellationToken = default) =>
@@ -617,7 +937,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         public ValueTask<DadAutoPartyWebhookCredential> LoadAsync(
             string credentialReference,
             CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(new DadAutoPartyWebhookCredential(
+            ValueTask.FromResult(credential ?? new DadAutoPartyWebhookCredential(
                 "123456789",
                 new string('a', 64),
                 "987654321"));

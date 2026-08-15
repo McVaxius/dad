@@ -108,6 +108,7 @@
     <Compile Include="..\Services\DadAutoPartyDiscordTokenStore.cs" Link="DadAutoPartyDiscordTokenStore.cs" />
     <Compile Include="..\Services\DadAutoPartyWebhookCredentialStore.cs" Link="DadAutoPartyWebhookCredentialStore.cs" />
     <Compile Include="..\Services\DadAutoPartyWebhookTransportAdapter.cs" Link="DadAutoPartyWebhookTransportAdapter.cs" />
+    <Compile Include="..\Services\DadAutoPartyProgressProjection.cs" Link="DadAutoPartyProgressProjection.cs" />
     <Compile Include="..\Services\DadAutoPartyEndpointService.cs" Link="DadAutoPartyEndpointService.cs" />
     <Compile Include="..\Services\DadAutoPartyParticipantBridge.cs" Link="DadAutoPartyParticipantBridge.cs" />
     <Compile Include="..\Services\DadAutoPartySemanticKeyResolver.cs" Link="DadAutoPartySemanticKeyResolver.cs" />
