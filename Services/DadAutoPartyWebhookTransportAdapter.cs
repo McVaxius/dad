@@ -174,9 +174,15 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         if (disposed)
             return ValueTask.FromResult(Denied(delivery.EnvelopeId, "dad-webhook-disposed"));
         if (!IsBounded(delivery) || delivery.ExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            UpdateSnapshot(Snapshot.State, "dad-webhook-envelope-invalid", Snapshot.LastSuccessfulExchangeAtUtc);
             return ValueTask.FromResult(Denied(delivery.EnvelopeId, "dad-webhook-envelope-invalid"));
+        }
         if (!outbound.Writer.TryWrite(delivery))
+        {
+            UpdateSnapshot(Snapshot.State, "dad-webhook-outbound-full", Snapshot.LastSuccessfulExchangeAtUtc);
             return ValueTask.FromResult(Denied(delivery.EnvelopeId, "dad-webhook-outbound-full"));
+        }
         Interlocked.Increment(ref pendingOutboundCount);
         UpdateSnapshot(Snapshot.State, "dad-webhook-outbound-queued", Snapshot.LastSuccessfulExchangeAtUtc);
         return ValueTask.FromResult(new AutoPartyTransportSendResult(
@@ -525,7 +531,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             }
             else
             {
-                UpdateSnapshot(DadAutoPartyEndpointConnectionState.Degraded, "dad-webhook-ack-failed", null);
+                UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-ack-failed", null);
             }
             return;
         }
@@ -552,7 +558,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             {
                 Interlocked.Decrement(ref pendingOutboundCount);
                 UpdateSnapshot(
-                    DadAutoPartyEndpointConnectionState.Degraded,
+                    DadAutoPartyEndpointConnectionState.Ready,
                     "dad-webhook-envelope-fragmentation-failed",
                     null);
                 return;
@@ -568,7 +574,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         {
             CompleteActiveOutbound();
             UpdateSnapshot(
-                DadAutoPartyEndpointConnectionState.Degraded,
+                DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-outbound-expired",
                 null);
             return;
@@ -610,7 +616,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
         else
         {
-            UpdateSnapshot(DadAutoPartyEndpointConnectionState.Degraded, "dad-webhook-publish-failed", null);
+            UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-publish-failed", null);
             UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
         }
     }
@@ -635,7 +641,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
         else
         {
-            UpdateSnapshot(DadAutoPartyEndpointConnectionState.Degraded, "dad-webhook-presence-failed", null);
+            UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-presence-failed", null);
         }
     }
 
@@ -797,7 +803,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             }
             if (!inbound.Writer.TryWrite(delivery))
             {
-                UpdateSnapshot(DadAutoPartyEndpointConnectionState.Degraded, "dad-webhook-inbound-full", null);
+                UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-inbound-full", null);
                 return;
             }
             Interlocked.Increment(ref bufferedInboundCount);
@@ -869,7 +875,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             cancellationToken).ConfigureAwait(false);
         if (response == null)
         {
-            UpdateSnapshot(DadAutoPartyEndpointConnectionState.Degraded, "dad-webhook-fetch-failed", null);
+            UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-fetch-failed", null);
             return null;
         }
         var message = await ReadWebhookMessageAsync(response, cancellationToken).ConfigureAwait(false);

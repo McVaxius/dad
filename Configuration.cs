@@ -189,6 +189,7 @@ public sealed class Configuration : IPluginConfiguration
             AutoParty.UplinkEpochId = string.Empty;
             AutoParty.DownlinkEpochId = string.Empty;
             AutoParty.MailboxEpochGeneration = 0;
+            AutoParty.DirectoryGeneration = 1;
             AutoParty.RelayKeyGeneration = 1;
             AutoParty.RelaySigningPublicKey = string.Empty;
             AutoParty.RelayAgreementPublicKey = string.Empty;

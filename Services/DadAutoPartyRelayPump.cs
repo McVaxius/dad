@@ -218,6 +218,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     public DadAutoPartyPairingChallenge? LastPairingChallenge { get; private set; }
 
+    internal string LastPairingChallengePeerIslandId { get; private set; } = string.Empty;
+
     public DadAutoPartyPairingAttemptResult? LastPairingAttemptResult { get; private set; }
 
     internal IReadOnlyList<DadAutoPartyTransientRouteSnapshot> GetTransientRoutes()
@@ -596,6 +598,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
         lock (gate)
         {
+            if ((LastPairingChallenge is { } currentChallenge &&
+                 currentChallenge.ExpiresAtUtc > now.UtcDateTime) ||
+                configuration.PendingPairings.Any(item => item.ExpiresAtUtc > now.UtcDateTime))
+                return ValueTask.FromResult(Decision(false, "dad-pairing-attempt-pending"));
             if (!TryEnqueueControl(notice))
                 return ValueTask.FromResult(Decision(false, "dad-relay-outbound-full"));
             LastPairingChallenge = new(
@@ -606,6 +612,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 configuration.EndpointKeyGeneration,
                 code,
                 expiresAt.UtcDateTime);
+            LastPairingChallengePeerIslandId = peer;
             LastPairingAttemptResult = null;
         }
         UpdateSnapshot("dad-pairing-notice-queued");
@@ -697,7 +704,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 new IslandId(configuration.RegisteredIslandId),
                 ToProtocolPolicy(policy),
                 protocolListings,
-                Math.Max(1, configuration.StateGeneration));
+                Math.Max(1, configuration.DirectoryGeneration));
             ValidateOutbound(update);
             lock (gate)
             {
@@ -974,6 +981,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         ResetSecurity();
         shutdown.Dispose();
         LastPairingChallenge = null;
+        LastPairingChallengePeerIslandId = string.Empty;
         LastPairingAttemptResult = null;
         UpdateSnapshot("dad-relay-pump-disposed", running: false);
     }
@@ -2306,7 +2314,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     receipt.SafeCode,
                     utcNow());
                 if (LastPairingChallenge?.ChallengeId == notice.PairingId)
+                {
                     LastPairingChallenge = null;
+                    LastPairingChallengePeerIslandId = string.Empty;
+                }
             }
             else if (!receipt.Accepted && related != null && related.Contract.Header.ExpiresAt > utcNow())
                 _ = TryEnqueueControl(related.Contract);
@@ -3630,7 +3641,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                          .ToList())
                 inboundRuntimeTargets.Remove(key);
             if (LastPairingChallenge is { } challenge && challenge.ExpiresAtUtc <= now.UtcDateTime)
+            {
                 LastPairingChallenge = null;
+                LastPairingChallengePeerIslandId = string.Empty;
+            }
             while (pendingOutbound.Count > 0 && pendingOutbound.Peek().Contract.Header.ExpiresAt <= now)
                 _ = pendingOutbound.Dequeue();
         }

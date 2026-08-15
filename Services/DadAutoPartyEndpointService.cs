@@ -112,6 +112,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
 
     public DadAutoPartyPairingChallenge? LastPairingChallenge => relayPump?.LastPairingChallenge;
 
+    internal string LastPairingChallengePeerIslandId => relayPump?.LastPairingChallengePeerIslandId ?? string.Empty;
+
     internal DadAutoPartyPairingAttemptResult? LastPairingAttemptResult => relayPump?.LastPairingAttemptResult;
 
     public DadAutoPartyPolicyDecision SetStandingSharePolicy(DadAutoPartySharePolicy sharePolicy)
@@ -562,17 +564,20 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     public DadAutoPartyPolicyDecision MarkRegistrationActive(
         Guid registrationId,
         Guid uplinkEpochId,
-        long epochGeneration)
+        long epochGeneration,
+        long directoryGeneration = 1)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (configuration.RegistrationState != DadAutoPartyRegistrationState.BootstrapImported ||
             registrationId == Guid.Empty || uplinkEpochId == Guid.Empty || epochGeneration < 1 ||
+            directoryGeneration < 1 ||
             !string.Equals(configuration.RegistrationId, registrationId.ToString("D"), StringComparison.Ordinal) ||
             !string.Equals(configuration.UplinkEpochId, uplinkEpochId.ToString("D"), StringComparison.Ordinal) ||
             configuration.MailboxEpochGeneration != epochGeneration)
             return Decision(false, "dad-registration-hello-mismatch");
         configuration.RegistrationState = DadAutoPartyRegistrationState.Active;
         configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
+        configuration.DirectoryGeneration = directoryGeneration;
         configuration.BootstrapExpiresAtUtc = default;
         configuration.StateGeneration++;
         saveConfiguration();
@@ -679,6 +684,13 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         {
             var adapterSnapshot = adapter.Snapshot;
             if (attachedAdapterGeneration == desiredGeneration &&
+                adapterSnapshot.State is DadAutoPartyEndpointConnectionState.Degraded or
+                    DadAutoPartyEndpointConnectionState.Quarantined or
+                    DadAutoPartyEndpointConnectionState.Disabled)
+            {
+                Snapshot = adapterSnapshot;
+            }
+            else if (attachedAdapterGeneration == desiredGeneration &&
                 adapterSnapshot.State == DadAutoPartyEndpointConnectionState.Ready)
             {
                 Volatile.Write(ref readyAdapterGeneration, desiredGeneration);
@@ -853,7 +865,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         return MarkRegistrationActive(
             receipt.RegistrationId,
             uplinkEpochId,
-            configuration.MailboxEpochGeneration);
+            configuration.MailboxEpochGeneration,
+            receipt.DirectoryGeneration);
     }
 
     private DadAutoPartyPolicyDecision Decision(bool allowed, string safeCode) =>

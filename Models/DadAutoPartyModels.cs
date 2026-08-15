@@ -16,6 +16,7 @@ public sealed class DadAutoPartyConfiguration
     public string UplinkEpochId { get; set; } = string.Empty;
     public string DownlinkEpochId { get; set; } = string.Empty;
     public long MailboxEpochGeneration { get; set; }
+    public long DirectoryGeneration { get; set; } = 1;
     public long RelayKeyGeneration { get; set; } = 1;
     public string RelaySigningPublicKey { get; set; } = string.Empty;
     public string RelayAgreementPublicKey { get; set; } = string.Empty;
@@ -96,6 +97,7 @@ public sealed class DadAutoPartyConfiguration
             ? downlinkEpochId.ToString("D")
             : string.Empty;
         MailboxEpochGeneration = Math.Max(0, MailboxEpochGeneration);
+        DirectoryGeneration = Math.Max(1, DirectoryGeneration);
         RelayKeyGeneration = Math.Max(1, RelayKeyGeneration);
         RelaySigningPublicKey = NormalizePublicKey(RelaySigningPublicKey);
         RelayAgreementPublicKey = NormalizePublicKey(RelayAgreementPublicKey);
@@ -189,6 +191,7 @@ public sealed class DadAutoPartyConfiguration
             UplinkEpochId = UplinkEpochId,
             DownlinkEpochId = DownlinkEpochId,
             MailboxEpochGeneration = MailboxEpochGeneration,
+            DirectoryGeneration = DirectoryGeneration,
             RelayKeyGeneration = RelayKeyGeneration,
             RelaySigningPublicKey = RelaySigningPublicKey,
             RelayAgreementPublicKey = RelayAgreementPublicKey,

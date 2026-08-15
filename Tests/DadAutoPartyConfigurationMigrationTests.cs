@@ -13,6 +13,19 @@ namespace dad.Tests;
 public sealed class DadAutoPartyConfigurationMigrationTests
 {
     [Fact]
+    public void MissingDirectoryGenerationDefaultsNormalizesAndClonesAsOne()
+    {
+        var autoParty = JsonSerializer.Deserialize<DadAutoPartyConfiguration>("{}")!;
+
+        Assert.Equal(1, autoParty.DirectoryGeneration);
+        autoParty.DirectoryGeneration = 0;
+        autoParty.Normalize();
+
+        Assert.Equal(1, autoParty.DirectoryGeneration);
+        Assert.Equal(1, autoParty.Clone().DirectoryGeneration);
+    }
+
+    [Fact]
     public void NewConfigurationUsesSchemaTenWithInertAutoPartyDefaults()
     {
         var configuration = new Configuration();
@@ -440,6 +453,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
 
         Assert.Equal(DadAutoPartyRegistrationState.Active, fixture.Configuration.AutoParty.RegistrationState);
         Assert.Equal(fixture.RegistrationId.ToString("D"), fixture.Configuration.AutoParty.RegistrationId);
+        Assert.Equal(7, fixture.Configuration.AutoParty.DirectoryGeneration);
         Assert.Single(fixture.Configuration.AutoParty.Pairings);
         Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
     }
@@ -711,6 +725,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         autoParty.UplinkEpochId = uplink.EpochId.ToString("D");
         autoParty.DownlinkEpochId = downlink.EpochId.ToString("D");
         autoParty.MailboxEpochGeneration = uplink.EpochGeneration;
+        autoParty.DirectoryGeneration = 7;
         autoParty.RelayKeyGeneration = relayKeys.KeyVersion;
         autoParty.RelaySigningPublicKey = Convert.ToBase64String(relaySigning);
         autoParty.RelayAgreementPublicKey = Convert.ToBase64String(relayAgreement);
@@ -789,6 +804,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         Assert.Equal(string.Empty, autoParty.UplinkEpochId);
         Assert.Equal(string.Empty, autoParty.DownlinkEpochId);
         Assert.Equal(0, autoParty.MailboxEpochGeneration);
+        Assert.Equal(1, autoParty.DirectoryGeneration);
         Assert.Equal(1, autoParty.RelayKeyGeneration);
         Assert.Equal(string.Empty, autoParty.RelaySigningPublicKey);
         Assert.Equal(string.Empty, autoParty.RelayAgreementPublicKey);

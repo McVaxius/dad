@@ -171,10 +171,27 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var activated = endpoint.MarkRegistrationActive(
             registrationId,
             crypto.UplinkEpoch.EpochId,
-            crypto.UplinkEpoch.EpochGeneration);
+            crypto.UplinkEpoch.EpochGeneration,
+            directoryGeneration: 7);
 
         Assert.True(activated.Allowed, activated.SafeCode);
         Assert.True(configuration.IsRegistrationActive);
+        Assert.Equal(7, configuration.DirectoryGeneration);
+
+        var activeRecovery = await endpoint.ImportBootstrapCopyPasteAsync(
+            crypto.CreateBootstrapCopyPaste(registrationId, routeId: configuration.RouteId));
+        Assert.True(activeRecovery.Allowed, activeRecovery.SafeCode);
+        Assert.Equal(7, configuration.DirectoryGeneration);
+
+        using var resetService = new DadAutoPartyService(
+            configuration,
+            identityStore,
+            static () => true,
+            static () => { },
+            credentialStore: webhookStore);
+        var reset = await resetService.PurgeAsync(deleteEndpointIdentity: false);
+        Assert.True(reset.Purged, reset.SafeCode);
+        Assert.Equal(1, configuration.DirectoryGeneration);
     }
 
     [Fact]
@@ -610,6 +627,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("Peer island ID", source, StringComparison.Ordinal);
         Assert.Contains("Initiate bilateral pairing by island ID", source, StringComparison.Ordinal);
         Assert.Contains("Pairing is bilateral", source, StringComparison.Ordinal);
+        Assert.Contains("Only one DAD initiates a pairing", source, StringComparison.Ordinal);
+        Assert.Contains("The peer waits for the pending notice", source, StringComparison.Ordinal);
+        Assert.Contains("pairingInitiationPending", source, StringComparison.Ordinal);
         Assert.Contains("One character\\0Selected characters\\0All characters for this peer", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Opaque handles (comma-separated)", source, StringComparison.Ordinal);
         Assert.True(bootstrapStart >= 0);
@@ -754,6 +774,26 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Equal(DadAutoPartyProgressState.Complete, initiator.NoticeQueued);
         Assert.False(initiator.NoticeAcceptedAndPendingPairingReceived);
         Assert.False(initiator.PairingActive);
+        Assert.Equal(pairingId.ToString("D"), initiator.PairingId);
+
+        var queuedBehindListing = DadAutoPartyProgressProjection.Pairing(
+            initiatorConfiguration,
+            ready,
+            challenge,
+            null,
+            peerIsland,
+            "dad-pairing-notice-queued",
+            now,
+            peerIsland,
+            new DadAutoPartyAdapterTransferSnapshot(
+                ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>(),
+                3,
+                4,
+                4,
+                true));
+        Assert.Contains("queued behind listing update", queuedBehindListing.NextAction, StringComparison.Ordinal);
+        Assert.Contains("accepted fragments 3 / 4", queuedBehindListing.NextAction, StringComparison.Ordinal);
+        Assert.Contains("current fragment 4 / 4", queuedBehindListing.NextAction, StringComparison.Ordinal);
 
         var peerConfiguration = ActiveConfiguration();
         peerConfiguration.RegisteredIslandId = localIsland;
@@ -770,6 +810,28 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Equal(DadAutoPartyProgressState.NotRequired, peerPending.NoticeQueued);
         Assert.True(peerPending.NoticeAcceptedAndPendingPairingReceived);
         Assert.False(peerPending.LocalApprovalSaved);
+        Assert.Equal(pairingId.ToString("D"), peerPending.PairingId);
+
+        var losingPairingId = Guid.NewGuid();
+        var losingChallenge = challenge with { ChallengeId = losingPairingId };
+        var simultaneous = DadAutoPartyProgressProjection.Pairing(
+            peerConfiguration,
+            ready,
+            losingChallenge,
+            new DadAutoPartyPairingAttemptResult(
+                losingPairingId,
+                peerIsland,
+                "pairing-route-already-exists",
+                new DateTimeOffset(now, TimeSpan.Zero)),
+            peerIsland,
+            "pairing-route-already-exists",
+            now,
+            peerIsland);
+        Assert.Equal(pairingId.ToString("D"), simultaneous.PairingId);
+        Assert.Equal(DadAutoPartyProgressState.NotRequired, simultaneous.NoticeQueued);
+        Assert.True(simultaneous.NoticeAcceptedAndPendingPairingReceived);
+        Assert.False(simultaneous.ExpiredOrRejected);
+        Assert.Equal("dad-pairing-notice-pending", simultaneous.SafeCode);
 
         pairing.PeerApproved = true;
         var peerFirst = DadAutoPartyProgressProjection.Pairing(
@@ -812,12 +874,13 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         var rejectedConfiguration = ActiveConfiguration();
         rejectedConfiguration.RegisteredIslandId = localIsland;
+        var rejectedPairingId = Guid.NewGuid();
         var rejected = DadAutoPartyProgressProjection.Pairing(
             rejectedConfiguration,
             ready,
             null,
             new DadAutoPartyPairingAttemptResult(
-                Guid.NewGuid(),
+                rejectedPairingId,
                 peerIsland,
                 "central-pairing-peer-offline",
                 new DateTimeOffset(now, TimeSpan.Zero)),
@@ -826,6 +889,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
             now);
         Assert.True(rejected.ExpiredOrRejected);
         Assert.Equal("central-pairing-peer-offline", rejected.SafeCode);
+        Assert.Equal(rejectedPairingId.ToString("D"), rejected.PairingId);
 
         var expiredConfiguration = ActiveConfiguration();
         expiredConfiguration.RegisteredIslandId = localIsland;
@@ -836,6 +900,22 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.True(expired.ExpiredOrRejected);
         Assert.False(expired.PairingActive);
         Assert.Equal("dad-pairing-expired", expired.SafeCode);
+
+        var freshPairingId = Guid.NewGuid();
+        var freshChallenge = challenge with { ChallengeId = freshPairingId };
+        var freshOverExpired = DadAutoPartyProgressProjection.Pairing(
+            expiredConfiguration,
+            ready,
+            freshChallenge,
+            null,
+            peerIsland,
+            "dad-pairing-notice-queued",
+            now,
+            peerIsland);
+        Assert.Equal(freshPairingId.ToString("D"), freshOverExpired.PairingId);
+        Assert.False(freshOverExpired.NoticeAcceptedAndPendingPairingReceived);
+        Assert.False(freshOverExpired.ExpiredOrRejected);
+        Assert.Equal("dad-pairing-notice-queued", freshOverExpired.SafeCode);
     }
 
     [Fact]
@@ -1076,6 +1156,155 @@ public sealed class DadAutoPartyWebhookEndpointTests
             item.MessageReference == "10001" &&
             CourierTextCodec.GetKind(item.Content) == CourierTextKind.Acknowledgement &&
             CourierTextCodec.DecodeAcknowledgement(item.Content).Contract.Direction == CourierDirection.Downlink);
+    }
+
+    [Fact]
+    public async Task HandledMailboxFailuresPreserveReadyPairingAndExactRawActivityCodes()
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new ScriptedWebhookHandler(
+            CourierTextCodec.EmptySlotContent,
+            failAllPatches: true);
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-transient-failures",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+
+        for (var attempt = 0; attempt < 200 &&
+             !string.Equals(adapter.Snapshot.SafeCode, "dad-webhook-presence-failed", StringComparison.Ordinal); attempt++)
+            await Task.Delay(5);
+
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, adapter.Snapshot.State);
+        Assert.Equal("dad-webhook-presence-failed", adapter.Snapshot.SafeCode);
+
+        var configuration = ActiveConfiguration();
+        var pairing = DadAutoPartyProgressProjection.Pairing(
+            configuration,
+            adapter.Snapshot,
+            null,
+            null,
+            "island-22222222222222222222222222222222",
+            null,
+            DateTime.UtcNow);
+        Assert.True(pairing.MailboxReady);
+        Assert.NotEqual("dad-pairing-mailbox-not-ready", pairing.SafeCode);
+
+        var outbound = Envelope("island-local", "central-autoparty", [1, 2, 3, 4]);
+        Assert.True((await adapter.SendAsync(outbound)).Accepted);
+        for (var attempt = 0; attempt < 200 &&
+             !string.Equals(adapter.Snapshot.SafeCode, "dad-webhook-publish-failed", StringComparison.Ordinal); attempt++)
+            await Task.Delay(5);
+
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, adapter.Snapshot.State);
+        var activity = DadAutoPartyProgressProjection.MailboxActivity(
+            adapter.Snapshot,
+            new DadAutoPartyRelayStatus(true, true, "dad-relay-pump-running", DateTimeOffset.UtcNow, null, 0, 0, 0),
+            adapter.TransferSnapshot);
+        Assert.Equal("dad-webhook-publish-failed", activity.RawSafeCode);
+    }
+
+    [Fact]
+    public async Task FetchAcknowledgementQueueAndFatalFailuresRespectMailboxLifecycleState()
+    {
+        using var crypto = new CryptoFixture();
+
+        var fetchHandler = new BlockingPatchWebhookHandler(failFetches: true);
+        using (var fetchClient = new HttpClient(fetchHandler))
+        await using (var fetchAdapter = new DadAutoPartyWebhookTransportAdapter(
+                         crypto.Credential(),
+                         "route-fetch-failure",
+                         1,
+                         crypto.EndpointSigningPrivateKey,
+                         fetchClient,
+                         ownsHttpClient: false,
+                         static (_, _) => Task.CompletedTask,
+                         TimeSpan.FromMilliseconds(10)))
+        {
+            await fetchHandler.PatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, fetchAdapter.Snapshot.State);
+            Assert.Equal("dad-webhook-fetch-failed", fetchAdapter.Snapshot.SafeCode);
+        }
+
+        var (_, downlinkPage) = crypto.CreateDownlink([5, 6, 7, 8]);
+        var acknowledgementHandler = new ScriptedWebhookHandler(
+            downlinkPage,
+            failAllPatches: true);
+        using (var acknowledgementClient = new HttpClient(acknowledgementHandler))
+        await using (var acknowledgementAdapter = new DadAutoPartyWebhookTransportAdapter(
+                         crypto.Credential(),
+                         "route-ack-failure",
+                         1,
+                         crypto.EndpointSigningPrivateKey,
+                         acknowledgementClient,
+                         ownsHttpClient: false,
+                         static (_, _) => Task.CompletedTask,
+                         TimeSpan.FromMilliseconds(10)))
+        {
+            for (var attempt = 0; attempt < 200 &&
+                 !string.Equals(acknowledgementAdapter.Snapshot.SafeCode, "dad-webhook-ack-failed", StringComparison.Ordinal); attempt++)
+                await Task.Delay(5);
+            Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, acknowledgementAdapter.Snapshot.State);
+            Assert.Equal("dad-webhook-ack-failed", acknowledgementAdapter.Snapshot.SafeCode);
+        }
+
+        var queueHandler = new BlockingPatchWebhookHandler(failFetches: false);
+        using (var queueClient = new HttpClient(queueHandler))
+        await using (var queueAdapter = new DadAutoPartyWebhookTransportAdapter(
+                         crypto.Credential(),
+                         "route-queue-failure",
+                         1,
+                         crypto.EndpointSigningPrivateKey,
+                         queueClient,
+                         ownsHttpClient: false,
+                         static (_, _) => Task.CompletedTask,
+                         TimeSpan.FromMilliseconds(10)))
+        {
+            await queueHandler.PatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            string? rejectedSafeCode = null;
+            for (var attempt = 0; attempt < 128 && rejectedSafeCode == null; attempt++)
+            {
+                var result = await queueAdapter.SendAsync(
+                    Envelope("island-local", "central-autoparty", [(byte)attempt]));
+                if (!result.Accepted)
+                    rejectedSafeCode = result.SafeCode;
+            }
+            Assert.Equal("dad-webhook-outbound-full", rejectedSafeCode);
+            Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, queueAdapter.Snapshot.State);
+            Assert.Equal("dad-webhook-outbound-full", queueAdapter.Snapshot.SafeCode);
+        }
+
+        using var fatalClient = new HttpClient(new ThrowingWebhookHandler());
+        await using var fatalAdapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-fatal-failure",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            fatalClient,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+        for (var attempt = 0; attempt < 200 &&
+             fatalAdapter.Snapshot.State != DadAutoPartyEndpointConnectionState.Degraded; attempt++)
+            await Task.Delay(5);
+
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Degraded, fatalAdapter.Snapshot.State);
+        Assert.Equal("dad-webhook-pump-failed", fatalAdapter.Snapshot.SafeCode);
+        var fatalPairing = DadAutoPartyProgressProjection.Pairing(
+            ActiveConfiguration(),
+            fatalAdapter.Snapshot,
+            null,
+            null,
+            "island-22222222222222222222222222222222",
+            null,
+            DateTime.UtcNow);
+        Assert.False(fatalPairing.MailboxReady);
+        Assert.Equal("dad-pairing-mailbox-not-ready", fatalPairing.SafeCode);
     }
 
     [Fact]
@@ -1667,7 +1896,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
     private sealed class ScriptedWebhookHandler(
         string downlinkContent,
         bool failFirstPatch = false,
-        string? uplinkContent = null) : HttpMessageHandler
+        string? uplinkContent = null,
+        bool failAllPatches = false) : HttpMessageHandler
     {
         private int postAttempts;
         private int getAttempts;
@@ -1765,7 +1995,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 using var document = JsonDocument.Parse(payload);
                 var content = document.RootElement.GetProperty("content").GetString()!;
                 var messageReference = request.RequestUri!.Segments[^1];
-                if (failFirstPatch && attempt == 1)
+                if (failAllPatches || failFirstPatch && attempt == 1)
                     return new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 lock (gate)
                 {
@@ -1784,6 +2014,51 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 Encoding.UTF8,
                 "application/json"),
         };
+    }
+
+    private sealed class BlockingPatchWebhookHandler(bool failFetches) : HttpMessageHandler
+    {
+        public TaskCompletionSource<bool> PatchStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                if (failFetches)
+                    return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+                var messageReference = request.RequestUri!.Segments[^1];
+                return Json(HttpStatusCode.OK, new
+                {
+                    id = messageReference,
+                    content = CourierTextCodec.EmptySlotContent,
+                });
+            }
+            if (request.Method == HttpMethod.Patch)
+            {
+                PatchStarted.TrySetResult(true);
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
+        }
+
+        private static HttpResponseMessage Json(HttpStatusCode status, object payload) => new(status)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(payload),
+                Encoding.UTF8,
+                "application/json"),
+        };
+    }
+
+    private sealed class ThrowingWebhookHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromException<HttpResponseMessage>(new InvalidOperationException("synthetic-pump-failure"));
     }
 
     private sealed class CryptoFixture : IDisposable

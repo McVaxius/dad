@@ -180,6 +180,7 @@ public sealed class DadAutoPartyIdentityPackageService
         configuration.UplinkEpochId = string.Empty;
         configuration.DownlinkEpochId = string.Empty;
         configuration.MailboxEpochGeneration = 0;
+        configuration.DirectoryGeneration = 1;
         configuration.RelayKeyGeneration = 1;
         configuration.RelaySigningPublicKey = string.Empty;
         configuration.RelayAgreementPublicKey = string.Empty;

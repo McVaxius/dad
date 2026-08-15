@@ -18,7 +18,6 @@ public sealed class DadAutoPartyWindow : Window
     private string pairingCode = string.Empty;
     private DadAutoPartyCharacterShareMode shareMode = DadAutoPartyCharacterShareMode.SpecificCharacter;
     private bool includePromiscuous = true;
-    private string initiatedPeerIslandId = string.Empty;
     private List<DadAcquiredCharacter> localCandidates = [];
     private List<DadAcquiredCharacter> localShareCandidates = [];
     private readonly HashSet<string> pairingShareHandles = new(StringComparer.Ordinal);
@@ -32,8 +31,7 @@ public sealed class DadAutoPartyWindow : Window
 
     private sealed record UiOperationResult(
         string SafeCode,
-        string ChallengeCopy = "",
-        string InitiatedPeerIslandId = "");
+        string ChallengeCopy = "");
 
     public DadAutoPartyWindow(Plugin plugin)
         : base("DAD AutoParty###DadAutoParty", ImGuiWindowFlags.NoCollapse)
@@ -183,16 +181,19 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.Separator();
         DadUi.Heading(
             "Pairing and sharing",
-            "Pairing is bilateral: both DAD owners verify the same code and fingerprints, then approve their own private character scope.");
+            "Pairing is bilateral, but initiation is one-sided. Only one DAD initiates a pairing. The peer waits for the pending notice; both owners then verify the same code and fingerprints and approve their own private character scope.");
         var pairingChallenge = plugin.AutoPartyEndpointService.LastPairingChallenge;
+        var pairingChallengePeerIslandId = plugin.AutoPartyEndpointService.LastPairingChallengePeerIslandId;
         var pairingProgress = DadAutoPartyProgressProjection.Pairing(
             configuration,
             endpoint,
             pairingChallenge,
             plugin.AutoPartyEndpointService.LastPairingAttemptResult,
-            pairingChallenge != null ? initiatedPeerIslandId : peerIslandId,
+            pairingChallenge != null ? pairingChallengePeerIslandId : peerIslandId,
             status,
-            DateTime.UtcNow);
+            DateTime.UtcNow,
+            pairingChallengePeerIslandId,
+            plugin.AutoPartyEndpointService.TransferSnapshot);
         DrawPairingProgressCard(pairingProgress);
         var localIslandId = configuration.RegisteredIslandId;
         ImGui.TextUnformatted($"This DAD island ID: {(string.IsNullOrWhiteSpace(localIslandId) ? "not registered" : localIslandId)}");
@@ -204,7 +205,10 @@ public sealed class DadAutoPartyWindow : Window
 
         var registrationReady = configuration.IsRegistrationActive &&
             endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
+        var pairingInitiationPending = pairingChallenge?.ExpiresAtUtc > DateTime.UtcNow ||
+            configuration.PendingPairings.Any(item => item.ExpiresAtUtc > DateTime.UtcNow);
         ImGui.BeginDisabled(!registrationReady);
+        ImGui.BeginDisabled(pairingInitiationPending);
         ImGui.InputText("Peer island ID", ref peerIslandId, 128);
         if (ImGui.Button("Initiate bilateral pairing by island ID"))
         {
@@ -214,11 +218,12 @@ public sealed class DadAutoPartyWindow : Window
                 var result = await plugin.AutoPartyEndpointService
                     .InitiatePairingAsync(requestedPeerIslandId)
                     .ConfigureAwait(false);
-                return new UiOperationResult(
-                    result.SafeCode,
-                    InitiatedPeerIslandId: result.Allowed ? requestedPeerIslandId : string.Empty);
+                return new UiOperationResult(result.SafeCode);
             });
         }
+        ImGui.EndDisabled();
+        if (pairingInitiationPending)
+            ImGui.TextDisabled("A pairing attempt is already pending; do not initiate from the peer DAD.");
 
         DadUi.Heading(
             "Community Available",
@@ -240,10 +245,15 @@ public sealed class DadAutoPartyWindow : Window
             }).SafeCode;
         }
         ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
-        var initiated = pairingChallenge;
+        var initiated = pairingChallenge != null && string.Equals(
+            pairingProgress.PairingId,
+            pairingChallenge.ChallengeId.ToString("D"),
+            StringComparison.Ordinal)
+                ? pairingChallenge
+                : null;
         if (initiated != null && initiated.ExpiresAtUtc > DateTime.UtcNow)
         {
-            ImGui.TextUnformatted($"Pairing initiated for: {initiatedPeerIslandId}");
+            ImGui.TextUnformatted($"Pairing initiated for: {pairingChallengePeerIslandId}");
             ImGui.TextUnformatted($"Local fingerprint: {initiated.PublicKeyFingerprint}");
             ImGui.TextUnformatted($"Confirmation code: {initiated.ConfirmationCode}");
             ImGui.TextDisabled($"Expires {initiated.ExpiresAtUtc:u}");
@@ -342,7 +352,7 @@ public sealed class DadAutoPartyWindow : Window
             });
         }
         ImGui.Checkbox("Include same-guild Community Available listings", ref includePromiscuous);
-        DrawDirectory(configuration, directory);
+        DrawDirectory(configuration, directory, pairingInitiationPending);
         ImGui.EndDisabled();
 
         ImGui.Separator();
@@ -444,6 +454,8 @@ public sealed class DadAutoPartyWindow : Window
         if (ImGui.BeginChild("dad-pairing-progress-card", new Vector2(0f, 250f), true))
         {
             ImGui.TextUnformatted("Island pairing");
+            if (!string.IsNullOrWhiteSpace(progress.PairingId))
+                ImGui.TextDisabled($"Pairing ID: {progress.PairingId}");
             DrawChecklistRow("Registration Active prerequisite", CompleteOrPending(progress.RegistrationActive));
             DrawChecklistRow("Current mailbox Ready prerequisite", CompleteOrPending(progress.MailboxReady));
             DrawChecklistRow("Peer island ID validated", progress.PeerIdValidated);
@@ -496,7 +508,8 @@ public sealed class DadAutoPartyWindow : Window
 
     private void DrawDirectory(
         DadAutoPartyConfiguration configuration,
-        DadAutoPartyDirectorySnapshot directory)
+        DadAutoPartyDirectorySnapshot directory,
+        bool pairingInitiationPending)
     {
         var visible = directory.Listings
             .Where(item => string.IsNullOrWhiteSpace(directorySearch) ||
@@ -519,6 +532,7 @@ public sealed class DadAutoPartyWindow : Window
             if (pairing == null)
             {
                 ImGui.SameLine();
+                ImGui.BeginDisabled(pairingInitiationPending);
                 if (ImGui.SmallButton("Initiate pairing"))
                 {
                     var peerIslandId = island.Key;
@@ -527,11 +541,10 @@ public sealed class DadAutoPartyWindow : Window
                         var result = await plugin.AutoPartyEndpointService
                             .InitiatePairingAsync(peerIslandId)
                             .ConfigureAwait(false);
-                        return new UiOperationResult(
-                            result.SafeCode,
-                            InitiatedPeerIslandId: result.Allowed ? peerIslandId : string.Empty);
+                        return new UiOperationResult(result.SafeCode);
                     });
                 }
+                ImGui.EndDisabled();
             }
 
             foreach (var listing in island.OrderBy(static item => item.DisplayLabel, StringComparer.OrdinalIgnoreCase))
@@ -845,8 +858,6 @@ public sealed class DadAutoPartyWindow : Window
             status = result.SafeCode;
             if (!string.IsNullOrWhiteSpace(result.ChallengeCopy))
                 challengeCopy = result.ChallengeCopy;
-            if (!string.IsNullOrWhiteSpace(result.InitiatedPeerIslandId))
-                initiatedPeerIslandId = result.InitiatedPeerIslandId;
         }
         else
         {

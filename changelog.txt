@@ -1,6 +1,15 @@
 # dad — changelog
 
 ## 2026-08-14 — AutoParty presence and mailbox repair (local-only, unpublished)
+- Persisted the authenticated central directory generation from registration receipts and now use it for private listing
+  updates instead of DAD's unrelated local state generation. Existing schema-10 configurations default to generation 1;
+  Active recovery preserves it, while deregistration and identity reset restore the default.
+- Kept a running current mailbox Ready across handled fetch, publish, acknowledgement, presence, queue, and delivery
+  failures while retaining the exact raw activity code. Starting, refresh, binding failure, fatal pump termination, and
+  disposal remain lifecycle blockers and continue to gate pairing.
+- Made pairing explicitly one-sided and blocked repeated initiation while a local challenge or central pending route is
+  live. Progress now follows one exact pairing ID, prefers central's winning pending route during crossing attempts,
+  suppresses the losing local code from that card, and reports when a pairing notice waits behind listing fragments.
 - An exact same-identity bootstrap refresh for an already-Active registration now keeps both registration and recovery
   Active while replacing the protected mailbox credential, detaches the obsolete runtime adapter, and rebinds through
   the existing stop/start lifecycle. Pairing remains gated while the replacement mailbox reports refreshing, queued

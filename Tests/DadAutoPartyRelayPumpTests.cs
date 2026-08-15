@@ -713,6 +713,35 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task PairingInitiationRetainsPeerOnlyInProcessAndBlocksRepeatedOrPendingAttempts()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump();
+
+        var first = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
+        var firstChallenge = Assert.IsType<DadAutoPartyPairingChallenge>(pump.LastPairingChallenge);
+        var repeated = await pump.InitiatePairingAsync("island-33333333333333333333333333333333");
+
+        Assert.True(first.Allowed, first.SafeCode);
+        Assert.Equal(PumpFixture.PeerIsland, pump.LastPairingChallengePeerIslandId);
+        Assert.False(repeated.Allowed);
+        Assert.Equal("dad-pairing-attempt-pending", repeated.SafeCode);
+        Assert.Equal(firstChallenge.ChallengeId, pump.LastPairingChallenge?.ChallengeId);
+        Assert.DoesNotContain(PumpFixture.PeerIsland, JsonSerializer.Serialize(fixture.Configuration), StringComparison.Ordinal);
+
+        using var pendingFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        pendingFixture.Configuration.PendingPairings.Add(pendingFixture.PendingApprovedPeerPairing());
+        await using var pendingPump = pendingFixture.CreatePump();
+
+        var blockedByPending = await pendingPump.InitiatePairingAsync(
+            "island-33333333333333333333333333333333");
+
+        Assert.False(blockedByPending.Allowed);
+        Assert.Equal("dad-pairing-attempt-pending", blockedByPending.SafeCode);
+        Assert.Null(pendingPump.LastPairingChallenge);
+    }
+
+    [Fact]
     public async Task PairingInitiationReportsExactLocalValidationFailure()
     {
         using (var inactiveFixture = new PumpFixture(DadAutoPartyRegistrationState.Unregistered))
@@ -786,6 +815,8 @@ public sealed class DadAutoPartyRelayPumpTests
     public async Task PrivateListingsAreSealedForTheCentralRelay()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        fixture.Configuration.DirectoryGeneration = 7;
+        fixture.Configuration.StateGeneration = 29;
         await using var pump = fixture.CreatePump();
         await pump.ProcessOnceAsync();
         var policy = new DadAutoPartySharePolicy
@@ -817,6 +848,8 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(DadAutoPartyIdentityPackageService.RegistrationRecipient, envelope.RecipientIslandId.Value);
         var update = fixture.Open<PrivateListingUpdate>(envelope);
         Assert.Equal(PumpFixture.LocalIsland, update.SharingIslandId.Value);
+        Assert.Equal(fixture.Configuration.DirectoryGeneration, update.DirectoryGeneration);
+        Assert.NotEqual(fixture.Configuration.StateGeneration, update.DirectoryGeneration);
         Assert.Equal(CharacterShareMode.SpecificCharacter, update.SharePolicy.Mode);
         Assert.Equal("opaque-local", Assert.Single(update.Listings).CharacterHandle.Value);
     }
@@ -860,6 +893,7 @@ public sealed class DadAutoPartyRelayPumpTests
         var envelope = Assert.Single(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>());
         var update = fixture.Open<PrivateListingUpdate>(envelope);
+        Assert.Equal(fixture.Configuration.DirectoryGeneration, update.DirectoryGeneration);
         Assert.Equal(CharacterShareMode.AllCharactersForPeer, update.SharePolicy.Mode);
         Assert.False(update.SharePolicy.Enabled);
         Assert.Empty(update.SharePolicy.CharacterHandles);
