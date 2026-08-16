@@ -44,6 +44,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     private DadAutoPartyService? autoPartyService;
     private DateTime nextLegacyCleanupAttemptUtc = DateTime.MinValue;
     private DateTime nextListingPublishUtc = DateTime.MinValue;
+    private bool adapterStartRequested;
+    private string lastAdapterStartFailure = string.Empty;
     private bool disposed;
 
     public DadAutoPartyEndpointService(
@@ -628,6 +630,9 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             var endpointKeyGeneration = configuration.EndpointKeyGeneration;
             var expected = configuration.Clone();
             var startGeneration = desiredGeneration;
+            if (!adapterStartRequested)
+                ReportMailboxDiagnostic("adapter-start-requested", "dad-webhook-adapter-start-requested");
+            adapterStartRequested = true;
             adapterStartTask = Task.Run(async () =>
             {
                 byte[]? identityMaterial = null;
@@ -653,14 +658,16 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                     signingPrivateKey = Convert.FromBase64String(identity.SigningPrivateKey);
                     if (signingPrivateKey.Length != AutoPartyProtocol.Ed25519SignatureBytes / 2)
                         return new AdapterStartResult(null, "dad-webhook-identity-invalid", startGeneration);
+                    var createdAdapter = new DadAutoPartyWebhookTransportAdapter(
+                        credential,
+                        routeId,
+                        endpointKeyGeneration,
+                        signingPrivateKey,
+                        httpClientFactory(),
+                        ownsHttpClient: true,
+                        diagnostic: diagnostic);
                     return new AdapterStartResult(
-                        new DadAutoPartyWebhookTransportAdapter(
-                            credential,
-                            routeId,
-                            endpointKeyGeneration,
-                            signingPrivateKey,
-                            httpClientFactory(),
-                            ownsHttpClient: true),
+                        createdAdapter,
                         "dad-webhook-adapter-created",
                         startGeneration);
                 }
@@ -747,6 +754,14 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         if (!completed.IsCompletedSuccessfully || completed.Result.Adapter == null)
         {
             _ = completed.Exception;
+            var safeCode = completed.IsCompletedSuccessfully
+                ? completed.Result.SafeCode
+                : "dad-webhook-adapter-start-failed";
+            if (!string.Equals(lastAdapterStartFailure, safeCode, StringComparison.Ordinal))
+            {
+                lastAdapterStartFailure = safeCode;
+                ReportMailboxDiagnostic("adapter-start-failed", safeCode);
+            }
             Snapshot = new(
                 DadAutoPartyEndpointConnectionState.Degraded,
                 completed.IsCompletedSuccessfully
@@ -762,13 +777,17 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         }
         if (completed.Result.Generation != Volatile.Read(ref desiredAdapterGeneration))
         {
+            ReportMailboxDiagnostic("adapter-stop-requested", "dad-webhook-adapter-stop-requested");
             adapterStopTask = completed.Result.Adapter.DisposeAsync().AsTask();
             Snapshot = RefreshingSnapshot();
             return;
         }
         adapter = completed.Result.Adapter;
         attachedAdapterGeneration = completed.Result.Generation;
+        adapterStartRequested = false;
+        lastAdapterStartFailure = string.Empty;
         connector.AttachVerifiedAdapter(adapter);
+        ReportMailboxDiagnostic("adapter-ready", "dad-webhook-adapter-ready");
         Snapshot = completed.Result.Generation == Volatile.Read(ref readyAdapterGeneration)
             ? adapter.Snapshot
             : RefreshingSnapshot();
@@ -782,13 +801,17 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         var stopping = adapter;
         adapter = null;
         attachedAdapterGeneration = -1;
+        ReportMailboxDiagnostic("adapter-stop-requested", "dad-webhook-adapter-stop-requested");
         adapterStopTask = stopping.DisposeAsync().AsTask();
     }
 
     private void RequestAdapterRefresh()
     {
         _ = Interlocked.Increment(ref desiredAdapterGeneration);
+        adapterStartRequested = false;
+        lastAdapterStartFailure = string.Empty;
         connector.DetachAdapter();
+        ReportMailboxDiagnostic("adapter-refresh-requested", "dad-webhook-refreshing");
         Snapshot = RefreshingSnapshot();
     }
 
@@ -813,9 +836,18 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         if (completed.IsFaulted)
         {
             _ = completed.Exception;
-            diagnostic("dad-webhook-adapter-stop-failed");
+            ReportMailboxDiagnostic("adapter-stop-failed", "dad-webhook-adapter-stop-failed");
         }
         adapterStopTask = null;
+    }
+
+    private void ReportMailboxDiagnostic(string stage, string safeCode)
+    {
+        var normalized = DadAutoPartyConfiguration.NormalizeSafeCode(safeCode);
+        var reportedCode = string.IsNullOrWhiteSpace(normalized)
+            ? "dad-mailbox-diagnostic-safe-code-invalid"
+            : normalized;
+        diagnostic($"dad-mailbox stage={stage} safeCode={reportedCode}");
     }
 
     private async Task<LegacyCleanupResult> DeleteLegacyTokenAsync(

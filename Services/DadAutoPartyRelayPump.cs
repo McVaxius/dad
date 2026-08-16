@@ -616,6 +616,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             LastPairingAttemptResult = null;
         }
         UpdateSnapshot("dad-pairing-notice-queued");
+        ReportPairingDiagnostic("notice-queued", "dad-pairing-notice-queued");
         return ValueTask.FromResult(Decision(true, "dad-pairing-notice-queued"));
     }
 
@@ -1669,9 +1670,16 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             {
                 lock (gate)
                     _ = pendingOutbound.Dequeue();
+                if (pending.Contract is PairingNotice)
+                    ReportPairingDiagnostic(
+                        pending,
+                        "expired-before-transfer",
+                        "dad-pairing-notice-expired-before-transfer");
                 continue;
             }
             var result = await SendContractAsync(pending.Contract, cancellationToken).ConfigureAwait(false);
+            if (pending.Contract is PairingNotice)
+                ReportPairingDiagnostic(pending, "adapter-queue", result.SafeCode);
             if (!result.Accepted)
             {
                 UpdateSnapshot(result.SafeCode);
@@ -2024,7 +2032,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         if (notice.PeerIslandId.Value != configuration.RegisteredIslandId ||
             notice.InitiatorIslandId.Value == configuration.RegisteredIslandId)
-            return ValueTask.FromResult(DispatchResult.Deny("dad-pairing-notice-route-invalid"));
+        {
+            const string safeCode = "dad-pairing-notice-route-invalid";
+            ReportPairingDiagnostic("inbound-denied", safeCode);
+            return ValueTask.FromResult(DispatchResult.Deny(safeCode));
+        }
         var decision = service.ReceivePairingNotice(
             notice.PairingId,
             notice.InitiatorOwnerId.Value,
@@ -2035,6 +2047,9 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             notice.TranscriptHash,
             notice.ConfirmationCodeHash,
             notice.PairingExpiresAt.UtcDateTime);
+        ReportPairingDiagnostic(
+            decision.Allowed ? "inbound-accepted" : "inbound-denied",
+            decision.SafeCode);
         return ValueTask.FromResult(decision.Allowed
             ? DispatchResult.Allow(decision.SafeCode)
             : DispatchResult.Deny(decision.SafeCode));
@@ -2305,6 +2320,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         lock (gate)
         {
             _ = awaitingRelayReceipts.Remove(receipt.RelatedMessageId, out related);
+            if (related?.Contract is PairingNotice)
+                ReportPairingDiagnostic(
+                    related,
+                    receipt.Accepted ? "relay-receipt-accepted" : "relay-receipt-rejected",
+                    receipt.SafeCode);
             if (!receipt.Accepted && related?.Contract is PairingNotice notice)
             {
                 rejectedPairingNotice = notice;
@@ -3349,12 +3369,16 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     }
 
     private EndpointPublicKeys LocalPublicKeys()
-        => new(
+    {
+        var registeredKeyIdPrefix = DadAutoPartyIdentityPackageService.GetRegisteredKeyIdPrefix(
+            configuration.RegistrationFingerprint);
+        return new(
             configuration.EndpointKeyGeneration,
-            $"dad-ed25519-{configuration.EndpointKeyGeneration}",
+            $"ed25519:{registeredKeyIdPrefix}",
             ImmutableArray.CreateRange(Convert.FromBase64String(configuration.SigningPublicKey)),
-            $"dad-x25519-{configuration.EndpointKeyGeneration}",
+            $"x25519:{registeredKeyIdPrefix}",
             ImmutableArray.CreateRange(Convert.FromBase64String(configuration.EncryptionPublicKey)));
+    }
 
     private bool TryEnqueueControl(IAutoPartyContract contract)
     {
@@ -3604,6 +3628,17 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             replayedMessages.Remove(messageId);
         lock (gate)
         {
+            foreach (var pending in awaitingRelayReceipts
+                         .Where(pair => pair.Value.Contract.Header.ExpiresAt <= now)
+                         .Select(static pair => pair.Value)
+                         .ToList())
+            {
+                if (pending.Contract is PairingNotice)
+                    ReportPairingDiagnostic(
+                        pending,
+                        "expired-in-flight",
+                        "dad-pairing-notice-expired-in-flight");
+            }
             foreach (var messageId in awaitingRelayReceipts
                          .Where(pair => pair.Value.Contract.Header.ExpiresAt <= now)
                          .Select(static pair => pair.Key)
@@ -3646,9 +3681,39 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 LastPairingChallengePeerIslandId = string.Empty;
             }
             while (pendingOutbound.Count > 0 && pendingOutbound.Peek().Contract.Header.ExpiresAt <= now)
+            {
+                var pending = pendingOutbound.Peek();
+                if (pending.Contract is PairingNotice)
+                    ReportPairingDiagnostic(
+                        pending,
+                        "expired-before-transfer",
+                        "dad-pairing-notice-expired-before-transfer");
                 _ = pendingOutbound.Dequeue();
+            }
         }
     }
+
+    private void ReportPairingDiagnostic(string stage, string safeCode)
+        => diagnostic($"dad-pairing stage={stage} safeCode={NormalizeDiagnosticSafeCode(safeCode)}");
+
+    private void ReportPairingDiagnostic(
+        PendingOutboundContract pending,
+        string stage,
+        string safeCode)
+    {
+        var normalized = NormalizeDiagnosticSafeCode(safeCode);
+        if (string.Equals(pending.LastReportedStage, stage, StringComparison.Ordinal) &&
+            string.Equals(pending.LastReportedSafeCode, normalized, StringComparison.Ordinal))
+            return;
+        pending.LastReportedStage = stage;
+        pending.LastReportedSafeCode = normalized;
+        ReportPairingDiagnostic(stage, normalized);
+    }
+
+    private static string NormalizeDiagnosticSafeCode(string safeCode)
+        => DadAutoPartyConfiguration.NormalizeSafeCode(safeCode) is { Length: > 0 } normalized
+            ? normalized
+            : "dad-pairing-diagnostic-safe-code-invalid";
 
     private void UpdateSnapshot(string safeCode, bool? running = null)
     {
@@ -3793,7 +3858,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         public static DispatchResult Deny(string safeCode) => new(false, safeCode);
     }
 
-    private sealed record PendingOutboundContract(IAutoPartyContract Contract, DateTimeOffset QueuedAt);
+    private sealed record PendingOutboundContract(IAutoPartyContract Contract, DateTimeOffset QueuedAt)
+    {
+        public string LastReportedStage { get; set; } = string.Empty;
+        public string LastReportedSafeCode { get; set; } = string.Empty;
+    }
 
     private sealed record PendingAllianceOutbound(
         AllianceRecruitmentOperation Operation,

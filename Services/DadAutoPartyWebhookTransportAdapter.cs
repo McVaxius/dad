@@ -39,6 +39,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private readonly bool ownsHttpClient;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly TimeSpan pollInterval;
+    private Action<string> diagnostic = static _ => { };
     private readonly FixedCourierKeyResolver keyResolver;
     private readonly ProductionContractAuthenticator authenticator;
     private readonly Channel<OpaqueEnvelope> outbound = Channel.CreateBounded<OpaqueEnvelope>(
@@ -78,6 +79,8 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private DadAutoPartyAdapterTransferSnapshot transferSnapshot = DadAutoPartyAdapterTransferSnapshot.Idle;
     private long nextUplinkPageGeneration = Math.Max(1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     private DateTime nextPresencePublishUtc = DateTime.MinValue;
+    private bool presencePublished;
+    private bool presencePublishFailed;
     private int pendingOutboundCount;
     private int bufferedInboundCount;
     private bool disposed;
@@ -90,7 +93,8 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         HttpClient? httpClient = null,
         bool ownsHttpClient = false,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null,
+        Action<string>? diagnostic = null)
     {
         if (credential is not { HasProvisionedMailbox: true })
             throw new ArgumentException("A provisioned webhook mailbox is required.", nameof(credential));
@@ -118,6 +122,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         this.pollInterval = pollInterval is { } interval && interval > TimeSpan.Zero
             ? interval
             : DefaultPollInterval;
+        this.diagnostic = diagnostic ?? (static _ => { });
         snapshot = new(
             DadAutoPartyEndpointConnectionState.Connecting,
             "dad-webhook-starting",
@@ -134,6 +139,9 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     internal DadAutoPartyAdapterTransferSnapshot TransferSnapshot => Volatile.Read(ref transferSnapshot);
     public CourierEpochDescriptor UplinkEpochSnapshot => Volatile.Read(ref uplinkEpoch);
     public CourierEpochDescriptor DownlinkEpochSnapshot => Volatile.Read(ref downlinkEpoch);
+
+    internal void ConfigureDiagnostic(Action<string>? callback)
+        => Volatile.Write(ref diagnostic, callback ?? (static _ => { }));
 
     public ValueTask<AutoPartyTransportHealth> GetHealthAsync(
         CancellationToken cancellationToken = default)
@@ -392,6 +400,17 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             {
                 if (acknowledgement.AcceptedMessageIds.Contains(activeOutbound.Delivery.EnvelopeId))
                 {
+                    if (IsPairingNotice(activeOutbound.Delivery))
+                    {
+                        ReportPairingDiagnostic(
+                            activeOutbound,
+                            $"fragment-acknowledged:{activeOutbound.Fragments.Length}/{activeOutbound.Fragments.Length}",
+                            "dad-webhook-uplink-fragment-acknowledged");
+                        ReportPairingDiagnostic(
+                            activeOutbound,
+                            "courier-accepted",
+                            acknowledgement.SafeCode);
+                    }
                     CompleteActiveOutbound();
                 }
                 else
@@ -408,8 +427,20 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                             activeOutbound.Fragments.Length);
                         activeOutbound.AwaitingAcknowledgement = false;
                         activeOutbound.PublishedContent = string.Empty;
+                        if (IsPairingNotice(activeOutbound.Delivery))
+                            ReportPairingDiagnostic(
+                                activeOutbound,
+                                $"fragment-acknowledged:{activeOutbound.NextFragmentIndex}/{activeOutbound.Fragments.Length}",
+                                "dad-webhook-uplink-fragment-acknowledged");
                         if (activeOutbound.NextFragmentIndex >= activeOutbound.Fragments.Length)
+                        {
+                            if (IsPairingNotice(activeOutbound.Delivery))
+                                ReportPairingDiagnostic(
+                                    activeOutbound,
+                                    "courier-accepted",
+                                    acknowledgement.SafeCode);
                             CompleteActiveOutbound();
+                        }
                         else
                             UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
                     }
@@ -552,6 +583,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                         delivery.PayloadType,
                         delivery.Ciphertext.AsSpan(),
                         delivery.ExpiresAt));
+                if (IsPairingNotice(delivery))
+                    ReportPairingDiagnostic(
+                        activeOutbound,
+                        "transfer-started",
+                        "dad-webhook-transfer-started");
                 UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
             }
             catch (ProtocolException)
@@ -608,6 +644,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         {
             activeOutbound.LastPublishedAtUtc = DateTime.UtcNow;
             RememberPublishedContent(CourierDirection.Uplink, reference, activeOutbound.PublishedContent);
+            if (IsPairingNotice(activeOutbound.Delivery))
+                ReportPairingDiagnostic(
+                    activeOutbound,
+                    $"fragment-published:{activeOutbound.NextFragmentIndex + 1}/{activeOutbound.Fragments.Length}",
+                    "dad-webhook-uplink-fragment-published");
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-uplink-fragment-published",
@@ -616,6 +657,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
         else
         {
+            if (IsPairingNotice(activeOutbound.Delivery))
+                ReportPairingDiagnostic(
+                    activeOutbound,
+                    $"fragment-publish-failed:{activeOutbound.NextFragmentIndex + 1}/{activeOutbound.Fragments.Length}",
+                    "dad-webhook-publish-failed");
             UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-publish-failed", null);
             UpdateTransferSnapshot(awaitingCentralAcknowledgement: false);
         }
@@ -634,6 +680,17 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 cancellationToken).ConfigureAwait(false))
         {
             RememberPublishedContent(CourierDirection.Uplink, pageReference.MessageReference, content);
+            if (presencePublishFailed)
+            {
+                presencePublishFailed = false;
+                presencePublished = true;
+                ReportMailboxDiagnostic("presence-recovered", "dad-webhook-presence-published");
+            }
+            else if (!presencePublished)
+            {
+                presencePublished = true;
+                ReportMailboxDiagnostic("presence-initial-published", "dad-webhook-presence-published");
+            }
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-presence-published",
@@ -641,6 +698,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
         else
         {
+            if (!presencePublishFailed)
+            {
+                presencePublishFailed = true;
+                ReportMailboxDiagnostic("presence-publish-failed", "dad-webhook-presence-failed");
+            }
             UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-presence-failed", null);
         }
     }
@@ -864,6 +926,39 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             awaitingCentralAcknowledgement));
     }
 
+    private void ReportPairingDiagnostic(
+        OutboundDeliveryState delivery,
+        string stage,
+        string safeCode)
+    {
+        var normalized = NormalizeDiagnosticSafeCode(safeCode);
+        if (string.Equals(delivery.LastReportedStage, stage, StringComparison.Ordinal) &&
+            string.Equals(delivery.LastReportedSafeCode, normalized, StringComparison.Ordinal))
+            return;
+        delivery.LastReportedStage = stage;
+        delivery.LastReportedSafeCode = normalized;
+        Volatile.Read(ref diagnostic)($"dad-pairing stage={stage} safeCode={normalized}");
+    }
+
+    private void ReportMailboxDiagnostic(string stage, string safeCode)
+    {
+        var normalized = DadAutoPartyConfiguration.NormalizeSafeCode(safeCode) is { Length: > 0 } value
+            ? value
+            : "dad-mailbox-diagnostic-safe-code-invalid";
+        Volatile.Read(ref diagnostic)($"dad-mailbox stage={stage} safeCode={normalized}");
+    }
+
+    private static string NormalizeDiagnosticSafeCode(string safeCode)
+        => DadAutoPartyConfiguration.NormalizeSafeCode(safeCode) is { Length: > 0 } normalized
+            ? normalized
+            : "dad-pairing-diagnostic-safe-code-invalid";
+
+    private static bool IsPairingNotice(OpaqueEnvelope delivery)
+        => string.Equals(
+            delivery.PayloadType,
+            ProtocolContractRegistry.GetTypeId<PairingNotice>(),
+            StringComparison.Ordinal);
+
     private async Task<WebhookMessage?> FetchKnownMessageAsync(
         string messageReference,
         CancellationToken cancellationToken)
@@ -1074,6 +1169,8 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         public bool AwaitingAcknowledgement { get; set; }
         public string PublishedContent { get; set; } = string.Empty;
         public DateTime LastPublishedAtUtc { get; set; } = DateTime.MinValue;
+        public string LastReportedStage { get; set; } = string.Empty;
+        public string LastReportedSafeCode { get; set; } = string.Empty;
     }
 
     private sealed class InboundDeliveryState(

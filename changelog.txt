@@ -1,6 +1,15 @@
 # dad — changelog
 
 ## 2026-08-14 — AutoParty presence and mailbox repair (local-only, unpublished)
+- Added bounded `dad-mailbox` lifecycle diagnostics for adapter start, ready, refresh, stop, and failure transitions,
+  plus initial presence publication, the first consecutive publication failure, and recovery. Idle ten-second presence
+  polls remain silent; the lines carry only stage and safe code.
+- Pairing notices now use the same fingerprint-derived `ed25519:` and `x25519:` endpoint key IDs as registration
+  challenges, preserving the existing key generation and public-key bytes so central recognizes the registered identity.
+- Added pairing-only diagnostic lifecycle lines through local notice queueing, adapter acceptance or safe-code denial,
+  courier transfer progress, central acceptance, expiry, inbound pending-notice decisions, and exact relay receipts.
+  Retry reporting is deduplicated in existing process-local delivery state; confirmation material, protected identifiers,
+  credentials, ciphertext, and message contents remain absent from the diagnostics.
 - Persisted the authenticated central directory generation from registration receipts and now use it for private listing
   updates instead of DAD's unrelated local state generation. Existing schema-10 configurations default to generation 1;
   Active recovery preserves it, while deregistration and identity reset restore the default.

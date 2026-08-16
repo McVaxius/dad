@@ -713,6 +713,191 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task PairingNoticeUsesRegistrationDerivedEndpointKeyIds()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump();
+
+        var initiated = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
+        Assert.True(initiated.Allowed, initiated.SafeCode);
+        await pump.ProcessOnceAsync();
+
+        var notice = fixture.Open<PairingNotice>(Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>()));
+        var keyIdPrefix = DadAutoPartyConfiguration.NormalizeFingerprint(
+            fixture.Configuration.RegistrationFingerprint)[..16].ToLowerInvariant();
+
+        Assert.Equal($"ed25519:{keyIdPrefix}", notice.InitiatorPublicKeys.SigningKeyId);
+        Assert.Equal($"x25519:{keyIdPrefix}", notice.InitiatorPublicKeys.AgreementKeyId);
+        Assert.Equal(fixture.LocalSigningPublic, notice.InitiatorPublicKeys.Ed25519PublicKey.ToArray());
+        Assert.Equal(fixture.LocalAgreementPublic, notice.InitiatorPublicKeys.X25519PublicKey.ToArray());
+    }
+
+    [Fact]
+    public async Task PairingDiagnosticsDeduplicateSendRetriesAndReportExactReceiptWithoutProtectedMaterial()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var diagnostics = new List<string>();
+        await using var pump = fixture.CreatePump(diagnostic: diagnostics.Add);
+
+        var initiated = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
+        Assert.True(initiated.Allowed, initiated.SafeCode);
+        var challenge = Assert.IsType<DadAutoPartyPairingChallenge>(pump.LastPairingChallenge);
+
+        Assert.Equal(1, diagnostics.Count(IsDiagnostic("notice-queued", "dad-pairing-notice-queued")));
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            fixture.Transport.SendAcceptance.Enqueue(false);
+            fixture.Transport.SendSafeCodes.Enqueue(
+                attempt == 2 ? "dad-pairing-transport-blocked" : "dad-pairing-send-denied");
+        }
+        fixture.Transport.SendAcceptance.Enqueue(true);
+        fixture.Transport.SendSafeCodes.Enqueue("dad-webhook-outbound-queued");
+
+        for (var attempt = 0; attempt < 4; attempt++)
+            await pump.ProcessOnceAsync();
+
+        Assert.Equal(1, diagnostics.Count(IsDiagnostic("adapter-queue", "dad-pairing-send-denied")));
+        Assert.Equal(1, diagnostics.Count(IsDiagnostic("adapter-queue", "dad-pairing-transport-blocked")));
+        Assert.Equal(1, diagnostics.Count(IsDiagnostic("adapter-queue", "dad-webhook-outbound-queued")));
+
+        var sentNotice = fixture.Transport.Sent
+            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>())
+            .Last();
+        var receiptEnvelope = fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("pairing-notice-rejected"),
+            Guid.NewGuid(),
+            sentNotice.EnvelopeId,
+            false,
+            "dad-pairing-notice-rejected"));
+        fixture.Transport.Inbound.Enqueue(receiptEnvelope);
+        await pump.ProcessOnceAsync();
+
+        Assert.Equal(1, diagnostics.Count(IsDiagnostic(
+            "relay-receipt-rejected",
+            "dad-pairing-notice-rejected")));
+        Assert.DoesNotContain(
+            string.Join('\n', diagnostics),
+            challenge.ConfirmationCode,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            string.Join('\n', diagnostics),
+            fixture.Configuration.RegistrationFingerprint,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            string.Join('\n', diagnostics),
+            fixture.Configuration.RegisteredOwnerId,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            string.Join('\n', diagnostics),
+            fixture.Configuration.RegisteredIslandId,
+            StringComparison.Ordinal);
+
+        static Func<string, bool> IsDiagnostic(string stage, string safeCode)
+            => line => line.Contains($"stage={stage}", StringComparison.Ordinal) &&
+                       line.Contains($"safeCode={safeCode}", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PairingDiagnosticsReportInboundDecisionAndBothExpiryStages()
+    {
+        using var inboundFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var inboundDiagnostics = new List<string>();
+        await using (var inboundPump = inboundFixture.CreatePump(diagnostic: inboundDiagnostics.Add))
+        {
+            var acceptedNotice = InboundPairingNotice(inboundFixture);
+            var acceptedDelivery = inboundFixture.SealRelay(acceptedNotice);
+            inboundFixture.Transport.Inbound.Enqueue(acceptedDelivery);
+            await inboundPump.ProcessOnceAsync();
+
+            Assert.Equal(1, inboundDiagnostics.Count(IsDiagnostic(
+                "inbound-accepted",
+                "dad-pairing-notice-pending")));
+            Assert.Contains(inboundFixture.Transport.Acknowledged, item =>
+                item.EnvelopeId == acceptedDelivery.EnvelopeId &&
+                item.SafeCode == "dad-pairing-notice-pending");
+
+            Assert.Single(inboundFixture.Configuration.PendingPairings).LocalApproved = true;
+            var rejectedNotice = InboundPairingNotice(inboundFixture);
+            var rejectedDelivery = inboundFixture.SealRelay(rejectedNotice);
+            inboundFixture.Transport.Inbound.Enqueue(rejectedDelivery);
+            await inboundPump.ProcessOnceAsync();
+
+            Assert.Equal(1, inboundDiagnostics.Count(IsDiagnostic(
+                "inbound-denied",
+                "dad-pairing-notice-conflict")));
+        }
+
+        var beforeTransferNow = DateTimeOffset.UtcNow;
+        using var beforeTransferFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var beforeTransferDiagnostics = new List<string>();
+        await using (var beforeTransferPump = beforeTransferFixture.CreatePump(
+                         utcNow: () => beforeTransferNow,
+                         diagnostic: beforeTransferDiagnostics.Add))
+        {
+            var initiated = await beforeTransferPump.InitiatePairingAsync(PumpFixture.PeerIsland);
+            Assert.True(initiated.Allowed, initiated.SafeCode);
+            beforeTransferNow = beforeTransferNow.AddMinutes(11);
+            await beforeTransferPump.ProcessOnceAsync();
+            Assert.Equal(1, beforeTransferDiagnostics.Count(IsDiagnostic(
+                "expired-before-transfer",
+                "dad-pairing-notice-expired-before-transfer")));
+        }
+
+        var inFlightNow = DateTimeOffset.UtcNow;
+        using var inFlightFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var inFlightDiagnostics = new List<string>();
+        await using (var inFlightPump = inFlightFixture.CreatePump(
+                         utcNow: () => inFlightNow,
+                         diagnostic: inFlightDiagnostics.Add))
+        {
+            var initiated = await inFlightPump.InitiatePairingAsync(PumpFixture.PeerIsland);
+            Assert.True(initiated.Allowed, initiated.SafeCode);
+            await inFlightPump.ProcessOnceAsync();
+            inFlightNow = inFlightNow.AddMinutes(11);
+            await inFlightPump.ProcessOnceAsync();
+            Assert.Equal(1, inFlightDiagnostics.Count(IsDiagnostic(
+                "expired-in-flight",
+                "dad-pairing-notice-expired-in-flight")));
+        }
+
+        static Func<string, bool> IsDiagnostic(string stage, string safeCode)
+            => line => line.Contains($"stage={stage}", StringComparison.Ordinal) &&
+                       line.Contains($"safeCode={safeCode}", StringComparison.Ordinal);
+
+        static PairingNotice InboundPairingNotice(PumpFixture fixture)
+        {
+            var keyVersion = 3L;
+            var keys = new EndpointPublicKeys(
+                keyVersion,
+                "ed25519:peer",
+                ImmutableArray.CreateRange(fixture.PeerSigningPublic),
+                "x25519:peer",
+                ImmutableArray.CreateRange(fixture.PeerAgreementPublic));
+            var fingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                PumpFixture.PeerOwner,
+                PumpFixture.PeerIsland,
+                keyVersion,
+                fixture.PeerSigningPublic,
+                fixture.PeerAgreementPublic);
+            var header = fixture.RelayHeader("pairing-notice-inbound");
+            return new PairingNotice(
+                header,
+                Guid.NewGuid(),
+                new OwnerId(PumpFixture.PeerOwner),
+                new IslandId(PumpFixture.PeerIsland),
+                new IslandId(PumpFixture.LocalIsland),
+                "guild-peer",
+                keys,
+                fingerprint,
+                new string('C', 64),
+                new string('D', 64),
+                header.ExpiresAt);
+        }
+    }
+
+    [Fact]
     public async Task PairingInitiationRetainsPeerOnlyInProcessAndBlocksRepeatedOrPendingAttempts()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
@@ -2376,7 +2561,8 @@ public sealed class DadAutoPartyRelayPumpTests
             Func<DateTime, DadAutoPartyListingPublication>? inboundListingPublicationProvider = null,
             IDadAutoPartyInboundProposalStore? inboundProposalStore = null,
             Action<string>? diagnostic = null,
-            Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission = null)
+            Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission = null,
+            Func<DateTimeOffset>? utcNow = null)
             => new(
                 Configuration,
                 IdentityStore,
@@ -2387,6 +2573,7 @@ public sealed class DadAutoPartyRelayPumpTests
                 inboundProposalStore: inboundProposalStore,
                 inboundListingPublicationProvider: inboundListingPublicationProvider,
                 inboundAdmission: inboundAdmission,
+                utcNow: utcNow,
                 delay: static (_, _) => Task.CompletedTask,
                 diagnostic: diagnostic);
 
@@ -2741,6 +2928,7 @@ public sealed class DadAutoPartyRelayPumpTests
     {
         public Queue<OpaqueEnvelope> Inbound { get; } = [];
         public Queue<bool> SendAcceptance { get; } = [];
+        public Queue<string> SendSafeCodes { get; } = [];
         public List<OpaqueEnvelope> Sent { get; } = [];
         public List<AutoPartyTransportAcknowledgement> Acknowledged { get; } = [];
 
@@ -2768,9 +2956,12 @@ public sealed class DadAutoPartyRelayPumpTests
             cancellationToken.ThrowIfCancellationRequested();
             Sent.Add(delivery);
             var accepted = SendAcceptance.Count == 0 || SendAcceptance.Dequeue();
+            var safeCode = SendSafeCodes.Count > 0
+                ? SendSafeCodes.Dequeue()
+                : accepted ? "accepted" : "denied";
             return ValueTask.FromResult(new AutoPartyTransportSendResult(
                 accepted,
-                accepted ? "accepted" : "denied",
+                safeCode,
                 delivery.EnvelopeId));
         }
 

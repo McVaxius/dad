@@ -402,12 +402,27 @@ public sealed class DadAutoPartyWebhookEndpointTests
             static () => true,
             static () => { },
             credentialStore: credentialStore);
+        var diagnostics = new List<string>();
+        var diagnosticGate = new object();
+        void RecordDiagnostic(string line)
+        {
+            lock (diagnosticGate)
+                diagnostics.Add(line);
+        }
+
+        string[] ReadDiagnostics()
+        {
+            lock (diagnosticGate)
+                return diagnostics.ToArray();
+        }
+
         using var endpoint = new DadAutoPartyEndpointService(
             configuration,
             credentialStore,
             new MemoryLegacyTokenStore(),
             service.Connector,
             static () => { },
+            diagnostic: RecordDiagnostic,
             httpClientFactory: () => new HttpClient(handler, disposeHandler: false),
             identityStore: identityStore);
         var pumpSleeping = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -431,6 +446,12 @@ public sealed class DadAutoPartyWebhookEndpointTests
             await Task.Delay(5);
         }
         Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, endpoint.Snapshot.State);
+        Assert.Contains(ReadDiagnostics(), line => line.Contains(
+            "stage=adapter-start-requested safeCode=dad-webhook-adapter-start-requested",
+            StringComparison.Ordinal));
+        Assert.Contains(ReadDiagnostics(), line => line.Contains(
+            "stage=adapter-ready safeCode=dad-webhook-adapter-ready",
+            StringComparison.Ordinal));
         endpoint.AttachRelayPump(pump, service);
         await pumpSleeping.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var queued = await endpoint.InitiatePairingAsync(queuedPeerIslandId);
@@ -451,6 +472,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Equal(DadAutoPartyEndpointConnectionState.Connecting, endpoint.Snapshot.State);
         Assert.Equal("dad-webhook-refreshing", endpoint.Snapshot.SafeCode);
         Assert.Same(DadAutoPartyAdapterTransferSnapshot.Idle, endpoint.TransferSnapshot);
+        Assert.Contains(ReadDiagnostics(), line => line.Contains(
+            "stage=adapter-refresh-requested safeCode=dad-webhook-refreshing",
+            StringComparison.Ordinal));
         var refreshingRegistration = DadAutoPartyProgressProjection.Registration(
             configuration,
             endpoint.Snapshot,
@@ -486,6 +510,15 @@ public sealed class DadAutoPartyWebhookEndpointTests
             await Task.Delay(5);
         }
         Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, endpoint.Snapshot.State);
+        Assert.Equal(2, ReadDiagnostics().Count(line => line.Contains(
+            "stage=adapter-start-requested safeCode=dad-webhook-adapter-start-requested",
+            StringComparison.Ordinal)));
+        Assert.Equal(2, ReadDiagnostics().Count(line => line.Contains(
+            "stage=adapter-ready safeCode=dad-webhook-adapter-ready",
+            StringComparison.Ordinal)));
+        Assert.Contains(ReadDiagnostics(), line => line.Contains(
+            "stage=adapter-stop-requested safeCode=dad-webhook-adapter-stop-requested",
+            StringComparison.Ordinal));
         var recoveredReady = DadAutoPartyProgressProjection.Registration(
             configuration,
             endpoint.Snapshot,
@@ -1159,6 +1192,178 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
+    public async Task EndpointLogsAdapterStartFailureOncePerUnchangedFailure()
+    {
+        var configuration = ActiveConfiguration();
+        var now = DateTimeOffset.UtcNow;
+        var relayKeys = new EndpointPublicKeys(
+            configuration.RelayKeyGeneration,
+            "relay-signing",
+            ImmutableArray.CreateRange(Convert.FromBase64String(configuration.RelaySigningPublicKey)),
+            "relay-agreement",
+            ImmutableArray.CreateRange(Convert.FromBase64String(configuration.RelayAgreementPublicKey)));
+        var credential = new DadAutoPartyWebhookCredential(
+            "123456789012345678",
+            new string('a', 64),
+            "223456789012345678")
+        {
+            UplinkEpoch = new(
+                Guid.Parse(configuration.UplinkEpochId),
+                new IslandId(configuration.RegisteredIslandId),
+                CourierDirection.Uplink,
+                now.AddMinutes(-1),
+                now.AddMinutes(30),
+                now.AddMinutes(35),
+                1,
+                [new CourierPageReference(1, "10001")],
+                configuration.MailboxEpochGeneration),
+            DownlinkEpoch = new(
+                Guid.Parse(configuration.DownlinkEpochId),
+                new IslandId(configuration.RegisteredIslandId),
+                CourierDirection.Downlink,
+                now.AddMinutes(-1),
+                now.AddMinutes(30),
+                now.AddMinutes(35),
+                1,
+                [new CourierPageReference(1, "10002")],
+                configuration.MailboxEpochGeneration),
+            RelayPublicKeys = relayKeys,
+        };
+        var store = new MemoryWebhookStore();
+        configuration.WebhookCredentialReference = await store.StoreAsync(credential);
+        var diagnostics = new List<string>();
+        var diagnosticGate = new object();
+        void RecordDiagnostic(string line)
+        {
+            lock (diagnosticGate)
+                diagnostics.Add(line);
+        }
+
+        string[] ReadDiagnostics()
+        {
+            lock (diagnosticGate)
+                return diagnostics.ToArray();
+        }
+
+        await using var connector = new DadDiscordCourierConnector(configuration, static () => true);
+        using var endpoint = new DadAutoPartyEndpointService(
+            configuration,
+            store,
+            new MemoryLegacyTokenStore(),
+            connector,
+            static () => { },
+            RecordDiagnostic);
+
+        for (var attempt = 0; attempt < 100 && !ReadDiagnostics().Any(line => line.Contains(
+                     "stage=adapter-start-failed safeCode=dad-webhook-identity-store-unavailable",
+                     StringComparison.Ordinal)); attempt++)
+        {
+            endpoint.Update(dadEnabled: true);
+            await Task.Delay(5);
+        }
+
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            endpoint.Update(dadEnabled: true);
+            await Task.Delay(5);
+        }
+
+        var observed = ReadDiagnostics();
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=adapter-start-requested safeCode=dad-webhook-adapter-start-requested",
+            StringComparison.Ordinal)));
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=adapter-start-failed safeCode=dad-webhook-identity-store-unavailable",
+            StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task AdapterLogsPairingTransferProgressOnlyWhenTheStageChanges()
+    {
+        using var crypto = new CryptoFixture();
+        var credential = crypto.Credential();
+        var outbound = Envelope(
+            "island-local",
+            "central-autoparty",
+            Enumerable.Range(0, AutoPartyProtocol.MaximumCourierFragmentBytes * 3 + 32)
+                .Select(static value => (byte)value)
+                .ToArray(),
+            ProtocolContractRegistry.GetTypeId<PairingNotice>());
+        var handler = new ScriptedWebhookHandler(CourierTextCodec.EmptySlotContent);
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            credential,
+            "route-pairing-diagnostics",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+        var diagnostics = new List<string>();
+        void RecordDiagnostic(string line)
+        {
+            lock (diagnostics)
+                diagnostics.Add(line);
+        }
+
+        string[] ReadDiagnostics()
+        {
+            lock (diagnostics)
+                return diagnostics.ToArray();
+        }
+
+        adapter.ConfigureDiagnostic(RecordDiagnostic);
+        var sent = await adapter.SendAsync(outbound);
+        Assert.True(sent.Accepted, sent.SafeCode);
+
+        for (var fragmentNumber = 1; fragmentNumber <= 4; fragmentNumber++)
+        {
+            CourierPage? publishedPage = null;
+            for (var attempt = 0; attempt < 200 && publishedPage == null; attempt++)
+            {
+                publishedPage = handler.UplinkPages
+                    .Select(content => CourierTextCodec.DecodePage(content).Contract)
+                    .LastOrDefault(page => page.Fragments[0].FragmentNumber == fragmentNumber);
+                if (publishedPage == null)
+                    await Task.Delay(10);
+            }
+
+            Assert.NotNull(publishedPage);
+            handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(publishedPage!));
+            for (var attempt = 0; attempt < 200 && !ReadDiagnostics().Any(line =>
+                         line.Contains(
+                             $"stage=fragment-acknowledged:{fragmentNumber}/4",
+                             StringComparison.Ordinal)); attempt++)
+                await Task.Delay(10);
+        }
+
+        for (var attempt = 0; attempt < 200 && !adapter.TransferSnapshot.IsIdle; attempt++)
+            await Task.Delay(10);
+
+        var observed = ReadDiagnostics();
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=transfer-started", StringComparison.Ordinal)));
+        for (var fragmentNumber = 1; fragmentNumber <= 4; fragmentNumber++)
+        {
+            Assert.Equal(1, observed.Count(line => line.Contains(
+                $"stage=fragment-published:{fragmentNumber}/4",
+                StringComparison.Ordinal)));
+            Assert.Equal(1, observed.Count(line => line.Contains(
+                $"stage=fragment-acknowledged:{fragmentNumber}/4",
+                StringComparison.Ordinal)));
+        }
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=courier-accepted safeCode=relay-uplink-fragment-accepted",
+            StringComparison.Ordinal)));
+        var joined = string.Join('\n', observed);
+        Assert.DoesNotContain(outbound.EnvelopeId.ToString("D"), joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(credential.WebhookToken, joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(outbound.SenderIslandId.Value, joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(outbound.RecipientIslandId.Value, joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HandledMailboxFailuresPreserveReadyPairingAndExactRawActivityCodes()
     {
         using var crypto = new CryptoFixture();
@@ -1323,6 +1528,21 @@ public sealed class DadAutoPartyWebhookEndpointTests
             ownsHttpClient: false,
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromMilliseconds(10));
+        var diagnostics = new List<string>();
+        var diagnosticGate = new object();
+        void RecordDiagnostic(string line)
+        {
+            lock (diagnosticGate)
+                diagnostics.Add(line);
+        }
+
+        string[] ReadDiagnostics()
+        {
+            lock (diagnosticGate)
+                return diagnostics.ToArray();
+        }
+
+        adapter.ConfigureDiagnostic(RecordDiagnostic);
 
         for (var attempt = 0; attempt < 100 && handler.Presences.Count < 2; attempt++)
             await Task.Delay(10);
@@ -1339,6 +1559,23 @@ public sealed class DadAutoPartyWebhookEndpointTests
             Assert.Equal(crypto.UplinkEpoch.EpochGeneration, presence.EpochGeneration);
         });
         Assert.True(presences[1].Header.Generation > presences[0].Header.Generation);
+
+        handler.FailNextPatches(3);
+        for (var attempt = 0; attempt < 200 && !ReadDiagnostics().Any(line => line.Contains(
+                     "stage=presence-recovered safeCode=dad-webhook-presence-published",
+                     StringComparison.Ordinal)); attempt++)
+            await Task.Delay(10);
+
+        var observed = ReadDiagnostics();
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=presence-initial-published safeCode=dad-webhook-presence-published",
+            StringComparison.Ordinal)));
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=presence-publish-failed safeCode=dad-webhook-presence-failed",
+            StringComparison.Ordinal)));
+        Assert.Equal(1, observed.Count(line => line.Contains(
+            "stage=presence-recovered safeCode=dad-webhook-presence-published",
+            StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -1747,7 +1984,11 @@ public sealed class DadAutoPartyWebhookEndpointTests
         ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15),
     };
 
-    private static OpaqueEnvelope Envelope(string sender, string recipient, byte[] payload) =>
+    private static OpaqueEnvelope Envelope(
+        string sender,
+        string recipient,
+        byte[] payload,
+        string payloadType = "test-envelope") =>
         new(
             AutoPartyProtocol.CurrentVersion,
             Guid.NewGuid(),
@@ -1756,7 +1997,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow.AddMinutes(5),
             1,
-            "test-envelope",
+            payloadType,
             ImmutableArray.CreateRange(payload));
 
     private static string ReadRepositorySource(params string[] pathParts)
@@ -1902,6 +2143,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         private int postAttempts;
         private int getAttempts;
         private int patchAttempts;
+        private int transientPatchFailures;
         private readonly object gate = new();
         private readonly Dictionary<string, string> messageContents = new(StringComparer.Ordinal)
         {
@@ -1957,6 +2199,13 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 messageContents[messageReference] = content;
         }
 
+        public void FailNextPatches(int count)
+        {
+            if (count < 1)
+                throw new ArgumentOutOfRangeException(nameof(count));
+            Interlocked.Exchange(ref transientPatchFailures, count);
+        }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
@@ -1995,7 +2244,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 using var document = JsonDocument.Parse(payload);
                 var content = document.RootElement.GetProperty("content").GetString()!;
                 var messageReference = request.RequestUri!.Segments[^1];
-                if (failAllPatches || failFirstPatch && attempt == 1)
+                if (failAllPatches || failFirstPatch && attempt == 1 || TryConsumeTransientPatchFailure())
                     return new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 lock (gate)
                 {
@@ -2005,6 +2254,20 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 return Json(HttpStatusCode.OK, new { id = messageReference, content });
             }
             return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
+        }
+
+        private bool TryConsumeTransientPatchFailure()
+        {
+            while (Volatile.Read(ref transientPatchFailures) is var remaining && remaining > 0)
+            {
+                if (Interlocked.CompareExchange(
+                        ref transientPatchFailures,
+                        remaining - 1,
+                        remaining) == remaining)
+                    return true;
+            }
+
+            return false;
         }
 
         private static HttpResponseMessage Json(HttpStatusCode status, object payload) => new(status)

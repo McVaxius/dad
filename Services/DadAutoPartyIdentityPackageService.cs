@@ -101,6 +101,7 @@ public sealed class DadAutoPartyIdentityPackageService
             {
                 signingPublic = Convert.FromBase64String(configuration.SigningPublicKey);
                 encryptionPublic = Convert.FromBase64String(configuration.EncryptionPublicKey);
+                var registeredKeyIdPrefix = GetRegisteredKeyIdPrefix(configuration.RegistrationFingerprint);
                 var header = new ContractHeader(
                     AutoPartyProtocol.CurrentVersion,
                     messageId,
@@ -123,9 +124,9 @@ public sealed class DadAutoPartyIdentityPackageService
                     challengeAlias,
                     new EndpointPublicKeys(
                         configuration.EndpointKeyGeneration,
-                        $"ed25519:{configuration.RegistrationFingerprint[..16].ToLowerInvariant()}",
+                        $"ed25519:{registeredKeyIdPrefix}",
                         ImmutableArray.CreateRange(signingPublic),
-                        $"x25519:{configuration.RegistrationFingerprint[..16].ToLowerInvariant()}",
+                        $"x25519:{registeredKeyIdPrefix}",
                         ImmutableArray.CreateRange(encryptionPublic)),
                     configuration.RegistrationFingerprint,
                     now + ChallengeLifetime);
@@ -285,6 +286,9 @@ public sealed class DadAutoPartyIdentityPackageService
             CryptographicOperations.ZeroMemory(canonical);
         }
     }
+
+    internal static string GetRegisteredKeyIdPrefix(string registrationFingerprint)
+        => DadAutoPartyConfiguration.NormalizeFingerprint(registrationFingerprint)[..16].ToLowerInvariant();
 
     private static DadAutoPartyIdentityOperationResult Failure(string safeCode) => new(false, safeCode);
 }
