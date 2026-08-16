@@ -119,6 +119,13 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     internal DadAutoPartyPairingAttemptResult? LastPairingAttemptResult => relayPump?.LastPairingAttemptResult;
 
     public DadAutoPartyPolicyDecision SetStandingSharePolicy(DadAutoPartySharePolicy sharePolicy)
+        => SetStandingSharePolicy(
+            DadAutoPartyCrewShareScope.SpecificCharacters,
+            sharePolicy);
+
+    public DadAutoPartyPolicyDecision SetStandingSharePolicy(
+        DadAutoPartyCrewShareScope scope,
+        DadAutoPartySharePolicy sharePolicy)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         var normalized = sharePolicy?.Clone().Normalize();
@@ -129,10 +136,20 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             })
             return Decision(false, "dad-standing-share-policy-invalid");
         configuration.StandingSharePolicy = normalized;
+        configuration.StandingShareScope = Enum.IsDefined(scope)
+            ? scope
+            : DadAutoPartyCrewShareScope.SpecificCharacters;
         configuration.StateGeneration++;
         saveConfiguration();
         nextListingPublishUtc = DateTime.MinValue;
         return Decision(true, "dad-standing-share-policy-updated");
+    }
+
+    public DadAutoPartyPolicyDecision SetPairingAlias(string peerIslandId, string localAlias)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        return autoPartyService?.SetPairingAlias(peerIslandId, localAlias) ??
+               Decision(false, "dad-relay-pump-not-attached");
     }
 
     internal event Action<DadAllianceCentralOperationContext>? AllianceRecruitmentReceived;

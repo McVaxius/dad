@@ -29,6 +29,7 @@ public sealed class DadSharedIdentityPlaceholder
 {
     public string IdentityToken { get; set; } = string.Empty;
     public string AccountToken { get; set; } = string.Empty;
+    public string BindingId { get; set; } = string.Empty;
     public string CharacterLabel { get; set; } = string.Empty;
     public bool RequiresCharacter { get; set; }
 
@@ -37,6 +38,7 @@ public sealed class DadSharedIdentityPlaceholder
         {
             IdentityToken = IdentityToken,
             AccountToken = AccountToken,
+            BindingId = BindingId,
             CharacterLabel = CharacterLabel,
             RequiresCharacter = RequiresCharacter,
         };

@@ -262,7 +262,7 @@ public sealed class Plugin : IDalamudPlugin
         AutoPartyParticipantBridge = new DadAutoPartyParticipantBridge(
             Configuration.AutoParty,
             GetCurrentAutoPartyRemoteBindings,
-            () => Configuration.AutoPartyFleet.Rows);
+            GetCurrentAutoPartyCrewCandidates);
         AutoPartyEndpointService = new DadAutoPartyEndpointService(
             Configuration.AutoParty,
             autoPartyWebhookStore,
@@ -271,11 +271,7 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Save,
             safeCode => Log.Warning("[dad] AutoParty endpoint transition {SafeCode}.", safeCode),
             identityStore: autoPartyIdentityStore,
-            listingPublicationProvider: utcNow => DadAutoPartyListingPublicationRules.Build(
-                Configuration.AutoParty,
-                Configuration.AutoPartyFleet,
-                Configuration.PlannerGroups,
-                utcNow));
+            listingPublicationProvider: BuildAutoPartyListingPublication);
         var autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
             Configuration.AutoParty.RegisteredOwnerId,
             Configuration.AutoParty.RegisteredIslandId,
@@ -333,11 +329,7 @@ public sealed class Plugin : IDalamudPlugin
                 Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "pending")),
             inboundProposalStore: new DadAutoPartyFileInboundProposalStore(
                 Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "pending")),
-            inboundListingPublicationProvider: utcNow => DadAutoPartyListingPublicationRules.Build(
-                Configuration.AutoParty,
-                Configuration.AutoPartyFleet,
-                Configuration.PlannerGroups,
-                utcNow),
+            inboundListingPublicationProvider: BuildAutoPartyListingPublication,
             inboundAdmission: proposal => autoPartyInboundAdmissionService.Admit(
                 proposal,
                 Configuration.AutoPartyFleet.Rows),
@@ -452,10 +444,7 @@ public sealed class Plugin : IDalamudPlugin
                 : Configuration.AutoParty.RegisteredIslandId,
             Log,
             GetCurrentAutoPartyRemoteBindings,
-            () => Configuration.AutoPartyFleet.Rows
-                .Where(static row => row is { Enabled: true, IsRemote: false })
-                .Select(static row => row.Clone())
-                .ToList());
+            GetCurrentAutoPartyCrewCandidates);
         AutoPartyService.ConfigureExecutionFacade(new DadAutoPartyRuntimeExecutionFacade(
             AutoPartyService.Policy,
             ExecuteInboundAutoPartyOperation,
@@ -1496,6 +1485,34 @@ public sealed class Plugin : IDalamudPlugin
 
     public DadCharacterPool BuildPlannerPool()
         => RosterCatalogService.BuildCuratedPool(CharacterIntelligenceService.CurrentPool);
+
+    internal IReadOnlyList<DadAutoPartyCrewCandidate> GetCurrentAutoPartyCrewCandidates()
+        => ReconcileAutoPartyCrew().Candidates;
+
+    private DadAutoPartyListingPublication BuildAutoPartyListingPublication(DateTime utcNow)
+    {
+        var crew = ReconcileAutoPartyCrew(utcNow);
+        return DadAutoPartyListingPublicationRules.Build(
+            Configuration.AutoParty,
+            crew.Candidates,
+            Configuration.PlannerGroups,
+            utcNow);
+    }
+
+    private DadAutoPartyCrewReconciliation ReconcileAutoPartyCrew(DateTime? utcNow = null)
+    {
+        var result = DadAutoPartyCrewSharingRules.Reconcile(
+            Configuration.AutoParty,
+            Configuration.AutoPartyFleet,
+            BuildPlannerPool().Characters,
+            utcNow ?? DateTime.UtcNow);
+        if (result.Changed)
+        {
+            Configuration.AutoParty.StateGeneration++;
+            Configuration.Save();
+        }
+        return result;
+    }
 
     internal DadPlannerUiSnapshot GetPlannerUiSnapshot(DadVisibleRunState runState)
     {

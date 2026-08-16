@@ -14,7 +14,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private readonly Func<DadAlliancePartyFinderActionContext, string> conflictBlocker;
     private readonly Func<string> coordinatorIdentity;
     private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
-    private readonly Func<IReadOnlyList<DadAutoPartyFleetRow>> currentLocalFleetRowsProvider;
+    private readonly Func<IReadOnlyList<DadAutoPartyCrewCandidate>> currentLocalCrewProvider;
     private readonly IPluginLog log;
     private readonly DadAllianceDeliveryDedupe receiverDedupe = new();
     private readonly ConcurrentQueue<Action> frameworkCompletions = new();
@@ -83,7 +83,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         Func<string> coordinatorIdentity,
         IPluginLog log,
         Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null,
-        Func<IReadOnlyList<DadAutoPartyFleetRow>>? currentLocalFleetRowsProvider = null)
+        Func<IReadOnlyList<DadAutoPartyCrewCandidate>>? currentLocalCrewProvider = null)
     {
         this.presenceService = presenceService;
         this.transportService = transportService;
@@ -93,7 +93,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         this.conflictBlocker = conflictBlocker;
         this.coordinatorIdentity = coordinatorIdentity;
         this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ?? (() => []);
-        this.currentLocalFleetRowsProvider = currentLocalFleetRowsProvider ?? (() => []);
+        this.currentLocalCrewProvider = currentLocalCrewProvider ?? (() => []);
         this.log = log;
         endpointService.AllianceRecruitmentReceived += QueueCentralInstruction;
         endpointService.AllianceRecruitmentReceiptReceived += QueueCentralReceipt;
@@ -1817,10 +1817,10 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         instruction = source.Clone();
         blocker = string.Empty;
         var local = presenceService.BuildLiveSafetySnapshot();
-        var rows = currentLocalFleetRowsProvider()
-            .Where(row => row is { Enabled: true, IsRemote: false } &&
-                          string.Equals(row.OpaqueCharacterId, source.TargetOpaqueCharacterId, StringComparison.Ordinal) &&
-                          string.Equals(row.CharacterKey, local.ActiveCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+        var rows = currentLocalCrewProvider()
+            .Where(candidate => candidate != null &&
+                          string.Equals(candidate.Identity.OpaqueCharacterId, source.TargetOpaqueCharacterId, StringComparison.Ordinal) &&
+                          string.Equals(candidate.Character.CharacterKey, local.ActiveCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
             .Take(2)
             .ToList();
         if (rows.Count != 1 || local.WorkerSessionId.IsEmpty || local.ActiveCharacterKey.IsEmpty ||

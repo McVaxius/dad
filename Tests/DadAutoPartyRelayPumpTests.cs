@@ -619,8 +619,9 @@ public sealed class DadAutoPartyRelayPumpTests
         var pairing = fixture.PendingApprovedPeerPairing();
         fixture.Configuration.PendingPairings.Add(pairing);
         var expectedMessageId = Guid.Parse(pairing.LocalApprovalRelayMessageId);
+        var diagnostics = new List<string>();
 
-        await using (var firstPump = fixture.CreatePump())
+        await using (var firstPump = fixture.CreatePump(diagnostic: diagnostics.Add))
             await firstPump.ProcessOnceAsync();
         var first = Assert.Single(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>());
@@ -628,12 +629,15 @@ public sealed class DadAutoPartyRelayPumpTests
         var firstApproval = fixture.Open<PairingApproval>(first);
         Assert.Equal(CharacterShareMode.AllCharactersForPeer, firstApproval.SharePolicy.Mode);
 
-        await using var restartedPump = fixture.CreatePump();
+        await using var restartedPump = fixture.CreatePump(diagnostic: diagnostics.Add);
         await restartedPump.ProcessOnceAsync();
         var approvals = fixture.Transport.Sent.Where(item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>()).ToList();
         Assert.Equal(2, approvals.Count);
         Assert.All(approvals, item => Assert.Equal(expectedMessageId, item.EnvelopeId));
+        Assert.Contains(diagnostics, line =>
+            line.Contains("stage=approval-queued", StringComparison.Ordinal) &&
+            line.Contains("safeCode=dad-pairing-approval-queued", StringComparison.Ordinal));
 
         var rejected = new RelayReceipt(
             fixture.RelayHeader("pairing-approval-rejected"),
@@ -650,6 +654,9 @@ public sealed class DadAutoPartyRelayPumpTests
             item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>()).ToList();
         Assert.Equal(3, approvals.Count);
         Assert.All(approvals, item => Assert.Equal(expectedMessageId, item.EnvelopeId));
+        Assert.Contains(diagnostics, line =>
+            line.Contains("stage=central-receipt-rejected", StringComparison.Ordinal) &&
+            line.Contains("safeCode=dad-pairing-approval-rejected", StringComparison.Ordinal));
 
         var accepted = rejected with
         {
@@ -663,6 +670,54 @@ public sealed class DadAutoPartyRelayPumpTests
 
         Assert.Empty(fixture.Configuration.PendingPairings);
         Assert.True(Assert.Single(fixture.Configuration.Pairings).IsActive);
+
+        Assert.Contains(diagnostics, line =>
+            line.Contains("stage=central-receipt-accepted", StringComparison.Ordinal) &&
+            line.Contains("safeCode=dad-pairing-approval-accepted", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PairingApprovalReportsReceivedPeerApprovalWithoutProtectedMaterial()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var pairing = fixture.PendingApprovedPeerPairing();
+        pairing.PeerApproved = false;
+        fixture.Configuration.PendingPairings.Add(pairing);
+        var diagnostics = new List<string>();
+        await using var pump = fixture.CreatePump(diagnostic: diagnostics.Add);
+        var approval = new PairingApproval(
+            fixture.RelayHeader("pairing-peer-approval"),
+            Guid.Parse(pairing.PairingId),
+            new IslandId(PumpFixture.PeerIsland),
+            new IslandId(PumpFixture.LocalIsland),
+            pairing.TranscriptHash,
+            pairing.ConfirmationCodeHash,
+            pairing.PublicKeyFingerprint,
+            pairing.LocalFingerprint,
+            new CharacterSharePolicy(
+                CharacterShareMode.AllCharactersForPeer,
+                ImmutableArray<OpaqueCharacterId>.Empty,
+                true,
+                1,
+                new DateTimeOffset(DateTime.UtcNow)),
+            true);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(approval));
+
+        await pump.ProcessOnceAsync();
+
+        Assert.True(pairing.PeerApproved);
+        Assert.Contains(diagnostics, line =>
+            line.Contains("stage=peer-approval-received", StringComparison.Ordinal) &&
+            line.Contains("safeCode=dad-pairing-peer-approved", StringComparison.Ordinal));
+        var reported = string.Join('\n', diagnostics);
+        Assert.DoesNotContain(pairing.ConfirmationCodeHash, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(pairing.PublicKeyFingerprint, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(pairing.LocalFingerprint, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(pairing.PairingId, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(PumpFixture.LocalOwner, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(PumpFixture.PeerOwner, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(PumpFixture.LocalIsland, reported, StringComparison.Ordinal);
+        Assert.DoesNotContain(PumpFixture.PeerIsland, reported, StringComparison.Ordinal);
     }
 
     [Fact]

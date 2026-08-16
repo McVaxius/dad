@@ -55,21 +55,25 @@ public sealed class DadAutoPartyParticipantBridgeTests
         var now = DateTimeOffset.UtcNow;
         var configuration = ActiveConfiguration();
         configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: false));
-        var localRows = new List<DadAutoPartyFleetRow>
+        var localCrew = new List<DadAutoPartyCrewCandidate>
         {
-            new()
-            {
-                RowId = "row-local",
-                OpaqueCharacterId = "opaque-local-character",
-                AccountKey = "account-local",
-                CharacterKey = "character-local",
-                JobId = RequestedJob,
-                Enabled = true,
-            },
+            new(
+                new DadAutoPartyCrewIdentity
+                {
+                    RosterIdentityKey = "crew-local",
+                    OpaqueCharacterId = "opaque-local-character",
+                },
+                new DadAcquiredCharacter
+                {
+                    AccountId = "account-local",
+                    CharacterKey = "character-local",
+                },
+                [RequestedJob],
+                Available: true),
         };
         var bridge = new DadAutoPartyParticipantBridge(
             configuration,
-            currentLocalFleetRowsProvider: () => localRows);
+            currentLocalCrewProvider: () => localCrew);
         var proposalId = Guid.NewGuid();
         var orchestration = new DadOrchestrationIntent
         {

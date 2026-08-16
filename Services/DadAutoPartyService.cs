@@ -333,6 +333,22 @@ public sealed class DadAutoPartyService : IDisposable
         return Decision(true, "dad-share-policy-updated");
     }
 
+    public DadAutoPartyPolicyDecision SetPairingAlias(string peerIslandId, string localAlias)
+    {
+        ThrowIfDisposed();
+        var pairing = configuration.Pairings.FirstOrDefault(item =>
+            item.IsActive && string.Equals(item.IslandId, peerIslandId?.Trim(), StringComparison.Ordinal));
+        var alias = DadAutoPartyConfiguration.NormalizeAlias(localAlias);
+        if (pairing == null)
+            return Decision(false, "dad-pairing-alias-invalid");
+        if (string.Equals(pairing.LocalAlias, alias, StringComparison.Ordinal))
+            return Decision(true, "dad-pairing-alias-unchanged");
+        pairing.LocalAlias = alias;
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, "dad-pairing-alias-updated");
+    }
+
     public DadAutoPartyPolicyDecision Deauthenticate(string peerIslandId, string safeReason)
     {
         ThrowIfDisposed();
@@ -345,6 +361,7 @@ public sealed class DadAutoPartyService : IDisposable
         if (string.IsNullOrWhiteSpace(reason))
             reason = "dad-owner-deauthenticated";
         pairing.RevokedAtUtc = DateTime.UtcNow;
+        pairing.LocalAlias = string.Empty;
         configuration.RevocationGeneration++;
         configuration.Deauthentications.RemoveAll(item =>
             string.Equals(item.PeerIslandId, islandId, StringComparison.Ordinal));

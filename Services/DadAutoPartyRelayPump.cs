@@ -669,6 +669,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 return Decision(false, "dad-relay-outbound-full");
         }
         UpdateSnapshot("dad-pairing-approval-queued");
+        ReportPairingDiagnostic("approval-queued", "dad-pairing-approval-queued");
         return Decision(true, "dad-pairing-approval-queued");
     }
 
@@ -2068,6 +2069,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             approval.ApprovingFingerprint,
             approval.PeerFingerprint,
             ToDadPolicy(approval.SharePolicy));
+        ReportPairingDiagnostic("peer-approval-received", decision.SafeCode);
         return ValueTask.FromResult(decision.Allowed
             ? DispatchResult.Allow(decision.SafeCode)
             : DispatchResult.Deny(decision.SafeCode));
@@ -2317,6 +2319,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         PendingOutboundContract? related;
         PairingNotice? rejectedPairingNotice = null;
+        var approvalRelayReceiptReported = false;
         lock (gate)
         {
             _ = awaitingRelayReceipts.Remove(receipt.RelatedMessageId, out related);
@@ -2325,6 +2328,13 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     related,
                     receipt.Accepted ? "relay-receipt-accepted" : "relay-receipt-rejected",
                     receipt.SafeCode);
+            if (related?.Contract is PairingApproval)
+            {
+                ReportPairingDiagnostic(
+                    receipt.Accepted ? "central-receipt-accepted" : "central-receipt-rejected",
+                    receipt.SafeCode);
+                approvalRelayReceiptReported = true;
+            }
             if (!receipt.Accepted && related?.Contract is PairingNotice notice)
             {
                 rejectedPairingNotice = notice;
@@ -2363,6 +2373,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 receipt.Accepted,
                 out var pairingDecision))
         {
+            if (!approvalRelayReceiptReported)
+                ReportPairingDiagnostic(
+                    receipt.Accepted ? "central-receipt-accepted" : "central-receipt-rejected",
+                    receipt.SafeCode);
             if (!pairingDecision.Allowed)
                 return ValueTask.FromResult(DispatchResult.Deny(pairingDecision.SafeCode));
             if (receipt.Accepted)

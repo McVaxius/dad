@@ -123,6 +123,8 @@
     <Compile Include="..\Services\DadAutoPartyFleetMatrixService.cs" Link="DadAutoPartyFleetMatrixService.cs" />
     <Compile Include="..\Services\DadAutoPartyFreeformRules.cs" Link="DadAutoPartyFreeformRules.cs" />
     <Compile Include="..\Services\DadAutoPartyListingPublicationRules.cs" Link="DadAutoPartyListingPublicationRules.cs" />
+    <Compile Include="..\Services\DadAutoPartyCrewSharingRules.cs" Link="DadAutoPartyCrewSharingRules.cs" />
+    <Compile Include="..\Services\DadAutoPartyCrewSlotBindingRules.cs" Link="DadAutoPartyCrewSlotBindingRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderRules.cs" Link="DadAlliancePartyFinderRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderPresetRules.cs" Link="DadAlliancePartyFinderPresetRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCreateFlow.cs" Link="DadAlliancePartyFinderCreateFlow.cs" />

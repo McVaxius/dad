@@ -1,5 +1,24 @@
 # dad — changelog
 
+## 2026-08-16 — Curated Crew sharing and paired-island Crew slots (local-only, unpublished)
+- AutoParty now publishes DAD's active curated Crew instead of Fleet Matrix staging. Existing local Fleet opaque IDs
+  are retained where available, new active Crew identities are stored with AutoParty, departed Crew identities and
+  local sharing references are pruned, and listings carry each Crew member's permitted combat jobs and live availability.
+- Private pairing and same-guild Community Available now both offer **This character**, **Specific characters**, and
+  **All characters** scopes. Private selections retain their existing paired-route policies; Community remains a
+  `CharacterList` policy and does not create a bilateral route.
+- Active paired islands can have a local alias and appear as isolated Paired DAD choices in the normal Crew editor.
+  Selecting an authorized remote listing saves one exact opaque slot binding and advertised job; changing, clearing,
+  removing, or deauthenticating the route leaves other Crew-slot bindings intact and blocks stale remote slots.
+
+## 2026-08-15 — Pairing completion clarity and approval tracing (local-only, unpublished)
+- The receiving DAD now shows the pairing-code entry unmasked. Once an owner saves a local approval, the editable
+  fingerprint, code, and sharing controls are replaced with an explicit waiting state until central accepts it; the
+  existing bilateral approval requirement and activation gate are unchanged.
+- Added bounded `dad-pairing` diagnostics for approval queueing, central approval-receipt acceptance or rejection, and
+  received peer approval. These lines contain only a stage and normalized safe code—never codes, fingerprints,
+  identifiers, or message contents.
+
 ## 2026-08-14 — AutoParty presence and mailbox repair (local-only, unpublished)
 - Added bounded `dad-mailbox` lifecycle diagnostics for adapter start, ready, refresh, stop, and failure transitions,
   plus initial presence publication, the first consecutive publication failure, and recovery. Idle ten-second presence

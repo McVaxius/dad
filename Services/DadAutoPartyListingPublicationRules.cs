@@ -15,21 +15,18 @@ internal static class DadAutoPartyListingPublicationRules
 
     public static DadAutoPartyListingPublication Build(
         DadAutoPartyConfiguration autoParty,
-        DadAutoPartyFleetConfiguration fleet,
+        IEnumerable<DadAutoPartyCrewCandidate>? crew,
         IEnumerable<DadPlannerGroup>? plans,
         DateTime utcNow)
     {
         ArgumentNullException.ThrowIfNull(autoParty);
-        ArgumentNullException.ThrowIfNull(fleet);
         utcNow = DateTime.SpecifyKind(utcNow, DateTimeKind.Utc);
         var policy = ResolveStandingPolicy(autoParty);
         var activities = BuildPermittedActivities(plans).ToList();
-        var listings = (fleet.Rows ?? [])
-            .Where(static row => row is { Enabled: true, IsRemote: false } &&
-                                 !string.IsNullOrWhiteSpace(row.OpaqueCharacterId) &&
-                                 DadRosterCharacterMerge.IsCombatJob(row.JobId))
-            .Select(row => BuildListing(autoParty, fleet, policy, activities, row, utcNow))
-            .Take(DadAutoPartyFleetLimits.MaxFleetRows)
+        var listings = (crew ?? [])
+            .Where(static candidate => candidate != null && candidate.PermittedCombatJobIds.Count > 0)
+            .Select(candidate => BuildListing(autoParty, policy, activities, candidate, utcNow))
+            .Take(256)
             .ToList();
         return new(policy, listings);
     }
@@ -54,25 +51,26 @@ internal static class DadAutoPartyListingPublicationRules
 
     private static DadAutoPartyListing BuildListing(
         DadAutoPartyConfiguration configuration,
-        DadAutoPartyFleetConfiguration fleet,
         DadAutoPartySharePolicy policy,
         IReadOnlyList<string> activities,
-        DadAutoPartyFleetRow row,
+        DadAutoPartyCrewCandidate candidate,
         DateTime utcNow)
     {
-        var projection = ProjectOpaqueIdentity(row.OpaqueCharacterId);
+        var projection = ProjectOpaqueIdentity(candidate.Identity.OpaqueCharacterId);
         return new DadAutoPartyListing
         {
             ListingId = projection.ListingId,
             OwnerId = configuration.RegisteredOwnerId,
             SharingIslandId = configuration.RegisteredIslandId,
             EffectiveShareMode = policy.Mode,
-            OpaqueCharacterId = row.OpaqueCharacterId,
+            OpaqueCharacterId = candidate.Identity.OpaqueCharacterId,
             DisplayLabel = projection.DisplayLabel,
-            AllowedJobIds = [row.JobId.ToString(CultureInfo.InvariantCulture)],
+            AllowedJobIds = candidate.PermittedCombatJobIds
+                .Select(static jobId => jobId.ToString(CultureInfo.InvariantCulture))
+                .ToList(),
             AllowedActivityIds = [.. activities],
-            Available = true,
-            Revision = Math.Max(1, fleet.Revision),
+            Available = candidate.Available,
+            Revision = Math.Max(1, configuration.StateGeneration),
             ExpiresAtUtc = utcNow + ListingLifetime,
         }.Normalize();
     }

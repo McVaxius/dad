@@ -16,29 +16,21 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             RegisteredIslandId = "island-local",
             StateGeneration = 7,
         };
-        var fleet = new DadAutoPartyFleetConfiguration
+        var crew = new[]
         {
-            Revision = 9,
-            Rows =
-            [
-                new DadAutoPartyFleetRow
+            new DadAutoPartyCrewCandidate(
+                new DadAutoPartyCrewIdentity
                 {
-                    RowId = "row-local",
+                    RosterIdentityKey = "crew-local",
                     OpaqueCharacterId = "opaque-local",
-                    AccountKey = "private-account",
-                    CharacterKey = "private-character-key",
-                    JobId = 19,
-                    Enabled = true,
                 },
-                new DadAutoPartyFleetRow
+                new DadAcquiredCharacter
                 {
-                    RowId = "row-remote",
-                    OpaqueCharacterId = "opaque-remote",
-                    JobId = 24,
-                    IsRemote = true,
-                    Enabled = true,
+                    AccountId = "private-account",
+                    CharacterKey = "private-character-key",
                 },
-            ],
+                [19],
+                Available: true),
         };
         var plans = new[]
         {
@@ -50,7 +42,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             },
         };
 
-        var publication = DadAutoPartyListingPublicationRules.Build(autoParty, fleet, plans, now);
+        var publication = DadAutoPartyListingPublicationRules.Build(autoParty, crew, plans, now);
 
         Assert.False(publication.StandingPolicy.Enabled);
         var listing = Assert.Single(publication.Listings);
@@ -63,7 +55,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         Assert.Equal(["19"], listing.AllowedJobIds);
         Assert.Contains(DadAutoPartyFreeformRules.FormationActivityId, listing.AllowedActivityIds);
         Assert.Contains("dad-premadeduty-123", listing.AllowedActivityIds);
-        Assert.Equal(9, listing.Revision);
+        Assert.Equal(7, listing.Revision);
         Assert.Equal(now.AddMinutes(15), listing.ExpiresAtUtc);
     }
 
@@ -87,7 +79,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         var publication = DadAutoPartyListingPublicationRules.Build(
             configuration,
-            new DadAutoPartyFleetConfiguration(),
+            [],
             [],
             now);
 
@@ -123,7 +115,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         var publication = DadAutoPartyListingPublicationRules.Build(
             configuration,
-            new DadAutoPartyFleetConfiguration(),
+            [],
             [],
             now);
 
@@ -153,7 +145,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         var publication = DadAutoPartyListingPublicationRules.Build(
             configuration,
-            new DadAutoPartyFleetConfiguration(),
+            [],
             [],
             DateTime.UtcNow);
 

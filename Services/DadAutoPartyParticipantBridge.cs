@@ -126,7 +126,7 @@ internal sealed class DadAutoPartyParticipantBridge
     private readonly object gate = new();
     private readonly DadAutoPartyConfiguration? configuration;
     private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
-    private readonly Func<IReadOnlyList<DadAutoPartyFleetRow>> currentLocalFleetRowsProvider;
+    private readonly Func<IReadOnlyList<DadAutoPartyCrewCandidate>> currentLocalCrewProvider;
     private readonly Dictionary<Guid, ProposalRuntime> proposals = [];
     private readonly Dictionary<Guid, PendingOperation> operations = [];
     private readonly Dictionary<Guid, DateTimeOffset> replayedMessages = [];
@@ -137,12 +137,12 @@ internal sealed class DadAutoPartyParticipantBridge
     public DadAutoPartyParticipantBridge(
         DadAutoPartyConfiguration? configuration,
         Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null,
-        Func<IReadOnlyList<DadAutoPartyFleetRow>>? currentLocalFleetRowsProvider = null)
+        Func<IReadOnlyList<DadAutoPartyCrewCandidate>>? currentLocalCrewProvider = null)
     {
         this.configuration = configuration;
         this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ??
             (() => configuration?.RemoteBindings ?? []);
-        this.currentLocalFleetRowsProvider = currentLocalFleetRowsProvider ?? (() => []);
+        this.currentLocalCrewProvider = currentLocalCrewProvider ?? (() => []);
     }
 
     public bool TryBindRun(
@@ -1543,8 +1543,8 @@ internal sealed class DadAutoPartyParticipantBridge
             return Fail("AutoParty execution projection requires one complete frozen roster with Slot1 authority.", out blocker);
         }
 
-        var localRows = currentLocalFleetRowsProvider()
-            .Where(static row => row is { Enabled: true, IsRemote: false })
+        var localCrew = currentLocalCrewProvider()
+            .Where(static candidate => candidate != null)
             .ToList();
         var requests = new List<DadAutoPartyParticipantRequest>(slots.Count);
         var projected = new List<EndpointExecutionParticipant>(slots.Count);
@@ -1568,11 +1568,19 @@ internal sealed class DadAutoPartyParticipantBridge
             }
             else if (slot.RouteKind == DadRunSlotRouteKind.LanWorker)
             {
-                var matches = localRows.Where(row =>
-                        string.Equals(row.AccountKey, slot.AccountKey.Value, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(row.CharacterKey, slot.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) &&
-                        row.JobId == slot.RequiredJobId.Value &&
-                        !string.IsNullOrWhiteSpace(row.OpaqueCharacterId))
+                var matches = localCrew.Where(candidate =>
+                        string.Equals(
+                            DadRosterIdentity.ResolveAccountKey(
+                                candidate.Character.AccountId,
+                                candidate.Character.AccountAlias).Value,
+                            slot.AccountKey.Value,
+                            StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(
+                            candidate.Character.CharacterKey,
+                            slot.CharacterKey.Value,
+                            StringComparison.OrdinalIgnoreCase) &&
+                        candidate.PermittedCombatJobIds.Contains(slot.RequiredJobId.Value) &&
+                        !string.IsNullOrWhiteSpace(candidate.Identity.OpaqueCharacterId))
                     .ToList();
                 if (matches.Count != 1)
                 {
@@ -1583,7 +1591,7 @@ internal sealed class DadAutoPartyParticipantBridge
 
                 ownerId = configuration.RegisteredOwnerId;
                 islandId = configuration.RegisteredIslandId;
-                opaqueCharacterId = matches[0].OpaqueCharacterId;
+                opaqueCharacterId = matches[0].Identity.OpaqueCharacterId;
             }
             else
             {

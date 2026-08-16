@@ -52,6 +52,9 @@ public sealed class DadAutoPartyConfiguration
         Mode = DadAutoPartyCharacterShareMode.CharacterList,
         Enabled = false,
     };
+    public DadAutoPartyCrewShareScope StandingShareScope { get; set; } =
+        DadAutoPartyCrewShareScope.SpecificCharacters;
+    public List<DadAutoPartyCrewIdentity> CrewIdentities { get; set; } = [];
     public List<DadAutoPartyPairing> Pairings { get; set; } = [];
     public List<DadAutoPartyGrant> Grants { get; set; } = [];
     public List<DadAutoPartyListing> Listings { get; set; } = [];
@@ -132,6 +135,15 @@ public sealed class DadAutoPartyConfiguration
             StandingSharePolicy.CharacterHandles.Clear();
             StandingSharePolicy.Enabled = false;
         }
+        if (!Enum.IsDefined(StandingShareScope))
+            StandingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+        CrewIdentities = (CrewIdentities ?? [])
+            .Where(static identity => identity != null)
+            .Select(static identity => identity!.Normalize())
+            .Where(static identity => identity.IsValid)
+            .DistinctBy(static identity => identity.RosterIdentityKey, StringComparer.OrdinalIgnoreCase)
+            .Take(256)
+            .ToList();
         Pairings = (Pairings ?? [])
             .Where(static pairing => pairing != null)
             .Select(static pairing => pairing!.Normalize())
@@ -210,6 +222,8 @@ public sealed class DadAutoPartyConfiguration
             RevocationGeneration = RevocationGeneration,
             StateGeneration = StateGeneration,
             StandingSharePolicy = StandingSharePolicy.Clone(),
+            StandingShareScope = StandingShareScope,
+            CrewIdentities = CrewIdentities.Select(static identity => identity.Clone()).ToList(),
             Pairings = Pairings.Select(static pairing => pairing.Clone()).ToList(),
             Grants = Grants.Select(static grant => grant with { }).ToList(),
             Listings = Listings.Select(static listing => listing.Clone()).ToList(),
@@ -308,6 +322,40 @@ public sealed class DadAutoPartyConfiguration
 
 }
 
+public enum DadAutoPartyCrewShareScope
+{
+    CurrentCharacter = 1,
+    SpecificCharacters = 2,
+    AllCharacters = 3,
+}
+
+/// <summary>
+/// Stable local-to-opaque mapping for an active DAD Crew row. It is intentionally kept with
+/// AutoParty rather than Fleet Matrix so publishing does not depend on matrix staging.
+/// </summary>
+public sealed class DadAutoPartyCrewIdentity
+{
+    public string RosterIdentityKey { get; set; } = string.Empty;
+    public string OpaqueCharacterId { get; set; } = string.Empty;
+
+    public bool IsValid =>
+        !string.IsNullOrWhiteSpace(RosterIdentityKey) &&
+        !string.IsNullOrWhiteSpace(OpaqueCharacterId);
+
+    public DadAutoPartyCrewIdentity Normalize()
+    {
+        RosterIdentityKey = DadAutoPartyConfiguration.NormalizeIdentifier(RosterIdentityKey);
+        OpaqueCharacterId = DadAutoPartyConfiguration.NormalizeIdentifier(OpaqueCharacterId);
+        return this;
+    }
+
+    public DadAutoPartyCrewIdentity Clone() => new()
+    {
+        RosterIdentityKey = RosterIdentityKey,
+        OpaqueCharacterId = OpaqueCharacterId,
+    };
+}
+
 public enum DadAutoPartyRegistrationState
 {
     Unregistered = 0,
@@ -370,6 +418,7 @@ public sealed class DadAutoPartyPairing
     public string OwnerId { get; set; } = string.Empty;
     public string IslandId { get; set; } = string.Empty;
     public string HomeGuildScope { get; set; } = string.Empty;
+    public string LocalAlias { get; set; } = string.Empty;
     public string PublicKeyFingerprint { get; set; } = string.Empty;
     public string LocalFingerprint { get; set; } = string.Empty;
     public string TranscriptHash { get; set; } = string.Empty;
@@ -416,6 +465,7 @@ public sealed class DadAutoPartyPairing
         OwnerId = DadAutoPartyConfiguration.NormalizeIdentifier(OwnerId);
         IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
         HomeGuildScope = DadAutoPartyConfiguration.NormalizeIdentifier(HomeGuildScope);
+        LocalAlias = DadAutoPartyConfiguration.NormalizeAlias(LocalAlias);
         PublicKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(PublicKeyFingerprint);
         LocalFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(LocalFingerprint);
         TranscriptHash = DadAutoPartyConfiguration.NormalizeFingerprint(TranscriptHash);
@@ -442,6 +492,7 @@ public sealed class DadAutoPartyPairing
             OwnerId = OwnerId,
             IslandId = IslandId,
             HomeGuildScope = HomeGuildScope,
+            LocalAlias = LocalAlias,
             PublicKeyFingerprint = PublicKeyFingerprint,
             LocalFingerprint = LocalFingerprint,
             TranscriptHash = TranscriptHash,

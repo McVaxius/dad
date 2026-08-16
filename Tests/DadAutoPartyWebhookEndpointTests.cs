@@ -663,7 +663,17 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("Only one DAD initiates a pairing", source, StringComparison.Ordinal);
         Assert.Contains("The peer waits for the pending notice", source, StringComparison.Ordinal);
         Assert.Contains("pairingInitiationPending", source, StringComparison.Ordinal);
-        Assert.Contains("One character\\0Selected characters\\0All characters for this peer", source, StringComparison.Ordinal);
+        Assert.Contains("if (pending.LocalApproved)", source, StringComparison.Ordinal);
+        Assert.Contains("Local approval is saved; waiting for central to accept it.", source, StringComparison.Ordinal);
+        var locallyApprovedBranch = source.IndexOf("if (pending.LocalApproved)", StringComparison.Ordinal);
+        var confirmedFingerprintInput = source.IndexOf("ImGui.InputText(\"Confirmed peer fingerprint\"", StringComparison.Ordinal);
+        var pairingCodeInput = source.IndexOf("ImGui.InputText(\"Pairing code\"", StringComparison.Ordinal);
+        var approvalButton = source.IndexOf("Approve pairing locally", StringComparison.Ordinal);
+        Assert.True(locallyApprovedBranch >= 0 && locallyApprovedBranch < confirmedFingerprintInput);
+        Assert.True(pairingCodeInput > confirmedFingerprintInput);
+        Assert.DoesNotContain("ImGuiInputTextFlags.Password", source[pairingCodeInput..approvalButton], StringComparison.Ordinal);
+        Assert.Contains("This character\\0Specific characters\\0All characters", source, StringComparison.Ordinal);
+        Assert.Contains("DadAutoPartyCrewShareScope", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Opaque handles (comma-separated)", source, StringComparison.Ordinal);
         Assert.True(bootstrapStart >= 0);
         Assert.True(bootstrapEnd > bootstrapStart);
