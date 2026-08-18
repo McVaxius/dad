@@ -394,6 +394,104 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
+    public async Task StartupAdvancesConfigurationWhenProtectedMailboxHasANewerCompleteEpochPair()
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        var current = await fixture.WebhookStore.LoadAsync(
+            fixture.Configuration.AutoParty.WebhookCredentialReference);
+        var protectedNewer = current with
+        {
+            UplinkEpoch = current.UplinkEpoch! with
+            {
+                EpochId = Guid.NewGuid(),
+                EpochGeneration = current.UplinkEpoch.EpochGeneration + 1,
+            },
+            DownlinkEpoch = current.DownlinkEpoch! with
+            {
+                EpochId = Guid.NewGuid(),
+                EpochGeneration = current.DownlinkEpoch.EpochGeneration + 1,
+            },
+        };
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            fixture.Configuration,
+            identityStore,
+            new MemoryWebhookStore(protectedNewer)));
+
+        Assert.Equal(DadAutoPartyRegistrationState.Active, fixture.Configuration.AutoParty.RegistrationState);
+        Assert.Equal(
+            protectedNewer.UplinkEpoch!.EpochId.ToString("D"),
+            fixture.Configuration.AutoParty.UplinkEpochId);
+        Assert.Equal(
+            protectedNewer.DownlinkEpoch!.EpochId.ToString("D"),
+            fixture.Configuration.AutoParty.DownlinkEpochId);
+        Assert.Equal(
+            protectedNewer.UplinkEpoch.EpochGeneration,
+            fixture.Configuration.AutoParty.MailboxEpochGeneration);
+    }
+
+    [Theory]
+    [InlineData("rollback")]
+    [InlineData("same-generation-id-mismatch")]
+    [InlineData("island-mismatch")]
+    [InlineData("relay-key-mismatch")]
+    public async Task StartupRejectsProtectedMailboxBindingOrEpochConflicts(string conflict)
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        var current = await fixture.WebhookStore.LoadAsync(
+            fixture.Configuration.AutoParty.WebhookCredentialReference);
+        var protectedCredential = conflict switch
+        {
+            "rollback" => current with
+            {
+                UplinkEpoch = current.UplinkEpoch! with
+                {
+                    EpochGeneration = current.UplinkEpoch.EpochGeneration - 1,
+                },
+                DownlinkEpoch = current.DownlinkEpoch! with
+                {
+                    EpochGeneration = current.DownlinkEpoch.EpochGeneration - 1,
+                },
+            },
+            "same-generation-id-mismatch" => current with
+            {
+                UplinkEpoch = current.UplinkEpoch! with { EpochId = Guid.NewGuid() },
+            },
+            "island-mismatch" => current with
+            {
+                UplinkEpoch = current.UplinkEpoch! with { IslandId = new IslandId("island-other") },
+                DownlinkEpoch = current.DownlinkEpoch! with { IslandId = new IslandId("island-other") },
+            },
+            "relay-key-mismatch" => current with
+            {
+                RelayPublicKeys = new EndpointPublicKeys(
+                    current.RelayPublicKeys!.KeyVersion,
+                    current.RelayPublicKeys.SigningKeyId,
+                    ImmutableArray.CreateRange(Enumerable.Repeat(
+                        (byte)0x71,
+                        AutoPartyProtocol.Ed25519PublicKeyBytes)),
+                    current.RelayPublicKeys.AgreementKeyId,
+                    current.RelayPublicKeys.X25519PublicKey),
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(conflict)),
+        };
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            fixture.Configuration,
+            identityStore,
+            new MemoryWebhookStore(protectedCredential)));
+
+        Assert.Equal(
+            DadAutoPartyRegistrationState.Unregistered,
+            fixture.Configuration.AutoParty.RegistrationState);
+        Assert.Equal(
+            DadAutoPartyRegistrationRecoveryState.RecoveryAvailable,
+            fixture.Configuration.AutoParty.RegistrationRecoveryState);
+    }
+
+    [Fact]
     public async Task StartupKeepsValidatedBootstrapImportPendingUntilAuthenticatedReceipt()
     {
         var fixture = await CreateRegistrationFixtureAsync();
@@ -872,6 +970,12 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public ValueTask ReplaceAsync(
+            string credentialReference,
+            DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public ValueTask<bool> DeleteAsync(
             string credentialReference,
             CancellationToken cancellationToken = default)
@@ -957,6 +1061,12 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 "123456789",
                 new string('a', 64),
                 "987654321"));
+
+        public ValueTask ReplaceAsync(
+            string credentialReference,
+            DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
         public ValueTask<bool> DeleteAsync(
             string credentialReference,

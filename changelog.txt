@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-08-17 — Durable authenticated mailbox epoch rotation (local-only, unpublished)
+- Authenticated UPLINK and DOWNLINK rotations are now exposed for persistence only after both descriptors are valid,
+  retain the registered island and relay-key binding, share one generation, and are newer than durable configuration.
+- DAD replaces the existing DPAPI mailbox credential atomically at the same reference, then commits both epoch IDs and
+  their generation from the framework update thread without restarting the current adapter. Each generation receives at
+  most one attempt; a failed current attempt reports `dad-webhook-epoch-persist-failed` and gates new pairing.
+- Startup now completes an interrupted post-replacement save by advancing configuration from a protected newer epoch pair.
+  Protected rollback, split generations, same-generation ID conflicts, and island or relay-key mismatches remain in the
+  existing recovery-available path instead of starting an inconsistently bound mailbox.
+
 ## 2026-08-16 — Curated Crew sharing and paired-island Crew slots (local-only, unpublished)
 - AutoParty now publishes DAD's active curated Crew instead of Fleet Matrix staging. Existing local Fleet opaque IDs
   are retained where available, new active Crew identities are stored with AutoParty, departed Crew identities and

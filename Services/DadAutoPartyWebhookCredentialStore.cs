@@ -17,6 +17,11 @@ public interface IDadAutoPartyWebhookCredentialStore
         string credentialReference,
         CancellationToken cancellationToken = default);
 
+    ValueTask ReplaceAsync(
+        string credentialReference,
+        DadAutoPartyWebhookCredential credential,
+        CancellationToken cancellationToken = default);
+
     ValueTask<bool> DeleteAsync(
         string credentialReference,
         CancellationToken cancellationToken = default);
@@ -108,6 +113,43 @@ public sealed partial class DadAutoPartyDpapiWebhookCredentialStore : IDadAutoPa
             CryptographicOperations.ZeroMemory(protectedBytes);
             if (plain != null)
                 CryptographicOperations.ZeroMemory(plain);
+        }
+    }
+
+    public async ValueTask ReplaceAsync(
+        string credentialReference,
+        DadAutoPartyWebhookCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (credential is not { IsValid: true })
+            throw new ArgumentException("The webhook mailbox credential is invalid.", nameof(credential));
+
+        var plain = JsonSerializer.SerializeToUtf8Bytes(credential, JsonOptions);
+        byte[]? protectedBytes = null;
+        try
+        {
+            if (plain.Length is <= 0 or > MaximumPlainBytes)
+                throw new ArgumentOutOfRangeException(nameof(credential));
+            protectedBytes = ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser);
+            var path = ResolvePath(credentialReference);
+            var temporaryPath = path + ".tmp";
+            try
+            {
+                await File.WriteAllBytesAsync(temporaryPath, protectedBytes, cancellationToken).ConfigureAwait(false);
+                File.Replace(temporaryPath, path, null);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                    File.Delete(temporaryPath);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plain);
+            if (protectedBytes != null)
+                CryptographicOperations.ZeroMemory(protectedBytes);
         }
     }
 

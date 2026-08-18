@@ -57,6 +57,12 @@ namespace dad.Tests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public ValueTask ReplaceAsync(
+            string credentialReference,
+            Models.DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public ValueTask<bool> DeleteAsync(
             string credentialReference,
             CancellationToken cancellationToken = default) =>

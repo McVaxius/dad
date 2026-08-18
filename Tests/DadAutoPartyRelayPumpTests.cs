@@ -2955,6 +2955,12 @@ public sealed class DadAutoPartyRelayPumpTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public ValueTask ReplaceAsync(
+            string credentialReference,
+            DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public ValueTask<bool> DeleteAsync(
             string credentialReference,
             CancellationToken cancellationToken = default) =>

@@ -140,6 +140,31 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     public CourierEpochDescriptor UplinkEpochSnapshot => Volatile.Read(ref uplinkEpoch);
     public CourierEpochDescriptor DownlinkEpochSnapshot => Volatile.Read(ref downlinkEpoch);
 
+    internal bool TryCreateReplacementCredential(
+        long durableGeneration,
+        out DadAutoPartyWebhookCredential? replacement)
+    {
+        replacement = null;
+        var currentUplink = UplinkEpochSnapshot;
+        var currentDownlink = DownlinkEpochSnapshot;
+        if (currentUplink.EpochGeneration != currentDownlink.EpochGeneration ||
+            currentUplink.EpochGeneration <= durableGeneration ||
+            currentUplink.IslandId != credential.UplinkEpoch!.IslandId ||
+            currentDownlink.IslandId != credential.DownlinkEpoch!.IslandId)
+            return false;
+
+        var candidate = credential with
+        {
+            UplinkEpoch = currentUplink,
+            DownlinkEpoch = currentDownlink,
+        };
+        if (!candidate.HasProvisionedMailbox)
+            return false;
+
+        replacement = candidate;
+        return true;
+    }
+
     internal void ConfigureDiagnostic(Action<string>? callback)
         => Volatile.Write(ref diagnostic, callback ?? (static _ => { }));
 

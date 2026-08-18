@@ -15,7 +15,7 @@ namespace dad.Tests;
 public sealed class DadAutoPartyWebhookEndpointTests
 {
     [Fact]
-    public async Task CurrentUserDpapiMailboxStoreRoundTripsRedactsAndDeletes()
+    public async Task CurrentUserDpapiMailboxStoreReplacesInPlaceAndDoesNotRecreateMissingTarget()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -38,7 +38,38 @@ public sealed class DadAutoPartyWebhookEndpointTests
             Assert.Equal("DadAutoPartyWebhookCredential([redacted])", loaded.ToString());
             Assert.DoesNotContain(credential.WebhookToken, await File.ReadAllTextAsync(
                 Assert.Single(Directory.GetFiles(root, "*.dpapi"))), StringComparison.Ordinal);
+
+            var newer = credential with
+            {
+                UplinkEpoch = credential.UplinkEpoch with
+                {
+                    EpochId = Guid.NewGuid(),
+                    EpochGeneration = credential.UplinkEpoch.EpochGeneration + 1,
+                },
+                DownlinkEpoch = credential.DownlinkEpoch with
+                {
+                    EpochId = Guid.NewGuid(),
+                    EpochGeneration = credential.DownlinkEpoch.EpochGeneration + 1,
+                },
+            };
+            await store.ReplaceAsync(reference, newer);
+            loaded = await store.LoadAsync(reference);
+            Assert.Equal(newer.UplinkEpoch!.EpochId, loaded.UplinkEpoch!.EpochId);
+            Assert.Equal(newer.DownlinkEpoch!.EpochId, loaded.DownlinkEpoch!.EpochId);
+            Assert.Equal(newer.UplinkEpoch.EpochGeneration, loaded.UplinkEpoch.EpochGeneration);
+
             Assert.True(await store.DeleteAsync(reference));
+            IOException? replacementFailure = null;
+            try
+            {
+                await store.ReplaceAsync(reference, credential);
+            }
+            catch (IOException exception)
+            {
+                replacementFailure = exception;
+            }
+            Assert.NotNull(replacementFailure);
+            Assert.Empty(Directory.GetFiles(root));
         }
         finally
         {
@@ -1165,21 +1196,27 @@ public sealed class DadAutoPartyWebhookEndpointTests
             Assert.Equal(4, adapter.TransferSnapshot.TotalFragmentCount);
             Assert.True(adapter.TransferSnapshot.AwaitingCentralAcknowledgement);
 
-            handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(publishedPage!));
+            var acknowledgementContent = crypto.CreateUplinkAcknowledgement(publishedPage!);
             if (fragmentNumber < 4)
             {
                 for (var attempt = 0; attempt < 100 &&
                      (adapter.TransferSnapshot.AcceptedFragmentCount != fragmentNumber ||
                       adapter.TransferSnapshot.CurrentFragmentNumber != fragmentNumber + 1 ||
                       !adapter.TransferSnapshot.AwaitingCentralAcknowledgement); attempt++)
+                {
+                    handler.SetContent("10001", acknowledgementContent);
                     await Task.Delay(10);
+                }
                 Assert.Equal(fragmentNumber, adapter.TransferSnapshot.AcceptedFragmentCount);
                 Assert.Equal(fragmentNumber + 1, adapter.TransferSnapshot.CurrentFragmentNumber);
             }
             else
             {
                 for (var attempt = 0; attempt < 100 && !adapter.TransferSnapshot.IsIdle; attempt++)
+                {
+                    handler.SetContent("10001", acknowledgementContent);
                     await Task.Delay(10);
+                }
                 Assert.Same(DadAutoPartyAdapterTransferSnapshot.Idle, adapter.TransferSnapshot);
             }
         }
@@ -1340,12 +1377,15 @@ public sealed class DadAutoPartyWebhookEndpointTests
             }
 
             Assert.NotNull(publishedPage);
-            handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(publishedPage!));
+            var acknowledgementContent = crypto.CreateUplinkAcknowledgement(publishedPage!);
             for (var attempt = 0; attempt < 200 && !ReadDiagnostics().Any(line =>
                          line.Contains(
                              $"stage=fragment-acknowledged:{fragmentNumber}/4",
                              StringComparison.Ordinal)); attempt++)
+            {
+                handler.SetContent("10001", acknowledgementContent);
                 await Task.Delay(10);
+            }
         }
 
         for (var attempt = 0; attempt < 200 && !adapter.TransferSnapshot.IsIdle; attempt++)
@@ -1614,6 +1654,187 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Equal(crypto.UplinkEpoch.EpochId, acknowledgement.EpochId);
         Assert.Equal(CourierDirection.Uplink, acknowledgement.Direction);
         Assert.Equal(crypto.UplinkEpoch.EpochGeneration, acknowledgement.PageGeneration);
+    }
+
+    [Fact]
+    public async Task AdapterExposesReplacementOnlyAfterBothAuthenticatedEpochsReachSameNewGeneration()
+    {
+        using var crypto = new CryptoFixture();
+        var nextUplink = crypto.UplinkEpoch with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = crypto.UplinkEpoch.EpochGeneration + 1,
+        };
+        var nextDownlink = crypto.DownlinkEpoch with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = crypto.DownlinkEpoch.EpochGeneration + 1,
+        };
+        var handler = new ScriptedWebhookHandler(
+            CourierTextCodec.EmptySlotContent,
+            uplinkContent: crypto.CreateEpochAnnouncement(nextUplink));
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-one",
+            crypto.EndpointKeyVersion,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+
+        for (var attempt = 0; attempt < 100 &&
+             adapter.UplinkEpochSnapshot.EpochGeneration != nextUplink.EpochGeneration; attempt++)
+            await Task.Delay(10);
+
+        Assert.Equal(nextUplink.EpochId, adapter.UplinkEpochSnapshot.EpochId);
+        Assert.False(adapter.TryCreateReplacementCredential(
+            crypto.UplinkEpoch.EpochGeneration,
+            out _));
+
+        handler.SetContent("10002", crypto.CreateEpochAnnouncement(nextDownlink));
+        for (var attempt = 0; attempt < 100 &&
+             adapter.DownlinkEpochSnapshot.EpochGeneration != nextDownlink.EpochGeneration; attempt++)
+            await Task.Delay(10);
+
+        Assert.True(adapter.TryCreateReplacementCredential(
+            crypto.UplinkEpoch.EpochGeneration,
+            out var replacement));
+        Assert.NotNull(replacement);
+        Assert.Equal(nextUplink.EpochId, replacement!.UplinkEpoch!.EpochId);
+        Assert.Equal(nextDownlink.EpochId, replacement.DownlinkEpoch!.EpochId);
+        Assert.Equal(crypto.Credential().WebhookId, replacement.WebhookId);
+        Assert.Equal(crypto.RelayPublicKeys, replacement.RelayPublicKeys);
+    }
+
+    [Fact]
+    public async Task EndpointPersistsOneAuthenticatedEpochPairOnUpdateThreadAndRestartsFromIt()
+    {
+        using var crypto = new CryptoFixture();
+        using var identityStore = new MemoryIdentityStore();
+        var identityMaterial = JsonSerializer.SerializeToUtf8Bytes(new DadAutoPartyPrivateIdentityPackage(
+            crypto.OwnerId.Value,
+            crypto.IslandId.Value,
+            crypto.EndpointKeyVersion,
+            Convert.ToBase64String(crypto.EndpointSigningPrivateKey),
+            Convert.ToBase64String(crypto.EndpointAgreementPrivateKey)));
+        var identityReference = await identityStore.StoreAsync(identityMaterial);
+        CryptographicOperations.ZeroMemory(identityMaterial);
+        var credentialStore = new MemoryWebhookStore();
+        var credentialReference = await credentialStore.StoreAsync(crypto.Credential());
+        var registrationId = Guid.NewGuid();
+        var configuration = new DadAutoPartyConfiguration
+        {
+            Enabled = true,
+            RegistrationState = DadAutoPartyRegistrationState.Active,
+            RegistrationId = registrationId.ToString("D"),
+            RouteId = $"route-{registrationId:N}",
+            CentralBotApplicationId = "123456789012345678",
+            HomeGuildScope = "223456789012345678",
+            WebhookCredentialReference = credentialReference,
+            UplinkEpochId = crypto.UplinkEpoch.EpochId.ToString("D"),
+            DownlinkEpochId = crypto.DownlinkEpoch.EpochId.ToString("D"),
+            MailboxEpochGeneration = crypto.UplinkEpoch.EpochGeneration,
+            RelayKeyGeneration = crypto.RelayKeyVersion,
+            RelaySigningPublicKey = Convert.ToBase64String(crypto.RelaySigningPublicKey),
+            RelayAgreementPublicKey = Convert.ToBase64String(crypto.RelayAgreementPublicKey),
+            EndpointIdentityReference = identityReference,
+            RegisteredOwnerId = crypto.OwnerId.Value,
+            RegisteredIslandId = crypto.IslandId.Value,
+            RegistrationFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                crypto.OwnerId.Value,
+                crypto.IslandId.Value,
+                crypto.EndpointKeyVersion,
+                crypto.EndpointSigningPublicKey,
+                crypto.EndpointAgreementPublicKey),
+            EndpointAlias = "epoch-test",
+            SigningPublicKey = Convert.ToBase64String(crypto.EndpointSigningPublicKey),
+            EncryptionPublicKey = Convert.ToBase64String(crypto.EndpointAgreementPublicKey),
+            EndpointKeyGeneration = crypto.EndpointKeyVersion,
+        }.Normalize();
+        var nextUplink = crypto.UplinkEpoch with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = crypto.UplinkEpoch.EpochGeneration + 1,
+        };
+        var nextDownlink = crypto.DownlinkEpoch with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = crypto.DownlinkEpoch.EpochGeneration + 1,
+        };
+        using var handler = new ScriptedWebhookHandler(
+            crypto.CreateEpochAnnouncement(nextDownlink),
+            uplinkContent: crypto.CreateEpochAnnouncement(nextUplink));
+        var connector = new DadDiscordCourierConnector(configuration, static () => true);
+        var priorStateGeneration = configuration.StateGeneration;
+        var saveCount = 0;
+        var updateThread = 0;
+        var saveThread = 0;
+        var insideUpdate = false;
+        void SaveConfiguration()
+        {
+            Assert.True(insideUpdate);
+            saveCount++;
+            saveThread = Environment.CurrentManagedThreadId;
+        }
+
+        using (var endpoint = new DadAutoPartyEndpointService(
+                   configuration,
+                   credentialStore,
+                   new MemoryLegacyTokenStore(),
+                   connector,
+                   SaveConfiguration,
+                   httpClientFactory: () => new HttpClient(handler, disposeHandler: false),
+                   identityStore: identityStore))
+        {
+            for (var attempt = 0; attempt < 400 &&
+                 configuration.MailboxEpochGeneration != nextUplink.EpochGeneration; attempt++)
+            {
+                insideUpdate = true;
+                updateThread = Environment.CurrentManagedThreadId;
+                endpoint.Update(dadEnabled: true);
+                insideUpdate = false;
+                await Task.Delay(5);
+            }
+
+            Assert.Equal(nextUplink.EpochGeneration, configuration.MailboxEpochGeneration);
+            Assert.Equal(nextUplink.EpochId.ToString("D"), configuration.UplinkEpochId);
+            Assert.Equal(nextDownlink.EpochId.ToString("D"), configuration.DownlinkEpochId);
+            Assert.Equal(priorStateGeneration + 1, configuration.StateGeneration);
+            Assert.Equal(1, credentialStore.ReplaceCount);
+            Assert.Equal(1, saveCount);
+            Assert.Equal(updateThread, saveThread);
+            for (var attempt = 0; attempt < 100 &&
+                 endpoint.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready; attempt++)
+            {
+                insideUpdate = true;
+                endpoint.Update(dadEnabled: true);
+                insideUpdate = false;
+                await Task.Delay(5);
+            }
+            Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, endpoint.Snapshot.State);
+        }
+
+        var restartedConnector = new DadDiscordCourierConnector(configuration, static () => true);
+        using var restarted = new DadAutoPartyEndpointService(
+            configuration,
+            credentialStore,
+            new MemoryLegacyTokenStore(),
+            restartedConnector,
+            static () => { },
+            httpClientFactory: () => new HttpClient(handler, disposeHandler: false),
+            identityStore: identityStore);
+        for (var attempt = 0; attempt < 200 &&
+             restarted.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready; attempt++)
+        {
+            restarted.Update(dadEnabled: true);
+            await Task.Delay(5);
+        }
+
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, restarted.Snapshot.State);
+        Assert.Equal(nextUplink.EpochGeneration, restarted.Snapshot.EpochGeneration);
+        Assert.Equal(1, credentialStore.ReplaceCount);
     }
 
     [Theory]
@@ -2134,6 +2355,21 @@ public sealed class DadAutoPartyWebhookEndpointTests
                     : throw new InvalidOperationException("missing-test-credential"));
         }
 
+        public ValueTask ReplaceAsync(
+            string credentialReference,
+            DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (gate)
+            {
+                if (!credentials.ContainsKey(credentialReference))
+                    throw new InvalidOperationException("missing-test-credential");
+                credentials[credentialReference] = credential;
+            }
+            return ValueTask.CompletedTask;
+        }
+
         public ValueTask<bool> DeleteAsync(
             string credentialReference,
             CancellationToken cancellationToken = default)
@@ -2647,6 +2883,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
     {
         public DadAutoPartyWebhookCredential? StoredCredential { get; private set; }
         public string StoredReference { get; private set; } = string.Empty;
+        public int ReplaceCount { get; private set; }
 
         public ValueTask<string> StoreAsync(
             DadAutoPartyWebhookCredential credential,
@@ -2667,6 +2904,20 @@ public sealed class DadAutoPartyWebhookEndpointTests
                    string.Equals(credentialReference, StoredReference, StringComparison.Ordinal)
                 ? ValueTask.FromResult(credential)
                 : throw new InvalidOperationException("missing-test-credential");
+        }
+
+        public ValueTask ReplaceAsync(
+            string credentialReference,
+            DadAutoPartyWebhookCredential credential,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (StoredCredential == null ||
+                !string.Equals(credentialReference, StoredReference, StringComparison.Ordinal))
+                throw new InvalidOperationException("missing-test-credential");
+            StoredCredential = credential;
+            ReplaceCount++;
+            return ValueTask.CompletedTask;
         }
 
         public ValueTask<bool> DeleteAsync(

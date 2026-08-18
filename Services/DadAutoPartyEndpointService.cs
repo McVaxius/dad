@@ -35,11 +35,15 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     private readonly CancellationTokenSource shutdown = new();
     private Task<AdapterStartResult>? adapterStartTask;
     private Task<LegacyCleanupResult>? legacyCleanupTask;
+    private Task? epochPersistenceTask;
+    private EpochPersistenceAttempt? epochPersistenceAttempt;
     private Task? adapterStopTask;
     private DadAutoPartyWebhookTransportAdapter? adapter;
     private long desiredAdapterGeneration;
     private long attachedAdapterGeneration = -1;
     private long readyAdapterGeneration;
+    private long lastEpochPersistenceAttemptGeneration;
+    private long failedEpochPersistenceGeneration;
     private DadAutoPartyRelayPump? relayPump;
     private DadAutoPartyService? autoPartyService;
     private DateTime nextLegacyCleanupAttemptUtc = DateTime.MinValue;
@@ -609,6 +613,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         relayPump?.UpdateFramework();
         ObserveLegacyCleanup();
+        ObserveEpochPersistence();
         ObserveAdapterStop();
         ObserveAdapterStart();
 
@@ -733,6 +738,22 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         {
             Snapshot = RefreshingSnapshot();
         }
+
+        ScheduleEpochPersistenceIfNeeded();
+        if (failedEpochPersistenceGeneration > configuration.MailboxEpochGeneration &&
+            adapter != null && attachedAdapterGeneration == desiredGeneration)
+        {
+            var prior = Snapshot;
+            Snapshot = new(
+                DadAutoPartyEndpointConnectionState.Degraded,
+                "dad-webhook-epoch-persist-failed",
+                DateTime.UtcNow,
+                prior.LastSuccessfulExchangeAtUtc,
+                prior.PendingOutboundCount,
+                prior.PendingAcknowledgementCount,
+                prior.BufferedInboundCount,
+                configuration.MailboxEpochGeneration);
+        }
     }
 
     private void PublishListingsIfDue(DateTime utcNow)
@@ -754,6 +775,95 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             diagnostic("dad-listing-publication-invalid");
         }
     }
+
+    private void ScheduleEpochPersistenceIfNeeded()
+    {
+        var currentAdapter = adapter;
+        var adapterGeneration = Volatile.Read(ref desiredAdapterGeneration);
+        if (epochPersistenceTask != null || currentAdapter == null ||
+            attachedAdapterGeneration != adapterGeneration ||
+            !currentAdapter.TryCreateReplacementCredential(
+                configuration.MailboxEpochGeneration,
+                out var replacement) ||
+            replacement == null)
+            return;
+
+        var epochGeneration = replacement.UplinkEpoch!.EpochGeneration;
+        if (epochGeneration <= lastEpochPersistenceAttemptGeneration)
+            return;
+
+        var attempt = new EpochPersistenceAttempt(
+            configuration.WebhookCredentialReference,
+            configuration.RegistrationId,
+            configuration.RouteId,
+            configuration.RegisteredOwnerId,
+            configuration.RegisteredIslandId,
+            adapterGeneration,
+            currentAdapter,
+            replacement);
+        lastEpochPersistenceAttemptGeneration = epochGeneration;
+        epochPersistenceAttempt = attempt;
+        epochPersistenceTask = Task.Run(
+            () => credentialStore.ReplaceAsync(
+                attempt.CredentialReference,
+                attempt.Credential,
+                shutdown.Token).AsTask(),
+            shutdown.Token);
+    }
+
+    private void ObserveEpochPersistence()
+    {
+        if (epochPersistenceTask is not { IsCompleted: true } completed || epochPersistenceAttempt == null)
+            return;
+
+        var attempt = epochPersistenceAttempt;
+        epochPersistenceTask = null;
+        epochPersistenceAttempt = null;
+        if (!EpochPersistenceAttemptIsCurrent(attempt))
+        {
+            _ = completed.Exception;
+            return;
+        }
+        if (!completed.IsCompletedSuccessfully)
+        {
+            _ = completed.Exception;
+            failedEpochPersistenceGeneration = Math.Max(
+                failedEpochPersistenceGeneration,
+                attempt.Credential.UplinkEpoch!.EpochGeneration);
+            ReportMailboxDiagnostic("epoch-persist-failed", "dad-webhook-epoch-persist-failed");
+            return;
+        }
+
+        var uplink = attempt.Credential.UplinkEpoch!;
+        var downlink = attempt.Credential.DownlinkEpoch!;
+        if (uplink.EpochGeneration != downlink.EpochGeneration ||
+            uplink.EpochGeneration <= configuration.MailboxEpochGeneration)
+            return;
+
+        configuration.UplinkEpochId = uplink.EpochId.ToString("D");
+        configuration.DownlinkEpochId = downlink.EpochId.ToString("D");
+        configuration.MailboxEpochGeneration = uplink.EpochGeneration;
+        configuration.StateGeneration++;
+        if (failedEpochPersistenceGeneration <= uplink.EpochGeneration)
+            failedEpochPersistenceGeneration = 0;
+        saveConfiguration();
+        ReportMailboxDiagnostic("epoch-persisted", "dad-webhook-epoch-persisted");
+    }
+
+    private bool EpochPersistenceAttemptIsCurrent(EpochPersistenceAttempt attempt) =>
+        HasValidatedBootstrap(DateTime.UtcNow) &&
+        string.Equals(
+            configuration.WebhookCredentialReference,
+            attempt.CredentialReference,
+            StringComparison.Ordinal) &&
+        string.Equals(configuration.RegistrationId, attempt.RegistrationId, StringComparison.Ordinal) &&
+        string.Equals(configuration.RouteId, attempt.RouteId, StringComparison.Ordinal) &&
+        string.Equals(configuration.RegisteredOwnerId, attempt.OwnerId, StringComparison.Ordinal) &&
+        string.Equals(configuration.RegisteredIslandId, attempt.IslandId, StringComparison.Ordinal) &&
+        ReferenceEquals(adapter, attempt.Adapter) &&
+        attachedAdapterGeneration == attempt.AdapterGeneration &&
+        Volatile.Read(ref desiredAdapterGeneration) == attempt.AdapterGeneration &&
+        CredentialMatchesRegistrationBinding(attempt.Credential, configuration);
 
     private void ObserveAdapterStart()
     {
@@ -825,6 +935,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     private void RequestAdapterRefresh()
     {
         _ = Interlocked.Increment(ref desiredAdapterGeneration);
+        lastEpochPersistenceAttemptGeneration = configuration.MailboxEpochGeneration;
+        failedEpochPersistenceGeneration = 0;
         adapterStartRequested = false;
         lastAdapterStartFailure = string.Empty;
         connector.DetachAdapter();
@@ -936,7 +1048,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     internal static bool CredentialMatchesConfiguration(
         DadAutoPartyWebhookCredential credential,
         DadAutoPartyConfiguration expected) =>
-        credential.HasProvisionedMailbox &&
+        CredentialMatchesRegistrationBinding(credential, expected) &&
         string.Equals(
             credential.UplinkEpoch!.EpochId.ToString("D"),
             expected.UplinkEpochId,
@@ -945,16 +1057,21 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             credential.DownlinkEpoch!.EpochId.ToString("D"),
             expected.DownlinkEpochId,
             StringComparison.Ordinal) &&
-        string.Equals(
-            credential.UplinkEpoch.IslandId.Value,
-            expected.RegisteredIslandId,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            credential.DownlinkEpoch.IslandId.Value,
-            expected.RegisteredIslandId,
-            StringComparison.Ordinal) &&
         credential.UplinkEpoch.EpochGeneration == expected.MailboxEpochGeneration &&
-        credential.DownlinkEpoch.EpochGeneration == expected.MailboxEpochGeneration &&
+        credential.DownlinkEpoch.EpochGeneration == expected.MailboxEpochGeneration;
+
+    internal static bool CredentialMatchesRegistrationBinding(
+        DadAutoPartyWebhookCredential credential,
+        DadAutoPartyConfiguration expected) =>
+        credential.HasProvisionedMailbox &&
+        string.Equals(
+            credential.UplinkEpoch!.IslandId.Value,
+            expected.RegisteredIslandId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            credential.DownlinkEpoch!.IslandId.Value,
+            expected.RegisteredIslandId,
+            StringComparison.Ordinal) &&
         credential.RelayPublicKeys!.KeyVersion == expected.RelayKeyGeneration &&
         EncodedKeyMatches(credential.RelayPublicKeys.Ed25519PublicKey, expected.RelaySigningPublicKey) &&
         EncodedKeyMatches(credential.RelayPublicKeys.X25519PublicKey, expected.RelayAgreementPublicKey);
@@ -1041,7 +1158,10 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default).Unwrap());
         }
-        var lifecycleTasks = new Task?[] { adapterStartTask, adapterStopTask, legacyCleanupTask }
+        if (epochPersistenceTask != null)
+            ObserveBackgroundDisposal(epochPersistenceTask);
+        var lifecycleTasks = new Task?[]
+            { adapterStartTask, adapterStopTask, legacyCleanupTask, epochPersistenceTask }
             .Where(static task => task != null)
             .Cast<Task>()
             .ToArray();
@@ -1067,6 +1187,16 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         DadAutoPartyWebhookTransportAdapter? Adapter,
         string SafeCode,
         long Generation);
+
+    private sealed record EpochPersistenceAttempt(
+        string CredentialReference,
+        string RegistrationId,
+        string RouteId,
+        string OwnerId,
+        string IslandId,
+        long AdapterGeneration,
+        DadAutoPartyWebhookTransportAdapter Adapter,
+        DadAutoPartyWebhookCredential Credential);
 
     private sealed record LegacyCleanupResult(bool Succeeded, string SafeCode);
 }
@@ -1100,9 +1230,10 @@ internal static class DadAutoPartyRegistrationRecovery
             return PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
         }
 
+        var mailboxChanged = false;
         if (!configuration.HasDurableRegistrationMaterial ||
             !TryGetRegistrationIdFromRoute(configuration.RouteId, out var routedRegistrationId) ||
-            !HasMatchingProtectedMailbox(configuration, credentialStore))
+            !TryReconcileProtectedMailbox(configuration, credentialStore, out mailboxChanged))
         {
             configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
             configuration.RegistrationRecoveryState =
@@ -1132,7 +1263,8 @@ internal static class DadAutoPartyRegistrationRecovery
             configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
             configuration.BootstrapExpiresAtUtc = default;
         }
-        return PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
+        return mailboxChanged ||
+            PersistedStateChanged(configuration, priorState, priorRegistrationId, priorBootstrapExpiry);
     }
 
     internal static bool TryGetRegistrationIdFromRoute(string? routeId, out Guid registrationId)
@@ -1220,16 +1352,42 @@ internal static class DadAutoPartyRegistrationRecovery
         }
     }
 
-    private static bool HasMatchingProtectedMailbox(
+    private static bool TryReconcileProtectedMailbox(
         DadAutoPartyConfiguration configuration,
-        IDadAutoPartyWebhookCredentialStore credentialStore)
+        IDadAutoPartyWebhookCredentialStore credentialStore,
+        out bool changed)
     {
+        changed = false;
         try
         {
             var credential = credentialStore.LoadAsync(
                 configuration.WebhookCredentialReference,
                 CancellationToken.None).AsTask().GetAwaiter().GetResult();
-            return DadAutoPartyEndpointService.CredentialMatchesConfiguration(credential, configuration);
+            if (!DadAutoPartyEndpointService.CredentialMatchesRegistrationBinding(credential, configuration))
+                return false;
+
+            var uplink = credential.UplinkEpoch!;
+            var downlink = credential.DownlinkEpoch!;
+            if (uplink.EpochGeneration != downlink.EpochGeneration ||
+                uplink.EpochGeneration < configuration.MailboxEpochGeneration)
+                return false;
+            if (uplink.EpochGeneration == configuration.MailboxEpochGeneration)
+            {
+                return string.Equals(
+                           uplink.EpochId.ToString("D"),
+                           configuration.UplinkEpochId,
+                           StringComparison.Ordinal) &&
+                       string.Equals(
+                           downlink.EpochId.ToString("D"),
+                           configuration.DownlinkEpochId,
+                           StringComparison.Ordinal);
+            }
+
+            configuration.UplinkEpochId = uplink.EpochId.ToString("D");
+            configuration.DownlinkEpochId = downlink.EpochId.ToString("D");
+            configuration.MailboxEpochGeneration = uplink.EpochGeneration;
+            changed = true;
+            return true;
         }
         catch (Exception exception) when (
             exception is JsonException or FormatException or CryptographicException or InvalidOperationException or
