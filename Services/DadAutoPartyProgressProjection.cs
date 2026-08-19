@@ -36,15 +36,10 @@ internal sealed record DadAutoPartyMailboxActivityProgress(
 internal sealed record DadAutoPartyPairingProgress(
     bool RegistrationActive,
     bool MailboxReady,
-    string PairingId,
-    DadAutoPartyProgressState PeerIdValidated,
-    DadAutoPartyProgressState NoticeQueued,
-    bool NoticeAcceptedAndPendingPairingReceived,
-    bool LocalApprovalSaved,
-    bool LocalApprovalAcceptedByCentral,
-    bool PeerApprovalReceived,
-    bool PairingActive,
-    bool ExpiredOrRejected,
+    bool LocalInviteCurrent,
+    bool PeerInviteValid,
+    bool IntentSubmitted,
+    bool AttemptExpired,
     string SafeCode,
     string NextAction);
 
@@ -136,105 +131,22 @@ internal static class DadAutoPartyProgressProjection
     internal static DadAutoPartyPairingProgress Pairing(
         DadAutoPartyConfiguration configuration,
         DadAutoPartyEndpointSnapshot endpoint,
-        DadAutoPartyPairingChallenge? challenge,
-        DadAutoPartyPairingAttemptResult? attempt,
-        string? requestedPeerIslandId,
+        bool peerInviteValid,
         string? operationSafeCode,
-        DateTime utcNow,
-        string? challengedPeerIslandId = null,
-        DadAutoPartyAdapterTransferSnapshot? transfer = null)
+        DateTime utcNow)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(endpoint);
-
-        var normalizedPeer = DadAutoPartyConfiguration.NormalizeIdentifier(requestedPeerIslandId);
-        var requestedPeerValid = IsGeneratedIslandId(normalizedPeer) &&
-            !string.Equals(normalizedPeer, configuration.RegisteredIslandId, StringComparison.Ordinal);
-        var normalizedChallengedPeer = DadAutoPartyConfiguration.NormalizeIdentifier(challengedPeerIslandId);
-        var challengedPeerValid = IsGeneratedIslandId(normalizedChallengedPeer) &&
-            !string.Equals(normalizedChallengedPeer, configuration.RegisteredIslandId, StringComparison.Ordinal);
-        var normalizedAttemptPeer = DadAutoPartyConfiguration.NormalizeIdentifier(attempt?.PeerIslandId);
-        var attemptPeerValid = IsGeneratedIslandId(normalizedAttemptPeer) &&
-            !string.Equals(normalizedAttemptPeer, configuration.RegisteredIslandId, StringComparison.Ordinal);
-        var targetPeers = new[]
-            {
-                requestedPeerValid ? normalizedPeer : string.Empty,
-                challengedPeerValid ? normalizedChallengedPeer : string.Empty,
-                attemptPeerValid ? normalizedAttemptPeer : string.Empty,
-            }
-            .Where(static item => !string.IsNullOrWhiteSpace(item))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        var hasProcessLocalAttempt = challenge != null || attempt != null;
-        var pendingPairings = configuration.PendingPairings
-            .Where(item => !hasProcessLocalAttempt || item.ExpiresAtUtc > utcNow);
-        var pairing = pendingPairings
-            .Where(item => targetPeers.Length == 0 || targetPeers.Contains(item.IslandId, StringComparer.Ordinal))
-            .OrderBy(static item => item.ExpiresAtUtc)
-            .FirstOrDefault() ??
-            pendingPairings.OrderBy(static item => item.ExpiresAtUtc).FirstOrDefault();
-        if (pairing == null)
-        {
-            pairing = configuration.Pairings
-                .Where(item => item.IsActive &&
-                               (targetPeers.Length == 0 || targetPeers.Contains(item.IslandId, StringComparer.Ordinal)))
-                .OrderByDescending(static item => item.ConfirmedAtUtc)
-                .FirstOrDefault();
-        }
-
-        var selectedPairingId = pairing?.PairingId ??
-            challenge?.ChallengeId.ToString("D") ??
-            attempt?.PairingId.ToString("D") ??
-            string.Empty;
-        var selectedChallenge = challenge != null &&
-            string.Equals(challenge.ChallengeId.ToString("D"), selectedPairingId, StringComparison.Ordinal)
-                ? challenge
-                : null;
-        var selectedAttempt = attempt != null &&
-            string.Equals(attempt.PairingId.ToString("D"), selectedPairingId, StringComparison.Ordinal)
-                ? attempt
-                : null;
-        var inPendingPairings = pairing != null && configuration.PendingPairings.Any(item =>
-            string.Equals(item.PairingId, selectedPairingId, StringComparison.Ordinal));
-        var inActivePairings = pairing != null && configuration.Pairings.Any(item =>
-            string.Equals(item.PairingId, selectedPairingId, StringComparison.Ordinal));
-        var initiatorSide = selectedChallenge != null || selectedAttempt != null;
-        var peerIdValidated = pairing != null || requestedPeerValid || challengedPeerValid || attemptPeerValid
-            ? DadAutoPartyProgressState.Complete
-            : string.IsNullOrWhiteSpace(normalizedPeer)
-                ? DadAutoPartyProgressState.Pending
-                : DadAutoPartyProgressState.Blocked;
-        var noticeQueued = initiatorSide
-            ? DadAutoPartyProgressState.Complete
-            : pairing != null
-                ? DadAutoPartyProgressState.NotRequired
-                : DadAutoPartyProgressState.Pending;
-        var localApprovalSaved = pairing?.LocalApproved == true &&
-            Guid.TryParse(pairing.LocalApprovalRelayMessageId, out _) &&
-            pairing.LocalSharePolicy is { IsValid: true };
-        var pairingActive = inActivePairings && pairing?.IsActive == true;
-        var expired = !pairingActive &&
-            (inPendingPairings && pairing!.ExpiresAtUtc <= utcNow ||
-             selectedChallenge != null && selectedChallenge.ExpiresAtUtc <= utcNow);
-        var rejected = selectedAttempt != null &&
-            !string.Equals(selectedAttempt.SafeCode, "dad-pairing-notice-queued", StringComparison.Ordinal);
+        var attemptPresent = Guid.TryParse(configuration.PairingAttemptId, out _) &&
+            !string.IsNullOrWhiteSpace(configuration.PairingInviteToken);
+        var expired = attemptPresent && configuration.PairingAttemptExpiresAtUtc <= utcNow;
+        var localInviteCurrent = attemptPresent && !expired;
         var pairingOperationCode = DadAutoPartyConfiguration.NormalizeSafeCode(operationSafeCode);
         if (!pairingOperationCode.StartsWith("dad-pairing-", StringComparison.Ordinal))
             pairingOperationCode = string.Empty;
-        var activeTransfer = transfer ?? DadAutoPartyAdapterTransferSnapshot.Idle;
-        var queuedBehindActivePayload = pairing == null && selectedChallenge != null && !activeTransfer.IsIdle &&
-            !string.Equals(
-                activeTransfer.PayloadType,
-                ProtocolContractRegistry.GetTypeId<PairingNotice>(),
-                StringComparison.Ordinal);
 
         string safeCode;
-        if (pairingActive)
-            safeCode = "dad-pairing-active";
-        else if (rejected)
-            safeCode = selectedAttempt!.SafeCode;
-        else if (expired)
+        if (expired)
             safeCode = "dad-pairing-expired";
         else if (!configuration.IsRegistrationActive)
             safeCode = "dad-pairing-registration-not-active";
@@ -242,63 +154,36 @@ internal static class DadAutoPartyProgressProjection
             safeCode = "dad-pairing-mailbox-refreshing";
         else if (endpoint.State != DadAutoPartyEndpointConnectionState.Ready)
             safeCode = "dad-pairing-mailbox-not-ready";
-        else if (pairing?.LocalApprovalRelayAcceptedAtUtc != null)
-            safeCode = "dad-pairing-approval-relayed";
-        else if (localApprovalSaved)
-            safeCode = "dad-pairing-local-approved";
-        else if (pairing != null)
-            safeCode = "dad-pairing-notice-pending";
-        else if (selectedChallenge != null)
-            safeCode = "dad-pairing-notice-queued";
+        else if (configuration.PairingAttemptSubmitted)
+            safeCode = "dad-pairing-intent-submitted";
         else if (!string.IsNullOrWhiteSpace(pairingOperationCode))
             safeCode = pairingOperationCode;
+        else if (localInviteCurrent)
+            safeCode = "dad-pairing-invite-current";
         else
             safeCode = "dad-pairing-idle";
 
         string nextAction;
-        if (rejected || expired)
-            nextAction = "This attempt ended; start an explicit new pairing attempt.";
-        else if (!configuration.IsRegistrationActive)
+        if (!configuration.IsRegistrationActive)
             nextAction = "Complete registration activation before pairing.";
         else if (endpoint.State != DadAutoPartyEndpointConnectionState.Ready)
             nextAction = "Wait for the current mailbox to become Ready.";
-        else if (pairingActive)
-            nextAction = "Pairing is Active.";
-        else if (peerIdValidated == DadAutoPartyProgressState.Blocked)
-            nextAction = "Enter an island ID in the form island- plus 32 lowercase hexadecimal characters.";
-        else if (pairing == null && selectedChallenge == null)
-            nextAction = "Enter a peer island ID and initiate pairing.";
-        else if (queuedBehindActivePayload)
-            nextAction =
-                $"Pairing notice is queued behind {FriendlyPayloadName(activeTransfer.PayloadType).ToLowerInvariant()}: " +
-                $"accepted fragments {activeTransfer.AcceptedFragmentCount} / {activeTransfer.TotalFragmentCount}; " +
-                $"current fragment {activeTransfer.CurrentFragmentNumber} / {activeTransfer.TotalFragmentCount}, " +
-                (activeTransfer.AwaitingCentralAcknowledgement
-                    ? "waiting for central acknowledgement."
-                    : "ready to publish.");
-        else if (pairing == null)
-            nextAction = "Wait for central acceptance and the pending pairing notice.";
-        else if (!localApprovalSaved)
-            nextAction = "Verify the fingerprint and code, choose a share scope, and approve locally.";
-        else if (pairing.LocalApprovalRelayAcceptedAtUtc == null)
-            nextAction = "Wait for central to accept the local approval.";
-        else if (!pairing.PeerApproved)
-            nextAction = "Wait for the peer owner's approval.";
+        else if (expired || !localInviteCurrent)
+            nextAction = "Generate a current pairing fingerprint.";
+        else if (configuration.PairingAttemptSubmitted)
+            nextAction = "Wait for the peer owner to submit the reciprocal fingerprint and sharing choice.";
+        else if (!peerInviteValid)
+            nextAction = "Paste the peer DAD's current APP1 pairing fingerprint.";
         else
-            nextAction = "Wait for the pairing to become Active.";
+            nextAction = "Choose what this DAD shares, then submit pairing.";
 
         return new(
             configuration.IsRegistrationActive,
             endpoint.State == DadAutoPartyEndpointConnectionState.Ready,
-            selectedPairingId,
-            peerIdValidated,
-            noticeQueued,
-            pairing != null,
-            localApprovalSaved,
-            pairing?.LocalApprovalRelayAcceptedAtUtc != null,
-            pairing?.PeerApproved == true,
-            pairingActive,
-            expired || rejected,
+            localInviteCurrent,
+            peerInviteValid,
+            configuration.PairingAttemptSubmitted,
+            expired,
             safeCode,
             nextAction);
     }
@@ -309,10 +194,10 @@ internal static class DadAutoPartyProgressProjection
             return "Registration hello";
         if (string.Equals(payloadType, ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>(), StringComparison.Ordinal))
             return "Listing update";
-        if (string.Equals(payloadType, ProtocolContractRegistry.GetTypeId<PairingNotice>(), StringComparison.Ordinal))
-            return "Pairing notice";
-        if (string.Equals(payloadType, ProtocolContractRegistry.GetTypeId<PairingApproval>(), StringComparison.Ordinal))
-            return "Pairing approval";
+        if (string.Equals(payloadType, ProtocolContractRegistry.GetTypeId<PairingIntent>(), StringComparison.Ordinal))
+            return "Pairing intent";
+        if (string.Equals(payloadType, ProtocolContractRegistry.GetTypeId<PairingAttemptCancellation>(), StringComparison.Ordinal))
+            return "Pairing cancellation";
         return "Mailbox message";
     }
 
@@ -325,9 +210,4 @@ internal static class DadAutoPartyProgressProjection
         !string.IsNullOrWhiteSpace(configuration.SigningPublicKey) &&
         !string.IsNullOrWhiteSpace(configuration.EncryptionPublicKey) &&
         configuration.EndpointKeyGeneration >= 1;
-
-    private static bool IsGeneratedIslandId(string value) =>
-        value.Length == 39 &&
-        value.StartsWith("island-", StringComparison.Ordinal) &&
-        value[7..].All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 }

@@ -80,6 +80,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly Func<DateTimeOffset> utcNow;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly Action<string> diagnostic;
+    private readonly Action saveConfiguration;
     private readonly Queue<PendingOutboundContract> pendingOutbound = [];
     private readonly Dictionary<Guid, PendingOutboundContract> awaitingRelayReceipts = [];
     private readonly Dictionary<Guid, IAutoPartyContract> participantContracts = [];
@@ -125,7 +126,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission = null,
         Func<DateTimeOffset>? utcNow = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Action<string>? diagnostic = null)
+        Action<string>? diagnostic = null,
+        Action? saveConfiguration = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.identityStore = identityStore ?? throw new ArgumentNullException(nameof(identityStore));
@@ -139,6 +141,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         this.inboundAdmission = inboundAdmission;
         this.delay = delay ?? Task.Delay;
         this.diagnostic = diagnostic ?? (_ => { });
+        this.saveConfiguration = saveConfiguration ?? (() => { });
         snapshot = new(false, "dad-relay-pump-stopped", this.utcNow(), null, 0, 0, 0);
     }
 
@@ -215,10 +218,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         lock (gate)
             inboundRuntimeTargets.Remove(new InboundRuntimeTargetKey(proposalId, characterId.Value));
     }
-
-    public DadAutoPartyPairingChallenge? LastPairingChallenge { get; private set; }
-
-    internal string LastPairingChallengePeerIslandId { get; private set; } = string.Empty;
 
     public DadAutoPartyPairingAttemptResult? LastPairingAttemptResult { get; private set; }
 
@@ -551,126 +550,294 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         return ValueTask.FromResult(Decision(true, "dad-directory-query-queued"));
     }
 
-    public ValueTask<DadAutoPartyPolicyDecision> InitiatePairingAsync(
-        string peerIslandId,
+    public async ValueTask<DadAutoPartyPolicyDecision> EnsurePairingInviteAsync(
+        bool regenerate = false,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!configuration.IsRegistrationActive)
-            return ValueTask.FromResult(Decision(false, "dad-pairing-registration-not-active"));
-        if (string.IsNullOrWhiteSpace(peerIslandId))
-            return ValueTask.FromResult(Decision(false, "dad-pairing-peer-blank"));
-        var peer = DadAutoPartyConfiguration.NormalizeIdentifier(peerIslandId);
-        if (string.Equals(peer, configuration.RegisteredIslandId, StringComparison.Ordinal))
-            return ValueTask.FromResult(Decision(false, "dad-pairing-self-not-allowed"));
-        if (!IsGeneratedIslandId(peer))
-            return ValueTask.FromResult(Decision(false, "dad-pairing-peer-invalid"));
+        if (!configuration.IsRegistrationActive ||
+            !Guid.TryParse(configuration.RegistrationId, out var registrationId))
+        {
+            return Decision(false, "dad-pairing-registration-not-active");
+        }
 
         var now = utcNow();
-        var pairingId = Guid.NewGuid();
-        var code = RandomNumberGenerator.GetInt32(100000, 1000000).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var codeHash = HashText(code);
-        var transcript = HashText(
-            $"dad.autoparty.pairing/v1|{pairingId:N}|{configuration.RegisteredIslandId}|{peer}|" +
-            $"{configuration.RegistrationFingerprint}|{codeHash}");
+        if (!regenerate &&
+            configuration.PairingAttemptExpiresAtUtc > now.UtcDateTime &&
+            Guid.TryParse(configuration.PairingAttemptId, out _) &&
+            !string.IsNullOrWhiteSpace(configuration.PairingInviteToken))
+        {
+            return Decision(true, "dad-pairing-invite-current");
+        }
+
+        var attemptExpired = !string.IsNullOrWhiteSpace(configuration.PairingAttemptId) &&
+            configuration.PairingAttemptExpiresAtUtc <= now.UtcDateTime;
+        if (attemptExpired)
+        {
+            configuration.ClearPairingAttempt();
+            configuration.StateGeneration++;
+            saveConfiguration();
+        }
+        else if (configuration.PairingAttemptSubmitted)
+        {
+            return await CancelPairingAttemptAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        var attemptId = Guid.NewGuid();
         var expiresAt = now + TimeSpan.FromMinutes(10);
-        PairingNotice notice;
+        PairingInvite invite;
+        byte[]? canonical = null;
+        byte[]? signature = null;
         try
         {
-            notice = new PairingNotice(
-                CreateHeader(new IslandId(RelayIsland), $"pairing-notice-{pairingId:N}", expiresAt),
-                pairingId,
-                new OwnerId(configuration.RegisteredOwnerId),
-                new IslandId(configuration.RegisteredIslandId),
-                new IslandId(peer),
-                configuration.HomeGuildScope,
-                LocalPublicKeys(),
-                configuration.RegistrationFingerprint,
-                transcript,
-                codeHash,
-                expiresAt);
-            ValidateOutbound(notice);
-        }
-        catch (Exception exception) when (exception is ProtocolException or ArgumentException or FormatException)
-        {
-            return ValueTask.FromResult(Decision(false, "dad-pairing-contract-invalid"));
-        }
-
-        lock (gate)
-        {
-            if ((LastPairingChallenge is { } currentChallenge &&
-                 currentChallenge.ExpiresAtUtc > now.UtcDateTime) ||
-                configuration.PendingPairings.Any(item => item.ExpiresAtUtc > now.UtcDateTime))
-                return ValueTask.FromResult(Decision(false, "dad-pairing-attempt-pending"));
-            if (!TryEnqueueControl(notice))
-                return ValueTask.FromResult(Decision(false, "dad-relay-outbound-full"));
-            LastPairingChallenge = new(
-                pairingId,
-                configuration.RegisteredOwnerId,
-                configuration.RegisteredIslandId,
-                configuration.RegistrationFingerprint,
-                configuration.EndpointKeyGeneration,
-                code,
-                expiresAt.UtcDateTime);
-            LastPairingChallengePeerIslandId = peer;
-            LastPairingAttemptResult = null;
-        }
-        UpdateSnapshot("dad-pairing-notice-queued");
-        ReportPairingDiagnostic("notice-queued", "dad-pairing-notice-queued");
-        return ValueTask.FromResult(Decision(true, "dad-pairing-notice-queued"));
-    }
-
-    public DadAutoPartyPolicyDecision QueuePairingApproval(
-        DadAutoPartyPairing pairing,
-        DadAutoPartySharePolicy localSharePolicy,
-        bool accepted)
-    {
-        ArgumentNullException.ThrowIfNull(pairing);
-        ArgumentNullException.ThrowIfNull(localSharePolicy);
-        if (!configuration.IsRegistrationActive || !pairing.IsValid || !pairing.LocalApproved ||
-            !Guid.TryParse(pairing.PairingId, out var pairingId) ||
-            !Guid.TryParse(pairing.LocalApprovalRelayMessageId, out var messageId) ||
-            messageId != DadAutoPartyService.DerivePairingApprovalMessageId(
-                pairingId,
-                configuration.RegisteredIslandId) ||
-            localSharePolicy.Clone().Normalize() is not { IsValid: true } policy ||
-            !DadAutoPartyService.SamePolicy(pairing.LocalSharePolicy, policy))
-            return Decision(false, "dad-pairing-approval-invalid");
-        PairingApproval approval;
-        try
-        {
-            approval = new PairingApproval(
+            invite = new PairingInvite(
                 CreateHeader(
                     new IslandId(RelayIsland),
-                    $"pairing-approval-{pairing.PairingId}",
-                    utcNow() + ControlLifetime,
-                    messageId),
-                pairingId,
+                    $"pairing-invite-{attemptId:N}",
+                    expiresAt,
+                    generation: configuration.StateGeneration,
+                    issuedAt: now),
+                attemptId,
+                registrationId,
+                new OwnerId(configuration.RegisteredOwnerId),
                 new IslandId(configuration.RegisteredIslandId),
-                new IslandId(pairing.IslandId),
-                pairing.TranscriptHash,
-                pairing.ConfirmationCodeHash,
+                configuration.EndpointAlias,
+                LocalPublicKeys(),
                 configuration.RegistrationFingerprint,
-                pairing.PublicKeyFingerprint,
-                ToProtocolPolicy(policy),
-                accepted);
-            ValidateOutbound(approval);
+                expiresAt);
+            canonical = CanonicalCborCodec.EncodeUnsigned(invite);
+            signature = await new DadAutoPartySigningService(configuration, identityStore)
+                .SignAsync(canonical, cancellationToken).ConfigureAwait(false);
+            var token = PairingCopyPasteCodec.EncodeInvite(
+                AuthenticatedContract<PairingInvite>.Create(invite, signature));
+            configuration.ClearPairingAttempt();
+            configuration.PairingInviteToken = token;
+            configuration.PairingAttemptId = attemptId.ToString("D");
+            configuration.PairingAttemptExpiresAtUtc = expiresAt.UtcDateTime;
+            configuration.StateGeneration++;
+            saveConfiguration();
+            LastPairingAttemptResult = null;
+            return Decision(true, "dad-pairing-invite-generated");
+        }
+        catch (Exception exception) when (
+            exception is ProtocolException or CryptographicException or InvalidOperationException or
+                ArgumentException or FormatException or IOException or UnauthorizedAccessException)
+        {
+            return Decision(false, "dad-pairing-invite-generation-failed");
+        }
+        finally
+        {
+            if (canonical is not null)
+                CryptographicOperations.ZeroMemory(canonical);
+            if (signature is not null)
+                CryptographicOperations.ZeroMemory(signature);
+        }
+    }
+
+    public bool TryValidatePeerPairingInvite(
+        string token,
+        out PairingInvite? invite,
+        out string safeCode)
+    {
+        invite = null;
+        safeCode = "dad-pairing-peer-invite-invalid";
+        try
+        {
+            var signed = PairingCopyPasteCodec.DecodeInvite((token ?? string.Empty).Trim());
+            var candidate = signed.Contract;
+            if (candidate.InviteExpiresAt <= utcNow() ||
+                candidate.IslandId.Value == configuration.RegisteredIslandId ||
+                candidate.RegistrationId.ToString("D") == configuration.RegistrationId ||
+                !string.Equals(
+                    DadAutoPartyIdentityPackageService.BuildFingerprint(
+                        candidate.OwnerId.Value,
+                        candidate.IslandId.Value,
+                        candidate.PublicKeys.KeyVersion,
+                        candidate.PublicKeys.Ed25519PublicKey.ToArray(),
+                        candidate.PublicKeys.X25519PublicKey.ToArray()),
+                    candidate.EndpointFingerprint,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var canonical = CanonicalCborCodec.EncodeUnsigned(candidate);
+            try
+            {
+                if (!DadAutoPartySigningService.Verify(
+                    candidate.PublicKeys.Ed25519PublicKey.AsSpan(),
+                    canonical,
+                    signed.AuthenticationTag.AsSpan()))
+                {
+                    return false;
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(canonical);
+            }
+
+            invite = candidate;
+            safeCode = "dad-pairing-peer-invite-valid";
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is ProtocolException or CryptographicException or ArgumentException or FormatException)
+        {
+            return false;
+        }
+    }
+
+    public ValueTask<DadAutoPartyPolicyDecision> SubmitPairingAsync(
+        string peerToken,
+        DadAutoPartySharePolicy localSharePolicy,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!configuration.IsRegistrationActive ||
+            configuration.PairingAttemptExpiresAtUtc <= utcNow().UtcDateTime ||
+            !Guid.TryParse(configuration.RegistrationId, out var registrationId) ||
+            !Guid.TryParse(configuration.PairingAttemptId, out var attemptId))
+        {
+            return ValueTask.FromResult(Decision(false, "dad-pairing-invite-not-current"));
+        }
+
+        AuthenticatedContract<PairingInvite> localSigned;
+        try
+        {
+            localSigned = PairingCopyPasteCodec.DecodeInvite(configuration.PairingInviteToken);
+        }
+        catch (ProtocolException)
+        {
+            return ValueTask.FromResult(Decision(false, "dad-pairing-invite-not-current"));
+        }
+
+        if (!TryValidatePeerPairingInvite(peerToken, out var peerInvite, out var safeCode) ||
+            peerInvite is null)
+        {
+            return ValueTask.FromResult(Decision(false, safeCode));
+        }
+
+        var policy = localSharePolicy?.Clone().Normalize();
+        if (policy is not { IsValid: true })
+        {
+            return ValueTask.FromResult(Decision(false, "dad-pairing-share-policy-invalid"));
+        }
+
+        var peerSigned = PairingCopyPasteCodec.DecodeInvite(peerToken.Trim());
+        var peerInviteFingerprint = FingerprintInvite(peerSigned);
+        if (configuration.PairingAttemptSubmitted)
+        {
+            var unchanged = string.Equals(
+                                configuration.PairingPeerAttemptId,
+                                peerInvite.AttemptId.ToString("D"),
+                                StringComparison.Ordinal) &&
+                            string.Equals(
+                                configuration.PairingPeerInviteFingerprint,
+                                peerInviteFingerprint,
+                                StringComparison.Ordinal) &&
+                            DadAutoPartyService.SamePolicy(
+                                configuration.PairingAttemptSharePolicy,
+                                policy);
+            return ValueTask.FromResult(Decision(
+                unchanged,
+                unchanged ? "dad-pairing-intent-idempotent" : "dad-pairing-attempt-conflict"));
+        }
+
+        var messageId = Guid.NewGuid();
+        var expiresAt = localSigned.Contract.InviteExpiresAt <= peerInvite.InviteExpiresAt
+            ? localSigned.Contract.InviteExpiresAt
+            : peerInvite.InviteExpiresAt;
+        PairingIntent intent;
+        try
+        {
+            intent = new PairingIntent(
+                CreateHeader(
+                    new IslandId(RelayIsland),
+                    $"pairing-intent-{attemptId:N}",
+                    expiresAt,
+                    messageId),
+                attemptId,
+                registrationId,
+                ImmutableArray.CreateRange(CanonicalCborCodec.EncodeSigned(localSigned)),
+                ImmutableArray.CreateRange(CanonicalCborCodec.EncodeSigned(peerSigned)),
+                ToProtocolPolicy(policy));
+            ValidateOutbound(intent);
         }
         catch (Exception exception) when (exception is ProtocolException or ArgumentException or FormatException)
         {
-            return Decision(false, "dad-pairing-approval-invalid");
+            return ValueTask.FromResult(Decision(false, "dad-pairing-intent-invalid"));
         }
+
         lock (gate)
         {
-            if (pendingOutbound.Any(item => item.Contract.Header.MessageId == messageId) ||
-                awaitingRelayReceipts.ContainsKey(messageId))
-                return Decision(true, "dad-pairing-approval-already-queued");
-            if (!TryEnqueueControl(approval))
+            if (!TryEnqueueControl(intent))
+                return ValueTask.FromResult(Decision(false, "dad-relay-outbound-full"));
+        }
+
+        configuration.PairingAttemptSubmitted = true;
+        configuration.PairingPeerAttemptId = peerInvite.AttemptId.ToString("D");
+        configuration.PairingPeerIslandId = peerInvite.IslandId.Value;
+        configuration.PairingPeerInviteFingerprint = peerInviteFingerprint;
+        configuration.PairingAttemptSharePolicy = policy;
+        configuration.PairingIntentMessageId = messageId.ToString("D");
+        configuration.PairingCancellationMessageId = string.Empty;
+        configuration.StateGeneration++;
+        saveConfiguration();
+        LastPairingAttemptResult = new(
+            attemptId,
+            peerInvite.IslandId.Value,
+            "dad-pairing-intent-queued",
+            utcNow());
+        UpdateSnapshot("dad-pairing-intent-queued");
+        return ValueTask.FromResult(Decision(true, "dad-pairing-intent-queued"));
+    }
+
+    public async ValueTask<DadAutoPartyPolicyDecision> CancelPairingAttemptAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Guid.TryParse(configuration.PairingAttemptId, out var attemptId) ||
+            !Guid.TryParse(configuration.RegistrationId, out var registrationId))
+        {
+            configuration.ClearPairingAttempt();
+            saveConfiguration();
+            return await EnsurePairingInviteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!configuration.PairingAttemptSubmitted)
+        {
+            configuration.ClearPairingAttempt();
+            configuration.StateGeneration++;
+            saveConfiguration();
+            return await EnsurePairingInviteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        if (Guid.TryParse(configuration.PairingCancellationMessageId, out _))
+        {
+            return Decision(true, "dad-pairing-cancellation-pending");
+        }
+
+        var messageId = Guid.NewGuid();
+        var contract = new PairingAttemptCancellation(
+            CreateHeader(
+                new IslandId(RelayIsland),
+                $"pairing-cancel-{attemptId:N}",
+                utcNow() + ControlLifetime,
+                messageId),
+            attemptId,
+            registrationId);
+        ValidateOutbound(contract);
+        lock (gate)
+        {
+            if (!TryEnqueueControl(contract))
                 return Decision(false, "dad-relay-outbound-full");
         }
-        UpdateSnapshot("dad-pairing-approval-queued");
-        ReportPairingDiagnostic("approval-queued", "dad-pairing-approval-queued");
-        return Decision(true, "dad-pairing-approval-queued");
+
+        configuration.PairingCancellationMessageId = messageId.ToString("D");
+        configuration.StateGeneration++;
+        saveConfiguration();
+        return Decision(true, "dad-pairing-cancellation-queued");
     }
 
     public DadAutoPartyPolicyDecision QueueListingUpdate(
@@ -954,7 +1121,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         keyResolver!.RefreshPublicKeys();
         EnsureRegistrationHelloQueued();
         EnsureDeregistrationQueued();
-        EnsurePairingApprovalsQueued();
         EnsureInboundResponsesQueued();
         await ReceiveBoundedAsync(cancellationToken).ConfigureAwait(false);
         ProcessInboundProposalEvaluations();
@@ -982,8 +1148,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
         ResetSecurity();
         shutdown.Dispose();
-        LastPairingChallenge = null;
-        LastPairingChallengePeerIslandId = string.Empty;
         LastPairingAttemptResult = null;
         UpdateSnapshot("dad-relay-pump-disposed", running: false);
     }
@@ -1112,15 +1276,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 return;
             _ = TryEnqueueControl(BuildDeregistrationRequest(pending));
         }
-    }
-
-    private void EnsurePairingApprovalsQueued()
-    {
-        var now = utcNow().UtcDateTime;
-        foreach (var pairing in configuration.PendingPairings.Where(item =>
-                     item.LocalApproved && item.LocalApprovalRelayAcceptedAtUtc == null &&
-                     item.ExpiresAtUtc > now).ToArray())
-            _ = QueuePairingApproval(pairing, pairing.LocalSharePolicy, accepted: true);
     }
 
     private void PrepareInboundResponsesFramework()
@@ -1671,16 +1826,9 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             {
                 lock (gate)
                     _ = pendingOutbound.Dequeue();
-                if (pending.Contract is PairingNotice)
-                    ReportPairingDiagnostic(
-                        pending,
-                        "expired-before-transfer",
-                        "dad-pairing-notice-expired-before-transfer");
                 continue;
             }
             var result = await SendContractAsync(pending.Contract, cancellationToken).ConfigureAwait(false);
-            if (pending.Contract is PairingNotice)
-                ReportPairingDiagnostic(pending, "adapter-queue", result.SafeCode);
             if (!result.Accepted)
             {
                 UpdateSnapshot(result.SafeCode);
@@ -1772,8 +1920,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             {
                 RegistrationHello value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 DeregistrationRequest value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
-                PairingNotice value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
-                PairingApproval value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
+                PairingIntent value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
+                PairingAttemptCancellation value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 PrivateListingUpdate value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 DirectoryQuery value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 RegisteredRequesterAccessRequest value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
@@ -1862,10 +2010,13 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     DispatchDeregistrationReceiptAsync(value, cancellationToken))
                 .ConfigureAwait(false);
         if (SameType<PairingNotice>(type))
-            return await OpenAndDispatchAsync<PairingNotice>(sealedContract, true, DispatchPairingNoticeAsync)
+            return await OpenAndDispatchAsync<PairingNotice>(sealedContract, true, DispatchObsoletePairingFlowAsync)
                 .ConfigureAwait(false);
         if (SameType<PairingApproval>(type))
-            return await OpenAndDispatchAsync<PairingApproval>(sealedContract, true, DispatchPairingApprovalAsync)
+            return await OpenAndDispatchAsync<PairingApproval>(sealedContract, true, DispatchObsoletePairingFlowAsync)
+                .ConfigureAwait(false);
+        if (SameType<PairingEstablished>(type))
+            return await OpenAndDispatchAsync<PairingEstablished>(sealedContract, true, DispatchPairingEstablishedAsync)
                 .ConfigureAwait(false);
         if (SameType<DirectoryPage>(type))
             return await OpenAndDispatchAsync<DirectoryPage>(sealedContract, true, DispatchDirectoryPageAsync)
@@ -2029,47 +2180,30 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         return DispatchResult.Allow(result.SafeCode);
     }
 
-    private ValueTask<DispatchResult> DispatchPairingNoticeAsync(PairingNotice notice)
-    {
-        if (notice.PeerIslandId.Value != configuration.RegisteredIslandId ||
-            notice.InitiatorIslandId.Value == configuration.RegisteredIslandId)
-        {
-            const string safeCode = "dad-pairing-notice-route-invalid";
-            ReportPairingDiagnostic("inbound-denied", safeCode);
-            return ValueTask.FromResult(DispatchResult.Deny(safeCode));
-        }
-        var decision = service.ReceivePairingNotice(
-            notice.PairingId,
-            notice.InitiatorOwnerId.Value,
-            notice.InitiatorIslandId.Value,
-            notice.InitiatorHomeGuildScope,
-            notice.InitiatorPublicKeys,
-            notice.InitiatorFingerprint,
-            notice.TranscriptHash,
-            notice.ConfirmationCodeHash,
-            notice.PairingExpiresAt.UtcDateTime);
-        ReportPairingDiagnostic(
-            decision.Allowed ? "inbound-accepted" : "inbound-denied",
-            decision.SafeCode);
-        return ValueTask.FromResult(decision.Allowed
-            ? DispatchResult.Allow(decision.SafeCode)
-            : DispatchResult.Deny(decision.SafeCode));
-    }
+    private ValueTask<DispatchResult> DispatchObsoletePairingFlowAsync<T>(T _)
+        where T : IAutoPartyContract =>
+        ValueTask.FromResult(DispatchResult.Deny("pairing-flow-obsolete-regenerate"));
 
-    private ValueTask<DispatchResult> DispatchPairingApprovalAsync(PairingApproval approval)
+    private ValueTask<DispatchResult> DispatchPairingEstablishedAsync(PairingEstablished established)
     {
-        if (approval.PeerIslandId.Value != configuration.RegisteredIslandId)
-            return ValueTask.FromResult(DispatchResult.Deny("dad-pairing-approval-denied"));
-        if (!approval.Accepted)
-            return ValueTask.FromResult(DispatchResult.Allow("dad-pairing-peer-declined"));
-        var decision = service.ConfirmPeerApproval(
-            approval.PairingId,
-            approval.TranscriptHash,
-            approval.ConfirmationCodeHash,
-            approval.ApprovingFingerprint,
-            approval.PeerFingerprint,
-            ToDadPolicy(approval.SharePolicy));
-        ReportPairingDiagnostic("peer-approval-received", decision.SafeCode);
+        var intentMessageId = Guid.TryParse(configuration.PairingIntentMessageId, out var parsed)
+            ? parsed
+            : Guid.Empty;
+        var decision = service.AcceptPairingEstablished(established);
+        if (decision.Allowed)
+        {
+            if (intentMessageId != Guid.Empty)
+            {
+                lock (gate)
+                    awaitingRelayReceipts.Remove(intentMessageId);
+                RemovePendingOutbound(intentMessageId);
+            }
+            LastPairingAttemptResult = new(
+                established.PairingId,
+                established.PeerIslandId.Value,
+                decision.SafeCode,
+                utcNow());
+        }
         return ValueTask.FromResult(decision.Allowed
             ? DispatchResult.Allow(decision.SafeCode)
             : DispatchResult.Deny(decision.SafeCode));
@@ -2117,6 +2251,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 ListingId = DeriveGuid(entry.IslandId.Value, listing.CharacterHandle.Value).ToString("D"),
                 OwnerId = entry.OwnerId.Value,
                 SharingIslandId = entry.IslandId.Value,
+                SharingEndpointAlias = entry.EndpointAlias,
                 EffectiveShareMode = effectiveMode,
                 EffectivePolicyHash = effectivePolicyHash,
                 OpaqueCharacterId = listing.CharacterHandle.Value,
@@ -2318,41 +2453,42 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private ValueTask<DispatchResult> DispatchRelayReceiptAsync(RelayReceipt receipt)
     {
         PendingOutboundContract? related;
-        PairingNotice? rejectedPairingNotice = null;
-        var approvalRelayReceiptReported = false;
         lock (gate)
         {
             _ = awaitingRelayReceipts.Remove(receipt.RelatedMessageId, out related);
-            if (related?.Contract is PairingNotice)
-                ReportPairingDiagnostic(
-                    related,
-                    receipt.Accepted ? "relay-receipt-accepted" : "relay-receipt-rejected",
-                    receipt.SafeCode);
-            if (related?.Contract is PairingApproval)
+            if (related?.Contract is PairingIntent intent)
             {
-                ReportPairingDiagnostic(
-                    receipt.Accepted ? "central-receipt-accepted" : "central-receipt-rejected",
-                    receipt.SafeCode);
-                approvalRelayReceiptReported = true;
-            }
-            if (!receipt.Accepted && related?.Contract is PairingNotice notice)
-            {
-                rejectedPairingNotice = notice;
                 LastPairingAttemptResult = new(
-                    notice.PairingId,
-                    notice.PeerIslandId.Value,
+                    intent.AttemptId,
+                    configuration.PairingPeerIslandId,
                     receipt.SafeCode,
                     utcNow());
-                if (LastPairingChallenge?.ChallengeId == notice.PairingId)
+                if (!receipt.Accepted)
                 {
-                    LastPairingChallenge = null;
-                    LastPairingChallengePeerIslandId = string.Empty;
+                    configuration.PairingAttemptSubmitted = false;
+                    configuration.PairingPeerAttemptId = string.Empty;
+                    configuration.PairingPeerIslandId = string.Empty;
+                    configuration.PairingPeerInviteFingerprint = string.Empty;
+                    configuration.PairingAttemptSharePolicy = new DadAutoPartySharePolicy();
+                    configuration.PairingIntentMessageId = string.Empty;
+                    configuration.PairingCancellationMessageId = string.Empty;
+                    configuration.StateGeneration++;
+                    saveConfiguration();
                 }
+            }
+            else if (related?.Contract is PairingAttemptCancellation)
+            {
+                if (receipt.Accepted)
+                    configuration.ClearPairingAttempt();
+                else
+                    configuration.PairingCancellationMessageId = string.Empty;
+                configuration.StateGeneration++;
+                saveConfiguration();
             }
             else if (!receipt.Accepted && related != null && related.Contract.Header.ExpiresAt > utcNow())
                 _ = TryEnqueueControl(related.Contract);
         }
-        if (rejectedPairingNotice != null)
+        if (related?.Contract is PairingIntent or PairingAttemptCancellation)
         {
             UpdateSnapshot(receipt.SafeCode);
             return ValueTask.FromResult(DispatchResult.Allow(receipt.SafeCode));
@@ -2367,21 +2503,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             return ValueTask.FromResult(DispatchResult.Deny("dad-inbound-response-store-failed"));
-        }
-        if (service.TryApplyPairingApprovalRelayReceipt(
-                receipt.RelatedMessageId,
-                receipt.Accepted,
-                out var pairingDecision))
-        {
-            if (!approvalRelayReceiptReported)
-                ReportPairingDiagnostic(
-                    receipt.Accepted ? "central-receipt-accepted" : "central-receipt-rejected",
-                    receipt.SafeCode);
-            if (!pairingDecision.Allowed)
-                return ValueTask.FromResult(DispatchResult.Deny(pairingDecision.SafeCode));
-            if (receipt.Accepted)
-                RemovePendingOutbound(receipt.RelatedMessageId);
-            return ValueTask.FromResult(DispatchResult.Allow(pairingDecision.SafeCode));
         }
         if (related == null)
             return ValueTask.FromResult(DispatchResult.Allow("dad-relay-receipt-idempotent"));
@@ -3340,9 +3461,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         string idempotencyKey,
         DateTimeOffset expiresAt,
         Guid? messageId = null,
-        long? generation = null)
+        long? generation = null,
+        DateTimeOffset? issuedAt = null)
     {
-        var now = utcNow();
+        var now = issuedAt ?? utcNow();
         if (expiresAt <= now)
             throw new InvalidOperationException("dad-relay-contract-expired");
         long recipientVersion;
@@ -3411,8 +3533,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             RegistrationHello value => CanonicalCborCodec.EncodeUnsigned(value),
             DeregistrationRequest value => CanonicalCborCodec.EncodeUnsigned(value),
-            PairingNotice value => CanonicalCborCodec.EncodeUnsigned(value),
-            PairingApproval value => CanonicalCborCodec.EncodeUnsigned(value),
+            PairingIntent value => CanonicalCborCodec.EncodeUnsigned(value),
+            PairingAttemptCancellation value => CanonicalCborCodec.EncodeUnsigned(value),
             PrivateListingUpdate value => CanonicalCborCodec.EncodeUnsigned(value),
             DirectoryQuery value => CanonicalCborCodec.EncodeUnsigned(value),
             RegisteredRequesterAccessRequest value => CanonicalCborCodec.EncodeUnsigned(value),
@@ -3642,17 +3764,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             replayedMessages.Remove(messageId);
         lock (gate)
         {
-            foreach (var pending in awaitingRelayReceipts
-                         .Where(pair => pair.Value.Contract.Header.ExpiresAt <= now)
-                         .Select(static pair => pair.Value)
-                         .ToList())
-            {
-                if (pending.Contract is PairingNotice)
-                    ReportPairingDiagnostic(
-                        pending,
-                        "expired-in-flight",
-                        "dad-pairing-notice-expired-in-flight");
-            }
             foreach (var messageId in awaitingRelayReceipts
                          .Where(pair => pair.Value.Contract.Header.ExpiresAt <= now)
                          .Select(static pair => pair.Key)
@@ -3689,45 +3800,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                          .Select(static pair => pair.Key)
                          .ToList())
                 inboundRuntimeTargets.Remove(key);
-            if (LastPairingChallenge is { } challenge && challenge.ExpiresAtUtc <= now.UtcDateTime)
-            {
-                LastPairingChallenge = null;
-                LastPairingChallengePeerIslandId = string.Empty;
-            }
             while (pendingOutbound.Count > 0 && pendingOutbound.Peek().Contract.Header.ExpiresAt <= now)
-            {
-                var pending = pendingOutbound.Peek();
-                if (pending.Contract is PairingNotice)
-                    ReportPairingDiagnostic(
-                        pending,
-                        "expired-before-transfer",
-                        "dad-pairing-notice-expired-before-transfer");
                 _ = pendingOutbound.Dequeue();
-            }
         }
     }
-
-    private void ReportPairingDiagnostic(string stage, string safeCode)
-        => diagnostic($"dad-pairing stage={stage} safeCode={NormalizeDiagnosticSafeCode(safeCode)}");
-
-    private void ReportPairingDiagnostic(
-        PendingOutboundContract pending,
-        string stage,
-        string safeCode)
-    {
-        var normalized = NormalizeDiagnosticSafeCode(safeCode);
-        if (string.Equals(pending.LastReportedStage, stage, StringComparison.Ordinal) &&
-            string.Equals(pending.LastReportedSafeCode, normalized, StringComparison.Ordinal))
-            return;
-        pending.LastReportedStage = stage;
-        pending.LastReportedSafeCode = normalized;
-        ReportPairingDiagnostic(stage, normalized);
-    }
-
-    private static string NormalizeDiagnosticSafeCode(string safeCode)
-        => DadAutoPartyConfiguration.NormalizeSafeCode(safeCode) is { Length: > 0 } normalized
-            ? normalized
-            : "dad-pairing-diagnostic-safe-code-invalid";
 
     private void UpdateSnapshot(string safeCode, bool? running = null)
     {
@@ -3779,6 +3855,19 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             Revision = policy.Revision,
             UpdatedAtUtc = policy.UpdatedAt.UtcDateTime,
         };
+
+    private static string FingerprintInvite(AuthenticatedContract<PairingInvite> invite)
+    {
+        var encoded = CanonicalCborCodec.EncodeSigned(invite);
+        try
+        {
+            return Convert.ToHexString(SHA256.HashData(encoded));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encoded);
+        }
+    }
 
     private void TrimAllianceOutbound()
     {
@@ -3872,11 +3961,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         public static DispatchResult Deny(string safeCode) => new(false, safeCode);
     }
 
-    private sealed record PendingOutboundContract(IAutoPartyContract Contract, DateTimeOffset QueuedAt)
-    {
-        public string LastReportedStage { get; set; } = string.Empty;
-        public string LastReportedSafeCode { get; set; } = string.Empty;
-    }
+    private sealed record PendingOutboundContract(IAutoPartyContract Contract, DateTimeOffset QueuedAt);
 
     private sealed record PendingAllianceOutbound(
         AllianceRecruitmentOperation Operation,

@@ -288,7 +288,7 @@ public sealed class Configuration : IPluginConfiguration
 
 internal static class DadAutoPartyConfigurationMigration
 {
-    internal const int CurrentVersion = 10;
+    internal const int CurrentVersion = 11;
 
     internal static bool Migrate(
         Configuration configuration,
@@ -307,6 +307,23 @@ internal static class DadAutoPartyConfigurationMigration
                 identityStore,
                 webhookStore);
             return changed;
+        }
+
+        if (configuration.Version == 10)
+        {
+            configuration.AutoParty ??= new DadAutoPartyConfiguration();
+            configuration.AutoParty.PendingPairings.Clear();
+            configuration.AutoParty.ClearPairingAttempt();
+            configuration.AutoParty.Normalize();
+            configuration.AutoParty.Pairings = configuration.AutoParty.Pairings
+                .Where(static pairing => pairing.IsActive || pairing.RevokedAtUtc != null)
+                .ToList();
+            configuration.Version = CurrentVersion;
+            _ = DadAutoPartyRegistrationRecovery.ReconcileAtStartup(
+                configuration.AutoParty,
+                identityStore,
+                webhookStore);
+            return true;
         }
 
         var autoParty = configuration.AutoParty;
@@ -350,5 +367,5 @@ internal static class DadAutoPartyConfigurationMigration
     }
 
     private static InvalidOperationException ResetFailure()
-        => new("AutoParty schema-10 protected-state reset could not complete.");
+        => new("AutoParty schema-11 protected-state reset could not complete.");
 }

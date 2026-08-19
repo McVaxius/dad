@@ -142,7 +142,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.3]" />
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.4]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
   </ItemGroup>
 </Project>

@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.3.nupkg'
-$expectedHash = '398dc012459d67507cdc652ae27ed290f4495722c09ed9814dea0841097b8510'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.4.nupkg'
+$expectedHash = '97387d1d26dc86ebd004651153a3224c191566b2d57e65fc2c528f51700b003e'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'
@@ -102,11 +102,13 @@ uploaded or promoted to a release.
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v9 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are
+- Configuration schema v11 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are
   session-only and reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON
-  files. Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-9
-  migration preserves valid endpoint keys, ordinary Plans/Schedules, Fleet Matrix, LAN, and unrelated DAD behavior while
-  clearing incompatible pre-central AutoParty trust and scheduling retryable DPAPI cleanup of the former bot token.
+  files. Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-10
+  migration preserves registration, protected identity/mailbox references, epochs, keys, active and revoked routes,
+  transcript hashes, grants, listings, bindings, Crew data, ordinary Plans/Schedules, Fleet Matrix, LAN, and unrelated DAD
+  behavior while removing only obsolete pending one-sided pairing and confirmation-code state. Schema 9 and older retain
+  the existing fail-closed AutoParty reset and former-token cleanup path.
 - Shared configuration changes are coalesced at the end of the framework update after a 250 ms quiet period, with a
   one-second maximum delay. Storage failures stay outside window drawing, retry on a bounded cadence, and surface a
   memory-only warning with an explicit **Retry save** action; disposal makes one final write attempt.
@@ -133,7 +135,9 @@ uploaded or promoted to a release.
   the window keeps pairing and directory requests disabled while relay acknowledgement is pending. Extra prose, partial
   or multiple tokens, legacy registration packages, replay, expiry, tamper, and wrong-recipient input are rejected.
 - A background REST adapter performs exact webhook-message fetch/edit, bounded `AP2` fragments, acknowledgements, retry,
-  expiry, epoch rotation, and signed presence. It polls distinct UPLINK and DOWNLINK slots every 10 seconds, consumes
+  expiry, epoch rotation, and signed presence. It polls distinct UPLINK and DOWNLINK slots every 10 seconds while idle and
+  every 2 seconds while transfer, partial assembly, delivery, or acknowledgement work exists. It batches only contiguous
+  fragments from one delivery below the 1,900-character ceiling, advances cursors only through gap-free receipts, consumes
   UPLINK acknowledgements before publishing, writes acknowledgements back to the slot matching their direction, and sends
   presence immediately at startup and every idle 10-second cycle. Network work stays off the Dalamud framework thread;
   framework updates consume bounded immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC
@@ -143,9 +147,14 @@ uploaded or promoted to a release.
   depends on channel visibility. Its AutoParty window reports registration/connection state, last mailbox exchange,
   queue/epoch health, and operation results. Discord administrators may retain access, but encrypted AP2 frames are not
   notifications or an audit trail.
-- Each DAD displays a copyable island ID and accepts another island ID for direct bilateral pairing. Pairing may cross
-  allowlisted guilds and activates only after both endpoints approve the same transcript, confirmation code, and
-  fingerprints. Registration and active pairing survive ordinary DAD and central-service restarts. Current reachability
+- Each DAD displays one read-only signed `APP1` pairing fingerprint with copy, regenerate, and exact cancellation controls.
+  Each owner pastes the peer fingerprint, chooses an independent private sharing scope, and submits as local approval.
+  The first reciprocal intent is silent to the peer; the inverse atomically establishes both routes. The fingerprint is
+  stable while waiting, expires after exactly ten minutes, and is replaced after success, expiry, or acknowledged
+  cancellation. Peer clipboard text is discarded after validated submission. Pairing may cross allowlisted guilds.
+  Normal pairing and directory labels use endpoint aliases or **Paired DAD**; copyable internal island IDs are available
+  only with `/dad debug`. Registration and active pairing survive ordinary DAD and central-service restarts. Current
+  reachability
   does not: each DAD starts offline until the central service accepts genuinely new authenticated activity, and more than
   60 seconds without accepted activity means offline. Active paired islands remain visible as online or offline; an
   offline island exposes no cached usable listings or route choices. Each endpoint independently shares one checked local

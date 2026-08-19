@@ -102,6 +102,176 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task App1AttemptRemainsStableSubmitsWithoutPeerClipboardPersistenceAndRegeneratesAfterCancellation()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+
+        var generated = await pump.EnsurePairingInviteAsync();
+        Assert.True(generated.Allowed, generated.SafeCode);
+        var firstToken = fixture.Configuration.PairingInviteToken;
+        var localSigned = PairingCopyPasteCodec.DecodeInvite(firstToken);
+        var localCanonical = CanonicalCborCodec.EncodeUnsigned(localSigned.Contract);
+        Assert.Equal(TimeSpan.FromMinutes(10), localSigned.Contract.InviteExpiresAt - localSigned.Contract.Header.IssuedAt);
+        Assert.True(BouncyCastlePrimitives.Ed25519Verify(
+            fixture.LocalSigningPublic,
+            localCanonical,
+            localSigned.AuthenticationTag.AsSpan()));
+        Assert.Equal("dad-pairing-invite-current", (await pump.EnsurePairingInviteAsync()).SafeCode);
+        Assert.Equal(firstToken, fixture.Configuration.PairingInviteToken);
+
+        var peerSigned = CreatePeerPairingInvite(fixture, now);
+        var peerToken = PairingCopyPasteCodec.EncodeInvite(peerSigned);
+        Assert.True(pump.TryValidatePeerPairingInvite(peerToken, out var peerInvite, out var peerSafeCode));
+        Assert.Equal("dad-pairing-peer-invite-valid", peerSafeCode);
+        Assert.NotNull(peerInvite);
+        Assert.False(pump.TryValidatePeerPairingInvite(firstToken, out _, out _));
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["character-local"],
+            Enabled = true,
+            Revision = 3,
+            UpdatedAtUtc = now.UtcDateTime,
+        };
+        var intentNonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
+        var manualIntent = new PairingIntent(
+            new ContractHeader(
+                AutoPartyProtocol.CurrentVersion,
+                Guid.NewGuid(),
+                "pairing-intent-validation",
+                new IslandId(PumpFixture.LocalIsland),
+                new IslandId(DadAutoPartyIdentityPackageService.RegistrationRecipient),
+                now,
+                now.AddMinutes(10),
+                1,
+                1,
+                1,
+                2,
+                ContractHeader.CreateNonce(intentNonce),
+                []),
+            localSigned.Contract.AttemptId,
+            localSigned.Contract.RegistrationId,
+            ImmutableArray.CreateRange(CanonicalCborCodec.EncodeSigned(localSigned)),
+            ImmutableArray.CreateRange(CanonicalCborCodec.EncodeSigned(peerSigned)),
+            new CharacterSharePolicy(
+                CharacterShareMode.CharacterList,
+                [new OpaqueCharacterId("character-local")],
+                true,
+                3,
+                now));
+        Assert.NotEmpty(CanonicalCborCodec.EncodeUnsigned(manualIntent));
+        CryptographicOperations.ZeroMemory(intentNonce);
+
+        var submitted = await pump.SubmitPairingAsync(peerToken, policy);
+        var replay = await pump.SubmitPairingAsync(peerToken, policy);
+        Assert.True(submitted.Allowed, submitted.SafeCode);
+        Assert.Equal("dad-pairing-intent-queued", submitted.SafeCode);
+        Assert.True(replay.Allowed, replay.SafeCode);
+        Assert.Equal("dad-pairing-intent-idempotent", replay.SafeCode);
+        Assert.True(fixture.Configuration.PairingAttemptSubmitted);
+        Assert.DoesNotContain(peerToken, JsonSerializer.Serialize(fixture.Configuration), StringComparison.Ordinal);
+
+        await pump.ProcessOnceAsync();
+        var intentEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingIntent>());
+        var intent = fixture.Open<PairingIntent>(intentEnvelope);
+        Assert.Equal(localSigned.Contract.AttemptId, intent.AttemptId);
+        Assert.Equal(peerSigned.Contract.AttemptId, CanonicalCborCodec.DecodeSigned<PairingInvite>(
+            intent.PeerInvite.AsMemory()).Contract.AttemptId);
+
+        var regeneration = await pump.EnsurePairingInviteAsync(regenerate: true);
+        Assert.True(regeneration.Allowed, regeneration.SafeCode);
+        Assert.Equal("dad-pairing-cancellation-queued", regeneration.SafeCode);
+        Assert.Equal(firstToken, fixture.Configuration.PairingInviteToken);
+        await pump.ProcessOnceAsync();
+        var cancellationEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingAttemptCancellation>());
+        var cancellation = fixture.Open<PairingAttemptCancellation>(cancellationEnvelope);
+        Assert.Equal(localSigned.Contract.AttemptId, cancellation.AttemptId);
+
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("pairing-cancellation-receipt", now),
+            Guid.NewGuid(),
+            cancellation.Header.MessageId,
+            true,
+            "pairing-attempt-cancelled")));
+        await pump.ProcessOnceAsync();
+        Assert.Equal("pairing-attempt-cancelled", pump.Snapshot.SafeCode);
+        Assert.Equal(string.Empty, fixture.Configuration.PairingAttemptId);
+        Assert.Equal(string.Empty, fixture.Configuration.PairingInviteToken);
+
+        Assert.True((await pump.EnsurePairingInviteAsync()).Allowed);
+        var secondToken = fixture.Configuration.PairingInviteToken;
+        Assert.NotEqual(firstToken, secondToken);
+        now = now.AddMinutes(11);
+        Assert.True((await pump.EnsurePairingInviteAsync()).Allowed);
+        Assert.NotEqual(secondToken, fixture.Configuration.PairingInviteToken);
+    }
+
+    [Fact]
+    public async Task PairingEstablishedInstallsPeerAliasAndPoliciesThenInvalidatesTheAttempt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        Assert.True((await pump.EnsurePairingInviteAsync()).Allowed);
+        var localSigned = PairingCopyPasteCodec.DecodeInvite(fixture.Configuration.PairingInviteToken);
+        var peerSigned = CreatePeerPairingInvite(fixture, now);
+        var localPolicy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+            Enabled = true,
+            Revision = 4,
+            UpdatedAtUtc = now.UtcDateTime,
+        };
+        Assert.True((await pump.SubmitPairingAsync(
+            PairingCopyPasteCodec.EncodeInvite(peerSigned),
+            localPolicy)).Allowed);
+        await pump.ProcessOnceAsync();
+        var intent = fixture.Open<PairingIntent>(Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingIntent>()));
+        var header = fixture.RelayHeader("pairing-established", now);
+        var peerPolicy = new CharacterSharePolicy(
+            CharacterShareMode.SpecificCharacter,
+            [new OpaqueCharacterId("character-peer")],
+            true,
+            5,
+            header.IssuedAt);
+        var established = new PairingEstablished(
+            header,
+            Guid.NewGuid(),
+            localSigned.Contract.AttemptId,
+            peerSigned.Contract.AttemptId,
+            peerSigned.Contract.OwnerId,
+            peerSigned.Contract.IslandId,
+            "Peer-endpoint",
+            peerSigned.Contract.PublicKeys,
+            peerSigned.Contract.EndpointFingerprint,
+            new string('a', 64),
+            intent.SharePolicy,
+            peerPolicy,
+            header.IssuedAt);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(established));
+
+        await pump.ProcessOnceAsync();
+
+        Assert.Equal("dad-pairing-active", pump.Snapshot.SafeCode);
+        var pairing = Assert.Single(fixture.Configuration.Pairings);
+        Assert.True(pairing.IsActive);
+        Assert.Equal(PumpFixture.PeerIsland, pairing.IslandId);
+        Assert.Equal("Peer-endpoint", pairing.PeerEndpointAlias);
+        Assert.Equal(localPolicy.Mode, pairing.LocalSharePolicy.Mode);
+        Assert.Equal(DadAutoPartyCharacterShareMode.SpecificCharacter, pairing.PeerSharePolicy.Mode);
+        Assert.Equal(["character-peer"], pairing.PeerSharePolicy.CharacterHandles);
+        Assert.Equal(string.Empty, fixture.Configuration.PairingAttemptId);
+        Assert.Equal(string.Empty, fixture.Configuration.PairingInviteToken);
+        Assert.True((await pump.EnsurePairingInviteAsync()).Allowed);
+        Assert.NotEqual(localSigned.Contract.AttemptId.ToString("D"), fixture.Configuration.PairingAttemptId);
+    }
+
+    [Fact]
     public async Task RegistrationActivatesAndAcknowledgesOnlyAuthenticatedReceipt()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.BootstrapImported);
@@ -276,66 +446,6 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(proposal.ActivityId, execution.Modules[0].ActivityId);
     }
 
-    [Fact]
-    public async Task UnrelayedPairingCannotAuthorizeDirectSessionTrafficUntilSemanticReceipt()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
-        var pending = Assert.Single(fixture.Configuration.Pairings);
-        fixture.Configuration.Pairings.Clear();
-        pending.LocalApproved = true;
-        pending.PeerApproved = true;
-        pending.LocalApprovalRelayAcceptedAtUtc = null;
-        pending.ConfirmedAtUtc = default;
-        fixture.Configuration.PendingPairings.Add(pending);
-        await using var pump = fixture.CreatePump();
-        pump.ConfigureLifecycleHandlers(
-            static _ => new(false, "unused", 1),
-            static (_, _, _) => ValueTask.FromResult(new DadAutoPartyPrivacyResult(false, false, "unused")));
-        var now = DateTimeOffset.UtcNow;
-        var grant = new CapabilityGrant(
-            fixture.PeerHeader("pending-peer-grant"),
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            new OwnerId(PumpFixture.PeerOwner),
-            new OwnerId(PumpFixture.LocalOwner),
-            new CapabilityScope(
-                new OpaqueCharacterId("opaque-remote"),
-                new JobId("19"),
-                new ActivityId("dad-duty-1"),
-                SessionPermission.All,
-                1),
-            now,
-            now.AddMinutes(4),
-            1,
-            1);
-        var delivery = fixture.SealPeer(grant);
-        fixture.Transport.Inbound.Enqueue(delivery);
-
-        await pump.ProcessOnceAsync();
-
-        Assert.DoesNotContain(fixture.Transport.Acknowledged, item => item.EnvelopeId == delivery.EnvelopeId);
-        Assert.Empty(fixture.Configuration.Grants);
-
-        var relayReceipt = new RelayReceipt(
-            fixture.RelayHeader("pairing-approval-direct-route"),
-            Guid.NewGuid(),
-            Guid.Parse(pending.LocalApprovalRelayMessageId),
-            true,
-            "dad-pairing-approval-accepted");
-        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(relayReceipt));
-        await pump.ProcessOnceAsync();
-        Assert.True(Assert.Single(fixture.Configuration.Pairings).IsActive);
-
-        var acceptedGrant = grant with
-        {
-            Header = fixture.PeerHeader("relayed-peer-grant"),
-            GrantId = Guid.NewGuid(),
-        };
-        var acceptedDelivery = fixture.SealPeer(acceptedGrant);
-        fixture.Transport.Inbound.Enqueue(acceptedDelivery);
-        await pump.ProcessOnceAsync();
-        Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == acceptedDelivery.EnvelopeId);
-    }
 
     [Fact]
     public async Task UnpairedDirectRouteRequiresMatchingUnexpiredCentralAttestation()
@@ -612,444 +722,6 @@ public sealed class DadAutoPartyRelayPumpTests
             1);
     }
 
-    [Fact]
-    public async Task PairingApprovalReconcilesSameMessageAfterRestartAndRetriesRejectedReceipt()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var pairing = fixture.PendingApprovedPeerPairing();
-        fixture.Configuration.PendingPairings.Add(pairing);
-        var expectedMessageId = Guid.Parse(pairing.LocalApprovalRelayMessageId);
-        var diagnostics = new List<string>();
-
-        await using (var firstPump = fixture.CreatePump(diagnostic: diagnostics.Add))
-            await firstPump.ProcessOnceAsync();
-        var first = Assert.Single(fixture.Transport.Sent, item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>());
-        Assert.Equal(expectedMessageId, first.EnvelopeId);
-        var firstApproval = fixture.Open<PairingApproval>(first);
-        Assert.Equal(CharacterShareMode.AllCharactersForPeer, firstApproval.SharePolicy.Mode);
-
-        await using var restartedPump = fixture.CreatePump(diagnostic: diagnostics.Add);
-        await restartedPump.ProcessOnceAsync();
-        var approvals = fixture.Transport.Sent.Where(item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>()).ToList();
-        Assert.Equal(2, approvals.Count);
-        Assert.All(approvals, item => Assert.Equal(expectedMessageId, item.EnvelopeId));
-        Assert.Contains(diagnostics, line =>
-            line.Contains("stage=approval-queued", StringComparison.Ordinal) &&
-            line.Contains("safeCode=dad-pairing-approval-queued", StringComparison.Ordinal));
-
-        var rejected = new RelayReceipt(
-            fixture.RelayHeader("pairing-approval-rejected"),
-            Guid.NewGuid(),
-            expectedMessageId,
-            false,
-            "dad-pairing-approval-rejected");
-        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(rejected));
-        await restartedPump.ProcessOnceAsync();
-
-        Assert.Empty(fixture.Configuration.Pairings);
-        Assert.Single(fixture.Configuration.PendingPairings);
-        approvals = fixture.Transport.Sent.Where(item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>()).ToList();
-        Assert.Equal(3, approvals.Count);
-        Assert.All(approvals, item => Assert.Equal(expectedMessageId, item.EnvelopeId));
-        Assert.Contains(diagnostics, line =>
-            line.Contains("stage=central-receipt-rejected", StringComparison.Ordinal) &&
-            line.Contains("safeCode=dad-pairing-approval-rejected", StringComparison.Ordinal));
-
-        var accepted = rejected with
-        {
-            Header = fixture.RelayHeader("pairing-approval-accepted"),
-            ReceiptId = Guid.NewGuid(),
-            Accepted = true,
-            SafeCode = "dad-pairing-approval-accepted",
-        };
-        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(accepted));
-        await restartedPump.ProcessOnceAsync();
-
-        Assert.Empty(fixture.Configuration.PendingPairings);
-        Assert.True(Assert.Single(fixture.Configuration.Pairings).IsActive);
-
-        Assert.Contains(diagnostics, line =>
-            line.Contains("stage=central-receipt-accepted", StringComparison.Ordinal) &&
-            line.Contains("safeCode=dad-pairing-approval-accepted", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task PairingApprovalReportsReceivedPeerApprovalWithoutProtectedMaterial()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var pairing = fixture.PendingApprovedPeerPairing();
-        pairing.PeerApproved = false;
-        fixture.Configuration.PendingPairings.Add(pairing);
-        var diagnostics = new List<string>();
-        await using var pump = fixture.CreatePump(diagnostic: diagnostics.Add);
-        var approval = new PairingApproval(
-            fixture.RelayHeader("pairing-peer-approval"),
-            Guid.Parse(pairing.PairingId),
-            new IslandId(PumpFixture.PeerIsland),
-            new IslandId(PumpFixture.LocalIsland),
-            pairing.TranscriptHash,
-            pairing.ConfirmationCodeHash,
-            pairing.PublicKeyFingerprint,
-            pairing.LocalFingerprint,
-            new CharacterSharePolicy(
-                CharacterShareMode.AllCharactersForPeer,
-                ImmutableArray<OpaqueCharacterId>.Empty,
-                true,
-                1,
-                new DateTimeOffset(DateTime.UtcNow)),
-            true);
-        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(approval));
-
-        await pump.ProcessOnceAsync();
-
-        Assert.True(pairing.PeerApproved);
-        Assert.Contains(diagnostics, line =>
-            line.Contains("stage=peer-approval-received", StringComparison.Ordinal) &&
-            line.Contains("safeCode=dad-pairing-peer-approved", StringComparison.Ordinal));
-        var reported = string.Join('\n', diagnostics);
-        Assert.DoesNotContain(pairing.ConfirmationCodeHash, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(pairing.PublicKeyFingerprint, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(pairing.LocalFingerprint, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(pairing.PairingId, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(PumpFixture.LocalOwner, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(PumpFixture.PeerOwner, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(PumpFixture.LocalIsland, reported, StringComparison.Ordinal);
-        Assert.DoesNotContain(PumpFixture.PeerIsland, reported, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task PairingNoticeNegativeReceiptCompletesAttemptWithoutRetransmission()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        await using var pump = fixture.CreatePump();
-        var initiated = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
-        Assert.True(initiated.Allowed, initiated.SafeCode);
-        var challenge = Assert.IsType<DadAutoPartyPairingChallenge>(pump.LastPairingChallenge);
-
-        await pump.ProcessOnceAsync();
-
-        var sentNoticeEnvelope = Assert.Single(fixture.Transport.Sent, item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>());
-        var sentNotice = fixture.Open<PairingNotice>(sentNoticeEnvelope);
-        Assert.Equal(challenge.ChallengeId, sentNotice.PairingId);
-        Assert.Equal(1, pump.Snapshot.AwaitingRelayReceiptCount);
-
-        var receipt = new RelayReceipt(
-            fixture.RelayHeader("pairing-notice-identity-mismatch"),
-            Guid.NewGuid(),
-            sentNotice.Header.MessageId,
-            false,
-            "pairing-notice-identity-mismatch");
-        var receiptEnvelope = fixture.SealRelay(receipt);
-        fixture.Transport.Inbound.Enqueue(receiptEnvelope);
-
-        await pump.ProcessOnceAsync();
-
-        Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == receiptEnvelope.EnvelopeId);
-        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
-        Assert.Null(pump.LastPairingChallenge);
-        var attempt = Assert.IsType<DadAutoPartyPairingAttemptResult>(pump.LastPairingAttemptResult);
-        Assert.Equal(challenge.ChallengeId, attempt.PairingId);
-        Assert.Equal(PumpFixture.PeerIsland, attempt.PeerIslandId);
-        Assert.Equal("pairing-notice-identity-mismatch", attempt.SafeCode);
-        Assert.Empty(fixture.Configuration.PendingPairings);
-        Assert.Empty(fixture.Configuration.Pairings);
-
-        for (var cycle = 0; cycle < 3; cycle++)
-            await pump.ProcessOnceAsync();
-
-        Assert.Single(fixture.Transport.Sent, item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>());
-        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
-        Assert.Equal("pairing-notice-identity-mismatch", pump.LastPairingAttemptResult?.SafeCode);
-    }
-
-    [Fact]
-    public async Task PairingNoticeUsesRegistrationDerivedEndpointKeyIds()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        await using var pump = fixture.CreatePump();
-
-        var initiated = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
-        Assert.True(initiated.Allowed, initiated.SafeCode);
-        await pump.ProcessOnceAsync();
-
-        var notice = fixture.Open<PairingNotice>(Assert.Single(fixture.Transport.Sent, item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>()));
-        var keyIdPrefix = DadAutoPartyConfiguration.NormalizeFingerprint(
-            fixture.Configuration.RegistrationFingerprint)[..16].ToLowerInvariant();
-
-        Assert.Equal($"ed25519:{keyIdPrefix}", notice.InitiatorPublicKeys.SigningKeyId);
-        Assert.Equal($"x25519:{keyIdPrefix}", notice.InitiatorPublicKeys.AgreementKeyId);
-        Assert.Equal(fixture.LocalSigningPublic, notice.InitiatorPublicKeys.Ed25519PublicKey.ToArray());
-        Assert.Equal(fixture.LocalAgreementPublic, notice.InitiatorPublicKeys.X25519PublicKey.ToArray());
-    }
-
-    [Fact]
-    public async Task PairingDiagnosticsDeduplicateSendRetriesAndReportExactReceiptWithoutProtectedMaterial()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var diagnostics = new List<string>();
-        await using var pump = fixture.CreatePump(diagnostic: diagnostics.Add);
-
-        var initiated = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
-        Assert.True(initiated.Allowed, initiated.SafeCode);
-        var challenge = Assert.IsType<DadAutoPartyPairingChallenge>(pump.LastPairingChallenge);
-
-        Assert.Equal(1, diagnostics.Count(IsDiagnostic("notice-queued", "dad-pairing-notice-queued")));
-
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            fixture.Transport.SendAcceptance.Enqueue(false);
-            fixture.Transport.SendSafeCodes.Enqueue(
-                attempt == 2 ? "dad-pairing-transport-blocked" : "dad-pairing-send-denied");
-        }
-        fixture.Transport.SendAcceptance.Enqueue(true);
-        fixture.Transport.SendSafeCodes.Enqueue("dad-webhook-outbound-queued");
-
-        for (var attempt = 0; attempt < 4; attempt++)
-            await pump.ProcessOnceAsync();
-
-        Assert.Equal(1, diagnostics.Count(IsDiagnostic("adapter-queue", "dad-pairing-send-denied")));
-        Assert.Equal(1, diagnostics.Count(IsDiagnostic("adapter-queue", "dad-pairing-transport-blocked")));
-        Assert.Equal(1, diagnostics.Count(IsDiagnostic("adapter-queue", "dad-webhook-outbound-queued")));
-
-        var sentNotice = fixture.Transport.Sent
-            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingNotice>())
-            .Last();
-        var receiptEnvelope = fixture.SealRelay(new RelayReceipt(
-            fixture.RelayHeader("pairing-notice-rejected"),
-            Guid.NewGuid(),
-            sentNotice.EnvelopeId,
-            false,
-            "dad-pairing-notice-rejected"));
-        fixture.Transport.Inbound.Enqueue(receiptEnvelope);
-        await pump.ProcessOnceAsync();
-
-        Assert.Equal(1, diagnostics.Count(IsDiagnostic(
-            "relay-receipt-rejected",
-            "dad-pairing-notice-rejected")));
-        Assert.DoesNotContain(
-            string.Join('\n', diagnostics),
-            challenge.ConfirmationCode,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            string.Join('\n', diagnostics),
-            fixture.Configuration.RegistrationFingerprint,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            string.Join('\n', diagnostics),
-            fixture.Configuration.RegisteredOwnerId,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            string.Join('\n', diagnostics),
-            fixture.Configuration.RegisteredIslandId,
-            StringComparison.Ordinal);
-
-        static Func<string, bool> IsDiagnostic(string stage, string safeCode)
-            => line => line.Contains($"stage={stage}", StringComparison.Ordinal) &&
-                       line.Contains($"safeCode={safeCode}", StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task PairingDiagnosticsReportInboundDecisionAndBothExpiryStages()
-    {
-        using var inboundFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var inboundDiagnostics = new List<string>();
-        await using (var inboundPump = inboundFixture.CreatePump(diagnostic: inboundDiagnostics.Add))
-        {
-            var acceptedNotice = InboundPairingNotice(inboundFixture);
-            var acceptedDelivery = inboundFixture.SealRelay(acceptedNotice);
-            inboundFixture.Transport.Inbound.Enqueue(acceptedDelivery);
-            await inboundPump.ProcessOnceAsync();
-
-            Assert.Equal(1, inboundDiagnostics.Count(IsDiagnostic(
-                "inbound-accepted",
-                "dad-pairing-notice-pending")));
-            Assert.Contains(inboundFixture.Transport.Acknowledged, item =>
-                item.EnvelopeId == acceptedDelivery.EnvelopeId &&
-                item.SafeCode == "dad-pairing-notice-pending");
-
-            Assert.Single(inboundFixture.Configuration.PendingPairings).LocalApproved = true;
-            var rejectedNotice = InboundPairingNotice(inboundFixture);
-            var rejectedDelivery = inboundFixture.SealRelay(rejectedNotice);
-            inboundFixture.Transport.Inbound.Enqueue(rejectedDelivery);
-            await inboundPump.ProcessOnceAsync();
-
-            Assert.Equal(1, inboundDiagnostics.Count(IsDiagnostic(
-                "inbound-denied",
-                "dad-pairing-notice-conflict")));
-        }
-
-        var beforeTransferNow = DateTimeOffset.UtcNow;
-        using var beforeTransferFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var beforeTransferDiagnostics = new List<string>();
-        await using (var beforeTransferPump = beforeTransferFixture.CreatePump(
-                         utcNow: () => beforeTransferNow,
-                         diagnostic: beforeTransferDiagnostics.Add))
-        {
-            var initiated = await beforeTransferPump.InitiatePairingAsync(PumpFixture.PeerIsland);
-            Assert.True(initiated.Allowed, initiated.SafeCode);
-            beforeTransferNow = beforeTransferNow.AddMinutes(11);
-            await beforeTransferPump.ProcessOnceAsync();
-            Assert.Equal(1, beforeTransferDiagnostics.Count(IsDiagnostic(
-                "expired-before-transfer",
-                "dad-pairing-notice-expired-before-transfer")));
-        }
-
-        var inFlightNow = DateTimeOffset.UtcNow;
-        using var inFlightFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var inFlightDiagnostics = new List<string>();
-        await using (var inFlightPump = inFlightFixture.CreatePump(
-                         utcNow: () => inFlightNow,
-                         diagnostic: inFlightDiagnostics.Add))
-        {
-            var initiated = await inFlightPump.InitiatePairingAsync(PumpFixture.PeerIsland);
-            Assert.True(initiated.Allowed, initiated.SafeCode);
-            await inFlightPump.ProcessOnceAsync();
-            inFlightNow = inFlightNow.AddMinutes(11);
-            await inFlightPump.ProcessOnceAsync();
-            Assert.Equal(1, inFlightDiagnostics.Count(IsDiagnostic(
-                "expired-in-flight",
-                "dad-pairing-notice-expired-in-flight")));
-        }
-
-        static Func<string, bool> IsDiagnostic(string stage, string safeCode)
-            => line => line.Contains($"stage={stage}", StringComparison.Ordinal) &&
-                       line.Contains($"safeCode={safeCode}", StringComparison.Ordinal);
-
-        static PairingNotice InboundPairingNotice(PumpFixture fixture)
-        {
-            var keyVersion = 3L;
-            var keys = new EndpointPublicKeys(
-                keyVersion,
-                "ed25519:peer",
-                ImmutableArray.CreateRange(fixture.PeerSigningPublic),
-                "x25519:peer",
-                ImmutableArray.CreateRange(fixture.PeerAgreementPublic));
-            var fingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
-                PumpFixture.PeerOwner,
-                PumpFixture.PeerIsland,
-                keyVersion,
-                fixture.PeerSigningPublic,
-                fixture.PeerAgreementPublic);
-            var header = fixture.RelayHeader("pairing-notice-inbound");
-            return new PairingNotice(
-                header,
-                Guid.NewGuid(),
-                new OwnerId(PumpFixture.PeerOwner),
-                new IslandId(PumpFixture.PeerIsland),
-                new IslandId(PumpFixture.LocalIsland),
-                "guild-peer",
-                keys,
-                fingerprint,
-                new string('C', 64),
-                new string('D', 64),
-                header.ExpiresAt);
-        }
-    }
-
-    [Fact]
-    public async Task PairingInitiationRetainsPeerOnlyInProcessAndBlocksRepeatedOrPendingAttempts()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        await using var pump = fixture.CreatePump();
-
-        var first = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
-        var firstChallenge = Assert.IsType<DadAutoPartyPairingChallenge>(pump.LastPairingChallenge);
-        var repeated = await pump.InitiatePairingAsync("island-33333333333333333333333333333333");
-
-        Assert.True(first.Allowed, first.SafeCode);
-        Assert.Equal(PumpFixture.PeerIsland, pump.LastPairingChallengePeerIslandId);
-        Assert.False(repeated.Allowed);
-        Assert.Equal("dad-pairing-attempt-pending", repeated.SafeCode);
-        Assert.Equal(firstChallenge.ChallengeId, pump.LastPairingChallenge?.ChallengeId);
-        Assert.DoesNotContain(PumpFixture.PeerIsland, JsonSerializer.Serialize(fixture.Configuration), StringComparison.Ordinal);
-
-        using var pendingFixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        pendingFixture.Configuration.PendingPairings.Add(pendingFixture.PendingApprovedPeerPairing());
-        await using var pendingPump = pendingFixture.CreatePump();
-
-        var blockedByPending = await pendingPump.InitiatePairingAsync(
-            "island-33333333333333333333333333333333");
-
-        Assert.False(blockedByPending.Allowed);
-        Assert.Equal("dad-pairing-attempt-pending", blockedByPending.SafeCode);
-        Assert.Null(pendingPump.LastPairingChallenge);
-    }
-
-    [Fact]
-    public async Task PairingInitiationReportsExactLocalValidationFailure()
-    {
-        using (var inactiveFixture = new PumpFixture(DadAutoPartyRegistrationState.Unregistered))
-        await using (var inactivePump = inactiveFixture.CreatePump())
-        {
-            var inactive = await inactivePump.InitiatePairingAsync(PumpFixture.PeerIsland);
-            Assert.False(inactive.Allowed);
-            Assert.Equal("dad-pairing-registration-not-active", inactive.SafeCode);
-        }
-
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        await using var pump = fixture.CreatePump();
-
-        var blank = await pump.InitiatePairingAsync("   ");
-        Assert.False(blank.Allowed);
-        Assert.Equal("dad-pairing-peer-blank", blank.SafeCode);
-
-        var self = await pump.InitiatePairingAsync(PumpFixture.LocalIsland);
-        Assert.False(self.Allowed);
-        Assert.Equal("dad-pairing-self-not-allowed", self.SafeCode);
-
-        var malformed = await pump.InitiatePairingAsync("island-peer");
-        Assert.False(malformed.Allowed);
-        Assert.Equal("dad-pairing-peer-invalid", malformed.SafeCode);
-
-        fixture.Configuration.RegisteredOwnerId = string.Empty;
-        var invalidContract = await pump.InitiatePairingAsync(PumpFixture.PeerIsland);
-        Assert.False(invalidContract.Allowed);
-        Assert.Equal("dad-pairing-contract-invalid", invalidContract.SafeCode);
-    }
-
-    [Fact]
-    public async Task RestartAmbiguityReceiptActivatesWithoutAwaitingEntryAndDuplicateIsIdempotent()
-    {
-        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var pairing = fixture.PendingApprovedPeerPairing();
-        fixture.Configuration.PendingPairings.Add(pairing);
-        var messageId = Guid.Parse(pairing.LocalApprovalRelayMessageId);
-        await using var pump = fixture.CreatePump();
-        var accepted = new RelayReceipt(
-            fixture.RelayHeader("pairing-approval-restart-accepted"),
-            Guid.NewGuid(),
-            messageId,
-            true,
-            "dad-pairing-approval-accepted");
-        var acceptedDelivery = fixture.SealRelay(accepted);
-        fixture.Transport.Inbound.Enqueue(acceptedDelivery);
-
-        await pump.ProcessOnceAsync();
-
-        Assert.Empty(fixture.Configuration.PendingPairings);
-        Assert.True(Assert.Single(fixture.Configuration.Pairings).IsActive);
-        Assert.DoesNotContain(fixture.Transport.Sent, item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairingApproval>());
-        Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == acceptedDelivery.EnvelopeId);
-
-        var duplicate = accepted with
-        {
-            Header = fixture.RelayHeader("pairing-approval-restart-duplicate"),
-            ReceiptId = Guid.NewGuid(),
-        };
-        var duplicateDelivery = fixture.SealRelay(duplicate);
-        fixture.Transport.Inbound.Enqueue(duplicateDelivery);
-        await pump.ProcessOnceAsync();
-
-        Assert.Single(fixture.Configuration.Pairings);
-        Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == duplicateDelivery.EnvelopeId);
-    }
 
     [Fact]
     public async Task PrivateListingsAreSealedForTheCentralRelay()
@@ -2529,6 +2201,66 @@ public sealed class DadAutoPartyRelayPumpTests
             Summary = "dad-alliance-succeeded",
         };
 
+    private static AuthenticatedContract<PairingInvite> CreatePeerPairingInvite(
+        PumpFixture fixture,
+        DateTimeOffset issuedAt)
+    {
+        var nonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
+        try
+        {
+            var header = new ContractHeader(
+                AutoPartyProtocol.CurrentVersion,
+                Guid.NewGuid(),
+                $"peer-pairing-invite-{Guid.NewGuid():N}",
+                new IslandId(PumpFixture.PeerIsland),
+                new IslandId(DadAutoPartyIdentityPackageService.RegistrationRecipient),
+                issuedAt,
+                issuedAt.AddMinutes(10),
+                1,
+                1,
+                3,
+                2,
+                ContractHeader.CreateNonce(nonce),
+                []);
+            var keys = new EndpointPublicKeys(
+                3,
+                "peer-signing-3",
+                ImmutableArray.CreateRange(fixture.PeerSigningPublic),
+                "peer-agreement-3",
+                ImmutableArray.CreateRange(fixture.PeerAgreementPublic));
+            var invite = new PairingInvite(
+                header,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                new OwnerId(PumpFixture.PeerOwner),
+                new IslandId(PumpFixture.PeerIsland),
+                "Peer-endpoint",
+                keys,
+                DadAutoPartyIdentityPackageService.BuildFingerprint(
+                    PumpFixture.PeerOwner,
+                    PumpFixture.PeerIsland,
+                    3,
+                    fixture.PeerSigningPublic,
+                    fixture.PeerAgreementPublic),
+                header.ExpiresAt);
+            var canonical = CanonicalCborCodec.EncodeUnsigned(invite);
+            try
+            {
+                return AuthenticatedContract<PairingInvite>.Create(
+                    invite,
+                    BouncyCastlePrimitives.Ed25519Sign(fixture.PeerSigningPrivate, canonical));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(canonical);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(nonce);
+        }
+    }
+
     private sealed class PumpFixture : IDisposable
     {
         public const string LocalOwner = "owner-local";
@@ -2632,19 +2364,20 @@ public sealed class DadAutoPartyRelayPumpTests
                 delay: static (_, _) => Task.CompletedTask,
                 diagnostic: diagnostic);
 
-        public ContractHeader RelayHeader(string purpose)
+        public ContractHeader RelayHeader(string purpose, DateTimeOffset? now = null)
         {
             var nonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
             try
             {
+                var observedAt = now ?? DateTimeOffset.UtcNow;
                 return new ContractHeader(
                     AutoPartyProtocol.CurrentVersion,
                     Guid.NewGuid(),
                     $"{purpose}-{Guid.NewGuid():N}",
                     new IslandId(DadAutoPartyIdentityPackageService.RegistrationRecipient),
                     new IslandId(LocalIsland),
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow.AddMinutes(5),
+                    observedAt,
+                    observedAt.AddMinutes(5),
                     1,
                     1,
                     2,
@@ -2760,13 +2493,6 @@ public sealed class DadAutoPartyRelayPumpTests
                 PublicKeyFingerprint = new string('B', 64),
                 LocalFingerprint = Configuration.RegistrationFingerprint,
                 TranscriptHash = new string('C', 64),
-                ConfirmationCodeHash = new string('D', 64),
-                LocalApproved = true,
-                PeerApproved = true,
-                LocalApprovalRelayMessageId = DadAutoPartyService.DerivePairingApprovalMessageId(
-                    pairingId,
-                    LocalIsland).ToString("D"),
-                LocalApprovalRelayAcceptedAtUtc = DateTime.UtcNow,
                 LocalSharePolicy = new DadAutoPartySharePolicy
                 {
                     Enabled = true,
@@ -2783,14 +2509,6 @@ public sealed class DadAutoPartyRelayPumpTests
                 AgreementPublicKey = Convert.ToBase64String(PeerAgreementPublic),
                 ConfirmedAtUtc = DateTime.UtcNow,
             };
-        }
-
-        public DadAutoPartyPairing PendingApprovedPeerPairing()
-        {
-            var pairing = ActivePeerPairing();
-            pairing.ConfirmedAtUtc = default;
-            pairing.LocalApprovalRelayAcceptedAtUtc = null;
-            return pairing;
         }
 
         private sealed class FixtureResolver(PumpFixture fixture) : IContractKeyResolver

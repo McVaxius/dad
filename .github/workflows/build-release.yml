@@ -31,8 +31,8 @@ jobs:
         shell: pwsh
         run: |
           $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
-          $package = Join-Path $packageDir "Dad.AutoParty.Protocol.0.2.0-preview.3.nupkg"
-          $expectedHash = "398dc012459d67507cdc652ae27ed290f4495722c09ed9814dea0841097b8510"
+          $package = Join-Path $packageDir "Dad.AutoParty.Protocol.0.2.0-preview.4.nupkg"
+          $expectedHash = "644ea1dabcd0c3b2b371f58c05051561ee3d94ec6b56b357aea33b2d7c55967d"
 
           if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
             throw "Vendored AutoParty package is missing: $package"

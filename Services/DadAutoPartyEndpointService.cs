@@ -116,10 +116,6 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         }
     }
 
-    public DadAutoPartyPairingChallenge? LastPairingChallenge => relayPump?.LastPairingChallenge;
-
-    internal string LastPairingChallengePeerIslandId => relayPump?.LastPairingChallengePeerIslandId ?? string.Empty;
-
     internal DadAutoPartyPairingAttemptResult? LastPairingAttemptResult => relayPump?.LastPairingAttemptResult;
 
     public DadAutoPartyPolicyDecision SetStandingSharePolicy(DadAutoPartySharePolicy sharePolicy)
@@ -193,66 +189,65 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             ValueTask.FromResult(Decision(false, "dad-relay-pump-not-attached"));
     }
 
-    public ValueTask<DadAutoPartyPolicyDecision> InitiatePairingAsync(
-        string peerIslandId,
+    public ValueTask<DadAutoPartyPolicyDecision> EnsurePairingInviteAsync(
+        bool regenerate = false,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        if (configuration.IsRegistrationActive &&
-            Volatile.Read(ref desiredAdapterGeneration) != Volatile.Read(ref readyAdapterGeneration))
-            return ValueTask.FromResult(Decision(false, "dad-pairing-mailbox-refreshing"));
-        if (configuration.IsRegistrationActive && Snapshot.State != DadAutoPartyEndpointConnectionState.Ready)
-            return ValueTask.FromResult(Decision(false, "dad-pairing-mailbox-not-ready"));
-        return relayPump?.InitiatePairingAsync(peerIslandId, cancellationToken) ??
+        var readiness = PairingReadiness();
+        return readiness is not null
+            ? ValueTask.FromResult(readiness)
+            : relayPump?.EnsurePairingInviteAsync(regenerate, cancellationToken) ??
+              ValueTask.FromResult(Decision(false, "dad-relay-pump-not-attached"));
+    }
+
+    public bool TryValidatePeerPairingInvite(
+        string token,
+        out PairingInvite? invite,
+        out string safeCode)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (relayPump == null)
+        {
+            invite = null;
+            safeCode = "dad-relay-pump-not-attached";
+            return false;
+        }
+        return relayPump.TryValidatePeerPairingInvite(token, out invite, out safeCode);
+    }
+
+    public ValueTask<DadAutoPartyPolicyDecision> SubmitPairingAsync(
+        string peerToken,
+        DadAutoPartySharePolicy sharePolicy,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        var readiness = PairingReadiness();
+        return readiness is not null
+            ? ValueTask.FromResult(readiness)
+            : relayPump?.SubmitPairingAsync(peerToken, sharePolicy, cancellationToken) ??
+              ValueTask.FromResult(Decision(false, "dad-relay-pump-not-attached"));
+    }
+
+    public ValueTask<DadAutoPartyPolicyDecision> CancelPairingAttemptAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        return relayPump?.CancelPairingAttemptAsync(cancellationToken) ??
             ValueTask.FromResult(Decision(false, "dad-relay-pump-not-attached"));
     }
 
-    public ValueTask<DadAutoPartyPolicyDecision> ApprovePairingAsync(
-        Guid pairingId,
-        string displayedPeerFingerprint,
-        string confirmationCode,
-        DadAutoPartySharePolicy localSharePolicy,
-        CancellationToken cancellationToken = default)
+    private DadAutoPartyPolicyDecision? PairingReadiness()
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(ApprovePairing(
-            pairingId,
-            displayedPeerFingerprint,
-            confirmationCode,
-            localSharePolicy));
-    }
-
-    internal DadAutoPartyPolicyDecision ApprovePairing(
-        Guid pairingId,
-        string displayedPeerFingerprint,
-        string confirmationCode,
-        DadAutoPartySharePolicy localSharePolicy)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        if (relayPump == null || autoPartyService == null)
-            return Decision(false, "dad-relay-pump-not-attached");
-
-        var local = autoPartyService.ApprovePairing(
-            pairingId,
-            displayedPeerFingerprint,
-            confirmationCode,
-            localSharePolicy);
-        if (!local.Allowed)
-            return local;
-        var pairingIdText = pairingId.ToString("D");
-        var pairing = configuration.Pairings
-            .Concat(configuration.PendingPairings)
-            .SingleOrDefault(item => string.Equals(item.PairingId, pairingIdText, StringComparison.Ordinal));
-        if (pairing == null)
-            return Decision(false, "dad-pairing-approval-state-missing");
-        if (pairing.LocalApprovalRelayAcceptedAtUtc != null)
-            return local;
-        var queued = relayPump.QueuePairingApproval(pairing, pairing.LocalSharePolicy, accepted: true);
-        if (queued.Allowed)
-            nextListingPublishUtc = DateTime.MinValue;
-        return queued;
+        if (configuration.IsRegistrationActive &&
+            Volatile.Read(ref desiredAdapterGeneration) != Volatile.Read(ref readyAdapterGeneration))
+            return Decision(false, "dad-pairing-mailbox-refreshing");
+        if (configuration.IsRegistrationActive && Snapshot.State != DadAutoPartyEndpointConnectionState.Ready)
+            return Decision(false, "dad-pairing-mailbox-not-ready");
+        return null;
     }
 
     public ValueTask<DadAutoPartyPolicyDecision> DeauthenticateAsync(

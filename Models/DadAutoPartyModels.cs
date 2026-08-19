@@ -59,8 +59,19 @@ public sealed class DadAutoPartyConfiguration
     public List<DadAutoPartyGrant> Grants { get; set; } = [];
     public List<DadAutoPartyListing> Listings { get; set; } = [];
     public List<DadAutoPartyRemoteBinding> RemoteBindings { get; set; } = [];
+    [JsonIgnore]
     public List<DadAutoPartyPairing> PendingPairings { get; set; } = [];
     public List<DadAutoPartyDeauthentication> Deauthentications { get; set; } = [];
+    public string PairingInviteToken { get; set; } = string.Empty;
+    public string PairingAttemptId { get; set; } = string.Empty;
+    public DateTime PairingAttemptExpiresAtUtc { get; set; }
+    public bool PairingAttemptSubmitted { get; set; }
+    public string PairingPeerAttemptId { get; set; } = string.Empty;
+    public string PairingPeerIslandId { get; set; } = string.Empty;
+    public string PairingPeerInviteFingerprint { get; set; } = string.Empty;
+    public DadAutoPartySharePolicy PairingAttemptSharePolicy { get; set; } = new();
+    public string PairingIntentMessageId { get; set; } = string.Empty;
+    public string PairingCancellationMessageId { get; set; } = string.Empty;
 
     [JsonIgnore]
     public DadAutoPartyRegistrationRecoveryState RegistrationRecoveryState { get; internal set; }
@@ -170,13 +181,7 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static binding => binding.FleetRowId, StringComparer.OrdinalIgnoreCase)
             .Take(256)
             .ToList();
-        PendingPairings = (PendingPairings ?? [])
-            .Where(static pairing => pairing != null)
-            .Select(static pairing => pairing!.Normalize())
-            .Where(static pairing => pairing.IsValid)
-            .DistinctBy(static pairing => pairing.IslandId, StringComparer.Ordinal)
-            .Take(16)
-            .ToList();
+        PendingPairings = [];
         Deauthentications = (Deauthentications ?? [])
             .Where(static item => item != null)
             .Select(static item => item!.Normalize())
@@ -185,6 +190,33 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static item => item.PeerIslandId, StringComparer.Ordinal)
             .Take(256)
             .ToList();
+        PairingInviteToken = (PairingInviteToken ?? string.Empty).Trim();
+        PairingAttemptId = Guid.TryParse(PairingAttemptId, out var pairingAttemptId)
+            ? pairingAttemptId.ToString("D")
+            : string.Empty;
+        PairingPeerAttemptId = Guid.TryParse(PairingPeerAttemptId, out var peerAttemptId)
+            ? peerAttemptId.ToString("D")
+            : string.Empty;
+        PairingPeerIslandId = NormalizeIdentifier(PairingPeerIslandId);
+        PairingPeerInviteFingerprint = NormalizeFingerprint(PairingPeerInviteFingerprint);
+        PairingAttemptSharePolicy = (PairingAttemptSharePolicy ?? new DadAutoPartySharePolicy()).Normalize();
+        PairingIntentMessageId = Guid.TryParse(PairingIntentMessageId, out var intentMessageId)
+            ? intentMessageId.ToString("D")
+            : string.Empty;
+        PairingCancellationMessageId = Guid.TryParse(
+            PairingCancellationMessageId,
+            out var cancellationMessageId)
+            ? cancellationMessageId.ToString("D")
+            : string.Empty;
+        var pairingAttemptValid = PairingInviteToken.StartsWith(
+                                      PairingCopyPasteCodec.Prefix,
+                                      StringComparison.Ordinal) &&
+                                  PairingInviteToken.Length <=
+                                      AutoPartyProtocol.MaximumPairingInviteCharacters &&
+                                  !string.IsNullOrWhiteSpace(PairingAttemptId) &&
+                                  PairingAttemptExpiresAtUtc != default;
+        if (!pairingAttemptValid)
+            ClearPairingAttempt();
         if (!HasImportedBootstrap && RegistrationState != DadAutoPartyRegistrationState.Unregistered)
             RegistrationState = DadAutoPartyRegistrationState.Unregistered;
         return this;
@@ -230,7 +262,31 @@ public sealed class DadAutoPartyConfiguration
             RemoteBindings = RemoteBindings.Select(static binding => binding.Clone()).ToList(),
             PendingPairings = PendingPairings.Select(static pairing => pairing.Clone()).ToList(),
             Deauthentications = Deauthentications.Select(static item => item.Clone()).ToList(),
+            PairingInviteToken = PairingInviteToken,
+            PairingAttemptId = PairingAttemptId,
+            PairingAttemptExpiresAtUtc = PairingAttemptExpiresAtUtc,
+            PairingAttemptSubmitted = PairingAttemptSubmitted,
+            PairingPeerAttemptId = PairingPeerAttemptId,
+            PairingPeerIslandId = PairingPeerIslandId,
+            PairingPeerInviteFingerprint = PairingPeerInviteFingerprint,
+            PairingAttemptSharePolicy = PairingAttemptSharePolicy.Clone(),
+            PairingIntentMessageId = PairingIntentMessageId,
+            PairingCancellationMessageId = PairingCancellationMessageId,
         };
+
+    public void ClearPairingAttempt()
+    {
+        PairingInviteToken = string.Empty;
+        PairingAttemptId = string.Empty;
+        PairingAttemptExpiresAtUtc = default;
+        PairingAttemptSubmitted = false;
+        PairingPeerAttemptId = string.Empty;
+        PairingPeerIslandId = string.Empty;
+        PairingPeerInviteFingerprint = string.Empty;
+        PairingAttemptSharePolicy = new DadAutoPartySharePolicy();
+        PairingIntentMessageId = string.Empty;
+        PairingCancellationMessageId = string.Empty;
+    }
 
     internal static string NormalizeIdentifier(string? value)
         => (value ?? string.Empty).Trim() is { Length: <= 128 } normalized
@@ -422,22 +478,13 @@ public sealed class DadAutoPartyPairing
     public string PublicKeyFingerprint { get; set; } = string.Empty;
     public string LocalFingerprint { get; set; } = string.Empty;
     public string TranscriptHash { get; set; } = string.Empty;
-    public string ConfirmationCodeHash { get; set; } = string.Empty;
-    public bool LocalApproved { get; set; }
-    public bool PeerApproved { get; set; }
-    public string LocalApprovalRelayMessageId { get; set; } = string.Empty;
-    public DateTime? LocalApprovalRelayAcceptedAtUtc { get; set; }
     public DadAutoPartySharePolicy LocalSharePolicy { get; set; } = new();
     public DadAutoPartySharePolicy PeerSharePolicy { get; set; } = new();
     public DateTime ExpiresAtUtc { get; set; }
     public long KeyGeneration { get; set; } = 1;
     public string SigningPublicKey { get; set; } = string.Empty;
     public string AgreementPublicKey { get; set; } = string.Empty;
-    public string SigningKeyFingerprint { get; set; } = string.Empty;
-    public string PairingRequestNonce { get; set; } = string.Empty;
-    public DateTime? PairingRequestExpiresAtUtc { get; set; }
-    public DateTime? OperatorFingerprintConfirmedAtUtc { get; set; }
-    public DadAutoPartyRole Role { get; set; }
+    public string PeerEndpointAlias { get; set; } = string.Empty;
     public DateTime ConfirmedAtUtc { get; set; }
     public DateTime? RevokedAtUtc { get; set; }
 
@@ -447,16 +494,13 @@ public sealed class DadAutoPartyPairing
         !string.IsNullOrWhiteSpace(PublicKeyFingerprint) &&
         !string.IsNullOrWhiteSpace(LocalFingerprint) &&
         !string.IsNullOrWhiteSpace(TranscriptHash) &&
-        !string.IsNullOrWhiteSpace(ConfirmationCodeHash) &&
         KeyGeneration >= 1 &&
         !string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey)) &&
         !string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(AgreementPublicKey)) &&
         ExpiresAtUtc != default;
 
     public bool IsActive =>
-        IsValid && LocalApproved && PeerApproved &&
-        Guid.TryParse(LocalApprovalRelayMessageId, out _) &&
-        LocalApprovalRelayAcceptedAtUtc != null && RevokedAtUtc == null &&
+        IsValid && RevokedAtUtc == null &&
         ConfirmedAtUtc != default;
 
     public DadAutoPartyPairing Normalize()
@@ -469,18 +513,11 @@ public sealed class DadAutoPartyPairing
         PublicKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(PublicKeyFingerprint);
         LocalFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(LocalFingerprint);
         TranscriptHash = DadAutoPartyConfiguration.NormalizeFingerprint(TranscriptHash);
-        ConfirmationCodeHash = DadAutoPartyConfiguration.NormalizeFingerprint(ConfirmationCodeHash);
-        LocalApprovalRelayMessageId = Guid.TryParse(LocalApprovalRelayMessageId, out var approvalMessageId)
-            ? approvalMessageId.ToString("D")
-            : string.Empty;
         LocalSharePolicy = (LocalSharePolicy ?? new DadAutoPartySharePolicy()).Normalize();
         PeerSharePolicy = (PeerSharePolicy ?? new DadAutoPartySharePolicy()).Normalize();
         SigningPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey);
         AgreementPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(AgreementPublicKey);
-        SigningKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(SigningKeyFingerprint);
-        PairingRequestNonce = Guid.TryParseExact(PairingRequestNonce, "N", out var requestNonce)
-            ? requestNonce.ToString("N")
-            : string.Empty;
+        PeerEndpointAlias = DadAutoPartyConfiguration.NormalizeAlias(PeerEndpointAlias);
         KeyGeneration = Math.Max(1, KeyGeneration);
         return this;
     }
@@ -496,22 +533,13 @@ public sealed class DadAutoPartyPairing
             PublicKeyFingerprint = PublicKeyFingerprint,
             LocalFingerprint = LocalFingerprint,
             TranscriptHash = TranscriptHash,
-            ConfirmationCodeHash = ConfirmationCodeHash,
-            LocalApproved = LocalApproved,
-            PeerApproved = PeerApproved,
-            LocalApprovalRelayMessageId = LocalApprovalRelayMessageId,
-            LocalApprovalRelayAcceptedAtUtc = LocalApprovalRelayAcceptedAtUtc,
             LocalSharePolicy = LocalSharePolicy.Clone(),
             PeerSharePolicy = PeerSharePolicy.Clone(),
             ExpiresAtUtc = ExpiresAtUtc,
             KeyGeneration = KeyGeneration,
             SigningPublicKey = SigningPublicKey,
             AgreementPublicKey = AgreementPublicKey,
-            SigningKeyFingerprint = SigningKeyFingerprint,
-            PairingRequestNonce = PairingRequestNonce,
-            PairingRequestExpiresAtUtc = PairingRequestExpiresAtUtc,
-            OperatorFingerprintConfirmedAtUtc = OperatorFingerprintConfirmedAtUtc,
-            Role = Role,
+            PeerEndpointAlias = PeerEndpointAlias,
             ConfirmedAtUtc = ConfirmedAtUtc,
             RevokedAtUtc = RevokedAtUtc,
         };
@@ -609,12 +637,6 @@ public sealed class DadAutoPartyDeauthentication
     };
 }
 
-public enum DadAutoPartyRole
-{
-    Client = 0,
-    Coordinator = 1,
-}
-
 public enum DadAutoPartyPairingHealth
 {
     Disabled = 0,
@@ -671,6 +693,7 @@ public sealed class DadAutoPartyListing
     public string ListingId { get; set; } = string.Empty;
     public string OwnerId { get; set; } = string.Empty;
     public string SharingIslandId { get; set; } = string.Empty;
+    public string SharingEndpointAlias { get; set; } = string.Empty;
     public DadAutoPartyCharacterShareMode EffectiveShareMode { get; set; } =
         DadAutoPartyCharacterShareMode.SpecificCharacter;
     public string EffectivePolicyHash { get; set; } = string.Empty;
@@ -706,6 +729,7 @@ public sealed class DadAutoPartyListing
         ListingId = Guid.TryParse(ListingId, out var id) ? id.ToString("D") : string.Empty;
         OwnerId = DadAutoPartyConfiguration.NormalizeIdentifier(OwnerId);
         SharingIslandId = DadAutoPartyConfiguration.NormalizeIdentifier(SharingIslandId);
+        SharingEndpointAlias = DadAutoPartyConfiguration.NormalizeAlias(SharingEndpointAlias);
         if (!Enum.IsDefined(EffectiveShareMode))
             EffectiveShareMode = DadAutoPartyCharacterShareMode.SpecificCharacter;
         EffectivePolicyHash = DadAutoPartyConfiguration.NormalizeIdentifier(EffectivePolicyHash);
@@ -725,6 +749,7 @@ public sealed class DadAutoPartyListing
             ListingId = ListingId,
             OwnerId = OwnerId,
             SharingIslandId = SharingIslandId,
+            SharingEndpointAlias = SharingEndpointAlias,
             EffectiveShareMode = EffectiveShareMode,
             EffectivePolicyHash = EffectivePolicyHash,
             OpaqueCharacterId = OpaqueCharacterId,
@@ -830,15 +855,6 @@ public sealed record DadAutoPartyIdentityOperationResult(
     bool Succeeded,
     string SafeCode,
     string OutputPath = "");
-
-public sealed record DadAutoPartyPairingChallenge(
-    Guid ChallengeId,
-    string OwnerId,
-    string IslandId,
-    string PublicKeyFingerprint,
-    long KeyGeneration,
-    string ConfirmationCode,
-    DateTime ExpiresAtUtc);
 
 public sealed record DadAutoPartyObservedPartyReceipt(
     int MemberCount,

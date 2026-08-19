@@ -196,7 +196,6 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         PublicKeyFingerprint = new string('A', 64),
         LocalFingerprint = new string('B', 64),
         TranscriptHash = new string('C', 64),
-        ConfirmationCodeHash = new string('D', 64),
         SigningPublicKey = Convert.ToBase64String(new byte[32]),
         AgreementPublicKey = Convert.ToBase64String(new byte[32]),
         KeyGeneration = 1,

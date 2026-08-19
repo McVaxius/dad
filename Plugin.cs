@@ -333,7 +333,8 @@ public sealed class Plugin : IDalamudPlugin
             inboundAdmission: proposal => autoPartyInboundAdmissionService.Admit(
                 proposal,
                 Configuration.AutoPartyFleet.Rows),
-            diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode));
+            diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode),
+            saveConfiguration: Configuration.Save);
         PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyEndpointService.GetLanPresence);
         PresenceService.ConfigureParticipantResolver(workerSessionId =>
             TransportService.CurrentTransport.KnownParticipants

@@ -31,6 +31,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private const int MaximumHttpAttempts = 3;
     private const int MaximumWebhookResponseBytes = 16 * 1024;
     internal static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan DefaultActivePollInterval = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly DadAutoPartyWebhookCredential credential;
     private readonly string routeId;
@@ -39,6 +40,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private readonly bool ownsHttpClient;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly TimeSpan pollInterval;
+    private readonly TimeSpan activePollInterval;
     private Action<string> diagnostic = static _ => { };
     private readonly FixedCourierKeyResolver keyResolver;
     private readonly ProductionContractAuthenticator authenticator;
@@ -119,9 +121,9 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         this.httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         this.ownsHttpClient = httpClient == null || ownsHttpClient;
         this.delay = delay ?? Task.Delay;
-        this.pollInterval = pollInterval is { } interval && interval > TimeSpan.Zero
-            ? interval
-            : DefaultPollInterval;
+        var customPollInterval = pollInterval is { } interval && interval > TimeSpan.Zero;
+        this.pollInterval = customPollInterval ? pollInterval!.Value : DefaultPollInterval;
+        activePollInterval = customPollInterval ? pollInterval!.Value : DefaultActivePollInterval;
         this.diagnostic = diagnostic ?? (static _ => { });
         snapshot = new(
             DadAutoPartyEndpointConnectionState.Connecting,
@@ -236,7 +238,6 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
 
     private async Task PumpAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(pollInterval);
         try
         {
             UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-ready", null);
@@ -249,7 +250,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 await PollDownlinkAsync(cancellationToken).ConfigureAwait(false);
                 QueueCompletedInboundDeliveries();
                 await PublishUplinkAsync(cancellationToken).ConfigureAwait(false);
-                await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false);
+                await delay(CurrentPollInterval(), cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -363,9 +364,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             {
                 if (fragment.ExpiresAt <= DateTimeOffset.UtcNow)
                     return false;
-                receipts.Add(new CourierFragmentReceipt(fragment.DeliveryId, fragment.FragmentNumber));
                 if (completedInboundIds.Contains(fragment.DeliveryId))
+                {
+                    receipts.Add(new CourierFragmentReceipt(fragment.DeliveryId, fragment.FragmentNumber));
                     continue;
+                }
                 if (!inboundDeliveries.TryGetValue(fragment.DeliveryId, out var state))
                 {
                     if (inboundDeliveries.Count >= MaximumTrackedDeliveries)
@@ -373,8 +376,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                     state = new InboundDeliveryState(page.Header, page.EpochId, page.PageNumber, page.PageGeneration);
                     inboundDeliveries.Add(fragment.DeliveryId, state);
                 }
+                if (fragment.FragmentNumber > state.NextExpectedFragmentNumber)
+                    return false;
                 if (!state.TryAdd(fragment, page))
                     return false;
+                receipts.Add(new CourierFragmentReceipt(fragment.DeliveryId, fragment.FragmentNumber));
             }
 
             if (receipts.Count > 0)
@@ -425,7 +431,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             {
                 if (acknowledgement.AcceptedMessageIds.Contains(activeOutbound.Delivery.EnvelopeId))
                 {
-                    if (IsPairingNotice(activeOutbound.Delivery))
+                    if (IsPairingTransfer(activeOutbound.Delivery))
                     {
                         ReportPairingDiagnostic(
                             activeOutbound,
@@ -440,11 +446,21 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 }
                 else
                 {
-                    var highestAccepted = acknowledgement.AcceptedFragments
-                        .Where(receipt => receipt.DeliveryId == activeOutbound.Delivery.EnvelopeId)
-                        .Select(static receipt => receipt.FragmentNumber)
-                        .DefaultIfEmpty(0)
-                        .Max();
+                    var highestAccepted = activeOutbound.NextFragmentIndex;
+                    var publishedEnd = Math.Min(
+                        activeOutbound.Fragments.Length,
+                        activeOutbound.NextFragmentIndex + activeOutbound.PublishedFragmentCount);
+                    for (var fragmentNumber = activeOutbound.NextFragmentIndex + 1;
+                         fragmentNumber <= publishedEnd;
+                         fragmentNumber++)
+                    {
+                        if (!acknowledgement.AcceptedFragments.Contains(
+                                new CourierFragmentReceipt(
+                                    activeOutbound.Delivery.EnvelopeId,
+                                    fragmentNumber)))
+                            break;
+                        highestAccepted = fragmentNumber;
+                    }
                     if (highestAccepted > activeOutbound.NextFragmentIndex)
                     {
                         activeOutbound.NextFragmentIndex = Math.Min(
@@ -452,14 +468,15 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                             activeOutbound.Fragments.Length);
                         activeOutbound.AwaitingAcknowledgement = false;
                         activeOutbound.PublishedContent = string.Empty;
-                        if (IsPairingNotice(activeOutbound.Delivery))
+                        activeOutbound.PublishedFragmentCount = 0;
+                        if (IsPairingTransfer(activeOutbound.Delivery))
                             ReportPairingDiagnostic(
                                 activeOutbound,
                                 $"fragment-acknowledged:{activeOutbound.NextFragmentIndex}/{activeOutbound.Fragments.Length}",
                                 "dad-webhook-uplink-fragment-acknowledged");
                         if (activeOutbound.NextFragmentIndex >= activeOutbound.Fragments.Length)
                         {
-                            if (IsPairingNotice(activeOutbound.Delivery))
+                            if (IsPairingTransfer(activeOutbound.Delivery))
                                 ReportPairingDiagnostic(
                                     activeOutbound,
                                     "courier-accepted",
@@ -608,7 +625,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                         delivery.PayloadType,
                         delivery.Ciphertext.AsSpan(),
                         delivery.ExpiresAt));
-                if (IsPairingNotice(delivery))
+                if (IsPairingTransfer(delivery))
                     ReportPairingDiagnostic(
                         activeOutbound,
                         "transfer-started",
@@ -641,21 +658,49 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             return;
         }
         if (activeOutbound.AwaitingAcknowledgement &&
-            DateTime.UtcNow - activeOutbound.LastPublishedAtUtc < pollInterval)
+            DateTime.UtcNow - activeOutbound.LastPublishedAtUtc < activePollInterval)
             return;
 
         if (!activeOutbound.AwaitingAcknowledgement)
         {
-            var fragment = activeOutbound.Fragments[activeOutbound.NextFragmentIndex];
             var epoch = UplinkEpochSnapshot;
-            var pageNumber = ((fragment.FragmentNumber - 1) % epoch.PageCount) + 1;
+            var firstFragment = activeOutbound.Fragments[activeOutbound.NextFragmentIndex];
+            var pageNumber = ((firstFragment.FragmentNumber - 1) % epoch.PageCount) + 1;
             activeOutbound.PageNumber = pageNumber;
             activeOutbound.PageGeneration = Interlocked.Increment(ref nextUplinkPageGeneration);
-            activeOutbound.PublishedContent = EncodePage(
-                epoch,
-                pageNumber,
-                activeOutbound.PageGeneration,
-                fragment);
+            var pageFragments = ImmutableArray.CreateBuilder<CourierPayloadFragment>();
+            for (var index = activeOutbound.NextFragmentIndex;
+                 index < activeOutbound.Fragments.Length &&
+                 pageFragments.Count < AutoPartyProtocol.MaximumCourierFragmentsPerPage;
+                 index++)
+            {
+                var candidate = activeOutbound.Fragments[index];
+                if (((candidate.FragmentNumber - 1) % epoch.PageCount) + 1 != pageNumber)
+                    break;
+                pageFragments.Add(candidate);
+                string candidateContent;
+                try
+                {
+                    candidateContent = EncodePage(
+                        epoch,
+                        pageNumber,
+                        activeOutbound.PageGeneration,
+                        pageFragments.ToImmutable());
+                }
+                catch (ProtocolException exception) when (
+                    exception.Code == ProtocolFailureCode.SemanticEnvelopeLimitExceeded &&
+                    string.Equals(exception.SafeCode, "courier-text-too-large", StringComparison.Ordinal))
+                {
+                    pageFragments.RemoveAt(pageFragments.Count - 1);
+                    break;
+                }
+                activeOutbound.PublishedContent = candidateContent;
+            }
+            if (pageFragments.Count == 0)
+                throw new ProtocolException(
+                    ProtocolFailureCode.DefensiveCeilingExceeded,
+                    "dad-uplink-page-too-large");
+            activeOutbound.PublishedFragmentCount = pageFragments.Count;
             activeOutbound.AwaitingAcknowledgement = true;
         }
 
@@ -669,7 +714,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         {
             activeOutbound.LastPublishedAtUtc = DateTime.UtcNow;
             RememberPublishedContent(CourierDirection.Uplink, reference, activeOutbound.PublishedContent);
-            if (IsPairingNotice(activeOutbound.Delivery))
+            if (IsPairingTransfer(activeOutbound.Delivery))
                 ReportPairingDiagnostic(
                     activeOutbound,
                     $"fragment-published:{activeOutbound.NextFragmentIndex + 1}/{activeOutbound.Fragments.Length}",
@@ -682,7 +727,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
         else
         {
-            if (IsPairingNotice(activeOutbound.Delivery))
+            if (IsPairingTransfer(activeOutbound.Delivery))
                 ReportPairingDiagnostic(
                     activeOutbound,
                     $"fragment-publish-failed:{activeOutbound.NextFragmentIndex + 1}/{activeOutbound.Fragments.Length}",
@@ -736,13 +781,16 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         CourierEpochDescriptor epoch,
         int pageNumber,
         long pageGeneration,
-        CourierPayloadFragment fragment)
+        ImmutableArray<CourierPayloadFragment> fragments)
     {
+        if (fragments.IsDefaultOrEmpty)
+            throw new ArgumentException("At least one fragment is required.", nameof(fragments));
+        var firstFragment = fragments[0];
         var header = CreateLocalHeader(
             $"courier-{epoch.EpochId:N}-{pageNumber}-{pageGeneration}",
             pageGeneration,
             epoch.EpochGeneration,
-            fragment.ExpiresAt);
+            firstFragment.ExpiresAt);
         var page = new CourierPage(
             header,
             epoch.EpochId,
@@ -750,9 +798,22 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             pageNumber,
             epoch.PageCount,
             pageGeneration,
-            ImmutableArray.Create(fragment));
+            fragments);
         return CourierTextCodec.EncodePage(authenticator.Sign(page));
     }
+
+    private TimeSpan CurrentPollInterval() => HasActiveCourierWork()
+        ? activePollInterval
+        : pollInterval;
+
+    private bool HasActiveCourierWork() =>
+        activeOutbound != null ||
+        Volatile.Read(ref pendingOutboundCount) > 0 ||
+        inboundDeliveries.Count > 0 ||
+        inboundAcknowledgementContexts.Count > 0 ||
+        pendingCourierAcknowledgements.Count > 0 ||
+        applicationAcknowledgements.Reader.Count > 0 ||
+        Volatile.Read(ref bufferedInboundCount) > 0;
 
     private string EncodeAcknowledgement(PendingCourierAcknowledgement pending)
     {
@@ -978,11 +1039,15 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             ? normalized
             : "dad-pairing-diagnostic-safe-code-invalid";
 
-    private static bool IsPairingNotice(OpaqueEnvelope delivery)
+    private static bool IsPairingTransfer(OpaqueEnvelope delivery)
         => string.Equals(
-            delivery.PayloadType,
-            ProtocolContractRegistry.GetTypeId<PairingNotice>(),
-            StringComparison.Ordinal);
+               delivery.PayloadType,
+               ProtocolContractRegistry.GetTypeId<PairingIntent>(),
+               StringComparison.Ordinal) ||
+           string.Equals(
+               delivery.PayloadType,
+               ProtocolContractRegistry.GetTypeId<PairingAttemptCancellation>(),
+               StringComparison.Ordinal);
 
     private async Task<WebhookMessage?> FetchKnownMessageAsync(
         string messageReference,
@@ -1191,6 +1256,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         public int NextFragmentIndex { get; set; }
         public int PageNumber { get; set; }
         public long PageGeneration { get; set; }
+        public int PublishedFragmentCount { get; set; }
         public bool AwaitingAcknowledgement { get; set; }
         public string PublishedContent { get; set; } = string.Empty;
         public DateTime LastPublishedAtUtc { get; set; } = DateTime.MinValue;
@@ -1211,6 +1277,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         public Dictionary<int, CourierPayloadFragment> Fragments { get; } = [];
         public CourierPayloadFragment? FirstFragment =>
             Fragments.TryGetValue(1, out var first) ? first : null;
+        public int NextExpectedFragmentNumber => Fragments.Count + 1;
         public bool IsComplete =>
             FirstFragment is { } first && Fragments.Count == first.FragmentCount;
 

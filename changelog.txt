@@ -1,5 +1,26 @@
 # dad — changelog
 
+## 2026-08-18 — Reciprocal APP1 pairing and courier repair (local-only, unpublished)
+- Replaced island-ID initiation, six-digit confirmation, and editable long-term fingerprint fields with one read-only
+  signed `APP1` fingerprint, explicit copy/regenerate/cancel controls, peer paste input, independent sharing scope, and
+  reciprocal submission. The first central intent creates no peer prompt; the inverse establishes both routes. Normal UI
+  uses endpoint aliases or **Paired DAD**, while `/dad debug` alone exposes copyable technical island IDs.
+- Advanced DAD configuration to schema 11 while preserving schema-10 registration, protected identity/mailbox references,
+  epochs, keys, active/revoked routes, transcript hashes, grants, listings, bindings, Crew data, and ordinary settings.
+  Migration drops only obsolete pending one-sided pairing/code state; schema 9 and older retain the existing fail-closed
+  reset. Raw peer clipboard text is discarded after validated submission.
+- Batched only contiguous fragments from one delivery into each legal `AP2` page, retained the 1,900-character and
+  256-item bounds, and advanced durable UPLINK/DOWNLINK cursors only through gap-free acknowledgements. Idle polling stays
+  10 seconds and active transfer, partial assembly, delivery, or acknowledgement work uses 2 seconds.
+- Vendored `Dad.AutoParty.Protocol 0.2.0-preview.4` through the existing local NuGet workflow with SHA-256
+  `97387d1d26dc86ebd004651153a3224c191566b2d57e65fc2c528f51700b003e`. Protocol envelope v3, LAN/public IPC behavior,
+  credentials, active routes, and public DAD version `0.5.0.9` remain unchanged.
+
+## 2026-08-18 — Pairing confirmation retry repair (local-only, unpublished)
+- Local pairing approval now requires both confirmation values and a valid sharing policy, keeps the entered fingerprint
+  and code after rejection with an inline mismatch prompt, and clears them only after approval is saved and queued. Opening
+  the window or receiving a different pending pairing resets stale confirmation state.
+
 ## 2026-08-17 — Durable authenticated mailbox epoch rotation (local-only, unpublished)
 - Authenticated UPLINK and DOWNLINK rotations are now exposed for persistence only after both descriptors are valid,
   retain the registered island and relay-key binding, share one generation, and are newer than durable configuration.

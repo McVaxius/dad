@@ -26,17 +26,144 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
-    public void NewConfigurationUsesSchemaTenWithInertAutoPartyDefaults()
+    public void NewConfigurationUsesSchemaElevenWithInertAutoPartyDefaults()
     {
         var configuration = new Configuration();
 
-        Assert.Equal(10, configuration.Version);
+        Assert.Equal(11, configuration.Version);
         AssertInert(configuration.AutoParty);
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("PairingEnabled"));
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("ExecutionEnabled"));
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("DiscordGuildId"));
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("PilotExchangeRoot"));
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("MeasuredPilot"));
+    }
+
+    [Fact]
+    public async Task SchemaTenToElevenPreservesRegistrationTrustRoutesPoliciesAndOrdinaryConfiguration()
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        var configuration = fixture.Configuration;
+        var autoParty = configuration.AutoParty;
+        var now = DateTime.UtcNow;
+        configuration.Version = 10;
+        configuration.PluginEnabled = true;
+        configuration.ServerListenPort = 5544;
+        configuration.PlannerGroups = [new DadPlannerGroup { DisplayName = "Preserved planner" }];
+        configuration.Schedules = [new DadScheduleDefinition { DisplayName = "Preserved schedule" }];
+        autoParty.StandingShareScope = DadAutoPartyCrewShareScope.AllCharacters;
+        autoParty.CrewIdentities =
+        [
+            new DadAutoPartyCrewIdentity
+            {
+                RosterIdentityKey = "roster-preserved",
+                OpaqueCharacterId = "character-preserved",
+            },
+        ];
+        autoParty.Grants =
+        [
+            new DadAutoPartyGrant
+            {
+                GrantId = Guid.NewGuid().ToString("D"),
+                ProposalId = Guid.NewGuid().ToString("D"),
+                OwnerId = "owner-preserved",
+                IslandId = "island-preserved",
+                OpaqueCharacterId = "character-preserved",
+                RequestedJobId = "job-paladin",
+                ActivityId = "activity-preserved",
+                Permissions = SessionPermission.Reserve,
+                IssuedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(5),
+                MaximumUses = 1,
+            },
+        ];
+        autoParty.Listings =
+        [
+            new DadAutoPartyListing
+            {
+                ListingId = Guid.NewGuid().ToString("D"),
+                OwnerId = "owner-preserved",
+                SharingIslandId = "island-preserved",
+                SharingEndpointAlias = "Preserved endpoint",
+                EffectiveShareMode = DadAutoPartyCharacterShareMode.CharacterList,
+                EffectivePolicyHash = "policy-preserved",
+                OpaqueCharacterId = "character-preserved",
+                DisplayLabel = "Preserved character",
+                AllowedJobIds = ["job-paladin"],
+                AllowedActivityIds = ["activity-preserved"],
+                ExpiresAtUtc = now.AddMinutes(5),
+            },
+        ];
+        autoParty.RemoteBindings =
+        [
+            new DadAutoPartyRemoteBinding
+            {
+                FleetRowId = "fleet-row-preserved",
+                OpaqueCharacterId = "character-preserved",
+                OwnerId = "owner-preserved",
+                IslandId = "island-preserved",
+                RequestedJobId = "job-paladin",
+                OwnsQueueAuthority = true,
+                OwnerConsentConfirmed = true,
+            },
+        ];
+        var revoked = Pairing("peer-revoked", now, active: false);
+        revoked.RevokedAtUtc = now;
+        autoParty.Pairings.Add(revoked);
+        autoParty.PairingInviteToken = "APP1.obsolete-schema-ten-state";
+        autoParty.PairingAttemptId = Guid.NewGuid().ToString("D");
+        autoParty.PairingAttemptExpiresAtUtc = now.AddMinutes(10);
+        autoParty.PairingAttemptSubmitted = true;
+        autoParty.PairingPeerAttemptId = Guid.NewGuid().ToString("D");
+        autoParty.PairingPeerIslandId = "island-obsolete-peer";
+        var preserved = autoParty.Clone();
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            configuration,
+            identityStore,
+            fixture.WebhookStore));
+
+        Assert.Equal(11, configuration.Version);
+        Assert.True(configuration.PluginEnabled);
+        Assert.Equal(5544, configuration.ServerListenPort);
+        Assert.Equal("Preserved planner", Assert.Single(configuration.PlannerGroups).DisplayName);
+        Assert.Equal("Preserved schedule", Assert.Single(configuration.Schedules).DisplayName);
+        Assert.Equal(DadAutoPartyRegistrationState.Active, autoParty.RegistrationState);
+        Assert.Equal(fixture.RegistrationId.ToString("D"), autoParty.RegistrationId);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.Active, autoParty.RegistrationRecoveryState);
+        Assert.Equal(preserved.RouteId, autoParty.RouteId);
+        Assert.Equal(preserved.EndpointIdentityReference, autoParty.EndpointIdentityReference);
+        Assert.Equal(preserved.WebhookCredentialReference, autoParty.WebhookCredentialReference);
+        Assert.Equal(preserved.UplinkEpochId, autoParty.UplinkEpochId);
+        Assert.Equal(preserved.DownlinkEpochId, autoParty.DownlinkEpochId);
+        Assert.Equal(preserved.MailboxEpochGeneration, autoParty.MailboxEpochGeneration);
+        Assert.Equal(preserved.RelayKeyGeneration, autoParty.RelayKeyGeneration);
+        Assert.Equal(preserved.RelaySigningPublicKey, autoParty.RelaySigningPublicKey);
+        Assert.Equal(preserved.RelayAgreementPublicKey, autoParty.RelayAgreementPublicKey);
+        Assert.Equal(preserved.SigningPublicKey, autoParty.SigningPublicKey);
+        Assert.Equal(preserved.EncryptionPublicKey, autoParty.EncryptionPublicKey);
+        Assert.Equal(preserved.EndpointKeyGeneration, autoParty.EndpointKeyGeneration);
+        Assert.Equal(2, autoParty.Pairings.Count);
+        Assert.Contains(autoParty.Pairings, pairing => pairing.IsActive);
+        Assert.Contains(autoParty.Pairings, pairing => pairing.RevokedAtUtc != null);
+        Assert.Equal(
+            preserved.Pairings.Select(static pairing => pairing.TranscriptHash).Order(),
+            autoParty.Pairings.Select(static pairing => pairing.TranscriptHash).Order());
+        var serializedPairings = JsonSerializer.Serialize(autoParty.Pairings);
+        Assert.DoesNotContain("ConfirmationCode", serializedPairings, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApprovalRelay", serializedPairings, StringComparison.Ordinal);
+        Assert.Empty(autoParty.PendingPairings);
+        Assert.Single(autoParty.CrewIdentities);
+        Assert.Single(autoParty.Grants);
+        Assert.Single(autoParty.Listings);
+        Assert.Single(autoParty.RemoteBindings);
+        Assert.True(autoParty.StandingSharePolicy.Enabled);
+        Assert.Equal(DadAutoPartyCrewShareScope.AllCharacters, autoParty.StandingShareScope);
+        Assert.Equal(string.Empty, autoParty.PairingInviteToken);
+        Assert.Equal(string.Empty, autoParty.PairingAttemptId);
+        Assert.False(autoParty.PairingAttemptSubmitted);
+        Assert.Equal(string.Empty, autoParty.PairingPeerIslandId);
     }
 
     [Fact]
@@ -54,7 +181,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             identityStore,
             webhookStore));
 
-        Assert.Equal(10, configuration.Version);
+        Assert.Equal(11, configuration.Version);
         Assert.True(configuration.PluginEnabled);
         Assert.Equal(5544, configuration.ServerListenPort);
         Assert.Equal("account-current", configuration.ClientAccountId);
@@ -97,7 +224,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 identityStore,
                 webhookStore));
 
-            Assert.Equal(10, configuration.Version);
+            Assert.Equal(11, configuration.Version);
             Assert.Empty(Directory.GetFiles(Path.Combine(root, "identity"), "*.dpapi"));
             Assert.Empty(Directory.GetFiles(Path.Combine(root, "mailbox"), "*.dpapi"));
         }
@@ -127,8 +254,8 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             Assert.True(DadAutoPartyConfigurationMigration.Migrate(missing, identityStore, webhookStore));
             Assert.True(DadAutoPartyConfigurationMigration.Migrate(malformed, identityStore, webhookStore));
 
-            Assert.Equal(10, missing.Version);
-            Assert.Equal(10, malformed.Version);
+            Assert.Equal(11, missing.Version);
+            Assert.Equal(11, malformed.Version);
             AssertInert(missing.AutoParty);
             AssertInert(malformed.AutoParty);
         }
@@ -166,7 +293,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 var exception = Assert.Throws<InvalidOperationException>(() =>
                     DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore));
                 Assert.Equal(
-                    "AutoParty schema-10 protected-state reset could not complete.",
+                    "AutoParty schema-11 protected-state reset could not complete.",
                     exception.Message);
                 Assert.Equal(9, configuration.Version);
                 Assert.Same(priorAutoParty, configuration.AutoParty);
@@ -176,7 +303,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 configuration,
                 identityStore,
                 webhookStore));
-            Assert.Equal(10, configuration.Version);
+            Assert.Equal(11, configuration.Version);
             Assert.False(File.Exists(webhookPath));
         }
         finally
@@ -187,7 +314,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
-    public void SchemaTenMigrationIsIdempotent()
+    public void SchemaElevenMigrationIsIdempotent()
     {
         var identityStore = new RecordingIdentityStore();
         var webhookStore = new RecordingWebhookStore();
@@ -388,7 +515,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         Assert.Equal($"route-{fixture.RegistrationId:N}", reloaded.AutoParty.RouteId);
         Assert.Equal(DadAutoPartyRegistrationRecoveryState.Active, reloaded.AutoParty.RegistrationRecoveryState);
         Assert.Single(reloaded.AutoParty.Pairings);
-        Assert.Single(reloaded.AutoParty.PendingPairings);
+        Assert.Empty(reloaded.AutoParty.PendingPairings);
         Assert.True(reloaded.AutoParty.StandingSharePolicy.Enabled);
         Assert.Equal(["character-one"], reloaded.AutoParty.StandingSharePolicy.CharacterHandles);
     }
@@ -510,7 +637,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             fixture.Configuration.AutoParty.RegistrationState);
         Assert.Equal(expiresAt, fixture.Configuration.AutoParty.BootstrapExpiresAtUtc);
         Assert.Single(fixture.Configuration.AutoParty.Pairings);
-        Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
+        Assert.Empty(fixture.Configuration.AutoParty.PendingPairings);
     }
 
     [Fact]
@@ -532,7 +659,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             fixture.Configuration.AutoParty.RegistrationRecoveryState);
         Assert.Equal(default, fixture.Configuration.AutoParty.BootstrapExpiresAtUtc);
         Assert.Single(fixture.Configuration.AutoParty.Pairings);
-        Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
+        Assert.Empty(fixture.Configuration.AutoParty.PendingPairings);
         Assert.True(fixture.Configuration.AutoParty.StandingSharePolicy.Enabled);
     }
 
@@ -553,7 +680,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         Assert.Equal(fixture.RegistrationId.ToString("D"), fixture.Configuration.AutoParty.RegistrationId);
         Assert.Equal(7, fixture.Configuration.AutoParty.DirectoryGeneration);
         Assert.Single(fixture.Configuration.AutoParty.Pairings);
-        Assert.Single(fixture.Configuration.AutoParty.PendingPairings);
+        Assert.Empty(fixture.Configuration.AutoParty.PendingPairings);
     }
 
     [Fact]
@@ -587,7 +714,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             DadAutoPartyRegistrationRecoveryState.RecoveryAvailable,
             missingMailbox.Configuration.AutoParty.RegistrationRecoveryState);
         Assert.Single(missingMailbox.Configuration.AutoParty.Pairings);
-        Assert.Single(missingMailbox.Configuration.AutoParty.PendingPairings);
+        Assert.Empty(missingMailbox.Configuration.AutoParty.PendingPairings);
     }
 
     [Fact]
@@ -858,11 +985,6 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         PublicKeyFingerprint = new string('1', 64),
         LocalFingerprint = new string('2', 64),
         TranscriptHash = new string('3', 64),
-        ConfirmationCodeHash = new string('4', 64),
-        LocalApproved = active,
-        PeerApproved = active,
-        LocalApprovalRelayMessageId = active ? Guid.NewGuid().ToString("D") : string.Empty,
-        LocalApprovalRelayAcceptedAtUtc = active ? now : null,
         LocalSharePolicy = new DadAutoPartySharePolicy
         {
             Mode = DadAutoPartyCharacterShareMode.CharacterList,
