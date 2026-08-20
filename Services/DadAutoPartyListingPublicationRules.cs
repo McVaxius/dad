@@ -7,7 +7,10 @@ namespace dad.Services;
 
 public sealed record DadAutoPartyListingPublication(
     DadAutoPartySharePolicy StandingPolicy,
-    IReadOnlyList<DadAutoPartyListing> Listings);
+    IReadOnlyList<DadAutoPartyListing> Listings)
+{
+    internal IReadOnlyList<DadAutoPartyInboundRoute> InboundRoutes { get; init; } = [];
+}
 
 internal static class DadAutoPartyListingPublicationRules
 {
@@ -23,14 +26,39 @@ internal static class DadAutoPartyListingPublicationRules
         utcNow = DateTime.SpecifyKind(utcNow, DateTimeKind.Utc);
         var savedPolicy = ResolveStandingPolicy(autoParty);
         var activities = BuildPermittedActivities(plans).ToList();
-        var listings = (crew ?? [])
+        var publishable = (crew ?? [])
             .Where(static candidate => candidate is { Available: true } &&
+                                       candidate.InboundRoute != null &&
                                        candidate.PermittedCombatJobIds.Count > 0)
-            .Select(candidate => BuildListing(autoParty, savedPolicy, activities, candidate, utcNow))
+            .Where(candidate => IsAuthorizedByAnyLocalPolicy(
+                autoParty,
+                savedPolicy,
+                candidate.Identity.OpaqueCharacterId))
             .Take(256)
             .ToList();
-        return new(ResolveWireStandingPolicy(savedPolicy, listings), listings);
+        var listings = publishable
+            .Select(candidate => BuildListing(autoParty, savedPolicy, activities, candidate, utcNow))
+            .ToList();
+        return new(ResolveWireStandingPolicy(savedPolicy, listings), listings)
+        {
+            InboundRoutes = publishable.Select(static candidate => candidate.InboundRoute!).ToList(),
+        };
     }
+
+    private static bool IsAuthorizedByAnyLocalPolicy(
+        DadAutoPartyConfiguration configuration,
+        DadAutoPartySharePolicy standingPolicy,
+        string opaqueCharacterId)
+        => DadAutoPartyShareRules.Allows(
+               standingPolicy,
+               opaqueCharacterId,
+               paired: false,
+               sameHomeGuild: true) ||
+           configuration.Pairings.Any(pairing => pairing.IsActive && DadAutoPartyShareRules.Allows(
+               pairing.LocalSharePolicy,
+               opaqueCharacterId,
+               paired: true,
+               sameHomeGuild: false));
 
     private static DadAutoPartySharePolicy ResolveWireStandingPolicy(
         DadAutoPartySharePolicy savedPolicy,

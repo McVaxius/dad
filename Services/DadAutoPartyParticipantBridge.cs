@@ -133,6 +133,7 @@ internal sealed class DadAutoPartyParticipantBridge
     private readonly Dictionary<string, long> revokedIslands = new(StringComparer.Ordinal);
     private readonly LinkedList<Guid> pendingCommandOrder = [];
     private readonly Dictionary<Guid, PendingCommand> pendingCommands = [];
+    private Func<IReadOnlyList<DadFrozenRunSlot>, DateTimeOffset, string?>? directoryAuthorityGate;
 
     public DadAutoPartyParticipantBridge(
         DadAutoPartyConfiguration? configuration,
@@ -144,6 +145,10 @@ internal sealed class DadAutoPartyParticipantBridge
             (() => configuration?.RemoteBindings ?? []);
         this.currentLocalCrewProvider = currentLocalCrewProvider ?? (() => []);
     }
+
+    public void ConfigureDirectoryAuthorityGate(
+        Func<IReadOnlyList<DadFrozenRunSlot>, DateTimeOffset, string?> gate)
+        => directoryAuthorityGate = gate ?? throw new ArgumentNullException(nameof(gate));
 
     public bool TryBindRun(
         DadRunPlan plan,
@@ -162,6 +167,10 @@ internal sealed class DadAutoPartyParticipantBridge
 
         if (configuration is not { Enabled: true, IsRegistrationActive: true })
             return Fail("AutoParty registration is not active for registered-island participants.", out blocker);
+
+        var authorityBlocker = directoryAuthorityGate?.Invoke(remoteSlots, now);
+        if (!string.IsNullOrWhiteSpace(authorityBlocker))
+            return Fail(authorityBlocker, out blocker);
         if (!Guid.TryParse(plan.Request.Orchestration.AutoPartyProposalId, out var proposalId) ||
             proposalId == Guid.Empty)
         {

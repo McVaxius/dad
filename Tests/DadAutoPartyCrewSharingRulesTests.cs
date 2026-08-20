@@ -122,6 +122,51 @@ public sealed class DadAutoPartyCrewSharingRulesTests
     }
 
     [Fact]
+    public void OfflineXadbCrewPublishesOnlyThroughOneFreshOwnershipProvenDadRoute()
+    {
+        var now = new DateTimeOffset(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
+        var offline = Crew("account-a", "Alice@World", DadCharacterSource.XadbOnly, 19);
+        offline.ContentId = 100;
+        offline.XadbReady = true;
+        var reconciliation = DadAutoPartyCrewSharingRules.Reconcile(
+            new DadAutoPartyConfiguration(),
+            new DadAutoPartyFleetConfiguration(),
+            [offline],
+            now.UtcDateTime);
+        var row = new DadRosterCharacter
+        {
+            AccountKey = new DadAccountKey("account-a"),
+            CharacterKey = new DadCharacterKey("Alice@World"),
+            ContentId = 100,
+            CharacterName = "Alice",
+            WorldId = 1,
+            WorldName = "World",
+            XadbReady = true,
+            Visibility = DadRosterVisibility.Active,
+        };
+        var owner = Owner("worker-a", "account-a", "Alice@World", now.UtcDateTime, isLocal: true);
+
+        var unique = DadAutoPartyCrewSharingRules.AttachInboundRoutes(
+            reconciliation.Candidates,
+            [row],
+            owner,
+            [],
+            now);
+
+        Assert.True(Assert.Single(unique).Available);
+        Assert.NotNull(unique[0].InboundRoute);
+
+        var ambiguous = DadAutoPartyCrewSharingRules.AttachInboundRoutes(
+            reconciliation.Candidates,
+            [row],
+            owner,
+            [Owner("worker-b", "account-a", "Alice@World", now.UtcDateTime, isLocal: true)],
+            now);
+        Assert.False(Assert.Single(ambiguous).Available);
+        Assert.Null(ambiguous[0].InboundRoute);
+    }
+
+    [Fact]
     public void ClearingOneCrewSlotBindingLeavesOtherBindingsIntact()
     {
         var configuration = new DadAutoPartyConfiguration();
@@ -177,6 +222,31 @@ public sealed class DadAutoPartyCrewSharingRulesTests
             JobLevels = new Dictionary<uint, int> { [currentJob] = 100 },
             Readiness = DadReadinessState.Ready,
             Freshness = DadSnapshotFreshness.Live,
+        };
+
+    private static DadParticipantSnapshot Owner(
+        string worker,
+        string account,
+        string character,
+        DateTime heartbeat,
+        bool isLocal = false)
+        => new()
+        {
+            ClientInstanceId = worker + "-client",
+            WorkerSessionId = new DadWorkerSessionId(worker),
+            IsLocalClient = isLocal,
+            IsAvailable = true,
+            WorldReadyStable = true,
+            AutoRetainerAvailable = true,
+            ManagedAccountKey = new DadAccountKey(account),
+            ActiveCharacterKey = new DadCharacterKey(character),
+            AvailableCharacterKeys = [new DadCharacterKey(character)],
+            LastHeartbeatUtc = heartbeat,
+            Character = new DadAcquiredCharacter
+            {
+                CharacterKey = character,
+                ContentId = 100,
+            },
         };
 
     private static DadAutoPartyPairing ActivePairing() => new()

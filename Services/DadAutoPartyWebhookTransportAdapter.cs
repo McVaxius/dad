@@ -69,6 +69,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private readonly ConcurrentDictionary<Guid, InboundAcknowledgementContext> inboundAcknowledgementContexts = [];
     private readonly HashSet<Guid> completedInboundIds = [];
     private readonly Queue<Guid> completedInboundOrder = [];
+    private readonly Dictionary<Guid, string> completedInboundSafeCodes = [];
     private readonly Dictionary<int, long> observedDownlinkPageGenerations = [];
     private readonly Dictionary<string, string> observedUplinkContents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> observedDownlinkContents = new(StringComparer.Ordinal);
@@ -297,6 +298,8 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         {
             if (!inboundAcknowledgementContexts.TryRemove(acknowledgement.EnvelopeId, out var context))
                 continue;
+            if (completedInboundIds.Contains(acknowledgement.EnvelopeId))
+                completedInboundSafeCodes[acknowledgement.EnvelopeId] = acknowledgement.SafeCode;
             pendingCourierAcknowledgements.Enqueue(new(
                 context.EpochId,
                 CourierDirection.Downlink,
@@ -360,6 +363,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             observedDownlinkPageGenerations[page.PageNumber] = page.PageGeneration;
 
             var receipts = ImmutableArray.CreateBuilder<CourierFragmentReceipt>(page.Fragments.Length);
+            var replayedApplicationAcknowledgements = new HashSet<Guid>();
             foreach (var fragment in page.Fragments)
             {
                 if (fragment.ExpiresAt <= DateTimeOffset.UtcNow)
@@ -367,6 +371,18 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 if (completedInboundIds.Contains(fragment.DeliveryId))
                 {
                     receipts.Add(new CourierFragmentReceipt(fragment.DeliveryId, fragment.FragmentNumber));
+                    if (replayedApplicationAcknowledgements.Add(fragment.DeliveryId) &&
+                        completedInboundSafeCodes.TryGetValue(fragment.DeliveryId, out var safeCode))
+                    {
+                        pendingCourierAcknowledgements.Enqueue(new(
+                            page.EpochId,
+                            CourierDirection.Downlink,
+                            page.PageNumber,
+                            page.PageGeneration,
+                            ImmutableArray<CourierFragmentReceipt>.Empty,
+                            ImmutableArray.Create(fragment.DeliveryId),
+                            safeCode));
+                    }
                     continue;
                 }
                 if (!inboundDeliveries.TryGetValue(fragment.DeliveryId, out var state))
@@ -982,7 +998,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             return;
         completedInboundOrder.Enqueue(deliveryId);
         while (completedInboundOrder.Count > MaximumTrackedDeliveries)
-            completedInboundIds.Remove(completedInboundOrder.Dequeue());
+        {
+            var expired = completedInboundOrder.Dequeue();
+            completedInboundIds.Remove(expired);
+            completedInboundSafeCodes.Remove(expired);
+        }
     }
 
     private void CompleteActiveOutbound()
@@ -1225,6 +1245,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         inboundDeliveries.Clear();
         inboundAcknowledgementContexts.Clear();
         completedInboundIds.Clear();
+        completedInboundSafeCodes.Clear();
         Volatile.Write(ref transferSnapshot, DadAutoPartyAdapterTransferSnapshot.Idle);
         UpdateSnapshot(DadAutoPartyEndpointConnectionState.Disabled, "dad-webhook-disposed", null);
     }

@@ -885,6 +885,18 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 CourierTextCodec.DecodeAcknowledgement(content).Contract),
             item => item.AcceptedMessageIds.Contains(downlink.EnvelopeId));
         Assert.Equal(CourierDirection.Downlink, downlinkAcknowledgement.Direction);
+
+        const long replayGeneration = 100;
+        handler.SetContent("10002", crypto.ReplayDownlinkPage(downlinkPages[0], replayGeneration));
+        for (var attempt = 0; attempt < 200 && handler.DownlinkAcknowledgements.Count(content =>
+                 CourierTextCodec.DecodeAcknowledgement(content).Contract.AcceptedMessageIds.Contains(
+                     downlink.EnvelopeId)) < 2; attempt++)
+            await Task.Delay(10);
+        var replayedSemantic = handler.DownlinkAcknowledgements
+            .Select(content => CourierTextCodec.DecodeAcknowledgement(content).Contract)
+            .Last(item => item.AcceptedMessageIds.Contains(downlink.EnvelopeId));
+        Assert.Equal(replayGeneration, replayedSemantic.PageGeneration);
+        Assert.Equal("dad-downlink-consumed", replayedSemantic.SafeCode);
     }
 
     [Fact]
@@ -2185,6 +2197,22 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 first += pageFragments.Count;
             }
             return (envelope, pages.ToImmutable());
+        }
+
+        public string ReplayDownlinkPage(string content, long pageGeneration)
+        {
+            var original = CourierTextCodec.DecodePage(content).Contract;
+            var header = CreateHeader(
+                $"downlink-replay-{original.Fragments[0].DeliveryId:N}-{pageGeneration}",
+                pageGeneration,
+                original.Header.ExpiresAt);
+            var replay = original with
+            {
+                Header = header,
+                PageGeneration = pageGeneration,
+            };
+            var authenticator = new ProductionContractAuthenticator(keyResolver);
+            return CourierTextCodec.EncodePage(authenticator.Sign(replay));
         }
 
         public string CreateUplinkAcknowledgement(

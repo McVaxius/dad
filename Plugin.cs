@@ -150,6 +150,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRuntimeReadinessTracker localRuntimeReadinessTracker = new();
     private readonly DadAutoPartyRuntimeBindingStore autoPartyRuntimeBindingStore = new();
+    private readonly DadAutoPartyInboundAdmissionService autoPartyInboundAdmissionService;
     private readonly DadAutoPartyRelayPump autoPartyRelayPump;
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
     private bool standaloneCrewDisbandActive;
@@ -272,30 +273,16 @@ public sealed class Plugin : IDalamudPlugin
             safeCode => Log.Warning("[dad] AutoParty endpoint transition {SafeCode}.", safeCode),
             identityStore: autoPartyIdentityStore,
             listingPublicationProvider: BuildAutoPartyListingPublication);
-        var autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
+        autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
             Configuration.AutoParty.RegisteredOwnerId,
             Configuration.AutoParty.RegisteredIslandId,
             PresenceService.WorkerSessionId,
-            row =>
-            {
-                var candidates = new List<DadParticipantSnapshot>();
-                var local = PresenceService.BuildLiveSafetySnapshot();
-                if (string.Equals(local.ManagedAccountKey.Value, row.AccountKey, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(local.ActiveCharacterKey.Value, row.CharacterKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    candidates.Add(local);
-                }
-                candidates.AddRange(TransportService.CurrentTransport.KnownParticipants.Where(participant =>
-                    string.Equals(
-                        participant.ManagedAccountKey.Value,
-                        row.AccountKey,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(
-                        participant.ActiveCharacterKey.Value,
-                        row.CharacterKey,
-                        StringComparison.OrdinalIgnoreCase)));
-                return candidates;
-            },
+            (route, request) => string.Equals(
+                    route.WorkerSessionId.Value,
+                    PresenceService.WorkerSessionId.Value,
+                    StringComparison.OrdinalIgnoreCase)
+                ? WakeTakeoverService.Handle(request)
+                : TransportService.SendWakeTakeoverRequest(route.OwnerSnapshot, request),
             (participant, request) => string.Equals(
                     participant.WorkerSessionId.Value,
                     PresenceService.WorkerSessionId.Value,
@@ -330,11 +317,12 @@ public sealed class Plugin : IDalamudPlugin
             inboundProposalStore: new DadAutoPartyFileInboundProposalStore(
                 Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "pending")),
             inboundListingPublicationProvider: BuildAutoPartyListingPublication,
-            inboundAdmission: proposal => autoPartyInboundAdmissionService.Admit(
-                proposal,
-                Configuration.AutoPartyFleet.Rows),
+            inboundAdmissionWithPublication: autoPartyInboundAdmissionService.Admit,
+            restoreInboundProposal: autoPartyInboundAdmissionService.RestoreProposal,
             diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode),
             saveConfiguration: Configuration.Save);
+        AutoPartyParticipantBridge.ConfigureDirectoryAuthorityGate(
+            autoPartyRelayPump.GetRemoteAuthorityBlocker);
         PresenceService.ConfigureAutoPartyPresenceProvider(AutoPartyEndpointService.GetLanPresence);
         PresenceService.ConfigureParticipantResolver(workerSessionId =>
             TransportService.CurrentTransport.KnownParticipants
@@ -1502,17 +1490,29 @@ public sealed class Plugin : IDalamudPlugin
 
     private DadAutoPartyCrewReconciliation ReconcileAutoPartyCrew(DateTime? utcNow = null)
     {
+        var observedAt = utcNow ?? DateTime.UtcNow;
         var result = DadAutoPartyCrewSharingRules.Reconcile(
             Configuration.AutoParty,
             Configuration.AutoPartyFleet,
             BuildPlannerPool().Characters,
-            utcNow ?? DateTime.UtcNow);
+            observedAt);
         if (result.Changed)
         {
             Configuration.AutoParty.StateGeneration++;
             Configuration.Save();
         }
-        return result;
+        var catalog = RosterCatalogService.BuildPlannerPreviewCatalog(
+            CharacterIntelligenceService.CurrentPool);
+        var reachablePeers = TransportService.CurrentTransport.KnownParticipants
+            .Where(participant => TransportService.IsWorkerOnline(participant.WorkerSessionId))
+            .ToList();
+        var routed = DadAutoPartyCrewSharingRules.AttachInboundRoutes(
+            result.Candidates,
+            catalog.Characters,
+            PresenceService.BuildLiveSafetySnapshot(),
+            reachablePeers,
+            new DateTimeOffset(DateTime.SpecifyKind(observedAt, DateTimeKind.Utc)));
+        return new DadAutoPartyCrewReconciliation(result.Changed, routed);
     }
 
     internal DadPlannerUiSnapshot GetPlannerUiSnapshot(DadVisibleRunState runState)
@@ -2505,6 +2505,47 @@ public sealed class Plugin : IDalamudPlugin
             !string.Equals(context.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal))
             return ValueTask.FromResult(Denied(routeSafeCode));
 
+        if (operation.Kind == ExecutionOperationKind.Restore)
+        {
+            WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
+            {
+                RunId = context.ExecutionPlan.RunId,
+                Reason = "Authenticated AutoParty restoration.",
+            });
+            if (context.FrozenInviter != null || context.PartyInviteTargets is { Count: > 0 })
+            {
+                if (!TryBuildInboundAutoPartyTeardownInstruction(context, out var instruction, out var blocker))
+                    return ValueTask.FromResult(Denied(blocker));
+                var teardown = PresenceService.HandleAssemblyInstruction(instruction);
+                if (!teardown.Success && !teardown.Deferred)
+                    return ValueTask.FromResult(Denied("dad-inbound-restore-teardown-failed"));
+                if (teardown.Deferred)
+                    return ValueTask.FromResult(Accepted(DadRunPhase.TearingDownParty, "dad-inbound-restore-pending"));
+            }
+
+            if (!autoPartyInboundAdmissionService.RestoreProposal(
+                    operation.ProposalId,
+                    "Authenticated AutoParty restoration."))
+            {
+                return ValueTask.FromResult(Accepted(
+                    DadRunPhase.Finalizing,
+                    "dad-inbound-takeover-restoration-pending"));
+            }
+
+            _ = PresenceService.HandleCancelRun(new DadCancelCommandDto
+            {
+                RunId = context.ExecutionPlan.RunId,
+                AuthorityWorkerSessionId = PresenceService.WorkerSessionId,
+                CancellationState = DadRunCancellationState.Finalized,
+                Reason = "Authenticated AutoParty restoration complete.",
+            });
+            autoPartyRelayPump.RemoveInboundExecutionContext(operation.ProposalId, operation.CharacterId);
+            return ValueTask.FromResult(Completed(
+                DadRunPhase.Finalizing,
+                "dad-inbound-restore-complete",
+                profileRestored: false));
+        }
+
         var local = PresenceService.BuildLiveSafetySnapshot();
         if (!MatchesInboundRuntimeTarget(local, context.Target))
             return ValueTask.FromResult(Denied("dad-inbound-worker-route-mismatch"));
@@ -2570,38 +2611,6 @@ public sealed class Plugin : IDalamudPlugin
             return ValueTask.FromResult(ack.Accepted
                 ? Completed(DadRunPhase.Finalizing, "dad-inbound-cancel-complete")
                 : Denied("dad-inbound-cancel-rejected"));
-        }
-
-        if (operation.Kind == ExecutionOperationKind.Restore)
-        {
-            WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
-            {
-                RunId = context.ExecutionPlan.RunId,
-                Reason = "Authenticated AutoParty restoration.",
-            });
-            if (context.FrozenInviter != null || context.PartyInviteTargets is { Count: > 0 })
-            {
-                if (!TryBuildInboundAutoPartyTeardownInstruction(context, out var instruction, out var blocker))
-                    return ValueTask.FromResult(Denied(blocker));
-                var teardown = PresenceService.HandleAssemblyInstruction(instruction);
-                if (!teardown.Success && !teardown.Deferred)
-                    return ValueTask.FromResult(Denied("dad-inbound-restore-teardown-failed"));
-                if (teardown.Deferred)
-                    return ValueTask.FromResult(Accepted(DadRunPhase.TearingDownParty, "dad-inbound-restore-pending"));
-            }
-
-            _ = PresenceService.HandleCancelRun(new DadCancelCommandDto
-            {
-                RunId = context.ExecutionPlan.RunId,
-                AuthorityWorkerSessionId = PresenceService.WorkerSessionId,
-                CancellationState = DadRunCancellationState.Finalized,
-                Reason = "Authenticated AutoParty restoration complete.",
-            });
-            autoPartyRelayPump.RemoveInboundExecutionContext(operation.ProposalId, operation.CharacterId);
-            return ValueTask.FromResult(Completed(
-                DadRunPhase.Finalizing,
-                "dad-inbound-restore-complete",
-                profileRestored: false));
         }
 
         return ValueTask.FromResult(Denied("dad-inbound-operation-unsupported"));

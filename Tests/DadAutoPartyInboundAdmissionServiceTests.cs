@@ -15,7 +15,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     {
         var fixture = new Fixture();
 
-        var result = fixture.Service.Admit(Proposal(), fixture.Rows);
+        var result = fixture.Service.Admit(Proposal(), fixture.Publication);
 
         Assert.True(result.Ready, result.SafeBlocker);
         Assert.Equal("run-inbound-admission", result.RunId);
@@ -24,24 +24,28 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         Assert.Equal("Slot2", target.SlotId);
         Assert.Equal(1, fixture.WakeCalls);
         Assert.Equal(1, fixture.ClaimCalls);
-        Assert.Equal("opaque-local", fixture.ResolvedRows.Single().OpaqueCharacterId);
+        Assert.Equal(1, fixture.TakeoverCalls);
     }
 
     [Fact]
-    public void DuplicateFleetRowAndMismatchedWorkerRouteFailClosed()
+    public void AmbiguousOrMismatchedPublishedRouteFailsClosed()
     {
         var duplicate = new Fixture();
-        duplicate.Rows.Add(duplicate.Rows[0].Clone());
-        var duplicateResult = duplicate.Service.Admit(Proposal(), duplicate.Rows);
+        duplicate.Publication = duplicate.Publication with
+        {
+            InboundRoutes = [duplicate.Route, duplicate.Route],
+        };
+        var duplicateResult = duplicate.Service.Admit(Proposal(), duplicate.Publication);
         Assert.False(duplicateResult.Ready);
         Assert.Equal(DadAutoPartyInboundAdmissionService.FleetRouteMismatch, duplicateResult.SafeBlocker);
         Assert.Empty(duplicateResult.InviteTargets);
 
         var mismatch = new Fixture();
-        mismatch.Routes[0].ActiveCharacterKey = new DadCharacterKey("Different Character@World");
-        var mismatchResult = mismatch.Service.Admit(Proposal(), mismatch.Rows);
+        mismatch.Route.OwnerSnapshot.WorkerSessionId = new DadWorkerSessionId("different-worker");
+        mismatch.Publication = mismatch.Publication with { InboundRoutes = [mismatch.Route] };
+        var mismatchResult = mismatch.Service.Admit(Proposal(), mismatch.Publication);
         Assert.False(mismatchResult.Ready);
-        Assert.Equal(DadAutoPartyInboundAdmissionService.WorkerRouteMismatch, mismatchResult.SafeBlocker);
+        Assert.Equal(DadAutoPartyInboundAdmissionService.FleetRouteMismatch, mismatchResult.SafeBlocker);
         Assert.Empty(mismatchResult.InviteTargets);
     }
 
@@ -70,9 +74,10 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
             return response;
         };
 
-        var result = fixture.Service.Admit(Proposal(), fixture.Rows);
+        var result = fixture.Service.Admit(Proposal(), fixture.Publication);
 
         Assert.False(result.Ready);
+        Assert.Equal(DadAutoPartyInboundAdmissionDisposition.Pending, result.Disposition);
         Assert.Equal(
             barrier switch
             {
@@ -107,7 +112,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
             return decision;
         };
 
-        var result = fixture.Service.Admit(Proposal(), fixture.Rows);
+        var result = fixture.Service.Admit(Proposal(), fixture.Publication);
 
         Assert.False(result.Ready);
         Assert.Equal(DadAutoPartyInboundAdmissionService.ClaimBlocked, result.SafeBlocker);
@@ -119,8 +124,8 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     {
         var fixture = new Fixture();
 
-        var first = fixture.Service.Admit(Proposal(), fixture.Rows);
-        var second = fixture.Service.Admit(Proposal(), fixture.Rows);
+        var first = fixture.Service.Admit(Proposal(), fixture.Publication);
+        var second = fixture.Service.Admit(Proposal(), fixture.Publication);
 
         Assert.True(first.Ready, first.SafeBlocker);
         Assert.True(second.Ready, second.SafeBlocker);
@@ -155,7 +160,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     {
         var fixture = new Fixture();
         var expired = Proposal() with { Header = Header(expiresAt: Now) };
-        var expiredResult = fixture.Service.Admit(expired, fixture.Rows);
+        var expiredResult = fixture.Service.Admit(expired, fixture.Publication);
         Assert.Equal(DadAutoPartyInboundAdmissionService.ExpiredProposal, expiredResult.SafeBlocker);
 
         var oversizedParticipants = Enumerable.Range(1, 9)
@@ -172,10 +177,54 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         {
             ExecutionPlan = Proposal().ExecutionPlan! with { Participants = oversizedParticipants },
         };
-        var oversizedResult = fixture.Service.Admit(oversized, fixture.Rows);
+        var oversizedResult = fixture.Service.Admit(oversized, fixture.Publication);
         Assert.Equal(DadAutoPartyInboundAdmissionService.InvalidProposal, oversizedResult.SafeBlocker);
         Assert.Equal(0, fixture.WakeCalls);
         Assert.Equal(0, fixture.ClaimCalls);
+    }
+
+    [Fact]
+    public void GuardedTakeoverRemainsPendingWithoutWakeOrClaimUntilReady()
+    {
+        var fixture = new Fixture
+        {
+            TakeoverOverride = (_, request) => new DadWakeTakeoverResultDto
+            {
+                SchedulerRunId = request.SchedulerRunId,
+                SlotId = request.SlotId,
+                AccountKey = request.AccountKey,
+                CharacterKey = request.CharacterKey,
+                OperationToken = request.OperationToken,
+                Status = DadWakeTakeoverStatus.Pending,
+                Phase = DadWakeTakeoverPhase.Prepared,
+                AcknowledgementState = DadWakeAcknowledgementState.Accepted,
+                Snapshot = Fixture.ReadySnapshot(),
+            },
+        };
+
+        var result = fixture.Service.Admit(Proposal(), fixture.Publication);
+
+        Assert.Equal(DadAutoPartyInboundAdmissionDisposition.Pending, result.Disposition);
+        Assert.Equal(DadAutoPartyInboundAdmissionService.TakeoverPending, result.SafeBlocker);
+        Assert.Equal(0, fixture.WakeCalls);
+        Assert.Equal(0, fixture.ClaimCalls);
+    }
+
+    [Fact]
+    public void ProposalExpiryRestoresTheFrozenTakeoverBeforeRemoval()
+    {
+        var fixture = new Fixture();
+        var proposal = Proposal();
+        Assert.True(fixture.Service.Admit(proposal, fixture.Publication).Ready);
+
+        var restored = fixture.Service.RestoreProposal(
+            proposal.ProposalId,
+            "dad-inbound-proposal-expired");
+
+        Assert.True(restored);
+        var cancel = Assert.Single(fixture.TakeoverRequests, request =>
+            request.MessageKind == DadWakeTakeoverMessageKind.Cancel);
+        Assert.Equal($"autoparty-{proposal.ProposalId:N}-Slot2", cancel.OperationToken);
     }
 
     [Fact]
@@ -184,7 +233,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         var fixture = new Fixture();
         var proposal = Proposal();
         var plan = Assert.IsType<EndpointExecutionPlan>(proposal.ExecutionPlan);
-        var live = fixture.Routes.Single().Clone();
+        var live = fixture.Route.OwnerSnapshot.Clone();
         live.RunId = plan.RunId;
         live.AssignedSlotId = "Slot2";
         live.ClaimState = DadClaimState.Granted;
@@ -331,28 +380,34 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
 
         public Fixture()
         {
-            Rows =
-            [
-                new DadAutoPartyFleetRow
-                {
-                    RowId = "row-local",
-                    OpaqueCharacterId = "opaque-local",
-                    AccountKey = "account-local",
-                    CharacterKey = "Local Character@Alpha",
-                    JobId = 19,
-                    Enabled = true,
-                    IsRemote = false,
-                },
-            ];
-            Routes = [ReadySnapshot()];
+            var owner = ReadySnapshot();
+            Route = new DadAutoPartyInboundRoute(
+                "opaque-local",
+                owner.ManagedAccountKey,
+                owner.ActiveCharacterKey,
+                owner.Character.ContentId,
+                owner.Character.CharacterName,
+                owner.Character.WorldId,
+                owner.Character.WorldName,
+                owner.WorkerSessionId,
+                owner.ClientInstanceId,
+                owner,
+                Now);
+            Publication = new DadAutoPartyListingPublication(
+                new DadAutoPartySharePolicy(),
+                [])
+            {
+                InboundRoutes = [Route],
+            };
             Service = new DadAutoPartyInboundAdmissionService(
                 LocalOwner,
                 LocalIsland,
                 new DadWorkerSessionId("authority-worker"),
-                row =>
+                (route, request) =>
                 {
-                    ResolvedRows.Add(row);
-                    return Routes;
+                    TakeoverCalls++;
+                    TakeoverRequests.Add(request);
+                    return TakeoverOverride?.Invoke(route, request) ?? ReadyTakeover(route, request);
                 },
                 (route, request) =>
                 {
@@ -387,13 +442,16 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         }
 
         public DadAutoPartyInboundAdmissionService Service { get; }
-        public List<DadAutoPartyFleetRow> Rows { get; }
-        public List<DadParticipantSnapshot> Routes { get; }
-        public List<DadAutoPartyFleetRow> ResolvedRows { get; } = [];
+        public DadAutoPartyListingPublication Publication { get; set; }
+        public DadAutoPartyInboundRoute Route { get; }
+        public List<DadWakeTakeoverRequestDto> TakeoverRequests { get; } = [];
         public List<DadWakeRequestDto> WakeRequests { get; } = [];
         public List<DadClaimRequestDto> ClaimRequests { get; } = [];
+        public int TakeoverCalls { get; private set; }
         public int WakeCalls { get; private set; }
         public int ClaimCalls { get; private set; }
+        public Func<DadAutoPartyInboundRoute, DadWakeTakeoverRequestDto, DadWakeTakeoverResultDto?>?
+            TakeoverOverride { get; set; }
         public Func<DadParticipantSnapshot, DadWakeRequestDto, DadParticipantReadyDto?>? WakeOverride { get; set; }
         public Func<DadParticipantSnapshot, DadClaimRequestDto, DadClaimDecisionDto?>? ClaimOverride { get; set; }
 
@@ -433,15 +491,52 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
             };
         }
 
-        private static DadParticipantSnapshot ReadySnapshot()
+        private static DadWakeTakeoverResultDto ReadyTakeover(
+            DadAutoPartyInboundRoute route,
+            DadWakeTakeoverRequestDto request)
+        {
+            var snapshot = route.OwnerSnapshot.Clone();
+            snapshot.ActiveCharacterKey = route.CharacterKey;
+            snapshot.Character = snapshot.Character.Clone();
+            snapshot.Character.CharacterKey = route.CharacterKey.Value;
+            snapshot.Character.ContentId = route.ContentId;
+            snapshot.Character.CharacterName = route.CharacterName;
+            snapshot.Character.WorldId = route.WorldId;
+            snapshot.Character.WorldName = route.WorldName;
+            snapshot.Character.CurrentJobId = 19;
+            return new DadWakeTakeoverResultDto
+            {
+                SchedulerRunId = request.SchedulerRunId,
+                SlotId = request.SlotId,
+                AccountKey = request.AccountKey,
+                CharacterKey = request.CharacterKey,
+                OperationToken = request.OperationToken,
+                Status = request.MessageKind == DadWakeTakeoverMessageKind.Cancel
+                    ? DadWakeTakeoverStatus.Blocked
+                    : DadWakeTakeoverStatus.Ready,
+                Stage = request.MessageKind == DadWakeTakeoverMessageKind.Cancel
+                    ? DadWakeTakeoverStage.Blocked
+                    : DadWakeTakeoverStage.Ready,
+                Phase = request.MessageKind == DadWakeTakeoverMessageKind.Cancel
+                    ? DadWakeTakeoverPhase.Cancelled
+                    : DadWakeTakeoverPhase.Ready,
+                AcknowledgementState = DadWakeAcknowledgementState.Executed,
+                Snapshot = snapshot,
+            };
+        }
+
+        internal static DadParticipantSnapshot ReadySnapshot()
             => new()
             {
+                ClientInstanceId = "client-local",
                 WorkerSessionId = new DadWorkerSessionId("worker-local"),
+                IsLocalClient = true,
                 State = DadParticipantState.Ready,
                 IsAvailable = true,
                 IsEligibleForRun = true,
                 PostArReady = true,
                 WorldReadyStable = true,
+                AutoRetainerAvailable = true,
                 LastHeartbeatUtc = Now.UtcDateTime,
                 ManagedAccountKey = new DadAccountKey("account-local"),
                 ActiveCharacterKey = new DadCharacterKey("Local Character@Alpha"),

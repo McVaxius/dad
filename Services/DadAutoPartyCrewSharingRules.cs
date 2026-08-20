@@ -6,10 +6,24 @@ internal sealed record DadAutoPartyCrewCandidate(
     DadAutoPartyCrewIdentity Identity,
     DadAcquiredCharacter Character,
     IReadOnlyList<uint> PermittedCombatJobIds,
-    bool Available)
+    bool Available,
+    DadAutoPartyInboundRoute? InboundRoute = null)
 {
     public bool IsCurrentCharacter => Character.Source == DadCharacterSource.LocalRuntime;
 }
+
+internal sealed record DadAutoPartyInboundRoute(
+    string OpaqueCharacterId,
+    DadAccountKey AccountKey,
+    DadCharacterKey CharacterKey,
+    ulong ContentId,
+    string CharacterName,
+    uint WorldId,
+    string WorldName,
+    DadWorkerSessionId WorkerSessionId,
+    string ClientInstanceId,
+    DadParticipantSnapshot OwnerSnapshot,
+    DateTimeOffset ObservedAt);
 
 internal sealed record DadAutoPartyCrewReconciliation(
     bool Changed,
@@ -196,6 +210,92 @@ internal static class DadAutoPartyCrewSharingRules
         if (character.CurrentJobId is { } currentJob && DadRosterCharacterMerge.IsCombatJob(currentJob))
             jobs.Add(currentJob);
         return jobs.Order().ToArray();
+    }
+
+    public static IReadOnlyList<DadAutoPartyCrewCandidate> AttachInboundRoutes(
+        IEnumerable<DadAutoPartyCrewCandidate>? crew,
+        IEnumerable<DadRosterCharacter>? roster,
+        DadParticipantSnapshot localParticipant,
+        IEnumerable<DadParticipantSnapshot>? reachableParticipants,
+        DateTimeOffset utcNow)
+    {
+        ArgumentNullException.ThrowIfNull(localParticipant);
+        var rosterRows = (roster ?? []).Where(static row => row != null).ToList();
+        var owners = new[] { localParticipant }
+            .Concat(reachableParticipants ?? [])
+            .Where(static participant => participant != null && !participant.WorkerSessionId.IsEmpty)
+            .DistinctBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return (crew ?? []).Where(static candidate => candidate != null).Select(candidate =>
+        {
+            var accountKey = DadRosterIdentity.ResolveAccountKey(
+                candidate.Character.AccountId,
+                candidate.Character.AccountAlias);
+            var characterKey = new DadCharacterKey(candidate.Character.CharacterKey?.Trim() ?? string.Empty);
+            var matchingRows = rosterRows.Where(row =>
+                    DadRosterIdentity.SameAccount(row.AccountKey, accountKey) &&
+                    DadRosterIdentity.SameCharacter(
+                        row.CharacterKey,
+                        row.ContentId,
+                        characterKey,
+                        candidate.Character.ContentId))
+                .Take(2)
+                .ToArray();
+            if (accountKey.IsEmpty || characterKey.IsEmpty || matchingRows.Length != 1)
+                return candidate with { Available = false, InboundRoute = null };
+
+            var row = matchingRows[0];
+            if (row.Visibility != DadRosterVisibility.Active || row.IsStale || row.NeedsRosterUpdate ||
+                row.Source == DadCharacterSource.PeerRuntime ||
+                (!row.XadbReady && row.Source != DadCharacterSource.LocalRuntime) ||
+                row.ContentId == 0 || row.WorldId is null or 0 or > ushort.MaxValue ||
+                string.IsNullOrWhiteSpace(row.CharacterName) || string.IsNullOrWhiteSpace(row.WorldName))
+            {
+                return candidate with { Available = false, InboundRoute = null };
+            }
+
+            var routes = owners.Where(owner =>
+                    owner.IsAvailable && owner.WorldReadyStable && !owner.ActiveCharacterKey.IsEmpty &&
+                    owner.AutoRetainerAvailable &&
+                    DadRosterIdentity.SameAccount(owner.ManagedAccountKey, accountKey) &&
+                    (owner.IsLocalClient || utcNow.UtcDateTime - owner.LastHeartbeatUtc <= TimeSpan.FromSeconds(15)) &&
+                    (DadRosterIdentity.SameCharacter(owner.ActiveCharacterKey, owner.Character?.ContentId ?? 0, characterKey, row.ContentId) ||
+                     owner.AvailableCharacterKeys.Any(available => DadRosterIdentity.SameCharacter(
+                         available,
+                         0,
+                         characterKey,
+                         row.ContentId))) &&
+                    (row.SourceWorkerSessionId.IsEmpty || string.Equals(
+                        row.SourceWorkerSessionId.Value,
+                        owner.WorkerSessionId.Value,
+                        StringComparison.OrdinalIgnoreCase)) &&
+                    (string.IsNullOrWhiteSpace(row.SourceClientInstanceId) || string.Equals(
+                        row.SourceClientInstanceId,
+                        owner.ClientInstanceId,
+                        StringComparison.OrdinalIgnoreCase)) &&
+                    (!row.SourceWorkerSessionId.IsEmpty ||
+                     !string.IsNullOrWhiteSpace(row.SourceClientInstanceId) || owner.IsLocalClient))
+                .Take(2)
+                .ToArray();
+            if (routes.Length != 1)
+                return candidate with { Available = false, InboundRoute = null };
+
+            var owner = routes[0].Clone();
+            var route = new DadAutoPartyInboundRoute(
+                candidate.Identity.OpaqueCharacterId,
+                accountKey,
+                characterKey,
+                row.ContentId,
+                row.CharacterName,
+                row.WorldId.Value,
+                row.WorldName,
+                owner.WorkerSessionId,
+                owner.ClientInstanceId,
+                owner,
+                utcNow);
+            return candidate with { Available = true, InboundRoute = route };
+        }).ToList();
     }
 
     private static string? FindFleetOpaqueIdentity(

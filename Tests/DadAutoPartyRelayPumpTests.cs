@@ -556,7 +556,8 @@ public sealed class DadAutoPartyRelayPumpTests
         await pump.ProcessOnceAsync();
         var directoryQueryEnvelope = Assert.Single(
             fixture.Transport.Sent,
-            item => item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+            item => item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>() &&
+                    fixture.Open<DirectoryQuery>(item).IncludePromiscuous);
         var query = fixture.Open<DirectoryQuery>(directoryQueryEnvelope);
         var listingExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
         var page = new DirectoryPage(
@@ -659,6 +660,30 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Empty(pump.GetTransientRoutes());
         Assert.False(listing.HasCurrentTransientRoute);
         Assert.False(pump.IsListingRouteCurrent(listing));
+    }
+
+    [Fact]
+    public async Task ActiveRegistrationAutomaticallyRefreshesPrivateDirectoryEveryFiveMinutesAndCoalesces()
+    {
+        var now = new DateTimeOffset(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+
+        await pump.ProcessOnceAsync();
+        Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+        Assert.Equal(
+            "dad-directory-query-coalesced",
+            (await pump.RequestDirectoryAsync(string.Empty, false)).SafeCode);
+
+        await pump.ProcessOnceAsync();
+        Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+
+        now = now.AddMinutes(5);
+        await pump.ProcessOnceAsync();
+        Assert.Equal(2, fixture.Transport.Sent.Count(item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
     }
 
     [Fact]
@@ -984,6 +1009,60 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Contains(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ParticipantInviteLocator>());
         Assert.Equal(0, fixture.PendingStore.SaveCount);
+    }
+
+    [Fact]
+    public async Task PendingInboundAdmissionEmitsNoPrematureNegativePreflightAndReevaluatesToReady()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        var listing = new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = "opaque-local",
+            DisplayLabel = "Shared local character",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = ["dad-duty-1"],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10),
+        };
+        var policy = Assert.Single(fixture.Configuration.Pairings).LocalSharePolicy.Clone();
+        var proposalId = Guid.NewGuid();
+        var runId = $"run-{Guid.NewGuid():N}";
+        var proposal = PeerProposalForLocalParticipant(fixture, proposalId, runId);
+        var ready = false;
+        await using var pump = fixture.CreatePump(
+            _ => new DadAutoPartyListingPublication(policy, [listing]),
+            inboundAdmission: _ => ready
+                ? new DadAutoPartyInboundAdmissionResult(
+                    runId,
+                    true,
+                    string.Empty,
+                    ["Slot2"],
+                    [NativeInviteTarget(runId, "Slot2", "Private Local", 1001)])
+                : DadAutoPartyInboundAdmissionResult.Pending(
+                    runId,
+                    DadAutoPartyInboundAdmissionService.TakeoverPending));
+        fixture.Transport.Inbound.Enqueue(fixture.SealPeer(proposal));
+
+        await pump.ProcessOnceAsync();
+        pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<Reservation>() ||
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PreflightResult>() ||
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<SessionLease>());
+
+        ready = true;
+        pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        Assert.Contains(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PreflightResult>() &&
+            fixture.Open<PreflightResult>(item).Ready);
     }
 
     [Fact]

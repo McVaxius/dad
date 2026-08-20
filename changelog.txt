@@ -1,16 +1,29 @@
 # dad — changelog
 
 ## 2026-08-20 — Paired directory and stable aliases (local-only, unpublished)
-- Crew publication now includes only currently available characters. The wire-only Community policy intersects its saved
-  selection with those published listings and disables with no handles when sharing is off or no selected listing remains,
-  without changing the full saved Community selection.
-- Community sharing no longer suppresses current listings needed by private pairings; disabled Community updates retain a
-  disabled, empty wire policy while carrying the available private-pair directory listings.
+- Crew publication now includes an offline XADB character only when one fresh, reachable, ownership-proven DAD route can
+  relog it. Runtime admission consumes that same private route snapshot without Fleet Matrix rows or a pre-existing live
+  character; stale, peer-owned, unowned, ambiguous, and unroutable rows remain unavailable. Wire listings retain only the
+  existing opaque character, job, activity, availability, revision, and expiry fields.
+- Community sharing no longer suppresses listings authorized by private pairings. Disabled Community updates retain a
+  disabled, empty wire policy while carrying private-pair listings, while enabled Community selection is intersected only
+  on its wire clone. The existing 256-listing bound remains unchanged.
+- The paired directory now refreshes automatically after active registration, after pairing, every five minutes, and when
+  a remote launch lacks fresh authority. Identical outstanding queries coalesce and expire; manual **Refresh** remains an
+  optional immediate override. Missing, stale, offline, or ambiguous launch authority blocks and queues a refresh.
+- Completed webhook delivery replays now resend the retained semantic application acknowledgement as well as fragment
+  receipts, so a lost semantic acknowledgement can clear centrally without redelivering the application payload.
+- Inbound admission now distinguishes pending guarded takeover from terminal denial. Pending proposals send no premature
+  negative preflight; DAD drives the existing VERMAXION/AutoRetainer prepare, reset, relog, and exact-character gates and
+  publishes runtime invite targets only after verified readiness.
+- Wake takeover now captures the exact prior character and AutoRetainer Multi Mode state before mutation. Success, failure,
+  cancellation, expiry, and authenticated restoration relog the prior character first, then restore and verify the exact
+  previous Multi Mode state before releasing cancellation ownership. This restoration state remains process-local.
 - Advanced DAD configuration to schema 12 with normalized, island-keyed paired aliases. Legacy per-pair aliases migrate
   locally into the bounded map, survive pairing replacement and deauthentication, and clear only with deregistration,
   purge, or local identity replacement. Aliases remain outside every wire contract.
-- Crew now requests the non-Community paired directory when a Paired DAD is selected and offers a manual **Refresh** when
-  no authorized listing is cached. Stable aliases fall back to the peer endpoint alias and then **Paired DAD**; technical
+- Crew retains manual **Refresh** as an optional override. Stable aliases fall back to the peer endpoint alias and then
+  **Paired DAD**; technical
   island IDs appear only with **Details** and are never saved into the Crew placeholder.
 
 ## 2026-08-18 — Reciprocal APP1 pairing and courier repair (local-only, unpublished)

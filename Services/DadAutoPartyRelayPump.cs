@@ -66,6 +66,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private static readonly TimeSpan ControlLifetime = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ParticipantLifetime = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan DispatchLease = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DirectoryRefreshInterval = TimeSpan.FromMinutes(5);
 
     private readonly object gate = new();
     private readonly DadAutoPartyConfiguration configuration;
@@ -76,7 +77,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly IDadAutoPartyPendingOperationStore pendingOperationStore;
     private readonly DadAutoPartyInboundProposalService inboundProposalService;
     private readonly Func<DateTime, DadAutoPartyListingPublication>? inboundListingPublicationProvider;
-    private readonly Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission;
+    private readonly Func<RunProposal, DadAutoPartyListingPublication, DadAutoPartyInboundAdmissionResult>? inboundAdmission;
+    private readonly Func<Guid, string, bool>? restoreInboundProposal;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly Action<string> diagnostic;
@@ -112,6 +114,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private PendingExecution? activeExecutionPending;
     private string loadedIdentityReference = string.Empty;
     private long nextSequence = Math.Max(1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    private DateTimeOffset? lastPrivateDirectoryRequestAt;
+    private DateTimeOffset? lastPrivateDirectoryCompletedAt;
     private bool disposed;
 
     public DadAutoPartyRelayPump(
@@ -127,7 +131,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         Func<DateTimeOffset>? utcNow = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Action<string>? diagnostic = null,
-        Action? saveConfiguration = null)
+        Action? saveConfiguration = null,
+        Func<RunProposal, DadAutoPartyListingPublication, DadAutoPartyInboundAdmissionResult>?
+            inboundAdmissionWithPublication = null,
+        Func<Guid, string, bool>? restoreInboundProposal = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.identityStore = identityStore ?? throw new ArgumentNullException(nameof(identityStore));
@@ -136,9 +143,17 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         this.participantBridge = participantBridge ?? throw new ArgumentNullException(nameof(participantBridge));
         this.pendingOperationStore = pendingOperationStore ?? throw new ArgumentNullException(nameof(pendingOperationStore));
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
-        inboundProposalService = new(configuration, inboundProposalStore, this.utcNow);
+        inboundProposalService = new(
+            configuration,
+            inboundProposalStore,
+            this.utcNow,
+            restoreInboundProposal);
         this.inboundListingPublicationProvider = inboundListingPublicationProvider;
-        this.inboundAdmission = inboundAdmission;
+        this.inboundAdmission = inboundAdmissionWithPublication ??
+                                (inboundAdmission == null
+                                    ? null
+                                    : (proposal, _) => inboundAdmission(proposal));
+        this.restoreInboundProposal = restoreInboundProposal;
         this.delay = delay ?? Task.Delay;
         this.diagnostic = diagnostic ?? (_ => { });
         this.saveConfiguration = saveConfiguration ?? (() => { });
@@ -535,19 +550,114 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             normalized.Any(char.IsControl))
             return ValueTask.FromResult(Decision(false, "dad-directory-query-invalid"));
 
-        var queryId = Guid.NewGuid();
-        var query = new PendingDirectoryQuery(queryId, normalized, includePromiscuous, 32);
+        return ValueTask.FromResult(QueueDirectoryQuery(
+            normalized,
+            includePromiscuous,
+            requestFollowUpIfPending: true));
+    }
+
+    internal DadAutoPartyPolicyDecision EnsurePrivateDirectoryAuthority(bool immediate = false)
+    {
+        if (!configuration.IsRegistrationActive)
+            return Decision(false, "dad-directory-registration-not-active");
+        var now = utcNow();
         lock (gate)
         {
+            if (!immediate && lastPrivateDirectoryCompletedAt is { } completed &&
+                now - completed < DirectoryRefreshInterval)
+            {
+                return Decision(true, "dad-directory-authority-current");
+            }
+        }
+        return QueueDirectoryQuery(string.Empty, false, requestFollowUpIfPending: immediate);
+    }
+
+    internal string? GetRemoteAuthorityBlocker(
+        IReadOnlyList<DadFrozenRunSlot> remoteSlots,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(remoteSlots);
+        DateTimeOffset? completed;
+        lock (gate)
+            completed = lastPrivateDirectoryCompletedAt;
+        if (!completed.HasValue || now - completed.Value >= DirectoryRefreshInterval)
+        {
+            _ = EnsurePrivateDirectoryAuthority(immediate: true);
+            return "AutoParty paired directory authority is missing or stale; an automatic refresh was queued.";
+        }
+
+        var directory = service.GetDirectorySnapshot();
+        foreach (var slot in remoteSlots)
+        {
+            var matches = directory.Listings.Where(listing =>
+                    string.Equals(listing.OwnerId, slot.OwnerId, StringComparison.Ordinal) &&
+                    string.Equals(listing.SharingIslandId, slot.IslandId, StringComparison.Ordinal) &&
+                    string.Equals(listing.OpaqueCharacterId, slot.OpaqueCharacterId, StringComparison.Ordinal) &&
+                    slot.RequiredJobId.HasValue && listing.AllowedJobIds.Contains(
+                        slot.RequiredJobId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        StringComparer.Ordinal) &&
+                    listing.ExpiresAtUtc > now.UtcDateTime &&
+                    directory.OnlineIslandIds.Contains(listing.SharingIslandId))
+                .Take(2)
+                .ToArray();
+            if (matches.Length == 1)
+                continue;
+            _ = EnsurePrivateDirectoryAuthority(immediate: true);
+            return $"{slot.SlotId} no longer has one fresh reachable AutoParty directory authority; an automatic refresh was queued.";
+        }
+        return null;
+    }
+
+    private DadAutoPartyPolicyDecision QueueDirectoryQuery(
+        string searchText,
+        bool includePromiscuous,
+        bool requestFollowUpIfPending)
+    {
+        var now = utcNow();
+        lock (gate)
+        {
+            var existing = directoryQueries.Values.FirstOrDefault(query =>
+                string.Equals(query.SearchText, searchText, StringComparison.Ordinal) &&
+                query.IncludePromiscuous == includePromiscuous);
+            if (existing != null)
+            {
+                existing.FollowUpRequested |= requestFollowUpIfPending;
+                return Decision(true, "dad-directory-query-coalesced");
+            }
+
+            var queryId = Guid.NewGuid();
+            var query = new PendingDirectoryQuery(
+                queryId,
+                searchText,
+                includePromiscuous,
+                32,
+                now,
+                now + ControlLifetime);
             directoryQueries[queryId] = query;
             if (!TryEnqueueControl(BuildDirectoryQuery(query, string.Empty)))
             {
                 directoryQueries.Remove(queryId);
-                return ValueTask.FromResult(Decision(false, "dad-relay-outbound-full"));
+                return Decision(false, "dad-relay-outbound-full");
             }
+            if (searchText.Length == 0 && !includePromiscuous)
+                lastPrivateDirectoryRequestAt = now;
         }
         UpdateSnapshot("dad-directory-query-queued");
-        return ValueTask.FromResult(Decision(true, "dad-directory-query-queued"));
+        return Decision(true, "dad-directory-query-queued");
+    }
+
+    private void EnsureAutomaticDirectoryQuery()
+    {
+        if (!configuration.IsRegistrationActive)
+            return;
+        var now = utcNow();
+        lock (gate)
+        {
+            if (lastPrivateDirectoryRequestAt is { } requested &&
+                now - requested < DirectoryRefreshInterval)
+                return;
+        }
+        _ = QueueDirectoryQuery(string.Empty, false, requestFollowUpIfPending: false);
     }
 
     public async ValueTask<DadAutoPartyPolicyDecision> EnsurePairingInviteAsync(
@@ -1127,6 +1237,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
         keyResolver!.RefreshPublicKeys();
         EnsureRegistrationHelloQueued();
+        EnsureAutomaticDirectoryQuery();
         EnsureDeregistrationQueued();
         EnsureInboundResponsesQueued();
         await ReceiveBoundedAsync(cancellationToken).ConfigureAwait(false);
@@ -1324,7 +1435,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             {
                 try
                 {
-                    admission = inboundAdmission(state.Proposal) ??
+                    admission = inboundAdmission(state.Proposal, publication) ??
                                 DadAutoPartyInboundAdmissionResult.Blocked(
                                     state.Proposal.ExecutionPlan?.RunId ?? string.Empty,
                                     DadAutoPartyInboundAdmissionService.InvalidProposal);
@@ -1453,6 +1564,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             }
 
             var admission = evaluation.Admission;
+            if (admission.Disposition == DadAutoPartyInboundAdmissionDisposition.Pending)
+            {
+                diagnostic(admission.SafeBlocker);
+                continue;
+            }
             var responseCount = state.OwnedParticipants.Length + 1 +
                                 (admission.Ready ? 1 + admission.InviteTargets.Length : 0);
             lock (gate)
@@ -2137,6 +2253,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             !string.Equals(receipt.IslandId.Value, configuration.RegisteredIslandId, StringComparison.Ordinal))
             return ValueTask.FromResult(DispatchResult.Deny("dad-registration-receipt-mismatch"));
         var decision = registrationReceiptHandler(receipt);
+        if (decision.Allowed)
+            _ = EnsurePrivateDirectoryAuthority(immediate: true);
         return ValueTask.FromResult(decision.Allowed
             ? DispatchResult.Allow(decision.SafeCode)
             : DispatchResult.Deny(decision.SafeCode));
@@ -2210,6 +2328,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 established.PeerIslandId.Value,
                 decision.SafeCode,
                 utcNow());
+            _ = EnsurePrivateDirectoryAuthority(immediate: true);
         }
         return ValueTask.FromResult(decision.Allowed
             ? DispatchResult.Allow(decision.SafeCode)
@@ -2303,6 +2422,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             }
         }
 
+        var queueFollowUp = false;
         lock (gate)
         {
             if (page.HasMore)
@@ -2313,8 +2433,13 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             else
             {
                 directoryQueries.Remove(page.QueryId);
+                if (query.SearchText.Length == 0 && !query.IncludePromiscuous)
+                    lastPrivateDirectoryCompletedAt = utcNow();
+                queueFollowUp = query.FollowUpRequested;
             }
         }
+        if (queueFollowUp)
+            _ = QueueDirectoryQuery(query.SearchText, query.IncludePromiscuous, requestFollowUpIfPending: false);
         return ValueTask.FromResult(DispatchResult.Allow("dad-directory-page-applied"));
     }
 
@@ -3769,6 +3894,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var now = utcNow();
         foreach (var messageId in replayedMessages.Where(pair => pair.Value <= now).Select(static pair => pair.Key).ToList())
             replayedMessages.Remove(messageId);
+        List<Guid> expiredRuntimeProposalIds;
         lock (gate)
         {
             foreach (var messageId in awaitingRelayReceipts
@@ -3781,6 +3907,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                          .Select(static pair => pair.Key)
                          .ToList())
                 pendingAccessRequests.Remove(accessId);
+            foreach (var queryId in directoryQueries
+                         .Where(pair => pair.Value.ExpiresAt <= now)
+                         .Select(static pair => pair.Key)
+                         .ToList())
+                directoryQueries.Remove(queryId);
             RemoveTransientRoutes((_, route) => route.ValidUntil <= now);
             foreach (var commandId in participantContracts
                          .Where(pair => pair.Value.Header.ExpiresAt <= now)
@@ -3802,13 +3933,27 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                          .Select(static pair => pair.Key)
                          .ToList())
                 pendingAllianceInbound.Remove(operationId);
-            foreach (var key in inboundRuntimeTargets
-                         .Where(pair => pair.Value.ExpiresAt <= now)
-                         .Select(static pair => pair.Key)
-                         .ToList())
-                inboundRuntimeTargets.Remove(key);
+            expiredRuntimeProposalIds = inboundRuntimeTargets
+                .Where(pair => pair.Value.ExpiresAt <= now)
+                .Select(static pair => pair.Key.ProposalId)
+                .Distinct()
+                .ToList();
             while (pendingOutbound.Count > 0 && pendingOutbound.Peek().Contract.Header.ExpiresAt <= now)
                 _ = pendingOutbound.Dequeue();
+        }
+        foreach (var proposalId in expiredRuntimeProposalIds)
+        {
+            if (restoreInboundProposal?.Invoke(
+                    proposalId,
+                    "dad-inbound-runtime-target-expired") == false)
+                continue;
+            lock (gate)
+            {
+                foreach (var key in inboundRuntimeTargets.Keys
+                             .Where(key => key.ProposalId == proposalId)
+                             .ToList())
+                    inboundRuntimeTargets.Remove(key);
+            }
         }
     }
 
@@ -3980,11 +4125,22 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         DadExpectedPartyInviter? ExpectedInviter,
         IReadOnlyList<DadNativePartyInviteTarget> PartyInviteTargets);
 
-    private sealed record PendingDirectoryQuery(
-        Guid QueryId,
-        string SearchText,
-        bool IncludePromiscuous,
-        int MaximumEntries);
+    private sealed class PendingDirectoryQuery(
+        Guid queryId,
+        string searchText,
+        bool includePromiscuous,
+        int maximumEntries,
+        DateTimeOffset createdAt,
+        DateTimeOffset expiresAt)
+    {
+        public Guid QueryId { get; } = queryId;
+        public string SearchText { get; } = searchText;
+        public bool IncludePromiscuous { get; } = includePromiscuous;
+        public int MaximumEntries { get; } = maximumEntries;
+        public DateTimeOffset CreatedAt { get; } = createdAt;
+        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+        public bool FollowUpRequested { get; set; }
+    }
 
     private sealed record PendingAccessRequest(
         Guid AccessRequestId,

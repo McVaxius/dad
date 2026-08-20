@@ -116,16 +116,19 @@ internal sealed class DadAutoPartyInboundProposalService
     private readonly DadAutoPartyConfiguration configuration;
     private readonly IDadAutoPartyInboundProposalStore store;
     private readonly Func<DateTimeOffset> utcNow;
+    private readonly Func<Guid, string, bool> restoreBeforeRemoval;
     private readonly Dictionary<Guid, DadAutoPartyInboundProposalState> states = [];
 
     public DadAutoPartyInboundProposalService(
         DadAutoPartyConfiguration configuration,
         IDadAutoPartyInboundProposalStore? store = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        Func<Guid, string, bool>? restoreBeforeRemoval = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.store = store ?? new DadAutoPartyMemoryInboundProposalStore();
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        this.restoreBeforeRemoval = restoreBeforeRemoval ?? ((_, _) => true);
         var now = this.utcNow();
         foreach (var state in this.store.Load().Take(MaximumSessions))
         {
@@ -151,9 +154,9 @@ internal sealed class DadAutoPartyInboundProposalService
             safeCode = "dad-inbound-proposal-invalid";
             return false;
         }
+        Sweep(utcNow());
         lock (gate)
         {
-            Sweep(utcNow());
             if (!TryResolveOwnedParticipants(proposal, out var owned, out safeCode))
             {
                 state = default!;
@@ -335,9 +338,9 @@ internal sealed class DadAutoPartyInboundProposalService
 
     public IReadOnlyList<IAutoPartyContract> UnacknowledgedResponses(int maximum)
     {
+        Sweep(utcNow());
         lock (gate)
         {
-            Sweep(utcNow());
             return states.Values
                 .OrderBy(static state => state.RetainedAt)
                 .SelectMany(static state => state.Responses())
@@ -380,6 +383,13 @@ internal sealed class DadAutoPartyInboundProposalService
             return;
         lock (gate)
         {
+            if (!states.ContainsKey(proposalId))
+                return;
+        }
+        if (!restoreBeforeRemoval(proposalId, "dad-inbound-proposal-removed"))
+            return;
+        lock (gate)
+        {
             if (states.Remove(proposalId))
                 Persist();
         }
@@ -389,29 +399,50 @@ internal sealed class DadAutoPartyInboundProposalService
     {
         if (string.IsNullOrWhiteSpace(senderIslandId))
             return;
+        Guid[] candidates;
         lock (gate)
         {
-            var removed = states.Where(pair => string.Equals(
+            candidates = states.Where(pair => string.Equals(
                     pair.Value.Proposal.Header.SenderIslandId.Value,
                     senderIslandId,
                     StringComparison.Ordinal))
                 .Select(static pair => pair.Key)
                 .ToArray();
-            foreach (var proposalId in removed)
-                states.Remove(proposalId);
-            if (removed.Length > 0)
+        }
+        var restored = candidates.Where(proposalId => restoreBeforeRemoval(
+                proposalId,
+                "dad-inbound-proposal-sender-removed"))
+            .ToArray();
+        lock (gate)
+        {
+            var changed = false;
+            foreach (var proposalId in restored)
+                changed |= states.Remove(proposalId);
+            if (changed)
                 Persist();
         }
     }
 
     public void Clear()
     {
+        Guid[] candidates;
         lock (gate)
         {
             if (states.Count == 0)
                 return;
-            states.Clear();
-            Persist();
+            candidates = states.Keys.ToArray();
+        }
+        var restored = candidates.Where(proposalId => restoreBeforeRemoval(
+                proposalId,
+                "dad-inbound-proposals-cleared"))
+            .ToArray();
+        lock (gate)
+        {
+            var changed = false;
+            foreach (var proposalId in restored)
+                changed |= states.Remove(proposalId);
+            if (changed)
+                Persist();
         }
     }
 
@@ -532,13 +563,29 @@ internal sealed class DadAutoPartyInboundProposalService
 
     private void Sweep(DateTimeOffset now)
     {
-        var expired = states.Where(pair => pair.Value.Proposal.Header.ExpiresAt <= now)
-            .Select(static pair => pair.Key)
+        Guid[] expired;
+        lock (gate)
+        {
+            expired = states.Where(pair => pair.Value.Proposal.Header.ExpiresAt <= now)
+                .Select(static pair => pair.Key)
+                .ToArray();
+        }
+        var restored = expired.Where(proposalId => restoreBeforeRemoval(
+                proposalId,
+                "dad-inbound-proposal-expired"))
             .ToArray();
-        foreach (var proposalId in expired)
-            states.Remove(proposalId);
-        if (expired.Length > 0)
-            Persist();
+        lock (gate)
+        {
+            var changed = false;
+            foreach (var proposalId in restored)
+            {
+                if (states.TryGetValue(proposalId, out var state) &&
+                    state.Proposal.Header.ExpiresAt <= now)
+                    changed |= states.Remove(proposalId);
+            }
+            if (changed)
+                Persist();
+        }
     }
 
     private void Persist()

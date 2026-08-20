@@ -15,6 +15,11 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             RegisteredOwnerId = "owner-local",
             RegisteredIslandId = "island-local",
             StateGeneration = 7,
+            Pairings = [ValidPairing(new DadAutoPartySharePolicy
+            {
+                Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+                Enabled = true,
+            })],
         };
         var crew = new[]
         {
@@ -30,7 +35,8 @@ public sealed class DadAutoPartyListingPublicationRulesTests
                     CharacterKey = "private-character-key",
                 },
                 [19],
-                Available: true),
+                Available: true,
+                InboundRoute: Route("opaque-local")),
             Candidate("opaque-unavailable", available: false),
         };
         var plans = new[]
@@ -77,6 +83,12 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         {
             StateGeneration = 5,
             StandingSharePolicy = policy,
+            Pairings = [ValidPairing(new DadAutoPartySharePolicy
+            {
+                Mode = DadAutoPartyCharacterShareMode.CharacterList,
+                CharacterHandles = ["opaque-private"],
+                Enabled = true,
+            })],
         };
 
         var publication = DadAutoPartyListingPublicationRules.Build(
@@ -89,7 +101,6 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             [],
             now);
 
-        Assert.Empty(configuration.Pairings);
         Assert.True(publication.StandingPolicy.Enabled);
         Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, publication.StandingPolicy.Mode);
         Assert.Equal(["opaque-community"], publication.StandingPolicy.CharacterHandles);
@@ -169,6 +180,28 @@ public sealed class DadAutoPartyListingPublicationRulesTests
     }
 
     [Fact]
+    public void PublicationRetainsTheExistingTwoHundredFiftySixCharacterLimit()
+    {
+        var configuration = new DadAutoPartyConfiguration
+        {
+            Pairings = [ValidPairing(new DadAutoPartySharePolicy
+            {
+                Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+                Enabled = true,
+            })],
+        };
+
+        var publication = DadAutoPartyListingPublicationRules.Build(
+            configuration,
+            Enumerable.Range(0, 300).Select(index => Candidate($"opaque-{index:D3}", available: true)),
+            [],
+            DateTime.UtcNow);
+
+        Assert.Equal(256, publication.Listings.Count);
+        Assert.Equal(256, publication.InboundRoutes.Count);
+    }
+
+    [Fact]
     public void InvalidStandingPolicyFailsClosedAndNormalizationDoesNotTouchPairPolicies()
     {
         var pairPolicy = new DadAutoPartySharePolicy
@@ -243,6 +276,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         SigningPublicKey = Convert.ToBase64String(new byte[32]),
         AgreementPublicKey = Convert.ToBase64String(new byte[32]),
         KeyGeneration = 1,
+        ConfirmedAtUtc = DateTime.UtcNow,
         ExpiresAtUtc = DateTime.UtcNow.AddHours(1),
         LocalSharePolicy = localPolicy,
     };
@@ -256,6 +290,30 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             },
             new DadAcquiredCharacter(),
             [19],
-            available);
+            available,
+            available ? Route(opaqueCharacterId) : null);
+
+    private static DadAutoPartyInboundRoute Route(string opaqueCharacterId)
+    {
+        var owner = new DadParticipantSnapshot
+        {
+            ClientInstanceId = "client-local",
+            WorkerSessionId = new DadWorkerSessionId("worker-local"),
+            IsLocalClient = true,
+            ManagedAccountKey = new DadAccountKey("account-local"),
+        };
+        return new DadAutoPartyInboundRoute(
+            opaqueCharacterId,
+            owner.ManagedAccountKey,
+            new DadCharacterKey("Character@World"),
+            1,
+            "Character",
+            1,
+            "World",
+            owner.WorkerSessionId,
+            owner.ClientInstanceId,
+            owner,
+            DateTimeOffset.UtcNow);
+    }
 
 }

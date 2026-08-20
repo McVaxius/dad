@@ -45,353 +45,20 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void TrueIdleTitleMenuDisablesMultiModeOnceThenUsesAcknowledgedLoginOnce()
+    public void TitleIdleWithoutProvablePriorCharacterBlocksBeforeMutation()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);
         ConfigureTitleIdle(target);
         var service = new DadWakeTakeoverService(target);
 
-        var disabling = service.Handle(Request());
-
-        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, disabling.Phase);
-        Assert.Equal(DadWakeTakeoverStage.DisablingMultiMode, disabling.Stage);
-        Assert.Equal(["SetMultiMode:False"], target.Actions);
-        Assert.Equal(0, target.ReserveCount);
-
-        service.Update();
-        service.Update();
-        service.Handle(Request());
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
-        Assert.Equal(0, target.ReserveCount);
-
-        ActivateTargetCharacter(target);
+        var blocked = service.Handle(Request());
         service.Update();
 
-        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-        Assert.DoesNotContain("DisableAutoRetainer", target.Actions);
-        Assert.DoesNotContain("ResetAutoRetainer", target.Actions);
-    }
-
-    [Fact]
-    public void TitleIdleRelogDoesNotRepeatDisableIfMultiModeDriftsBackOn()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        target.Snapshot.MultiModeEnabled = true;
-        service.Update();
-        service.Handle(Request());
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
-        Assert.Contains("verif", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
-
-        target.Snapshot.MultiModeEnabled = false;
-        service.Update();
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-    }
-
-    [Fact]
-    public void TrueIdleTitleMenuWithMultiModeAlreadyOffSkipsDisableAndLogsIn()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.Snapshot.MultiModeEnabled = false;
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-
-        Assert.DoesNotContain("SetMultiMode:False", target.Actions);
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
-    }
-
-    [Theory]
-    [InlineData(TitleIdleFailure.DisconnectedRoute)]
-    [InlineData(TitleIdleFailure.WrongAccount)]
-    [InlineData(TitleIdleFailure.UnknownCharacter)]
-    [InlineData(TitleIdleFailure.StaleTitleEvidence)]
-    [InlineData(TitleIdleFailure.TitleNotReady)]
-    [InlineData(TitleIdleFailure.TitleNavigation)]
-    [InlineData(TitleIdleFailure.ConnectionOverlay)]
-    [InlineData(TitleIdleFailure.ErrorOverlay)]
-    [InlineData(TitleIdleFailure.AutoRetainerUnavailable)]
-    [InlineData(TitleIdleFailure.AutoRetainerBusy)]
-    [InlineData(TitleIdleFailure.SuppressionUnreadable)]
-    [InlineData(TitleIdleFailure.LifestreamUnavailable)]
-    [InlineData(TitleIdleFailure.LifestreamBusy)]
-    [InlineData(TitleIdleFailure.CannotAutoLogin)]
-    [InlineData(TitleIdleFailure.ExternalSuppression)]
-    [InlineData(TitleIdleFailure.ExternalAutomationHold)]
-    [InlineData(TitleIdleFailure.CharacterSelect)]
-    [InlineData(TitleIdleFailure.ConnectingToDataCenter)]
-    [InlineData(TitleIdleFailure.AmbiguousSurface)]
-    [InlineData(TitleIdleFailure.NoSurface)]
-    [InlineData(TitleIdleFailure.ClientLoggedIn)]
-    [InlineData(TitleIdleFailure.ActiveCondition)]
-    [InlineData(TitleIdleFailure.StaleVermaxion)]
-    [InlineData(TitleIdleFailure.VermaxionBusy)]
-    [InlineData(TitleIdleFailure.VermaxionUnavailable)]
-    public void InexactOrUnownedTitleStateIssuesNoCommand(TitleIdleFailure failure)
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        ApplyTitleIdleFailure(target, failure);
-        var service = new DadWakeTakeoverService(target);
-
-        var waiting = service.Handle(Request());
-        service.Update();
-
-        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, waiting.Phase);
-        Assert.Equal(0, target.ReserveCount);
-        Assert.Empty(target.Actions);
-    }
-
-    [Theory]
-    [InlineData(TitleIdleFailure.AutoRetainerBusy)]
-    [InlineData(TitleIdleFailure.LifestreamBusy)]
-    [InlineData(TitleIdleFailure.VermaxionBusy)]
-    [InlineData(TitleIdleFailure.CharacterSelect)]
-    [InlineData(TitleIdleFailure.ConnectingToDataCenter)]
-    [InlineData(TitleIdleFailure.AmbiguousSurface)]
-    public void TransientPreMutationTitleBlockerWaitsThenRecoversNormally(TitleIdleFailure failure)
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        ApplyTitleIdleFailure(target, failure);
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        service.Update();
-        Assert.Empty(target.Actions);
-
-        ConfigureTitleIdle(target);
-        service.Update();
-        service.Update();
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-    }
-
-    [Fact]
-    public void RouteLossAfterTitleDisableInvalidatesTheOperationAndNeverRelogs()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        Assert.False(target.Snapshot.MultiModeEnabled);
-        target.Snapshot.AccountMatches = false;
-        service.Update();
-        target.Snapshot.AccountMatches = true;
-        service.Update();
-        service.Handle(Request());
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
-        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, service.Handle(StatusRequest()).Phase);
-        Assert.Contains("invalidated", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void CancellationAfterTitleDisablePreventsRelogPermanently()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        var service = new DadWakeTakeoverService(target);
-        service.Handle(Request());
-        var cancel = Request();
-        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
-
-        var cancelled = service.Handle(cancel);
-        target.Snapshot.MultiModeEnabled = false;
-        service.Update();
-        service.Handle(StatusRequest());
-
-        Assert.Equal(DadWakeTakeoverPhase.Cancelled, cancelled.Phase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void ExactIdleMovieStaffListTypesOneEscapeThenWaitsForFreshTitleMenu()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.Snapshot.MultiModeEnabled = false;
-        target.Snapshot.TitleSurface = DadTitleSurface.TitleMovie;
-        target.Snapshot.TitleMenuReady = false;
-        target.Snapshot.TitleMovieExactReady = true;
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        service.Update();
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "DismissTitleMovie"));
-        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
-
-        target.Snapshot.TitleSurface = DadTitleSurface.TitleMenu;
-        target.Snapshot.TitleMovieExactReady = false;
-        target.Snapshot.TitleMenuReady = true;
-        service.Update();
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "DismissTitleMovie"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-    }
-
-    [Fact]
-    public void MovieStaffListWithMultiModeOnTypesNoEscapeAndIssuesNoLogin()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.Snapshot.TitleSurface = DadTitleSurface.TitleMovie;
-        target.Snapshot.TitleMenuReady = false;
-        target.Snapshot.TitleMovieExactReady = true;
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        service.Update();
-
-        Assert.Empty(target.Actions);
-        Assert.Contains("Multi Mode", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void RejectedMovieDismissalBlocksWithoutReplayingTheOneShot()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.Snapshot.MultiModeEnabled = false;
-        target.Snapshot.TitleSurface = DadTitleSurface.TitleMovie;
-        target.Snapshot.TitleMenuReady = false;
-        target.Snapshot.TitleMovieExactReady = true;
-        target.DismissTitleMovieAccepted = false;
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        service.Update();
-        service.Update();
-
-        var blocked = service.Handle(StatusRequest());
         Assert.Equal(DadWakeTakeoverPhase.Blocked, blocked.Phase);
-        Assert.Contains("will not replay", blocked.BlockedReason, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "DismissTitleMovie"));
-        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void SurfaceDriftAfterMultiModeDisableInvalidatesLoginEvenIfTitleMenuReturns()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        target.Snapshot.TitleSurface = DadTitleSurface.CharacterSelect;
-        target.Snapshot.TitleMenuReady = false;
-        service.Update();
-        target.Snapshot.TitleSurface = DadTitleSurface.TitleMenu;
-        target.Snapshot.TitleMenuReady = true;
-        service.Update();
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-        Assert.DoesNotContain(target.Actions, static action => action.StartsWith("ConnectAndLogin:", StringComparison.Ordinal));
-        Assert.Contains("invalidated", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void TitleRelogSettlingOnWrongCharacterWaitsWithoutReplay()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        var service = new DadWakeTakeoverService(target);
-        service.Handle(Request());
-        service.Update();
-        target.Snapshot.Participant.IsAvailable = true;
-        target.Snapshot.Participant.WorldReadyStable = true;
-        target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Other Character@World");
-
-        service.Update();
-        service.Update();
-
-        var waiting = service.Handle(StatusRequest());
-        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waiting.Phase);
-        Assert.Contains("without replay", waiting.Summary, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:False"));
-    }
-
-    [Fact]
-    public void ExplicitFalseTitleLoginRetriesOnlyAfterCadenceAndFreshProof()
-    {
-        var clock = new TestClock();
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.ExplicitFalse);
-        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Accepted);
-        var service = new DadWakeTakeoverService(target, clock.UtcNow);
-
-        service.Handle(Request());
-        service.Update();
-
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-        Assert.Contains("five-second", service.Handle(StatusRequest()).Summary, StringComparison.OrdinalIgnoreCase);
-
-        service.Update();
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-
-        clock.Advance(TimeSpan.FromSeconds(5));
-        service.Update();
-
-        Assert.Equal(2, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
-        Assert.True(target.CaptureForceFlags.Count(static forced => forced) >= 4);
-    }
-
-    [Fact]
-    public void UncertainTitleLoginFailsClosedAndNeverReplays()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Uncertain);
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        service.Update();
-        service.Update();
-        var result = service.Handle(StatusRequest());
-
-        Assert.Equal(DadWakeTakeoverPhase.Blocked, result.Phase);
-        Assert.Contains("will not replay", result.BlockedReason, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
-    }
-
-    [Fact]
-    public void ThrowingTitleLoginFailsClosedAndNeverReplays()
-    {
-        var target = FakeTarget.Valid(wrongCharacter: true);
-        ConfigureTitleIdle(target);
-        target.ThrowOnTitleLogin = true;
-        var service = new DadWakeTakeoverService(target);
-
-        service.Handle(Request());
-        service.Update();
-        service.Update();
-
-        var result = service.Handle(StatusRequest());
-        Assert.Equal(DadWakeTakeoverPhase.Blocked, result.Phase);
-        Assert.Contains("will not replay", result.BlockedReason, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, target.Actions.Count(static action => action == "ConnectAndLogin:Target Character@World"));
+        Assert.Equal(DadWakeAcknowledgementState.Rejected, blocked.AcknowledgementState);
+        Assert.Contains("Exact pre-takeover character", blocked.BlockedReason, StringComparison.Ordinal);
+        Assert.Equal(0, target.ReserveCount);
+        Assert.Empty(target.Actions);
     }
 
     [Theory]
@@ -797,6 +464,66 @@ public sealed class DadWakeTakeoverServiceTests
 
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
         Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+    }
+
+    [Fact]
+    public void CompletedTakeoverRestoresPriorCharacterBeforeExactMultiModeState()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ActivateTargetCharacter(target);
+        service.Update();
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+
+        target.ResolveCorrectCharacterFromRequest = true;
+        target.AutoApplyRelogTarget = true;
+        var cancel = Request();
+        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        var pending = service.Handle(cancel);
+        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(pending));
+
+        target.Snapshot.DadOwnsCharacterPostprocess = true;
+        service.OnCharacterPostprocessReady();
+        service.Update();
+        service.Update();
+
+        var restored = service.Handle(cancel);
+        Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(restored));
+        Assert.Equal("Other Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.True(target.Snapshot.MultiModeEnabled);
+        Assert.Equal(1, target.Actions.Count(static action =>
+            action == "RelogTarget:Other Character@World"));
+        Assert.True(
+            target.Actions.IndexOf("RelogTarget:Other Character@World") <
+            target.Actions.LastIndexOf("SetMultiMode:True"));
+
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action =>
+            action == "RelogTarget:Other Character@World"));
+    }
+
+    [Fact]
+    public void CancellationAfterResetRestoresMultiModeWithoutRelogWhenPriorCharacterIsStillActive()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        Prepare(service, target);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        target.ResolveCorrectCharacterFromRequest = true;
+        var cancel = Request();
+        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+
+        var restored = service.Handle(cancel);
+
+        Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(restored));
+        Assert.Equal("Other Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.True(target.Snapshot.MultiModeEnabled);
+        Assert.DoesNotContain(target.Actions, static action =>
+            action.StartsWith("RelogTarget:", StringComparison.Ordinal));
+        Assert.Equal(1, target.Actions.Count(static action => action == "SetMultiMode:True"));
     }
 
     [Fact]
@@ -1769,96 +1496,6 @@ public sealed class DadWakeTakeoverServiceTests
         target.Snapshot.TitleMenuReady = false;
     }
 
-    private static void ApplyTitleIdleFailure(FakeTarget target, TitleIdleFailure failure)
-    {
-        switch (failure)
-        {
-            case TitleIdleFailure.DisconnectedRoute:
-                target.Snapshot.ClientRouteConnected = false;
-                break;
-            case TitleIdleFailure.WrongAccount:
-                target.Snapshot.AccountMatches = false;
-                break;
-            case TitleIdleFailure.UnknownCharacter:
-                target.Snapshot.CharacterKnownToAccount = false;
-                break;
-            case TitleIdleFailure.StaleTitleEvidence:
-                target.Snapshot.TitleSurfaceEvidenceFresh = false;
-                target.Snapshot.TitleMenuEvidenceFresh = false;
-                break;
-            case TitleIdleFailure.TitleNotReady:
-                target.Snapshot.TitleMenuReady = false;
-                break;
-            case TitleIdleFailure.TitleNavigation:
-                target.Snapshot.TitleNavigationOverlayVisible = true;
-                break;
-            case TitleIdleFailure.ConnectionOverlay:
-                target.Snapshot.TitleConnectionOverlayVisible = true;
-                break;
-            case TitleIdleFailure.ErrorOverlay:
-                target.Snapshot.TitleErrorOverlayVisible = true;
-                break;
-            case TitleIdleFailure.AutoRetainerUnavailable:
-                target.Snapshot.AutoRetainerAvailable = false;
-                break;
-            case TitleIdleFailure.AutoRetainerBusy:
-                target.Snapshot.AutoRetainerBusy = true;
-                break;
-            case TitleIdleFailure.SuppressionUnreadable:
-                target.Snapshot.SuppressionReadable = false;
-                break;
-            case TitleIdleFailure.LifestreamUnavailable:
-                target.Snapshot.LifestreamAvailable = false;
-                break;
-            case TitleIdleFailure.LifestreamBusy:
-                target.Snapshot.LifestreamBusy = true;
-                break;
-            case TitleIdleFailure.CannotAutoLogin:
-                target.Snapshot.LifestreamCanAutoLogin = false;
-                break;
-            case TitleIdleFailure.ExternalSuppression:
-                target.Snapshot.AutoRetainerSuppressed = true;
-                break;
-            case TitleIdleFailure.ExternalAutomationHold:
-                target.Reservation.State = DadVermaxionReservationState.Pending;
-                target.Reservation.OperationToken = "another-operation";
-                target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Busy);
-                target.Snapshot.VermaxionStatusKind = DadVermaxionReadinessKind.Busy;
-                break;
-            case TitleIdleFailure.CharacterSelect:
-                target.Snapshot.TitleSurface = DadTitleSurface.CharacterSelect;
-                target.Snapshot.TitleMenuReady = false;
-                break;
-            case TitleIdleFailure.ConnectingToDataCenter:
-                target.Snapshot.TitleSurface = DadTitleSurface.ConnectingToDataCenter;
-                target.Snapshot.TitleMenuReady = false;
-                break;
-            case TitleIdleFailure.AmbiguousSurface:
-                target.Snapshot.TitleSurface = DadTitleSurface.Ambiguous;
-                target.Snapshot.TitleMenuReady = false;
-                break;
-            case TitleIdleFailure.NoSurface:
-                target.Snapshot.TitleSurface = DadTitleSurface.None;
-                target.Snapshot.TitleMenuReady = false;
-                break;
-            case TitleIdleFailure.ClientLoggedIn:
-                target.Snapshot.TitleClientLoggedOut = false;
-                break;
-            case TitleIdleFailure.ActiveCondition:
-                target.Snapshot.TitleNoActiveConditionFlags = false;
-                break;
-            case TitleIdleFailure.StaleVermaxion:
-                target.Snapshot.VermaxionStatusEvidenceFresh = false;
-                break;
-            case TitleIdleFailure.VermaxionBusy:
-                target.Snapshot.VermaxionStatusKind = DadVermaxionReadinessKind.Busy;
-                break;
-            case TitleIdleFailure.VermaxionUnavailable:
-                target.Snapshot.VermaxionStatusKind = DadVermaxionReadinessKind.Unavailable;
-                break;
-        }
-    }
-
     private static void Grant(FakeTarget target)
     {
         target.ReservationStateOnReserve = DadVermaxionReservationState.Granted;
@@ -1989,6 +1626,8 @@ public sealed class DadWakeTakeoverServiceTests
         public Func<DateTime>? UtcNow { get; set; }
         public bool DismissTitleMovieAccepted { get; set; } = true;
         public bool ThrowOnTitleLogin { get; set; }
+        public bool ResolveCorrectCharacterFromRequest { get; set; }
+        public bool AutoApplyRelogTarget { get; set; }
 
         public static FakeTarget Valid(bool wrongCharacter)
         {
@@ -2044,6 +1683,11 @@ public sealed class DadWakeTakeoverServiceTests
             OnCapture?.Invoke(forceExternalRefresh);
             if (UtcNow != null && Snapshot.Participant.CurrentLocation != null)
                 Snapshot.Participant.CurrentLocation.ObservedAtUtc = UtcNow();
+            if (ResolveCorrectCharacterFromRequest)
+                Snapshot.CorrectCharacter = string.Equals(
+                    Snapshot.Participant.ActiveCharacterKey.Value,
+                    request.CharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase);
             RefreshAuthority(request.OperationToken);
             return Snapshot;
         }
@@ -2183,6 +1827,18 @@ public sealed class DadWakeTakeoverServiceTests
         public DadWakeTakeoverActionResult ExecuteCommand(DadWakeTakeoverCommand command, DadWakeTakeoverRequestDto request)
         {
             Actions.Add(command.ToString());
+            if (command == DadWakeTakeoverCommand.RelogCharacter)
+            {
+                Actions.Add($"RelogTarget:{request.CharacterKey.Value}");
+                if (AutoApplyRelogTarget)
+                {
+                    Snapshot.Participant.ActiveCharacterKey = request.CharacterKey;
+                    Snapshot.Participant.Character.CharacterKey = request.CharacterKey.Value;
+                    Snapshot.Participant.IsAvailable = true;
+                    Snapshot.Participant.WorldReadyStable = true;
+                    Snapshot.CorrectCharacter = true;
+                }
+            }
             OnCommandExecuted?.Invoke(command);
             return DadWakeTakeoverActionResult.Accepted();
         }
@@ -2210,32 +1866,4 @@ public sealed class DadWakeTakeoverServiceTests
         ExternalSuppression,
     }
 
-    public enum TitleIdleFailure
-    {
-        DisconnectedRoute,
-        WrongAccount,
-        UnknownCharacter,
-        StaleTitleEvidence,
-        TitleNotReady,
-        TitleNavigation,
-        ConnectionOverlay,
-        ErrorOverlay,
-        AutoRetainerUnavailable,
-        AutoRetainerBusy,
-        SuppressionUnreadable,
-        LifestreamUnavailable,
-        LifestreamBusy,
-        CannotAutoLogin,
-        ExternalSuppression,
-        ExternalAutomationHold,
-        CharacterSelect,
-        ConnectingToDataCenter,
-        AmbiguousSurface,
-        NoSurface,
-        ClientLoggedIn,
-        ActiveCondition,
-        StaleVermaxion,
-        VermaxionBusy,
-        VermaxionUnavailable,
-    }
 }
