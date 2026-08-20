@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.4.nupkg'
-$expectedHash = 'f54652f13f9ea115b547f03411e7174d5388eb425f5e69a9e933b7587d34a9dd'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.5.nupkg'
+$expectedHash = '3fb8ea0c02d03354bfe85e02833b8cb27bb9d116c3f5c571b544f34ec02c1a46'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'
@@ -160,9 +160,12 @@ uploaded or promoted to a release.
   offline island exposes no cached usable listings or route choices. Each endpoint independently shares one checked local
   character, selected checked characters, or all characters for that peer.
 - Private directory rows carry registered route identity, the effective share mode and policy hash, plus opaque character
-  handles, display labels, permitted jobs/activities, availability, revision, and expiry. Player invite names, Content IDs,
-  and native invite locators appear only in short-lived endpoint-encrypted proposal traffic and remain in memory; they are
-  never saved into Plans, Schedules, Fleet Matrix, logs, or public IPC.
+  handles/placeholders, permitted jobs/activities, availability, revision, and expiry. After a paired page arrives, DAD
+  requests `CharacterName@World` labels directly in batches of at most 16 handles through the existing signed,
+  X25519-sealed peer route. Decrypted labels remain in a process-local overlay tied to the active pairing and exact listing
+  revision/expiry; the persisted directory and unpaired Community listings remain opaque. Content IDs and native invite
+  locators appear only in short-lived endpoint-encrypted proposal traffic and remain in memory; they are never saved into
+  Plans, Schedules, Fleet Matrix, logs, or public IPC.
 - **Community Available** is a separate, default-empty selector for specific local characters. Its selected rows can be
   displayed to same-guild requesters, but cannot be selected, bound, or executed until the requester signs an exact
   policy access request and the relay returns the same short-lived endpoint identity attestation to both DAD islands.

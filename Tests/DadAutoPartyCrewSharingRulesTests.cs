@@ -206,6 +206,28 @@ public sealed class DadAutoPartyCrewSharingRulesTests
         Assert.Equal("opaque-b", remaining.OpaqueCharacterId);
     }
 
+    [Fact]
+    public void SavedCrewBindingPersistsOpaquePlaceholderWhileRuntimePresentationUsesPrivateLabel()
+    {
+        var configuration = new DadAutoPartyConfiguration();
+        var pairing = ActivePairing();
+        var slot = new DadPlannerGroupSlot { SlotId = "Slot1" };
+        var listing = Listing("opaque-private", 19);
+        listing.OpaqueDisplayLabel = listing.DisplayLabel;
+        listing.DisplayLabel = "Private Character@Private World";
+
+        Assert.True(DadAutoPartyCrewSlotBindingRules.TryBind(
+            configuration,
+            slot,
+            pairing,
+            listing,
+            19,
+            out var blocker), blocker);
+
+        Assert.Equal("Private Character@Private World", listing.DisplayLabel);
+        Assert.Equal("Shared character", slot.SharedIdentity!.CharacterLabel);
+    }
+
     private static DadAcquiredCharacter Crew(
         string accountId,
         string characterKey,

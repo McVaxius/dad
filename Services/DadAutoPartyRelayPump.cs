@@ -89,6 +89,9 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly Queue<PendingExecution> pendingExecutions = [];
     private readonly Dictionary<Guid, IntegrationProfile> pendingProfiles = [];
     private readonly Dictionary<Guid, PendingDirectoryQuery> directoryQueries = [];
+    private readonly Dictionary<Guid, PendingPairedLabelRequest> pairedLabelRequests = [];
+    private readonly Dictionary<string, PublishedPairedLabel> publishedPairedLabels =
+        new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, PendingAccessRequest> pendingAccessRequests = [];
     private readonly Dictionary<RouteKey, AttestedRoute> attestedRoutes = [];
     private readonly Dictionary<Guid, PendingAllianceOutbound> pendingAllianceOutbound = [];
@@ -960,18 +963,21 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     public DadAutoPartyPolicyDecision QueueListingUpdate(
         DadAutoPartySharePolicy sharePolicy,
-        IEnumerable<DadAutoPartyListing> listings)
+        IEnumerable<DadAutoPartyListing> listings,
+        IReadOnlyDictionary<string, string>? pairedLabels = null)
     {
         ArgumentNullException.ThrowIfNull(sharePolicy);
         if (!configuration.IsRegistrationActive ||
             sharePolicy.Clone().Normalize() is not { IsValid: true } policy)
             return Decision(false, "dad-listing-update-invalid");
         var now = utcNow();
-        var protocolListings = (listings ?? [])
+        var publishableListings = (listings ?? [])
             .Where(listing => listing is { IsValid: true, Available: true } &&
                               listing.ExpiresAtUtc > now.UtcDateTime &&
                               listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
             .Take(AutoPartyProtocol.MaximumCollectionItems)
+            .ToList();
+        var protocolListings = publishableListings
             .Select(static listing => new PrivateCharacterListing(
                 new OpaqueCharacterId(listing.OpaqueCharacterId),
                 listing.DisplayLabel,
@@ -996,6 +1002,18 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             {
                 if (!TryEnqueueControl(update))
                     return Decision(false, "dad-relay-outbound-full");
+                publishedPairedLabels.Clear();
+                foreach (var listing in publishableListings)
+                {
+                    if (pairedLabels == null ||
+                        !pairedLabels.TryGetValue(listing.OpaqueCharacterId, out var label) ||
+                        !IsBoundedLocatorValue(label, AutoPartyProtocol.MaximumDisplayLabelLength))
+                        continue;
+                    publishedPairedLabels[listing.OpaqueCharacterId] = new(
+                        label,
+                        listing.Revision,
+                        new DateTimeOffset(DateTime.SpecifyKind(listing.ExpiresAtUtc, DateTimeKind.Utc)));
+                }
             }
         }
         catch (Exception exception) when (exception is ProtocolException or ArgumentException)
@@ -1140,6 +1158,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         RemoveTransientRoutes((route, _) =>
             string.Equals(route.FirstIslandId, islandId, StringComparison.Ordinal) ||
             string.Equals(route.SecondIslandId, islandId, StringComparison.Ordinal));
+        RemovePendingPairedLabelRequests(islandId);
 
         if (pairing == null)
             return local;
@@ -2047,6 +2066,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 PairingAttemptCancellation value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 PrivateListingUpdate value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 DirectoryQuery value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
+                PairedListingLabelRequest value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
+                PairedListingLabelResponse value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 RegisteredRequesterAccessRequest value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 DeauthenticationNotice value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 Revocation value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
@@ -2143,6 +2164,14 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 .ConfigureAwait(false);
         if (SameType<DirectoryPage>(type))
             return await OpenAndDispatchAsync<DirectoryPage>(sealedContract, true, DispatchDirectoryPageAsync)
+                .ConfigureAwait(false);
+        if (SameType<PairedListingLabelRequest>(type))
+            return await OpenAndDispatchAsync<PairedListingLabelRequest>(
+                    sealedContract, false, DispatchPairedListingLabelRequestAsync)
+                .ConfigureAwait(false);
+        if (SameType<PairedListingLabelResponse>(type))
+            return await OpenAndDispatchAsync<PairedListingLabelResponse>(
+                    sealedContract, false, DispatchPairedListingLabelResponseAsync)
                 .ConfigureAwait(false);
         if (SameType<RegisteredRequesterAccessRequest>(type))
             return await OpenAndDispatchAsync<RegisteredRequesterAccessRequest>(
@@ -2293,6 +2322,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             awaitingRelayReceipts.Clear();
             participantContracts.Clear();
             directoryQueries.Clear();
+            pairedLabelRequests.Clear();
+            publishedPairedLabels.Clear();
             pendingAccessRequests.Clear();
             attestedRoutes.Clear();
             pendingAllianceOutbound.Clear();
@@ -2346,6 +2377,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
         foreach (var entry in page.Entries)
         {
+            var now = utcNow();
             var pairing = configuration.Pairings.FirstOrDefault(item =>
                 item.IsActive && string.Equals(item.IslandId, entry.IslandId.Value, StringComparison.Ordinal));
             if (pairing != null && string.IsNullOrWhiteSpace(pairing.HomeGuildScope))
@@ -2353,7 +2385,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             if (!entry.Online)
             {
                 if (pairing != null)
+                {
                     service.ApplyDirectoryPresence(entry.IslandId.Value, false);
+                    RemovePendingPairedLabelRequests(entry.IslandId.Value);
+                }
                 continue;
             }
             var effectiveMode = (DadAutoPartyCharacterShareMode)(int)entry.EffectiveShareMode;
@@ -2399,10 +2434,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 if (!decision.Allowed)
                     return ValueTask.FromResult(DispatchResult.Deny(decision.SafeCode));
                 service.ApplyDirectoryPresence(entry.IslandId.Value, true);
+                if (!TryQueuePairedLabelRequests(pairing, listings, now))
+                    return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-request-queue-full"));
             }
             else
             {
-                var now = utcNow();
                 var visible = listings
                     .Where(listing => listing.IsValid && listing.Available &&
                                       listing.ExpiresAtUtc > now.UtcDateTime &&
@@ -2441,6 +2477,146 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         if (queueFollowUp)
             _ = QueueDirectoryQuery(query.SearchText, query.IncludePromiscuous, requestFollowUpIfPending: false);
         return ValueTask.FromResult(DispatchResult.Allow("dad-directory-page-applied"));
+    }
+
+    private bool TryQueuePairedLabelRequests(
+        DadAutoPartyPairing pairing,
+        IReadOnlyCollection<DadAutoPartyListing> listings,
+        DateTimeOffset now)
+    {
+        if (!Guid.TryParse(pairing.PairingId, out var pairingId) || pairingId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(pairing.TranscriptHash))
+            return false;
+        var handles = listings
+            .Where(listing => listing.IsValid && listing.Available && listing.ExpiresAtUtc > now.UtcDateTime)
+            .Select(static listing => listing.OpaqueCharacterId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        foreach (var batch in handles.Chunk(AutoPartyProtocol.MaximumPairedListingLabelBatchSize))
+        {
+            var requested = batch.ToImmutableArray();
+            lock (gate)
+            {
+                var duplicate = pairedLabelRequests.Values.Any(pending =>
+                    pending.ExpiresAt > now && pending.PairingId == pairingId &&
+                    string.Equals(pending.PeerIslandId, pairing.IslandId, StringComparison.Ordinal) &&
+                    pending.RequestedCharacters.SequenceEqual(requested, StringComparer.Ordinal));
+                if (duplicate)
+                    continue;
+                if (pairedLabelRequests.Count >= MaximumPendingOutbound)
+                    return false;
+                var requestId = Guid.NewGuid();
+                var request = new PairedListingLabelRequest(
+                    CreateHeader(
+                        new IslandId(pairing.IslandId),
+                        $"paired-label-request-{requestId:N}",
+                        now + ControlLifetime,
+                        requestId),
+                    requestId,
+                    pairingId,
+                    pairing.TranscriptHash,
+                    requested.Select(static handle => new OpaqueCharacterId(handle)).ToImmutableArray());
+                if (!TryEnqueueControl(request))
+                    return false;
+                pairedLabelRequests[requestId] = new(
+                    requestId,
+                    pairing.IslandId,
+                    pairing.OwnerId,
+                    pairingId,
+                    pairing.TranscriptHash,
+                    requested,
+                    request.Header.ExpiresAt);
+            }
+        }
+        return true;
+    }
+
+    private ValueTask<DispatchResult> DispatchPairedListingLabelRequestAsync(
+        PairedListingLabelRequest request)
+    {
+        var now = utcNow();
+        var pairing = FindExactActivePairing(
+            request.Header.SenderIslandId.Value,
+            request.Header.SenderKeyVersion,
+            request.PairingId,
+            request.PairingTranscriptHash);
+        if (pairing == null)
+            return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-request-pairing-invalid"));
+
+        ImmutableArray<PairedListingLabel> labels;
+        lock (gate)
+        {
+            labels = request.RequestedCharacters
+                .Select(static handle => handle.Value)
+                .Where(handle =>
+                    publishedPairedLabels.TryGetValue(handle, out var published) &&
+                    published.ExpiresAt > now &&
+                    DadAutoPartyShareRules.Allows(
+                        pairing.LocalSharePolicy,
+                        handle,
+                        paired: true,
+                        sameHomeGuild: string.Equals(
+                            pairing.HomeGuildScope,
+                            configuration.HomeGuildScope,
+                            StringComparison.Ordinal)))
+                .Select(handle => new PairedListingLabel(
+                    new OpaqueCharacterId(handle),
+                    publishedPairedLabels[handle].DisplayLabel))
+                .ToImmutableArray();
+            var responseId = Guid.NewGuid();
+            var response = new PairedListingLabelResponse(
+                CreateHeader(
+                    request.Header.SenderIslandId,
+                    $"paired-label-response-{request.RequestId:N}",
+                    Min(request.Header.ExpiresAt, now + ControlLifetime),
+                    responseId),
+                request.RequestId,
+                request.PairingId,
+                request.PairingTranscriptHash,
+                labels);
+            if (!TryEnqueueControl(response))
+                return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-response-queue-full"));
+        }
+        return ValueTask.FromResult(DispatchResult.Allow("dad-paired-label-response-queued"));
+    }
+
+    private ValueTask<DispatchResult> DispatchPairedListingLabelResponseAsync(
+        PairedListingLabelResponse response)
+    {
+        PendingPairedLabelRequest pending;
+        lock (gate)
+        {
+            if (!pairedLabelRequests.TryGetValue(response.RequestId, out pending!))
+                return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-response-unsolicited"));
+        }
+        var pairing = FindExactActivePairing(
+            response.Header.SenderIslandId.Value,
+            response.Header.SenderKeyVersion,
+            response.PairingId,
+            response.PairingTranscriptHash);
+        if (pairing == null || response.PairingId != pending.PairingId ||
+            !string.Equals(response.Header.SenderIslandId.Value, pending.PeerIslandId, StringComparison.Ordinal) ||
+            !string.Equals(pairing.OwnerId, pending.PeerOwnerId, StringComparison.Ordinal) ||
+            !string.Equals(response.PairingTranscriptHash, pending.PairingTranscriptHash, StringComparison.Ordinal) ||
+            response.Labels.Any(label => !pending.RequestedCharacters.Contains(
+                label.CharacterHandle.Value,
+                StringComparer.Ordinal)))
+        {
+            return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-response-pairing-invalid"));
+        }
+        if (!service.ApplyPairedListingLabels(
+                pending.PeerIslandId,
+                pending.PairingId,
+                pending.PairingTranscriptHash,
+                pending.RequestedCharacters,
+                response.Labels,
+                utcNow()))
+        {
+            return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-response-stale"));
+        }
+        lock (gate)
+            pairedLabelRequests.Remove(response.RequestId);
+        return ValueTask.FromResult(DispatchResult.Allow("dad-paired-label-response-applied"));
     }
 
     private ValueTask<DispatchResult> DispatchAccessRequestAsync(RegisteredRequesterAccessRequest request)
@@ -2563,6 +2739,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             inboundProposalService.RemoveSender(notice.PeerIslandId.Value);
             RemoveInboundRuntimeTargets((_, target) =>
                 string.Equals(target.SenderIslandId, notice.PeerIslandId.Value, StringComparison.Ordinal));
+            RemovePendingPairedLabelRequests(notice.PeerIslandId.Value);
             return ValueTask.FromResult(DispatchResult.Allow("dad-deauthentication-applied"));
         }
         var decision = service.Deauthenticate(pairing.IslandId, notice.SafeReason);
@@ -2577,6 +2754,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         RemoveTransientRoutes((route, _) =>
             string.Equals(route.FirstIslandId, pairing.IslandId, StringComparison.Ordinal) ||
             string.Equals(route.SecondIslandId, pairing.IslandId, StringComparison.Ordinal));
+        RemovePendingPairedLabelRequests(pairing.IslandId);
         return ValueTask.FromResult(decision.Allowed
             ? DispatchResult.Allow(decision.SafeCode)
             : DispatchResult.Deny(decision.SafeCode));
@@ -3669,6 +3847,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             PairingAttemptCancellation value => CanonicalCborCodec.EncodeUnsigned(value),
             PrivateListingUpdate value => CanonicalCborCodec.EncodeUnsigned(value),
             DirectoryQuery value => CanonicalCborCodec.EncodeUnsigned(value),
+            PairedListingLabelRequest value => CanonicalCborCodec.EncodeUnsigned(value),
+            PairedListingLabelResponse value => CanonicalCborCodec.EncodeUnsigned(value),
             RegisteredRequesterAccessRequest value => CanonicalCborCodec.EncodeUnsigned(value),
             DeauthenticationNotice value => CanonicalCborCodec.EncodeUnsigned(value),
             Revocation value => CanonicalCborCodec.EncodeUnsigned(value),
@@ -3684,6 +3864,41 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             _ => throw new ProtocolException(ProtocolFailureCode.InvalidContractType, "unknown-contract-type"),
         };
         CryptographicOperations.ZeroMemory(encoded);
+    }
+
+    private DadAutoPartyPairing? FindExactActivePairing(
+        string peerIslandId,
+        long peerKeyVersion,
+        Guid pairingId,
+        string pairingTranscriptHash)
+    {
+        var matches = configuration.Pairings
+            .Where(pairing => pairing.IsActive && pairing.KeyGeneration == peerKeyVersion &&
+                              Guid.TryParse(pairing.PairingId, out var configuredPairingId) &&
+                              configuredPairingId == pairingId &&
+                              string.Equals(pairing.IslandId, peerIslandId, StringComparison.Ordinal) &&
+                              string.Equals(
+                                  pairing.TranscriptHash,
+                                  pairingTranscriptHash,
+                                  StringComparison.Ordinal))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private void RemovePendingPairedLabelRequests(string peerIslandId)
+    {
+        lock (gate)
+        {
+            foreach (var requestId in pairedLabelRequests
+                         .Where(pair => string.Equals(
+                             pair.Value.PeerIslandId,
+                             peerIslandId,
+                             StringComparison.Ordinal))
+                         .Select(static pair => pair.Key)
+                         .ToList())
+                pairedLabelRequests.Remove(requestId);
+        }
     }
 
     private bool IsAllianceRecruitmentAuthorized(
@@ -3912,6 +4127,16 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                          .Select(static pair => pair.Key)
                          .ToList())
                 directoryQueries.Remove(queryId);
+            foreach (var requestId in pairedLabelRequests
+                         .Where(pair => pair.Value.ExpiresAt <= now)
+                         .Select(static pair => pair.Key)
+                         .ToList())
+                pairedLabelRequests.Remove(requestId);
+            foreach (var handle in publishedPairedLabels
+                         .Where(pair => pair.Value.ExpiresAt <= now)
+                         .Select(static pair => pair.Key)
+                         .ToList())
+                publishedPairedLabels.Remove(handle);
             RemoveTransientRoutes((_, route) => route.ValidUntil <= now);
             foreach (var commandId in participantContracts
                          .Where(pair => pair.Value.Header.ExpiresAt <= now)
@@ -4151,6 +4376,20 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         long Generation,
         ImmutableArray<string> RequestedCharacters,
         string PolicyHash,
+        DateTimeOffset ExpiresAt);
+
+    private sealed record PendingPairedLabelRequest(
+        Guid RequestId,
+        string PeerIslandId,
+        string PeerOwnerId,
+        Guid PairingId,
+        string PairingTranscriptHash,
+        ImmutableArray<string> RequestedCharacters,
+        DateTimeOffset ExpiresAt);
+
+    private readonly record struct PublishedPairedLabel(
+        string DisplayLabel,
+        long ListingRevision,
         DateTimeOffset ExpiresAt);
 
     private readonly record struct RouteKey(string FirstIslandId, string SecondIslandId);

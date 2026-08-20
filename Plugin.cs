@@ -272,7 +272,8 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Save,
             safeCode => Log.Warning("[dad] AutoParty endpoint transition {SafeCode}.", safeCode),
             identityStore: autoPartyIdentityStore,
-            listingPublicationProvider: BuildAutoPartyListingPublication);
+            listingPublicationProvider: BuildAutoPartyListingPublication,
+            prepareListingPublication: RefreshAutoPartyPublicationRoster);
         autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
             Configuration.AutoParty.RegisteredOwnerId,
             Configuration.AutoParty.RegisteredIslandId,
@@ -1486,6 +1487,15 @@ public sealed class Plugin : IDalamudPlugin
             crew.Candidates,
             Configuration.PlannerGroups,
             utcNow);
+    }
+
+    private bool RefreshAutoPartyPublicationRoster()
+    {
+        var pool = CharacterIntelligenceService.RefreshLocalCharacterPool(
+            "autoparty-publication",
+            logRefresh: false);
+        var catalog = RosterCatalogService.RefreshCatalog(pool);
+        return catalog.IsFullRosterAvailable && catalog.XadbContractVersion.GetValueOrDefault() >= 6;
     }
 
     private DadAutoPartyCrewReconciliation ReconcileAutoPartyCrew(DateTime? utcNow = null)

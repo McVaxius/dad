@@ -10,6 +10,8 @@ public sealed record DadAutoPartyListingPublication(
     IReadOnlyList<DadAutoPartyListing> Listings)
 {
     internal IReadOnlyList<DadAutoPartyInboundRoute> InboundRoutes { get; init; } = [];
+    internal IReadOnlyDictionary<string, string> PairedLabels { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 }
 
 internal static class DadAutoPartyListingPublicationRules
@@ -42,7 +44,26 @@ internal static class DadAutoPartyListingPublicationRules
         return new(ResolveWireStandingPolicy(savedPolicy, listings), listings)
         {
             InboundRoutes = publishable.Select(static candidate => candidate.InboundRoute!).ToList(),
+            PairedLabels = publishable
+                .Select(static candidate => new
+                {
+                    candidate.Identity.OpaqueCharacterId,
+                    Label = BuildPrivateLabel(candidate.InboundRoute!),
+                })
+                .Where(static item => item.Label.Length > 0)
+                .ToDictionary(
+                    static item => item.OpaqueCharacterId,
+                    static item => item.Label,
+                    StringComparer.Ordinal),
         };
+    }
+
+    private static string BuildPrivateLabel(DadAutoPartyInboundRoute route)
+    {
+        var label = $"{route.CharacterName.Trim()}@{route.WorldName.Trim()}";
+        return label.Length is > 0 and <= 96 && label.All(static character => !char.IsControl(character))
+            ? label
+            : string.Empty;
     }
 
     private static bool IsAuthorizedByAnyLocalPolicy(

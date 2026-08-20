@@ -733,6 +733,10 @@ public sealed class DadAutoPartyListing
     public string EffectivePolicyHash { get; set; } = string.Empty;
     public string OpaqueCharacterId { get; set; } = string.Empty;
     public string DisplayLabel { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string OpaqueDisplayLabel { get; set; } = string.Empty;
+
     public List<string> AllowedJobIds { get; set; } = [];
     public List<string> AllowedActivityIds { get; set; } = [];
     public bool Available { get; set; } = true;
@@ -788,6 +792,7 @@ public sealed class DadAutoPartyListing
             EffectivePolicyHash = EffectivePolicyHash,
             OpaqueCharacterId = OpaqueCharacterId,
             DisplayLabel = DisplayLabel,
+            OpaqueDisplayLabel = OpaqueDisplayLabel,
             AllowedJobIds = [.. AllowedJobIds],
             AllowedActivityIds = [.. AllowedActivityIds],
             Available = Available,

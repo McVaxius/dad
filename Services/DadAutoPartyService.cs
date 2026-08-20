@@ -13,6 +13,7 @@ public sealed class DadAutoPartyService : IDisposable
     private Action<string>? ownerStop;
     private DateTime nextMaintenanceUtc = DateTime.MinValue;
     private readonly HashSet<string> onlineDirectoryIslands = new(StringComparer.Ordinal);
+    private readonly Dictionary<PairedLabelKey, PairedLabelOverlay> pairedLabelOverlay = [];
     private bool disposed;
 
     public DadAutoPartyService(
@@ -218,7 +219,10 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.Listings.RemoveAll(item =>
             string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal));
         lock (directoryPresenceGate)
+        {
             onlineDirectoryIslands.Remove(islandId);
+            RemovePairedLabelsLocked(islandId);
+        }
         configuration.RemoteBindings.RemoveAll(item =>
             string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
         configuration.Grants.RemoveAll(item =>
@@ -287,6 +291,8 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.Listings.RemoveAll(item =>
             string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal));
         configuration.Listings.AddRange(accepted!);
+        lock (directoryPresenceGate)
+            PrunePairedLabelsLocked(now);
         configuration.StateGeneration++;
         saveConfiguration();
         return Decision(true, "dad-listings-applied");
@@ -305,7 +311,10 @@ public sealed class DadAutoPartyService : IDisposable
             if (online)
                 onlineDirectoryIslands.Add(islandId);
             else
+            {
                 onlineDirectoryIslands.Remove(islandId);
+                RemovePairedLabelsLocked(islandId);
+            }
         }
 
         if (online || configuration.Listings.RemoveAll(item =>
@@ -320,22 +329,98 @@ public sealed class DadAutoPartyService : IDisposable
         ThrowIfDisposed();
         var now = DateTime.UtcNow;
         HashSet<string> onlineIslands;
+        Dictionary<PairedLabelKey, PairedLabelOverlay> labels;
         lock (directoryPresenceGate)
+        {
+            PrunePairedLabelsLocked(now);
             onlineIslands = new HashSet<string>(onlineDirectoryIslands, StringComparer.Ordinal);
+            labels = new Dictionary<PairedLabelKey, PairedLabelOverlay>(pairedLabelOverlay);
+        }
+        var listings = configuration.Listings
+            .Where(item => item.Available && item.ExpiresAtUtc > now &&
+                           (string.Equals(
+                                item.SharingIslandId,
+                                configuration.RegisteredIslandId,
+                                StringComparison.Ordinal) ||
+                            onlineIslands.Contains(item.SharingIslandId)))
+            .Select(static item => item.Clone())
+            .ToList();
+        foreach (var listing in listings)
+        {
+            listing.OpaqueDisplayLabel = listing.DisplayLabel;
+            if (labels.TryGetValue(
+                    new PairedLabelKey(listing.SharingIslandId, listing.OpaqueCharacterId),
+                    out var overlay) &&
+                overlay.ListingRevision == listing.Revision &&
+                overlay.ListingExpiresAtUtc == listing.ExpiresAtUtc)
+            {
+                listing.DisplayLabel = overlay.DisplayLabel;
+            }
+        }
         return new(
             configuration.StateGeneration,
-            configuration.Listings
-                .Where(item => item.Available && item.ExpiresAtUtc > now &&
-                               (string.Equals(
-                                    item.SharingIslandId,
-                                    configuration.RegisteredIslandId,
-                                    StringComparison.Ordinal) ||
-                                onlineIslands.Contains(item.SharingIslandId)))
-                .Select(static item => item.Clone())
+            listings
                 .OrderBy(static item => item.DisplayLabel, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(static item => item.OpaqueCharacterId, StringComparer.Ordinal)
                 .ToList(),
             onlineIslands);
+    }
+
+    internal bool ApplyPairedListingLabels(
+        string peerIslandId,
+        Guid pairingId,
+        string pairingTranscriptHash,
+        IReadOnlyCollection<string> requestedHandles,
+        IEnumerable<PairedListingLabel> labels,
+        DateTimeOffset observedAt)
+    {
+        ThrowIfDisposed();
+        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(peerIslandId);
+        var transcriptHash = DadAutoPartyConfiguration.NormalizeIdentifier(pairingTranscriptHash);
+        var pairing = configuration.Pairings.SingleOrDefault(item =>
+            item.IsActive && Guid.TryParse(item.PairingId, out var configuredPairingId) &&
+            configuredPairingId == pairingId &&
+            string.Equals(item.IslandId, islandId, StringComparison.Ordinal) &&
+            string.Equals(item.TranscriptHash, transcriptHash, StringComparison.Ordinal));
+        if (pairing == null)
+            return false;
+
+        var requested = (requestedHandles ?? [])
+            .Select(DadAutoPartyConfiguration.NormalizeIdentifier)
+            .Where(static handle => handle.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .Take(AutoPartyProtocol.MaximumPairedListingLabelBatchSize)
+            .ToHashSet(StringComparer.Ordinal);
+        var supplied = (labels ?? [])
+            .Where(label => label != null && requested.Contains(label.CharacterHandle.Value))
+            .DistinctBy(static label => label.CharacterHandle.Value, StringComparer.Ordinal)
+            .ToList();
+        var now = observedAt.UtcDateTime;
+        lock (directoryPresenceGate)
+        {
+            if (!onlineDirectoryIslands.Contains(islandId))
+                return false;
+            foreach (var handle in requested)
+                pairedLabelOverlay.Remove(new PairedLabelKey(islandId, handle));
+            foreach (var label in supplied)
+            {
+                var listing = configuration.Listings.SingleOrDefault(item =>
+                    item.Available && item.ExpiresAtUtc > now &&
+                    string.Equals(item.OwnerId, pairing.OwnerId, StringComparison.Ordinal) &&
+                    string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal) &&
+                    string.Equals(item.OpaqueCharacterId, label.CharacterHandle.Value, StringComparison.Ordinal));
+                if (listing == null)
+                    continue;
+                pairedLabelOverlay[new PairedLabelKey(islandId, listing.OpaqueCharacterId)] = new(
+                    pairingId,
+                    transcriptHash,
+                    listing.Revision,
+                    listing.ExpiresAtUtc,
+                    label.DisplayLabel);
+            }
+            PrunePairedLabelsLocked(now);
+        }
+        return true;
     }
 
     public void Update(bool dadPluginEnabled)
@@ -349,6 +434,8 @@ public sealed class DadAutoPartyService : IDisposable
         nextMaintenanceUtc = now + TimeSpan.FromMinutes(1);
         var changed = configuration.Grants.RemoveAll(grant => grant.ExpiresAtUtc <= now) > 0;
         changed |= configuration.Listings.RemoveAll(listing => listing.ExpiresAtUtc <= now) > 0;
+        lock (directoryPresenceGate)
+            PrunePairedLabelsLocked(now);
         changed |= configuration.PendingPairings.RemoveAll(pairing => pairing.ExpiresAtUtc <= now) > 0;
         if (configuration.PairingAttemptExpiresAtUtc != default &&
             configuration.PairingAttemptExpiresAtUtc <= now)
@@ -434,8 +521,23 @@ public sealed class DadAutoPartyService : IDisposable
             requiredPermissions);
     }
 
-    public DadAutoPartyPolicyDecision Revoke(Revocation revocation) =>
-        Policy.Revoke(revocation);
+    public DadAutoPartyPolicyDecision Revoke(Revocation revocation)
+    {
+        var decision = Policy.Revoke(revocation);
+        if (decision.Allowed && revocation.TargetKind == RevocationTargetKind.Identity)
+        {
+            var islands = configuration.Pairings
+                .Where(pairing => string.Equals(pairing.OwnerId, revocation.TargetId, StringComparison.Ordinal))
+                .Select(static pairing => pairing.IslandId)
+                .ToList();
+            lock (directoryPresenceGate)
+            {
+                foreach (var islandId in islands)
+                    RemovePairedLabelsLocked(islandId);
+            }
+        }
+        return decision;
+    }
 
     public DadAutoPartyAuthorizationDecision EvaluateSchedulerAuthorization(DadRunRequest request) =>
         DadAutoPartySchedulerAuthorizationRules.Evaluate(request, Policy.GetProposalAuthorization);
@@ -532,6 +634,11 @@ public sealed class DadAutoPartyService : IDisposable
         if (disposed)
             return;
         StopAll("dad-autoparty-disposed");
+        lock (directoryPresenceGate)
+        {
+            onlineDirectoryIslands.Clear();
+            pairedLabelOverlay.Clear();
+        }
         Connector.DisposeAsync().AsTask().GetAwaiter().GetResult();
         disposed = true;
     }
@@ -562,7 +669,42 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.RemoteBindings.Clear();
         configuration.Deauthentications.Clear();
         lock (directoryPresenceGate)
+        {
             onlineDirectoryIslands.Clear();
+            pairedLabelOverlay.Clear();
+        }
+    }
+
+    private void PrunePairedLabelsLocked(DateTime now)
+    {
+        foreach (var key in pairedLabelOverlay.Keys.ToList())
+        {
+            var overlay = pairedLabelOverlay[key];
+            var pairing = configuration.Pairings.SingleOrDefault(item =>
+                item.IsActive && Guid.TryParse(item.PairingId, out var pairingId) &&
+                pairingId == overlay.PairingId &&
+                string.Equals(item.IslandId, key.IslandId, StringComparison.Ordinal) &&
+                string.Equals(item.TranscriptHash, overlay.PairingTranscriptHash, StringComparison.Ordinal));
+            var listing = configuration.Listings.SingleOrDefault(item =>
+                item.Available && item.ExpiresAtUtc > now &&
+                string.Equals(item.SharingIslandId, key.IslandId, StringComparison.Ordinal) &&
+                string.Equals(item.OpaqueCharacterId, key.OpaqueCharacterId, StringComparison.Ordinal));
+            if (pairing == null || listing == null || !onlineDirectoryIslands.Contains(key.IslandId) ||
+                listing.Revision != overlay.ListingRevision ||
+                listing.ExpiresAtUtc != overlay.ListingExpiresAtUtc ||
+                overlay.ListingExpiresAtUtc <= now)
+            {
+                pairedLabelOverlay.Remove(key);
+            }
+        }
+    }
+
+    private void RemovePairedLabelsLocked(string islandId)
+    {
+        foreach (var key in pairedLabelOverlay.Keys
+                     .Where(key => string.Equals(key.IslandId, islandId, StringComparison.Ordinal))
+                     .ToList())
+            pairedLabelOverlay.Remove(key);
     }
 
     private DadAutoPartyPolicyDecision Decision(bool allowed, string safeCode) =>
@@ -583,6 +725,15 @@ public sealed class DadAutoPartyService : IDisposable
         };
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(disposed, this);
+
+    private readonly record struct PairedLabelKey(string IslandId, string OpaqueCharacterId);
+
+    private readonly record struct PairedLabelOverlay(
+        Guid PairingId,
+        string PairingTranscriptHash,
+        long ListingRevision,
+        DateTime ListingExpiresAtUtc,
+        string DisplayLabel);
 }
 
 public static class DadAutoPartyShareRules

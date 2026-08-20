@@ -32,6 +32,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     private readonly Action<string> diagnostic;
     private readonly Func<HttpClient> httpClientFactory;
     private readonly Func<DateTime, DadAutoPartyListingPublication>? listingPublicationProvider;
+    private readonly Func<bool>? prepareListingPublication;
     private readonly CancellationTokenSource shutdown = new();
     private Task<AdapterStartResult>? adapterStartTask;
     private Task<LegacyCleanupResult>? legacyCleanupTask;
@@ -61,7 +62,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         Action<string>? diagnostic = null,
         Func<HttpClient>? httpClientFactory = null,
         IDadAutoPartyEndpointIdentityStore? identityStore = null,
-        Func<DateTime, DadAutoPartyListingPublication>? listingPublicationProvider = null)
+        Func<DateTime, DadAutoPartyListingPublication>? listingPublicationProvider = null,
+        Func<bool>? prepareListingPublication = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.credentialStore = credentialStore ?? throw new ArgumentNullException(nameof(credentialStore));
@@ -72,6 +74,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         this.diagnostic = diagnostic ?? (_ => { });
         this.httpClientFactory = httpClientFactory ?? (() => new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
         this.listingPublicationProvider = listingPublicationProvider;
+        this.prepareListingPublication = prepareListingPublication;
     }
 
     public DadAutoPartyEndpointSnapshot Snapshot { get; private set; } =
@@ -759,8 +762,17 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             return;
         try
         {
+            if (prepareListingPublication != null && !prepareListingPublication())
+            {
+                nextListingPublishUtc = utcNow + ListingPublishRetryDelay;
+                diagnostic("dad-listing-publication-roster-unavailable");
+                return;
+            }
             var publication = listingPublicationProvider(utcNow);
-            var result = relayPump.QueueListingUpdate(publication.StandingPolicy, publication.Listings);
+            var result = relayPump.QueueListingUpdate(
+                publication.StandingPolicy,
+                publication.Listings,
+                publication.PairedLabels);
             nextListingPublishUtc = utcNow + (result.Allowed ? ListingPublishInterval : ListingPublishRetryDelay);
             if (!result.Allowed)
                 diagnostic(result.SafeCode);

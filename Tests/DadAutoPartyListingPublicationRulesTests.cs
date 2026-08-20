@@ -64,6 +64,8 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         Assert.Contains("dad-premadeduty-123", listing.AllowedActivityIds);
         Assert.Equal(7, listing.Revision);
         Assert.Equal(now.AddMinutes(15), listing.ExpiresAtUtc);
+        Assert.Equal("Character@World", publication.PairedLabels["opaque-local"]);
+        Assert.DoesNotContain("Character@World", listing.DisplayLabel, StringComparison.Ordinal);
         Assert.DoesNotContain(publication.Listings, item => item.OpaqueCharacterId == "opaque-unavailable");
     }
 
@@ -199,6 +201,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         Assert.Equal(256, publication.Listings.Count);
         Assert.Equal(256, publication.InboundRoutes.Count);
+        Assert.Equal(256, publication.PairedLabels.Count);
     }
 
     [Fact]

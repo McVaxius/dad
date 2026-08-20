@@ -759,6 +759,165 @@ public sealed class DadAutoPartyRelayPumpTests
             1);
     }
 
+    [Fact]
+    public async Task PairedDirectoryRequestsPrivateLabelsInSixteenHandleBatchesAndKeepsCommunityOpaque()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        await pump.ProcessOnceAsync();
+        var query = fixture.Open<DirectoryQuery>(fixture.Transport.Sent.Single(item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        var pairedListings = Enumerable.Range(1, 17)
+            .Select(index => new PrivateCharacterListing(
+                new OpaqueCharacterId($"opaque-peer-{index}"),
+                $"Shared character {index:0000}",
+                [new JobId("19")],
+                [new ActivityId(DadAutoPartyFreeformRules.FormationActivityId)],
+                true,
+                1,
+                expiresAt))
+            .ToImmutableArray();
+        var pairing = Assert.Single(fixture.Configuration.Pairings);
+        var page = new DirectoryPage(
+            fixture.RelayHeader("directory-private-labels"),
+            query.QueryId,
+            1,
+            false,
+            string.Empty,
+            [
+                new PrivateDirectoryEntry(
+                    new OwnerId(PumpFixture.PeerOwner),
+                    new IslandId(PumpFixture.PeerIsland),
+                    "peer-endpoint",
+                    "guild-peer",
+                    CharacterShareMode.AllCharactersForPeer,
+                    "paired-policy-hash",
+                    true,
+                    pairedListings,
+                    1,
+                    expiresAt),
+                new PrivateDirectoryEntry(
+                    new OwnerId("owner-community"),
+                    new IslandId("island-community"),
+                    "community-endpoint",
+                    "guild-home",
+                    CharacterShareMode.CharacterList,
+                    "community-policy-hash",
+                    true,
+                    [new PrivateCharacterListing(
+                        new OpaqueCharacterId("opaque-community"),
+                        "Shared character community",
+                        [new JobId("19")],
+                        [new ActivityId(DadAutoPartyFreeformRules.FormationActivityId)],
+                        true,
+                        1,
+                        expiresAt)],
+                    1,
+                    expiresAt),
+            ],
+            1);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(page));
+
+        await pump.ProcessOnceAsync();
+
+        var requests = fixture.Transport.Sent
+            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PairedListingLabelRequest>())
+            .Select(fixture.Open<PairedListingLabelRequest>)
+            .ToList();
+        Assert.Equal([16, 1], requests.Select(static request => request.RequestedCharacters.Length));
+        Assert.All(requests, request =>
+        {
+            Assert.Equal(PumpFixture.PeerIsland, request.Header.RecipientIslandId.Value);
+            Assert.Equal(Guid.Parse(pairing.PairingId), request.PairingId);
+            Assert.Equal(pairing.TranscriptHash, request.PairingTranscriptHash);
+        });
+
+        var first = requests[0];
+        var response = new PairedListingLabelResponse(
+            fixture.PeerHeader("paired-label-response"),
+            first.RequestId,
+            first.PairingId,
+            first.PairingTranscriptHash,
+            [new PairedListingLabel(first.RequestedCharacters[0], "Private Character@Private World")]);
+        fixture.Transport.Inbound.Enqueue(fixture.SealPeer(response));
+        await pump.ProcessOnceAsync();
+
+        var directory = fixture.Service.GetDirectorySnapshot();
+        Assert.Equal(
+            "Private Character@Private World",
+            directory.Listings.Single(item =>
+                item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
+        Assert.Equal(
+            "Shared character community",
+            directory.Listings.Single(item => item.OpaqueCharacterId == "opaque-community").DisplayLabel);
+        Assert.Equal(
+            "Shared character 0001",
+            fixture.Configuration.Listings.Single(item =>
+                item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
+
+        fixture.Configuration.Listings.Single(item =>
+            item.OpaqueCharacterId == first.RequestedCharacters[0].Value).ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);
+        fixture.Service.Update(dadPluginEnabled: true);
+        Assert.DoesNotContain(
+            fixture.Service.GetDirectorySnapshot().Listings,
+            item => item.OpaqueCharacterId == first.RequestedCharacters[0].Value);
+    }
+
+    [Fact]
+    public async Task PairedLabelResponderReturnsOnlyCurrentlyPublishedAndPairAuthorizedHandles()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        var pairing = Assert.Single(fixture.Configuration.Pairings);
+        pairing.LocalSharePolicy = new DadAutoPartySharePolicy
+        {
+            Enabled = true,
+            Mode = DadAutoPartyCharacterShareMode.SpecificCharacter,
+            CharacterHandles = ["opaque-allowed"],
+        }.Normalize();
+        var expiresAt = DateTime.UtcNow.AddMinutes(10);
+        var listings = new[] { "opaque-allowed", "opaque-denied" }
+            .Select(handle => new DadAutoPartyListing
+            {
+                ListingId = Guid.NewGuid().ToString("D"),
+                OwnerId = PumpFixture.LocalOwner,
+                SharingIslandId = PumpFixture.LocalIsland,
+                OpaqueCharacterId = handle,
+                DisplayLabel = $"Shared character {handle}",
+                AllowedJobIds = ["19"],
+                AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+                Available = true,
+                Revision = 1,
+                ExpiresAtUtc = expiresAt,
+            })
+            .ToList();
+        await using var pump = fixture.CreatePump();
+        Assert.True(pump.QueueListingUpdate(
+            pairing.LocalSharePolicy,
+            listings,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["opaque-allowed"] = "Allowed Character@Allowed World",
+                ["opaque-denied"] = "Denied Character@Denied World",
+            }).Allowed);
+        var request = new PairedListingLabelRequest(
+            fixture.PeerHeader("paired-label-request"),
+            Guid.NewGuid(),
+            Guid.Parse(pairing.PairingId),
+            pairing.TranscriptHash,
+            [new OpaqueCharacterId("opaque-allowed"), new OpaqueCharacterId("opaque-denied")]);
+        fixture.Transport.Inbound.Enqueue(fixture.SealPeer(request));
+
+        await pump.ProcessOnceAsync();
+
+        var envelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PairedListingLabelResponse>());
+        var response = fixture.Open<PairedListingLabelResponse>(envelope);
+        var label = Assert.Single(response.Labels);
+        Assert.Equal("opaque-allowed", label.CharacterHandle.Value);
+        Assert.Equal("Allowed Character@Allowed World", label.DisplayLabel);
+    }
+
 
     [Fact]
     public async Task PrivateListingsAreSealedForTheCentralRelay()
@@ -1940,6 +2099,79 @@ public sealed class DadAutoPartyRelayPumpTests
         endpoint.Dispose();
 
         Assert.False(pump.Snapshot.Running);
+    }
+
+    [Fact]
+    public async Task EndpointRefreshesFullXadbRosterBeforeFirstAndCadencedListingPublication()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var pump = fixture.CreatePump();
+        var rosterReady = false;
+        var refreshCalls = 0;
+        var publicationCalls = 0;
+        var diagnostics = new List<string>();
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.SpecificCharacter,
+            CharacterHandles = ["opaque-local"],
+            Enabled = true,
+        }.Normalize();
+        var listing = new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = "opaque-local",
+            DisplayLabel = "Shared character local",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15),
+        };
+        using var endpoint = new DadAutoPartyEndpointService(
+            fixture.Configuration,
+            new UnusedWebhookStore(),
+            new UnusedLegacyTokenStore(),
+            fixture.Connector,
+            static () => { },
+            diagnostic: diagnostics.Add,
+            identityStore: fixture.IdentityStore,
+            listingPublicationProvider: _ =>
+            {
+                publicationCalls++;
+                return new DadAutoPartyListingPublication(policy, [listing]);
+            },
+            prepareListingPublication: () =>
+            {
+                refreshCalls++;
+                return rosterReady;
+            });
+        typeof(DadAutoPartyEndpointService).GetField(
+            "relayPump",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(endpoint, pump);
+        var publish = typeof(DadAutoPartyEndpointService).GetMethod(
+            "PublishListingsIfDue",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var first = DateTime.UtcNow;
+
+        publish.Invoke(endpoint, [first]);
+        Assert.Equal(1, refreshCalls);
+        Assert.Equal(0, publicationCalls);
+        Assert.Contains("dad-listing-publication-roster-unavailable", diagnostics);
+
+        rosterReady = true;
+        publish.Invoke(endpoint, [first.AddSeconds(31)]);
+        Assert.Equal(2, refreshCalls);
+        Assert.Equal(1, publicationCalls);
+
+        publish.Invoke(endpoint, [first.AddMinutes(5).AddSeconds(32)]);
+        Assert.Equal(3, refreshCalls);
+        Assert.Equal(2, publicationCalls);
+
+        endpoint.Dispose();
+        await pump.DisposeAsync();
     }
 
     [Fact]

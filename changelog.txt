@@ -1,10 +1,13 @@
 # dad — changelog
 
-## 2026-08-20 — Paired directory and stable aliases (local-only, unpublished)
+## 2026-08-20 — Automatic paired directory and private character labels (local-only, unpublished)
 - Crew publication now includes an offline XADB character only when one fresh, reachable, ownership-proven DAD route can
   relog it. Runtime admission consumes that same private route snapshot without Fleet Matrix rows or a pre-existing live
   character; stale, peer-owned, unowned, ambiguous, and unroutable rows remain unavailable. Wire listings retain only the
   existing opaque character, job, activity, availability, revision, and expiry fields.
+- Every first eligible listing publication and five-minute publication pass now refreshes DAD's local XADB full-roster
+  view first. Missing or degraded contract-v6 roster proof fails closed and retries on the existing publication cadence;
+  login and manual **Refresh** remain immediate but optional triggers.
 - Community sharing no longer suppresses listings authorized by private pairings. Disabled Community updates retain a
   disabled, empty wire policy while carrying private-pair listings, while enabled Community selection is intersected only
   on its wire clone. The existing 256-listing bound remains unchanged.
@@ -23,8 +26,17 @@
   locally into the bounded map, survive pairing replacement and deauthentication, and clear only with deregistration,
   purge, or local identity replacement. Aliases remain outside every wire contract.
 - Crew retains manual **Refresh** as an optional override. Stable aliases fall back to the peer endpoint alias and then
-  **Paired DAD**; technical
-  island IDs appear only with **Details** and are never saved into the Crew placeholder.
+  **Paired DAD**; technical island IDs appear only with **Details** and are never saved into the Crew placeholder.
+- Paired directory pages now trigger direct label requests in batches of at most 16 opaque handles. The peer returns
+  `CharacterName@World` only for handles still published, available, and authorized by that exact active pairing; both
+  contracts use the existing signed X25519-sealed DAD-to-DAD route, so AutoParty sees only opaque envelopes.
+- Decrypted labels live only in a process-local overlay bound to the current pairing and exact listing revision/expiry.
+  Picker and saved Crew-slot presentation use the private label while it is current, then fall back to the persisted
+  opaque placeholder on expiry, removal, offline presence, revocation, deauthentication, or unload. Unpaired Community
+  listings remain opaque.
+- Vendored `Dad.AutoParty.Protocol 0.2.0-preview.5` through the existing local NuGet workflow with SHA-256
+  `3fb8ea0c02d03354bfe85e02833b8cb27bb9d116c3f5c571b544f34ec02c1a46`. Wire schema version 3, DAD public version
+  `0.5.0.9`, LAN/public IPC, AutoParty services and storage, and `Z:\dad.bat` behavior remain unchanged.
 
 ## 2026-08-18 — Reciprocal APP1 pairing and courier repair (local-only, unpublished)
 - Replaced island-ID initiation, six-digit confirmation, and editable long-term fingerprint fields with one read-only
