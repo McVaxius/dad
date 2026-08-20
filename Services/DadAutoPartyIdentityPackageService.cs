@@ -185,6 +185,7 @@ public sealed class DadAutoPartyIdentityPackageService
         configuration.RelayKeyGeneration = 1;
         configuration.RelaySigningPublicKey = string.Empty;
         configuration.RelayAgreementPublicKey = string.Empty;
+        configuration.PairedDadAliases.Clear();
         configuration.Pairings.Clear();
         configuration.PendingPairings.Clear();
         configuration.Grants.Clear();
@@ -234,6 +235,7 @@ public sealed class DadAutoPartyIdentityPackageService
             configuration.SigningPublicKey = Convert.ToBase64String(signingPublic);
             configuration.EncryptionPublicKey = Convert.ToBase64String(encryptionPublic);
             configuration.EndpointKeyGeneration = keyGeneration;
+            configuration.PairedDadAliases.Clear();
             configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
             configuration.StateGeneration++;
             saveConfiguration();

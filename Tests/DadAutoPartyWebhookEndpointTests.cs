@@ -124,6 +124,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         }.Normalize();
         configuration.Pairings.Add(new DadAutoPartyPairing { PairingId = Guid.NewGuid().ToString("D") });
         configuration.PendingPairings.Add(new DadAutoPartyPairing { PairingId = Guid.NewGuid().ToString("D") });
+        configuration.PairedDadAliases["island-stable-alias"] = "Stable_DAD";
         configuration.StandingSharePolicy = new DadAutoPartySharePolicy
         {
             Mode = DadAutoPartyCharacterShareMode.CharacterList,
@@ -153,6 +154,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.True(configuration.IsRegistrationActive);
         Assert.Single(configuration.Pairings);
         Assert.Single(configuration.PendingPairings);
+        Assert.Equal("Stable_DAD", configuration.PairedDadAliases["island-stable-alias"]);
         Assert.True(configuration.StandingSharePolicy.Enabled);
         Assert.Equal(crypto.UplinkEpoch.EpochId.ToString("D"), configuration.UplinkEpochId);
         Assert.Equal(crypto.DownlinkEpoch.EpochId.ToString("D"), configuration.DownlinkEpochId);
@@ -223,6 +225,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var reset = await resetService.PurgeAsync(deleteEndpointIdentity: false);
         Assert.True(reset.Purged, reset.SafeCode);
         Assert.Equal(1, configuration.DirectoryGeneration);
+        Assert.Empty(configuration.PairedDadAliases);
     }
 
     [Fact]
@@ -381,9 +384,10 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
-    public void AutoPartyWindowShowsReciprocalApp1PairingAliasesAndDebugOnlyTechnicalIds()
+    public void AutoPartyWindowShowsReciprocalApp1PairingStableAliasesAndDebugOnlyTechnicalIds()
     {
         var source = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
+        var crewSource = ReadRepositorySource("Windows", "DadPresetCrewEditor.cs");
         var bootstrapStart = source.IndexOf("\"Encrypted bootstrap DM\"", StringComparison.Ordinal);
         var bootstrapEnd = source.IndexOf("\"Import bootstrap\"", bootstrapStart, StringComparison.Ordinal);
 
@@ -414,6 +418,10 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("Peer pairing fingerprint", source, StringComparison.Ordinal);
         Assert.Contains("Paste fingerprint", source, StringComparison.Ordinal);
         Assert.Contains("Submit pairing", source, StringComparison.Ordinal);
+        Assert.Contains("ClearPairingFingerprint: result.Allowed", source, StringComparison.Ordinal);
+        Assert.Contains("RestoreSubmittedPairingSelection(plugin.Configuration.AutoParty)", source, StringComparison.Ordinal);
+        Assert.Contains("pairingShareHandles.UnionWith(configuration.PairingAttemptSharePolicy.CharacterHandles)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ClearPairingInput: result.Allowed", source, StringComparison.Ordinal);
         Assert.Contains("The first submission is silent", source, StringComparison.Ordinal);
         Assert.Contains("APP1", source, StringComparison.Ordinal);
         Assert.Contains("plugin.Configuration.DebugUiEnabled", source, StringComparison.Ordinal);
@@ -427,6 +435,17 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.DoesNotContain("Approve pairing locally", source, StringComparison.Ordinal);
         Assert.Contains("SharingEndpointAlias", source, StringComparison.Ordinal);
         Assert.Contains("Paired DAD", source, StringComparison.Ordinal);
+        Assert.Contains("configuration.PairedDadAliases.TryGetValue", source, StringComparison.Ordinal);
+        Assert.Contains("SetPairingAlias(pairing.IslandId, alias)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Save alias", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("pairing.LocalAlias", source, StringComparison.Ordinal);
+        Assert.Contains("PairedDadAliases.TryGetValue", crewSource, StringComparison.Ordinal);
+        Assert.Contains("pairing.PeerEndpointAlias", crewSource, StringComparison.Ordinal);
+        Assert.Contains("RequestDirectoryAsync(string.Empty, false)", crewSource, StringComparison.Ordinal);
+        Assert.Contains("Refresh##{idPrefix}-paired-refresh-{index}", crewSource, StringComparison.Ordinal);
+        Assert.Contains("showDetails ? $\"{label} [{pairing.IslandId}]\" : label", crewSource, StringComparison.Ordinal);
+        Assert.Contains("CharacterLabel = $\"{PairingLabel(pairing)} - select an authorized character\"", crewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("pairing.LocalAlias", crewSource, StringComparison.Ordinal);
         Assert.Contains("This character\\0Specific characters\\0All characters", source, StringComparison.Ordinal);
         Assert.Contains("DadAutoPartyCrewShareScope", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Opaque handles (comma-separated)", source, StringComparison.Ordinal);
@@ -753,7 +772,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
             Enumerable.Range(0, AutoPartyProtocol.MaximumCourierFragmentBytes + 1)
                 .Select(static value => (byte)(value + 11))
                 .ToArray());
-        Assert.True(downlinkPages.Length > 1);
+        Assert.Contains(downlinkPages, content =>
+            CourierTextCodec.DecodePage(content).Contract.Fragments.Length > 1);
         Assert.All(downlinkPages, page => Assert.True(
             page.Length <= AutoPartyProtocol.MaximumCourierTextCharacters));
         var handler = new ScriptedWebhookHandler(downlinkPages[0]);
@@ -815,6 +835,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
             }
             Assert.NotNull(page);
             Assert.InRange(page!.Fragments.Length, 1, AutoPartyProtocol.MaximumCourierFragmentsPerPage);
+            if (acceptedThrough == 0)
+                Assert.True(page.Fragments.Length > 1, "The first uplink page did not batch contiguous fragments.");
             Assert.Contains(handler.UplinkPages, content =>
                 content.Length <= AutoPartyProtocol.MaximumCourierTextCharacters &&
                 CourierTextCodec.DecodePage(content).Contract.Header.MessageId == page.Header.MessageId);
@@ -991,28 +1013,37 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var sent = await adapter.SendAsync(outbound);
         Assert.True(sent.Accepted, sent.SafeCode);
 
-        for (var fragmentNumber = 1; fragmentNumber <= 4; fragmentNumber++)
+        var acceptedThrough = 0;
+        var publishedThrough = new List<int>();
+        while (acceptedThrough < 4)
         {
             CourierPage? publishedPage = null;
             for (var attempt = 0; attempt < 200 && publishedPage == null; attempt++)
             {
                 publishedPage = handler.UplinkPages
                     .Select(content => CourierTextCodec.DecodePage(content).Contract)
-                    .LastOrDefault(page => page.Fragments[0].FragmentNumber == fragmentNumber);
+                    .LastOrDefault(page => page.Fragments[0].FragmentNumber == acceptedThrough + 1);
                 if (publishedPage == null)
                     await Task.Delay(10);
             }
 
             Assert.NotNull(publishedPage);
+            if (acceptedThrough == 0)
+                Assert.True(
+                    publishedPage!.Fragments.Length > 1,
+                    "Pairing progress used one Discord edit per fragment instead of batching.");
+            var lastFragmentNumber = publishedPage!.Fragments[^1].FragmentNumber;
+            publishedThrough.Add(lastFragmentNumber);
             var acknowledgementContent = crypto.CreateUplinkAcknowledgement(publishedPage!);
             for (var attempt = 0; attempt < 200 && !ReadDiagnostics().Any(line =>
                          line.Contains(
-                             $"stage=fragment-acknowledged:{fragmentNumber}/4",
+                             $"stage=fragment-acknowledged:{lastFragmentNumber}/4",
                              StringComparison.Ordinal)); attempt++)
             {
                 handler.SetContent("10001", acknowledgementContent);
                 await Task.Delay(10);
             }
+            acceptedThrough = lastFragmentNumber;
         }
 
         for (var attempt = 0; attempt < 200 && !adapter.TransferSnapshot.IsIdle; attempt++)
@@ -1021,7 +1052,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var observed = ReadDiagnostics();
         Assert.Equal(1, observed.Count(line => line.Contains(
             "stage=transfer-started", StringComparison.Ordinal)));
-        for (var fragmentNumber = 1; fragmentNumber <= 4; fragmentNumber++)
+        foreach (var fragmentNumber in publishedThrough)
         {
             Assert.Equal(1, observed.Count(line => line.Contains(
                 $"stage=fragment-published:{fragmentNumber}/4",

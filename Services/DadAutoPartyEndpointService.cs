@@ -448,6 +448,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;
         if (!sameIdentityRecovery)
         {
+            configuration.PairedDadAliases.Clear();
             configuration.Pairings.Clear();
             configuration.PendingPairings.Clear();
             configuration.Grants.Clear();

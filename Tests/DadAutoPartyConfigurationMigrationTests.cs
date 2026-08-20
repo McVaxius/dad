@@ -26,11 +26,11 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
-    public void NewConfigurationUsesSchemaElevenWithInertAutoPartyDefaults()
+    public void NewConfigurationUsesSchemaTwelveWithInertAutoPartyDefaults()
     {
         var configuration = new Configuration();
 
-        Assert.Equal(11, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         AssertInert(configuration.AutoParty);
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("PairingEnabled"));
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("ExecutionEnabled"));
@@ -40,7 +40,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
-    public async Task SchemaTenToElevenPreservesRegistrationTrustRoutesPoliciesAndOrdinaryConfiguration()
+    public async Task SchemaTenToTwelvePreservesRegistrationTrustRoutesPoliciesAndOrdinaryConfiguration()
     {
         var fixture = await CreateRegistrationFixtureAsync();
         using var identityStore = fixture.IdentityStore;
@@ -124,7 +124,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             identityStore,
             fixture.WebhookStore));
 
-        Assert.Equal(11, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         Assert.True(configuration.PluginEnabled);
         Assert.Equal(5544, configuration.ServerListenPort);
         Assert.Equal("Preserved planner", Assert.Single(configuration.PlannerGroups).DisplayName);
@@ -167,6 +167,47 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
+    public void SchemaElevenMigratesLegacyPairingAliasesIntoNormalizedStableMap()
+    {
+        var now = DateTime.UtcNow;
+        var legacyPairing = Pairing(" island-legacy ", now, active: true);
+        legacyPairing.LocalAlias = " Legacy_DAD ";
+        var mappedPairing = Pairing("island-mapped", now, active: true);
+        mappedPairing.LocalAlias = "Legacy_Loses";
+        var configuration = new Configuration
+        {
+            Version = 11,
+            AutoParty = new DadAutoPartyConfiguration
+            {
+                PairedDadAliases = new Dictionary<string, string>
+                {
+                    [" island-mapped "] = " Map_Wins ",
+                },
+                Pairings = [legacyPairing, mappedPairing],
+            },
+        };
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            configuration,
+            new RecordingIdentityStore(),
+            new RecordingWebhookStore()));
+
+        Assert.Equal(12, configuration.Version);
+        Assert.Equal("Legacy_DAD", configuration.AutoParty.PairedDadAliases["island-legacy"]);
+        Assert.Equal("Map_Wins", configuration.AutoParty.PairedDadAliases["island-mapped"]);
+        Assert.Null(legacyPairing.LocalAlias);
+        Assert.Null(mappedPairing.LocalAlias);
+        Assert.DoesNotContain(
+            "LocalAlias",
+            JsonSerializer.Serialize(configuration.AutoParty.Pairings),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "LocalAlias",
+            Newtonsoft.Json.JsonConvert.SerializeObject(configuration.AutoParty.Pairings),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SchemaNineResetClearsAutoPartyAndPreservesUnrelatedConfigurationAndFleet()
     {
         var identityStore = new RecordingIdentityStore();
@@ -181,7 +222,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             identityStore,
             webhookStore));
 
-        Assert.Equal(11, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         Assert.True(configuration.PluginEnabled);
         Assert.Equal(5544, configuration.ServerListenPort);
         Assert.Equal("account-current", configuration.ClientAccountId);
@@ -224,7 +265,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 identityStore,
                 webhookStore));
 
-            Assert.Equal(11, configuration.Version);
+            Assert.Equal(12, configuration.Version);
             Assert.Empty(Directory.GetFiles(Path.Combine(root, "identity"), "*.dpapi"));
             Assert.Empty(Directory.GetFiles(Path.Combine(root, "mailbox"), "*.dpapi"));
         }
@@ -254,8 +295,8 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             Assert.True(DadAutoPartyConfigurationMigration.Migrate(missing, identityStore, webhookStore));
             Assert.True(DadAutoPartyConfigurationMigration.Migrate(malformed, identityStore, webhookStore));
 
-            Assert.Equal(11, missing.Version);
-            Assert.Equal(11, malformed.Version);
+            Assert.Equal(12, missing.Version);
+            Assert.Equal(12, malformed.Version);
             AssertInert(missing.AutoParty);
             AssertInert(malformed.AutoParty);
         }
@@ -293,7 +334,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 var exception = Assert.Throws<InvalidOperationException>(() =>
                     DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore));
                 Assert.Equal(
-                    "AutoParty schema-11 protected-state reset could not complete.",
+                    "AutoParty schema-12 protected-state reset could not complete.",
                     exception.Message);
                 Assert.Equal(9, configuration.Version);
                 Assert.Same(priorAutoParty, configuration.AutoParty);
@@ -303,7 +344,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 configuration,
                 identityStore,
                 webhookStore));
-            Assert.Equal(11, configuration.Version);
+            Assert.Equal(12, configuration.Version);
             Assert.False(File.Exists(webhookPath));
         }
         finally
@@ -314,7 +355,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Fact]
-    public void SchemaElevenMigrationIsIdempotent()
+    public void SchemaTwelveMigrationIsIdempotent()
     {
         var identityStore = new RecordingIdentityStore();
         var webhookStore = new RecordingWebhookStore();
@@ -1047,6 +1088,7 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             DadAutoPartyCharacterShareMode.CharacterList,
             autoParty.StandingSharePolicy.Mode);
         Assert.True(autoParty.StandingSharePolicy.IsValid);
+        Assert.Empty(autoParty.PairedDadAliases);
         Assert.Empty(autoParty.Pairings);
         Assert.Empty(autoParty.PendingPairings);
         Assert.Empty(autoParty.Grants);

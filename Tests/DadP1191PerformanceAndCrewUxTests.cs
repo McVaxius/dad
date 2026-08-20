@@ -37,7 +37,7 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         if (DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore))
             configuration.Save();
 
-        Assert.Equal(10, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         Assert.False(configuration.AutoParty.Enabled);
         Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.AutoParty.RegistrationState);
         Assert.Equal(string.Empty, configuration.AutoParty.EndpointIdentityReference);

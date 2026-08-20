@@ -211,6 +211,18 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task App1RejectsAnAlreadyActivePeerBeforeSubmission()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        var peerToken = PairingCopyPasteCodec.EncodeInvite(CreatePeerPairingInvite(fixture, now));
+
+        Assert.False(pump.TryValidatePeerPairingInvite(peerToken, out _, out var safeCode));
+        Assert.Equal("dad-pairing-peer-already-active", safeCode);
+    }
+
+    [Fact]
     public async Task PairingEstablishedInstallsPeerAliasAndPoliciesThenInvalidatesTheAttempt()
     {
         var now = DateTimeOffset.UtcNow;
@@ -809,7 +821,7 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(CharacterShareMode.AllCharactersForPeer, update.SharePolicy.Mode);
         Assert.False(update.SharePolicy.Enabled);
         Assert.Empty(update.SharePolicy.CharacterHandles);
-        Assert.Empty(update.Listings);
+        Assert.Equal("opaque-local", Assert.Single(update.Listings).CharacterHandle.Value);
     }
 
     [Fact]
@@ -1207,6 +1219,10 @@ public sealed class DadAutoPartyRelayPumpTests
         pump.ConfigureLifecycleHandlers(
             static _ => new(false, "unused", 1),
             static (_, _, _) => ValueTask.FromResult(new DadAutoPartyPrivacyResult(false, false, "unused")));
+        Assert.True(fixture.Service.SetPairingAlias(PumpFixture.PeerIsland, "Temporary_DAD").Allowed);
+        Assert.True(fixture.Service.SetPairingAlias(PumpFixture.PeerIsland, string.Empty).Allowed);
+        Assert.False(fixture.Configuration.PairedDadAliases.ContainsKey(PumpFixture.PeerIsland));
+        Assert.True(fixture.Service.SetPairingAlias(PumpFixture.PeerIsland, "Stable_DAD").Allowed);
 
         var decision = pump.Deauthenticate(PumpFixture.PeerIsland, "dad-owner-deauthenticated");
 
@@ -1215,6 +1231,7 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.NotNull(pairing.RevokedAtUtc);
         Assert.Contains(fixture.Configuration.Deauthentications, item =>
             item.PeerIslandId == PumpFixture.PeerIsland);
+        Assert.Equal("Stable_DAD", fixture.Configuration.PairedDadAliases[PumpFixture.PeerIsland]);
         Assert.True(fixture.Bridge.PendingCommandCount > 0);
 
         await pump.ProcessOnceAsync();

@@ -55,6 +55,7 @@ public sealed class DadAutoPartyConfiguration
     public DadAutoPartyCrewShareScope StandingShareScope { get; set; } =
         DadAutoPartyCrewShareScope.SpecificCharacters;
     public List<DadAutoPartyCrewIdentity> CrewIdentities { get; set; } = [];
+    public Dictionary<string, string> PairedDadAliases { get; set; } = new(StringComparer.Ordinal);
     public List<DadAutoPartyPairing> Pairings { get; set; } = [];
     public List<DadAutoPartyGrant> Grants { get; set; } = [];
     public List<DadAutoPartyListing> Listings { get; set; } = [];
@@ -155,6 +156,17 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static identity => identity.RosterIdentityKey, StringComparer.OrdinalIgnoreCase)
             .Take(256)
             .ToList();
+        PairedDadAliases = (PairedDadAliases ?? new Dictionary<string, string>())
+            .Select(static pair => new KeyValuePair<string, string>(
+                NormalizeIdentifier(pair.Key),
+                NormalizeAlias(pair.Value)))
+            .Where(static pair => !string.IsNullOrWhiteSpace(pair.Key) &&
+                                  !string.IsNullOrWhiteSpace(pair.Value))
+            .GroupBy(static pair => pair.Key, StringComparer.Ordinal)
+            .Select(static group => group.First())
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .Take(256)
+            .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal);
         Pairings = (Pairings ?? [])
             .Where(static pairing => pairing != null)
             .Select(static pairing => pairing!.Normalize())
@@ -162,6 +174,16 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static pairing => pairing.IslandId, StringComparer.Ordinal)
             .Take(256)
             .ToList();
+        foreach (var pairing in Pairings)
+        {
+            var legacyAlias = pairing.TakeLegacyLocalAlias();
+            if (!string.IsNullOrWhiteSpace(legacyAlias) &&
+                PairedDadAliases.Count < 256 &&
+                !PairedDadAliases.ContainsKey(pairing.IslandId))
+            {
+                PairedDadAliases.Add(pairing.IslandId, legacyAlias);
+            }
+        }
         Grants = (Grants ?? [])
             .Where(static grant => grant is { IsValid: true })
             .DistinctBy(static grant => grant.GrantId, StringComparer.Ordinal)
@@ -256,6 +278,7 @@ public sealed class DadAutoPartyConfiguration
             StandingSharePolicy = StandingSharePolicy.Clone(),
             StandingShareScope = StandingShareScope,
             CrewIdentities = CrewIdentities.Select(static identity => identity.Clone()).ToList(),
+            PairedDadAliases = new Dictionary<string, string>(PairedDadAliases, StringComparer.Ordinal),
             Pairings = Pairings.Select(static pairing => pairing.Clone()).ToList(),
             Grants = Grants.Select(static grant => grant with { }).ToList(),
             Listings = Listings.Select(static listing => listing.Clone()).ToList(),
@@ -474,7 +497,9 @@ public sealed class DadAutoPartyPairing
     public string OwnerId { get; set; } = string.Empty;
     public string IslandId { get; set; } = string.Empty;
     public string HomeGuildScope { get; set; } = string.Empty;
-    public string LocalAlias { get; set; } = string.Empty;
+    // Schema-12 migration-only shim. Normalize moves this value into PairedDadAliases and clears it.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LocalAlias { get; set; }
     public string PublicKeyFingerprint { get; set; } = string.Empty;
     public string LocalFingerprint { get; set; } = string.Empty;
     public string TranscriptHash { get; set; } = string.Empty;
@@ -509,7 +534,8 @@ public sealed class DadAutoPartyPairing
         OwnerId = DadAutoPartyConfiguration.NormalizeIdentifier(OwnerId);
         IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
         HomeGuildScope = DadAutoPartyConfiguration.NormalizeIdentifier(HomeGuildScope);
-        LocalAlias = DadAutoPartyConfiguration.NormalizeAlias(LocalAlias);
+        var localAlias = DadAutoPartyConfiguration.NormalizeAlias(LocalAlias);
+        LocalAlias = string.IsNullOrWhiteSpace(localAlias) ? null : localAlias;
         PublicKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(PublicKeyFingerprint);
         LocalFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(LocalFingerprint);
         TranscriptHash = DadAutoPartyConfiguration.NormalizeFingerprint(TranscriptHash);
@@ -522,6 +548,15 @@ public sealed class DadAutoPartyPairing
         return this;
     }
 
+    internal string TakeLegacyLocalAlias()
+    {
+        var alias = DadAutoPartyConfiguration.NormalizeAlias(LocalAlias);
+        LocalAlias = null;
+        return alias;
+    }
+
+    public bool ShouldSerializeLocalAlias() => false;
+
     public DadAutoPartyPairing Clone()
         => new()
         {
@@ -529,7 +564,6 @@ public sealed class DadAutoPartyPairing
             OwnerId = OwnerId,
             IslandId = IslandId,
             HomeGuildScope = HomeGuildScope,
-            LocalAlias = LocalAlias,
             PublicKeyFingerprint = PublicKeyFingerprint,
             LocalFingerprint = LocalFingerprint,
             TranscriptHash = TranscriptHash,

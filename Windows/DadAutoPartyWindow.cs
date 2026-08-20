@@ -36,7 +36,8 @@ public sealed class DadAutoPartyWindow : Window
     private sealed record UiOperationResult(
         string SafeCode,
         string ChallengeCopy = "",
-        bool ClearPairingInput = false);
+        bool ClearPairingFingerprint = false,
+        bool ClearPairingSelection = false);
 
     public DadAutoPartyWindow(Plugin plugin)
         : base("DAD AutoParty###DadAutoParty", ImGuiWindowFlags.NoCollapse)
@@ -63,6 +64,8 @@ public sealed class DadAutoPartyWindow : Window
         pairingInviteRequested = false;
         forgetLostIdentityConfirmed = false;
         pairingShareHandles.Clear();
+        pairingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+        RestoreSubmittedPairingSelection(plugin.Configuration.AutoParty);
         communityShareHandles.Clear();
         if (plugin.Configuration.AutoParty.StandingSharePolicy.Mode ==
             DadAutoPartyCharacterShareMode.CharacterList)
@@ -198,6 +201,7 @@ public sealed class DadAutoPartyWindow : Window
             if (!string.IsNullOrWhiteSpace(observedPairingAttemptId) &&
                 string.IsNullOrWhiteSpace(configuration.PairingAttemptId))
             {
+                ClearPairingInput();
                 pairingInviteRequested = false;
             }
             observedPairingAttemptId = configuration.PairingAttemptId;
@@ -263,7 +267,7 @@ public sealed class DadAutoPartyWindow : Window
                 var result = await plugin.AutoPartyEndpointService
                     .CancelPairingAttemptAsync()
                     .ConfigureAwait(false);
-                return new UiOperationResult(result.SafeCode, ClearPairingInput: result.Allowed);
+                return new UiOperationResult(result.SafeCode, ClearPairingSelection: result.Allowed);
             });
         }
         ImGui.EndDisabled();
@@ -334,7 +338,7 @@ public sealed class DadAutoPartyWindow : Window
                 var result = await plugin.AutoPartyEndpointService
                     .SubmitPairingAsync(peerCopy, pairingPolicy)
                     .ConfigureAwait(false);
-                return new UiOperationResult(result.SafeCode, ClearPairingInput: result.Allowed);
+                return new UiOperationResult(result.SafeCode, ClearPairingFingerprint: result.Allowed);
             });
         }
         ImGui.EndDisabled();
@@ -365,25 +369,23 @@ public sealed class DadAutoPartyWindow : Window
         }
         ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
         var directory = plugin.AutoPartyService.GetDirectorySnapshot();
-        foreach (var pairing in configuration.Pairings.OrderBy(ResolvePairingLabel, StringComparer.OrdinalIgnoreCase))
+        foreach (var pairing in configuration.Pairings.OrderBy(
+                     pairing => ResolvePairingLabel(configuration, pairing),
+                     StringComparer.OrdinalIgnoreCase))
         {
             var pairingState = pairing.IsActive
                 ? directory.OnlineIslandIds.Contains(pairing.IslandId) ? "active, online" : "active, offline"
                 : "revoked";
             ImGui.TextUnformatted(
-                $"{ResolvePairingLabel(pairing)}: {pairingState} | " +
+                $"{ResolvePairingLabel(configuration, pairing)}: {pairingState} | " +
                 $"share {pairing.LocalSharePolicy.Mode}");
             if (pairing.IsActive)
             {
-                var alias = pairing.LocalAlias;
+                var alias = configuration.PairedDadAliases.TryGetValue(pairing.IslandId, out var configuredAlias)
+                    ? configuredAlias
+                    : string.Empty;
                 ImGui.SetNextItemWidth(180f);
-                if (ImGui.InputText($"Paired DAD alias##{pairing.PairingId}", ref alias, 48) &&
-                    string.Equals(alias, pairing.LocalAlias, StringComparison.Ordinal))
-                {
-                    alias = pairing.LocalAlias;
-                }
-                ImGui.SameLine();
-                if (ImGui.SmallButton($"Save alias##{pairing.PairingId}"))
+                if (ImGui.InputText($"Paired DAD alias##{pairing.PairingId}", ref alias, 48))
                     status = plugin.AutoPartyEndpointService.SetPairingAlias(pairing.IslandId, alias).SafeCode;
             }
             ImGui.SameLine();
@@ -531,10 +533,13 @@ public sealed class DadAutoPartyWindow : Window
     private static DadAutoPartyProgressState CompleteOrPending(bool complete) =>
         complete ? DadAutoPartyProgressState.Complete : DadAutoPartyProgressState.Pending;
 
-    private static string ResolvePairingLabel(DadAutoPartyPairing pairing)
+    private static string ResolvePairingLabel(
+        DadAutoPartyConfiguration configuration,
+        DadAutoPartyPairing pairing)
     {
-        if (!string.IsNullOrWhiteSpace(pairing.LocalAlias))
-            return pairing.LocalAlias;
+        if (configuration.PairedDadAliases.TryGetValue(pairing.IslandId, out var alias) &&
+            !string.IsNullOrWhiteSpace(alias))
+            return alias;
         return !string.IsNullOrWhiteSpace(pairing.PeerEndpointAlias)
             ? pairing.PeerEndpointAlias
             : "Paired DAD";
@@ -591,7 +596,7 @@ public sealed class DadAutoPartyWindow : Window
                 item.IsActive && string.Equals(item.IslandId, island.Key, StringComparison.Ordinal));
             ImGui.PushID(island.Key);
             var directoryAlias = pairing != null
-                ? ResolvePairingLabel(pairing)
+                ? ResolvePairingLabel(configuration, pairing)
                 : island.Select(static listing => listing.SharingEndpointAlias)
                     .FirstOrDefault(static alias => !string.IsNullOrWhiteSpace(alias)) ?? "Paired DAD";
             ImGui.TextUnformatted($"{directoryAlias} | {(pairing == null ? "Community Available" : "paired")}");
@@ -903,8 +908,10 @@ public sealed class DadAutoPartyWindow : Window
             status = result.SafeCode;
             if (!string.IsNullOrWhiteSpace(result.ChallengeCopy))
                 challengeCopy = result.ChallengeCopy;
-            if (result.ClearPairingInput)
+            if (result.ClearPairingSelection)
                 ClearPairingInput();
+            else if (result.ClearPairingFingerprint)
+                ClearPairingFingerprint();
         }
         else
         {
@@ -924,9 +931,30 @@ public sealed class DadAutoPartyWindow : Window
 
     private void ClearPairingInput()
     {
-        peerPairingFingerprint = string.Empty;
-        peerPairingValidationCode = string.Empty;
+        ClearPairingFingerprint();
         pairingShareHandles.Clear();
         pairingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+    }
+
+    private void ClearPairingFingerprint()
+    {
+        peerPairingFingerprint = string.Empty;
+        peerPairingValidationCode = string.Empty;
+    }
+
+    private void RestoreSubmittedPairingSelection(DadAutoPartyConfiguration configuration)
+    {
+        if (!configuration.PairingAttemptSubmitted)
+            return;
+
+        pairingShareScope = configuration.PairingAttemptSharePolicy.Mode switch
+        {
+            DadAutoPartyCharacterShareMode.SpecificCharacter => DadAutoPartyCrewShareScope.CurrentCharacter,
+            DadAutoPartyCharacterShareMode.CharacterList => DadAutoPartyCrewShareScope.SpecificCharacters,
+            DadAutoPartyCharacterShareMode.AllCharactersForPeer => DadAutoPartyCrewShareScope.AllCharacters,
+            _ => DadAutoPartyCrewShareScope.SpecificCharacters,
+        };
+        if (configuration.PairingAttemptSharePolicy.Mode == DadAutoPartyCharacterShareMode.CharacterList)
+            pairingShareHandles.UnionWith(configuration.PairingAttemptSharePolicy.CharacterHandles);
     }
 }

@@ -675,8 +675,6 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                  index++)
             {
                 var candidate = activeOutbound.Fragments[index];
-                if (((candidate.FragmentNumber - 1) % epoch.PageCount) + 1 != pageNumber)
-                    break;
                 pageFragments.Add(candidate);
                 string candidateContent;
                 try
@@ -717,7 +715,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             if (IsPairingTransfer(activeOutbound.Delivery))
                 ReportPairingDiagnostic(
                     activeOutbound,
-                    $"fragment-published:{activeOutbound.NextFragmentIndex + 1}/{activeOutbound.Fragments.Length}",
+                    $"fragment-published:{activeOutbound.NextFragmentIndex + activeOutbound.PublishedFragmentCount}/{activeOutbound.Fragments.Length}",
                     "dad-webhook-uplink-fragment-published");
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,

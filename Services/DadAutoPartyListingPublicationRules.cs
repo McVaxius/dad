@@ -21,14 +21,37 @@ internal static class DadAutoPartyListingPublicationRules
     {
         ArgumentNullException.ThrowIfNull(autoParty);
         utcNow = DateTime.SpecifyKind(utcNow, DateTimeKind.Utc);
-        var policy = ResolveStandingPolicy(autoParty);
+        var savedPolicy = ResolveStandingPolicy(autoParty);
         var activities = BuildPermittedActivities(plans).ToList();
         var listings = (crew ?? [])
-            .Where(static candidate => candidate != null && candidate.PermittedCombatJobIds.Count > 0)
-            .Select(candidate => BuildListing(autoParty, policy, activities, candidate, utcNow))
+            .Where(static candidate => candidate is { Available: true } &&
+                                       candidate.PermittedCombatJobIds.Count > 0)
+            .Select(candidate => BuildListing(autoParty, savedPolicy, activities, candidate, utcNow))
             .Take(256)
             .ToList();
-        return new(policy, listings);
+        return new(ResolveWireStandingPolicy(savedPolicy, listings), listings);
+    }
+
+    private static DadAutoPartySharePolicy ResolveWireStandingPolicy(
+        DadAutoPartySharePolicy savedPolicy,
+        IReadOnlyCollection<DadAutoPartyListing> listings)
+    {
+        var policy = savedPolicy.Clone();
+        if (!policy.Enabled)
+        {
+            policy.CharacterHandles.Clear();
+            return policy;
+        }
+
+        var publishedHandles = listings
+            .Select(static listing => listing.OpaqueCharacterId)
+            .ToHashSet(StringComparer.Ordinal);
+        policy.CharacterHandles = policy.CharacterHandles
+            .Where(publishedHandles.Contains)
+            .ToList();
+        if (policy.CharacterHandles.Count == 0)
+            policy.Enabled = false;
+        return policy;
     }
 
     private static DadAutoPartySharePolicy ResolveStandingPolicy(

@@ -31,6 +31,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
                 },
                 [19],
                 Available: true),
+            Candidate("opaque-unavailable", available: false),
         };
         var plans = new[]
         {
@@ -57,16 +58,17 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         Assert.Contains("dad-premadeduty-123", listing.AllowedActivityIds);
         Assert.Equal(7, listing.Revision);
         Assert.Equal(now.AddMinutes(15), listing.ExpiresAtUtc);
+        Assert.DoesNotContain(publication.Listings, item => item.OpaqueCharacterId == "opaque-unavailable");
     }
 
     [Fact]
-    public void CommunityStandingPolicyPublishesSelectedCharactersWithoutAPairing()
+    public void CommunityStandingPolicyIntersectsAvailablePublishedListingsWithoutMutatingSelection()
     {
         var now = new DateTime(2026, 8, 11, 21, 0, 0, DateTimeKind.Utc);
         var policy = new DadAutoPartySharePolicy
         {
             Mode = DadAutoPartyCharacterShareMode.CharacterList,
-            CharacterHandles = ["opaque-community"],
+            CharacterHandles = ["opaque-community", "opaque-unavailable", "opaque-missing"],
             Enabled = true,
             Revision = 4,
             UpdatedAtUtc = now.AddMinutes(-1),
@@ -79,7 +81,11 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         var publication = DadAutoPartyListingPublicationRules.Build(
             configuration,
-            [],
+            [
+                Candidate("opaque-community", available: true),
+                Candidate("opaque-private", available: true),
+                Candidate("opaque-unavailable", available: false),
+            ],
             [],
             now);
 
@@ -87,10 +93,17 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         Assert.True(publication.StandingPolicy.Enabled);
         Assert.Equal(DadAutoPartyCharacterShareMode.CharacterList, publication.StandingPolicy.Mode);
         Assert.Equal(["opaque-community"], publication.StandingPolicy.CharacterHandles);
+        Assert.Equal(
+            ["opaque-community", "opaque-private"],
+            publication.Listings.Select(static listing => listing.OpaqueCharacterId));
+        Assert.Same(policy, configuration.StandingSharePolicy);
+        Assert.Equal(
+            ["opaque-community", "opaque-unavailable", "opaque-missing"],
+            policy.CharacterHandles);
     }
 
     [Fact]
-    public void PairPolicyCannotEnableOrOverwriteStandingPublicationPolicy()
+    public void DisabledCommunityPolicyStillPublishesPrivateListingsWithoutTouchingPairPolicy()
     {
         var now = new DateTime(2026, 8, 11, 21, 0, 0, DateTimeKind.Utc);
         var pairPolicy = new DadAutoPartySharePolicy
@@ -106,6 +119,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
             StandingSharePolicy = new DadAutoPartySharePolicy
             {
                 Mode = DadAutoPartyCharacterShareMode.CharacterList,
+                CharacterHandles = ["opaque-private"],
                 Enabled = false,
                 Revision = 3,
                 UpdatedAtUtc = now,
@@ -115,13 +129,43 @@ public sealed class DadAutoPartyListingPublicationRulesTests
 
         var publication = DadAutoPartyListingPublicationRules.Build(
             configuration,
-            [],
+            [Candidate("opaque-private", available: true)],
             [],
             now);
 
         Assert.False(publication.StandingPolicy.Enabled);
+        Assert.Empty(publication.StandingPolicy.CharacterHandles);
+        Assert.Equal("opaque-private", Assert.Single(publication.Listings).OpaqueCharacterId);
+        Assert.Equal(["opaque-private"], configuration.StandingSharePolicy.CharacterHandles);
         Assert.True(configuration.Pairings[0].LocalSharePolicy.Enabled);
         Assert.Equal(99, configuration.Pairings[0].LocalSharePolicy.Revision);
+    }
+
+    [Fact]
+    public void CommunityPolicyDisablesWireCloneWhenNoSelectedListingIsAvailable()
+    {
+        var now = new DateTime(2026, 8, 11, 21, 0, 0, DateTimeKind.Utc);
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            CharacterHandles = ["opaque-unavailable"],
+            Enabled = true,
+            Revision = 6,
+            UpdatedAtUtc = now,
+        };
+        var configuration = new DadAutoPartyConfiguration { StandingSharePolicy = policy };
+
+        var publication = DadAutoPartyListingPublicationRules.Build(
+            configuration,
+            [Candidate("opaque-unavailable", available: false)],
+            [],
+            now);
+
+        Assert.False(publication.StandingPolicy.Enabled);
+        Assert.Empty(publication.StandingPolicy.CharacterHandles);
+        Assert.Empty(publication.Listings);
+        Assert.True(policy.Enabled);
+        Assert.Equal(["opaque-unavailable"], policy.CharacterHandles);
     }
 
     [Fact]
@@ -202,5 +246,16 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         ExpiresAtUtc = DateTime.UtcNow.AddHours(1),
         LocalSharePolicy = localPolicy,
     };
+
+    private static DadAutoPartyCrewCandidate Candidate(string opaqueCharacterId, bool available)
+        => new(
+            new DadAutoPartyCrewIdentity
+            {
+                RosterIdentityKey = $"roster-{opaqueCharacterId}",
+                OpaqueCharacterId = opaqueCharacterId,
+            },
+            new DadAcquiredCharacter(),
+            [19],
+            available);
 
 }

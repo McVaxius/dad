@@ -20,7 +20,7 @@ integrations, and everyday commands.
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
 $package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.4.nupkg'
-$expectedHash = '97387d1d26dc86ebd004651153a3224c191566b2d57e65fc2c528f51700b003e'
+$expectedHash = 'f54652f13f9ea115b547f03411e7174d5388eb425f5e69a9e933b7587d34a9dd'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'

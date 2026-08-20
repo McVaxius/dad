@@ -6,7 +6,7 @@
         "type": "Direct",
         "requested": "[0.2.0-preview.4, 0.2.0-preview.4]",
         "resolved": "0.2.0-preview.4",
-        "contentHash": "rADFvaAvJ/5QAZ+ixQwgfQQrSjBRD0jCK30VEXvJ5vKxynLDfIYAqH9T47N8TeCQ+A7jj4s1LGKA21eX7yK2PQ==",
+        "contentHash": "fp73Rzc06EQTkWsvbtxtCxzUj+qMOH1raLDFmaxkTf7IThgxpI6UMpmIQuPlfbJ9jCgwhOBDd9kupYB+AzzVDg==",
         "dependencies": {
           "BouncyCastle.Cryptography": "[2.6.2]",
           "System.Formats.Cbor": "[10.0.9]"

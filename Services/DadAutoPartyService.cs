@@ -160,14 +160,30 @@ public sealed class DadAutoPartyService : IDisposable
     public DadAutoPartyPolicyDecision SetPairingAlias(string peerIslandId, string localAlias)
     {
         ThrowIfDisposed();
+        var islandId = DadAutoPartyConfiguration.NormalizeIdentifier(peerIslandId);
         var pairing = configuration.Pairings.FirstOrDefault(item =>
-            item.IsActive && string.Equals(item.IslandId, peerIslandId?.Trim(), StringComparison.Ordinal));
+            item.IsActive && string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
         var alias = DadAutoPartyConfiguration.NormalizeAlias(localAlias);
         if (pairing == null)
             return Decision(false, "dad-pairing-alias-invalid");
-        if (string.Equals(pairing.LocalAlias, alias, StringComparison.Ordinal))
-            return Decision(true, "dad-pairing-alias-unchanged");
-        pairing.LocalAlias = alias;
+        if (!string.IsNullOrWhiteSpace(localAlias) && string.IsNullOrWhiteSpace(alias))
+            return Decision(false, "dad-pairing-alias-invalid");
+        configuration.PairedDadAliases ??= new Dictionary<string, string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(alias))
+        {
+            if (!configuration.PairedDadAliases.Remove(islandId))
+                return Decision(true, "dad-pairing-alias-unchanged");
+        }
+        else
+        {
+            if (configuration.PairedDadAliases.TryGetValue(islandId, out var currentAlias) &&
+                string.Equals(currentAlias, alias, StringComparison.Ordinal))
+                return Decision(true, "dad-pairing-alias-unchanged");
+            if (!configuration.PairedDadAliases.ContainsKey(islandId) &&
+                configuration.PairedDadAliases.Count >= 256)
+                return Decision(false, "dad-pairing-alias-limit");
+            configuration.PairedDadAliases[islandId] = alias;
+        }
         configuration.StateGeneration++;
         saveConfiguration();
         return Decision(true, "dad-pairing-alias-updated");
@@ -185,7 +201,6 @@ public sealed class DadAutoPartyService : IDisposable
         if (string.IsNullOrWhiteSpace(reason))
             reason = "dad-owner-deauthenticated";
         pairing.RevokedAtUtc = DateTime.UtcNow;
-        pairing.LocalAlias = string.Empty;
         configuration.RevocationGeneration++;
         configuration.Deauthentications.RemoveAll(item =>
             string.Equals(item.PeerIslandId, islandId, StringComparison.Ordinal));
@@ -538,6 +553,7 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.RelaySigningPublicKey = string.Empty;
         configuration.RelayAgreementPublicKey = string.Empty;
         configuration.BootstrapExpiresAtUtc = default;
+        configuration.PairedDadAliases.Clear();
         configuration.Pairings.Clear();
         configuration.PendingPairings.Clear();
         configuration.ClearPairingAttempt();

@@ -1,5 +1,18 @@
 # dad — changelog
 
+## 2026-08-20 — Paired directory and stable aliases (local-only, unpublished)
+- Crew publication now includes only currently available characters. The wire-only Community policy intersects its saved
+  selection with those published listings and disables with no handles when sharing is off or no selected listing remains,
+  without changing the full saved Community selection.
+- Community sharing no longer suppresses current listings needed by private pairings; disabled Community updates retain a
+  disabled, empty wire policy while carrying the available private-pair directory listings.
+- Advanced DAD configuration to schema 12 with normalized, island-keyed paired aliases. Legacy per-pair aliases migrate
+  locally into the bounded map, survive pairing replacement and deauthentication, and clear only with deregistration,
+  purge, or local identity replacement. Aliases remain outside every wire contract.
+- Crew now requests the non-Community paired directory when a Paired DAD is selected and offers a manual **Refresh** when
+  no authorized listing is cached. Stable aliases fall back to the peer endpoint alias and then **Paired DAD**; technical
+  island IDs appear only with **Details** and are never saved into the Crew placeholder.
+
 ## 2026-08-18 — Reciprocal APP1 pairing and courier repair (local-only, unpublished)
 - Replaced island-ID initiation, six-digit confirmation, and editable long-term fingerprint fields with one read-only
   signed `APP1` fingerprint, explicit copy/regenerate/cancel controls, peer paste input, independent sharing scope, and
@@ -8,12 +21,15 @@
 - Advanced DAD configuration to schema 11 while preserving schema-10 registration, protected identity/mailbox references,
   epochs, keys, active/revoked routes, transcript hashes, grants, listings, bindings, Crew data, and ordinary settings.
   Migration drops only obsolete pending one-sided pairing/code state; schema 9 and older retain the existing fail-closed
-  reset. Raw peer clipboard text is discarded after validated submission.
+  reset. Raw peer clipboard text is discarded after validated submission, while the selected sharing scope and characters
+  remain visible and restore after reopening until establishment, explicit cancellation, or expiry. An already-active peer
+  fingerprint is rejected locally instead of starting another doomed attempt.
 - Batched only contiguous fragments from one delivery into each legal `AP2` page, retained the 1,900-character and
-  256-item bounds, and advanced durable UPLINK/DOWNLINK cursors only through gap-free acknowledgements. Idle polling stays
+  256-item bounds, and advanced durable UPLINK/DOWNLINK cursors only through gap-free acknowledgements. Signed page payloads
+  use the protocol package's bounded compact encoding so normal 256-byte fragments genuinely batch. Idle polling stays
   10 seconds and active transfer, partial assembly, delivery, or acknowledgement work uses 2 seconds.
 - Vendored `Dad.AutoParty.Protocol 0.2.0-preview.4` through the existing local NuGet workflow with SHA-256
-  `97387d1d26dc86ebd004651153a3224c191566b2d57e65fc2c528f51700b003e`. Protocol envelope v3, LAN/public IPC behavior,
+  `f54652f13f9ea115b547f03411e7174d5388eb425f5e69a9e933b7587d34a9dd`. Protocol envelope v3, LAN/public IPC behavior,
   credentials, active routes, and public DAD version `0.5.0.9` remain unchanged.
 
 ## 2026-08-18 — Pairing confirmation retry repair (local-only, unpublished)

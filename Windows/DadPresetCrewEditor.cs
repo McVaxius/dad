@@ -277,7 +277,7 @@ internal sealed class DadPresetCrewEditor
                 ? "(missing)"
                 : pairedIsland == null
                     ? $"Shared {ShortSharedToken(slot.SharedIdentity.AccountToken)} - remap"
-                    : $"Paired DAD: {PairingLabel(pairedIsland)}"
+                    : PairingLabel(pairedIsland, showDetails)
             : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatAccountOption(selectedAccount, showDetails);
         ImGui.SetNextItemWidth(-1f);
         var open = ImGui.BeginCombo($"##{idPrefix}-account-{index}", preview);
@@ -316,7 +316,7 @@ internal sealed class DadPresetCrewEditor
             }
             var pairedIslands = plugin.Configuration.AutoParty.Pairings
                 .Where(static pairing => pairing.IsActive)
-                .OrderBy(PairingLabel, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(pairing => PairingLabel(pairing), StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (pairedIslands.Count > 0)
             {
@@ -327,7 +327,7 @@ internal sealed class DadPresetCrewEditor
                         pairedIsland.IslandId,
                         pairing.IslandId,
                         StringComparison.Ordinal);
-                    if (!ImGui.Selectable($"Paired DAD: {PairingLabel(pairing)}", selected))
+                    if (!ImGui.Selectable(PairingLabel(pairing, showDetails), selected))
                         continue;
                     DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                     slot.RequiredAccountKey = new DadAccountKey(string.Empty);
@@ -340,6 +340,7 @@ internal sealed class DadPresetCrewEditor
                         RequiresCharacter = true,
                     };
                     changed(group);
+                    QueuePairedDirectoryRequest();
                 }
             }
             ImGui.EndCombo();
@@ -539,7 +540,12 @@ internal sealed class DadPresetCrewEditor
         }
         ImGui.EndDisabled();
         if (listings.Count == 0)
+        {
             ImGui.TextDisabled("No current authorized character listings from this Paired DAD.");
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Refresh##{idPrefix}-paired-refresh-{index}"))
+                QueuePairedDirectoryRequest();
+        }
         if (slot.SharedIdentity?.BindingId is { Length: > 0 } &&
             ImGui.SmallButton($"Clear shared##{idPrefix}-paired-clear-{index}"))
         {
@@ -615,8 +621,25 @@ internal sealed class DadPresetCrewEditor
             pairing.IsActive && string.Equals(pairing.IslandId, islandId, StringComparison.Ordinal));
     }
 
-    private static string PairingLabel(DadAutoPartyPairing pairing)
-        => string.IsNullOrWhiteSpace(pairing.LocalAlias) ? pairing.IslandId : pairing.LocalAlias;
+    private string PairingLabel(DadAutoPartyPairing pairing, bool showDetails = false)
+    {
+        var label = plugin.Configuration.AutoParty.PairedDadAliases.TryGetValue(
+            pairing.IslandId,
+            out var alias) && !string.IsNullOrWhiteSpace(alias)
+            ? alias
+            : !string.IsNullOrWhiteSpace(pairing.PeerEndpointAlias)
+                ? pairing.PeerEndpointAlias
+                : "Paired DAD";
+        return showDetails ? $"{label} [{pairing.IslandId}]" : label;
+    }
+
+    private void QueuePairedDirectoryRequest()
+    {
+        _ = plugin.AutoPartyEndpointService
+            .RequestDirectoryAsync(string.Empty, false)
+            .GetAwaiter()
+            .GetResult();
+    }
 
     private void DrawCharacterFilters(
         IReadOnlyList<DadAcquiredCharacter> characters,

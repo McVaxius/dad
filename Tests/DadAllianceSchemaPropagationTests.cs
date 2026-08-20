@@ -35,7 +35,7 @@ public sealed class DadAllianceSchemaPropagationTests
             new MissingAutoPartyWebhookStore());
 
         Assert.True(changed);
-        Assert.Equal(10, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         var slots = Assert.Single(configuration.PlannerGroups).Slots;
         Assert.All(slots, static slot => Assert.Equal(DadAllianceAssignment.None, slot.AllianceAssignment));
         Assert.False(DadAlliancePartyFinderRules.ValidateSavedRows(slots).IsValid);

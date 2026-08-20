@@ -677,6 +677,14 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 CryptographicOperations.ZeroMemory(canonical);
             }
 
+            if (configuration.Pairings.Any(pairing =>
+                    pairing.IsActive &&
+                    string.Equals(pairing.IslandId, candidate.IslandId.Value, StringComparison.Ordinal)))
+            {
+                safeCode = "dad-pairing-peer-already-active";
+                return false;
+            }
+
             invite = candidate;
             safeCode = "dad-pairing-peer-invite-valid";
             return true;
@@ -850,8 +858,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return Decision(false, "dad-listing-update-invalid");
         var now = utcNow();
         var protocolListings = (listings ?? [])
-            .Where(listing => policy.Enabled &&
-                              listing is { IsValid: true } &&
+            .Where(listing => listing is { IsValid: true, Available: true } &&
                               listing.ExpiresAtUtc > now.UtcDateTime &&
                               listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
             .Take(AutoPartyProtocol.MaximumCollectionItems)
