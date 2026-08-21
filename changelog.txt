@@ -1,5 +1,19 @@
 # dad — changelog
 
+## 2026-08-20 — Complete paired rosters and remote scheduler slots (local-only, unpublished)
+- AutoParty listing publication now sends one complete, ordered snapshot as size-valid chunks inside the existing 8 KiB
+  envelope. All supported listings are retained, empty and fitting rosters remain one chunk, and inputs above the existing
+  256-listing limit fail closed instead of being trimmed.
+- Private directory pages now carry snapshot identity and within-island listing positions. DAD stages the full query,
+  rejects mixed or non-contiguous parts, and replaces an island's listings only after its complete snapshot arrives.
+- Scheduler slots backed by a registered AutoParty island remain remotely managed through rebuilds. They bypass LAN-only
+  roster, dependency, launch, requested-job, wake/relog, takeover, and readiness gates, while LAN slots retain their
+  existing behavior and continue through the AutoParty authorization, frozen manifest, participant bridge, and
+  coordinator dispatch path.
+- Vendored `Dad.AutoParty.Protocol 0.2.0-preview.6` through the existing local NuGet workflow with SHA-256
+  `88a5b8ac6700190b58e9956af6b91b254419784d84eb548a85db925f7d621b4d`. Wire schema version 4 is intentionally
+  incompatible with older envelopes; DAD public version `0.5.0.9`, LAN/public IPC, and configuration schema are unchanged.
+
 ## 2026-08-20 — Automatic paired directory and private character labels (local-only, unpublished)
 - Crew publication now includes an offline XADB character only when one fresh, reachable, ownership-proven DAD route can
   relog it. Runtime admission consumes that same private route snapshot without Fleet Matrix rows or a pre-existing live

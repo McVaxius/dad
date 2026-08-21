@@ -14,7 +14,7 @@ public static class DadEarlyRequestedJobAssignmentRules
         var requiredRosterCharacters = orchestration.RequiredRosterCharacters ?? [];
 
         return slots
-            .Where(static slot => slot.RequiredJobId.HasValue)
+            .Where(static slot => !slot.IsRegisteredIsland && slot.RequiredJobId.HasValue)
             .Select(slot =>
             {
                 var reference = requiredRosterCharacters.FirstOrDefault(candidate =>

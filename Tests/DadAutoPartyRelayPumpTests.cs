@@ -582,6 +582,10 @@ public sealed class DadAutoPartyRelayPumpTests
                     true,
                     1,
                     listingExpiresAt)),
+                Guid.Parse("2a7a07ad-a834-4ac7-bad2-f68d5010309d"),
+                1,
+                0,
+                false,
                 1,
                 listingExpiresAt)),
             1);
@@ -687,6 +691,90 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task DirectoryQueryReassemblesOneIslandAcrossPagesBeforeReplacingItsRoster()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        fixture.Configuration.Listings.Add(new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = "owner-community",
+            SharingIslandId = "island-community",
+            SharingEndpointAlias = "community-endpoint",
+            EffectiveShareMode = DadAutoPartyCharacterShareMode.CharacterList,
+            EffectivePolicyHash = "community-policy-hash",
+            OpaqueCharacterId = "opaque-old",
+            DisplayLabel = "Old listing",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = expiresAt.UtcDateTime,
+        }.Normalize());
+        await using var pump = fixture.CreatePump();
+        Assert.True((await pump.RequestDirectoryAsync(string.Empty, true)).Allowed);
+        await pump.ProcessOnceAsync();
+        var query = fixture.Open<DirectoryQuery>(fixture.Transport.Sent.Last(item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
+        var snapshotId = Guid.Parse("a67e67f9-d1d2-4c5e-a582-c2f12b29b2a1");
+
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
+            fixture.RelayHeader("directory-community-1"),
+            query.QueryId,
+            1,
+            true,
+            "position-2-0-1",
+            [BuildEntry(0, true, "opaque-new-1")],
+            1)));
+        await pump.ProcessOnceAsync();
+
+        Assert.Contains(fixture.Configuration.Listings, item => item.OpaqueCharacterId == "opaque-old");
+        Assert.DoesNotContain(fixture.Configuration.Listings, item => item.OpaqueCharacterId == "opaque-new-1");
+        Assert.Contains(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>() &&
+            fixture.Open<DirectoryQuery>(item).ContinuationToken == "position-2-0-1");
+
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
+            fixture.RelayHeader("directory-community-2"),
+            query.QueryId,
+            2,
+            false,
+            string.Empty,
+            [BuildEntry(1, false, "opaque-new-2")],
+            1)));
+        await pump.ProcessOnceAsync();
+
+        var visible = fixture.Configuration.Listings
+            .Where(item => item.SharingIslandId == "island-community")
+            .OrderBy(static item => item.OpaqueCharacterId, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(["opaque-new-1", "opaque-new-2"], visible.Select(static item => item.OpaqueCharacterId));
+
+        PrivateDirectoryEntry BuildEntry(int offset, bool hasMore, string handle) => new(
+            new OwnerId("owner-community"),
+            new IslandId("island-community"),
+            "community-endpoint",
+            "guild-home",
+            CharacterShareMode.CharacterList,
+            "community-policy-hash",
+            true,
+            [new PrivateCharacterListing(
+                new OpaqueCharacterId(handle),
+                $"Shared character {handle}",
+                [new JobId("19")],
+                [new ActivityId(DadAutoPartyFreeformRules.FormationActivityId)],
+                true,
+                1,
+                expiresAt)],
+            snapshotId,
+            7,
+            offset,
+            hasMore,
+            1,
+            expiresAt);
+    }
+
+    [Fact]
     public async Task OfflinePairedDirectoryEntryClearsListingsAndPresenceResetsOnRestart()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
@@ -754,6 +842,10 @@ public sealed class DadAutoPartyRelayPumpTests
                         1,
                         expiresAt))
                     : ImmutableArray<PrivateCharacterListing>.Empty,
+                online ? Guid.Parse("4a227498-fd25-4e64-8e6d-609844c45a07") : Guid.Empty,
+                online ? 1 : 0,
+                0,
+                false,
                 1,
                 expiresAt)),
             1);
@@ -795,6 +887,10 @@ public sealed class DadAutoPartyRelayPumpTests
                     "paired-policy-hash",
                     true,
                     pairedListings,
+                    Guid.Parse("0b9b33c1-c11f-4874-a287-e3539125442c"),
+                    1,
+                    0,
+                    false,
                     1,
                     expiresAt),
                 new PrivateDirectoryEntry(
@@ -813,6 +909,10 @@ public sealed class DadAutoPartyRelayPumpTests
                         true,
                         1,
                         expiresAt)],
+                    Guid.Parse("13b90c1f-86f8-4c65-95fe-d79128ac3f0b"),
+                    1,
+                    0,
+                    false,
                     1,
                     expiresAt),
             ],
@@ -960,6 +1060,95 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.NotEqual(fixture.Configuration.StateGeneration, update.DirectoryGeneration);
         Assert.Equal(CharacterShareMode.SpecificCharacter, update.SharePolicy.Mode);
         Assert.Equal("opaque-local", Assert.Single(update.Listings).CharacterHandle.Value);
+    }
+
+    [Fact]
+    public async Task NinetyTwoCharacterRosterQueuesCompleteSizeValidListingSnapshot()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump();
+        var expiresAt = DateTime.UtcNow.AddMinutes(15);
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+            Enabled = true,
+            Revision = 3,
+            UpdatedAtUtc = DateTime.UtcNow,
+        };
+        var listings = Enumerable.Range(1, 92).Select(index => new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = $"opaque-local-{index:000}",
+            DisplayLabel = $"Shared character {index:000}",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = 3,
+            ExpiresAtUtc = expiresAt,
+        }).ToList();
+
+        var queued = pump.QueueListingUpdate(policy, listings);
+        await pump.ProcessOnceAsync();
+
+        Assert.True(queued.Allowed, queued.SafeCode);
+        var envelopes = fixture.Transport.Sent
+            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>())
+            .ToList();
+        Assert.True(envelopes.Count > 1);
+        Assert.All(envelopes, envelope =>
+            Assert.InRange(envelope.PayloadLength, 1, AutoPartyProtocol.MaximumSemanticEnvelopeBytes));
+        var updates = envelopes.Select(fixture.Open<PrivateListingUpdate>)
+            .OrderBy(static update => update.ChunkIndex)
+            .ToList();
+        Assert.Single(updates.Select(static update => update.SnapshotId).Distinct());
+        Assert.Single(updates.Select(static update => update.SnapshotRevision).Distinct());
+        Assert.All(updates, update => Assert.Equal(updates.Count, update.ChunkCount));
+        Assert.Equal(Enumerable.Range(1, updates.Count), updates.Select(static update => update.ChunkIndex));
+        Assert.Equal(
+            listings.Select(static listing => listing.OpaqueCharacterId).Order(StringComparer.Ordinal),
+            updates.SelectMany(static update => update.Listings)
+                .Select(static listing => listing.CharacterHandle.Value)
+                .Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task RosterAboveProtocolMaximumFailsClosedWithoutTruncation()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump();
+        var expiresAt = DateTime.UtcNow.AddMinutes(15);
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+            Enabled = true,
+            Revision = 3,
+            UpdatedAtUtc = DateTime.UtcNow,
+        };
+        var listings = Enumerable.Range(1, AutoPartyProtocol.MaximumCollectionItems + 1)
+            .Select(index => new DadAutoPartyListing
+            {
+                ListingId = Guid.NewGuid().ToString("D"),
+                OwnerId = PumpFixture.LocalOwner,
+                SharingIslandId = PumpFixture.LocalIsland,
+                OpaqueCharacterId = $"opaque-local-{index:000}",
+                DisplayLabel = $"Shared character {index:000}",
+                AllowedJobIds = ["19"],
+                AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+                Available = true,
+                Revision = 3,
+                ExpiresAtUtc = expiresAt,
+            })
+            .ToList();
+
+        var rejected = pump.QueueListingUpdate(policy, listings);
+        await pump.ProcessOnceAsync();
+
+        Assert.False(rejected.Allowed);
+        Assert.Equal("dad-listing-update-invalid", rejected.SafeCode);
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>());
     }
 
     [Fact]

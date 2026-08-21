@@ -975,8 +975,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             .Where(listing => listing is { IsValid: true, Available: true } &&
                               listing.ExpiresAtUtc > now.UtcDateTime &&
                               listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
-            .Take(AutoPartyProtocol.MaximumCollectionItems)
+            .Take(AutoPartyProtocol.MaximumCollectionItems + 1)
             .ToList();
+        if (publishableListings.Count > AutoPartyProtocol.MaximumCollectionItems)
+            return Decision(false, "dad-listing-update-invalid");
         var protocolListings = publishableListings
             .Select(static listing => new PrivateCharacterListing(
                 new OpaqueCharacterId(listing.OpaqueCharacterId),
@@ -989,19 +991,76 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             .ToImmutableArray();
         try
         {
-            var updateId = Guid.NewGuid();
-            var update = new PrivateListingUpdate(
-                CreateHeader(new IslandId(RelayIsland), $"listing-update-{updateId:N}", now + ControlLifetime),
-                updateId,
-                new IslandId(configuration.RegisteredIslandId),
-                ToProtocolPolicy(policy),
-                protocolListings,
-                Math.Max(1, configuration.DirectoryGeneration));
-            ValidateOutbound(update);
+            var snapshotId = Guid.NewGuid();
+            var snapshotRevision = Interlocked.Increment(ref nextSequence);
+            var protocolPolicy = ToProtocolPolicy(policy);
+            var chunks = new List<ImmutableArray<PrivateCharacterListing>>();
+            if (protocolListings.IsEmpty)
+            {
+                chunks.Add([]);
+            }
+            else
+            {
+                var current = ImmutableArray.CreateBuilder<PrivateCharacterListing>();
+                foreach (var listing in protocolListings)
+                {
+                    var candidate = current.Append(listing).ToImmutableArray();
+                    var probe = BuildListingUpdate(
+                        snapshotId,
+                        snapshotRevision,
+                        AutoPartyProtocol.MaximumCollectionItems,
+                        AutoPartyProtocol.MaximumCollectionItems,
+                        protocolPolicy,
+                        candidate,
+                        now);
+                    if (IsSizeValidListingEnvelope(probe))
+                    {
+                        current.Add(listing);
+                        continue;
+                    }
+
+                    if (current.Count == 0)
+                        return Decision(false, "dad-listing-update-invalid");
+                    chunks.Add(current.ToImmutable());
+                    current.Clear();
+                    current.Add(listing);
+                    probe = BuildListingUpdate(
+                        snapshotId,
+                        snapshotRevision,
+                        AutoPartyProtocol.MaximumCollectionItems,
+                        AutoPartyProtocol.MaximumCollectionItems,
+                        protocolPolicy,
+                        current.ToImmutable(),
+                        now);
+                    if (!IsSizeValidListingEnvelope(probe))
+                        return Decision(false, "dad-listing-update-invalid");
+                }
+
+                if (current.Count > 0)
+                    chunks.Add(current.ToImmutable());
+            }
+
+            var updates = chunks.Select((chunk, index) => BuildListingUpdate(
+                    snapshotId,
+                    snapshotRevision,
+                    index + 1,
+                    chunks.Count,
+                    protocolPolicy,
+                    chunk,
+                    now))
+                .ToList();
+            if (updates.Any(update => !IsSizeValidListingEnvelope(update)))
+                return Decision(false, "dad-listing-update-invalid");
+
             lock (gate)
             {
-                if (!TryEnqueueControl(update))
+                if (pendingOutbound.Count + updates.Count > MaximumPendingOutbound)
                     return Decision(false, "dad-relay-outbound-full");
+                foreach (var update in updates)
+                {
+                    ValidateOutbound(update);
+                    pendingOutbound.Enqueue(new PendingOutboundContract(update, now));
+                }
                 publishedPairedLabels.Clear();
                 foreach (var listing in publishableListings)
                 {
@@ -1022,6 +1081,63 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
         UpdateSnapshot("dad-listing-update-queued");
         return Decision(true, "dad-listing-update-queued");
+    }
+
+    private PrivateListingUpdate BuildListingUpdate(
+        Guid snapshotId,
+        long snapshotRevision,
+        int chunkIndex,
+        int chunkCount,
+        CharacterSharePolicy sharePolicy,
+        ImmutableArray<PrivateCharacterListing> listings,
+        DateTimeOffset issuedAt)
+    {
+        var updateId = Guid.NewGuid();
+        return new(
+            CreateHeader(
+                new IslandId(RelayIsland),
+                $"listing-update-{updateId:N}",
+                issuedAt + ControlLifetime,
+                generation: snapshotRevision,
+                issuedAt: issuedAt),
+            updateId,
+            new IslandId(configuration.RegisteredIslandId),
+            snapshotId,
+            snapshotRevision,
+            chunkIndex,
+            chunkCount,
+            sharePolicy,
+            listings,
+            Math.Max(1, configuration.DirectoryGeneration));
+    }
+
+    private static bool IsSizeValidListingEnvelope(PrivateListingUpdate update)
+    {
+        try
+        {
+            var signature = new byte[AutoPartyProtocol.Ed25519SignatureBytes];
+            var signed = CanonicalCborCodec.EncodeSigned(AuthenticatedContract<PrivateListingUpdate>.Create(
+                update,
+                signature));
+            var sealedContract = SealedContract.Create(
+                AutoPartyProtocol.CurrentVersion,
+                update.Header.MessageId,
+                update.Header.SenderIslandId,
+                update.Header.RecipientIslandId,
+                update.Header.SenderKeyVersion,
+                update.Header.RecipientKeyVersion,
+                new byte[AutoPartyProtocol.X25519KeyBytes],
+                new byte[signed.Length + AutoPartyProtocol.ChaCha20Poly1305TagBytes]);
+            var encoded = SealedContractCodec.Encode(sealedContract);
+            CryptographicOperations.ZeroMemory(signed);
+            CryptographicOperations.ZeroMemory(encoded);
+            return encoded.Length <= AutoPartyProtocol.MaximumSemanticEnvelopeBytes;
+        }
+        catch (ProtocolException exception) when (
+            exception.Code == ProtocolFailureCode.SemanticEnvelopeLimitExceeded)
+        {
+            return false;
+        }
     }
 
     public DadAutoPartyPolicyDecision RequestPromiscuousAccess(
@@ -2369,13 +2485,61 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private ValueTask<DispatchResult> DispatchDirectoryPageAsync(DirectoryPage page)
     {
         PendingDirectoryQuery query;
+        IReadOnlyList<PrivateDirectoryEntry> completedEntries;
+        var queueFollowUp = false;
         lock (gate)
         {
             if (!directoryQueries.TryGetValue(page.QueryId, out query!))
                 return ValueTask.FromResult(DispatchResult.Deny("dad-directory-page-unsolicited"));
+            if (page.PageNumber != query.ExpectedPageNumber ||
+                !TryStageDirectoryPage(query, page, out var stageSafeCode))
+            {
+                directoryQueries.Remove(page.QueryId);
+                return ValueTask.FromResult(DispatchResult.Deny(stageSafeCode));
+            }
+
+            if (page.HasMore)
+            {
+                if (!TryEnqueueControl(BuildDirectoryQuery(query, page.ContinuationToken)))
+                {
+                    directoryQueries.Remove(page.QueryId);
+                    return ValueTask.FromResult(DispatchResult.Deny("dad-relay-outbound-full"));
+                }
+
+                query.ExpectedPageNumber++;
+                return ValueTask.FromResult(DispatchResult.Allow("dad-directory-page-staged"));
+            }
+
+            if (query.StagedIslands.Values.Any(static island => !island.Complete))
+            {
+                directoryQueries.Remove(page.QueryId);
+                return ValueTask.FromResult(DispatchResult.Deny("dad-directory-query-incomplete"));
+            }
+
+            completedEntries = query.StagedIslands.Values
+                .Select(static island => island.BuildEntry())
+                .OrderBy(static entry => entry.IslandId.Value, StringComparer.Ordinal)
+                .ToList();
+            directoryQueries.Remove(page.QueryId);
+            queueFollowUp = query.FollowUpRequested;
         }
 
-        foreach (var entry in page.Entries)
+        foreach (var entry in completedEntries.Where(static entry => entry.Online))
+        {
+            var pairing = configuration.Pairings.FirstOrDefault(item =>
+                item.IsActive && string.Equals(item.IslandId, entry.IslandId.Value, StringComparison.Ordinal));
+            var effectiveMode = (DadAutoPartyCharacterShareMode)(int)entry.EffectiveShareMode;
+            var effectivePolicyHash = DadAutoPartyConfiguration.NormalizeIdentifier(entry.EffectivePolicyHash);
+            if (!Enum.IsDefined(effectiveMode) ||
+                (pairing == null &&
+                 (effectiveMode != DadAutoPartyCharacterShareMode.CharacterList ||
+                  string.IsNullOrWhiteSpace(effectivePolicyHash))))
+            {
+                return ValueTask.FromResult(DispatchResult.Deny("dad-directory-entry-policy-invalid"));
+            }
+        }
+
+        foreach (var entry in completedEntries)
         {
             var now = utcNow();
             var pairing = configuration.Pairings.FirstOrDefault(item =>
@@ -2393,11 +2557,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             }
             var effectiveMode = (DadAutoPartyCharacterShareMode)(int)entry.EffectiveShareMode;
             var effectivePolicyHash = DadAutoPartyConfiguration.NormalizeIdentifier(entry.EffectivePolicyHash);
-            if (!Enum.IsDefined(effectiveMode) ||
-                (pairing == null &&
-                 (effectiveMode != DadAutoPartyCharacterShareMode.CharacterList ||
-                  string.IsNullOrWhiteSpace(effectivePolicyHash))))
-                return ValueTask.FromResult(DispatchResult.Deny("dad-directory-entry-policy-invalid"));
             var policy = new DadAutoPartySharePolicy
             {
                 Enabled = true,
@@ -2458,25 +2617,61 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             }
         }
 
-        var queueFollowUp = false;
-        lock (gate)
+        if (query.SearchText.Length == 0 && !query.IncludePromiscuous)
         {
-            if (page.HasMore)
-            {
-                if (!TryEnqueueControl(BuildDirectoryQuery(query, page.ContinuationToken)))
-                    return ValueTask.FromResult(DispatchResult.Deny("dad-relay-outbound-full"));
-            }
-            else
-            {
-                directoryQueries.Remove(page.QueryId);
-                if (query.SearchText.Length == 0 && !query.IncludePromiscuous)
-                    lastPrivateDirectoryCompletedAt = utcNow();
-                queueFollowUp = query.FollowUpRequested;
-            }
+            lock (gate)
+                lastPrivateDirectoryCompletedAt = utcNow();
         }
         if (queueFollowUp)
             _ = QueueDirectoryQuery(query.SearchText, query.IncludePromiscuous, requestFollowUpIfPending: false);
         return ValueTask.FromResult(DispatchResult.Allow("dad-directory-page-applied"));
+    }
+
+    private static bool TryStageDirectoryPage(
+        PendingDirectoryQuery query,
+        DirectoryPage page,
+        out string safeCode)
+    {
+        safeCode = "dad-directory-page-mixed";
+        foreach (var entry in page.Entries)
+        {
+            if (!query.StagedIslands.TryGetValue(entry.IslandId.Value, out var staged))
+            {
+                if (entry.Online && entry.ListingOffset != 0)
+                    return false;
+                staged = new StagedDirectoryIsland(entry);
+                query.StagedIslands.Add(entry.IslandId.Value, staged);
+            }
+            else if (!staged.Matches(entry))
+            {
+                return false;
+            }
+
+            if (!entry.Online)
+            {
+                if (staged.Complete || entry.ListingOffset != 0 || !entry.Listings.IsEmpty)
+                    return false;
+                staged.Complete = true;
+                continue;
+            }
+
+            if (staged.Complete || entry.ListingOffset != staged.Listings.Count ||
+                staged.Listings.Count + entry.Listings.Length > AutoPartyProtocol.MaximumCollectionItems)
+            {
+                return false;
+            }
+
+            foreach (var listing in entry.Listings)
+            {
+                if (!staged.CharacterHandles.Add(listing.CharacterHandle.Value))
+                    return false;
+                staged.Listings.Add(listing);
+            }
+            staged.Complete = !entry.HasMoreListings;
+        }
+
+        safeCode = "dad-directory-page-staged";
+        return true;
     }
 
     private bool TryQueuePairedLabelRequests(
@@ -4365,6 +4560,72 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         public DateTimeOffset CreatedAt { get; } = createdAt;
         public DateTimeOffset ExpiresAt { get; } = expiresAt;
         public bool FollowUpRequested { get; set; }
+        public int ExpectedPageNumber { get; set; } = 1;
+        public Dictionary<string, StagedDirectoryIsland> StagedIslands { get; } =
+            new(StringComparer.Ordinal);
+    }
+
+    private sealed class StagedDirectoryIsland
+    {
+        private readonly OwnerId ownerId;
+        private readonly IslandId islandId;
+        private readonly string endpointAlias;
+        private readonly string homeGuildScope;
+        private readonly CharacterShareMode effectiveShareMode;
+        private readonly string effectivePolicyHash;
+        private readonly bool online;
+        private readonly Guid snapshotId;
+        private readonly long snapshotRevision;
+        private readonly long directoryGeneration;
+        private readonly DateTimeOffset expiresAt;
+
+        public StagedDirectoryIsland(PrivateDirectoryEntry entry)
+        {
+            ownerId = entry.OwnerId;
+            islandId = entry.IslandId;
+            endpointAlias = entry.EndpointAlias;
+            homeGuildScope = entry.HomeGuildScope;
+            effectiveShareMode = entry.EffectiveShareMode;
+            effectivePolicyHash = entry.EffectivePolicyHash;
+            online = entry.Online;
+            snapshotId = entry.SnapshotId;
+            snapshotRevision = entry.SnapshotRevision;
+            directoryGeneration = entry.DirectoryGeneration;
+            expiresAt = entry.ExpiresAt;
+        }
+
+        public List<PrivateCharacterListing> Listings { get; } = [];
+        public HashSet<string> CharacterHandles { get; } = new(StringComparer.Ordinal);
+        public bool Complete { get; set; }
+
+        public bool Matches(PrivateDirectoryEntry entry) =>
+            entry.OwnerId == ownerId &&
+            entry.IslandId == islandId &&
+            string.Equals(entry.EndpointAlias, endpointAlias, StringComparison.Ordinal) &&
+            string.Equals(entry.HomeGuildScope, homeGuildScope, StringComparison.Ordinal) &&
+            entry.EffectiveShareMode == effectiveShareMode &&
+            string.Equals(entry.EffectivePolicyHash, effectivePolicyHash, StringComparison.Ordinal) &&
+            entry.Online == online &&
+            entry.SnapshotId == snapshotId &&
+            entry.SnapshotRevision == snapshotRevision &&
+            entry.DirectoryGeneration == directoryGeneration &&
+            entry.ExpiresAt == expiresAt;
+
+        public PrivateDirectoryEntry BuildEntry() => new(
+            ownerId,
+            islandId,
+            endpointAlias,
+            homeGuildScope,
+            effectiveShareMode,
+            effectivePolicyHash,
+            online,
+            Listings.ToImmutableArray(),
+            snapshotId,
+            snapshotRevision,
+            0,
+            false,
+            directoryGeneration,
+            expiresAt);
     }
 
     private sealed record PendingAccessRequest(

@@ -16,11 +16,11 @@ public sealed class DadBuildReleaseWorkflowContractTests
         Assert.True(test > restore);
         Assert.True(upload > test);
         Assert.Contains(
-            "Dad.AutoParty.Protocol.0.2.0-preview.5.nupkg",
+            "Dad.AutoParty.Protocol.0.2.0-preview.6.nupkg",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "3fb8ea0c02d03354bfe85e02833b8cb27bb9d116c3f5c571b544f34ec02c1a46",
+            "88a5b8ac6700190b58e9956af6b91b254419784d84eb548a85db925f7d621b4d",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -33,7 +33,7 @@ public sealed class DadBuildReleaseWorkflowContractTests
             StringComparison.Ordinal);
         var testLock = ReadRepositorySource("Tests", "packages.lock.json");
         Assert.Contains(
-            "Vov+yczmV0gU7mMnLWXEn0Aqf25a9bWhfHF0QV+EtjEFn5m7QosbpZ/4kuvBybH+HM/UhyO+fHXvfIWYdIebJQ==",
+            "xAdVJWH//XTTOm4pJ3gUb6UcjUKQcZnm2r1avk901nZBYlDtON9dVpKB4PqxSWn6XVEFPj310na/FsZ/GH2A4w==",
             testLock,
             StringComparison.Ordinal);
         Assert.Contains(

@@ -1,4 +1,5 @@
 using dad.Models;
+using dad.Services;
 using Xunit;
 
 namespace dad.Tests;
@@ -52,5 +53,69 @@ public sealed class DadEarlyRequestedJobAssignmentRulesTests
         Assert.Equal("frozen-request", assignments[0].RunId);
         Assert.Equal(1001ul, assignments[0].RequiredContentId);
         Assert.Equal(40u, assignments[0].RequiredJobId);
+    }
+
+    [Fact]
+    public void MixedLanAndRegisteredIslandSlotsAssignOnlyLanSlotOneAndReachAutoPartyAuthorization()
+    {
+        var proposalId = Guid.Parse("f5c4e83d-0d7b-45f0-8f32-4d8680e59a84");
+        var slots = new List<DadSchedulerSlotState>
+        {
+            new()
+            {
+                SlotId = "Slot1",
+                RequiredAccountKey = new DadAccountKey("account-1"),
+                RequiredCharacterKey = new DadCharacterKey("character-1@world"),
+                RequiredJobId = 19,
+            },
+            new()
+            {
+                SlotId = "Slot2",
+                IsRegisteredIsland = true,
+                SharedIdentityToken = "shared-registered-slot-2",
+                RequiredJobId = 24,
+            },
+        };
+        var request = new DadRunRequest
+        {
+            RequestId = "mixed-request",
+            Orchestration = new DadOrchestrationIntent
+            {
+                AuthorityMode = DadAuthorityMode.ServerDad,
+                ModuleTarget = DadModuleId.PremadeDuty,
+                AutoPartyProposalId = proposalId.ToString("D"),
+                RequiredRosterCharacters =
+                [
+                    new DadRosterCharacterRef
+                    {
+                        AccountKey = slots[0].RequiredAccountKey,
+                        CharacterKey = slots[0].RequiredCharacterKey,
+                        ContentId = 1001,
+                        RequiredJobId = 19,
+                    },
+                    new DadRosterCharacterRef
+                    {
+                        SharedIdentityToken = slots[1].SharedIdentityToken,
+                        RequiredJobId = 24,
+                    },
+                ],
+            },
+        };
+
+        var assignment = Assert.Single(DadEarlyRequestedJobAssignmentRules.Build(
+            request,
+            slots,
+            new DadWorkerSessionId("authority")));
+
+        Assert.Equal("Slot1", assignment.AssignedSlotId);
+        Assert.Equal(19u, assignment.RequiredJobId);
+        var authorization = DadAutoPartySchedulerAuthorizationRules.Evaluate(
+            request,
+            candidate => new(DadAutoPartyAuthorizationState.Authorized, "dad-autoparty-authorized", candidate));
+        Assert.Equal(DadAutoPartyAuthorizationState.Authorized, authorization.State);
+        Assert.Equal(proposalId, authorization.ProposalId);
+        var clone = slots[1].Clone();
+        Assert.True(clone.IsRegisteredIsland);
+        Assert.Equal("shared-registered-slot-2", clone.SharedIdentityToken);
     }
 }

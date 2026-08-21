@@ -3211,6 +3211,9 @@ public sealed class DadSchedulerService
                 LevelSeekTarget = slot.LevelSeekTarget,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
+                SharedIdentity = slot.IsRegisteredIsland
+                    ? new DadSharedIdentityPlaceholder { IdentityToken = slot.SharedIdentityToken }
+                    : null,
             }).ToList(),
         };
         currentState.Slots = BuildSlotStates(group, pool, currentState.Slots, allowRosterMaintenanceTarget: true);
@@ -3458,6 +3461,9 @@ public sealed class DadSchedulerService
                 LevelSeekTarget = slot.LevelSeekTarget,
                 WakePolicy = slot.WakePolicy,
                 LaunchProfileId = slot.LaunchProfileId,
+                SharedIdentity = slot.IsRegisteredIsland
+                    ? new DadSharedIdentityPlaceholder { IdentityToken = slot.SharedIdentityToken }
+                    : null,
             }).ToList(),
         };
         var rebuilt = BuildSlotStates(
@@ -3778,6 +3784,8 @@ public sealed class DadSchedulerService
         var state = new DadSchedulerSlotState
         {
             SlotId = string.IsNullOrWhiteSpace(slot.SlotId) ? "Slot" : slot.SlotId,
+            IsRegisteredIsland = !string.IsNullOrWhiteSpace(slot.SharedIdentity?.IdentityToken),
+            SharedIdentityToken = slot.SharedIdentity?.IdentityToken?.Trim() ?? string.Empty,
             AllianceAssignment = slot.AllianceAssignment,
             WakePolicy = slot.WakePolicy,
             RequiredAccountKey = slot.RequiredAccountKey,
@@ -3788,6 +3796,18 @@ public sealed class DadSchedulerService
             LaunchProfileId = slot.LaunchProfileId?.Trim() ?? string.Empty,
             MatchedWorkerSessionId = frozenWorkerSessionId,
         };
+        if (state.IsRegisteredIsland)
+        {
+            state.RosterVisibility = DadRosterVisibility.Active;
+            state.NeedsRosterUpdate = false;
+            state.DependenciesReady = true;
+            state.DependencyState = DadDependencyState.Ready;
+            state.DependencySummary = $"Slot {state.SlotId} is remotely managed by its registered AutoParty island.";
+            state.Ready = true;
+            state.Summary = state.DependencySummary;
+            return state;
+        }
+
         state.RosterVisibility = rosterCatalogService.ResolveVisibility(slot.RequiredCharacterKey, slot.RequiredAccountKey);
         state.NeedsRosterUpdate = rosterCatalogService.ResolveNeedsRosterUpdate(slot.RequiredCharacterKey, slot.RequiredAccountKey);
         if (!allowRosterMaintenanceTarget &&
@@ -3930,6 +3950,16 @@ public sealed class DadSchedulerService
 
     private static void ApplyWakePolicyState(DadSchedulerSlotState state, bool dependenciesCommitted)
     {
+        if (state.IsRegisteredIsland)
+        {
+            state.DependenciesReady = true;
+            state.DependencyState = DadDependencyState.Ready;
+            state.Ready = true;
+            state.BlockedReason = string.Empty;
+            state.Summary = $"Slot {state.SlotId} is remotely managed by its registered AutoParty island.";
+            return;
+        }
+
         if (!string.IsNullOrWhiteSpace(state.BlockedReason))
             return;
 
@@ -4204,7 +4234,8 @@ public sealed class DadSchedulerService
         IEnumerable<DadSchedulerSlotState> slots,
         DateTime startedAtUtc)
     {
-        foreach (var slot in slots.Where(static slot => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline))
+        foreach (var slot in slots.Where(static slot =>
+                     !slot.IsRegisteredIsland && slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline))
             slot.TakeoverRequestedUtc ??= startedAtUtc;
     }
 
@@ -4218,7 +4249,8 @@ public sealed class DadSchedulerService
             blocker = preexistingBlocker;
             return false;
         }
-        var takeoverSlots = slots.Where(static slot => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline).ToList();
+        var takeoverSlots = slots.Where(static slot =>
+            !slot.IsRegisteredIsland && slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline).ToList();
         if (takeoverSlots.Count == 0)
             return true;
 
@@ -5021,7 +5053,8 @@ public sealed class DadSchedulerService
         if (request == null || request.Orchestration == null)
             return "Scheduler admission did not produce a frozen planner request and orchestration intent.";
 
-        var requestedSlots = slots.Where(static slot => slot.RequiredJobId.HasValue).ToList();
+        var requestedSlots = slots.Where(static slot =>
+            !slot.IsRegisteredIsland && slot.RequiredJobId.HasValue).ToList();
         if (assignments.Count != requestedSlots.Count)
             return $"Frozen requested-job manifest contains {assignments.Count}/{requestedSlots.Count} required slot assignments.";
 
