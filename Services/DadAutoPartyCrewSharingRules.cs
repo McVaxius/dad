@@ -102,12 +102,12 @@ internal static class DadAutoPartyCrewSharingRules
         var identitiesByKey = identities.ToDictionary(
             static identity => identity.RosterIdentityKey,
             StringComparer.OrdinalIgnoreCase);
-        var candidates = crew
+            var candidates = crew
             .Select(item => new DadAutoPartyCrewCandidate(
                 identitiesByKey[item.Key].Clone(),
                 item.Character,
                 ResolvePermittedCombatJobs(item.Character),
-                item.Character.IsLiveConnected))
+                true))
             .ToList();
         return new(changed, candidates);
     }
@@ -256,7 +256,6 @@ internal static class DadAutoPartyCrewSharingRules
             }
 
             var routes = owners.Where(owner =>
-                    owner.IsAvailable && owner.WorldReadyStable && !owner.ActiveCharacterKey.IsEmpty &&
                     owner.AutoRetainerAvailable &&
                     DadRosterIdentity.SameAccount(owner.ManagedAccountKey, accountKey) &&
                     (owner.IsLocalClient || utcNow.UtcDateTime - owner.LastHeartbeatUtc <= TimeSpan.FromSeconds(15)) &&

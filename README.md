@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.6.nupkg'
-$expectedHash = '88a5b8ac6700190b58e9956af6b91b254419784d84eb548a85db925f7d621b4d'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.7.nupkg'
+$expectedHash = '484335cccb87c36c74558a33fed8fc26b04456e487a2c03927a391ce3c1fc7ea'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'
@@ -102,7 +102,7 @@ uploaded or promoted to a release.
 - Character Profiles and launch-profile scaffolding remain operational but are visible only with Debug UI enabled.
   Per-row account assignment controls are not part of the normal Crew browser; the assigned/unassigned filter and
   existing compatibility contracts remain available.
-- Configuration schema v11 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are
+- Configuration schema v12 retains the v4 removal of serialized remote profile catalogs. Online remote catalogs are
   session-only and reconcile every 60 seconds; durable per-account character profiles stay in their separate account JSON
   files. Passive roster learning coalesces disk writes, and Crew projections/filter results are revision-cached. Schema-10
   migration preserves registration, protected identity/mailbox references, epochs, keys, active and revoked routes,
@@ -134,10 +134,12 @@ uploaded or promoted to a release.
   until DAD and the relay complete the first signed epoch exchange. The bootstrap DM input is ordinary visible text, and
   the window keeps pairing and directory requests disabled while relay acknowledgement is pending. Extra prose, partial
   or multiple tokens, legacy registration packages, replay, expiry, tamper, and wrong-recipient input are rejected.
-- A background REST adapter performs exact webhook-message fetch/edit, bounded `AP2` fragments, acknowledgements, retry,
-  expiry, epoch rotation, and signed presence. It polls distinct UPLINK and DOWNLINK slots every 10 seconds while idle and
-  every 2 seconds while transfer, partial assembly, delivery, or acknowledgement work exists. It batches only contiguous
-  fragments from one delivery below the 1,900-character ceiling, advances cursors only through gap-free receipts, consumes
+- A background REST adapter performs exact webhook-message fetch/edit, bounded `AP5` fragments, acknowledgements, retry,
+  expiry, epoch rotation, and signed presence. Every protected mailbox credential records its originating protocol and
+  requires exactly two UPLINK plus two DOWNLINK message references with one matching generation. It polls those pages
+  every 10 seconds while idle and every 2 seconds while transfer, partial assembly, delivery, or acknowledgement work
+  exists. It batches only contiguous fragments from one delivery below the 1,900-character ceiling, advances cursors only
+  through gap-free receipts, consumes
   UPLINK acknowledgements before publishing, writes acknowledgements back to the slot matching their direction, and sends
   presence immediately at startup and every idle 10-second cycle. Network work stays off the Dalamud framework thread;
   framework updates consume bounded immutable snapshots. `IAutoPartyTransportAdapter` and the existing LAN/public IPC
@@ -145,7 +147,7 @@ uploaded or promoted to a release.
 - The Discord transport channel is private machine infrastructure and explicitly denies `View Channel` to `@everyone`;
   the central service validates bot access before provisioning and never changes permissions. DAD neither reads nor
   depends on channel visibility. Its AutoParty window reports registration/connection state, last mailbox exchange,
-  queue/epoch health, and operation results. Discord administrators may retain access, but encrypted AP2 frames are not
+  queue/epoch health, and operation results. Discord administrators may retain access, but encrypted AP5 frames are not
   notifications or an audit trail.
 - Each DAD displays one read-only signed `APP1` pairing fingerprint with copy, regenerate, and exact cancellation controls.
   Each owner pastes the peer fingerprint, chooses an independent private sharing scope, and submits as local approval.
@@ -153,12 +155,19 @@ uploaded or promoted to a release.
   stable while waiting, expires after exactly ten minutes, and is replaced after success, expiry, or acknowledged
   cancellation. Peer clipboard text is discarded after validated submission. Pairing may cross allowlisted guilds.
   Normal pairing and directory labels use endpoint aliases or **Paired DAD**; copyable internal island IDs are available
-  only with `/dad debug`. Registration and active pairing survive ordinary DAD and central-service restarts. Current
-  reachability
-  does not: each DAD starts offline until the central service accepts genuinely new authenticated activity, and more than
+  only with `/dad debug`. Registration and active pairing survive ordinary same-protocol DAD and central-service restarts.
+  Current reachability does not: each DAD starts offline until the central service accepts genuinely new authenticated
+  activity, and more than
   60 seconds without accepted activity means offline. Active paired islands remain visible as online or offline; an
   offline island exposes no cached usable listings or route choices. Each endpoint independently shares one checked local
   character, selected checked characters, or all characters for that peer.
+- A protocol bump automatically invalidates the mailbox registration and every pairing trust relationship. On startup, a
+  missing or mismatched mailbox protocol stamp causes DAD to best-effort delete the protected credential and immediately
+  clear registration IDs, epochs, relay trust, pairings, pending operations, grants, listings, routes, deauthentications,
+  and pairing attempts even if file deletion fails. DAD advances its state generation and returns directly to ordinary
+  new registration without a reset panel. It preserves the enabled setting, protected endpoint identity/keypair, owner and
+  island IDs, fingerprint, alias, Crew identities, and local sharing preferences. Generate a fresh challenge, register,
+  import the new bootstrap, and establish fresh reciprocal `APP1` pairings.
 - Private directory rows carry registered route identity, the effective share mode and policy hash, plus opaque character
   handles/placeholders, permitted jobs/activities, availability, revision, and expiry. After a paired page arrives, DAD
   requests `CharacterName@World` labels directly in batches of at most 16 handles through the existing signed,
@@ -166,6 +175,11 @@ uploaded or promoted to a release.
   revision/expiry; the persisted directory and unpaired Community listings remain opaque. Content IDs and native invite
   locators appear only in short-lived endpoint-encrypted proposal traffic and remain in memory; they are never saved into
   Plans, Schedules, Fleet Matrix, logs, or public IPC.
+- The planner and main window share one nonblocking paired-directory refresh. It refreshes the source roster, publishes
+  every current authorized chunk and waits for all positive receipts, then issues a dedicated directory query and applies
+  only complete validated pagination. The result reports accepted published characters and distinct actionable received
+  characters; timeout, cancellation, reset, deregistration, and disposal remain terminal and truthful. The main button is
+  disabled while processing and enforces the in-memory 60-second end-to-end cooldown.
 - **Community Available** is a separate, default-empty selector for specific local characters. Its selected rows can be
   displayed to same-guild requesters, but cannot be selected, bound, or executed until the requester signs an exact
   policy access request and the relay returns the same short-lived endpoint identity attestation to both DAD islands.

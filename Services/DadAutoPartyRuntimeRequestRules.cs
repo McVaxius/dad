@@ -4,7 +4,7 @@ namespace dad.Services;
 
 internal static class DadAutoPartyRuntimeRequestRules
 {
-    public static DadRunRequest CloneForAdmission(DadRunRequest source)
+    public static DadRunRequest ClonePreservingRuntimeMetadata(DadRunRequest source)
     {
         ArgumentNullException.ThrowIfNull(source);
         source.ApplyOrchestrationDefaults();
@@ -17,8 +17,15 @@ internal static class DadAutoPartyRuntimeRequestRules
         CopyRuntimeIdentities(
             source.Orchestration.RequiredRosterCharacters,
             clone.Orchestration.RequiredRosterCharacters);
-        clone.Orchestration.AutoPartyProposalId = string.Empty;
+        clone.Orchestration.AutoPartyProposalId = source.Orchestration.AutoPartyProposalId;
         clone.Orchestration.AutoPartyFormationOnly = source.Orchestration.AutoPartyFormationOnly;
+        return clone;
+    }
+
+    public static DadRunRequest CloneForAdmission(DadRunRequest source)
+    {
+        var clone = ClonePreservingRuntimeMetadata(source);
+        clone.Orchestration.AutoPartyProposalId = string.Empty;
         return clone;
     }
 

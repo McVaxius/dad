@@ -456,11 +456,17 @@ internal sealed class DadAutoPartyInboundAdmissionService
         return !candidate.AccountKey.IsEmpty && !candidate.CharacterKey.IsEmpty &&
                candidate.ContentId != 0 && candidate.WorldId is > 0 and <= ushort.MaxValue &&
                !candidate.WorkerSessionId.IsEmpty && owner != null &&
-               owner.IsAvailable && owner.WorldReadyStable && !owner.ActiveCharacterKey.IsEmpty &&
                owner.AutoRetainerAvailable &&
                SameIgnoreCase(owner.WorkerSessionId.Value, candidate.WorkerSessionId.Value) &&
                SameIgnoreCase(owner.ManagedAccountKey.Value, candidate.AccountKey.Value) &&
-               (owner.IsLocalClient || now.UtcDateTime - owner.LastHeartbeatUtc <= TimeSpan.FromSeconds(15));
+               (owner.IsLocalClient || now.UtcDateTime - owner.LastHeartbeatUtc <= TimeSpan.FromSeconds(15)) &&
+               (owner.AvailableCharacterKeys.Any(available =>
+                    DadRosterIdentity.SameCharacter(available, 0, candidate.CharacterKey, candidate.ContentId)) ||
+                DadRosterIdentity.SameCharacter(
+                    owner.ActiveCharacterKey,
+                    owner.Character?.ContentId ?? 0,
+                    candidate.CharacterKey,
+                    candidate.ContentId));
     }
 
     private static DadWakeTakeoverRequestDto CloneTakeoverRequest(DadWakeTakeoverRequestDto request)

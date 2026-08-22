@@ -45,6 +45,76 @@ public sealed class DadAutoPartyFreeformRulesTests
     }
 
     [Fact]
+    public void SchedulerFreezesPreserveMixedLocalAndRegisteredRuntimeMetadata()
+    {
+        Assert.True(DadAutoPartyFreeformRules.TryBuild(
+            [Local("local-one", 19), Remote("remote-one", 24)],
+            out var formation,
+            out var blocker), blocker);
+        var proposalId = Guid.NewGuid().ToString("D");
+        formation.Group.AutoPartyProposalId = proposalId;
+        var frozenGroup = DadSchedulerGroupCloneRules.CloneWithSlots(
+            formation.Group,
+            formation.Group.Slots);
+
+        Assert.True(frozenGroup.AutoPartyFormationOnly);
+        Assert.Equal(proposalId, frozenGroup.AutoPartyProposalId);
+        Assert.Null(frozenGroup.Slots[0].SharedIdentity);
+        Assert.Equal("opaque-remote-one", frozenGroup.Slots[1].SharedIdentity?.IdentityToken);
+        Assert.NotSame(formation.Group.Slots[1].SharedIdentity, frozenGroup.Slots[1].SharedIdentity);
+
+        var request = new DadRunRequest
+        {
+            Orchestration = new DadOrchestrationIntent
+            {
+                AutoPartyProposalId = proposalId,
+                AutoPartyFormationOnly = true,
+                PreferredRosterCharacters =
+                [
+                    new DadRosterCharacterRef
+                    {
+                        AccountKey = new DadAccountKey("account-local-one"),
+                        CharacterKey = new DadCharacterKey("Character local-one@World"),
+                        ContentId = 10,
+                        RequiredJobId = 19,
+                    },
+                    new DadRosterCharacterRef
+                    {
+                        SharedIdentityToken = "opaque-remote-one",
+                        RequiredJobId = 24,
+                    },
+                ],
+                RequiredRosterCharacters =
+                [
+                    new DadRosterCharacterRef
+                    {
+                        AccountKey = new DadAccountKey("account-local-one"),
+                        CharacterKey = new DadCharacterKey("Character local-one@World"),
+                        ContentId = 10,
+                        RequiredJobId = 19,
+                    },
+                    new DadRosterCharacterRef
+                    {
+                        SharedIdentityToken = "opaque-remote-one",
+                        RequiredJobId = 24,
+                    },
+                ],
+            },
+        };
+
+        var frozenRequest = DadAutoPartyRuntimeRequestRules.ClonePreservingRuntimeMetadata(request);
+
+        Assert.Equal(proposalId, frozenRequest.Orchestration.AutoPartyProposalId);
+        Assert.True(frozenRequest.Orchestration.AutoPartyFormationOnly);
+        Assert.Equal(
+            "opaque-remote-one",
+            frozenRequest.Orchestration.PreferredRosterCharacters[1].SharedIdentityToken);
+        Assert.Equal(
+            "opaque-remote-one",
+            frozenRequest.Orchestration.RequiredRosterCharacters[1].SharedIdentityToken);
+    }
+
+    [Fact]
     public void InvalidCountsDuplicateRoutesAndNonCombatJobsFailClosed()
     {
         Assert.False(DadAutoPartyFreeformRules.TryBuild([Local("one", 19)], out _, out _));

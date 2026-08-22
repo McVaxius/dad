@@ -497,6 +497,12 @@ public sealed class DadAutoPartyService : IDisposable
         SessionPermission requiredPermissions) =>
         Policy.AcceptOwnedProposal(proposal, ownedParticipants, requiredPermissions);
 
+    public DadAutoPartyPolicyDecision RenewOwnedProposal(
+        Guid proposalId,
+        DateTimeOffset previousExpiresAt,
+        DateTimeOffset newExpiresAt) =>
+        Policy.RenewOwnedProposal(proposalId, previousExpiresAt, newExpiresAt);
+
     public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode) =>
         Policy.Reserve(reservation, mode);
 
@@ -588,7 +594,6 @@ public sealed class DadAutoPartyService : IDisposable
         }
         ClearRegistrationAndTrust();
         configuration.Enabled = false;
-        configuration.StateGeneration++;
         saveConfiguration();
         return new(true, false, "dad-deregistered");
     }
@@ -645,29 +650,7 @@ public sealed class DadAutoPartyService : IDisposable
 
     private void ClearRegistrationAndTrust()
     {
-        configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
-        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
-        configuration.RegistrationId = string.Empty;
-        configuration.RouteId = string.Empty;
-        configuration.CentralBotApplicationId = string.Empty;
-        configuration.HomeGuildScope = string.Empty;
-        configuration.WebhookCredentialReference = string.Empty;
-        configuration.UplinkEpochId = string.Empty;
-        configuration.DownlinkEpochId = string.Empty;
-        configuration.MailboxEpochGeneration = 0;
-        configuration.DirectoryGeneration = 1;
-        configuration.RelayKeyGeneration = 1;
-        configuration.RelaySigningPublicKey = string.Empty;
-        configuration.RelayAgreementPublicKey = string.Empty;
-        configuration.BootstrapExpiresAtUtc = default;
-        configuration.PairedDadAliases.Clear();
-        configuration.Pairings.Clear();
-        configuration.PendingPairings.Clear();
-        configuration.ClearPairingAttempt();
-        configuration.Grants.Clear();
-        configuration.Listings.Clear();
-        configuration.RemoteBindings.Clear();
-        configuration.Deauthentications.Clear();
+        configuration.ClearRegistrationAndTrust();
         lock (directoryPresenceGate)
         {
             onlineDirectoryIslands.Clear();

@@ -420,6 +420,27 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task RestartDropsPendingDeregistrationFromPreviousStateGeneration()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        fixture.PendingStore.SaveDeregistration(new DadAutoPartyPendingDeregistration(
+            Guid.NewGuid(),
+            2,
+            "dad-owner-deregistered",
+            DateTimeOffset.UtcNow,
+            false,
+            1));
+        fixture.Configuration.StateGeneration = 2;
+        await using var pump = fixture.CreatePump();
+
+        await pump.ProcessOnceAsync();
+
+        Assert.Null(fixture.PendingStore.LoadDeregistration());
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DeregistrationRequest>());
+    }
+
+    [Fact]
     public async Task ParticipantCommandLeaseReleasesDeniedSendAndAcknowledgesAcceptedRetry()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
@@ -434,12 +455,14 @@ public sealed class DadAutoPartyRelayPumpTests
             OwnsQueueAuthority = true,
             OwnerConsentConfirmed = true,
         });
-        var runtime = RemoteRuntime();
-        Assert.True(bridge.TryBindRun(runtime.Plan, runtime.Manifest, DateTimeOffset.UtcNow, out var blocker), blocker);
         await using var pump = fixture.CreatePump();
         pump.ConfigureLifecycleHandlers(
             static _ => new(false, "unused", 1),
             static (_, _, _) => ValueTask.FromResult(new DadAutoPartyPrivacyResult(false, false, "unused")));
+
+        await pump.ProcessOnceAsync();
+        var runtime = RemoteRuntime();
+        Assert.True(bridge.TryBindRun(runtime.Plan, runtime.Manifest, DateTimeOffset.UtcNow, out var blocker), blocker);
 
         fixture.Transport.SendAcceptance.Enqueue(false);
         await pump.ProcessOnceAsync();
@@ -693,8 +716,9 @@ public sealed class DadAutoPartyRelayPumpTests
     [Fact]
     public async Task DirectoryQueryReassemblesOneIslandAcrossPagesBeforeReplacingItsRoster()
     {
+        var now = DateTimeOffset.UtcNow;
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        var expiresAt = now.AddHours(2);
         fixture.Configuration.Listings.Add(new DadAutoPartyListing
         {
             ListingId = Guid.NewGuid().ToString("D"),
@@ -711,15 +735,17 @@ public sealed class DadAutoPartyRelayPumpTests
             Revision = 1,
             ExpiresAtUtc = expiresAt.UtcDateTime,
         }.Normalize());
-        await using var pump = fixture.CreatePump();
-        Assert.True((await pump.RequestDirectoryAsync(string.Empty, true)).Allowed);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        Assert.True((await pump.RequestDirectoryAsync(string.Empty, false)).Allowed);
         await pump.ProcessOnceAsync();
         var query = fixture.Open<DirectoryQuery>(fixture.Transport.Sent.Last(item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
+        Assert.Equal(TimeSpan.FromMinutes(5), query.Header.ExpiresAt - query.Header.IssuedAt);
         var snapshotId = Guid.Parse("a67e67f9-d1d2-4c5e-a582-c2f12b29b2a1");
 
+        now = now.AddMinutes(2);
         fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
-            fixture.RelayHeader("directory-community-1"),
+            fixture.RelayHeader("directory-community-1", now),
             query.QueryId,
             1,
             true,
@@ -730,12 +756,18 @@ public sealed class DadAutoPartyRelayPumpTests
 
         Assert.Contains(fixture.Configuration.Listings, item => item.OpaqueCharacterId == "opaque-old");
         Assert.DoesNotContain(fixture.Configuration.Listings, item => item.OpaqueCharacterId == "opaque-new-1");
+        var continuation = fixture.Transport.Sent
+            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>())
+            .Select(fixture.Open<DirectoryQuery>)
+            .Single(item => item.ContinuationToken == "position-2-0-1");
+        Assert.Equal(query.Header.ExpiresAt, continuation.Header.ExpiresAt);
         Assert.Contains(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>() &&
             fixture.Open<DirectoryQuery>(item).ContinuationToken == "position-2-0-1");
 
+        now = now.AddMinutes(2);
         fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
-            fixture.RelayHeader("directory-community-2"),
+            fixture.RelayHeader("directory-community-2", now),
             query.QueryId,
             2,
             false,
@@ -854,12 +886,13 @@ public sealed class DadAutoPartyRelayPumpTests
     [Fact]
     public async Task PairedDirectoryRequestsPrivateLabelsInSixteenHandleBatchesAndKeepsCommunityOpaque()
     {
+        var now = DateTimeOffset.UtcNow;
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
-        await using var pump = fixture.CreatePump();
+        await using var pump = fixture.CreatePump(utcNow: () => now);
         await pump.ProcessOnceAsync();
         var query = fixture.Open<DirectoryQuery>(fixture.Transport.Sent.Single(item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>()));
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        var expiresAt = now.AddHours(2);
         var pairedListings = Enumerable.Range(1, 17)
             .Select(index => new PrivateCharacterListing(
                 new OpaqueCharacterId($"opaque-peer-{index}"),
@@ -872,7 +905,7 @@ public sealed class DadAutoPartyRelayPumpTests
             .ToImmutableArray();
         var pairing = Assert.Single(fixture.Configuration.Pairings);
         var page = new DirectoryPage(
-            fixture.RelayHeader("directory-private-labels"),
+            fixture.RelayHeader("directory-private-labels", now),
             query.QueryId,
             1,
             false,
@@ -931,11 +964,13 @@ public sealed class DadAutoPartyRelayPumpTests
             Assert.Equal(PumpFixture.PeerIsland, request.Header.RecipientIslandId.Value);
             Assert.Equal(Guid.Parse(pairing.PairingId), request.PairingId);
             Assert.Equal(pairing.TranscriptHash, request.PairingTranscriptHash);
+            Assert.Equal(TimeSpan.FromMinutes(5), request.Header.ExpiresAt - request.Header.IssuedAt);
         });
 
         var first = requests[0];
+        now = now.AddMinutes(2);
         var response = new PairedListingLabelResponse(
-            fixture.PeerHeader("paired-label-response"),
+            fixture.PeerHeader("paired-label-response", now),
             first.RequestId,
             first.PairingId,
             first.PairingTranscriptHash,
@@ -955,6 +990,21 @@ public sealed class DadAutoPartyRelayPumpTests
             "Shared character 0001",
             fixture.Configuration.Listings.Single(item =>
                 item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
+
+        now = now.AddMinutes(3).AddSeconds(1);
+        var expiredRequest = requests[1];
+        var expiredResponse = new PairedListingLabelResponse(
+            fixture.PeerHeader("paired-label-response-expired", now),
+            expiredRequest.RequestId,
+            expiredRequest.PairingId,
+            expiredRequest.PairingTranscriptHash,
+            [new PairedListingLabel(expiredRequest.RequestedCharacters[0], "Too Late@Private World")]);
+        var expiredDelivery = fixture.SealPeer(expiredResponse);
+        fixture.Transport.Inbound.Enqueue(expiredDelivery);
+        await pump.ProcessOnceAsync();
+        Assert.DoesNotContain(
+            fixture.Transport.Acknowledged,
+            item => item.EnvelopeId == expiredDelivery.EnvelopeId);
 
         fixture.Configuration.Listings.Single(item =>
             item.OpaqueCharacterId == first.RequestedCharacters[0].Value).ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);
@@ -1065,15 +1115,16 @@ public sealed class DadAutoPartyRelayPumpTests
     [Fact]
     public async Task NinetyTwoCharacterRosterQueuesCompleteSizeValidListingSnapshot()
     {
+        var now = DateTimeOffset.UtcNow;
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
-        await using var pump = fixture.CreatePump();
-        var expiresAt = DateTime.UtcNow.AddMinutes(15);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        var expiresAt = now.UtcDateTime.AddHours(2);
         var policy = new DadAutoPartySharePolicy
         {
             Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
             Enabled = true,
             Revision = 3,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = now.UtcDateTime,
         };
         var listings = Enumerable.Range(1, 92).Select(index => new DadAutoPartyListing
         {
@@ -1096,7 +1147,11 @@ public sealed class DadAutoPartyRelayPumpTests
         var envelopes = fixture.Transport.Sent
             .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>())
             .ToList();
-        Assert.True(envelopes.Count > 1);
+        Assert.True(
+            envelopes.Count > 1,
+            $"Expected a multi-chunk snapshot; queued={queued.SafeCode}, sent {envelopes.Count}, " +
+            $"types=[{string.Join(',', fixture.Transport.Sent.Select(static item => item.PayloadType))}], " +
+            $"pump={pump.Snapshot.SafeCode}.");
         Assert.All(envelopes, envelope =>
             Assert.InRange(envelope.PayloadLength, 1, AutoPartyProtocol.MaximumSemanticEnvelopeBytes));
         var updates = envelopes.Select(fixture.Open<PrivateListingUpdate>)
@@ -1104,6 +1159,9 @@ public sealed class DadAutoPartyRelayPumpTests
             .ToList();
         Assert.Single(updates.Select(static update => update.SnapshotId).Distinct());
         Assert.Single(updates.Select(static update => update.SnapshotRevision).Distinct());
+        Assert.All(updates, update => Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            update.Header.ExpiresAt - update.Header.IssuedAt));
         Assert.All(updates, update => Assert.Equal(updates.Count, update.ChunkCount));
         Assert.Equal(Enumerable.Range(1, updates.Count), updates.Select(static update => update.ChunkIndex));
         Assert.Equal(
@@ -1111,6 +1169,31 @@ public sealed class DadAutoPartyRelayPumpTests
             updates.SelectMany(static update => update.Listings)
                 .Select(static listing => listing.CharacterHandle.Value)
                 .Order(StringComparer.Ordinal));
+
+        now = now.AddMinutes(1);
+        var delayed = pump.QueueListingUpdate(policy, listings);
+        Assert.True(delayed.Allowed, delayed.SafeCode);
+        Assert.Equal("dad-listing-update-coalesced", delayed.SafeCode);
+
+        foreach (var update in updates)
+        {
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+                fixture.RelayHeader($"listing-update-receipt-{update.ChunkIndex}", now),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied")));
+        }
+        await pump.ProcessOnceAsync();
+
+        var completed = pump.QueueListingUpdate(policy, listings);
+        Assert.True(completed.Allowed, completed.SafeCode);
+        Assert.Equal("dad-listing-update-queued", completed.SafeCode);
+
+        now = now.AddMinutes(5).AddSeconds(1);
+        var expired = pump.QueueListingUpdate(policy, listings);
+        Assert.True(expired.Allowed, expired.SafeCode);
+        Assert.Equal("dad-listing-update-queued", expired.SafeCode);
     }
 
     [Fact]
@@ -2364,6 +2447,557 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task ImmediateListingPublicationReportsCurrentRosterFailureAndCount()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        var pump = fixture.CreatePump();
+        var rosterReady = false;
+        var publicationCalls = 0;
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.SpecificCharacter,
+            CharacterHandles = ["opaque-local"],
+            Enabled = true,
+        }.Normalize();
+        var listing = new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = "opaque-local",
+            DisplayLabel = "Shared character local",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(15),
+        };
+        using var endpoint = new DadAutoPartyEndpointService(
+            fixture.Configuration,
+            new UnusedWebhookStore(),
+            new UnusedLegacyTokenStore(),
+            fixture.Connector,
+            static () => { },
+            identityStore: fixture.IdentityStore,
+            listingPublicationProvider: _ =>
+            {
+                publicationCalls++;
+                return new DadAutoPartyListingPublication(policy, [listing]);
+            },
+            prepareListingPublication: () => rosterReady);
+        typeof(DadAutoPartyEndpointService).GetField(
+            "relayPump",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(endpoint, pump);
+
+        var unavailable = endpoint.PublishListingsImmediately();
+        Assert.False(unavailable.Allowed);
+        Assert.Equal(0, unavailable.PublishedListingCount);
+        Assert.Equal(0, publicationCalls);
+
+        rosterReady = true;
+        var published = endpoint.PublishListingsImmediately();
+        Assert.True(published.Allowed, published.SafeCode);
+        Assert.Equal(1, published.PublishedListingCount);
+        Assert.Equal(1, publicationCalls);
+
+        endpoint.Dispose();
+        await pump.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task PairedDirectoryRefreshWaitsForEveryPublicationReceiptAndCountsOnlyActionableCharacters()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        typeof(DadAutoPartyRelayPump).GetField(
+                "lastPrivateDirectoryRequestAt",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(pump, now);
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+            Enabled = true,
+            Revision = 3,
+            UpdatedAtUtc = now.UtcDateTime,
+        }.Normalize();
+        var sourceListings = Enumerable.Range(1, 92).Select(index => new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = $"opaque-local-{index:000}",
+            DisplayLabel = $"Shared local character {index:000}",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = now.AddHours(1).UtcDateTime,
+        }.Normalize()).ToList();
+        var prepareCalls = 0;
+        var publicationCalls = 0;
+        using var endpoint = new DadAutoPartyEndpointService(
+            fixture.Configuration,
+            new UnusedWebhookStore(),
+            new UnusedLegacyTokenStore(),
+            fixture.Connector,
+            static () => { },
+            identityStore: fixture.IdentityStore,
+            listingPublicationProvider: _ =>
+            {
+                publicationCalls++;
+                Assert.Equal(1, prepareCalls);
+                return new DadAutoPartyListingPublication(policy, sourceListings);
+            },
+            prepareListingPublication: () =>
+            {
+                prepareCalls++;
+                return true;
+            });
+        typeof(DadAutoPartyEndpointService).GetField(
+                "relayPump",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(endpoint, pump);
+
+        var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+        for (var cycle = 0; cycle < 16; cycle++)
+            await pump.ProcessOnceAsync();
+        var updates = fixture.Transport.Sent
+            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>())
+            .Select(fixture.Open<PrivateListingUpdate>)
+            .OrderBy(static update => update.ChunkIndex)
+            .ToList();
+
+        var refreshSafeCode = refresh.IsCompleted ? (await refresh).SafeCode : "pending";
+        Assert.True(
+            updates.Count > 1,
+            $"Expected a multi-chunk refresh publication; sent {updates.Count}, pump={pump.Snapshot.SafeCode}, " +
+            $"completed={refresh.IsCompleted}:{refreshSafeCode}.");
+        Assert.False(refresh.IsCompleted);
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+        foreach (var update in updates.Take(updates.Count - 1))
+        {
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+                fixture.RelayHeader($"listing-receipt-{update.ChunkIndex}", now),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied")));
+        }
+        while (fixture.Transport.Inbound.Count > 0)
+            await pump.ProcessOnceAsync();
+
+        Assert.False(refresh.IsCompleted);
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+
+        var finalUpdate = updates[^1];
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("listing-receipt-final", now),
+            Guid.NewGuid(),
+            finalUpdate.Header.MessageId,
+            true,
+            "listing-update-applied")));
+        DirectoryQuery? query = null;
+        for (var cycle = 0; cycle < 100 && query == null; cycle++)
+        {
+            await pump.ProcessOnceAsync();
+            query = fixture.Transport.Sent
+                .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>())
+                .Select(fixture.Open<DirectoryQuery>)
+                .LastOrDefault();
+            if (query == null)
+                await Task.Delay(1);
+        }
+
+        Assert.NotNull(query);
+        Assert.False(refresh.IsCompleted);
+        var listingExpiresAt = now.AddHours(1);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
+            fixture.RelayHeader("paired-directory-refresh", now),
+            query!.QueryId,
+            1,
+            false,
+            string.Empty,
+            [
+                new PrivateDirectoryEntry(
+                    new OwnerId(PumpFixture.PeerOwner),
+                    new IslandId(PumpFixture.PeerIsland),
+                    "peer-endpoint",
+                    "guild-home",
+                    CharacterShareMode.AllCharactersForPeer,
+                    "paired-policy-hash",
+                    true,
+                    [
+                        new PrivateCharacterListing(
+                            new OpaqueCharacterId("opaque-actionable-one"),
+                            "Actionable one",
+                            [new JobId("19")],
+                            [new ActivityId("dad-duty-1")],
+                            true,
+                            1,
+                            listingExpiresAt),
+                        new PrivateCharacterListing(
+                            new OpaqueCharacterId("opaque-actionable-two"),
+                            "Actionable two",
+                            [new JobId("24")],
+                            [new ActivityId("dad-duty-1")],
+                            true,
+                            1,
+                            listingExpiresAt),
+                        new PrivateCharacterListing(
+                            new OpaqueCharacterId("opaque-noncombat"),
+                            "Noncombat",
+                            [new JobId("999")],
+                            [new ActivityId("dad-duty-1")],
+                            true,
+                            1,
+                            listingExpiresAt),
+                        new PrivateCharacterListing(
+                            new OpaqueCharacterId("opaque-unavailable"),
+                            "Unavailable",
+                            [new JobId("19")],
+                            [new ActivityId("dad-duty-1")],
+                            false,
+                            1,
+                            listingExpiresAt),
+                    ],
+                    Guid.NewGuid(),
+                    1,
+                    0,
+                    false,
+                    1,
+                    listingExpiresAt),
+            ],
+            1)));
+        await pump.ProcessOnceAsync();
+        var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.Allowed, result.SafeCode);
+        Assert.Equal("dad-directory-page-applied", result.SafeCode);
+        Assert.Equal(sourceListings.Count, result.PublishedListingCount);
+        Assert.Equal(2, result.ReceivedListingCount);
+        Assert.Equal(1, prepareCalls);
+        Assert.Equal(1, publicationCalls);
+    }
+
+    [Fact]
+    public async Task PairedDirectoryRefreshAcceptsAnEmptyPublicationAndCompletesCancellationTruthfully()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        typeof(DadAutoPartyRelayPump).GetField(
+                "lastPrivateDirectoryRequestAt",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(pump, now);
+        var policy = new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            Enabled = false,
+            CharacterHandles = [],
+            Revision = 1,
+            UpdatedAtUtc = now.UtcDateTime,
+        }.Normalize();
+        using var endpoint = new DadAutoPartyEndpointService(
+            fixture.Configuration,
+            new UnusedWebhookStore(),
+            new UnusedLegacyTokenStore(),
+            fixture.Connector,
+            static () => { },
+            identityStore: fixture.IdentityStore,
+            listingPublicationProvider: _ => new DadAutoPartyListingPublication(policy, []),
+            prepareListingPublication: static () => true);
+        typeof(DadAutoPartyEndpointService).GetField(
+                "relayPump",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(endpoint, pump);
+
+        var emptyRefresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+        await pump.ProcessOnceAsync();
+        var emptyUpdates = fixture.Transport.Sent.Where(item =>
+                item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>())
+            .ToList();
+        var emptyRefreshSafeCode = emptyRefresh.IsCompleted ? (await emptyRefresh).SafeCode : "pending";
+        Assert.True(
+            emptyUpdates.Count == 1,
+            $"Expected one empty publication; sent {emptyUpdates.Count}, pump={pump.Snapshot.SafeCode}, " +
+            $"completed={emptyRefresh.IsCompleted}:{emptyRefreshSafeCode}.");
+        var emptyUpdate = fixture.Open<PrivateListingUpdate>(emptyUpdates[0]);
+        Assert.Empty(emptyUpdate.Listings);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("empty-listing-receipt", now),
+            Guid.NewGuid(),
+            emptyUpdate.Header.MessageId,
+            true,
+            "listing-update-applied")));
+        DirectoryQuery? query = null;
+        for (var cycle = 0; cycle < 100 && query == null; cycle++)
+        {
+            await pump.ProcessOnceAsync();
+            query = fixture.Transport.Sent
+                .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>())
+                .Select(fixture.Open<DirectoryQuery>)
+                .LastOrDefault();
+            if (query == null)
+                await Task.Delay(1);
+        }
+        Assert.NotNull(query);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
+            fixture.RelayHeader("empty-directory-page", now),
+            query!.QueryId,
+            1,
+            false,
+            string.Empty,
+            [],
+            1)));
+        await pump.ProcessOnceAsync();
+        var emptyResult = await emptyRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(emptyResult.Allowed, emptyResult.SafeCode);
+        Assert.Equal(0, emptyResult.PublishedListingCount);
+        Assert.Equal(0, emptyResult.ReceivedListingCount);
+
+        using var cancellation = new CancellationTokenSource();
+        var cancelledRefresh = endpoint.RefreshPairedDirectoryAsync(cancellation.Token).AsTask();
+        cancellation.Cancel();
+        var cancelled = await cancelledRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(cancelled.Allowed);
+        Assert.Equal("dad-paired-directory-refresh-cancelled", cancelled.SafeCode);
+        Assert.Equal(0, cancelled.PublishedListingCount);
+        Assert.Equal(0, cancelled.ReceivedListingCount);
+
+        using var alreadyCancelled = new CancellationTokenSource();
+        alreadyCancelled.Cancel();
+        var preCancelled = await endpoint.RefreshPairedDirectoryAsync(alreadyCancelled.Token);
+        Assert.False(preCancelled.Allowed);
+        Assert.Equal("dad-paired-directory-refresh-cancelled", preCancelled.SafeCode);
+        Assert.Equal(0, preCancelled.PublishedListingCount);
+        Assert.Equal(0, preCancelled.ReceivedListingCount);
+    }
+
+    [Fact]
+    public async Task PairedDirectoryRefreshRejectsNegativePublicationReceiptBeforeDirectoryQuery()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+        var sentBefore = fixture.Transport.Sent.Count;
+
+        var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+        var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("listing-refresh-rejected", now),
+            Guid.NewGuid(),
+            update.Header.MessageId,
+            false,
+            "listing-update-rejected")));
+        await pump.ProcessOnceAsync();
+        var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.Allowed);
+        Assert.Equal("listing-update-rejected", result.SafeCode);
+        Assert.Equal(0, result.PublishedListingCount);
+        Assert.Equal(0, result.ReceivedListingCount);
+        Assert.DoesNotContain(fixture.Transport.Sent.Skip(sentBefore), item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+    }
+
+    [Fact]
+    public async Task PairedDirectoryRefreshRejectsMalformedFinalPageAfterAcceptedPublication()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+        var sentBefore = fixture.Transport.Sent.Count;
+
+        var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+        var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("listing-refresh-accepted", now),
+            Guid.NewGuid(),
+            update.Header.MessageId,
+            true,
+            "listing-update-applied")));
+        var queryStart = fixture.Transport.Sent.Count;
+        var query = await WaitForSentContractAsync<DirectoryQuery>(fixture, pump, queryStart);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DirectoryPage(
+            fixture.RelayHeader("directory-refresh-mixed", now),
+            query.QueryId,
+            2,
+            false,
+            string.Empty,
+            [],
+            1)));
+        await pump.ProcessOnceAsync();
+        var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.Allowed);
+        Assert.Equal("dad-directory-page-mixed", result.SafeCode);
+        Assert.Equal(1, result.PublishedListingCount);
+        Assert.Equal(0, result.ReceivedListingCount);
+    }
+
+    [Fact]
+    public async Task PairedDirectoryRefreshCompletesListingAndQueryExpiryTruthfully()
+    {
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+            await using var pump = fixture.CreatePump(utcNow: () => now);
+            using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+            var sentBefore = fixture.Transport.Sent.Count;
+
+            var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+            var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+            now = update.Header.ExpiresAt.AddSeconds(1);
+            await pump.ProcessOnceAsync();
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(result.Allowed);
+            Assert.Equal("dad-listing-publication-expired", result.SafeCode);
+            Assert.Equal(0, result.PublishedListingCount);
+            Assert.Equal(0, result.ReceivedListingCount);
+        }
+
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+            await using var pump = fixture.CreatePump(utcNow: () => now);
+            using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+            var sentBefore = fixture.Transport.Sent.Count;
+
+            var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+            var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+                fixture.RelayHeader("listing-before-query-expiry", now),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied")));
+            var queryStart = fixture.Transport.Sent.Count;
+            var query = await WaitForSentContractAsync<DirectoryQuery>(fixture, pump, queryStart);
+            now = query.Header.ExpiresAt.AddSeconds(1);
+            await pump.ProcessOnceAsync();
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(result.Allowed);
+            Assert.Equal("dad-directory-query-expired", result.SafeCode);
+            Assert.Equal(1, result.PublishedListingCount);
+            Assert.Equal(0, result.ReceivedListingCount);
+        }
+    }
+
+    [Fact]
+    public async Task PairedDirectoryRefreshCompletesSecurityResetDeregistrationAndDisposal()
+    {
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+            await using var pump = fixture.CreatePump(utcNow: () => now);
+            using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+            var sentBefore = fixture.Transport.Sent.Count;
+
+            var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+            var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+                fixture.RelayHeader("listing-before-security-reset", now),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied")));
+            var queryStart = fixture.Transport.Sent.Count;
+            _ = await WaitForSentContractAsync<DirectoryQuery>(fixture, pump, queryStart);
+            fixture.Configuration.EndpointIdentityReference =
+                "identity-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+            await pump.ProcessOnceAsync();
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(result.Allowed);
+            Assert.Equal("dad-directory-query-reset", result.SafeCode);
+            Assert.Equal(1, result.PublishedListingCount);
+            Assert.Equal(0, result.ReceivedListingCount);
+        }
+
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+            await using var pump = fixture.CreatePump(utcNow: () => now);
+            pump.ConfigureLifecycleHandlers(
+                static _ => new(false, "unused", 1),
+                (receipt, pending, _) =>
+                {
+                    Assert.Equal(pending.DeregistrationId, receipt.DeregistrationId);
+                    fixture.Configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+                    return ValueTask.FromResult(new DadAutoPartyPrivacyResult(
+                        true,
+                        false,
+                        "dad-deregistered"));
+                });
+            using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+            var sentBefore = fixture.Transport.Sent.Count;
+
+            var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+            var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+                fixture.RelayHeader("listing-before-deregistration", now),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied")));
+            var queryStart = fixture.Transport.Sent.Count;
+            _ = await WaitForSentContractAsync<DirectoryQuery>(fixture, pump, queryStart);
+            var queued = pump.BeginDeregistration(false);
+            Assert.True(queued.Allowed, queued.SafeCode);
+            var pending = Assert.IsType<DadAutoPartyPendingDeregistration>(
+                fixture.PendingStore.LoadDeregistration());
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new DeregistrationReceipt(
+                fixture.RelayHeader("refresh-deregistration", now),
+                pending.DeregistrationId,
+                new IslandId(PumpFixture.LocalIsland),
+                true,
+                2,
+                "dad-deregistered")));
+            await pump.ProcessOnceAsync();
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(result.Allowed);
+            Assert.Equal("dad-directory-query-deregistered", result.SafeCode);
+            Assert.Equal(1, result.PublishedListingCount);
+            Assert.Equal(0, result.ReceivedListingCount);
+        }
+
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+            await using var pump = fixture.CreatePump(utcNow: () => now);
+            using var endpoint = CreatePairedDirectoryRefreshEndpoint(fixture, pump, now);
+            var sentBefore = fixture.Transport.Sent.Count;
+
+            var refresh = endpoint.RefreshPairedDirectoryAsync().AsTask();
+            var update = await WaitForSentContractAsync<PrivateListingUpdate>(fixture, pump, sentBefore);
+            fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+                fixture.RelayHeader("listing-before-disposal", now),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied")));
+            var queryStart = fixture.Transport.Sent.Count;
+            _ = await WaitForSentContractAsync<DirectoryQuery>(fixture, pump, queryStart);
+            await pump.DisposeAsync();
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(result.Allowed);
+            Assert.Equal("dad-directory-query-disposed", result.SafeCode);
+            Assert.Equal(1, result.PublishedListingCount);
+            Assert.Equal(0, result.ReceivedListingCount);
+        }
+    }
+
+    [Fact]
     public async Task EndpointRejectsRelayAttachmentBeforeValidatedBootstrap()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Unregistered);
@@ -2396,7 +3030,8 @@ public sealed class DadAutoPartyRelayPumpTests
                 7,
                 "dad-owner-deregistered",
                 DateTimeOffset.UtcNow,
-                true);
+                true,
+                3);
 
             store.SaveDeregistration(pending);
             Assert.Equal(pending, store.LoadDeregistration());
@@ -2778,6 +3413,74 @@ public sealed class DadAutoPartyRelayPumpTests
         }
     }
 
+    private static DadAutoPartyEndpointService CreatePairedDirectoryRefreshEndpoint(
+        PumpFixture fixture,
+        DadAutoPartyRelayPump pump,
+        DateTimeOffset now)
+    {
+        typeof(DadAutoPartyRelayPump).GetField(
+                "lastPrivateDirectoryRequestAt",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(pump, now);
+        var endpoint = new DadAutoPartyEndpointService(
+            fixture.Configuration,
+            new UnusedWebhookStore(),
+            new UnusedLegacyTokenStore(),
+            fixture.Connector,
+            static () => { },
+            identityStore: fixture.IdentityStore,
+            listingPublicationProvider: observedAt =>
+            {
+                var policy = new DadAutoPartySharePolicy
+                {
+                    Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+                    Enabled = true,
+                    Revision = 1,
+                    UpdatedAtUtc = observedAt,
+                }.Normalize();
+                var listing = new DadAutoPartyListing
+                {
+                    ListingId = Guid.NewGuid().ToString("D"),
+                    OwnerId = PumpFixture.LocalOwner,
+                    SharingIslandId = PumpFixture.LocalIsland,
+                    OpaqueCharacterId = "opaque-refresh-local",
+                    DisplayLabel = "Shared refresh character",
+                    AllowedJobIds = ["19"],
+                    AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+                    Available = true,
+                    Revision = 1,
+                    ExpiresAtUtc = observedAt.AddHours(1),
+                }.Normalize();
+                return new DadAutoPartyListingPublication(policy, [listing]);
+            },
+            prepareListingPublication: static () => true);
+        typeof(DadAutoPartyEndpointService).GetField(
+                "relayPump",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(endpoint, pump);
+        return endpoint;
+    }
+
+    private static async Task<T> WaitForSentContractAsync<T>(
+        PumpFixture fixture,
+        DadAutoPartyRelayPump pump,
+        int startIndex)
+        where T : class, IAutoPartyContract
+    {
+        for (var cycle = 0; cycle < 100; cycle++)
+        {
+            await pump.ProcessOnceAsync();
+            var envelope = fixture.Transport.Sent
+                .Skip(startIndex)
+                .FirstOrDefault(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<T>());
+            if (envelope != null)
+                return fixture.Open<T>(envelope);
+            await Task.Delay(1);
+        }
+
+        throw new Xunit.Sdk.XunitException($"No {typeof(T).Name} was sent.");
+    }
+
     private sealed class PumpFixture : IDisposable
     {
         public const string LocalOwner = "owner-local";
@@ -2908,19 +3611,20 @@ public sealed class DadAutoPartyRelayPumpTests
             }
         }
 
-        public ContractHeader PeerHeader(string purpose)
+        public ContractHeader PeerHeader(string purpose, DateTimeOffset? now = null)
         {
             var nonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
             try
             {
+                var observedAt = now ?? DateTimeOffset.UtcNow;
                 return new ContractHeader(
                     AutoPartyProtocol.CurrentVersion,
                     Guid.NewGuid(),
                     $"{purpose}-{Guid.NewGuid():N}",
                     new IslandId(PeerIsland),
                     new IslandId(LocalIsland),
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow.AddMinutes(5),
+                    observedAt,
+                    observedAt.AddMinutes(5),
                     1,
                     1,
                     3,
@@ -3176,6 +3880,7 @@ public sealed class DadAutoPartyRelayPumpTests
             if (pending?.DeregistrationId == deregistrationId)
                 pending = null;
         }
+        public void ClearAll() => pending = null;
     }
 
     private sealed class UnusedWebhookStore : IDadAutoPartyWebhookCredentialStore

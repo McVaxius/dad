@@ -30,6 +30,7 @@ internal enum DadAutoPartyParticipantCommandKind
     Proposal = 0,
     Execution = 1,
     Revocation = 2,
+    ProposalRenewal = 3,
 }
 
 internal sealed record DadAutoPartyParticipantRequest(
@@ -99,7 +100,9 @@ internal sealed record DadAutoPartyParticipantCommand(
     EndpointExecutionModuleReference? ExecutionModuleReference = null,
     long RevocationGeneration = 0,
     string SafeCode = "",
-    bool FormationOnly = false);
+    bool FormationOnly = false,
+    DateTimeOffset? PreviousProposalExpiresAt = null,
+    long RenewalGeneration = 0);
 
 internal sealed record DadAutoPartyParticipantCommandBatch(
     Guid DispatchLeaseId,
@@ -421,15 +424,19 @@ internal sealed class DadAutoPartyParticipantBridge
                 safeCode = "dad-remote-reservation-route-mismatch";
                 return false;
             }
-            if (slot.Stage is not DadAutoPartyParticipantStage.ProposalPending and
-                not DadAutoPartyParticipantStage.PreflightPending)
+            if ((slot.Stage is not DadAutoPartyParticipantStage.ProposalPending and
+                 not DadAutoPartyParticipantStage.PreflightPending) &&
+                (slot.ReservationId != reservation.ReservationId || slot.ReservationId == Guid.Empty))
             {
                 safeCode = "dad-remote-reservation-order-invalid";
                 return false;
             }
             slot.ReservationId = reservation.ReservationId;
-            slot.StateGeneration = reservation.ObservedStateGeneration;
-            slot.Stage = DadAutoPartyParticipantStage.PreflightPending;
+            if (slot.Stage < DadAutoPartyParticipantStage.PreflightPending)
+            {
+                slot.StateGeneration = reservation.ObservedStateGeneration;
+                slot.Stage = DadAutoPartyParticipantStage.PreflightPending;
+            }
             slot.ObservedAt = now;
             slot.SafeCode = "dad-remote-reservation-accepted";
             CommitReplay(reservation.Header);
@@ -455,18 +462,22 @@ internal sealed class DadAutoPartyParticipantBridge
                 preflight.Header.SenderIslandId.Value,
                 preflight.OwnerId.Value);
             if (slots.Count == 0 || slots.Any(static slot =>
-                    slot.Stage != DadAutoPartyParticipantStage.PreflightPending ||
-                    slot.ReservationId == Guid.Empty))
+                    (slot.Stage != DadAutoPartyParticipantStage.PreflightPending &&
+                     slot.Stage < DadAutoPartyParticipantStage.LeasePending) ||
+                     slot.ReservationId == Guid.Empty))
             {
                 safeCode = "dad-remote-preflight-order-invalid";
                 return false;
             }
             if (slots.Any(slot =>
-                    preflight.ExpectedStateGeneration != slot.StateGeneration ||
-                    preflight.ObservedStateGeneration < slot.StateGeneration ||
-                    preflight.ReadinessGeneration <= slot.ReadinessGeneration ||
-                    (slot.ReadinessGeneration > 0 &&
-                     preflight.ObservedStateGeneration <= slot.StateGeneration)))
+                    slot.Stage == DadAutoPartyParticipantStage.PreflightPending
+                        ? preflight.ExpectedStateGeneration != slot.StateGeneration ||
+                          preflight.ObservedStateGeneration < slot.StateGeneration ||
+                          preflight.ReadinessGeneration <= slot.ReadinessGeneration ||
+                          (slot.ReadinessGeneration > 0 &&
+                           preflight.ObservedStateGeneration <= slot.StateGeneration)
+                        : !preflight.Ready ||
+                          preflight.ReadinessGeneration != slot.ReadinessGeneration))
             {
                 safeCode = "dad-remote-preflight-generation-replay";
                 return false;
@@ -486,7 +497,8 @@ internal sealed class DadAutoPartyParticipantBridge
                 safeCode = blocker;
                 return true;
             }
-            foreach (var slot in slots)
+            foreach (var slot in slots.Where(static slot =>
+                         slot.Stage == DadAutoPartyParticipantStage.PreflightPending))
             {
                 slot.StateGeneration = preflight.ObservedStateGeneration;
                 slot.ReadinessGeneration = preflight.ReadinessGeneration;
@@ -526,7 +538,11 @@ internal sealed class DadAutoPartyParticipantBridge
                 lease.ProposalId,
                 lease.Header.SenderIslandId.Value,
                 lease.OwnerId.Value);
-            if (slots.Count == 0 || slots.Any(static slot => slot.Stage != DadAutoPartyParticipantStage.LeasePending))
+            if (slots.Count == 0 || slots.Any(slot =>
+                    slot.Stage != DadAutoPartyParticipantStage.LeasePending &&
+                    !(slot.Stage == DadAutoPartyParticipantStage.Ready &&
+                      slot.LeaseId != Guid.Empty &&
+                      slot.LeaseId == lease.LeaseId)))
             {
                 safeCode = "dad-remote-lease-order-invalid";
                 return false;
@@ -952,6 +968,7 @@ internal sealed class DadAutoPartyParticipantBridge
         lock (gate)
         {
             Sweep(now);
+            StageDueProposalRenewals(now);
             ReleaseExpiredCommandLeases(now);
             var dispatchLeaseId = Guid.NewGuid();
             var leaseExpiresAt = now + dispatchLeaseDuration;
@@ -989,7 +1006,29 @@ internal sealed class DadAutoPartyParticipantBridge
                 if (!pendingCommands.TryGetValue(commandId, out var pending) ||
                     pending.DispatchLeaseId != dispatchLeaseId || pending.DispatchLeaseExpiresAt <= now)
                     continue;
+                var command = pending.Command;
                 RemoveCommand(commandId);
+                if (command.CommandKind == DadAutoPartyParticipantCommandKind.ProposalRenewal &&
+                    proposals.TryGetValue(command.ProposalId, out var proposal))
+                {
+                    if (command.PreviousProposalExpiresAt is { } previousExpiresAt &&
+                        proposal.ExpiresAt == previousExpiresAt &&
+                        proposal.RenewalGeneration + 1 == command.RenewalGeneration &&
+                        proposal.PendingRenewalExpiresAt == command.ExpiresAt &&
+                        proposal.PendingRenewalGeneration == command.RenewalGeneration)
+                    {
+                        proposal.ExpiresAt = command.ExpiresAt;
+                        proposal.RenewalGeneration = command.RenewalGeneration;
+                    }
+                    if (!pendingCommands.Values.Any(pendingRenewal =>
+                            pendingRenewal.Command.CommandKind == DadAutoPartyParticipantCommandKind.ProposalRenewal &&
+                            pendingRenewal.Command.ProposalId == command.ProposalId &&
+                            pendingRenewal.Command.RenewalGeneration == command.RenewalGeneration))
+                    {
+                        proposal.PendingRenewalExpiresAt = default;
+                        proposal.PendingRenewalGeneration = 0;
+                    }
+                }
                 acknowledged++;
             }
             return acknowledged;
@@ -1251,6 +1290,15 @@ internal sealed class DadAutoPartyParticipantBridge
         }
         foreach (var proposal in proposals.Values)
         {
+            var pendingRenewal = pendingCommands.Values.Any(pending =>
+                pending.Command.CommandKind == DadAutoPartyParticipantCommandKind.ProposalRenewal &&
+                pending.Command.ProposalId == proposal.ProposalId &&
+                pending.Command.RenewalGeneration == proposal.PendingRenewalGeneration);
+            if (!pendingRenewal)
+            {
+                proposal.PendingRenewalExpiresAt = default;
+                proposal.PendingRenewalGeneration = 0;
+            }
             foreach (var slot in proposal.Slots.Values)
             {
                 if (slot.InviteTargetExpiresAt <= now)
@@ -1258,7 +1306,10 @@ internal sealed class DadAutoPartyParticipantBridge
                     slot.InviteTarget = null;
                     slot.InviteTargetExpiresAt = default;
                 }
-                if (!slot.IsTerminal && (proposal.ExpiresAt <= now || slot.LeaseExpiresAt is { } lease && lease <= now))
+                if (!slot.IsTerminal &&
+                    ((proposal.ExpiresAt <= now &&
+                      (!pendingRenewal || proposal.PendingRenewalExpiresAt <= now)) ||
+                     slot.LeaseExpiresAt is { } lease && lease <= now))
                 {
                     slot.Stage = DadAutoPartyParticipantStage.Expired;
                     slot.SafeCode = "dad-remote-session-expired";
@@ -1275,6 +1326,63 @@ internal sealed class DadAutoPartyParticipantBridge
         pendingCommands.Add(command.CommandId, new PendingCommand(command));
         pendingCommandOrder.AddLast(command.CommandId);
         return true;
+    }
+
+    private void StageDueProposalRenewals(DateTimeOffset now)
+    {
+        foreach (var proposal in proposals.Values
+                     .Where(proposal => proposal.ExpiresAt > now &&
+                                        proposal.ExpiresAt - now <= TimeSpan.FromMinutes(5)))
+        {
+            if (pendingCommands.Values.Any(pending =>
+                    pending.Command.CommandKind == DadAutoPartyParticipantCommandKind.ProposalRenewal &&
+                    pending.Command.ProposalId == proposal.ProposalId))
+                continue;
+
+            var groups = proposal.Slots.Values
+                .GroupBy(static slot => slot.Slot.IslandId, StringComparer.Ordinal)
+                .ToArray();
+            if (groups.Length == 0 || pendingCommands.Count + groups.Length > MaximumPendingCommands)
+                continue;
+
+            var previousExpiresAt = proposal.ExpiresAt;
+            var nextExpiresAt = previousExpiresAt + ProposalLifetime;
+            var renewalGeneration = proposal.RenewalGeneration + 1;
+            var commands = groups.Select(group =>
+            {
+                var first = group
+                    .OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.Slot.SlotId))
+                    .First()
+                    .Slot;
+                return new DadAutoPartyParticipantCommand(
+                    Guid.NewGuid(),
+                    DadAutoPartyParticipantCommandKind.ProposalRenewal,
+                    proposal.ProposalId,
+                    proposal.RunId,
+                    first.SlotId,
+                    first.OwnerId,
+                    first.IslandId,
+                    first.OpaqueCharacterId,
+                    first.RequiredJobId!.Value,
+                    proposal.ActivityId,
+                    null,
+                    1,
+                    now,
+                    nextExpiresAt,
+                    RenewalGeneration: renewalGeneration,
+                    PreviousProposalExpiresAt: previousExpiresAt,
+                    FormationOnly: proposal.FormationOnly);
+            }).ToArray();
+            if (commands.Any(command => !Enqueue(command)))
+            {
+                foreach (var command in commands)
+                    RemoveCommand(command.CommandId);
+                continue;
+            }
+
+            proposal.PendingRenewalExpiresAt = nextExpiresAt;
+            proposal.PendingRenewalGeneration = renewalGeneration;
+        }
     }
 
     private bool StageLifecycleOperation(
@@ -1893,7 +2001,10 @@ internal sealed class DadAutoPartyParticipantBridge
         public bool FormationOnly { get; }
         public EndpointExecutionPlan ExecutionPlan { get; }
         public DateTimeOffset CreatedAt { get; }
-        public DateTimeOffset ExpiresAt { get; }
+        public DateTimeOffset ExpiresAt { get; set; }
+        public long RenewalGeneration { get; set; }
+        public DateTimeOffset PendingRenewalExpiresAt { get; set; }
+        public long PendingRenewalGeneration { get; set; }
         public Dictionary<string, SlotRuntime> Slots { get; }
     }
 

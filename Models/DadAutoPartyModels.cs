@@ -311,6 +311,34 @@ public sealed class DadAutoPartyConfiguration
         PairingCancellationMessageId = string.Empty;
     }
 
+    internal void ClearRegistrationAndTrust()
+    {
+        RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
+        RegistrationId = string.Empty;
+        RouteId = string.Empty;
+        CentralBotApplicationId = string.Empty;
+        HomeGuildScope = string.Empty;
+        WebhookCredentialReference = string.Empty;
+        UplinkEpochId = string.Empty;
+        DownlinkEpochId = string.Empty;
+        MailboxEpochGeneration = 0;
+        DirectoryGeneration = 1;
+        RelayKeyGeneration = 1;
+        RelaySigningPublicKey = string.Empty;
+        RelayAgreementPublicKey = string.Empty;
+        BootstrapExpiresAtUtc = default;
+        PairedDadAliases.Clear();
+        Pairings.Clear();
+        PendingPairings.Clear();
+        ClearPairingAttempt();
+        Grants.Clear();
+        Listings.Clear();
+        RemoteBindings.Clear();
+        Deauthentications.Clear();
+        StateGeneration++;
+    }
+
     internal static string NormalizeIdentifier(string? value)
         => (value ?? string.Empty).Trim() is { Length: <= 128 } normalized
             ? normalized
@@ -922,6 +950,7 @@ public sealed record DadAutoPartyWebhookCredential(
     string WebhookToken,
     string ChannelId)
 {
+    public int OriginatingProtocolVersion { get; init; }
     public CourierEpochDescriptor? UplinkEpoch { get; init; }
     public CourierEpochDescriptor? DownlinkEpoch { get; init; }
     public EndpointPublicKeys? RelayPublicKeys { get; init; }
@@ -934,10 +963,14 @@ public sealed record DadAutoPartyWebhookCredential(
 
     public bool HasProvisionedMailbox =>
         IsValid &&
+        OriginatingProtocolVersion == AutoPartyProtocol.CurrentVersion &&
         IsEpochValid(UplinkEpoch, CourierDirection.Uplink) &&
         IsEpochValid(DownlinkEpoch, CourierDirection.Downlink) &&
         UplinkEpoch!.IslandId == DownlinkEpoch!.IslandId &&
         UplinkEpoch.EpochId != DownlinkEpoch.EpochId &&
+        UplinkEpoch.EpochGeneration == DownlinkEpoch.EpochGeneration &&
+        UplinkEpoch.PageCount == 2 &&
+        DownlinkEpoch.PageCount == 2 &&
         RelayPublicKeys is { KeyVersion: >= 1 } &&
         !RelayPublicKeys.Ed25519PublicKey.IsDefault &&
         !RelayPublicKeys.X25519PublicKey.IsDefault &&
@@ -949,7 +982,7 @@ public sealed record DadAutoPartyWebhookCredential(
     private static bool IsEpochValid(CourierEpochDescriptor? epoch, CourierDirection direction) =>
         epoch != null &&
         epoch.EpochId != Guid.Empty &&
-        epoch.PageCount is > 0 and <= AutoPartyProtocol.MaximumCourierPages &&
+        epoch.PageCount == 2 &&
         epoch.EpochGeneration >= 1 &&
         !epoch.PageReferences.IsDefault &&
         epoch.Direction == direction &&
@@ -1001,6 +1034,22 @@ public sealed record DadAutoPartyEndpointSnapshot(
 {
     public static DadAutoPartyEndpointSnapshot Disabled(string safeCode = "dad-autoparty-disabled") =>
         new(DadAutoPartyEndpointConnectionState.Disabled, safeCode, DateTime.UtcNow, null, 0, 0, 0, 0);
+}
+
+public sealed record DadAutoPartyListingPublicationResult(
+    bool Allowed,
+    string SafeCode,
+    int PublishedListingCount);
+
+public sealed record DadPairedDirectoryRefreshResult(
+    bool Allowed,
+    string SafeCode,
+    int PublishedListingCount,
+    int ReceivedListingCount,
+    DateTime CompletedAtUtc)
+{
+    public static DadPairedDirectoryRefreshResult NotRun(string safeCode = "dad-paired-directory-refresh-not-run") =>
+        new(false, safeCode, 0, 0, DateTime.MinValue);
 }
 
 public sealed record DadAutoPartyDirectorySnapshot(

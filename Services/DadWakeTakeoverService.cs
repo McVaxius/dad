@@ -355,16 +355,15 @@ public sealed class DadWakeTakeoverService : IDisposable
             return BuildResult(operation, summary: "Waiting for temporary DAD takeover state to finish releasing before preparation resumes.");
 
         var snapshot = Capture(operation, forceExternalRefresh: true);
+        // Title-screen ownership is a valid normal takeover starting point. Route it
+        // through the existing AutoRetainer/Lifestream proof path before active-character
+        // and world-ready blockers can reject the operation.
+        var titleIdleLogin = PrepareAutoRetainerTitleIdleLogin(operation, snapshot);
+        if (titleIdleLogin is not null)
+            return titleIdleLogin;
         var blocker = ValidateCoreTarget(snapshot, operation.ActiveRequest);
         if (!string.IsNullOrWhiteSpace(blocker))
             return Block(operation, blocker, cleanup: true);
-        if (!operation.OriginalStateCaptured && DadTitleIdleLoginRules.IsTitleTakeoverSurface(snapshot))
-        {
-            return Block(
-                operation,
-                "Exact pre-takeover character and AutoRetainer Multi Mode state could not be proven from the title screen; no takeover mutation was allowed.",
-                cleanup: true);
-        }
         if (!operation.CoordinatorAvailable || !IsWorldAndLocalServicesSafe(snapshot))
         {
             return ReturnToReadinessWait(

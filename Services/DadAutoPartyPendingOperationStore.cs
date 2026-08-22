@@ -7,11 +7,13 @@ internal sealed record DadAutoPartyPendingDeregistration(
     long RevocationGeneration,
     string SafeReason,
     DateTimeOffset RequestedAt,
-    bool DeleteEndpointIdentity)
+    bool DeleteEndpointIdentity,
+    long StateGeneration)
 {
     public bool IsValid =>
         DeregistrationId != Guid.Empty &&
         RevocationGeneration >= 1 &&
+        StateGeneration >= 1 &&
         RequestedAt.Offset == TimeSpan.Zero &&
         RequestedAt <= DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2) &&
         !string.IsNullOrWhiteSpace(SafeReason) &&
@@ -25,6 +27,7 @@ internal interface IDadAutoPartyPendingOperationStore
     DadAutoPartyPendingDeregistration? LoadDeregistration();
     void SaveDeregistration(DadAutoPartyPendingDeregistration pending);
     void ClearDeregistration(Guid deregistrationId);
+    void ClearAll();
 }
 
 internal sealed class DadAutoPartyFilePendingOperationStore : IDadAutoPartyPendingOperationStore
@@ -88,5 +91,16 @@ internal sealed class DadAutoPartyFilePendingOperationStore : IDadAutoPartyPendi
         var current = LoadDeregistration();
         if (current?.DeregistrationId == deregistrationId && File.Exists(statePath))
             File.Delete(statePath);
+    }
+
+    public void ClearAll()
+    {
+        try
+        {
+            File.Delete(statePath);
+        }
+        catch (DirectoryNotFoundException)
+        {
+        }
     }
 }

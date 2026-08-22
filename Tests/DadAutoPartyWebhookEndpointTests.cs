@@ -216,6 +216,28 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.True(activeRecovery.Allowed, activeRecovery.SafeCode);
         Assert.Equal(7, configuration.DirectoryGeneration);
 
+        configuration.CrewIdentities.Add(new DadAutoPartyCrewIdentity
+        {
+            RosterIdentityKey = "roster-preserved",
+            OpaqueCharacterId = "character-preserved",
+        });
+        configuration.StandingShareScope = DadAutoPartyCrewShareScope.AllCharacters;
+        configuration.Grants.Add(new DadAutoPartyGrant());
+        configuration.Listings.Add(new DadAutoPartyListing());
+        configuration.RemoteBindings.Add(new DadAutoPartyRemoteBinding());
+        configuration.Deauthentications.Add(new DadAutoPartyDeauthentication());
+        configuration.PairingAttemptId = Guid.NewGuid().ToString("D");
+        configuration.PairingInviteToken = "APP1.protocol-reset";
+        var identityReferenceBeforeReset = configuration.EndpointIdentityReference;
+        var ownerBeforeReset = configuration.RegisteredOwnerId;
+        var islandBeforeReset = configuration.RegisteredIslandId;
+        var fingerprintBeforeReset = configuration.RegistrationFingerprint;
+        var aliasBeforeReset = configuration.EndpointAlias;
+        var signingKeyBeforeReset = configuration.SigningPublicKey;
+        var encryptionKeyBeforeReset = configuration.EncryptionPublicKey;
+        var sharingPolicyBeforeReset = JsonSerializer.Serialize(configuration.StandingSharePolicy);
+        var stateGenerationBeforeReset = configuration.StateGeneration;
+
         using var resetService = new DadAutoPartyService(
             configuration,
             identityStore,
@@ -224,8 +246,59 @@ public sealed class DadAutoPartyWebhookEndpointTests
             credentialStore: webhookStore);
         var reset = await resetService.PurgeAsync(deleteEndpointIdentity: false);
         Assert.True(reset.Purged, reset.SafeCode);
+        Assert.False(configuration.Enabled);
+        Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.RegistrationState);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.NewRegistration, configuration.RegistrationRecoveryState);
+        Assert.Equal(string.Empty, configuration.RegistrationId);
+        Assert.Equal(string.Empty, configuration.RouteId);
+        Assert.Equal(string.Empty, configuration.WebhookCredentialReference);
+        Assert.Equal(string.Empty, configuration.UplinkEpochId);
+        Assert.Equal(string.Empty, configuration.DownlinkEpochId);
+        Assert.Equal(0, configuration.MailboxEpochGeneration);
+        Assert.Equal(string.Empty, configuration.RelaySigningPublicKey);
+        Assert.Equal(string.Empty, configuration.RelayAgreementPublicKey);
         Assert.Equal(1, configuration.DirectoryGeneration);
         Assert.Empty(configuration.PairedDadAliases);
+        Assert.Empty(configuration.Pairings);
+        Assert.Empty(configuration.PendingPairings);
+        Assert.Empty(configuration.Grants);
+        Assert.Empty(configuration.Listings);
+        Assert.Empty(configuration.RemoteBindings);
+        Assert.Empty(configuration.Deauthentications);
+        Assert.Equal(string.Empty, configuration.PairingAttemptId);
+        Assert.Equal(string.Empty, configuration.PairingInviteToken);
+        Assert.Equal(identityReferenceBeforeReset, configuration.EndpointIdentityReference);
+        Assert.Equal(ownerBeforeReset, configuration.RegisteredOwnerId);
+        Assert.Equal(islandBeforeReset, configuration.RegisteredIslandId);
+        Assert.Equal(fingerprintBeforeReset, configuration.RegistrationFingerprint);
+        Assert.Equal(aliasBeforeReset, configuration.EndpointAlias);
+        Assert.Equal(signingKeyBeforeReset, configuration.SigningPublicKey);
+        Assert.Equal(encryptionKeyBeforeReset, configuration.EncryptionPublicKey);
+        Assert.Equal("roster-preserved", Assert.Single(configuration.CrewIdentities).RosterIdentityKey);
+        Assert.Equal(DadAutoPartyCrewShareScope.AllCharacters, configuration.StandingShareScope);
+        Assert.Equal(sharingPolicyBeforeReset, JsonSerializer.Serialize(configuration.StandingSharePolicy));
+        Assert.Equal(stateGenerationBeforeReset + 1, configuration.StateGeneration);
+    }
+
+    [Fact]
+    public void ProtectedMailboxCredentialRequiresCurrentProtocolAndTwoPagesPerDirection()
+    {
+        using var crypto = new CryptoFixture();
+        var current = crypto.Credential();
+        Assert.True(current.HasProvisionedMailbox);
+
+        var unstamped = current with { OriginatingProtocolVersion = 0 };
+        var onePage = current with
+        {
+            UplinkEpoch = current.UplinkEpoch! with
+            {
+                PageCount = 1,
+                PageReferences = [current.UplinkEpoch.PageReferences[0]],
+            },
+        };
+
+        Assert.False(unstamped.HasProvisionedMailbox);
+        Assert.False(onePage.HasProvisionedMailbox);
     }
 
     [Fact]
@@ -388,6 +461,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
     {
         var source = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
         var crewSource = ReadRepositorySource("Windows", "DadPresetCrewEditor.cs");
+        var pluginSource = ReadRepositorySource("Plugin.cs");
         var bootstrapStart = source.IndexOf("\"Encrypted bootstrap DM\"", StringComparison.Ordinal);
         var bootstrapEnd = source.IndexOf("\"Import bootstrap\"", bootstrapStart, StringComparison.Ordinal);
 
@@ -408,6 +482,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
             StringComparison.Ordinal);
         Assert.Contains("var registrationLocked = identityLost ||", source, StringComparison.Ordinal);
         Assert.Contains("activationPending ||", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProtocolResetRequired", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Reset local AutoParty registration and trust", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResetAutoPartyProtocolAsync", pluginSource, StringComparison.Ordinal);
         Assert.Contains("Forget old identity and register as new", source, StringComparison.Ordinal);
         Assert.Contains("I confirm the owner deregistration completed", source, StringComparison.Ordinal);
         Assert.Contains("ImGui.BeginDisabled(!registrationReady)", source, StringComparison.Ordinal);
@@ -441,7 +518,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.DoesNotContain("pairing.LocalAlias", source, StringComparison.Ordinal);
         Assert.Contains("PairedDadAliases.TryGetValue", crewSource, StringComparison.Ordinal);
         Assert.Contains("pairing.PeerEndpointAlias", crewSource, StringComparison.Ordinal);
-        Assert.Contains("RequestDirectoryAsync(string.Empty, false)", crewSource, StringComparison.Ordinal);
+        Assert.Contains("plugin.TryStartPairedDirectoryRefresh();", crewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(".GetAwaiter().GetResult()", crewSource, StringComparison.Ordinal);
         Assert.Contains("Refresh##{idPrefix}-paired-refresh-{index}", crewSource, StringComparison.Ordinal);
         Assert.Contains("showDetails ? $\"{label} [{pairing.IslandId}]\" : label", crewSource, StringComparison.Ordinal);
         Assert.Contains("CharacterLabel = $\"{PairingLabel(pairing)} - select an authorized character\"", crewSource, StringComparison.Ordinal);
@@ -461,6 +539,36 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("Status: {status}", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TransportChannelIds", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewChannel", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PairedDirectoryRefreshUsesPublicationThenDirectoryRequestAndShowsCooldownCounts()
+    {
+        var pluginSource = ReadRepositorySource("Plugin.cs");
+        var endpointSource = ReadRepositorySource("Services", "DadAutoPartyEndpointService.cs");
+        var mainSource = ReadRepositorySource("Windows", "MainWindow.cs");
+        var crewSource = ReadRepositorySource("Windows", "DadPresetCrewEditor.cs");
+
+        var publish = endpointSource.IndexOf(
+            "QueueListingUpdateAndWaitAsync(",
+            StringComparison.Ordinal);
+        var request = endpointSource.IndexOf(
+            "RequestDirectoryAndWaitAsync(operation.Token)",
+            publish,
+            StringComparison.Ordinal);
+
+        Assert.True(publish >= 0);
+        Assert.True(request > publish);
+        Assert.Contains("TimeSpan.FromSeconds(60)", endpointSource, StringComparison.Ordinal);
+        Assert.Contains("PairedDirectoryRefreshCooldown = TimeSpan.FromSeconds(60)", pluginSource, StringComparison.Ordinal);
+        Assert.Contains("RefreshPairedDirectoryAsync(backgroundCancellation.Token)", pluginSource, StringComparison.Ordinal);
+        Assert.Contains("PublishedListingCount", mainSource, StringComparison.Ordinal);
+        Assert.Contains("ReceivedListingCount", mainSource, StringComparison.Ordinal);
+        Assert.Contains("Refresh paired DAD character lists", mainSource, StringComparison.Ordinal);
+        Assert.Contains("Math.Ceiling(refreshCooldown.TotalSeconds)", mainSource, StringComparison.Ordinal);
+        Assert.Contains("new Vector2(-1f, 34f)", mainSource, StringComparison.Ordinal);
+        Assert.Contains("plugin.TryStartPairedDirectoryRefresh();", crewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(".GetAwaiter().GetResult()", crewSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -785,7 +893,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
             crypto.EndpointSigningPrivateKey,
             client,
             ownsHttpClient: false,
-            static (_, _) => Task.CompletedTask,
+            Task.Delay,
             TimeSpan.FromMilliseconds(10));
 
         Assert.True((await adapter.SendAsync(outbound)).Accepted);
@@ -849,7 +957,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
             {
                 var readsBeforeGap = handler.GetAttempts;
                 handler.SetContent(
-                    "10001",
+                    CryptoFixture.MessageReference(CourierDirection.Uplink, page.PageNumber),
                     crypto.CreateUplinkAcknowledgement(
                         page,
                         acceptedFragmentNumbers: [page.Fragments[^1].FragmentNumber + 1]));
@@ -859,13 +967,18 @@ public sealed class DadAutoPartyWebhookEndpointTests
             }
 
             var target = page.Fragments[^1].FragmentNumber;
-            handler.SetContent("10001", crypto.CreateUplinkAcknowledgement(page));
+            var acknowledgementContent = crypto.CreateUplinkAcknowledgement(page);
             for (var attempt = 0;
                  attempt < 200 &&
                  !adapter.TransferSnapshot.IsIdle &&
                  adapter.TransferSnapshot.AcceptedFragmentCount < target;
                  attempt++)
+            {
+                handler.SetContent(
+                    CryptoFixture.MessageReference(CourierDirection.Uplink, page.PageNumber),
+                    acknowledgementContent);
                 await Task.Delay(10);
+            }
             acceptedThrough = target;
         }
 
@@ -915,6 +1028,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
             new string('a', 64),
             "223456789012345678")
         {
+            OriginatingProtocolVersion = AutoPartyProtocol.CurrentVersion,
             UplinkEpoch = new(
                 Guid.Parse(configuration.UplinkEpochId),
                 new IslandId(configuration.RegisteredIslandId),
@@ -922,8 +1036,11 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 now.AddMinutes(-1),
                 now.AddMinutes(30),
                 now.AddMinutes(35),
-                1,
-                [new CourierPageReference(1, "10001")],
+                2,
+                [
+                    new CourierPageReference(1, "10001"),
+                    new CourierPageReference(2, "10003"),
+                ],
                 configuration.MailboxEpochGeneration),
             DownlinkEpoch = new(
                 Guid.Parse(configuration.DownlinkEpochId),
@@ -932,8 +1049,11 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 now.AddMinutes(-1),
                 now.AddMinutes(30),
                 now.AddMinutes(35),
-                1,
-                [new CourierPageReference(1, "10002")],
+                2,
+                [
+                    new CourierPageReference(1, "10002"),
+                    new CourierPageReference(2, "10004"),
+                ],
                 configuration.MailboxEpochGeneration),
             RelayPublicKeys = relayKeys,
         };
@@ -1052,7 +1172,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
                              $"stage=fragment-acknowledged:{lastFragmentNumber}/4",
                              StringComparison.Ordinal)); attempt++)
             {
-                handler.SetContent("10001", acknowledgementContent);
+                handler.SetContent(
+                    CryptoFixture.MessageReference(CourierDirection.Uplink, publishedPage.PageNumber),
+                    acknowledgementContent);
                 await Task.Delay(10);
             }
             acceptedThrough = lastFragmentNumber;
@@ -1242,7 +1364,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
             crypto.EndpointSigningPrivateKey,
             client,
             ownsHttpClient: false,
-            static (_, _) => Task.CompletedTask,
+            Task.Delay,
             TimeSpan.FromMilliseconds(10));
         var diagnostics = new List<string>();
         var diagnosticGate = new object();
@@ -1323,25 +1445,26 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
-    public async Task AdapterExposesReplacementOnlyAfterBothAuthenticatedEpochsReachSameNewGeneration()
+    public async Task AdapterStagesThenActivatesAndAcknowledgesOnlyOnePersistedNewerEpochPair()
     {
         using var crypto = new CryptoFixture();
+        var current = crypto.Credential();
         var nextUplink = crypto.UplinkEpoch with
         {
             EpochId = Guid.NewGuid(),
-            EpochGeneration = crypto.UplinkEpoch.EpochGeneration + 1,
+            EpochGeneration = current.UplinkEpoch!.EpochGeneration + 1,
         };
         var nextDownlink = crypto.DownlinkEpoch with
         {
             EpochId = Guid.NewGuid(),
-            EpochGeneration = crypto.DownlinkEpoch.EpochGeneration + 1,
+            EpochGeneration = current.DownlinkEpoch!.EpochGeneration + 1,
         };
         var handler = new ScriptedWebhookHandler(
             CourierTextCodec.EmptySlotContent,
             uplinkContent: crypto.CreateEpochAnnouncement(nextUplink));
         using var client = new HttpClient(handler);
         await using var adapter = new DadAutoPartyWebhookTransportAdapter(
-            crypto.Credential(),
+            current,
             "route-one",
             crypto.EndpointKeyVersion,
             crypto.EndpointSigningPrivateKey,
@@ -1350,32 +1473,150 @@ public sealed class DadAutoPartyWebhookEndpointTests
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromMilliseconds(10));
 
-        for (var attempt = 0; attempt < 100 &&
-             adapter.UplinkEpochSnapshot.EpochGeneration != nextUplink.EpochGeneration; attempt++)
+        var send = await adapter.SendAsync(Envelope(
+            crypto.IslandId.Value,
+            DadAutoPartyIdentityPackageService.RegistrationRecipient,
+            [1, 2, 3]));
+        Assert.True(send.Accepted);
+
+        for (var attempt = 0; attempt < 100 && handler.GetAttempts < 2; attempt++)
             await Task.Delay(10);
 
-        Assert.Equal(nextUplink.EpochId, adapter.UplinkEpochSnapshot.EpochId);
-        Assert.False(adapter.TryCreateReplacementCredential(
-            crypto.UplinkEpoch.EpochGeneration,
+        Assert.Equal(current.UplinkEpoch.EpochId, adapter.UplinkEpochSnapshot.EpochId);
+        Assert.False(adapter.TryCreatePendingEpochCredential(
+            current.UplinkEpoch.EpochGeneration,
             out _));
+        Assert.Empty(handler.UplinkAcknowledgements);
+        Assert.Empty(handler.DownlinkAcknowledgements);
 
         handler.SetContent("10002", crypto.CreateEpochAnnouncement(nextDownlink));
+        DadAutoPartyWebhookCredential? replacement = null;
         for (var attempt = 0; attempt < 100 &&
-             adapter.DownlinkEpochSnapshot.EpochGeneration != nextDownlink.EpochGeneration; attempt++)
+             !adapter.TryCreatePendingEpochCredential(
+                 current.UplinkEpoch.EpochGeneration,
+                 out replacement); attempt++)
             await Task.Delay(10);
 
-        Assert.True(adapter.TryCreateReplacementCredential(
-            crypto.UplinkEpoch.EpochGeneration,
-            out var replacement));
         Assert.NotNull(replacement);
         Assert.Equal(nextUplink.EpochId, replacement!.UplinkEpoch!.EpochId);
         Assert.Equal(nextDownlink.EpochId, replacement.DownlinkEpoch!.EpochId);
-        Assert.Equal(crypto.Credential().WebhookId, replacement.WebhookId);
+        Assert.Equal(current.WebhookId, replacement.WebhookId);
         Assert.Equal(crypto.RelayPublicKeys, replacement.RelayPublicKeys);
+        Assert.Empty(handler.UplinkAcknowledgements);
+        Assert.Empty(handler.DownlinkAcknowledgements);
+
+        Assert.True(adapter.ConfirmPersistedEpochPair(replacement));
+        for (var attempt = 0; attempt < 200 &&
+             (adapter.UplinkEpochSnapshot.EpochId != nextUplink.EpochId ||
+              adapter.DownlinkEpochSnapshot.EpochId != nextDownlink.EpochId ||
+              handler.UplinkAcknowledgements.Count == 0 ||
+              handler.DownlinkAcknowledgements.Count == 0); attempt++)
+            await Task.Delay(10);
+
+        Assert.Equal(nextUplink.EpochId, adapter.UplinkEpochSnapshot.EpochId);
+        Assert.Equal(nextDownlink.EpochId, adapter.DownlinkEpochSnapshot.EpochId);
+        Assert.Single(handler.UplinkAcknowledgements);
+        Assert.Single(handler.DownlinkAcknowledgements);
+        Assert.False(adapter.TryCreatePendingEpochCredential(
+            current.UplinkEpoch.EpochGeneration,
+            out _));
     }
 
     [Fact]
-    public async Task EndpointPersistsOneAuthenticatedEpochPairOnUpdateThreadAndRestartsFromIt()
+    public async Task AdapterRejectsStaleConflictingWrongIslandAndOnePageReplacementEpochs()
+    {
+        using var crypto = new CryptoFixture();
+        var currentUplink = crypto.UplinkEpoch with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = 3,
+        };
+        var currentDownlink = crypto.DownlinkEpoch with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = 3,
+        };
+        var currentCredential = crypto.Credential(currentUplink, currentDownlink);
+        var stale = currentUplink with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = 2,
+        };
+        var handler = new ScriptedWebhookHandler(
+            CourierTextCodec.EmptySlotContent,
+            uplinkContent: crypto.CreateEpochAnnouncement(stale));
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            currentCredential,
+            "route-one",
+            crypto.EndpointKeyVersion,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(10));
+
+        await WaitForReadsAsync();
+        AssertRejected();
+
+        var conflictingReferences = currentUplink with
+        {
+            PageReferences =
+            [
+                currentUplink.PageReferences[0],
+                new CourierPageReference(2, "10009"),
+            ],
+        };
+        await ObserveAsync(crypto.CreateEpochAnnouncement(conflictingReferences));
+        AssertRejected();
+
+        var onePageReplacement = currentUplink with
+        {
+            EpochId = Guid.NewGuid(),
+            EpochGeneration = 4,
+            PageCount = 1,
+            PageReferences = [currentUplink.PageReferences[0]],
+        };
+        var onePageError = Assert.Throws<ProtocolException>(() =>
+            crypto.CreateEpochAnnouncement(onePageReplacement));
+        Assert.Equal("invalid-courier-epoch", onePageError.SafeCode);
+        AssertRejected();
+
+        var wrongIsland = currentUplink with
+        {
+            EpochId = Guid.NewGuid(),
+            IslandId = new IslandId("island-wrong"),
+            EpochGeneration = 4,
+        };
+        await ObserveAsync(crypto.CreateEpochAnnouncement(wrongIsland));
+        AssertRejected();
+
+        async Task ObserveAsync(string content)
+        {
+            var before = handler.GetAttempts;
+            handler.SetContent("10001", content);
+            for (var attempt = 0; attempt < 100 && handler.GetAttempts == before; attempt++)
+                await Task.Delay(10);
+        }
+
+        async Task WaitForReadsAsync()
+        {
+            for (var attempt = 0; attempt < 100 && handler.GetAttempts == 0; attempt++)
+                await Task.Delay(10);
+        }
+
+        void AssertRejected()
+        {
+            Assert.Equal(currentUplink.EpochId, adapter.UplinkEpochSnapshot.EpochId);
+            Assert.Equal(currentDownlink.EpochId, adapter.DownlinkEpochSnapshot.EpochId);
+            Assert.False(adapter.TryCreatePendingEpochCredential(3, out _));
+            Assert.Empty(handler.UplinkAcknowledgements);
+            Assert.Empty(handler.DownlinkAcknowledgements);
+        }
+    }
+
+    [Fact]
+    public async Task EndpointPersistsConfigurationBeforeAcknowledgingAndRestartsFromRotatedEpochs()
     {
         using var crypto = new CryptoFixture();
         using var identityStore = new MemoryIdentityStore();
@@ -1388,7 +1629,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var identityReference = await identityStore.StoreAsync(identityMaterial);
         CryptographicOperations.ZeroMemory(identityMaterial);
         var credentialStore = new MemoryWebhookStore();
-        var credentialReference = await credentialStore.StoreAsync(crypto.Credential());
+        var currentCredential = crypto.Credential();
+        var credentialReference = await credentialStore.StoreAsync(currentCredential);
         var registrationId = Guid.NewGuid();
         var configuration = new DadAutoPartyConfiguration
         {
@@ -1399,9 +1641,9 @@ public sealed class DadAutoPartyWebhookEndpointTests
             CentralBotApplicationId = "123456789012345678",
             HomeGuildScope = "223456789012345678",
             WebhookCredentialReference = credentialReference,
-            UplinkEpochId = crypto.UplinkEpoch.EpochId.ToString("D"),
-            DownlinkEpochId = crypto.DownlinkEpoch.EpochId.ToString("D"),
-            MailboxEpochGeneration = crypto.UplinkEpoch.EpochGeneration,
+            UplinkEpochId = currentCredential.UplinkEpoch!.EpochId.ToString("D"),
+            DownlinkEpochId = currentCredential.DownlinkEpoch!.EpochId.ToString("D"),
+            MailboxEpochGeneration = currentCredential.UplinkEpoch.EpochGeneration,
             RelayKeyGeneration = crypto.RelayKeyVersion,
             RelaySigningPublicKey = Convert.ToBase64String(crypto.RelaySigningPublicKey),
             RelayAgreementPublicKey = Convert.ToBase64String(crypto.RelayAgreementPublicKey),
@@ -1422,12 +1664,12 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var nextUplink = crypto.UplinkEpoch with
         {
             EpochId = Guid.NewGuid(),
-            EpochGeneration = crypto.UplinkEpoch.EpochGeneration + 1,
+            EpochGeneration = currentCredential.UplinkEpoch.EpochGeneration + 1,
         };
         var nextDownlink = crypto.DownlinkEpoch with
         {
             EpochId = Guid.NewGuid(),
-            EpochGeneration = crypto.DownlinkEpoch.EpochGeneration + 1,
+            EpochGeneration = currentCredential.DownlinkEpoch.EpochGeneration + 1,
         };
         using var handler = new ScriptedWebhookHandler(
             crypto.CreateEpochAnnouncement(nextDownlink),
@@ -1438,11 +1680,24 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var updateThread = 0;
         var saveThread = 0;
         var insideUpdate = false;
+        var persistenceCalls = 0;
         void SaveConfiguration()
         {
             Assert.True(insideUpdate);
             saveCount++;
             saveThread = Environment.CurrentManagedThreadId;
+        }
+
+        bool PersistConfiguration()
+        {
+            Assert.True(insideUpdate);
+            persistenceCalls++;
+            Assert.Empty(handler.UplinkAcknowledgements);
+            Assert.Empty(handler.DownlinkAcknowledgements);
+            if (persistenceCalls == 1)
+                return false;
+            SaveConfiguration();
+            return true;
         }
 
         using (var endpoint = new DadAutoPartyEndpointService(
@@ -1452,7 +1707,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
                    connector,
                    SaveConfiguration,
                    httpClientFactory: () => new HttpClient(handler, disposeHandler: false),
-                   identityStore: identityStore))
+                   identityStore: identityStore,
+                   persistConfiguration: PersistConfiguration))
         {
             for (var attempt = 0; attempt < 400 &&
                  configuration.MailboxEpochGeneration != nextUplink.EpochGeneration; attempt++)
@@ -1468,21 +1724,31 @@ public sealed class DadAutoPartyWebhookEndpointTests
             Assert.Equal(nextUplink.EpochId.ToString("D"), configuration.UplinkEpochId);
             Assert.Equal(nextDownlink.EpochId.ToString("D"), configuration.DownlinkEpochId);
             Assert.Equal(priorStateGeneration + 1, configuration.StateGeneration);
-            Assert.Equal(1, credentialStore.ReplaceCount);
+            Assert.Equal(2, credentialStore.ReplaceCount);
+            Assert.Equal(2, persistenceCalls);
             Assert.Equal(1, saveCount);
             Assert.Equal(updateThread, saveThread);
-            for (var attempt = 0; attempt < 100 &&
-                 endpoint.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready; attempt++)
+            for (var attempt = 0; attempt < 800 &&
+                 (endpoint.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready ||
+                  handler.UplinkAcknowledgements.Count == 0 ||
+                  handler.DownlinkAcknowledgements.Count == 0); attempt++)
             {
                 insideUpdate = true;
                 endpoint.Update(dadEnabled: true);
                 insideUpdate = false;
                 await Task.Delay(5);
             }
-            Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, endpoint.Snapshot.State);
+            Assert.True(
+                endpoint.Snapshot.State == DadAutoPartyEndpointConnectionState.Ready,
+                $"Persisting endpoint remained {endpoint.Snapshot.State}: {endpoint.Snapshot.SafeCode}.");
+            Assert.Single(handler.UplinkAcknowledgements);
+            Assert.Single(handler.DownlinkAcknowledgements);
         }
 
         var restartedConnector = new DadDiscordCourierConnector(configuration, static () => true);
+        var configurationPersisted = false;
+        var uplinkAcknowledgementsBeforeRestart = handler.UplinkAcknowledgements.Count;
+        var downlinkAcknowledgementsBeforeRestart = handler.DownlinkAcknowledgements.Count;
         using var restarted = new DadAutoPartyEndpointService(
             configuration,
             credentialStore,
@@ -1490,7 +1756,17 @@ public sealed class DadAutoPartyWebhookEndpointTests
             restartedConnector,
             static () => { },
             httpClientFactory: () => new HttpClient(handler, disposeHandler: false),
-            identityStore: identityStore);
+            identityStore: identityStore,
+            isConfigurationPersisted: () => configurationPersisted);
+        restarted.Update(dadEnabled: true);
+        await Task.Delay(20);
+        restarted.Update(dadEnabled: true);
+        Assert.Equal(DadAutoPartyEndpointConnectionState.Degraded, restarted.Snapshot.State);
+        Assert.Equal("dad-webhook-configuration-not-durable", restarted.Snapshot.SafeCode);
+        Assert.Equal(uplinkAcknowledgementsBeforeRestart, handler.UplinkAcknowledgements.Count);
+        Assert.Equal(downlinkAcknowledgementsBeforeRestart, handler.DownlinkAcknowledgements.Count);
+
+        configurationPersisted = true;
         for (var attempt = 0; attempt < 200 &&
              restarted.Snapshot.State != DadAutoPartyEndpointConnectionState.Ready; attempt++)
         {
@@ -1498,9 +1774,11 @@ public sealed class DadAutoPartyWebhookEndpointTests
             await Task.Delay(5);
         }
 
-        Assert.Equal(DadAutoPartyEndpointConnectionState.Ready, restarted.Snapshot.State);
+        Assert.True(
+            restarted.Snapshot.State == DadAutoPartyEndpointConnectionState.Ready,
+            $"Restarted endpoint remained {restarted.Snapshot.State}: {restarted.Snapshot.SafeCode}.");
         Assert.Equal(nextUplink.EpochGeneration, restarted.Snapshot.EpochGeneration);
-        Assert.Equal(1, credentialStore.ReplaceCount);
+        Assert.Equal(2, credentialStore.ReplaceCount);
     }
 
     [Theory]
@@ -1899,6 +2177,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
         {
             ["10001"] = uplinkContent ?? CourierTextCodec.EmptySlotContent,
             ["10002"] = downlinkContent,
+            ["10003"] = CourierTextCodec.EmptySlotContent,
+            ["10004"] = CourierTextCodec.EmptySlotContent,
         };
         private readonly List<(string MessageReference, string Content)> patchedMessages = [];
         private readonly List<string> getMessageReferences = [];
@@ -1923,17 +2203,17 @@ public sealed class DadAutoPartyWebhookEndpointTests
             }
         }
         public IReadOnlyList<string> UplinkPages => PatchedMessages
-            .Where(static item => item.MessageReference == "10001" &&
+            .Where(static item => item.MessageReference is "10001" or "10003" &&
                                   CourierTextCodec.GetKind(item.Content) == CourierTextKind.Page)
             .Select(static item => item.Content)
             .ToArray();
         public IReadOnlyList<string> DownlinkAcknowledgements => PatchedMessages
-            .Where(static item => item.MessageReference == "10002" &&
+            .Where(static item => item.MessageReference is "10002" or "10004" &&
                                   CourierTextCodec.GetKind(item.Content) == CourierTextKind.Acknowledgement)
             .Select(static item => item.Content)
             .ToArray();
         public IReadOnlyList<string> UplinkAcknowledgements => PatchedMessages
-            .Where(static item => item.MessageReference == "10001" &&
+            .Where(static item => item.MessageReference is "10001" or "10003" &&
                                   CourierTextCodec.GetKind(item.Content) == CourierTextKind.Acknowledgement)
             .Select(static item => item.Content)
             .ToArray();
@@ -2127,12 +2407,27 @@ public sealed class DadAutoPartyWebhookEndpointTests
             keyResolver = new FixtureKeyResolver(this);
         }
 
-        public DadAutoPartyWebhookCredential Credential() =>
+        public DadAutoPartyWebhookCredential Credential() => Credential(UplinkEpoch, DownlinkEpoch);
+
+        public DadAutoPartyWebhookCredential Credential(
+            CourierEpochDescriptor uplink,
+            CourierEpochDescriptor downlink) =>
             new("323456789012345678", new string('a', 64), "423456789012345678")
             {
-                UplinkEpoch = UplinkEpoch,
-                DownlinkEpoch = DownlinkEpoch,
+                OriginatingProtocolVersion = AutoPartyProtocol.CurrentVersion,
+                UplinkEpoch = uplink,
+                DownlinkEpoch = downlink,
                 RelayPublicKeys = RelayPublicKeys,
+            };
+
+        public static string MessageReference(CourierDirection direction, int pageNumber) =>
+            (direction, pageNumber) switch
+            {
+                (CourierDirection.Uplink, 1) => "10001",
+                (CourierDirection.Downlink, 1) => "10002",
+                (CourierDirection.Uplink, 2) => "10003",
+                (CourierDirection.Downlink, 2) => "10004",
+                _ => throw new ArgumentOutOfRangeException(nameof(pageNumber)),
             };
 
         public (OpaqueEnvelope Envelope, string Page) CreateDownlink(byte[] payload)
@@ -2323,8 +2618,10 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 startsAt,
                 startsAt.AddMinutes(5),
                 startsAt.AddMinutes(6),
-                1,
-                ImmutableArray.Create(new CourierPageReference(1, messageReference)),
+                2,
+                ImmutableArray.Create(
+                    new CourierPageReference(1, messageReference),
+                    new CourierPageReference(2, MessageReference(direction, 2))),
                 1);
 
         private ContractHeader CreateHeader(
@@ -2524,6 +2821,10 @@ public sealed class DadAutoPartyWebhookEndpointTests
         }
 
         public void ClearDeregistration(Guid deregistrationId)
+        {
+        }
+
+        public void ClearAll()
         {
         }
     }

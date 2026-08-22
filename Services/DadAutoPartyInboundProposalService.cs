@@ -14,7 +14,8 @@ internal sealed record DadAutoPartyInboundProposalState(
     SessionLease? Lease,
     ImmutableArray<Guid> AcknowledgedMessageIds,
     long StateGeneration,
-    string SafeCode)
+    string SafeCode,
+    long RenewalGeneration = 0)
 {
     public bool ResponsesPrepared => !Reservations.IsDefaultOrEmpty && Preflight != null;
 
@@ -117,18 +118,21 @@ internal sealed class DadAutoPartyInboundProposalService
     private readonly IDadAutoPartyInboundProposalStore store;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly Func<Guid, string, bool> restoreBeforeRemoval;
+    private readonly Func<RunProposal, DateTimeOffset, DateTimeOffset, bool> renewPolicy;
     private readonly Dictionary<Guid, DadAutoPartyInboundProposalState> states = [];
 
     public DadAutoPartyInboundProposalService(
         DadAutoPartyConfiguration configuration,
         IDadAutoPartyInboundProposalStore? store = null,
         Func<DateTimeOffset>? utcNow = null,
-        Func<Guid, string, bool>? restoreBeforeRemoval = null)
+        Func<Guid, string, bool>? restoreBeforeRemoval = null,
+        Func<RunProposal, DateTimeOffset, DateTimeOffset, bool>? renewPolicy = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.store = store ?? new DadAutoPartyMemoryInboundProposalStore();
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         this.restoreBeforeRemoval = restoreBeforeRemoval ?? ((_, _) => true);
+        this.renewPolicy = renewPolicy ?? ((_, _, _) => true);
         var now = this.utcNow();
         foreach (var state in this.store.Load().Take(MaximumSessions))
         {
@@ -256,6 +260,99 @@ internal sealed class DadAutoPartyInboundProposalService
                 return true;
             state = default!;
             return false;
+        }
+    }
+
+    public bool TryApplyRenewal(
+        ProposalRenewal renewal,
+        out DadAutoPartyInboundProposalState renewed,
+        out string safeCode)
+    {
+        ArgumentNullException.ThrowIfNull(renewal);
+        var now = utcNow();
+        lock (gate)
+        {
+            if (!states.TryGetValue(renewal.ProposalId, out var state))
+            {
+                renewed = default!;
+                safeCode = "dad-inbound-proposal-renewal-no-session";
+                return false;
+            }
+
+            var proposal = state.Proposal;
+            var targetOwnerMatches = state.OwnedParticipants.Any(participant =>
+                participant.OwnerId == renewal.TargetOwnerId &&
+                participant.OwnerIslandId == renewal.TargetIslandId);
+            if (proposal.Header.ExpiresAt <= now)
+            {
+                renewed = default!;
+                safeCode = "dad-inbound-proposal-renewal-expired";
+                return false;
+            }
+
+            if (renewal.Header.SenderIslandId != proposal.Header.SenderIslandId ||
+                renewal.RequesterOwnerId != proposal.RequesterOwnerId ||
+                renewal.TargetIslandId.Value != configuration.RegisteredIslandId ||
+                renewal.TargetOwnerId.Value != configuration.RegisteredOwnerId ||
+                !targetOwnerMatches ||
+                renewal.PreviousExpiresAt != proposal.Header.ExpiresAt ||
+                renewal.NewExpiresAt != renewal.PreviousExpiresAt + TimeSpan.FromMinutes(30) ||
+                renewal.Header.ExpiresAt != renewal.NewExpiresAt ||
+                renewal.RenewalGeneration != state.RenewalGeneration + 1)
+            {
+                renewed = default!;
+                safeCode = "dad-inbound-proposal-renewal-identity-mismatch";
+                return false;
+            }
+
+            if (!renewPolicy(proposal, renewal.PreviousExpiresAt, renewal.NewExpiresAt))
+            {
+                renewed = default!;
+                safeCode = "dad-inbound-proposal-renewal-policy-rejected";
+                return false;
+            }
+
+            var reissuedResponses = state.Responses()
+                .Select(response => ReissueResponse(response, renewal.NewExpiresAt, now, renewal.RenewalGeneration))
+                .ToArray();
+            var reservations = reissuedResponses.OfType<Reservation>().ToImmutableArray();
+            var preflight = reissuedResponses.OfType<PreflightResult>().SingleOrDefault();
+            var lease = reissuedResponses.OfType<SessionLease>().SingleOrDefault();
+            if (lease is not null)
+            {
+                lease = lease with
+                {
+                    LeaseExpiresAt = Min(renewal.NewExpiresAt, now + TimeSpan.FromMinutes(30)),
+                };
+            }
+
+            renewed = state with
+            {
+                Proposal = proposal with
+                {
+                    Header = proposal.Header with { ExpiresAt = renewal.NewExpiresAt },
+                },
+                Reservations = reservations,
+                Preflight = preflight,
+                Lease = lease,
+                AcknowledgedMessageIds = [],
+                RenewalGeneration = renewal.RenewalGeneration,
+                SafeCode = "dad-inbound-proposal-renewed",
+            };
+            states[renewal.ProposalId] = renewed;
+            try
+            {
+                Persist();
+                safeCode = renewed.SafeCode;
+                return true;
+            }
+            catch
+            {
+                states[renewal.ProposalId] = state;
+                renewed = default!;
+                safeCode = "dad-inbound-proposal-store-failed";
+                return false;
+            }
         }
     }
 
@@ -560,6 +657,31 @@ internal sealed class DadAutoPartyInboundProposalService
                existingReservations.Zip(incomingReservations)
                    .All(static pair => pair.First.SequenceEqual(pair.Second));
     }
+
+    private static IAutoPartyContract ReissueResponse(
+        IAutoPartyContract response,
+        DateTimeOffset expiresAt,
+        DateTimeOffset issuedAt,
+        long renewalGeneration)
+    {
+        var header = response.Header with
+        {
+            MessageId = Guid.NewGuid(),
+            IdempotencyKey = $"proposal-renewal-response-{renewalGeneration}-{Guid.NewGuid():N}",
+            IssuedAt = issuedAt,
+            ExpiresAt = expiresAt,
+        };
+        return response switch
+        {
+            Reservation value => value with { Header = header },
+            PreflightResult value => value with { Header = header },
+            SessionLease value => value with { Header = header },
+            _ => throw new InvalidOperationException("dad-inbound-response-type-invalid"),
+        };
+    }
+
+    private static DateTimeOffset Min(DateTimeOffset left, DateTimeOffset right) =>
+        left <= right ? left : right;
 
     private void Sweep(DateTimeOffset now)
     {

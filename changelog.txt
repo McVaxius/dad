@@ -1,5 +1,31 @@
 # dad — changelog
 
+## 2026-08-22 - Automatic clean-break AP5 invalidation and truthful paired refresh (local-only, unpublished)
+- Protected mailbox credentials now carry their originating protocol version and require exactly two UPLINK plus two
+  DOWNLINK page references. Missing or mismatched protocol stamps now best-effort delete the protected credential and
+  immediately clear registration, epoch, relay, pairing, pending-operation, grant, listing, route, deauthentication, and
+  pairing-attempt trust even if deletion fails. DAD advances its state generation, preserves its enabled setting,
+  endpoint identity/keypair, owner/island identity, fingerprint, alias, Crew identities, and sharing choices, then returns
+  directly to ordinary new registration without an owner-confirmation/reset panel. One-page, malformed, wrong-island,
+  stale, conflicting, and split-generation current-protocol credentials or descriptors remain rejected and unacknowledged.
+- Ordinary same-protocol epoch rotation still accepts only an authenticated matching-direction pair for the current island
+  at one newer generation. DAD persists the protected pair and configuration before acknowledgement; failed persistence
+  stays degraded and unacknowledged.
+- The shared planner/main-window paired refresh now reports a published count only after every current authorized listing
+  chunk receives a positive central receipt, then waits for the final validated and applied directory response. Received
+  counts include only distinct active-pairing characters with a current route, availability, expiry, and recognized combat
+  job; negative receipts, malformed pages, expiry, cancellation, reset, deregistration, disposal, and the 60-second timeout
+  complete with truthful counts.
+- The existing vendored `Dad.AutoParty.Protocol 0.2.0-preview.7`, package hash/lock metadata, DAD `0.5.0.9`, configuration
+  schema 12, and current AutoParty database schema remain unchanged; automatic invalidation requires no package rebuild.
+
+## 2026-08-21 - Paired DAD character-list refresh (local-only, unpublished)
+- Added one nonblocking paired-directory refresh path used by the planner and the main window. It refreshes the current
+  source roster, builds and queues the current authorized AutoParty listings, then requests the paired directory without
+  using historical pairing entries as character data.
+- The main window now exposes a full-width accent refresh button with an in-memory 60-second countdown and visible
+  publication/received counts. Current-roster or publication failures report zero instead of reusing stale listings.
+
 ## 2026-08-20 — Complete paired rosters and remote scheduler slots (local-only, unpublished)
 - AutoParty listing publication now sends one complete, ordered snapshot as size-valid chunks inside the existing 8 KiB
   envelope. All supported listings are retained, empty and fitting rosters remain one chunk, and inputs above the existing

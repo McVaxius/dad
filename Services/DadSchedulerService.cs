@@ -295,7 +295,9 @@ public sealed class DadSchedulerService
             return status.Clone();
         }
 
-        var frozenGroup = CloneCrewValue(effectiveGroup);
+        var frozenGroup = DadSchedulerGroupCloneRules.CloneWithSlots(
+            effectiveGroup,
+            effectiveGroup.Slots ?? []);
         var frozenAlliancePreview = CloneCrewValue(alliancePreview);
         var job = new DadScheduledCrewJob
         {
@@ -5014,7 +5016,7 @@ public sealed class DadSchedulerService
     private static DadRunRequest? CloneRunRequest(DadRunRequest? request)
         => request == null
             ? null
-            : DadIpcJson.Deserialize<DadRunRequest>(DadIpcJson.Serialize(request));
+            : DadAutoPartyRuntimeRequestRules.ClonePreservingRuntimeMetadata(request);
 
     private DadScheduleRepeatBoundary ResolveScheduleRepeatBoundary()
     {

@@ -27,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan PlannerUiCacheSlowRebuildThreshold = TimeSpan.FromMilliseconds(25);
     private static readonly TimeSpan PlannerUiCacheSlowRebuildLogCooldown = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan DebouncedUiWriteDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PairedDirectoryRefreshCooldown = TimeSpan.FromSeconds(60);
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -96,6 +97,19 @@ public sealed class Plugin : IDalamudPlugin
     public string LastIssueReportPath { get; private set; } = string.Empty;
     public DateTime? LastIssueReportUtc { get; private set; }
 
+    public bool PairedDirectoryRefreshInProgress => pairedDirectoryRefreshTask is { IsCompleted: false };
+
+    public TimeSpan PairedDirectoryRefreshCooldownRemaining
+    {
+        get
+        {
+            var remaining = nextPairedDirectoryRefreshUtc - DateTime.UtcNow;
+            return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+        }
+    }
+
+    public DadPairedDirectoryRefreshResult LastPairedDirectoryRefresh => lastPairedDirectoryRefresh;
+
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private readonly SetupWizardWindow setupWizardWindow;
@@ -118,6 +132,10 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime? lastAuthorityRefreshSucceededUtc;
     private DateTime? lastAuthorityRefreshAttemptUtc;
     private bool authorityRefreshInFlight;
+    private DateTime nextPairedDirectoryRefreshUtc = DateTime.MinValue;
+    private Task? pairedDirectoryRefreshTask;
+    private DadPairedDirectoryRefreshResult lastPairedDirectoryRefresh =
+        DadPairedDirectoryRefreshResult.NotRun();
     private string lastAuthorityRefreshFailure = string.Empty;
     private string lastLoggedAuthorityEndpointKey = string.Empty;
     private string lastLoggedAuthorityRefreshKey = string.Empty;
@@ -273,7 +291,9 @@ public sealed class Plugin : IDalamudPlugin
             safeCode => Log.Warning("[dad] AutoParty endpoint transition {SafeCode}.", safeCode),
             identityStore: autoPartyIdentityStore,
             listingPublicationProvider: BuildAutoPartyListingPublication,
-            prepareListingPublication: RefreshAutoPartyPublicationRoster);
+            prepareListingPublication: RefreshAutoPartyPublicationRoster,
+            persistConfiguration: PersistConfigurationNow,
+            isConfigurationPersisted: IsConfigurationPersisted);
         autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
             Configuration.AutoParty.RegisteredOwnerId,
             Configuration.AutoParty.RegisteredIslandId,
@@ -320,6 +340,8 @@ public sealed class Plugin : IDalamudPlugin
             inboundListingPublicationProvider: BuildAutoPartyListingPublication,
             inboundAdmissionWithPublication: autoPartyInboundAdmissionService.Admit,
             restoreInboundProposal: autoPartyInboundAdmissionService.RestoreProposal,
+            renewInboundProposal: (proposal, previousExpiresAt, newExpiresAt) =>
+                AutoPartyService.RenewOwnedProposal(proposal.ProposalId, previousExpiresAt, newExpiresAt).Allowed,
             diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode),
             saveConfiguration: Configuration.Save);
         AutoPartyParticipantBridge.ConfigureDirectoryAuthorityGate(
@@ -1479,6 +1501,45 @@ public sealed class Plugin : IDalamudPlugin
     internal IReadOnlyList<DadAutoPartyCrewCandidate> GetCurrentAutoPartyCrewCandidates()
         => ReconcileAutoPartyCrew().Candidates;
 
+    public bool TryStartPairedDirectoryRefresh()
+    {
+        if (PairedDirectoryRefreshInProgress || PairedDirectoryRefreshCooldownRemaining > TimeSpan.Zero)
+            return false;
+
+        nextPairedDirectoryRefreshUtc = DateTime.UtcNow + PairedDirectoryRefreshCooldown;
+        pairedDirectoryRefreshTask = RunPairedDirectoryRefreshAsync();
+        return true;
+    }
+
+    private async Task RunPairedDirectoryRefreshAsync()
+    {
+        try
+        {
+            lastPairedDirectoryRefresh = await AutoPartyEndpointService
+                .RefreshPairedDirectoryAsync(backgroundCancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (backgroundCancellation.IsCancellationRequested)
+        {
+            lastPairedDirectoryRefresh = new(
+                false,
+                "dad-paired-directory-refresh-cancelled",
+                0,
+                0,
+                DateTime.UtcNow);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "[dad] Paired directory refresh failed.");
+            lastPairedDirectoryRefresh = new(
+                false,
+                "dad-paired-directory-refresh-failed",
+                0,
+                0,
+                DateTime.UtcNow);
+        }
+    }
+
     private DadAutoPartyListingPublication BuildAutoPartyListingPublication(DateTime utcNow)
     {
         var crew = ReconcileAutoPartyCrew(utcNow);
@@ -1496,6 +1557,19 @@ public sealed class Plugin : IDalamudPlugin
             logRefresh: false);
         var catalog = RosterCatalogService.RefreshCatalog(pool);
         return catalog.IsFullRosterAvailable && catalog.XadbContractVersion.GetValueOrDefault() >= 6;
+    }
+
+    private bool PersistConfigurationNow()
+    {
+        Configuration.Save();
+        _ = configurationPersistence.ForceFlush();
+        return IsConfigurationPersisted();
+    }
+
+    private bool IsConfigurationPersisted()
+    {
+        var state = configurationPersistence.GetState();
+        return !state.IsDirty && !state.HasFault;
     }
 
     private DadAutoPartyCrewReconciliation ReconcileAutoPartyCrew(DateTime? utcNow = null)

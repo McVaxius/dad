@@ -63,7 +63,7 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         Assert.Contains(DadAutoPartyFreeformRules.FormationActivityId, listing.AllowedActivityIds);
         Assert.Contains("dad-premadeduty-123", listing.AllowedActivityIds);
         Assert.Equal(7, listing.Revision);
-        Assert.Equal(now.AddMinutes(15), listing.ExpiresAtUtc);
+        Assert.Equal(now.AddMinutes(30), listing.ExpiresAtUtc);
         Assert.Equal("Character@World", publication.PairedLabels["opaque-local"]);
         Assert.DoesNotContain("Character@World", listing.DisplayLabel, StringComparison.Ordinal);
         Assert.DoesNotContain(publication.Listings, item => item.OpaqueCharacterId == "opaque-unavailable");
@@ -121,7 +121,8 @@ public sealed class DadAutoPartyListingPublicationRulesTests
         var now = new DateTime(2026, 8, 11, 21, 0, 0, DateTimeKind.Utc);
         var pairPolicy = new DadAutoPartySharePolicy
         {
-            Mode = DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild,
+            Mode = DadAutoPartyCharacterShareMode.SpecificCharacter,
+            CharacterHandles = ["opaque-private"],
             Enabled = true,
             Revision = 99,
             UpdatedAtUtc = now,
@@ -243,19 +244,20 @@ public sealed class DadAutoPartyListingPublicationRulesTests
     }
 
     [Fact]
-    public void StandingPolicyControlIsRenderedBeforePendingPairingBranch()
+    public void StandingPolicyControlIsRenderedAfterPairingSubmissionControls()
     {
         var source = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
         var control = source.IndexOf(
             "Save Community Available characters",
             StringComparison.Ordinal);
-        var pendingBranch = source.IndexOf(
-            "var pending = configuration.PendingPairings",
+        var pairingSubmission = source.IndexOf(
+            "if (configuration.PairingAttemptSubmitted)",
             StringComparison.Ordinal);
 
         Assert.True(control >= 0);
-        Assert.True(pendingBranch > control);
-        Assert.Contains("SetStandingSharePolicy", source[control..pendingBranch], StringComparison.Ordinal);
+        Assert.True(pairingSubmission >= 0);
+        Assert.True(control > pairingSubmission);
+        Assert.Contains("SetStandingSharePolicy", source[control..], StringComparison.Ordinal);
     }
 
     private static string ReadRepositorySource(params string[] pathParts)

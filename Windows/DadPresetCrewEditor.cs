@@ -543,8 +543,17 @@ internal sealed class DadPresetCrewEditor
         {
             ImGui.TextDisabled("No current authorized character listings from this Paired DAD.");
             ImGui.SameLine();
+            var refreshInProgress = plugin.PairedDirectoryRefreshInProgress;
+            var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
+            ImGui.BeginDisabled(refreshInProgress || refreshCooldown > TimeSpan.Zero);
             if (ImGui.SmallButton($"Refresh##{idPrefix}-paired-refresh-{index}"))
                 QueuePairedDirectoryRequest();
+            ImGui.EndDisabled();
+            if (refreshInProgress)
+                ImGui.TextDisabled("Paired DAD refresh is processing...");
+            else if (refreshCooldown > TimeSpan.Zero)
+                ImGui.TextDisabled(
+                    $"Paired DAD refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
         }
         if (slot.SharedIdentity?.BindingId is { Length: > 0 } &&
             ImGui.SmallButton($"Clear shared##{idPrefix}-paired-clear-{index}"))
@@ -635,10 +644,7 @@ internal sealed class DadPresetCrewEditor
 
     private void QueuePairedDirectoryRequest()
     {
-        _ = plugin.AutoPartyEndpointService
-            .RequestDirectoryAsync(string.Empty, false)
-            .GetAwaiter()
-            .GetResult();
+        plugin.TryStartPairedDirectoryRefresh();
     }
 
     private void DrawCharacterFilters(

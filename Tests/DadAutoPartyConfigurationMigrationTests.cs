@@ -600,6 +600,86 @@ public sealed class DadAutoPartyConfigurationMigrationTests
     }
 
     [Theory]
+    [InlineData(0, false)]
+    [InlineData(4, false)]
+    [InlineData(6, true)]
+    public async Task StartupAutomaticallyInvalidatesUnstampedOrWrongProtocolCredentials(
+        int originatingProtocolVersion,
+        bool credentialDeletionFails)
+    {
+        var fixture = await CreateRegistrationFixtureAsync();
+        using var identityStore = fixture.IdentityStore;
+        var current = await fixture.WebhookStore.LoadAsync(
+            fixture.Configuration.AutoParty.WebhookCredentialReference);
+        var incompatible = current with
+        {
+            OriginatingProtocolVersion = originatingProtocolVersion,
+        };
+        var autoParty = fixture.Configuration.AutoParty;
+        autoParty.CrewIdentities.Add(new DadAutoPartyCrewIdentity
+        {
+            RosterIdentityKey = "roster-preserved",
+            OpaqueCharacterId = "character-preserved",
+        });
+        autoParty.PairedDadAliases["peer-active"] = "Peer DAD";
+        autoParty.Grants.Add(new DadAutoPartyGrant());
+        autoParty.Listings.Add(new DadAutoPartyListing());
+        autoParty.RemoteBindings.Add(new DadAutoPartyRemoteBinding());
+        autoParty.Deauthentications.Add(new DadAutoPartyDeauthentication());
+        autoParty.PairingInviteToken = "APP1.obsolete";
+        autoParty.PairingAttemptId = Guid.NewGuid().ToString("D");
+        autoParty.StateGeneration = 8;
+        var identityReference = autoParty.EndpointIdentityReference;
+        var ownerId = autoParty.RegisteredOwnerId;
+        var islandId = autoParty.RegisteredIslandId;
+        var fingerprint = autoParty.RegistrationFingerprint;
+        var alias = autoParty.EndpointAlias;
+        var signingKey = autoParty.SigningPublicKey;
+        var encryptionKey = autoParty.EncryptionPublicKey;
+        var sharingPolicy = JsonSerializer.Serialize(autoParty.StandingSharePolicy);
+        var webhookStore = new MemoryWebhookStore(incompatible, credentialDeletionFails);
+
+        Assert.True(DadAutoPartyConfigurationMigration.Migrate(
+            fixture.Configuration,
+            identityStore,
+            webhookStore));
+
+        Assert.True(autoParty.Enabled);
+        Assert.Equal(DadAutoPartyRegistrationState.Unregistered, autoParty.RegistrationState);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.NewRegistration, autoParty.RegistrationRecoveryState);
+        Assert.Equal(string.Empty, autoParty.RegistrationId);
+        Assert.Equal(string.Empty, autoParty.RouteId);
+        Assert.Equal(string.Empty, autoParty.WebhookCredentialReference);
+        Assert.Equal(string.Empty, autoParty.UplinkEpochId);
+        Assert.Equal(string.Empty, autoParty.DownlinkEpochId);
+        Assert.Equal(0, autoParty.MailboxEpochGeneration);
+        Assert.Equal(string.Empty, autoParty.RelaySigningPublicKey);
+        Assert.Equal(string.Empty, autoParty.RelayAgreementPublicKey);
+        Assert.Empty(autoParty.PairedDadAliases);
+        Assert.Empty(autoParty.Pairings);
+        Assert.Empty(autoParty.PendingPairings);
+        Assert.Empty(autoParty.Grants);
+        Assert.Empty(autoParty.Listings);
+        Assert.Empty(autoParty.RemoteBindings);
+        Assert.Empty(autoParty.Deauthentications);
+        Assert.Equal(string.Empty, autoParty.PairingInviteToken);
+        Assert.Equal(string.Empty, autoParty.PairingAttemptId);
+        Assert.Equal(9, autoParty.StateGeneration);
+        Assert.Equal(identityReference, autoParty.EndpointIdentityReference);
+        Assert.Equal(ownerId, autoParty.RegisteredOwnerId);
+        Assert.Equal(islandId, autoParty.RegisteredIslandId);
+        Assert.Equal(fingerprint, autoParty.RegistrationFingerprint);
+        Assert.Equal(alias, autoParty.EndpointAlias);
+        Assert.Equal(signingKey, autoParty.SigningPublicKey);
+        Assert.Equal(encryptionKey, autoParty.EncryptionPublicKey);
+        Assert.Equal("roster-preserved", Assert.Single(autoParty.CrewIdentities).RosterIdentityKey);
+        Assert.Equal(sharingPolicy, JsonSerializer.Serialize(autoParty.StandingSharePolicy));
+        Assert.Equal(
+            ["webhook-mailbox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+            webhookStore.DeletedReferences);
+    }
+
+    [Theory]
     [InlineData("rollback")]
     [InlineData("same-generation-id-mismatch")]
     [InlineData("island-mismatch")]
@@ -959,8 +1039,11 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             now,
             now.AddMinutes(30),
             now.AddMinutes(35),
-            1,
-            [new CourierPageReference(1, "500000000000000001")],
+            2,
+            [
+                new CourierPageReference(1, "500000000000000001"),
+                new CourierPageReference(2, "500000000000000003"),
+            ],
             4);
         var downlink = new CourierEpochDescriptor(
             Guid.Parse("22222222-2222-4222-8222-222222222222"),
@@ -969,14 +1052,18 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             now,
             now.AddMinutes(30),
             now.AddMinutes(35),
-            1,
-            [new CourierPageReference(1, "500000000000000002")],
+            2,
+            [
+                new CourierPageReference(1, "500000000000000002"),
+                new CourierPageReference(2, "500000000000000004"),
+            ],
             4);
         var credential = new DadAutoPartyWebhookCredential(
             "300000000000000001",
             new string('a', 64),
             "400000000000000001")
         {
+            OriginatingProtocolVersion = AutoPartyProtocol.CurrentVersion,
             UplinkEpoch = uplink,
             DownlinkEpoch = downlink,
             RelayPublicKeys = relayKeys,
@@ -1206,12 +1293,18 @@ public sealed class DadAutoPartyConfigurationMigrationTests
 
     private sealed class MemoryWebhookStore : IDadAutoPartyWebhookCredentialStore
     {
-        private readonly DadAutoPartyWebhookCredential? credential;
+        private DadAutoPartyWebhookCredential? credential;
+        private readonly bool failDelete;
 
-        public MemoryWebhookStore(DadAutoPartyWebhookCredential? credential = null)
+        public MemoryWebhookStore(
+            DadAutoPartyWebhookCredential? credential = null,
+            bool failDelete = false)
         {
             this.credential = credential;
+            this.failDelete = failDelete;
         }
+
+        public List<string> DeletedReferences { get; } = [];
 
         public ValueTask<string> StoreAsync(
             DadAutoPartyWebhookCredential credential,
@@ -1221,10 +1314,9 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         public ValueTask<DadAutoPartyWebhookCredential> LoadAsync(
             string credentialReference,
             CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(credential ?? new DadAutoPartyWebhookCredential(
-                "123456789",
-                new string('a', 64),
-                "987654321"));
+            credential is not null
+                ? ValueTask.FromResult(credential)
+                : throw new InvalidOperationException("missing-test-mailbox");
 
         public ValueTask ReplaceAsync(
             string credentialReference,
@@ -1234,8 +1326,15 @@ public sealed class DadAutoPartyConfigurationMigrationTests
 
         public ValueTask<bool> DeleteAsync(
             string credentialReference,
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(true);
+            CancellationToken cancellationToken = default)
+        {
+            DeletedReferences.Add(credentialReference);
+            if (failDelete)
+                throw new IOException("synthetic-credential-delete-failure");
+            var deleted = credential != null;
+            credential = null;
+            return ValueTask.FromResult(deleted);
+        }
     }
 
     private sealed class MemoryLegacyTokenStore : IDadAutoPartyDiscordTokenStore

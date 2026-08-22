@@ -147,6 +147,31 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         }
     }
 
+    public DadAutoPartyPolicyDecision RenewOwnedProposal(
+        Guid proposalId,
+        DateTimeOffset previousExpiresAt,
+        DateTimeOffset newExpiresAt)
+    {
+        lock (gate)
+        {
+            if (!proposals.TryGetValue(proposalId, out var state) || !state.OwnedProposal || state.Revoked)
+                return Denied("dad-owned-proposal-renewal-not-found");
+            if (state.ProposalExpiresAtUtc != previousExpiresAt.UtcDateTime ||
+                newExpiresAt != previousExpiresAt + TimeSpan.FromMinutes(30) ||
+                newExpiresAt <= DateTimeOffset.UtcNow)
+                return Denied("dad-owned-proposal-renewal-mismatch");
+
+            proposals[proposalId] = state with
+            {
+                ProposalExpiresAtUtc = newExpiresAt.UtcDateTime,
+                LeaseExpiresAtUtc = state.LeaseExpiresAtUtc == DateTime.MinValue
+                    ? DateTime.MinValue
+                    : newExpiresAt.UtcDateTime,
+            };
+            return Allowed("dad-owned-proposal-renewed");
+        }
+    }
+
     public DadAutoPartyPolicyDecision IntersectGrant(
         RunProposal proposal,
         SessionPermission requiredPermissions)

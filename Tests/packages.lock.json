@@ -4,9 +4,9 @@
     "net10.0": {
       "Dad.AutoParty.Protocol": {
         "type": "Direct",
-        "requested": "[0.2.0-preview.6, 0.2.0-preview.6]",
-        "resolved": "0.2.0-preview.6",
-        "contentHash": "xAdVJWH//XTTOm4pJ3gUb6UcjUKQcZnm2r1avk901nZBYlDtON9dVpKB4PqxSWn6XVEFPj310na/FsZ/GH2A4w==",
+        "requested": "[0.2.0-preview.7, 0.2.0-preview.7]",
+        "resolved": "0.2.0-preview.7",
+        "contentHash": "FUYWEyTOnW/j2x3zHXAMlvFZeQ9wPgavefhh26q02OioRX2EzKZrAG4cBpVRIsU6j8qOcXLTEa24JoW/y0fvaw==",
         "dependencies": {
           "BouncyCastle.Cryptography": "[2.6.2]",
           "System.Formats.Cbor": "[10.0.9]"

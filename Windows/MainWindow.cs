@@ -296,6 +296,28 @@ public sealed class MainWindow : Window, IDisposable
             DadUi.EndCard();
         }
 
+        var refreshInProgress = plugin.PairedDirectoryRefreshInProgress;
+        var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
+        ImGui.BeginDisabled(refreshInProgress || refreshCooldown > TimeSpan.Zero);
+        if (DadUi.Button(
+                "Refresh paired DAD character lists",
+                DadUiTone.Accent,
+                new Vector2(-1f, 34f)))
+        {
+            plugin.TryStartPairedDirectoryRefresh();
+        }
+        ImGui.EndDisabled();
+        if (refreshInProgress)
+            ImGui.TextDisabled("Refreshing the current source roster and paired AutoParty directory...");
+        else if (refreshCooldown > TimeSpan.Zero)
+            ImGui.TextDisabled($"Paired DAD refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
+
+        var lastRefresh = plugin.LastPairedDirectoryRefresh;
+        if (lastRefresh.CompletedAtUtc != DateTime.MinValue)
+            ImGui.TextDisabled(
+                $"Last paired DAD refresh: {lastRefresh.SafeCode} | " +
+                $"published {lastRefresh.PublishedListingCount} | received {lastRefresh.ReceivedListingCount}.");
+
         var pluginEnabled = configuration.PluginEnabled;
         if (ImGui.Checkbox("DAD enabled", ref pluginEnabled))
             plugin.SetPluginEnabled(pluginEnabled, printStatus: false);

@@ -16,7 +16,7 @@ public sealed record DadAutoPartyListingPublication(
 
 internal static class DadAutoPartyListingPublicationRules
 {
-    private static readonly TimeSpan ListingLifetime = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan ListingLifetime = TimeSpan.FromMinutes(30);
 
     public static DadAutoPartyListingPublication Build(
         DadAutoPartyConfiguration autoParty,
