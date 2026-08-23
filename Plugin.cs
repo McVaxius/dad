@@ -144,10 +144,12 @@ public sealed class Plugin : IDalamudPlugin
     private string cachedPlannerPreviewSignature = string.Empty;
     private string cachedPlannerPreviewRequestId = string.Empty;
     private DateTime cachedPlannerPreviewRequestedAtUtc = DateTime.MinValue;
-    private DadPlannerUiSnapshot? cachedPlannerUiSnapshot;
-    private DadPlannerUiCacheKey? cachedPlannerUiCacheKey;
-    private DadPlannerSchedulerCacheKey? cachedPlannerSchedulerCacheKey;
-    private DadSchedulerPreview? cachedPlannerSchedulerPreview;
+    private readonly DadProjectionCache<DadPlannerUiCacheKey, DadPlannerUiSnapshot> plannerUiProjectionCache = new();
+    private readonly DadProjectionCache<DadPlannerSchedulerCacheKey, DadSchedulerPreview>
+        plannerSchedulerProjectionCache = new();
+    private readonly DadSemanticRevisionTracker<DadPlannerRosterSemantic> plannerRosterRevisionTracker = new();
+    private readonly DadSemanticRevisionTracker<DadPlannerRunSemantic> plannerRunRevisionTracker = new();
+    private readonly DadSemanticRevisionTracker<DadPlannerDependencySemantic> plannerDependencyRevisionTracker = new();
     private readonly Dictionary<string, DadLevelSeekDisplayState> cachedScheduleLevelSeekDisplays = new(StringComparer.OrdinalIgnoreCase);
     private DateTime cachedScheduleLevelSeekSnapshotUtc = DateTime.MinValue;
     private long plannerUiCacheGeneration;
@@ -1601,64 +1603,73 @@ public sealed class Plugin : IDalamudPlugin
 
     internal DadPlannerUiSnapshot GetPlannerUiSnapshot(DadVisibleRunState runState)
     {
+        var now = DateTime.UtcNow;
         var sourcePool = CharacterIntelligenceService.CurrentPool;
         var schedulerRevision = SchedulerService.GetPlannerUiRevision();
-        var runRevisionToken = BuildPlannerRunRevisionToken(runState);
-        var dependencyRevisionToken = BuildDependencyRevisionToken();
+        var rosterRevision = plannerRosterRevisionTracker.Observe(BuildPlannerRosterSemantic(sourcePool));
+        var catalogRevision = RosterCatalogService.GetPlannerSemanticRevision();
+        var runRevision = plannerRunRevisionTracker.Observe(BuildPlannerRunSemantic(runState));
+        var dependencyRevision = plannerDependencyRevisionTracker.Observe(BuildDependencySemantic());
         var cacheKey = BuildPlannerUiCacheKey(
-            sourcePool,
-            schedulerRevision.LaunchProfilesToken,
-            runRevisionToken,
-            dependencyRevisionToken);
+            rosterRevision,
+            catalogRevision,
+            schedulerRevision.LaunchProfilesRevision,
+            sourcePool.PeerTransport.TransportRevision);
         Stopwatch? stopwatch = null;
         var rebuildReason = string.Empty;
+        DadPlannerUiSnapshot heavyweightSnapshot;
 
-        if (cachedPlannerUiSnapshot == null || cachedPlannerUiCacheKey != cacheKey)
+        if (!plannerUiProjectionCache.TryGet(cacheKey, now, out heavyweightSnapshot))
         {
             plannerUiCacheMissCount++;
             stopwatch = Stopwatch.StartNew();
             rebuildReason = string.IsNullOrWhiteSpace(plannerUiCacheInvalidationReason)
-                ? cachedPlannerUiSnapshot == null ? "cold" : "planner inputs changed"
+                ? "planner inputs changed"
                 : plannerUiCacheInvalidationReason;
-
-            var rosterSnapshot = RosterCatalogService.BuildPlannerRosterSnapshot(sourcePool);
-            var pool = rosterSnapshot.CuratedPool;
-            var selectedGroup = GetSelectedPlannerGroup();
-            var selectedDuty = PresetProviderService.GetPlannerSelectedDuty(PlannerOptions);
-            var selectedRoulette = PresetProviderService.GetPlannerSelectedRoulette(PlannerOptions);
-            var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions, selectedGroup);
-            var requestPreview = BuildPlannerRunRequestPreview(pool, PlannerOptions, plannerPreview, selectedGroup, useStableIdentity: true);
-            var launchProfiles = SchedulerService.GetLaunchProfiles()
-                .OrderBy(static profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(static profile => profile.ProfileId, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var groups = Configuration.PlannerGroups
-                .OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(static group => group.GroupId, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var lanePreviews = Configuration.DebugUiEnabled
-                ? BuildPlannerLanePreviews(pool, requestPreview)
-                : [];
-
-            cachedPlannerUiSnapshot = new DadPlannerUiSnapshot
+            heavyweightSnapshot = plannerUiProjectionCache.GetOrCreate(cacheKey, () =>
             {
-                Generation = plannerUiCacheGeneration,
-                RebuiltAtUtc = DateTime.UtcNow,
-                RebuildReason = rebuildReason,
-                CuratedPool = pool,
-                PlannerPreview = plannerPreview,
-                RequestPreview = requestPreview,
-                AccountOptions = rosterSnapshot.AccountOptions,
-                LaunchProfiles = launchProfiles,
-                PlannerGroups = groups,
-                LanePreviews = lanePreviews,
-                CharactersByAccountKey = BuildPlannerCharactersByAccountKey(pool),
-                SelectedDuty = selectedDuty,
-                RouletteOptions = PresetProviderService.GetPlannerRouletteOptions(),
-                SelectedRoulette = selectedRoulette.Option,
-                RouletteConflictIndex = DadRoulettePresetConflictRules.BuildIndex(groups),
-            };
-            cachedPlannerUiCacheKey = cacheKey;
+                var rosterSnapshot = RosterCatalogService.BuildPlannerRosterSnapshot(sourcePool);
+                var pool = rosterSnapshot.CuratedPool;
+                var selectedGroup = GetSelectedPlannerGroup();
+                var selectedDuty = PresetProviderService.GetPlannerSelectedDuty(PlannerOptions);
+                var selectedRoulette = PresetProviderService.GetPlannerSelectedRoulette(PlannerOptions);
+                var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, PlannerOptions, selectedGroup);
+                var requestPreview = BuildPlannerRunRequestPreview(
+                    pool,
+                    PlannerOptions,
+                    plannerPreview,
+                    selectedGroup,
+                    useStableIdentity: true);
+                var launchProfiles = SchedulerService.GetLaunchProfiles()
+                    .OrderBy(static profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(static profile => profile.ProfileId, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var groups = Configuration.PlannerGroups
+                    .OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(static group => group.GroupId, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var lanePreviews = Configuration.DebugUiEnabled
+                    ? BuildPlannerLanePreviews(pool, requestPreview)
+                    : [];
+                return new DadPlannerUiSnapshot
+                {
+                    Generation = plannerUiCacheGeneration,
+                    RebuiltAtUtc = now,
+                    RebuildReason = rebuildReason,
+                    CuratedPool = pool,
+                    PlannerPreview = plannerPreview,
+                    RequestPreview = requestPreview,
+                    AccountOptions = rosterSnapshot.AccountOptions,
+                    LaunchProfiles = launchProfiles,
+                    PlannerGroups = groups,
+                    LanePreviews = lanePreviews,
+                    CharactersByAccountKey = BuildPlannerCharactersByAccountKey(pool),
+                    SelectedDuty = selectedDuty,
+                    RouletteOptions = PresetProviderService.GetPlannerRouletteOptions(),
+                    SelectedRoulette = selectedRoulette.Option,
+                    RouletteConflictIndex = DadRoulettePresetConflictRules.BuildIndex(groups),
+                };
+            }, now);
             plannerUiCacheInvalidationReason = string.Empty;
         }
         else
@@ -1667,146 +1678,163 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var schedulerCacheKey = new DadPlannerSchedulerCacheKey(
-            plannerUiCacheGeneration,
-            sourcePool.LastUpdatedUtc.Ticks,
-            RosterCatalogService.CatalogVersion,
-            schedulerRevision.SchedulerToken,
-            schedulerRevision.LaunchProfilesToken,
-            runRevisionToken,
-            dependencyRevisionToken);
-        if (cachedPlannerSchedulerPreview == null || cachedPlannerSchedulerCacheKey != schedulerCacheKey)
+            cacheKey,
+            schedulerRevision.SchedulerRevision,
+            runRevision,
+            dependencyRevision);
+        DadSchedulerPreview schedulerPreview;
+        if (!plannerSchedulerProjectionCache.TryGet(schedulerCacheKey, now, out schedulerPreview))
         {
             plannerSchedulerCacheMissCount++;
             stopwatch ??= Stopwatch.StartNew();
             if (string.IsNullOrWhiteSpace(rebuildReason))
                 rebuildReason = "scheduler inputs changed";
-
-            var selectedGroup = GetSelectedPlannerGroup();
-            if (selectedGroup?.LevelingMode?.Enabled == true)
-            {
-                var build = BuildLevelingChild(selectedGroup, cachedPlannerUiSnapshot.CuratedPool, iteration: 1);
-                if (build.Compilation.CanStartChild && build.Compilation.ChildGroup != null && build.PlannerPreview != null)
-                {
-                    cachedPlannerSchedulerPreview = SchedulerService.BuildPreview(build.Compilation.ChildGroup, build.PlannerPreview);
-                }
-                else
-                {
-                    var complete = build.Compilation.Status == DadLevelingCompilationStatus.Complete;
-                    cachedPlannerSchedulerPreview = new DadSchedulerPreview
-                    {
-                        GroupId = selectedGroup.GroupId,
-                        PresetName = selectedGroup.DisplayName,
-                        Phase = complete ? DadSchedulerPresetPhase.Completed : DadSchedulerPresetPhase.Blocked,
-                        CanStart = complete,
-                        ReadyToStart = complete,
-                        StatusSummary = build.Compilation.Summary,
-                        BlockedReason = complete ? string.Empty : build.Compilation.Summary,
-                        PlannerRequestPreview = BuildLevelingPlannerPreview(build),
-                    };
-                }
-            }
-            else
-            {
-                var schedulerRequestPreview = selectedGroup == null
-                    ? cachedPlannerUiSnapshot.RequestPreview
-                    : BuildPlannerGroupRunRequestPreview(cachedPlannerUiSnapshot.CuratedPool, selectedGroup.GroupId, null);
-                cachedPlannerSchedulerPreview = SchedulerService.BuildPreview(selectedGroup, schedulerRequestPreview);
-            }
-            cachedPlannerSchedulerCacheKey = schedulerCacheKey;
+            schedulerPreview = plannerSchedulerProjectionCache.GetOrCreate(
+                schedulerCacheKey,
+                () => BuildPlannerSchedulerProjection(heavyweightSnapshot),
+                now,
+                schedulerRevision.ValidUntilUtc);
         }
         else
         {
             plannerSchedulerCacheHitCount++;
         }
 
-        cachedPlannerUiSnapshot.SchedulerPreview = cachedPlannerSchedulerPreview;
         if (stopwatch != null)
         {
             stopwatch.Stop();
             RecordPlannerUiCacheRebuild(stopwatch.Elapsed, rebuildReason);
         }
 
-        return cachedPlannerUiSnapshot;
+        return heavyweightSnapshot with { SchedulerPreview = schedulerPreview };
     }
 
     private DadPlannerUiCacheKey BuildPlannerUiCacheKey(
-        DadCharacterPool pool,
-        int launchProfilesToken,
-        int runRevisionToken,
-        int dependencyRevisionToken)
+        long rosterRevision,
+        long catalogRevision,
+        long launchProfilesRevision,
+        long transportRevision)
         => new(
             plannerUiCacheGeneration,
             Configuration.DebugUiEnabled,
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled,
             (int)Configuration.CombatRotationMode,
-            RosterCatalogService.CatalogVersion,
-            pool.LastUpdatedUtc.Ticks,
-            pool.Characters.Count,
-            pool.PeerTransport.ConnectedPeerCount,
-            pool.PeerTransport.KnownParticipants.Count,
-            pool.PeerTransport.LastResponses.Count,
-            pool.XadbStatus.SnapshotUtc?.Ticks ?? 0,
-            launchProfilesToken,
-            runRevisionToken,
-            dependencyRevisionToken);
+            rosterRevision,
+            catalogRevision,
+            launchProfilesRevision,
+            transportRevision);
 
-    private int BuildDependencyRevisionToken()
+    private DadSchedulerPreview BuildPlannerSchedulerProjection(DadPlannerUiSnapshot heavyweightSnapshot)
     {
-        var hash = new HashCode();
-        AddDependencyRevision(ref hash, PresenceService.BuildSnapshotCopy());
-        foreach (var participant in TransportService.CurrentTransport.KnownParticipants
-                     .OrderBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase))
+        var selectedGroup = GetSelectedPlannerGroup();
+        if (selectedGroup?.LevelingMode?.Enabled == true)
         {
-            AddDependencyRevision(ref hash, participant);
+            var build = BuildLevelingChild(selectedGroup, heavyweightSnapshot.CuratedPool, iteration: 1);
+            if (build.Compilation.CanStartChild && build.Compilation.ChildGroup != null && build.PlannerPreview != null)
+                return SchedulerService.BuildPreview(build.Compilation.ChildGroup, build.PlannerPreview);
+
+            var complete = build.Compilation.Status == DadLevelingCompilationStatus.Complete;
+            return new DadSchedulerPreview
+            {
+                GroupId = selectedGroup.GroupId,
+                PresetName = selectedGroup.DisplayName,
+                Phase = complete ? DadSchedulerPresetPhase.Completed : DadSchedulerPresetPhase.Blocked,
+                CanStart = complete,
+                ReadyToStart = complete,
+                StatusSummary = build.Compilation.Summary,
+                BlockedReason = complete ? string.Empty : build.Compilation.Summary,
+                PlannerRequestPreview = BuildLevelingPlannerPreview(build),
+            };
         }
 
-        return hash.ToHashCode();
+        var schedulerRequestPreview = selectedGroup == null
+            ? heavyweightSnapshot.RequestPreview
+            : BuildPlannerGroupRunRequestPreview(heavyweightSnapshot.CuratedPool, selectedGroup.GroupId, null);
+        return SchedulerService.BuildPreview(selectedGroup, schedulerRequestPreview);
     }
 
-    private static void AddDependencyRevision(ref HashCode hash, DadParticipantSnapshot participant)
+    private static DadPlannerRosterSemantic BuildPlannerRosterSemantic(DadCharacterPool pool)
+        => new(
+            pool.XadbStatus.IsReady,
+            pool.XadbStatus.SnapshotVersion,
+            new DadOrderedSemantic<DadPlannerCharacterSemantic>(pool.Characters
+                .OrderBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(static character => character.ContentId)
+                .ThenBy(static character => character.AccountId, StringComparer.OrdinalIgnoreCase)
+                .Select(static character => new DadPlannerCharacterSemantic(
+                    character.CharacterKey,
+                    character.ContentId,
+                    character.CharacterName,
+                    character.WorldId,
+                    character.WorldName,
+                    character.DataCenterId,
+                    character.DataCenterName,
+                    character.AccountId,
+                    character.AccountAlias,
+                    character.Source,
+                    character.Freshness,
+                    character.CurrentJobId,
+                    character.CurrentJobAbbrev,
+                    character.CurrentLevel,
+                    new DadOrderedSemantic<KeyValuePair<uint, int>>(character.JobLevels
+                        .OrderBy(static job => job.Key)),
+                    character.TerritoryId,
+                    character.TerritoryName,
+                    character.PartyRosterCount,
+                    character.VisiblePartyCount,
+                    character.Readiness,
+                    new DadOrderedSemantic<string>(character.Blockers),
+                    character.SnapshotQuality,
+                    character.SnapshotVersion,
+                    character.XadbReady,
+                    character.RosterVisibility,
+                    character.NeedsRosterUpdate,
+                    character.MapEligible))));
+
+    private DadPlannerDependencySemantic BuildDependencySemantic()
     {
-        hash.Add(participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase);
-        hash.Add(participant.Dependencies.SchemaVersion);
-        hash.Add(participant.Dependencies.Revision);
-        hash.Add(participant.Dependencies.AggregateState);
-        hash.Add(participant.Dependencies.IsReady);
+        var participants = new List<DadParticipantSnapshot> { PresenceService.BuildSnapshotCopy() };
+        participants.AddRange(TransportService.CurrentTransport.KnownParticipants
+            .OrderBy(static participant => participant.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase));
+        return new DadPlannerDependencySemantic(new DadOrderedSemantic<DadPlannerDependencyEntrySemantic>(
+            participants.Select(static participant => new DadPlannerDependencyEntrySemantic(
+                participant.WorkerSessionId.Value,
+                participant.Dependencies.SchemaVersion,
+                participant.Dependencies.Revision,
+                participant.Dependencies.AggregateState,
+                participant.Dependencies.IsReady))));
     }
 
-    private static int BuildPlannerRunRevisionToken(DadVisibleRunState runState)
-    {
-        var hash = new HashCode();
-        AddPlannerRunRevision(ref hash, runState.LocalRun);
-        AddPlannerRunRevision(ref hash, runState.AuthorityRun);
-        AddPlannerRunRevision(ref hash, runState.VisibleRun);
-        hash.Add(runState.IsRemoteAuthorityView);
-        hash.Add(runState.AuthorityView.Kind);
-        hash.Add(runState.AuthorityView.HasRemoteAuthority);
-        return hash.ToHashCode();
-    }
+    private static DadPlannerRunSemantic BuildPlannerRunSemantic(DadVisibleRunState runState)
+        => new(
+            BuildPlannerRunValueSemantic(runState.LocalRun),
+            BuildPlannerRunValueSemantic(runState.AuthorityRun),
+            BuildPlannerRunValueSemantic(runState.VisibleRun),
+            runState.IsRemoteAuthorityView,
+            runState.AuthorityView.Kind,
+            runState.AuthorityView.HasRemoteAuthority);
 
-    private static void AddPlannerRunRevision(ref HashCode hash, DadRunResult run)
-    {
-        hash.Add(run.RequestId, StringComparer.Ordinal);
-        hash.Add(run.Status);
-        hash.Add(run.Phase);
-        hash.Add(run.ModuleId);
-        hash.Add(run.CancellationState);
-        hash.Add(run.CompletedTaskCount);
-        hash.Add(run.ActiveTaskIndex);
-        hash.Add(run.TotalTaskCount);
-        hash.Add(run.ActiveTaskName, StringComparer.Ordinal);
-        hash.Add(run.ActiveTaskStatus, StringComparer.Ordinal);
-        hash.Add(run.BlockedReason, StringComparer.Ordinal);
-        hash.Add(run.FailureReason, StringComparer.Ordinal);
-        hash.Add(run.CompletedAtUtc?.Ticks ?? 0);
-        hash.Add(run.CurrentExecutorStatus.ModuleId);
-        hash.Add(run.CurrentExecutorStatus.Status);
-        hash.Add(run.CurrentExecutorStatus.Phase);
-        hash.Add(run.CurrentExecutorStatus.BlockedReason, StringComparer.Ordinal);
-        hash.Add(run.Participants.Count);
-        hash.Add(run.StepResults.Count);
-    }
+    private static DadPlannerRunValueSemantic BuildPlannerRunValueSemantic(DadRunResult run)
+        => new(
+            run.RequestId,
+            run.Status,
+            run.Phase,
+            run.ModuleId,
+            run.CancellationState,
+            run.CompletedTaskCount,
+            run.ActiveTaskIndex,
+            run.TotalTaskCount,
+            run.ActiveTaskName,
+            run.ActiveTaskStatus,
+            run.BlockedReason,
+            run.FailureReason,
+            run.CurrentExecutorStatus.ModuleId,
+            run.CurrentExecutorStatus.Status,
+            run.CurrentExecutorStatus.Phase,
+            run.CurrentExecutorStatus.BlockedReason,
+            run.Participants.Count,
+            run.StepResults.Count);
 
     private IReadOnlyList<DadPlannerLanePreviewSnapshot> BuildPlannerLanePreviews(
         DadCharacterPool pool,
@@ -1884,10 +1912,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         plannerUiCacheGeneration++;
         plannerUiCacheInvalidationReason = string.IsNullOrWhiteSpace(reason) ? "explicit" : reason.Trim();
-        cachedPlannerUiSnapshot = null;
-        cachedPlannerUiCacheKey = null;
-        cachedPlannerSchedulerPreview = null;
-        cachedPlannerSchedulerCacheKey = null;
+        plannerUiProjectionCache.Invalidate();
+        plannerSchedulerProjectionCache.Invalidate();
         cachedScheduleLevelSeekDisplays.Clear();
         cachedScheduleLevelSeekSnapshotUtc = DateTime.MinValue;
         plannerValidationFeedback = null;
@@ -6104,7 +6130,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 }
 
-internal sealed class DadPlannerUiSnapshot
+internal sealed record DadPlannerUiSnapshot
 {
     public long Generation { get; init; }
     public DateTime RebuiltAtUtc { get; init; } = DateTime.UtcNow;
@@ -6112,7 +6138,7 @@ internal sealed class DadPlannerUiSnapshot
     public DadCharacterPool CuratedPool { get; init; } = new();
     public DadActivityPreset PlannerPreview { get; init; } = new();
     public DadPlannerRunRequestPreview RequestPreview { get; init; } = new();
-    public DadSchedulerPreview SchedulerPreview { get; set; } = new();
+    public DadSchedulerPreview SchedulerPreview { get; init; } = new();
     public IReadOnlyList<DadRosterAccountOption> AccountOptions { get; init; } = [];
     public IReadOnlyList<DadLaunchProfile> LaunchProfiles { get; init; } = [];
     public IReadOnlyList<DadPlannerGroup> PlannerGroups { get; init; } = [];
@@ -6158,25 +6184,88 @@ internal readonly record struct DadPlannerUiCacheKey(
     bool PluginEnabled,
     bool LocalOnlyModeEnabled,
     int CombatRotationMode,
-    long CatalogVersion,
-    long PoolUpdatedAtTicks,
-    int CharacterCount,
-    int ConnectedPeerCount,
-    int KnownParticipantCount,
-    int PeerResponseCount,
-    long XadbSnapshotTicks,
-    int LaunchProfilesToken,
-    int RunRevisionToken,
-    int DependencyRevisionToken);
+    long RosterRevision,
+    long CatalogRevision,
+    long LaunchProfilesRevision,
+    long TransportRevision);
 
 internal readonly record struct DadPlannerSchedulerCacheKey(
-    long Generation,
-    long PoolUpdatedAtTicks,
-    long CatalogVersion,
-    int SchedulerToken,
-    int LaunchProfilesToken,
-    int RunRevisionToken,
-    int DependencyRevisionToken);
+    DadPlannerUiCacheKey HeavyweightKey,
+    long SchedulerRevision,
+    long RunRevision,
+    long DependencyRevision);
+
+internal sealed record DadPlannerRosterSemantic(
+    bool XadbReady,
+    int? XadbSnapshotVersion,
+    DadOrderedSemantic<DadPlannerCharacterSemantic> Characters);
+
+internal sealed record DadPlannerCharacterSemantic(
+    string CharacterKey,
+    ulong ContentId,
+    string CharacterName,
+    uint WorldId,
+    string WorldName,
+    uint? DataCenterId,
+    string DataCenterName,
+    string AccountId,
+    string AccountAlias,
+    DadCharacterSource Source,
+    DadSnapshotFreshness Freshness,
+    uint? CurrentJobId,
+    string CurrentJobAbbrev,
+    int? CurrentLevel,
+    DadOrderedSemantic<KeyValuePair<uint, int>> JobLevels,
+    uint? TerritoryId,
+    string TerritoryName,
+    int? PartyRosterCount,
+    int? VisiblePartyCount,
+    DadReadinessState Readiness,
+    DadOrderedSemantic<string> Blockers,
+    string SnapshotQuality,
+    int? SnapshotVersion,
+    bool XadbReady,
+    DadRosterVisibility RosterVisibility,
+    bool NeedsRosterUpdate,
+    bool? MapEligible);
+
+internal sealed record DadPlannerDependencySemantic(
+    DadOrderedSemantic<DadPlannerDependencyEntrySemantic> Participants);
+
+internal sealed record DadPlannerDependencyEntrySemantic(
+    string WorkerSessionId,
+    int SchemaVersion,
+    long Revision,
+    DadDependencyState AggregateState,
+    bool IsReady);
+
+internal sealed record DadPlannerRunSemantic(
+    DadPlannerRunValueSemantic Local,
+    DadPlannerRunValueSemantic Authority,
+    DadPlannerRunValueSemantic Visible,
+    bool IsRemoteAuthorityView,
+    DadAuthorityViewKind AuthorityViewKind,
+    bool HasRemoteAuthority);
+
+internal sealed record DadPlannerRunValueSemantic(
+    string RequestId,
+    DadRunStatus Status,
+    DadRunPhase Phase,
+    DadModuleId ModuleId,
+    DadRunCancellationState CancellationState,
+    int CompletedTaskCount,
+    int ActiveTaskIndex,
+    int TotalTaskCount,
+    string ActiveTaskName,
+    string ActiveTaskStatus,
+    string BlockedReason,
+    string FailureReason,
+    DadModuleId ExecutorModuleId,
+    DadRunStatus ExecutorStatus,
+    DadRunPhase ExecutorPhase,
+    string ExecutorBlockedReason,
+    int ParticipantCount,
+    int StepResultCount);
 
 internal sealed record DadPlannerValidationFeedback(
     long Generation,

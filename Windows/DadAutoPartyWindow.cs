@@ -19,8 +19,8 @@ public sealed class DadAutoPartyWindow : Window
     private string observedPairingAttemptId = string.Empty;
     private string clearedExpiredPairingAttemptId = string.Empty;
     private bool pairingInviteRequested;
-    private DadAutoPartyCrewShareScope pairingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
-    private DadAutoPartyCrewShareScope communityShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+    private DadAutoPartyCrewShareScope pairingShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
+    private DadAutoPartyCrewShareScope communityShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
     private bool includePromiscuous = true;
     private List<DadAcquiredCharacter> localCandidates = [];
     private List<DadAcquiredCharacter> localShareCandidates = [];
@@ -64,7 +64,7 @@ public sealed class DadAutoPartyWindow : Window
         pairingInviteRequested = false;
         forgetLostIdentityConfirmed = false;
         pairingShareHandles.Clear();
-        pairingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+        pairingShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
         RestoreSubmittedPairingSelection(plugin.Configuration.AutoParty);
         communityShareHandles.Clear();
         if (plugin.Configuration.AutoParty.StandingSharePolicy.Mode ==
@@ -86,10 +86,13 @@ public sealed class DadAutoPartyWindow : Window
         DadUi.Heading(
             "Central AutoParty bridge",
             "One centrally operated Discord bot; this DAD uses only its private encrypted webhook mailbox.");
-        ImGui.TextWrapped(
-            "Enable bot DMs before registering. Submit this DAD's APR1 challenge in the guild, then paste the raw APB1 " +
-            "token or exact wrapper from the bot's single DM here. The guild shows only safe registration feedback; " +
-            "transport-channel traffic is private machine traffic. Pairing uses one reciprocal APP1 fingerprint from each DAD.");
+        if (ImGui.CollapsingHeader("Registration protocol details##dad-autoparty-registration-details"))
+        {
+            ImGui.TextWrapped(
+                "Enable bot DMs before registering. Submit this DAD's APR1 challenge in the guild, then paste the raw APB1 " +
+                "token or exact wrapper from the bot's single DM here. The guild shows only safe registration feedback; " +
+                "transport-channel traffic is private machine traffic. Pairing uses one reciprocal APP1 fingerprint from each DAD.");
+        }
         if (!string.IsNullOrWhiteSpace(configuration.LegacyDiscordTokenCleanupWarning))
             ImGui.TextColored(
                 new Vector4(1f, .7f, .2f, 1f),
@@ -192,7 +195,12 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.Separator();
         DadUi.Heading(
             "Pairing and sharing",
-            "Each owner copies this DAD's APP1 fingerprint, pastes the peer fingerprint, chooses what to share, and submits locally. The first submission is silent; the reciprocal submission establishes both routes.");
+            "Exchange one APP1 fingerprint in each direction, choose the local sharing scope, and submit.");
+        if (ImGui.CollapsingHeader("Pairing protocol details##dad-autoparty-pairing-details"))
+        {
+            ImGui.TextWrapped(
+                "The first submission is silent; the reciprocal submission establishes both routes after both owners verify the fingerprints locally.");
+        }
         var registrationReady = configuration.IsRegistrationActive &&
             endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
         var nowUtc = DateTime.UtcNow;
@@ -348,7 +356,7 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.BeginDisabled(!registrationReady);
         DadUi.Heading(
             "Community Available",
-            "Choose which Crew characters this home-guild Community availability may expose. The default is none.");
+            "Choose which Crew characters this home-guild Community availability may expose. Fresh setup starts with This character but remains disabled until Save.");
         DrawShareScopeSelector("Community scope", ref communityShareScope);
         if (communityShareScope == DadAutoPartyCrewShareScope.SpecificCharacters)
             DrawShareCharacterSelector("community", communityShareHandles, singleSelection: false);
@@ -368,16 +376,16 @@ public sealed class DadAutoPartyWindow : Window
                 .SetStandingSharePolicy(communityShareScope, policy).SafeCode;
         }
         ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
-        var directory = plugin.AutoPartyService.GetDirectorySnapshot();
-        foreach (var pairing in configuration.Pairings.OrderBy(
-                     pairing => ResolvePairingLabel(configuration, pairing),
-                     StringComparer.OrdinalIgnoreCase))
+        var windowProjection = plugin.AutoPartyService.GetWindowProjection(directorySearch, includePromiscuous);
+        var directory = windowProjection.Directory;
+        foreach (var row in windowProjection.PairingRows)
         {
+            var pairing = row.Pairing;
             var pairingState = pairing.IsActive
-                ? directory.OnlineIslandIds.Contains(pairing.IslandId) ? "active, online" : "active, offline"
+                ? row.Online ? "active, online" : "active, offline"
                 : "revoked";
             ImGui.TextUnformatted(
-                $"{ResolvePairingLabel(configuration, pairing)}: {pairingState} | " +
+                $"{row.DisplayLabel}: {pairingState} | " +
                 $"share {pairing.LocalSharePolicy.Mode}");
             if (pairing.IsActive)
             {
@@ -414,7 +422,7 @@ public sealed class DadAutoPartyWindow : Window
             });
         }
         ImGui.Checkbox("Include same-guild Community Available listings", ref includePromiscuous);
-        DrawDirectory(configuration, directory);
+        DrawDirectory(configuration, windowProjection);
         ImGui.EndDisabled();
 
         ImGui.Separator();
@@ -446,7 +454,11 @@ public sealed class DadAutoPartyWindow : Window
             plugin.AutoPartyService.StopAll("dad-owner-stop-button");
             status = "dad-owner-stop-active";
         }
-        ImGui.TextWrapped($"Status: {status}");
+        ImGui.TextWrapped(operationTask is { IsCompleted: false }
+            ? "AutoParty action in progress."
+            : "AutoParty is ready for the next action; progress cards above show the active workflow.");
+        if (ImGui.CollapsingHeader("Technical status##dad-autoparty-final-status"))
+            ImGui.TextWrapped($"Raw safe code: {status}");
     }
 
     private static void DrawRegistrationProgressCard(DadAutoPartyRegistrationProgress progress)
@@ -504,7 +516,8 @@ public sealed class DadAutoPartyWindow : Window
                 $"Relay: pending {activity.RelayPendingCount}, awaiting semantic receipt {activity.RelayAwaitingCount}.");
             if (lastSuccessfulExchangeAtUtc.HasValue)
                 ImGui.TextDisabled($"Last mailbox exchange: {lastSuccessfulExchangeAtUtc.Value:u}");
-            ImGui.TextDisabled($"Raw safe code: {activity.RawSafeCode}");
+            if (ImGui.CollapsingHeader("Technical details##dad-mailbox-activity-details"))
+                ImGui.TextDisabled($"Raw safe code: {activity.RawSafeCode}");
         }
         ImGui.EndChild();
         ImGui.PopStyleColor();
@@ -524,7 +537,8 @@ public sealed class DadAutoPartyWindow : Window
             DrawChecklistRow("Peer APP1 fingerprint locally verified", CompleteOrPending(progress.PeerInviteValid));
             DrawChecklistRow("Local sharing choice submitted", CompleteOrPending(progress.IntentSubmitted));
             ImGui.TextWrapped($"Next: {progress.NextAction}");
-            ImGui.TextDisabled($"Safe code: {progress.SafeCode}");
+            if (ImGui.CollapsingHeader("Technical details##dad-pairing-progress-details"))
+                ImGui.TextDisabled($"Raw safe code: {progress.SafeCode}");
         }
         ImGui.EndChild();
         ImGui.PopStyleColor();
@@ -549,10 +563,13 @@ public sealed class DadAutoPartyWindow : Window
     {
         if (string.IsNullOrWhiteSpace(islandId))
             return;
-        ImGui.TextDisabled($"{label}: {islandId}");
-        ImGui.SameLine();
-        if (ImGui.SmallButton($"Copy##technical-island-{id}"))
-            ImGui.SetClipboardText(islandId);
+        if (ImGui.CollapsingHeader($"Technical details##technical-island-details-{id}"))
+        {
+            ImGui.TextDisabled($"{label}: {islandId}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Copy##technical-island-{id}"))
+                ImGui.SetClipboardText(islandId);
+        }
     }
 
     private static void DrawChecklistRow(string label, DadAutoPartyProgressState state)
@@ -576,13 +593,9 @@ public sealed class DadAutoPartyWindow : Window
 
     private void DrawDirectory(
         DadAutoPartyConfiguration configuration,
-        DadAutoPartyDirectorySnapshot directory)
+        DadAutoPartyWindowProjection projection)
     {
-        var visible = directory.Listings
-            .Where(item => string.IsNullOrWhiteSpace(directorySearch) ||
-                           item.DisplayLabel.Contains(directorySearch, StringComparison.OrdinalIgnoreCase))
-            .Take(128)
-            .ToList();
+        var visible = projection.VisibleListings;
         if (visible.Count == 0)
         {
             ImGui.TextDisabled("No matching private listings are cached.");
@@ -814,7 +827,7 @@ public sealed class DadAutoPartyWindow : Window
             DadAutoPartyCrewShareScope.CurrentCharacter => 0,
             DadAutoPartyCrewShareScope.SpecificCharacters => 1,
             DadAutoPartyCrewShareScope.AllCharacters => 2,
-            _ => 1,
+            _ => 0,
         };
         if (ImGui.Combo(label, ref selected, "This character\0Specific characters\0All characters\0"))
         {
@@ -933,7 +946,7 @@ public sealed class DadAutoPartyWindow : Window
     {
         ClearPairingFingerprint();
         pairingShareHandles.Clear();
-        pairingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+        pairingShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
     }
 
     private void ClearPairingFingerprint()
@@ -952,7 +965,7 @@ public sealed class DadAutoPartyWindow : Window
             DadAutoPartyCharacterShareMode.SpecificCharacter => DadAutoPartyCrewShareScope.CurrentCharacter,
             DadAutoPartyCharacterShareMode.CharacterList => DadAutoPartyCrewShareScope.SpecificCharacters,
             DadAutoPartyCharacterShareMode.AllCharactersForPeer => DadAutoPartyCrewShareScope.AllCharacters,
-            _ => DadAutoPartyCrewShareScope.SpecificCharacters,
+            _ => DadAutoPartyCrewShareScope.CurrentCharacter,
         };
         if (configuration.PairingAttemptSharePolicy.Mode == DadAutoPartyCharacterShareMode.CharacterList)
             pairingShareHandles.UnionWith(configuration.PairingAttemptSharePolicy.CharacterHandles);

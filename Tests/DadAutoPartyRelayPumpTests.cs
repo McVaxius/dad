@@ -967,6 +967,18 @@ public sealed class DadAutoPartyRelayPumpTests
             Assert.Equal(TimeSpan.FromMinutes(5), request.Header.ExpiresAt - request.Header.IssuedAt);
         });
 
+        var unresolved = fixture.Service.GetDirectorySnapshot();
+        Assert.Same(unresolved, fixture.Service.GetDirectorySnapshot());
+        Assert.Equal(
+            "Shared character 0001 (real name incoming)",
+            unresolved.Listings.Single(item => item.OpaqueCharacterId == "opaque-peer-1").DisplayLabel);
+        Assert.Equal(
+            "Shared character community",
+            unresolved.Listings.Single(item => item.OpaqueCharacterId == "opaque-community").DisplayLabel);
+        Assert.Equal(
+            "Shared character 0001",
+            fixture.Configuration.Listings.Single(item => item.OpaqueCharacterId == "opaque-peer-1").DisplayLabel);
+
         var first = requests[0];
         now = now.AddMinutes(2);
         var response = new PairedListingLabelResponse(
@@ -979,6 +991,11 @@ public sealed class DadAutoPartyRelayPumpTests
         await pump.ProcessOnceAsync();
 
         var directory = fixture.Service.GetDirectorySnapshot();
+        Assert.NotSame(unresolved, directory);
+        Assert.Same(directory, fixture.Service.GetDirectorySnapshot());
+        Assert.Equal(
+            response.Header.ExpiresAt.UtcDateTime,
+            fixture.Service.GetWindowProjection(string.Empty, includePromiscuous: true).ValidUntilUtc);
         Assert.Equal(
             "Private Character@Private World",
             directory.Listings.Single(item =>
@@ -989,6 +1006,22 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(
             "Shared character 0001",
             fixture.Configuration.Listings.Single(item =>
+                item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
+
+        var historicalObservation = DateTimeOffset.UtcNow.AddMinutes(-2);
+        Assert.True(fixture.Service.ApplyPairedListingLabels(
+            PumpFixture.PeerIsland,
+            first.PairingId,
+            first.PairingTranscriptHash,
+            first.RequestedCharacters.Select(static handle => handle.Value).ToArray(),
+            [new PairedListingLabel(first.RequestedCharacters[0], "Expired Character@Private World")],
+            historicalObservation.AddMinutes(1),
+            historicalObservation));
+        var expiredLabelsDirectory = fixture.Service.GetDirectorySnapshot();
+        Assert.NotSame(directory, expiredLabelsDirectory);
+        Assert.Equal(
+            "Shared character 0001 (real name incoming)",
+            expiredLabelsDirectory.Listings.Single(item =>
                 item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
 
         now = now.AddMinutes(3).AddSeconds(1);
@@ -2432,11 +2465,25 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(1, refreshCalls);
         Assert.Equal(0, publicationCalls);
         Assert.Contains("dad-listing-publication-roster-unavailable", diagnostics);
+        var unavailable = endpoint.ListingPublicationSnapshot;
+        Assert.True(unavailable.Attempted);
+        Assert.False(unavailable.Allowed);
+        Assert.Equal(0, unavailable.PublishedOrQueuedListingCount);
+        Assert.Equal(first, unavailable.LastAttemptAtUtc);
+        Assert.Equal(first.AddSeconds(30), unavailable.NextAttemptAtUtc);
+        Assert.Equal(
+            "Local sharing blocked: XA Database contract-v6 full roster is unavailable",
+            unavailable.OperatorStatus);
 
         rosterReady = true;
         publish.Invoke(endpoint, [first.AddSeconds(31)]);
         Assert.Equal(2, refreshCalls);
         Assert.Equal(1, publicationCalls);
+        var queued = endpoint.ListingPublicationSnapshot;
+        Assert.True(queued.Allowed);
+        Assert.Equal(1, queued.PublishedOrQueuedListingCount);
+        Assert.Equal(first.AddSeconds(31), queued.LastAttemptAtUtc);
+        Assert.Equal(first.AddSeconds(31).AddMinutes(5), queued.NextAttemptAtUtc);
 
         publish.Invoke(endpoint, [first.AddMinutes(5).AddSeconds(32)]);
         Assert.Equal(3, refreshCalls);
@@ -2494,12 +2541,22 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.False(unavailable.Allowed);
         Assert.Equal(0, unavailable.PublishedListingCount);
         Assert.Equal(0, publicationCalls);
+        var unavailableSnapshot = endpoint.ListingPublicationSnapshot;
+        Assert.Equal(
+            TimeSpan.FromSeconds(30),
+            unavailableSnapshot.NextAttemptAtUtc - unavailableSnapshot.LastAttemptAtUtc);
 
         rosterReady = true;
         var published = endpoint.PublishListingsImmediately();
         Assert.True(published.Allowed, published.SafeCode);
         Assert.Equal(1, published.PublishedListingCount);
         Assert.Equal(1, publicationCalls);
+        var publishedSnapshot = endpoint.ListingPublicationSnapshot;
+        Assert.True(publishedSnapshot.Allowed);
+        Assert.Equal(1, publishedSnapshot.PublishedOrQueuedListingCount);
+        Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            publishedSnapshot.NextAttemptAtUtc - publishedSnapshot.LastAttemptAtUtc);
 
         endpoint.Dispose();
         await pump.DisposeAsync();
@@ -2681,6 +2738,11 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(2, result.ReceivedListingCount);
         Assert.Equal(1, prepareCalls);
         Assert.Equal(1, publicationCalls);
+        var publicationSnapshot = endpoint.ListingPublicationSnapshot;
+        Assert.True(publicationSnapshot.Allowed);
+        Assert.Equal(sourceListings.Count, publicationSnapshot.PublishedOrQueuedListingCount);
+        Assert.NotNull(publicationSnapshot.LastAttemptAtUtc);
+        Assert.NotNull(publicationSnapshot.NextAttemptAtUtc);
     }
 
     [Fact]
@@ -2758,6 +2820,12 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.True(emptyResult.Allowed, emptyResult.SafeCode);
         Assert.Equal(0, emptyResult.PublishedListingCount);
         Assert.Equal(0, emptyResult.ReceivedListingCount);
+        Assert.Equal(
+            "No peer listings received. Inspect the peer DAD's local-sharing status.",
+            emptyResult.OperatorStatus);
+        var emptyPublication = endpoint.ListingPublicationSnapshot;
+        Assert.True(emptyPublication.Allowed);
+        Assert.Equal(0, emptyPublication.PublishedOrQueuedListingCount);
 
         using var cancellation = new CancellationTokenSource();
         var cancelledRefresh = endpoint.RefreshPairedDirectoryAsync(cancellation.Token).AsTask();
@@ -2801,6 +2869,11 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal("listing-update-rejected", result.SafeCode);
         Assert.Equal(0, result.PublishedListingCount);
         Assert.Equal(0, result.ReceivedListingCount);
+        var publication = endpoint.ListingPublicationSnapshot;
+        Assert.False(publication.Allowed);
+        Assert.Equal("listing-update-rejected", publication.SafeCode);
+        Assert.Equal(0, publication.PublishedOrQueuedListingCount);
+        Assert.NotNull(publication.NextAttemptAtUtc);
         Assert.DoesNotContain(fixture.Transport.Sent.Skip(sentBefore), item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
     }

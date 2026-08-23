@@ -1,5 +1,34 @@
 # dad — changelog
 
+## 2026-08-22 — epoch trust hold, terminal mailbox recovery, and UI projection repair (local-only, unpublished)
+- DAD now reads both epoch control slots before ordinary mailbox traffic, retains separate locally authenticated
+  acknowledgements until central clears them, reconstructs the global hold after restart, and reacknowledges a restored
+  announcement. Application pages, semantic acknowledgements, and presence remain held until both directions are clear.
+- Webhook 401, 403, and 404 responses now terminally detach and stop the adapter, attempt deletion of the exact protected
+  credential, and clear registration-dependent trust on the framework thread. Endpoint identity, Crew/planner data,
+  sharing preferences, and the enabled setting remain available for normal registration.
+- Reusable typed process-local projection caches now use semantic equality, explicit invalidation, and optional expiry.
+  Heavy planner data is composed immutably with a separately cached scheduler preview; timestamp-only roster and scheduler
+  refreshes no longer rebuild it, while semantic changes and the next readiness boundary still do.
+- The AutoParty window caches its labelled directory, online state, and sorted pairing rows through the nearest listing or
+  authenticated-label expiry. Its workflow follows enablement, registration, pairing/sharing, community and peers,
+  private directory, freeform party, then owner controls; fresh pairing and Community selectors start at **This character**.
+- DAD remains `0.5.0.9`; configuration schema 12, `Dad.AutoParty.Protocol 0.2.0-preview.7`, package metadata, and all wire
+  contracts remain unchanged.
+
+## 2026-08-22 - Mixed-party admission and local-sharing visibility repair (local-only, unpublished)
+- Mixed AutoParty manifest binding now freezes each LAN **Any** slot to the exact combat job reported by its one
+  world-ready live worker snapshot. Wrong character, Content ID, stale snapshot, missing job, and noncombat job evidence
+  fail before proposal dispatch; explicit LAN jobs and registered-island jobs remain unchanged.
+- Automatic publication and manual paired-directory refresh now project one process-local local-sharing outcome with the
+  published/queued count, last attempt, and next publish or retry time. XA Database contract-v6 roster failures use a
+  direct local-sharing blocker, while an empty peer directory points the operator to the peer DAD's local-sharing status.
+- Unresolved paired-character rows and selectors retain their synthetic opaque labels with **(real name incoming)** until
+  the authenticated private character label arrives. Community Available listings and persisted opaque placeholders are
+  unchanged.
+- DAD remains `0.5.0.9`; configuration schema 12, the vendored AutoParty protocol package, AutoParty source and versions,
+  and all existing wire contracts remain unchanged.
+
 ## 2026-08-22 - Automatic clean-break AP5 invalidation and truthful paired refresh (local-only, unpublished)
 - Protected mailbox credentials now carry their originating protocol version and require exactly two UPLINK plus two
   DOWNLINK page references. Missing or mismatched protocol stamps now best-effort delete the protected credential and

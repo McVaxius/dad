@@ -38,8 +38,18 @@ public sealed class DadCoordinatorRuntimeProjectionRulesTests
         {
             Slots =
             [
-                new DadFrozenRunSlot { SlotId = "Slot1", AccountKey = new DadAccountKey("account-w") },
-                new DadFrozenRunSlot { SlotId = "Slot2", AccountKey = new DadAccountKey("account-x") },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot1",
+                    AccountKey = new DadAccountKey("account-w"),
+                    RequiredJobId = 19,
+                },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot2",
+                    AccountKey = new DadAccountKey("account-x"),
+                    RequiredJobId = 19,
+                },
             ],
         };
 

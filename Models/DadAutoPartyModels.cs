@@ -53,7 +53,7 @@ public sealed class DadAutoPartyConfiguration
         Enabled = false,
     };
     public DadAutoPartyCrewShareScope StandingShareScope { get; set; } =
-        DadAutoPartyCrewShareScope.SpecificCharacters;
+        DadAutoPartyCrewShareScope.CurrentCharacter;
     public List<DadAutoPartyCrewIdentity> CrewIdentities { get; set; } = [];
     public Dictionary<string, string> PairedDadAliases { get; set; } = new(StringComparer.Ordinal);
     public List<DadAutoPartyPairing> Pairings { get; set; } = [];
@@ -148,7 +148,7 @@ public sealed class DadAutoPartyConfiguration
             StandingSharePolicy.Enabled = false;
         }
         if (!Enum.IsDefined(StandingShareScope))
-            StandingShareScope = DadAutoPartyCrewShareScope.SpecificCharacters;
+            StandingShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
         CrewIdentities = (CrewIdentities ?? [])
             .Where(static identity => identity != null)
             .Select(static identity => identity!.Normalize())
@@ -1041,6 +1041,28 @@ public sealed record DadAutoPartyListingPublicationResult(
     string SafeCode,
     int PublishedListingCount);
 
+public sealed record DadAutoPartyListingPublicationSnapshot(
+    bool Attempted,
+    bool Allowed,
+    string SafeCode,
+    int PublishedOrQueuedListingCount,
+    DateTime? LastAttemptAtUtc,
+    DateTime? NextAttemptAtUtc)
+{
+    public string OperatorStatus => FormatOperatorStatus(SafeCode);
+
+    public static DadAutoPartyListingPublicationSnapshot NotRun() =>
+        new(false, false, "dad-listing-publication-not-run", 0, null, null);
+
+    internal static string FormatOperatorStatus(string safeCode)
+        => string.Equals(
+            safeCode,
+            "dad-listing-publication-roster-unavailable",
+            StringComparison.Ordinal)
+            ? "Local sharing blocked: XA Database contract-v6 full roster is unavailable"
+            : safeCode;
+}
+
 public sealed record DadPairedDirectoryRefreshResult(
     bool Allowed,
     string SafeCode,
@@ -1048,6 +1070,10 @@ public sealed record DadPairedDirectoryRefreshResult(
     int ReceivedListingCount,
     DateTime CompletedAtUtc)
 {
+    public string OperatorStatus => Allowed && ReceivedListingCount == 0
+        ? "No peer listings received. Inspect the peer DAD's local-sharing status."
+        : DadAutoPartyListingPublicationSnapshot.FormatOperatorStatus(SafeCode);
+
     public static DadPairedDirectoryRefreshResult NotRun(string safeCode = "dad-paired-directory-refresh-not-run") =>
         new(false, safeCode, 0, 0, DateTime.MinValue);
 }

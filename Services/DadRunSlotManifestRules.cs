@@ -290,8 +290,61 @@ internal static class DadRunSlotManifestRules
             }
 
             slot.WorkerSessionId = session;
+            if (!slot.RequiredJobId.HasValue &&
+                !TryFreezeLiveAnyJob(slot, matches[0], out blocker))
+            {
+                return false;
+            }
         }
 
+        return true;
+    }
+
+    private static bool TryFreezeLiveAnyJob(
+        DadFrozenRunSlot slot,
+        DadParticipantSnapshot participant,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (!Same(participant.ManagedAccountKey.Value, slot.AccountKey.Value) ||
+            !Same(participant.ActiveCharacterKey.Value, slot.CharacterKey.Value) ||
+            !Same(participant.Character.CharacterKey, slot.CharacterKey.Value))
+        {
+            return Fail(
+                $"{slot.SlotId} Any job requires the exact world-ready character '{slot.CharacterKey}' on account '{slot.AccountKey}'.",
+                out blocker);
+        }
+
+        if (participant.Character.ContentId != slot.ContentId)
+        {
+            return Fail(
+                $"{slot.SlotId} Any job requires Content ID {slot.ContentId}; worker '{slot.WorkerSessionId}' reports {participant.Character.ContentId}.",
+                out blocker);
+        }
+
+        if (!participant.Character.IsLiveConnected || !participant.WorldReadyStable)
+        {
+            return Fail(
+                $"{slot.SlotId} Any job requires one current world-ready live snapshot for '{slot.CharacterKey}'.",
+                out blocker);
+        }
+
+        if (!participant.Character.CurrentJobId.HasValue)
+        {
+            return Fail(
+                $"{slot.SlotId} Any job cannot freeze because the live snapshot has no current class/job.",
+                out blocker);
+        }
+
+        var currentJobId = participant.Character.CurrentJobId.Value;
+        if (!DadRosterCharacterMerge.IsCombatJob(currentJobId))
+        {
+            return Fail(
+                $"{slot.SlotId} Any job cannot freeze live class/job {currentJobId} because it is not a combat job.",
+                out blocker);
+        }
+
+        slot.RequiredJobId = currentJobId;
         return true;
     }
 

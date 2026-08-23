@@ -45,20 +45,23 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void TitleIdleWithoutProvablePriorCharacterBlocksBeforeMutation()
+    public void TitleIdleWithoutLoggedInPriorCharacterUsesExactOwnedLoginPath()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);
         ConfigureTitleIdle(target);
         var service = new DadWakeTakeoverService(target);
 
-        var blocked = service.Handle(Request());
+        var preparing = service.Handle(Request());
         service.Update();
+        var waiting = service.Handle(StatusRequest());
 
-        Assert.Equal(DadWakeTakeoverPhase.Blocked, blocked.Phase);
-        Assert.Equal(DadWakeAcknowledgementState.Rejected, blocked.AcknowledgementState);
-        Assert.Contains("Exact pre-takeover character", blocked.BlockedReason, StringComparison.Ordinal);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, preparing.Phase);
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waiting.Phase);
+        Assert.Equal(DadWakeAcknowledgementState.Executed, waiting.AcknowledgementState);
         Assert.Equal(0, target.ReserveCount);
-        Assert.Empty(target.Actions);
+        Assert.Equal(
+            ["SetMultiMode:False", "ConnectAndLogin:Target Character@World"],
+            target.Actions);
     }
 
     [Theory]

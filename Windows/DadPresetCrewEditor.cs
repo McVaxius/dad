@@ -554,6 +554,24 @@ internal sealed class DadPresetCrewEditor
             else if (refreshCooldown > TimeSpan.Zero)
                 ImGui.TextDisabled(
                     $"Paired DAD refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
+
+            var publication = plugin.AutoPartyEndpointService.ListingPublicationSnapshot;
+            if (publication.Attempted)
+            {
+                ImGui.TextDisabled(publication.OperatorStatus);
+                var nextAttempt = publication.NextAttemptAtUtc.HasValue
+                    ? $"{(publication.Allowed ? "next publication" : "next retry")} " +
+                      publication.NextAttemptAtUtc.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)
+                    : "next retry not scheduled";
+                ImGui.TextDisabled(
+                    $"Published/queued {publication.PublishedOrQueuedListingCount} | " +
+                    $"last attempt {publication.LastAttemptAtUtc!.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} | " +
+                    $"{nextAttempt}.");
+            }
+
+            var lastRefresh = plugin.LastPairedDirectoryRefresh;
+            if (lastRefresh.CompletedAtUtc != DateTime.MinValue)
+                ImGui.TextDisabled(lastRefresh.OperatorStatus);
         }
         if (slot.SharedIdentity?.BindingId is { Length: > 0 } &&
             ImGui.SmallButton($"Clear shared##{idPrefix}-paired-clear-{index}"))

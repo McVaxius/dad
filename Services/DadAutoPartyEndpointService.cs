@@ -51,6 +51,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     private DadAutoPartyService? autoPartyService;
     private DateTime nextLegacyCleanupAttemptUtc = DateTime.MinValue;
     private DateTime nextListingPublishUtc = DateTime.MinValue;
+    private DadAutoPartyListingPublicationSnapshot listingPublicationSnapshot =
+        DadAutoPartyListingPublicationSnapshot.NotRun();
     private bool adapterStartRequested;
     private string lastAdapterStartFailure = string.Empty;
     private bool disposed;
@@ -89,6 +91,8 @@ public sealed class DadAutoPartyEndpointService : IDisposable
 
     public DadAutoPartyEndpointSnapshot Snapshot { get; private set; } =
         DadAutoPartyEndpointSnapshot.Disabled("dad-webhook-not-registered");
+
+    public DadAutoPartyListingPublicationSnapshot ListingPublicationSnapshot => listingPublicationSnapshot;
 
     internal DadAutoPartyAdapterTransferSnapshot TransferSnapshot
     {
@@ -151,7 +155,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         configuration.StandingSharePolicy = normalized;
         configuration.StandingShareScope = Enum.IsDefined(scope)
             ? scope
-            : DadAutoPartyCrewShareScope.SpecificCharacters;
+            : DadAutoPartyCrewShareScope.CurrentCharacter;
         configuration.StateGeneration++;
         saveConfiguration();
         nextListingPublishUtc = DateTime.MinValue;
@@ -212,7 +216,9 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        var attemptedAtUtc = DateTime.UtcNow;
         var publishedCount = 0;
+        var publicationOutcomeRecorded = false;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -224,6 +230,11 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             if (!configuration.IsRegistrationActive || relayPump == null ||
                 listingPublicationProvider == null)
             {
+                RecordListingPublicationOutcome(
+                    attemptedAtUtc,
+                    new(false, "dad-paired-directory-refresh-not-ready", 0),
+                    nextListingPublishUtc > attemptedAtUtc ? nextListingPublishUtc : null);
+                publicationOutcomeRecorded = true;
                 return new(
                     false,
                     "dad-paired-directory-refresh-not-ready",
@@ -233,7 +244,12 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             }
             if (prepareListingPublication != null && !prepareListingPublication())
             {
-                nextListingPublishUtc = DateTime.UtcNow + ListingPublishRetryDelay;
+                nextListingPublishUtc = attemptedAtUtc + ListingPublishRetryDelay;
+                RecordListingPublicationOutcome(
+                    attemptedAtUtc,
+                    new(false, "dad-listing-publication-roster-unavailable", 0),
+                    nextListingPublishUtc);
+                publicationOutcomeRecorded = true;
                 return new(
                     false,
                     "dad-listing-publication-roster-unavailable",
@@ -242,7 +258,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                     DateTime.UtcNow);
             }
 
-            var publication = listingPublicationProvider(DateTime.UtcNow);
+            var publication = listingPublicationProvider(attemptedAtUtc);
             var published = await relayPump.QueueListingUpdateAndWaitAsync(
                 publication.StandingPolicy,
                 publication.Listings,
@@ -250,6 +266,11 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 operation.Token).ConfigureAwait(false);
             nextListingPublishUtc = DateTime.UtcNow +
                 (published.Allowed ? ListingPublishInterval : ListingPublishRetryDelay);
+            RecordListingPublicationOutcome(
+                attemptedAtUtc,
+                published,
+                nextListingPublishUtc);
+            publicationOutcomeRecorded = true;
             if (!published.Allowed)
             {
                 return new(false, published.SafeCode, 0, 0, DateTime.UtcNow);
@@ -270,11 +291,27 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             var safeCode = timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested
                 ? "dad-paired-directory-refresh-timeout"
                 : "dad-paired-directory-refresh-cancelled";
+            if (!publicationOutcomeRecorded)
+            {
+                nextListingPublishUtc = DateTime.UtcNow + ListingPublishRetryDelay;
+                RecordListingPublicationOutcome(
+                    attemptedAtUtc,
+                    new(false, safeCode, 0),
+                    nextListingPublishUtc);
+            }
             return new(false, safeCode, publishedCount, 0, DateTime.UtcNow);
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException or FormatException)
         {
+            if (!publicationOutcomeRecorded)
+            {
+                nextListingPublishUtc = DateTime.UtcNow + ListingPublishRetryDelay;
+                RecordListingPublicationOutcome(
+                    attemptedAtUtc,
+                    new(false, "dad-paired-directory-refresh-invalid", 0),
+                    nextListingPublishUtc);
+            }
             return new(
                 false,
                 "dad-paired-directory-refresh-invalid",
@@ -703,11 +740,13 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     public void Update(bool dadEnabled)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        relayPump?.UpdateFramework();
         ObserveLegacyCleanup();
         ObserveEpochPersistence();
         ObserveAdapterStop();
         ObserveAdapterStart();
+        if (HandleTerminalMailboxInvalidation())
+            return;
+        relayPump?.UpdateFramework();
 
         if (configuration.LegacyDiscordTokenCleanupPending && legacyCleanupTask == null &&
             DateTime.UtcNow >= nextLegacyCleanupAttemptUtc)
@@ -864,6 +903,51 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         }
     }
 
+    private bool HandleTerminalMailboxInvalidation()
+    {
+        var invalidatedAdapter = adapter;
+        if (invalidatedAdapter is not { TerminalMailboxInvalidated: true })
+            return false;
+
+        var invalidatedCredentialReference = configuration.WebhookCredentialReference;
+        connector.DetachAdapter();
+        adapter = null;
+        attachedAdapterGeneration = -1;
+        _ = Interlocked.Increment(ref desiredAdapterGeneration);
+        Volatile.Write(ref readyAdapterGeneration, -1);
+        adapterStartRequested = false;
+        lastAdapterStartFailure = string.Empty;
+        ReportMailboxDiagnostic("adapter-stop-requested", "dad-webhook-mailbox-invalidated");
+        adapterStopTask = invalidatedAdapter.DisposeAsync().AsTask();
+
+        if (!string.IsNullOrWhiteSpace(invalidatedCredentialReference))
+            ObserveBackgroundDisposal(DeleteInvalidatedCredentialAsync(invalidatedCredentialReference));
+
+        if (autoPartyService != null)
+            autoPartyService.HandleTerminalMailboxInvalidation();
+        else
+            configuration.ClearRegistrationAndTrust();
+        saveConfiguration();
+        nextListingPublishUtc = DateTime.MinValue;
+        listingPublicationSnapshot = DadAutoPartyListingPublicationSnapshot.NotRun();
+        Snapshot = DadAutoPartyEndpointSnapshot.Disabled("dad-webhook-not-registered");
+        ReportMailboxDiagnostic("mailbox-invalidated-cleared", "dad-webhook-mailbox-invalidated");
+        return true;
+    }
+
+    private async Task DeleteInvalidatedCredentialAsync(string credentialReference)
+    {
+        try
+        {
+            await credentialStore.DeleteAsync(credentialReference, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        {
+            ReportMailboxDiagnostic("mailbox-credential-delete-failed", "dad-webhook-credential-delete-failed");
+        }
+    }
+
     private void PublishListingsIfDue(DateTime utcNow)
     {
         if (utcNow < nextListingPublishUtc)
@@ -876,7 +960,17 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     {
         if (!configuration.IsRegistrationActive || relayPump == null || listingPublicationProvider == null ||
             (!force && utcNow < nextListingPublishUtc))
-            return new(false, "dad-listing-publication-not-ready", 0);
+        {
+            var notReady = new DadAutoPartyListingPublicationResult(
+                false,
+                "dad-listing-publication-not-ready",
+                0);
+            RecordListingPublicationOutcome(
+                utcNow,
+                notReady,
+                nextListingPublishUtc > utcNow ? nextListingPublishUtc : null);
+            return notReady;
+        }
 
         try
         {
@@ -884,7 +978,12 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             {
                 nextListingPublishUtc = utcNow + ListingPublishRetryDelay;
                 diagnostic("dad-listing-publication-roster-unavailable");
-                return new(false, "dad-listing-publication-roster-unavailable", 0);
+                var unavailable = new DadAutoPartyListingPublicationResult(
+                    false,
+                    "dad-listing-publication-roster-unavailable",
+                    0);
+                RecordListingPublicationOutcome(utcNow, unavailable, nextListingPublishUtc);
+                return unavailable;
             }
             var publication = listingPublicationProvider(utcNow);
             var result = relayPump.QueueListingUpdate(
@@ -894,14 +993,38 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             nextListingPublishUtc = utcNow + (result.Allowed ? ListingPublishInterval : ListingPublishRetryDelay);
             if (!result.Allowed)
                 diagnostic(result.SafeCode);
-            return new(result.Allowed, result.SafeCode, result.Allowed ? publication.Listings.Count : 0);
+            var outcome = new DadAutoPartyListingPublicationResult(
+                result.Allowed,
+                result.SafeCode,
+                result.Allowed ? publication.Listings.Count : 0);
+            RecordListingPublicationOutcome(utcNow, outcome, nextListingPublishUtc);
+            return outcome;
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or FormatException)
         {
             nextListingPublishUtc = utcNow + ListingPublishRetryDelay;
             diagnostic("dad-listing-publication-invalid");
-            return new(false, "dad-listing-publication-invalid", 0);
+            var invalid = new DadAutoPartyListingPublicationResult(
+                false,
+                "dad-listing-publication-invalid",
+                0);
+            RecordListingPublicationOutcome(utcNow, invalid, nextListingPublishUtc);
+            return invalid;
         }
+    }
+
+    private void RecordListingPublicationOutcome(
+        DateTime attemptedAtUtc,
+        DadAutoPartyListingPublicationResult outcome,
+        DateTime? nextAttemptAtUtc)
+    {
+        listingPublicationSnapshot = new(
+            true,
+            outcome.Allowed,
+            outcome.SafeCode,
+            outcome.PublishedListingCount,
+            attemptedAtUtc,
+            nextAttemptAtUtc);
     }
 
     private void ScheduleEpochPersistenceIfNeeded()

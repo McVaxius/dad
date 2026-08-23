@@ -95,7 +95,9 @@ public sealed class DadRunSlotManifestRulesTests
                 out var bindBlocker),
             bindBlocker);
         Assert.Equal("worker-w", bound.Slots[0].WorkerSessionId.Value);
+        Assert.Equal((uint?)19, bound.Slots[0].RequiredJobId);
         Assert.True(bound.Slots[1].WorkerSessionId.IsEmpty);
+        Assert.Equal((uint?)19, bound.Slots[1].RequiredJobId);
 
         var remoteSnapshot = DadRunSlotManifestRules.ResolveSlot(bound.Slots[1], [], true, out var remoteBlocker);
         Assert.Equal(DadParticipantState.Stale, remoteSnapshot.State);
@@ -106,6 +108,72 @@ public sealed class DadRunSlotManifestRulesTests
         Assert.Equal(RemoteIdentityToken, clone.Slots[1].OpaqueCharacterId);
         Assert.Equal(RemoteOwnerId, clone.Slots[1].OwnerId);
         Assert.Equal(RemoteIslandId, clone.Slots[1].IslandId);
+    }
+
+    [Fact]
+    public void MixedAnyJobBindingFailsClosedForInexactOrUnsafeLiveSnapshots()
+    {
+        var plan = BuildMixedRegisteredIslandPlan();
+        Assert.True(
+            DadRunSlotManifestRules.TryCreate(
+                plan,
+                [RemoteBinding(RemoteIdentityToken, 19)],
+                out var manifest,
+                out var createBlocker),
+            createBlocker);
+
+        void AssertRejected(DadParticipantSnapshot participant, string expectedBlocker)
+        {
+            Assert.False(
+                DadRunSlotManifestRules.TryBindWorkerSessions(
+                    manifest,
+                    [participant],
+                    out _,
+                    out var blocker));
+            Assert.Contains(expectedBlocker, blocker, StringComparison.OrdinalIgnoreCase);
+        }
+
+        AssertRejected(
+            Participant(WAccount, "Other Character@Alpha", WContentId, "worker-w"),
+            "exact world-ready character");
+        AssertRejected(
+            Participant(WAccount, WCharacter, 9999, "worker-w"),
+            "Content ID");
+
+        var stale = Participant(WAccount, WCharacter, WContentId, "worker-w");
+        stale.Character.Freshness = DadSnapshotFreshness.Stale;
+        AssertRejected(stale, "world-ready live snapshot");
+        AssertRejected(
+            Participant(WAccount, WCharacter, WContentId, "worker-w", currentJobId: null),
+            "no current class/job");
+        AssertRejected(
+            Participant(WAccount, WCharacter, WContentId, "worker-w", currentJobId: 8),
+            "not a combat job");
+    }
+
+    [Fact]
+    public void ExplicitLanAndRegisteredIslandJobsRemainExactDuringBinding()
+    {
+        var plan = BuildMixedRegisteredIslandPlan();
+        plan.Orchestration.RequiredRosterCharacters[0].RequiredJobId = 21;
+        Assert.True(
+            DadRunSlotManifestRules.TryCreate(
+                plan,
+                [RemoteBinding(RemoteIdentityToken, 19)],
+                out var manifest,
+                out var createBlocker),
+            createBlocker);
+
+        Assert.True(
+            DadRunSlotManifestRules.TryBindWorkerSessions(
+                manifest,
+                [Participant(WAccount, WCharacter, WContentId, "worker-w", currentJobId: 24)],
+                out var bound,
+                out var bindBlocker),
+            bindBlocker);
+
+        Assert.Equal((uint?)21, bound.Slots[0].RequiredJobId);
+        Assert.Equal((uint?)19, bound.Slots[1].RequiredJobId);
     }
 
     [Fact]
@@ -945,7 +1013,9 @@ public sealed class DadRunSlotManifestRulesTests
         string character,
         ulong contentId,
         string workerSession,
-        bool postArReady = true)
+        bool postArReady = true,
+        uint? currentJobId = 19,
+        bool worldReadyStable = true)
         => new()
         {
             WorkerSessionId = new DadWorkerSessionId(workerSession),
@@ -956,6 +1026,7 @@ public sealed class DadRunSlotManifestRulesTests
                 AccountId = account,
                 CharacterKey = character,
                 ContentId = contentId,
+                CurrentJobId = currentJobId,
                 Source = DadCharacterSource.PeerRuntime,
                 Freshness = DadSnapshotFreshness.Live,
                 Readiness = DadReadinessState.Ready,
@@ -963,6 +1034,7 @@ public sealed class DadRunSlotManifestRulesTests
             IsAvailable = true,
             IsEligibleForRun = true,
             PostArReady = postArReady,
+            WorldReadyStable = worldReadyStable,
             State = DadParticipantState.Ready,
         };
 }

@@ -50,7 +50,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
     }
 
     [Fact]
-    public void ProposalCarriesFullFrozenExecutionPlanThroughOpaqueRoutes()
+    public void LocalAnyJobFreezesLiveCombatJobAndProposalCarriesFullExecutionPlan()
     {
         var now = DateTimeOffset.UtcNow;
         var configuration = ActiveConfiguration();
@@ -124,7 +124,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
                 },
             ],
         };
-        var manifest = new DadRunSlotManifest
+        var unboundManifest = new DadRunSlotManifest
         {
             RequestId = request.RequestId,
             ExpectedPartySize = 2,
@@ -150,7 +150,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
                     AccountKey = new DadAccountKey("account-local"),
                     CharacterKey = new DadCharacterKey("character-local"),
                     ContentId = 123456789,
-                    RequiredJobId = RequestedJob,
+                    RequiredJobId = null,
                     AdsLootMode = DadAdsLootMode.Need,
                     IsLeader = true,
                     IsInviter = true,
@@ -167,6 +167,31 @@ public sealed class DadAutoPartyParticipantBridgeTests
                 },
             ],
         };
+
+        Assert.True(
+            DadRunSlotManifestRules.TryBindWorkerSessions(
+                unboundManifest,
+                [new DadParticipantSnapshot
+                {
+                    WorkerSessionId = new DadWorkerSessionId("worker-local"),
+                    ManagedAccountKey = new DadAccountKey("account-local"),
+                    ActiveCharacterKey = new DadCharacterKey("character-local"),
+                    Character = new DadAcquiredCharacter
+                    {
+                        AccountId = "account-local",
+                        CharacterKey = "character-local",
+                        ContentId = 123456789,
+                        CurrentJobId = RequestedJob,
+                        Source = DadCharacterSource.LocalRuntime,
+                        Freshness = DadSnapshotFreshness.Live,
+                        Readiness = DadReadinessState.Ready,
+                    },
+                    WorldReadyStable = true,
+                }],
+                out var manifest,
+                out var bindBlocker),
+            bindBlocker);
+        Assert.Equal((uint?)RequestedJob, manifest.Slots[0].RequiredJobId);
 
         Assert.True(bridge.TryBindRun(plan, manifest, now, out var blocker), blocker);
 

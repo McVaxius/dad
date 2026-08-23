@@ -2963,6 +2963,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 pending.PairingTranscriptHash,
                 pending.RequestedCharacters,
                 response.Labels,
+                response.Header.ExpiresAt,
                 utcNow()))
         {
             return ValueTask.FromResult(DispatchResult.Deny("dad-paired-label-response-stale"));

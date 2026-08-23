@@ -28,6 +28,9 @@ public sealed class DadSchedulerService
     private readonly Dictionary<string, PendingRewardProbeCancellation> pendingRewardProbeCancellations = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadStableContradictionTracker> slotContradictionTrackers = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadImmutableCommandRegistry frozenRequestRegistry = new();
+    private readonly DadSemanticRevisionTracker<DadSchedulerPlannerSemantic> plannerSemanticRevisionTracker = new();
+    private readonly DadSemanticRevisionTracker<DadLaunchProfilePlannerSemantic>
+        launchProfileSemanticRevisionTracker = new();
     private DadStrictPlannerRevalidationTracker strictRevalidationTracker = new();
     private DadSchedulerPresetPhase? lastLoggedSchedulerPhase;
     private bool dependencyGateCommitted;
@@ -342,130 +345,129 @@ public sealed class DadSchedulerService
 
     internal DadSchedulerUiRevision GetPlannerUiRevision()
     {
-        var schedulerHash = new HashCode();
-        schedulerHash.Add(currentState.SchedulerRunId, StringComparer.Ordinal);
-        schedulerHash.Add(currentState.JobId, StringComparer.Ordinal);
-        schedulerHash.Add(currentState.Phase);
-        schedulerHash.Add(currentState.UpdatedAtUtc.Ticks);
-        schedulerHash.Add(currentState.CompletedAtUtc?.Ticks ?? 0);
-        schedulerHash.Add(currentState.PlannerStarted);
-        schedulerHash.Add(currentState.ScheduleCadence);
-        schedulerHash.Add(currentState.SkipKind);
-        schedulerHash.Add(crewFormation?.Status.RunId, StringComparer.Ordinal);
-        schedulerHash.Add(crewFormation?.Status.Phase);
-        schedulerHash.Add(currentState.Slots.Count);
-        foreach (var slot in currentState.Slots)
-        {
-            schedulerHash.Add(slot.SlotId, StringComparer.Ordinal);
-            schedulerHash.Add(slot.WakePolicy);
-            schedulerHash.Add(slot.LaunchStarted);
-            schedulerHash.Add(slot.LoadCommandSentUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.TakeoverStatus);
-            schedulerHash.Add(slot.TakeoverStage);
-            schedulerHash.Add(slot.TakeoverPhase);
-            schedulerHash.Add(slot.OperationToken);
-            schedulerHash.Add(slot.CommitKind);
-            schedulerHash.Add(slot.CommitExecutionUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.AcknowledgementState);
-            schedulerHash.Add(slot.TakeoverRequestedUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.ResetIssuedUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.RelogIssuedUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.PostArReady);
-            schedulerHash.Add(slot.AutoRetainerBusy);
-            schedulerHash.Add(slot.MultiModeEnabled);
-            schedulerHash.Add(slot.RelogIssued);
-            schedulerHash.Add(slot.ExternalAutomationHeld);
-            schedulerHash.Add(slot.ExternalAutomationActivity, StringComparer.Ordinal);
-            schedulerHash.Add(slot.ExternalAutomationState, StringComparer.Ordinal);
-            schedulerHash.Add(slot.VermaxionReservationState);
-            schedulerHash.Add(slot.VermaxionReservationUpdatedAtUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.NextTakeoverStatusCheckUtc?.Ticks ?? 0);
-            schedulerHash.Add(slot.TimeoutStage);
-            schedulerHash.Add(slot.ClientConnected);
-            schedulerHash.Add(slot.IsOnline);
-            schedulerHash.Add(slot.CorrectCharacter);
-            schedulerHash.Add(slot.Ready);
-            schedulerHash.Add(slot.BlockedReason, StringComparer.Ordinal);
-        }
+        var schedulerSemantic = new DadSchedulerPlannerSemantic(
+            currentState.SchedulerRunId,
+            currentState.JobId,
+            currentState.Phase,
+            currentState.PlannerStarted,
+            currentState.ScheduleCadence,
+            currentState.SkipKind,
+            currentState.Summary,
+            currentState.BlockedReason,
+            crewFormation?.Status.RunId ?? string.Empty,
+            crewFormation?.Status.Phase ?? DadCrewFormationPhase.Idle,
+            new DadOrderedSemantic<DadSchedulerSlotPlannerSemantic>(currentState.Slots.Select(static slot => new DadSchedulerSlotPlannerSemantic(
+                slot.SlotId,
+                slot.WakePolicy,
+                slot.LaunchStarted,
+                slot.TakeoverStatus,
+                slot.TakeoverStage,
+                slot.TakeoverPhase,
+                slot.OperationToken,
+                slot.CommitKind,
+                slot.AcknowledgementState,
+                slot.PostArReady,
+                slot.AutoRetainerAvailable,
+                slot.AutoRetainerBusy,
+                slot.MultiModeEnabled,
+                slot.RelogIssued,
+                slot.ExternalAutomationHeld,
+                slot.ExternalAutomationActivity,
+                slot.ExternalAutomationState,
+                slot.VermaxionReservationState,
+                slot.TimeoutStage,
+                slot.ClientConnected,
+                slot.IsOnline,
+                slot.CorrectCharacter,
+                slot.DependenciesReady,
+                slot.DependencyState,
+                slot.DependencyRevision,
+                slot.Ready,
+                slot.RosterVisibility,
+                slot.NeedsRosterUpdate,
+                slot.MatchedWorkerSessionId.Value,
+                slot.ActiveCharacterKey.Value,
+                slot.BlockedReason))),
+            new DadOrderedSemantic<DadSchedulerQueuePlannerSemantic>((configuration.SchedulerQueue ?? []).Select(static job => new DadSchedulerQueuePlannerSemantic(
+                job.JobId,
+                job.JobType,
+                job.GroupId,
+                job.Enabled,
+                job.DryRun,
+                job.Priority,
+                job.StatusSummary,
+                job.BlockedReason,
+                job.ScheduleRunId,
+                job.ScheduleEntryId,
+                job.ScheduleRepeatIteration,
+                job.ScheduleCadence))),
+            new DadOrderedSemantic<DadSchedulePlannerSemantic>((configuration.Schedules ?? []).Select(static schedule => new DadSchedulePlannerSemantic(
+                schedule.ScheduleId,
+                schedule.DisplayName,
+                schedule.Cadence,
+                schedule.Revision,
+                schedule.LastDailyResetUtc,
+                new DadOrderedSemantic<DadScheduleEntryPlannerSemantic>((schedule.Entries ?? []).Select(static entry => new DadScheduleEntryPlannerSemantic(
+                    entry.EntryId,
+                    entry.GroupId,
+                    entry.RepeatCount)))))),
+            new DadActiveSchedulePlannerSemantic(
+                configuration.ActiveScheduleRun?.RunId ?? string.Empty,
+                configuration.ActiveScheduleRun?.Status ?? DadScheduleRunStatus.Idle,
+                configuration.ActiveScheduleRun?.Phase ?? DadScheduleRunPhase.Idle),
+            configuration.ScheduleHistory?.Count ?? 0,
+            new DadOrderedSemantic<DadPendingSchedulerCleanupSemantic>(pendingTakeoverCancellations
+                .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+                .Select(static pair => new DadPendingSchedulerCleanupSemantic(
+                    "takeover",
+                    pair.Key,
+                    pair.Value.Job.JobId,
+                    pair.Value.Job.GroupId,
+                    string.Empty))
+                .Concat(pendingEarlyAssignmentCancellations
+                    .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+                    .Select(static pair => new DadPendingSchedulerCleanupSemantic(
+                        "early-assignment",
+                        pair.Key,
+                        pair.Value.Job.JobId,
+                        pair.Value.Job.GroupId,
+                        string.Empty)))
+                .Concat(pendingRewardProbeCancellations
+                    .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+                    .Select(static pair => new DadPendingSchedulerCleanupSemantic(
+                        "reward-probe",
+                        pair.Key,
+                        pair.Value.Job.JobId,
+                        pair.Value.Job.GroupId,
+                        pair.Value.Request.RouteWorkerSessionId.Value)))));
 
-        schedulerHash.Add(configuration.SchedulerQueue?.Count ?? 0);
-        foreach (var job in configuration.SchedulerQueue ?? [])
-        {
-            schedulerHash.Add(job.JobId, StringComparer.Ordinal);
-            schedulerHash.Add(job.JobType);
-            schedulerHash.Add(job.GroupId, StringComparer.Ordinal);
-            schedulerHash.Add(job.Enabled);
-            schedulerHash.Add(job.DryRun);
-            schedulerHash.Add(job.NextEligibleTimeUtc?.Ticks ?? 0);
-            schedulerHash.Add(job.Priority);
-            schedulerHash.Add(job.StatusSummary, StringComparer.Ordinal);
-            schedulerHash.Add(job.BlockedReason, StringComparer.Ordinal);
-            schedulerHash.Add(job.ScheduleRunId, StringComparer.Ordinal);
-            schedulerHash.Add(job.ScheduleEntryId, StringComparer.Ordinal);
-            schedulerHash.Add(job.ScheduleRepeatIteration);
-            schedulerHash.Add(job.ScheduleCadence);
-        }
+        var launchProfileSemantic = new DadLaunchProfilePlannerSemantic(
+            new DadOrderedSemantic<DadLaunchProfileEntryPlannerSemantic>((configuration.LaunchProfiles ?? []).Select(
+                static profile => new DadLaunchProfileEntryPlannerSemantic(
+                    profile.ProfileId,
+                    profile.DisplayName,
+                    profile.BatchPath,
+                    profile.AccountKey.Value,
+                    profile.Enabled,
+                    profile.AllowAutoStart,
+                    profile.TimeoutSeconds,
+                    profile.DryRun,
+                    new DadOrderedSemantic<string>((profile.ExpectedCharacterKeys ?? [])
+                        .Select(static key => key.Value))))));
 
-        schedulerHash.Add(configuration.Schedules?.Count ?? 0);
-        foreach (var schedule in configuration.Schedules ?? [])
-        {
-            schedulerHash.Add(schedule.ScheduleId, StringComparer.Ordinal);
-            schedulerHash.Add(schedule.DisplayName, StringComparer.Ordinal);
-            schedulerHash.Add(schedule.Cadence);
-            schedulerHash.Add(schedule.Revision);
-            schedulerHash.Add(schedule.LastDailyResetUtc?.Ticks ?? 0);
-            schedulerHash.Add(schedule.Entries?.Count ?? 0);
-            foreach (var entry in schedule.Entries ?? [])
-            {
-                schedulerHash.Add(entry.EntryId, StringComparer.Ordinal);
-                schedulerHash.Add(entry.GroupId, StringComparer.Ordinal);
-                schedulerHash.Add(entry.RepeatCount);
-            }
-        }
-
-        schedulerHash.Add(configuration.ActiveScheduleRun?.RunId ?? string.Empty, StringComparer.Ordinal);
-        schedulerHash.Add(configuration.ActiveScheduleRun?.Status ?? DadScheduleRunStatus.Idle);
-        schedulerHash.Add(configuration.ActiveScheduleRun?.Phase ?? DadScheduleRunPhase.Idle);
-        schedulerHash.Add(configuration.ActiveScheduleRun?.UpdatedAtUtc.Ticks ?? 0);
-        schedulerHash.Add(configuration.ScheduleHistory?.Count ?? 0);
-        schedulerHash.Add(pendingTakeoverCancellations.Count);
-        foreach (var pending in pendingTakeoverCancellations.OrderBy(static pair => pair.Key))
-        {
-            schedulerHash.Add(pending.Key, StringComparer.Ordinal);
-            schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
-            schedulerHash.Add(pending.Value.Job.GroupId, StringComparer.Ordinal);
-        }
-        schedulerHash.Add(pendingEarlyAssignmentCancellations.Count);
-        foreach (var pending in pendingEarlyAssignmentCancellations.OrderBy(static pair => pair.Key))
-        {
-            schedulerHash.Add(pending.Key, StringComparer.Ordinal);
-            schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
-        }
-        schedulerHash.Add(pendingRewardProbeCancellations.Count);
-        foreach (var pending in pendingRewardProbeCancellations.OrderBy(static pair => pair.Key))
-        {
-            schedulerHash.Add(pending.Key, StringComparer.Ordinal);
-            schedulerHash.Add(pending.Value.Job.JobId, StringComparer.Ordinal);
-            schedulerHash.Add(pending.Value.Request.RouteWorkerSessionId.Value, StringComparer.OrdinalIgnoreCase);
-        }
-
-        var launchProfilesHash = new HashCode();
-        launchProfilesHash.Add(configuration.LaunchProfiles?.Count ?? 0);
-        foreach (var profile in configuration.LaunchProfiles ?? [])
-        {
-            launchProfilesHash.Add(profile.ProfileId, StringComparer.Ordinal);
-            launchProfilesHash.Add(profile.DisplayName, StringComparer.Ordinal);
-            launchProfilesHash.Add(profile.BatchPath, StringComparer.Ordinal);
-            launchProfilesHash.Add(profile.AccountKey.Value, StringComparer.Ordinal);
-            launchProfilesHash.Add(profile.Enabled);
-            launchProfilesHash.Add(profile.AllowAutoStart);
-            launchProfilesHash.Add(profile.TimeoutSeconds);
-            launchProfilesHash.Add(profile.DryRun);
-            foreach (var characterKey in profile.ExpectedCharacterKeys ?? [])
-                launchProfilesHash.Add(characterKey.Value, StringComparer.Ordinal);
-        }
-
-        return new DadSchedulerUiRevision(schedulerHash.ToHashCode(), launchProfilesHash.ToHashCode());
+        var now = DateTime.UtcNow;
+        var validUntilUtc = (configuration.SchedulerQueue ?? [])
+            .Select(static job => job.NextEligibleTimeUtc)
+            .Concat(currentState.Slots.Select(static slot => slot.NextTakeoverStatusCheckUtc))
+            .Concat(pendingTakeoverCancellations.Values.Select(static pending => (DateTime?)pending.NextAttemptUtc))
+            .Concat(pendingEarlyAssignmentCancellations.Values.Select(static pending => (DateTime?)pending.NextAttemptUtc))
+            .Concat(pendingRewardProbeCancellations.Values.Select(static pending => (DateTime?)pending.NextAttemptUtc))
+            .Where(candidate => candidate.HasValue && candidate.Value > now)
+            .Min();
+        return new DadSchedulerUiRevision(
+            plannerSemanticRevisionTracker.Observe(schedulerSemantic),
+            launchProfileSemanticRevisionTracker.Observe(launchProfileSemantic),
+            validUntilUtc);
     }
 
     public DadSchedulerQueueSnapshot GetQueueSnapshot()
@@ -5871,4 +5873,111 @@ public sealed class DadSchedulerService
     }
 }
 
-internal readonly record struct DadSchedulerUiRevision(int SchedulerToken, int LaunchProfilesToken);
+internal readonly record struct DadSchedulerUiRevision(
+    long SchedulerRevision,
+    long LaunchProfilesRevision,
+    DateTime? ValidUntilUtc);
+
+internal sealed record DadSchedulerPlannerSemantic(
+    string SchedulerRunId,
+    string JobId,
+    DadSchedulerPresetPhase Phase,
+    bool PlannerStarted,
+    DadScheduleCadence ScheduleCadence,
+    DadSchedulerSkipKind SkipKind,
+    string Summary,
+    string BlockedReason,
+    string CrewFormationRunId,
+    DadCrewFormationPhase CrewFormationPhase,
+    DadOrderedSemantic<DadSchedulerSlotPlannerSemantic> Slots,
+    DadOrderedSemantic<DadSchedulerQueuePlannerSemantic> Queue,
+    DadOrderedSemantic<DadSchedulePlannerSemantic> Schedules,
+    DadActiveSchedulePlannerSemantic ActiveSchedule,
+    int ScheduleHistoryCount,
+    DadOrderedSemantic<DadPendingSchedulerCleanupSemantic> PendingCleanup);
+
+internal sealed record DadSchedulerSlotPlannerSemantic(
+    string SlotId,
+    DadSchedulerWakePolicy WakePolicy,
+    bool LaunchStarted,
+    DadWakeTakeoverStatus TakeoverStatus,
+    DadWakeTakeoverStage TakeoverStage,
+    DadWakeTakeoverPhase TakeoverPhase,
+    string OperationToken,
+    DadWakeCommitKind CommitKind,
+    DadWakeAcknowledgementState AcknowledgementState,
+    bool PostArReady,
+    bool AutoRetainerAvailable,
+    bool AutoRetainerBusy,
+    bool MultiModeEnabled,
+    bool RelogIssued,
+    bool ExternalAutomationHeld,
+    string ExternalAutomationActivity,
+    string ExternalAutomationState,
+    DadVermaxionReservationState VermaxionReservationState,
+    DadWakeTimeoutStage TimeoutStage,
+    bool ClientConnected,
+    bool IsOnline,
+    bool CorrectCharacter,
+    bool DependenciesReady,
+    DadDependencyState DependencyState,
+    long DependencyRevision,
+    bool Ready,
+    DadRosterVisibility RosterVisibility,
+    bool NeedsRosterUpdate,
+    string MatchedWorkerSessionId,
+    string ActiveCharacterKey,
+    string BlockedReason);
+
+internal sealed record DadSchedulerQueuePlannerSemantic(
+    string JobId,
+    DadSchedulerJobType JobType,
+    string GroupId,
+    bool Enabled,
+    bool DryRun,
+    int Priority,
+    string StatusSummary,
+    string BlockedReason,
+    string ScheduleRunId,
+    string ScheduleEntryId,
+    int ScheduleRepeatIteration,
+    DadScheduleCadence ScheduleCadence);
+
+internal sealed record DadSchedulePlannerSemantic(
+    string ScheduleId,
+    string DisplayName,
+    DadScheduleCadence Cadence,
+    long Revision,
+    DateTime? LastDailyResetUtc,
+    DadOrderedSemantic<DadScheduleEntryPlannerSemantic> Entries);
+
+internal sealed record DadScheduleEntryPlannerSemantic(
+    string EntryId,
+    string GroupId,
+    int RepeatCount);
+
+internal sealed record DadActiveSchedulePlannerSemantic(
+    string RunId,
+    DadScheduleRunStatus Status,
+    DadScheduleRunPhase Phase);
+
+internal sealed record DadPendingSchedulerCleanupSemantic(
+    string Kind,
+    string Key,
+    string JobId,
+    string GroupId,
+    string WorkerSessionId);
+
+internal sealed record DadLaunchProfilePlannerSemantic(
+    DadOrderedSemantic<DadLaunchProfileEntryPlannerSemantic> Profiles);
+
+internal sealed record DadLaunchProfileEntryPlannerSemantic(
+    string ProfileId,
+    string DisplayName,
+    string BatchPath,
+    string AccountKey,
+    bool Enabled,
+    bool AllowAutoStart,
+    int TimeoutSeconds,
+    bool DryRun,
+    DadOrderedSemantic<string> ExpectedCharacterKeys);

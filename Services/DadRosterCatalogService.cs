@@ -15,7 +15,9 @@ public sealed class DadRosterCatalogService
     private IReadOnlyList<DadPeerRosterCatalogResponse> lastPeerResponses = [];
     private long catalogVersion;
     private readonly DadDeferredSaveGate deferredSaveGate = new(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(60));
-    private readonly DadRevisionSnapshotCache<DadRosterUiSnapshot> uiSnapshotCache = new();
+    private readonly DadProjectionCache<DadRosterUiProjectionKey, DadRosterUiSnapshot> uiSnapshotCache = new();
+    private readonly DadSemanticRevisionTracker<DadRosterCatalogPlannerSemantic>
+        plannerSemanticRevisionTracker = new();
     // B1/B7: short-lived reuse of the locally-built catalog so the cache-driven auto-refresh re-merges peers
     // WITHOUT re-running the XADB IPC fetch on the framework thread on every coordinator publish (~5 s).
     private static readonly TimeSpan LocalCatalogReuseWindow = TimeSpan.FromSeconds(10);
@@ -50,19 +52,58 @@ public sealed class DadRosterCatalogService
     public DadAccountRosterCatalog CurrentCatalog => GetUiSnapshot().Catalog.Clone();
 
     internal DadRosterUiSnapshot GetUiSnapshot()
-        => uiSnapshotCache.GetOrCreate(catalogVersion, transportService.TransportRevision, () =>
+        => uiSnapshotCache.GetOrCreate(
+            new DadRosterUiProjectionKey(catalogVersion, transportService.TransportRevision),
+            () =>
         {
             var catalog = ApplyOwnerConnectivity(currentCatalog.Clone());
             catalog.Accounts = BuildCurrentAccountDirectory(catalog).ToList();
-            return new DadRosterUiSnapshot
-            {
-                CatalogRevision = catalogVersion,
-                TransportRevision = transportService.TransportRevision,
-                Catalog = catalog,
-            };
-        });
+            return new DadRosterUiSnapshot(
+                catalogVersion,
+                transportService.TransportRevision,
+                catalog);
+        },
+            DateTime.UtcNow);
 
     public long CatalogVersion => catalogVersion;
+
+    internal long GetPlannerSemanticRevision()
+        => plannerSemanticRevisionTracker.Observe(new DadRosterCatalogPlannerSemantic(
+            currentCatalog.Version,
+            currentCatalog.XadbContractVersion,
+            currentCatalog.IsFullRosterAvailable,
+            currentCatalog.IsLiveConnectedCatalog,
+            new DadOrderedSemantic<DadRosterCatalogCharacterSemantic>(currentCatalog.Characters
+                .OrderBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(static character => character.ContentId)
+                .Select(static character => new DadRosterCatalogCharacterSemantic(
+                    character.AccountKey.Value,
+                    character.AccountAlias,
+                    character.CharacterKey.Value,
+                    character.ContentId,
+                    character.CharacterName,
+                    character.WorldId,
+                    character.WorldName,
+                    character.DataCenterId,
+                    character.DataCenterName,
+                    new DadOrderedSemantic<KeyValuePair<uint, int>>(character.JobLevels
+                        .OrderBy(static job => job.Key)),
+                    character.CurrentJobId,
+                    character.CurrentJobAbbrev,
+                    character.CurrentLevel,
+                    character.SnapshotQuality,
+                    character.SnapshotVersion,
+                    character.XadbReady,
+                    character.IsCurrent,
+                    character.IsStale,
+                    character.NeedsRosterUpdate,
+                    character.MapEligible,
+                    character.Visibility,
+                    character.Source,
+                    character.SourceClientInstanceId,
+                    character.SourceWorkerSessionId.Value,
+                    new DadOrderedSemantic<string>(character.Blockers))))));
 
     public void NotifyAccountPresentationChanged(DadAccountKey accountKey, string alias)
     {
@@ -2320,6 +2361,40 @@ public sealed class DadRosterCatalogService
     private static string FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
 }
+
+internal sealed record DadRosterCatalogPlannerSemantic(
+    int Version,
+    int? XadbContractVersion,
+    bool IsFullRosterAvailable,
+    bool IsLiveConnectedCatalog,
+    DadOrderedSemantic<DadRosterCatalogCharacterSemantic> Characters);
+
+internal sealed record DadRosterCatalogCharacterSemantic(
+    string AccountKey,
+    string AccountAlias,
+    string CharacterKey,
+    ulong ContentId,
+    string CharacterName,
+    uint? WorldId,
+    string WorldName,
+    uint? DataCenterId,
+    string DataCenterName,
+    DadOrderedSemantic<KeyValuePair<uint, int>> JobLevels,
+    uint? CurrentJobId,
+    string CurrentJobAbbrev,
+    int? CurrentLevel,
+    string SnapshotQuality,
+    int? SnapshotVersion,
+    bool XadbReady,
+    bool IsCurrent,
+    bool IsStale,
+    bool NeedsRosterUpdate,
+    bool? MapEligible,
+    DadRosterVisibility Visibility,
+    DadCharacterSource Source,
+    string SourceClientInstanceId,
+    string SourceWorkerSessionId,
+    DadOrderedSemantic<string> Blockers);
 
 public sealed class DadPlannerRosterSnapshot
 {
