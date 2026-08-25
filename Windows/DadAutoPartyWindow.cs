@@ -313,9 +313,9 @@ public sealed class DadAutoPartyWindow : Window
                 DrawTechnicalIslandId("Peer technical island ID", peerInvite.IslandId.Value, "peer-invite");
         }
 
-        DrawShareScopeSelector("What this DAD shares", ref pairingShareScope);
+        DrawPairingShareScopeSelector("What this DAD shares", ref pairingShareScope);
         if (pairingShareScope == DadAutoPartyCrewShareScope.SpecificCharacters)
-            DrawShareCharacterSelector("pairing", pairingShareHandles, singleSelection: false);
+            DrawShareCharacterSelector("pairing", pairingShareHandles, singleSelection: true);
         var pairingSelectionValid = DadAutoPartyCrewSharingRules.TryBuildPrivatePolicy(
             pairingShareScope,
             shareCandidates,
@@ -840,6 +840,24 @@ public sealed class DadAutoPartyWindow : Window
         }
     }
 
+    private static void DrawPairingShareScopeSelector(
+        string label,
+        ref DadAutoPartyCrewShareScope scope)
+    {
+        if (scope is not DadAutoPartyCrewShareScope.CurrentCharacter and
+            not DadAutoPartyCrewShareScope.SpecificCharacters)
+        {
+            scope = DadAutoPartyCrewShareScope.CurrentCharacter;
+        }
+        var selected = scope == DadAutoPartyCrewShareScope.CurrentCharacter ? 0 : 1;
+        if (ImGui.Combo(label, ref selected, "This character\0One selected character\0"))
+        {
+            scope = selected == 0
+                ? DadAutoPartyCrewShareScope.CurrentCharacter
+                : DadAutoPartyCrewShareScope.SpecificCharacters;
+        }
+    }
+
     private void DrawShareCharacterSelector(
         string selectorId,
         HashSet<string> selectedHandles,
@@ -964,7 +982,7 @@ public sealed class DadAutoPartyWindow : Window
         {
             DadAutoPartyCharacterShareMode.SpecificCharacter => DadAutoPartyCrewShareScope.CurrentCharacter,
             DadAutoPartyCharacterShareMode.CharacterList => DadAutoPartyCrewShareScope.SpecificCharacters,
-            DadAutoPartyCharacterShareMode.AllCharactersForPeer => DadAutoPartyCrewShareScope.AllCharacters,
+            DadAutoPartyCharacterShareMode.AllCharactersForPeer => DadAutoPartyCrewShareScope.CurrentCharacter,
             _ => DadAutoPartyCrewShareScope.CurrentCharacter,
         };
         if (configuration.PairingAttemptSharePolicy.Mode == DadAutoPartyCharacterShareMode.CharacterList)

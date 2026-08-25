@@ -53,6 +53,7 @@ internal sealed record DadAutoPartyParticipantSnapshot(
     DadAutoPartyParticipantStage Stage,
     long StateGeneration,
     DateTimeOffset? LeaseExpiresAt,
+    DateTimeOffset ProposalExpiresAt,
     DateTimeOffset ObservedAt,
     string SafeCode,
     IReadOnlyList<ulong> ObservedPartyContentIds,
@@ -69,6 +70,11 @@ internal sealed record DadAutoPartyParticipantSnapshot(
         Stage >= DadAutoPartyParticipantStage.Ready &&
         Stage < DadAutoPartyParticipantStage.Revoked &&
         LeaseExpiresAt > now;
+
+    public bool CommandRouteActive(DateTimeOffset now) =>
+        Stage >= DadAutoPartyParticipantStage.Ready &&
+        Stage < DadAutoPartyParticipantStage.Revoked &&
+        ProposalExpiresAt > now;
 
     public bool IsTerminal => Stage is DadAutoPartyParticipantStage.Settled or
         DadAutoPartyParticipantStage.Restored or
@@ -335,7 +341,7 @@ internal sealed class DadAutoPartyParticipantBridge
             }
 
             var snapshot = ToSnapshot(proposalId, proposal, runtime);
-            if (!snapshot.LeaseActive(now))
+            if (!snapshot.CommandRouteActive(now))
             {
                 blocker = snapshot.Stage switch
                 {
@@ -344,7 +350,7 @@ internal sealed class DadAutoPartyParticipantBridge
                     DadAutoPartyParticipantStage.PreflightPending =>
                         $"{slot.SlotId} is waiting for authenticated AutoParty preflight evidence.",
                     DadAutoPartyParticipantStage.LeasePending =>
-                        $"{slot.SlotId} is waiting for an active AutoParty lease.",
+                        $"{slot.SlotId} is waiting for its authenticated AutoParty command route.",
                     _ => $"{slot.SlotId} AutoParty route is unavailable ({snapshot.SafeCode}).",
                 };
                 return BuildParticipant(proposalId, slot, snapshot, blocker, now);
@@ -705,7 +711,8 @@ internal sealed class DadAutoPartyParticipantBridge
         {
             Sweep(now);
             if (!TryGetSlot(proposalId, slotId, out var proposal, out var slot) ||
-                slot.Stage >= DadAutoPartyParticipantStage.Revoked || slot.LeaseExpiresAt <= now)
+                slot.Stage < DadAutoPartyParticipantStage.Ready ||
+                slot.Stage >= DadAutoPartyParticipantStage.Revoked || proposal.ExpiresAt <= now)
             {
                 safeCode = "dad-remote-operation-route-unavailable";
                 return false;
@@ -1007,6 +1014,7 @@ internal sealed class DadAutoPartyParticipantBridge
                     pending.DispatchLeaseId != dispatchLeaseId || pending.DispatchLeaseExpiresAt <= now)
                     continue;
                 var command = pending.Command;
+                ApplySuccessfulDispatch(command, now);
                 RemoveCommand(commandId);
                 if (command.CommandKind == DadAutoPartyParticipantCommandKind.ProposalRenewal &&
                     proposals.TryGetValue(command.ProposalId, out var proposal))
@@ -1328,6 +1336,53 @@ internal sealed class DadAutoPartyParticipantBridge
         return true;
     }
 
+    private void ApplySuccessfulDispatch(DadAutoPartyParticipantCommand command, DateTimeOffset now)
+    {
+        if (!proposals.TryGetValue(command.ProposalId, out var proposal))
+            return;
+
+        if (command.CommandKind == DadAutoPartyParticipantCommandKind.Proposal)
+        {
+            foreach (var slot in proposal.Slots.Values.Where(slot =>
+                         string.Equals(slot.Slot.IslandId, command.IslandId, StringComparison.Ordinal) &&
+                         !slot.IsTerminal))
+            {
+                slot.Stage = DadAutoPartyParticipantStage.Ready;
+                slot.ObservedAt = now;
+                slot.SafeCode = "dad-remote-command-route-active";
+            }
+            return;
+        }
+
+        if (command.CommandKind != DadAutoPartyParticipantCommandKind.Execution ||
+            command.OperationKind is not { } kind ||
+            !operations.TryGetValue(command.CommandId, out var operation) || operation.Completed ||
+            !TryGetSlot(command.ProposalId, command.SlotId, out _, out var runtime))
+            return;
+
+        operation.Completed = true;
+        if (kind == ExecutionOperationKind.Queue)
+        {
+            runtime.ActiveModuleReference = operation.ModuleReference;
+            runtime.Stage = DadAutoPartyParticipantStage.Queued;
+        }
+        else if (kind == ExecutionOperationKind.Settle)
+        {
+            runtime.ActiveModuleReference = null;
+            runtime.NextModuleIndex++;
+            runtime.Stage = runtime.NextModuleIndex < proposal.ExecutionPlan.Modules.Length
+                ? DadAutoPartyParticipantStage.Formed
+                : DadAutoPartyParticipantStage.Settled;
+        }
+        else if (!(runtime.Stage == DadAutoPartyParticipantStage.Restored &&
+                   kind == ExecutionOperationKind.Cancel))
+        {
+            runtime.Stage = CompletedStage(kind);
+        }
+        runtime.ObservedAt = now;
+        runtime.SafeCode = $"dad-remote-{kind.ToString().ToLowerInvariant()}-dispatched";
+    }
+
     private void StageDueProposalRenewals(DateTimeOffset now)
     {
         foreach (var proposal in proposals.Values
@@ -1509,6 +1564,7 @@ internal sealed class DadAutoPartyParticipantBridge
             slot.Stage,
             slot.StateGeneration,
             slot.LeaseExpiresAt,
+            proposal.ExpiresAt,
             slot.ObservedAt,
             slot.SafeCode,
             slot.ObservedPartyContentIds,
@@ -1526,21 +1582,22 @@ internal sealed class DadAutoPartyParticipantBridge
         string status,
         DateTimeOffset now)
     {
+        var routeActive = snapshot?.CommandRouteActive(now) == true;
         var leaseActive = snapshot?.LeaseActive(now) == true;
         return new DadParticipantSnapshot
         {
             WorkerSessionId = RuntimeWorkerId(proposalId, slot.SlotId),
             RegisteredIslandId = slot.IslandId,
             RunId = snapshot?.RunId ?? string.Empty,
-            State = leaseActive ? DadParticipantState.Discovered : DadParticipantState.Stale,
+            State = routeActive ? DadParticipantState.Discovered : DadParticipantState.Stale,
             ClaimState = leaseActive ? DadClaimState.Granted : DadClaimState.None,
             LeaseState = leaseActive ? DadParticipantLeaseState.Granted : DadParticipantLeaseState.None,
-            IsAvailable = leaseActive,
-            IsEligibleForRun = leaseActive,
-            PostArReady = leaseActive,
-            WorldReadyStable = leaseActive,
-            Dependencies = leaseActive ? CreateReadyDependencies(snapshot!.StateGeneration, now) :
-                DadDependencySnapshot.CreateChecking(summary: "Waiting for authenticated AutoParty readiness."),
+            IsAvailable = routeActive,
+            IsEligibleForRun = routeActive,
+            PostArReady = routeActive,
+            WorldReadyStable = routeActive,
+            Dependencies = routeActive ? CreateReadyDependencies(snapshot!.StateGeneration, now) :
+                DadDependencySnapshot.CreateChecking(summary: "Waiting for authenticated AutoParty command dispatch."),
             LastHeartbeatUtc = snapshot?.ObservedAt.UtcDateTime ?? now.UtcDateTime,
             ActiveCharacterKey = new DadCharacterKey($"remote-{slot.SlotId}"),
             AvailableCharacterKeys = [new DadCharacterKey($"remote-{slot.SlotId}")],

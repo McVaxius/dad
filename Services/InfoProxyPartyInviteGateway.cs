@@ -8,6 +8,8 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace dad.Services;
 
+internal sealed record DadAuthenticatedIslandInviteResult(string Summary);
+
 internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInviteDispatcher
 {
     private readonly Configuration configuration;
@@ -162,6 +164,44 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             DateTime.UtcNow,
             this,
             out blocker);
+    }
+
+    internal DadAuthenticatedIslandInviteResult? TryInviteAuthenticatedIsland(
+        DadNativePartyInviteTarget target,
+        bool partyListContainsContentId,
+        out string blocker)
+    {
+        RequireFrameworkThread();
+        var runtimeTarget = new DadNativePartyInviteTarget
+        {
+            RunId = target.RunId,
+            ModuleId = target.ModuleId,
+            SlotId = target.SlotId,
+            AccountKey = target.AccountKey,
+            CharacterKey = target.CharacterKey,
+            ContentId = target.ContentId,
+            CharacterName = target.CharacterName,
+            WorldId = target.WorldId,
+            WorkerSessionId = target.WorkerSessionId,
+            LocalCurrentWorldId = (uint)playerState.CurrentWorld.RowId,
+            WorldRelationExact = false,
+            SameApplicableInstanceExact = target.SameApplicableInstanceExact,
+        };
+        var attempts = inviteAttempts.TryDispatchAuthenticatedIsland(
+            runtimeTarget,
+            partyListContainsContentId,
+            DateTime.UtcNow,
+            this,
+            out blocker);
+        if (attempts.Count == 0)
+            return null;
+        var pass = attempts[0].AttemptNumber;
+        var sameWorld = attempts.Single(static attempt =>
+            attempt.InviteType == DadNativePartyInviteType.SameWorld).DispatchResult;
+        var crossWorld = attempts.Single(static attempt =>
+            attempt.InviteType == DadNativePartyInviteType.CrossWorldContentId).DispatchResult;
+        return new DadAuthenticatedIslandInviteResult(
+            $"Dad-island invite pass {pass}: same-world={sameWorld}, cross-world={crossWorld} for {target.CharacterKey}.");
     }
 
     public bool ConfirmRunPartyMembership(string runId)

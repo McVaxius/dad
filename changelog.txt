@@ -1,5 +1,19 @@
 # dad — changelog
 
+## 2026-08-25 — Command-driven Dad-island AutoParty execution (local-only, unpublished)
+- Registered Dad-island proposal, Form, Queue, Settle, Cancel, and Restore stages now advance when their authenticated
+  relay commands are accepted, without session, readiness, execution, or completion receipts. Mixed groups retain every
+  existing LAN acknowledgement, proof, relogging rule, readiness gate, and five-second cadence.
+- Authenticated receivers retain the frozen run/slot context and publish invitation locators before relog/job readiness,
+  then execute the existing bounded takeover, job, formation, queue, settlement, cancellation, and restoration paths
+  locally without emitting execution-operation receipts. Idle AutoRetainer is immediately eligible for the existing
+  one-shot suppression/disable/reset flow; active AutoRetainer work still waits until idle.
+- Dad-island leaders accept only the exact bundled inviter and dispatch both same-world and cross-world invitations
+  immediately, then every 30 seconds through 4:30 with failure at 5:00. Successful Form dispatch completes remote leader
+  assembly without remote PartyList proof, while LAN invitation behavior is unchanged.
+- Pairing offers only **This character** or one explicitly selected character; Community sharing is unchanged. DAD remains
+  `0.5.0.9`; configuration schema 12, protocol/package metadata, public APIs, and all wire shapes remain unchanged.
+
 ## 2026-08-22 — epoch trust hold, terminal mailbox recovery, and UI projection repair (local-only, unpublished)
 - DAD now reads both epoch control slots before ordinary mailbox traffic, retains separate locally authenticated
   acknowledgements until central clears them, reconstructs the global hold after restart, and reacknowledges a restored

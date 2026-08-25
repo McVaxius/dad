@@ -173,13 +173,9 @@ internal static class DadCoordinatorMutationBoundaryRules
             !participant.IsEligibleForRun ||
             !participant.PostArReady ||
             !participant.WorldReadyStable ||
-            !participant.Dependencies.IsReady ||
-            participant.ClaimState != DadClaimState.Granted ||
-            participant.LeaseState != DadParticipantLeaseState.Granted ||
-            participant.LeaseExpiresUtc is not { } leaseExpiresUtc ||
-            leaseExpiresUtc <= nowUtc)
+            !participant.Dependencies.IsReady)
         {
-            return $"{slot.SlotId} is waiting for its exact active registered-island proposal lease.";
+            return $"{slot.SlotId} is waiting for its exact active registered-island command route.";
         }
 
         return string.Empty;

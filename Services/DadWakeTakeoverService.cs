@@ -73,6 +73,8 @@ public sealed class DadWakeTakeoverService : IDisposable
             var validation = ValidateRequest(request);
             if (!string.IsNullOrWhiteSpace(validation))
                 return Blocked(request, null, validation);
+            if (target is DadWakeTakeoverTarget runtimeTarget)
+                runtimeTarget.ObserveAuthenticatedAutoPartyWake(request);
 
             PruneOperations();
             var key = DadWakePolicyRules.BuildOperationKey(request);
@@ -218,7 +220,9 @@ public sealed class DadWakeTakeoverService : IDisposable
             }
             if (operation.Phase == DadWakeTakeoverPhase.Prepared &&
                 snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.Granted &&
-                IsVerifiedReservationPreparation(snapshot))
+                IsVerifiedReservationPreparation(
+                    snapshot,
+                    DadAutoPartyInboundAdmissionService.IsAuthenticatedAutoPartyWake(operation.ActiveRequest)))
             {
                 operation.VermaxionMutationAuthorization = DadVermaxionMutationAuthorization.Granted;
                 operation.Summary = BuildPreparedSummary(DadVermaxionMutationAuthorization.Granted);
@@ -687,6 +691,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         DadWakeTakeoverTargetSnapshot snapshot)
     {
         var authorization = snapshot.VermaxionMutationAuthorization;
+        var authenticatedAutoPartyWake =
+            DadAutoPartyInboundAdmissionService.IsAuthenticatedAutoPartyWake(operation.ActiveRequest);
         if (authorization == DadVermaxionMutationAuthorization.None)
             return BuildResult(operation, snapshot);
 
@@ -694,7 +700,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         {
             return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         }
-        if (snapshot.MultiModeEnabled)
+        if (snapshot.MultiModeEnabled && !authenticatedAutoPartyWake)
         {
             operation.Summary = authorization == DadVermaxionMutationAuthorization.Granted
                 ? "VERMAXION grant received; waiting for verified AutoRetainer off/idle state."
@@ -718,7 +724,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         if (!string.IsNullOrWhiteSpace(blocker))
             return Block(operation, blocker, cleanup: true);
         if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot) ||
-            snapshot.MultiModeEnabled || !snapshot.SuppressionReadable ||
+            (snapshot.MultiModeEnabled && !authenticatedAutoPartyWake) || !snapshot.SuppressionReadable ||
             snapshot.AutoRetainerSuppressed && !snapshot.DadOwnsSuppression ||
             snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None)
         {
@@ -739,7 +745,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         }
         if (!acquire.Success || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed ||
-            snapshot.AutoRetainerBusy || snapshot.MultiModeEnabled ||
+            snapshot.AutoRetainerBusy || (snapshot.MultiModeEnabled && !authenticatedAutoPartyWake) ||
             snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None)
         {
             var summary = acquire.Success
@@ -1710,7 +1716,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
 
         return operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None
-            ? IsVerifiedReservationPreparation(snapshot)
+            ? IsVerifiedReservationPreparation(
+                snapshot,
+                DadAutoPartyInboundAdmissionService.IsAuthenticatedAutoPartyWake(operation.ActiveRequest))
             : snapshot.DadOwnsCharacterPostprocess;
     }
 
@@ -1765,7 +1773,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
 
         return operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None
-            ? IsVerifiedReservationPreparation(snapshot)
+            ? IsVerifiedReservationPreparation(
+                snapshot,
+                DadAutoPartyInboundAdmissionService.IsAuthenticatedAutoPartyWake(operation.ActiveRequest))
             : snapshot.DadOwnsCharacterPostprocess;
     }
 
@@ -1794,11 +1804,13 @@ public sealed class DadWakeTakeoverService : IDisposable
         return "Waiting for safe takeover readiness; no timeout; cancel to stop.";
     }
 
-    private static bool IsVerifiedReservationPreparation(DadWakeTakeoverTargetSnapshot snapshot)
+    private static bool IsVerifiedReservationPreparation(
+        DadWakeTakeoverTargetSnapshot snapshot,
+        bool allowEnabledMultiMode = false)
         => snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None &&
            snapshot.AutoRetainerAvailable &&
            !snapshot.AutoRetainerBusy &&
-           !snapshot.MultiModeEnabled &&
+           (allowEnabledMultiMode || !snapshot.MultiModeEnabled) &&
            snapshot.SuppressionReadable &&
            snapshot.DadOwnsSuppression &&
            snapshot.AutoRetainerSuppressed;

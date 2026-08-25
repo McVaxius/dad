@@ -116,6 +116,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         ValueTask<DadAutoPartyPrivacyResult>>? deregistrationReceiptHandler;
     private Func<DadAutoPartyFormExecutionContext, CancellationToken,
         ValueTask<DadAutoPartyExecutionResult>>? formExecutionHandler;
+    private Func<ExecutionOperation, IntegrationProfile?, DadAutoPartyObservedPartyReceipt?, CancellationToken,
+        ValueTask<DadAutoPartyExecutionResult>>? registeredIslandExecutionHandler;
     private Action<DadAllianceCentralOperationContext>? allianceOperationHandler;
     private Action<DadAllianceCentralReceiptContext>? allianceReceiptHandler;
     private DadAutoPartySemanticKeyResolver? keyResolver;
@@ -288,6 +290,14 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         formExecutionHandler = handler ?? throw new ArgumentNullException(nameof(handler));
+    }
+
+    internal void ConfigureRegisteredIslandExecutionHandler(
+        Func<ExecutionOperation, IntegrationProfile?, DadAutoPartyObservedPartyReceipt?, CancellationToken,
+            ValueTask<DadAutoPartyExecutionResult>> handler)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        registeredIslandExecutionHandler = handler ?? throw new ArgumentNullException(nameof(handler));
     }
 
     internal DadAutoPartyPolicyDecision QueueParticipantInviteLocator(
@@ -1596,6 +1606,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             pendingAllianceOutbound.Clear();
             pendingAllianceInbound.Clear();
             inboundRuntimeTargets.Clear();
+            runtimeAdmissionValidatedProposalIds.Clear();
         }
         keyResolver?.Dispose();
         keyResolver = null;
@@ -1667,7 +1678,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             lock (gate)
             {
-                if (state.AdmissionReady && runtimeAdmissionValidatedProposalIds.Contains(state.Proposal.ProposalId))
+                if (runtimeAdmissionValidatedProposalIds.Contains(state.Proposal.ProposalId))
                     continue;
                 if (pendingInboundProposalIds.Contains(state.Proposal.ProposalId))
                     continue;
@@ -1812,9 +1823,29 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             }
 
             var admission = evaluation.Admission;
+            var inviteContextReady = false;
+            var commandLocatorSafeCode = DadAutoPartyInboundAdmissionService.InvalidProposal;
+            if (admission.Disposition != DadAutoPartyInboundAdmissionDisposition.Denied &&
+                admission.InviteTargets.Length > 0)
+            {
+                inviteContextReady = TryQueueInboundInviteLocators(
+                    state,
+                    admission,
+                    Math.Max(1, configuration.StateGeneration),
+                    out commandLocatorSafeCode);
+                if (!inviteContextReady)
+                    diagnostic(commandLocatorSafeCode);
+            }
             if (admission.Disposition == DadAutoPartyInboundAdmissionDisposition.Pending)
             {
                 diagnostic(admission.SafeBlocker);
+                continue;
+            }
+            if (admission.Ready && inviteContextReady)
+            {
+                lock (gate)
+                    runtimeAdmissionValidatedProposalIds.Add(evaluation.ProposalId);
+                diagnostic("dad-inbound-command-route-ready");
                 continue;
             }
             var responseCount = state.OwnedParticipants.Length + 1 +
@@ -2058,7 +2089,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         safeCode = DadAutoPartyInboundAdmissionService.InvalidProposal;
         var plan = state.Proposal.ExecutionPlan;
-        if (!admission.Ready || plan == null ||
+        if (admission.Disposition == DadAutoPartyInboundAdmissionDisposition.Denied || plan == null ||
             !string.Equals(admission.RunId, plan.RunId, StringComparison.Ordinal) ||
             admission.InviteTargets.Length != state.OwnedParticipants.Length ||
             admission.OwnedSlotIds.Length != admission.InviteTargets.Length ||
@@ -2097,6 +2128,25 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return false;
         lock (gate)
         {
+            var retained = bindings.All(binding =>
+            {
+                var key = new InboundRuntimeTargetKey(
+                    state.Proposal.ProposalId,
+                    binding.Participant.CharacterId.Value);
+                return inboundRuntimeTargets.TryGetValue(key, out var existing) &&
+                       existing.ExpiresAt > utcNow() &&
+                       string.Equals(existing.SlotId, binding.Target.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                       existing.Target.ContentId == binding.Target.ContentId &&
+                       string.Equals(
+                           existing.Target.WorkerSessionId.Value,
+                           binding.Target.WorkerSessionId.Value,
+                           StringComparison.OrdinalIgnoreCase);
+            });
+            if (retained)
+            {
+                safeCode = "dad-inbound-command-context-retained";
+                return true;
+            }
             foreach (var binding in bindings)
             {
                 inboundRuntimeTargets[
@@ -3440,9 +3490,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     }
 
     private ValueTask<DispatchResult> DispatchExecutionOperationReceiptAsync(ExecutionOperationReceipt receipt)
-        => ValueTask.FromResult(participantBridge.ObserveOperationReceipt(receipt, utcNow(), out var safeCode)
-            ? DispatchResult.Allow(safeCode)
-            : DispatchResult.Deny(safeCode));
+        => ValueTask.FromResult(DispatchResult.Allow("dad-operation-receipt-command-route-idempotent"));
 
     private ValueTask<DispatchResult> DispatchIntegrationProfileAsync(IntegrationProfile profile)
     {
@@ -3576,6 +3624,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 DadRunPhase.Idle,
                 "dad-partylist-proof-required",
                 operation.ExpectedStateGeneration)),
+            ExecutionOperationKind.Queue or ExecutionOperationKind.Cancel or
+                ExecutionOperationKind.Settle or ExecutionOperationKind.Restore
+                when registeredIslandExecutionHandler != null =>
+                registeredIslandExecutionHandler(operation, profile, null, shutdown.Token),
             ExecutionOperationKind.Queue => service.Execution.QueueAsync(operation),
             ExecutionOperationKind.Cancel => service.Execution.CancelAsync(operation),
             ExecutionOperationKind.Settle => service.Execution.SettleAsync(operation),
@@ -3634,53 +3686,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 DadRunPhase.Idle,
                 $"dad-inbound-{operation.Kind.ToString().ToLowerInvariant()}-expired",
                 operation.ExpectedStateGeneration);
-        }
-        try
-        {
-            var messageId = DeriveGuid(operation.OperationId.ToString("N"), "receipt");
-            var outcome = result.Outcome;
-            var resultSafeCode = result.SafeCode;
-            var observedPartyContentIds = ImmutableArray<ulong>.Empty;
-            if (operation.Kind == ExecutionOperationKind.Form && outcome == ExecutionOutcome.Completed)
-            {
-                if (result.PartyReceipt == null ||
-                    result.PartyReceipt.MemberCount != result.PartyReceipt.ContentIds.Length ||
-                    result.PartyReceipt.ContentIds.IsDefaultOrEmpty ||
-                    result.PartyReceipt.ContentIds.Length > 8 ||
-                    result.PartyReceipt.ContentIds.Any(static contentId => contentId == 0) ||
-                    result.PartyReceipt.ContentIds.Distinct().Count() != result.PartyReceipt.ContentIds.Length)
-                {
-                    outcome = ExecutionOutcome.Denied;
-                    resultSafeCode = "dad-partylist-proof-required";
-                }
-                else
-                {
-                    observedPartyContentIds = result.PartyReceipt.ContentIds;
-                }
-            }
-            var receipt = new ExecutionOperationReceipt(
-                CreateHeader(
-                    operation.Header.SenderIslandId,
-                    $"operation-receipt-{operation.OperationId:N}",
-                    utcNow() + ParticipantLifetime,
-                    messageId),
-                operation.OperationId,
-                operation.ProposalId,
-                operation.OwnerId,
-                operation.Kind,
-                outcome,
-                Math.Max(1, result.ObservedStateGeneration),
-                DadAutoPartyConfiguration.NormalizeSafeCode(resultSafeCode) is { Length: > 0 } safeCode
-                    ? safeCode
-                    : "dad-relay-execution-complete",
-                observedPartyContentIds,
-                operation.ModuleReference);
-            lock (gate)
-                _ = TryEnqueueControl(receipt);
-        }
-        catch (Exception exception) when (exception is ProtocolException or ArgumentException or InvalidOperationException)
-        {
-            diagnostic("dad-relay-execution-receipt-failed");
         }
         UpdateSnapshot(result.SafeCode);
     }
@@ -4601,6 +4606,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 .Select(static pair => pair.Key.ProposalId)
                 .Distinct()
                 .ToList();
+            foreach (var proposalId in expiredRuntimeProposalIds)
+                runtimeAdmissionValidatedProposalIds.Remove(proposalId);
             while (pendingOutbound.Count > 0 && pendingOutbound.Peek().Contract.Header.ExpiresAt <= now)
                 _ = pendingOutbound.Dequeue();
         }

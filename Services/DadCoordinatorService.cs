@@ -1163,9 +1163,9 @@ public sealed class DadCoordinatorService
                         proposalId,
                         frozenSlot.SlotId,
                         DateTimeOffset.UtcNow) is not { } remoteSnapshot ||
-                    !remoteSnapshot.LeaseActive(DateTimeOffset.UtcNow))
+                    !remoteSnapshot.CommandRouteActive(DateTimeOffset.UtcNow))
                 {
-                    blockers.Add($"{frozenSlot.SlotId} is waiting for its active AutoParty lease.");
+                    blockers.Add($"{frozenSlot.SlotId} is waiting for its active AutoParty command route.");
                 }
                 continue;
             }
@@ -1374,7 +1374,7 @@ public sealed class DadCoordinatorService
                 continue;
             }
 
-            if (!DadPartyAssemblyService.IsParticipantInParty(
+            if (DadPartyAssemblyService.IsParticipantInParty(
                     participant,
                     partyMembers,
                     runtimeInviteTargets.GetValueOrDefault(instruction.SlotId)))
@@ -1437,6 +1437,26 @@ public sealed class DadCoordinatorService
             CurrentResult.ActiveTaskStatus = string.Join(" | ", blockers.Distinct(StringComparer.OrdinalIgnoreCase));
             CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
             Publish();
+            return;
+        }
+
+        var registeredIslandLeader = activeSlotManifest.Slots.Single(static slot => slot.IsLeader)
+            .RouteKind == DadRunSlotRouteKind.RegisteredIsland;
+        if (registeredIslandLeader)
+        {
+            foreach (var participant in activeParticipants)
+            {
+                LogPartyTransition(
+                    activePlan,
+                    participant,
+                    "party-command-dispatched",
+                    "Registered-island Slot1 Form dispatch and every LAN join acknowledgement are complete.");
+            }
+
+            inviteRetryContinuationRunId = string.Empty;
+            TransitionAfterAssembly(
+                activePlan,
+                "Registered-island Slot1 assembly dispatched; every LAN participant acknowledgement is complete.");
             return;
         }
 

@@ -123,6 +123,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly DadConfigurationPersistenceCoordinator configurationPersistence;
     private readonly CancellationTokenSource backgroundCancellation = new();
+    private readonly HashSet<(Guid ProposalId, string CharacterId)> completedInboundAutoPartyForms = [];
     private readonly object authorityCacheGate = new();
     private IDtrBarEntry? dtrEntry;
     private DadRunResult? cachedAuthorityRun;
@@ -433,6 +434,7 @@ public sealed class Plugin : IDalamudPlugin
             GetCurrentAutoPartyRemoteBindings,
             AutoPartyParticipantBridge);
         autoPartyRelayPump.ConfigureFormExecutionHandler(ExecuteInboundAutoPartyForm);
+        autoPartyRelayPump.ConfigureRegisteredIslandExecutionHandler(ExecuteInboundAutoPartyOperation);
         AlliancePartyFinderService = new DadAlliancePartyFinderService(
             PresenceService,
             TransportService,
@@ -2617,6 +2619,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (operation.Kind == ExecutionOperationKind.Restore)
         {
+            completedInboundAutoPartyForms.Remove((operation.ProposalId, operation.CharacterId.Value));
             WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
             {
                 RunId = context.ExecutionPlan.RunId,
@@ -2656,9 +2659,24 @@ public sealed class Plugin : IDalamudPlugin
                 profileRestored: false));
         }
 
+        if (operation.Kind == ExecutionOperationKind.Cancel)
+        {
+            completedInboundAutoPartyForms.Remove((operation.ProposalId, operation.CharacterId.Value));
+            var ack = WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
+            {
+                RunId = context.ExecutionPlan.RunId,
+                Reason = "Authenticated AutoParty cancellation.",
+            });
+            return ValueTask.FromResult(ack.Accepted
+                ? Completed(DadRunPhase.Finalizing, "dad-inbound-cancel-complete")
+                : Denied("dad-inbound-cancel-rejected"));
+        }
+
         var local = PresenceService.BuildLiveSafetySnapshot();
-        if (!MatchesInboundRuntimeTarget(local, context.Target))
-            return ValueTask.FromResult(Denied("dad-inbound-worker-route-mismatch"));
+        if (!IsInboundRuntimeTargetReady(local, context))
+            return ValueTask.FromResult(Accepted(
+                DadRunPhase.WaitingForReadiness,
+                "dad-inbound-worker-readiness-pending"));
 
         if (operation.Kind == ExecutionOperationKind.Prepare)
         {
@@ -2674,6 +2692,13 @@ public sealed class Plugin : IDalamudPlugin
 
         if (operation.Kind is ExecutionOperationKind.Queue or ExecutionOperationKind.Settle)
         {
+            if (operation.Kind == ExecutionOperationKind.Queue &&
+                !completedInboundAutoPartyForms.Contains((operation.ProposalId, operation.CharacterId.Value)))
+            {
+                return ValueTask.FromResult(Accepted(
+                    DadRunPhase.AssemblingParty,
+                    "dad-inbound-form-execution-pending"));
+            }
             if (!DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(
                     operation,
                     context,
@@ -2709,18 +2734,6 @@ public sealed class Plugin : IDalamudPlugin
                 : Accepted(workerStatus.State == DadWorkerExecutionState.Running
                     ? DadRunPhase.InDutyOrTask
                     : DadRunPhase.WaitingForQueuePop, "dad-inbound-worker-settlement-pending"));
-        }
-
-        if (operation.Kind == ExecutionOperationKind.Cancel)
-        {
-            var ack = WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
-            {
-                RunId = context.ExecutionPlan.RunId,
-                Reason = "Authenticated AutoParty cancellation.",
-            });
-            return ValueTask.FromResult(ack.Accepted
-                ? Completed(DadRunPhase.Finalizing, "dad-inbound-cancel-complete")
-                : Denied("dad-inbound-cancel-rejected"));
         }
 
         return ValueTask.FromResult(Denied("dad-inbound-operation-unsupported"));
@@ -2795,9 +2808,14 @@ public sealed class Plugin : IDalamudPlugin
             DadRunPhase.Idle,
             safeCode,
             operation.ExpectedStateGeneration);
-        var authorization = AutoPartyService.Policy.AuthorizeExecution(operation);
-        if (!authorization.Allowed)
-            return ValueTask.FromResult(Denied(authorization.SafeCode));
+        DadAutoPartyExecutionResult Accepted(string safeCode) => new(
+            operation.OperationId,
+            operation.ProposalId,
+            operation.Kind,
+            ExecutionOutcome.Accepted,
+            DadRunPhase.WaitingForReadiness,
+            safeCode,
+            operation.ExpectedStateGeneration);
         if (!autoPartyRelayPump.TryGetInboundExecutionContext(
                 operation.ProposalId,
                 operation.CharacterId,
@@ -2814,15 +2832,15 @@ public sealed class Plugin : IDalamudPlugin
 
         var candidates = new List<DadParticipantSnapshot>();
         var local = PresenceService.BuildLiveSafetySnapshot();
-        if (MatchesInboundRuntimeTarget(local, localTarget))
+        if (IsInboundRuntimeTargetReady(local, runtimeContext))
             candidates.Add(local);
         candidates.AddRange(TransportService.CurrentTransport.KnownParticipants.Where(participant =>
-            MatchesInboundRuntimeTarget(participant, localTarget)));
+            IsInboundRuntimeTargetReady(participant, runtimeContext)));
         var participant = candidates
             .DistinctBy(static candidate => candidate.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
             .SingleOrDefault();
         if (participant == null)
-            return ValueTask.FromResult(Denied("dad-inbound-form-worker-route-mismatch"));
+            return ValueTask.FromResult(Accepted("dad-inbound-form-worker-readiness-pending"));
 
         var slotOne = context.ExpectedInviter == null;
         if (!slotOne && context.PartyInviteTargets.Count != 0)
@@ -2875,6 +2893,7 @@ public sealed class Plugin : IDalamudPlugin
                 followerObservedContentIds.Contains(inviter.ContentId) &&
                 followerObservedContentIds.Contains(localTarget.ContentId))
             {
+                completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
                 return ValueTask.FromResult(new DadAutoPartyExecutionResult(
                     operation.OperationId,
                     operation.ProposalId,
@@ -2920,6 +2939,7 @@ public sealed class Plugin : IDalamudPlugin
                 operation.ExpectedStateGeneration));
         }
 
+        completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
         return ValueTask.FromResult(new DadAutoPartyExecutionResult(
             operation.OperationId,
             operation.ProposalId,
@@ -2949,6 +2969,25 @@ public sealed class Plugin : IDalamudPlugin
                target.CharacterKey,
                target.ContentId) &&
            string.Equals(participant.AssignedSlotId, target.SlotId, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsInboundRuntimeTargetReady(
+        DadParticipantSnapshot participant,
+        DadAutoPartyInboundExecutionContext context)
+    {
+        if (!MatchesInboundRuntimeTarget(participant, context.Target) || !participant.WorldReadyStable)
+            return false;
+        var matches = context.ExecutionPlan.Participants.Where(candidate =>
+                string.Equals(candidate.SlotId, context.Target.SlotId, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToArray();
+        return matches.Length == 1 &&
+               uint.TryParse(
+                   matches[0].RequestedJob.Value,
+                   System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out var requestedJobId) &&
+               requestedJobId != 0 && participant.Character.CurrentJobId == requestedJobId;
+    }
 
     private static bool MatchesInboundRuntimeTarget(
         DadExpectedPartyInviter inviter,

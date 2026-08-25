@@ -41,6 +41,18 @@ internal sealed record DadAutoPartyInboundAdmissionResult(
 
     public static DadAutoPartyInboundAdmissionResult Pending(string runId, string safeBlocker)
         => new(runId, DadAutoPartyInboundAdmissionDisposition.Pending, safeBlocker, [], []);
+
+    public static DadAutoPartyInboundAdmissionResult Pending(
+        string runId,
+        string safeBlocker,
+        ImmutableArray<string> ownedSlotIds,
+        ImmutableArray<DadNativePartyInviteTarget> inviteTargets)
+        => new(
+            runId,
+            DadAutoPartyInboundAdmissionDisposition.Pending,
+            safeBlocker,
+            ownedSlotIds,
+            inviteTargets);
 }
 
 internal sealed class DadAutoPartyInboundAdmissionService
@@ -70,6 +82,20 @@ internal sealed class DadAutoPartyInboundAdmissionService
     private readonly TimeSpan dependencyStaleAfter;
     private readonly object gate = new();
     private readonly Dictionary<Guid, TakeoverProposalState> takeoverProposals = [];
+
+    internal static bool IsAuthenticatedAutoPartyWake(DadWakeTakeoverRequestDto request)
+    {
+        const string prefix = "autoparty-";
+        var token = request.OperationToken?.Trim() ?? string.Empty;
+        var slotId = request.SlotId?.Trim() ?? string.Empty;
+        var separator = prefix.Length + 32;
+        return slotId.Length > 0 && token.Length == separator + 1 + slotId.Length &&
+               token.StartsWith(prefix, StringComparison.Ordinal) &&
+               token[separator] == '-' &&
+               Guid.TryParseExact(token.Substring(prefix.Length, 32), "N", out var proposalId) &&
+               proposalId != Guid.Empty &&
+               string.Equals(token[(separator + 1)..], slotId, StringComparison.OrdinalIgnoreCase);
+    }
 
     public DadAutoPartyInboundAdmissionService(
         string registeredOwnerId,
@@ -198,14 +224,14 @@ internal sealed class DadAutoPartyInboundAdmissionService
         {
             var result = SubmitTakeover(slot, DadWakeTakeoverMessageKind.Prepare);
             if (result == null)
-                return DadAutoPartyInboundAdmissionResult.Pending(runId, TakeoverPending);
+                return BuildPending(takeover, moduleId, TakeoverPending);
             if (result.Status == DadWakeTakeoverStatus.Blocked)
                 return MarkTerminalAndRestore(takeover, WakeBlocked);
             takeoverResults.Add((slot, result));
         }
 
         if (takeoverResults.Any(static item => item.Result.Phase < DadWakeTakeoverPhase.Prepared))
-            return DadAutoPartyInboundAdmissionResult.Pending(runId, TakeoverPending);
+            return BuildPending(takeover, moduleId, TakeoverPending);
 
         if (takeoverResults.Any(static item => item.Result.Phase == DadWakeTakeoverPhase.Prepared))
         {
@@ -220,11 +246,11 @@ internal sealed class DadAutoPartyInboundAdmissionService
                 if (result?.Status == DadWakeTakeoverStatus.Blocked)
                     return MarkTerminalAndRestore(takeover, WakeBlocked);
             }
-            return DadAutoPartyInboundAdmissionResult.Pending(runId, TakeoverPending);
+            return BuildPending(takeover, moduleId, TakeoverPending);
         }
 
         if (takeoverResults.Any(static item => item.Result.Phase < DadWakeTakeoverPhase.ResetVerified))
-            return DadAutoPartyInboundAdmissionResult.Pending(runId, TakeoverPending);
+            return BuildPending(takeover, moduleId, TakeoverPending);
 
         if (takeoverResults.Any(static item => item.Result.Phase == DadWakeTakeoverPhase.ResetVerified))
         {
@@ -239,11 +265,11 @@ internal sealed class DadAutoPartyInboundAdmissionService
                 if (result?.Status == DadWakeTakeoverStatus.Blocked)
                     return MarkTerminalAndRestore(takeover, WakeBlocked);
             }
-            return DadAutoPartyInboundAdmissionResult.Pending(runId, TakeoverPending);
+            return BuildPending(takeover, moduleId, TakeoverPending);
         }
 
         if (takeoverResults.Any(static item => item.Result.Phase != DadWakeTakeoverPhase.Ready))
-            return DadAutoPartyInboundAdmissionResult.Pending(runId, TakeoverPending);
+            return BuildPending(takeover, moduleId, TakeoverPending);
 
         var targets = ImmutableArray.CreateBuilder<DadNativePartyInviteTarget>(owned.Length);
         var slotIds = ImmutableArray.CreateBuilder<string>(owned.Length);
@@ -268,7 +294,7 @@ internal sealed class DadAutoPartyInboundAdmissionService
                 RequiredContentId = slot.Route.ContentId,
                 RequiredJobId = requestedJobId,
                 AssignedSlotId = participant.SlotId,
-                RequirePostArReady = plan.RequirePostArReady,
+                RequirePostArReady = false,
             };
 
             DadParticipantReadyDto? wake;
@@ -281,19 +307,20 @@ internal sealed class DadAutoPartyInboundAdmissionService
                 wake = null;
             }
             if (wake == null || !wake.AcceptedAssignment)
-                return DadAutoPartyInboundAdmissionResult.Pending(runId, WakeBlocked);
+                return BuildPending(takeover, moduleId, WakeBlocked);
             if (!TryValidateReady(
                     wake,
                     wakeRequest,
                     route.WorkerSessionId,
                     requestedJobId,
-                    plan.RequirePostArReady,
+                    requirePostArReady: false,
                     now.UtcDateTime,
                     out var readySnapshot,
                     out var dependencyBlocked))
             {
-                return DadAutoPartyInboundAdmissionResult.Pending(
-                    runId,
+                return BuildPending(
+                    takeover,
+                    moduleId,
                     dependencyBlocked ? DependenciesBlocked : ReadinessBlocked);
             }
 
@@ -445,6 +472,35 @@ internal sealed class DadAutoPartyInboundAdmissionService
             string.Equals(participant.SlotId, slot.Participant.SlotId, StringComparison.OrdinalIgnoreCase) &&
             SameOrdinal(participant.CharacterId.Value, slot.Participant.CharacterId.Value) &&
             SameOrdinal(participant.RequestedJob.Value, slot.Participant.RequestedJob.Value)));
+
+    private static DadAutoPartyInboundAdmissionResult BuildPending(
+        TakeoverProposalState state,
+        DadModuleId moduleId,
+        string safeBlocker)
+    {
+        var slotIds = state.Slots
+            .Select(static slot => slot.Participant.SlotId)
+            .ToImmutableArray();
+        var targets = state.Slots
+            .Select(slot => new DadNativePartyInviteTarget
+            {
+                RunId = state.RunId,
+                ModuleId = moduleId,
+                SlotId = slot.Participant.SlotId,
+                AccountKey = slot.Route.AccountKey,
+                CharacterKey = slot.Route.CharacterKey,
+                ContentId = slot.Route.ContentId,
+                CharacterName = slot.Route.CharacterName,
+                WorldId = checked((ushort)slot.Route.WorldId),
+                WorkerSessionId = slot.Route.WorkerSessionId,
+            })
+            .ToImmutableArray();
+        return DadAutoPartyInboundAdmissionResult.Pending(
+            state.RunId,
+            safeBlocker,
+            slotIds,
+            targets);
+    }
 
     private static bool TryValidatePublishedRoute(
         DadAutoPartyInboundRoute candidate,

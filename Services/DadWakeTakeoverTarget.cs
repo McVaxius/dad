@@ -15,6 +15,8 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMov
     private readonly DadTitleMenuReadinessService titleMenuReadiness;
     private readonly ICommandManager commandManager;
     private readonly IPluginLog log;
+    private string authenticatedAutoPartyRunId = string.Empty;
+    private string authenticatedAutoPartySlotId = string.Empty;
     private int loggedCanonicalV2Authority;
     private int loggedLegacyNumericV2Authority;
     private int loggedCompatibilityAuthority;
@@ -43,6 +45,10 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMov
 
     public DadWakeTakeoverTargetSnapshot Capture(DadWakeTakeoverRequestDto request, bool forceExternalRefresh = false)
     {
+        var authenticatedAutoPartyWake =
+            DadAutoPartyInboundAdmissionService.IsAuthenticatedAutoPartyWake(request) ||
+            string.Equals(authenticatedAutoPartyRunId, request.SchedulerRunId, StringComparison.Ordinal) &&
+            string.Equals(authenticatedAutoPartySlotId, request.SlotId, StringComparison.OrdinalIgnoreCase);
         var participant = forceExternalRefresh
             ? presenceService.BuildLiveSafetySnapshot()
             : presenceService.BuildSnapshotCopy();
@@ -72,7 +78,7 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMov
             external,
             ar.Available,
             ar.IsBusy,
-            ar.MultiModeEnabled,
+            authenticatedAutoPartyWake ? false : ar.MultiModeEnabled,
             ar.SuppressionReadable,
             ar.IsSuppressed,
             ar.SuppressionOwnedByDad);
@@ -139,6 +145,15 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMov
             AutoRetainerStatus = ar.Summary,
             Participant = participant,
         };
+    }
+
+    internal void ObserveAuthenticatedAutoPartyWake(DadWakeTakeoverRequestDto request)
+    {
+        if (!DadAutoPartyInboundAdmissionService.IsAuthenticatedAutoPartyWake(request))
+            return;
+        authenticatedAutoPartyRunId = request.SchedulerRunId;
+        authenticatedAutoPartySlotId = request.SlotId;
+        presenceService.ObserveAuthenticatedAutoPartyWake(request.SchedulerRunId, request.SlotId);
     }
 
     public DadWakeTakeoverActionResult ArmCharacterPostprocess(string operationToken)
