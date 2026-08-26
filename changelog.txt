@@ -1,6 +1,11 @@
 # dad — changelog
 
 ## 2026-08-25 — Command-driven Dad-island AutoParty execution (local-only, unpublished)
+- Pair removal is now a confirmed, reversible **Unpair** action. It ends only the selected relationship, retains the
+  separate confirmed deregistration path, and permits a later fresh reciprocal fingerprint exchange while preserving
+  the endpoint identity used for registration recovery.
+- Exact reciprocal re-pairing clears only that peer's legacy pair tombstone and owner veto. Old-transcript notices cannot
+  revoke the new route, while admin blocks, unrelated revocations, authentication, and runtime safety gates remain intact.
 - Registered Dad-island proposal, Form, Queue, Settle, Cancel, and Restore stages now advance when their authenticated
   relay commands are accepted, without session, readiness, execution, or completion receipts. Mixed groups retain every
   existing LAN acknowledgement, proof, relogging rule, readiness gate, and five-second cadence.
@@ -13,6 +18,10 @@
   assembly without remote PartyList proof, while LAN invitation behavior is unchanged.
 - Pairing offers only **This character** or one explicitly selected character; Community sharing is unchanged. DAD remains
   `0.5.0.9`; configuration schema 12, protocol/package metadata, public APIs, and all wire shapes remain unchanged.
+- Completed pairings and sharing changes now trigger reciprocal listing publication automatically. The exact logged-in
+  local character can publish without AutoRetainer or post-AR readiness, while remote routes retain their existing gates.
+- The Plan tab now reads update-owned semantic revisions and derives Crew Tools readiness from its existing planner
+  snapshot, avoiding repeated full roster, scheduler, dependency, and formation-preview work during rendering.
 
 ## 2026-08-22 — epoch trust hold, terminal mailbox recovery, and UI projection repair (local-only, unpublished)
 - DAD now reads both epoch control slots before ordinary mailbox traffic, retains separate locally authenticated

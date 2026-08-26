@@ -12,6 +12,7 @@ public sealed class DadAutoPartyService : IDisposable
     private readonly IDadAutoPartyWebhookCredentialStore? credentialStore;
     private readonly Action saveConfiguration;
     private Action<string>? ownerStop;
+    private Action? listingPublicationChanged;
     private DateTime nextMaintenanceUtc = DateTime.MinValue;
     private readonly HashSet<string> onlineDirectoryIslands = new(StringComparer.Ordinal);
     private readonly Dictionary<PairedLabelKey, PairedLabelOverlay> pairedLabelOverlay = [];
@@ -59,6 +60,12 @@ public sealed class DadAutoPartyService : IDisposable
     {
         ThrowIfDisposed();
         ownerStop = stop ?? throw new ArgumentNullException(nameof(stop));
+    }
+
+    internal void ConfigureListingPublicationChanged(Action changed)
+    {
+        ThrowIfDisposed();
+        listingPublicationChanged = changed ?? throw new ArgumentNullException(nameof(changed));
     }
 
     public void SetEnabled(bool enabled)
@@ -139,10 +146,14 @@ public sealed class DadAutoPartyService : IDisposable
         configuration.Pairings.RemoveAll(item =>
             string.Equals(item.IslandId, pairing.IslandId, StringComparison.Ordinal));
         configuration.Pairings.Add(pairing);
+        configuration.Deauthentications.RemoveAll(item =>
+            string.Equals(item.PeerIslandId, pairing.IslandId, StringComparison.Ordinal));
+        Policy.SetOwnerVeto(new OwnerId(pairing.OwnerId), false, "dad-pairing-reactivated");
         configuration.PendingPairings.Clear();
         configuration.ClearPairingAttempt();
         configuration.StateGeneration++;
         saveConfiguration();
+        listingPublicationChanged?.Invoke();
         return Decision(true, "dad-pairing-active");
     }
 
@@ -159,6 +170,7 @@ public sealed class DadAutoPartyService : IDisposable
         pairing.LocalSharePolicy = normalized;
         configuration.StateGeneration++;
         saveConfiguration();
+        listingPublicationChanged?.Invoke();
         return Decision(true, "dad-share-policy-updated");
     }
 

@@ -94,6 +94,9 @@ public sealed class DadAutoPartyEndpointService : IDisposable
 
     public DadAutoPartyListingPublicationSnapshot ListingPublicationSnapshot => listingPublicationSnapshot;
 
+    internal void ScheduleListingPublication()
+        => nextListingPublishUtc = DateTime.MinValue;
+
     internal DadAutoPartyAdapterTransferSnapshot TransferSnapshot
     {
         get

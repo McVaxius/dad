@@ -47,6 +47,7 @@ public sealed class DadRosterCatalogService
         normalized |= NormalizeRosterVisibilityRecords(saveIfChanged: false);
         if (normalized)
             SaveImmediately();
+        AdvancePlannerSemanticRevision();
     }
 
     public DadAccountRosterCatalog CurrentCatalog => GetUiSnapshot().Catalog.Clone();
@@ -68,6 +69,15 @@ public sealed class DadRosterCatalogService
     public long CatalogVersion => catalogVersion;
 
     internal long GetPlannerSemanticRevision()
+        => plannerSemanticRevisionTracker.Revision;
+
+    private void AdvanceCatalogVersion()
+    {
+        catalogVersion++;
+        AdvancePlannerSemanticRevision();
+    }
+
+    private void AdvancePlannerSemanticRevision()
         => plannerSemanticRevisionTracker.Observe(new DadRosterCatalogPlannerSemantic(
             currentCatalog.Version,
             currentCatalog.XadbContractVersion,
@@ -118,7 +128,7 @@ public sealed class DadRosterCatalogService
             character.AccountAlias = alias;
 
         cachedLocalCatalog = null;
-        catalogVersion++;
+        AdvanceCatalogVersion();
     }
 
     public bool LearnRetainedTransportKnowledge(DadCharacterPool pool)
@@ -133,7 +143,7 @@ public sealed class DadRosterCatalogService
             [runtimeOverlay, peerRuntimeFallback],
             deferSave: true);
         if (changed)
-            catalogVersion++;
+            AdvanceCatalogVersion();
         return changed;
     }
 
@@ -287,7 +297,7 @@ public sealed class DadRosterCatalogService
         allCatalogs.Add(BuildKnownRosterCatalog());
 
         currentCatalog = ApplyOwnerConnectivity(MergeCatalogs(allCatalogs, plan));
-        catalogVersion++;
+        AdvanceCatalogVersion();
         if (plan.LogDiagnostics)
             LogRosterDiagnostics(currentCatalog, plan);
 
@@ -349,7 +359,7 @@ public sealed class DadRosterCatalogService
         allCatalogs.Add(BuildKnownRosterCatalog());
 
         currentCatalog = ApplyOwnerConnectivity(MergeCatalogs(allCatalogs, plan));
-        catalogVersion++;
+        AdvanceCatalogVersion();
         return CurrentCatalog;
     }
 
@@ -400,7 +410,7 @@ public sealed class DadRosterCatalogService
         var liveProjection = ApplyOwnerConnectivity(catalog);
         liveProjection.Accounts = BuildLiveConnectedAccountDirectory(liveProjection).ToList();
         currentCatalog = liveProjection.Clone();
-        catalogVersion++;
+        AdvanceCatalogVersion();
         if (plan.LogDiagnostics)
             LogRosterDiagnostics(liveProjection, plan);
 
@@ -897,7 +907,7 @@ public sealed class DadRosterCatalogService
 
         if (durableChanged)
             SaveImmediately();
-        catalogVersion++;
+        AdvanceCatalogVersion();
         log.Information(
             "[dad][Roster] Purged Dad metadata for account {AccountKey}: {KnownCount} known, {VisibilityCount} visibility, {RefreshCount} refresh record(s).",
             accountKey.Value,
@@ -930,6 +940,7 @@ public sealed class DadRosterCatalogService
         };
         lastPeerResponses = [];
         cachedLocalCatalog = null;
+        AdvanceCatalogVersion();
         log.Information(
             "[dad][Roster] Cleared Dad roster account data: {KnownCount} known, {VisibilityCount} visibility, {RefreshCount} refresh record(s).",
             result.RosterKnownCharactersCleared,
@@ -991,6 +1002,7 @@ public sealed class DadRosterCatalogService
         currentCatalog.Visibility = currentCatalog.Visibility
             .Where(record => !RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId))
             .ToList();
+        AdvanceCatalogVersion();
 
         log.Information(
             "[dad][Roster] Forgot local Dad roster copy for account {AccountKey}, character {CharacterKey}, cid {ContentId}: known {Known}, visibility {Visibility}, refresh {Refresh}, config {Config}.",
@@ -1089,7 +1101,7 @@ public sealed class DadRosterCatalogService
         cachedLocalCatalog = null;
         if (UpsertKnownCharacter(refreshed, xadbAuthoritative: true))
             SaveImmediately();
-        catalogVersion++;
+        AdvanceCatalogVersion();
     }
 
     public DadRosterCharacter? FindCharacter(DadCharacterKey characterKey)

@@ -256,25 +256,33 @@ internal static class DadAutoPartyCrewSharingRules
             }
 
             var routes = owners.Where(owner =>
-                    owner.AutoRetainerAvailable &&
-                    DadRosterIdentity.SameAccount(owner.ManagedAccountKey, accountKey) &&
-                    (owner.IsLocalClient || utcNow.UtcDateTime - owner.LastHeartbeatUtc <= TimeSpan.FromSeconds(15)) &&
-                    (DadRosterIdentity.SameCharacter(owner.ActiveCharacterKey, owner.Character?.ContentId ?? 0, characterKey, row.ContentId) ||
-                     owner.AvailableCharacterKeys.Any(available => DadRosterIdentity.SameCharacter(
-                         available,
-                         0,
-                         characterKey,
-                         row.ContentId))) &&
-                    (row.SourceWorkerSessionId.IsEmpty || string.Equals(
-                        row.SourceWorkerSessionId.Value,
-                        owner.WorkerSessionId.Value,
-                        StringComparison.OrdinalIgnoreCase)) &&
-                    (string.IsNullOrWhiteSpace(row.SourceClientInstanceId) || string.Equals(
-                        row.SourceClientInstanceId,
-                        owner.ClientInstanceId,
-                        StringComparison.OrdinalIgnoreCase)) &&
-                    (!row.SourceWorkerSessionId.IsEmpty ||
-                     !string.IsNullOrWhiteSpace(row.SourceClientInstanceId) || owner.IsLocalClient))
+                {
+                    var activeCharacterMatches = DadRosterIdentity.SameCharacter(
+                        owner.ActiveCharacterKey,
+                        owner.Character?.ContentId ?? 0,
+                        characterKey,
+                        row.ContentId);
+                    return (owner.AutoRetainerAvailable ||
+                            candidate.IsCurrentCharacter && owner.IsLocalClient && activeCharacterMatches) &&
+                           DadRosterIdentity.SameAccount(owner.ManagedAccountKey, accountKey) &&
+                           (owner.IsLocalClient || utcNow.UtcDateTime - owner.LastHeartbeatUtc <= TimeSpan.FromSeconds(15)) &&
+                           (activeCharacterMatches ||
+                            owner.AvailableCharacterKeys.Any(available => DadRosterIdentity.SameCharacter(
+                                available,
+                                0,
+                                characterKey,
+                                row.ContentId))) &&
+                           (row.SourceWorkerSessionId.IsEmpty || string.Equals(
+                               row.SourceWorkerSessionId.Value,
+                               owner.WorkerSessionId.Value,
+                               StringComparison.OrdinalIgnoreCase)) &&
+                           (string.IsNullOrWhiteSpace(row.SourceClientInstanceId) || string.Equals(
+                               row.SourceClientInstanceId,
+                               owner.ClientInstanceId,
+                               StringComparison.OrdinalIgnoreCase)) &&
+                           (!row.SourceWorkerSessionId.IsEmpty ||
+                            !string.IsNullOrWhiteSpace(row.SourceClientInstanceId) || owner.IsLocalClient);
+                })
                 .Take(2)
                 .ToArray();
             if (routes.Length != 1)

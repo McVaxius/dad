@@ -19,6 +19,8 @@ public sealed class DadCharacterIntelligenceService
     private readonly DadXadbClient xadbClient;
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
+    private readonly DadSemanticRevisionTracker<global::dad.DadPlannerRosterSemantic>
+        plannerSemanticRevisionTracker = new();
     // B5: fires once per distinct (active job, level) change of the local character, never on first capture.
     private readonly DadLocalLevelChangeDetector levelChangeDetector = new();
     private DateTime nextAutoRefreshUtc = DateTime.MinValue;
@@ -40,9 +42,11 @@ public sealed class DadCharacterIntelligenceService
         {
             PeerTransport = transportService.CurrentTransport,
         };
+        AdvancePlannerSemanticRevision();
     }
 
     public DadCharacterPool CurrentPool { get; private set; }
+    internal long PlannerSemanticRevision => plannerSemanticRevisionTracker.Revision;
 
     public void Update()
     {
@@ -67,6 +71,7 @@ public sealed class DadCharacterIntelligenceService
         runtimeIdentityInitialized = true;
         var xadbStatus = xadbClient.Inspect();
         CurrentPool = BuildPool(xadbStatus, transportService.CurrentTransport);
+        AdvancePlannerSemanticRevision();
         nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
 
         if (logRefresh)
@@ -106,6 +111,7 @@ public sealed class DadCharacterIntelligenceService
     {
         var xadbStatus = xadbClient.Save();
         CurrentPool = BuildPool(xadbStatus, transportService.CurrentTransport);
+        AdvancePlannerSemanticRevision();
         nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
         log.Information(
             "[dad] Saved local snapshot to XADB: {RowCount} row(s), status {Status}.",
@@ -120,9 +126,48 @@ public sealed class DadCharacterIntelligenceService
         var peerTransport = transportService.RequestSnapshots(request);
         var xadbStatus = CurrentPool.XadbStatus.IsReady ? CurrentPool.XadbStatus : xadbClient.Inspect();
         CurrentPool = BuildPool(xadbStatus, peerTransport);
+        AdvancePlannerSemanticRevision();
         nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
         return CurrentPool;
     }
+
+    private void AdvancePlannerSemanticRevision()
+        => plannerSemanticRevisionTracker.Observe(new global::dad.DadPlannerRosterSemantic(
+            CurrentPool.XadbStatus.IsReady,
+            CurrentPool.XadbStatus.SnapshotVersion,
+            new DadOrderedSemantic<global::dad.DadPlannerCharacterSemantic>(CurrentPool.Characters
+                .OrderBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(static character => character.ContentId)
+                .ThenBy(static character => character.AccountId, StringComparer.OrdinalIgnoreCase)
+                .Select(static character => new global::dad.DadPlannerCharacterSemantic(
+                    character.CharacterKey,
+                    character.ContentId,
+                    character.CharacterName,
+                    character.WorldId,
+                    character.WorldName,
+                    character.DataCenterId,
+                    character.DataCenterName,
+                    character.AccountId,
+                    character.AccountAlias,
+                    character.Source,
+                    character.Freshness,
+                    character.CurrentJobId,
+                    character.CurrentJobAbbrev,
+                    character.CurrentLevel,
+                    new DadOrderedSemantic<KeyValuePair<uint, int>>(character.JobLevels
+                        .OrderBy(static job => job.Key)),
+                    character.TerritoryId,
+                    character.TerritoryName,
+                    character.PartyRosterCount,
+                    character.VisiblePartyCount,
+                    character.Readiness,
+                    new DadOrderedSemantic<string>(character.Blockers),
+                    character.SnapshotQuality,
+                    character.SnapshotVersion,
+                    character.XadbReady,
+                    character.RosterVisibility,
+                    character.NeedsRosterUpdate,
+                    character.MapEligible)))));
 
     public string GetCharacterPoolJson()
         => JsonSerializer.Serialize(CurrentPool, PoolJsonOptions);

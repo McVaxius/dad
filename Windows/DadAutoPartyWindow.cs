@@ -32,6 +32,7 @@ public sealed class DadAutoPartyWindow : Window
     private string status = "AutoParty is disabled.";
     private Task<UiOperationResult>? operationTask;
     private bool forgetLostIdentityConfirmed;
+    private string pendingUnpairIslandId = string.Empty;
 
     private sealed record UiOperationResult(
         string SafeCode,
@@ -63,6 +64,7 @@ public sealed class DadAutoPartyWindow : Window
         clearedExpiredPairingAttemptId = string.Empty;
         pairingInviteRequested = false;
         forgetLostIdentityConfirmed = false;
+        pendingUnpairIslandId = string.Empty;
         pairingShareHandles.Clear();
         pairingShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
         RestoreSubmittedPairingSelection(plugin.Configuration.AutoParty);
@@ -397,13 +399,15 @@ public sealed class DadAutoPartyWindow : Window
                     status = plugin.AutoPartyEndpointService.SetPairingAlias(pairing.IslandId, alias).SafeCode;
             }
             ImGui.SameLine();
-            if (pairing.IsActive && ImGui.SmallButton($"Deauthenticate##{pairing.PairingId}"))
-                status = plugin.AutoPartyEndpointService.Deauthenticate(
-                    pairing.IslandId,
-                    "dad-owner-deauthenticated").SafeCode;
+            if (pairing.IsActive && ImGui.SmallButton($"Unpair…##{pairing.PairingId}"))
+            {
+                pendingUnpairIslandId = pairing.IslandId;
+                ImGui.OpenPopup("Confirm unpair##dad-autoparty-unpair");
+            }
             if (plugin.Configuration.DebugUiEnabled)
                 DrawTechnicalIslandId("Peer technical island ID", pairing.IslandId, pairing.PairingId);
         }
+        DrawUnpairConfirmation(configuration);
 
         ImGui.Separator();
         DadUi.Heading("Private directory", "Only opaque handles and bounded display labels are retained.");
@@ -446,8 +450,8 @@ public sealed class DadAutoPartyWindow : Window
             status = plugin.RequestAutoPartyFormationDisband();
 
         ImGui.Separator();
-        if (ImGui.Button("Deregister this island"))
-            status = plugin.AutoPartyEndpointService.BeginDeregistration().SafeCode;
+        if (ImGui.Button("Deregister this island…"))
+            ImGui.OpenPopup("Confirm deregistration##dad-autoparty-deregister");
         ImGui.SameLine();
         if (ImGui.Button("Owner Stop"))
         {
@@ -459,6 +463,63 @@ public sealed class DadAutoPartyWindow : Window
             : "AutoParty is ready for the next action; progress cards above show the active workflow.");
         if (ImGui.CollapsingHeader("Technical status##dad-autoparty-final-status"))
             ImGui.TextWrapped($"Raw safe code: {status}");
+        DrawDeregistrationConfirmation();
+    }
+
+    private void DrawUnpairConfirmation(DadAutoPartyConfiguration configuration)
+    {
+        if (!ImGui.BeginPopupModal(
+                "Confirm unpair##dad-autoparty-unpair",
+                ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            return;
+        }
+
+        var pairing = configuration.Pairings.FirstOrDefault(item =>
+            item.IsActive && string.Equals(item.IslandId, pendingUnpairIslandId, StringComparison.Ordinal));
+        ImGui.TextWrapped(
+            "Unpairing ends this trusted relationship and clears its current shared directory access. " +
+            "Both islands may exchange fresh fingerprints and mutually pair again later.");
+        ImGui.BeginDisabled(pairing == null);
+        if (ImGui.Button("Unpair"))
+        {
+            status = plugin.AutoPartyEndpointService.Deauthenticate(
+                pendingUnpairIslandId,
+                "dad-owner-unpaired").SafeCode;
+            pendingUnpairIslandId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+        {
+            pendingUnpairIslandId = string.Empty;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
+    }
+
+    private void DrawDeregistrationConfirmation()
+    {
+        if (!ImGui.BeginPopupModal(
+                "Confirm deregistration##dad-autoparty-deregister",
+                ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            return;
+        }
+
+        ImGui.TextWrapped(
+            "Deregistering removes this bot registration and private mailbox and clears current trust. " +
+            "The protected endpoint identity is preserved so this island can be registered again.");
+        if (ImGui.Button("Deregister this island"))
+        {
+            status = plugin.AutoPartyEndpointService.BeginDeregistration().SafeCode;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
     }
 
     private static void DrawRegistrationProgressCard(DadAutoPartyRegistrationProgress progress)

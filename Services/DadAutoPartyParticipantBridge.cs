@@ -1070,7 +1070,12 @@ internal sealed class DadAutoPartyParticipantBridge
         }
     }
 
-    public void DeauthenticateIsland(string islandId, long revocationGeneration, string safeReason, DateTimeOffset now)
+    public void DeauthenticateIsland(
+        string islandId,
+        long revocationGeneration,
+        string safeReason,
+        DateTimeOffset now,
+        bool sendIdentityRevocation = true)
     {
         var normalizedIsland = DadAutoPartyConfiguration.NormalizeIdentifier(islandId);
         if (string.IsNullOrWhiteSpace(normalizedIsland) || revocationGeneration < 1)
@@ -1093,7 +1098,7 @@ internal sealed class DadAutoPartyParticipantBridge
                     StageLifecycleOperation(proposal, slot, ExecutionOperationKind.Restore, now, reason);
                 }
             }
-            var revocationStaged = Enqueue(new DadAutoPartyParticipantCommand(
+            var revocationStaged = !sendIdentityRevocation || Enqueue(new DadAutoPartyParticipantCommand(
                 Guid.NewGuid(),
                 DadAutoPartyParticipantCommandKind.Revocation,
                 Guid.Empty,
@@ -1124,6 +1129,15 @@ internal sealed class DadAutoPartyParticipantBridge
                 }
             }
         }
+    }
+
+    public void ReactivateIsland(string islandId)
+    {
+        var normalizedIsland = DadAutoPartyConfiguration.NormalizeIdentifier(islandId);
+        if (string.IsNullOrWhiteSpace(normalizedIsland))
+            return;
+        lock (gate)
+            revokedIslands.Remove(normalizedIsland);
     }
 
     public void StopAll(string safeReason, DateTimeOffset now)

@@ -148,9 +148,10 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadProjectionCache<DadPlannerUiCacheKey, DadPlannerUiSnapshot> plannerUiProjectionCache = new();
     private readonly DadProjectionCache<DadPlannerSchedulerCacheKey, DadSchedulerPreview>
         plannerSchedulerProjectionCache = new();
-    private readonly DadSemanticRevisionTracker<DadPlannerRosterSemantic> plannerRosterRevisionTracker = new();
     private readonly DadSemanticRevisionTracker<DadPlannerRunSemantic> plannerRunRevisionTracker = new();
     private readonly DadSemanticRevisionTracker<DadPlannerDependencySemantic> plannerDependencyRevisionTracker = new();
+    private long lastPlannerDependencyLocalRevision = -1;
+    private long lastPlannerDependencyTransportRevision = -1;
     private readonly Dictionary<string, DadLevelSeekDisplayState> cachedScheduleLevelSeekDisplays = new(StringComparer.OrdinalIgnoreCase);
     private DateTime cachedScheduleLevelSeekSnapshotUtc = DateTime.MinValue;
     private long plannerUiCacheGeneration;
@@ -297,6 +298,8 @@ public sealed class Plugin : IDalamudPlugin
             prepareListingPublication: RefreshAutoPartyPublicationRoster,
             persistConfiguration: PersistConfigurationNow,
             isConfigurationPersisted: IsConfigurationPersisted);
+        AutoPartyService.ConfigureListingPublicationChanged(
+            AutoPartyEndpointService.ScheduleListingPublication);
         autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
             Configuration.AutoParty.RegisteredOwnerId,
             Configuration.AutoParty.RegisteredIslandId,
@@ -1608,15 +1611,15 @@ public sealed class Plugin : IDalamudPlugin
         var now = DateTime.UtcNow;
         var sourcePool = CharacterIntelligenceService.CurrentPool;
         var schedulerRevision = SchedulerService.GetPlannerUiRevision();
-        var rosterRevision = plannerRosterRevisionTracker.Observe(BuildPlannerRosterSemantic(sourcePool));
+        var rosterRevision = CharacterIntelligenceService.PlannerSemanticRevision;
         var catalogRevision = RosterCatalogService.GetPlannerSemanticRevision();
-        var runRevision = plannerRunRevisionTracker.Observe(BuildPlannerRunSemantic(runState));
-        var dependencyRevision = plannerDependencyRevisionTracker.Observe(BuildDependencySemantic());
+        var runRevision = plannerRunRevisionTracker.Revision;
+        var dependencyRevision = plannerDependencyRevisionTracker.Revision;
         var cacheKey = BuildPlannerUiCacheKey(
             rosterRevision,
             catalogRevision,
             schedulerRevision.LaunchProfilesRevision,
-            sourcePool.PeerTransport.TransportRevision);
+            TransportService.TransportRevision);
         Stopwatch? stopwatch = null;
         var rebuildReason = string.Empty;
         DadPlannerUiSnapshot heavyweightSnapshot;
@@ -1664,6 +1667,7 @@ public sealed class Plugin : IDalamudPlugin
                     AccountOptions = rosterSnapshot.AccountOptions,
                     LaunchProfiles = launchProfiles,
                     PlannerGroups = groups,
+                    SelectedGroup = selectedGroup,
                     LanePreviews = lanePreviews,
                     CharactersByAccountKey = BuildPlannerCharactersByAccountKey(pool),
                     SelectedDuty = selectedDuty,
@@ -1756,44 +1760,6 @@ public sealed class Plugin : IDalamudPlugin
         return SchedulerService.BuildPreview(selectedGroup, schedulerRequestPreview);
     }
 
-    private static DadPlannerRosterSemantic BuildPlannerRosterSemantic(DadCharacterPool pool)
-        => new(
-            pool.XadbStatus.IsReady,
-            pool.XadbStatus.SnapshotVersion,
-            new DadOrderedSemantic<DadPlannerCharacterSemantic>(pool.Characters
-                .OrderBy(static character => character.CharacterKey, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(static character => character.ContentId)
-                .ThenBy(static character => character.AccountId, StringComparer.OrdinalIgnoreCase)
-                .Select(static character => new DadPlannerCharacterSemantic(
-                    character.CharacterKey,
-                    character.ContentId,
-                    character.CharacterName,
-                    character.WorldId,
-                    character.WorldName,
-                    character.DataCenterId,
-                    character.DataCenterName,
-                    character.AccountId,
-                    character.AccountAlias,
-                    character.Source,
-                    character.Freshness,
-                    character.CurrentJobId,
-                    character.CurrentJobAbbrev,
-                    character.CurrentLevel,
-                    new DadOrderedSemantic<KeyValuePair<uint, int>>(character.JobLevels
-                        .OrderBy(static job => job.Key)),
-                    character.TerritoryId,
-                    character.TerritoryName,
-                    character.PartyRosterCount,
-                    character.VisiblePartyCount,
-                    character.Readiness,
-                    new DadOrderedSemantic<string>(character.Blockers),
-                    character.SnapshotQuality,
-                    character.SnapshotVersion,
-                    character.XadbReady,
-                    character.RosterVisibility,
-                    character.NeedsRosterUpdate,
-                    character.MapEligible))));
-
     private DadPlannerDependencySemantic BuildDependencySemantic()
     {
         var participants = new List<DadParticipantSnapshot> { PresenceService.BuildSnapshotCopy() };
@@ -1806,6 +1772,21 @@ public sealed class Plugin : IDalamudPlugin
                 participant.Dependencies.Revision,
                 participant.Dependencies.AggregateState,
                 participant.Dependencies.IsReady))));
+    }
+
+    private void AdvancePlannerDependencyRevision()
+    {
+        var localRevision = DependencyService.Snapshot.Revision;
+        var transportRevision = TransportService.TransportRevision;
+        if (localRevision == lastPlannerDependencyLocalRevision &&
+            transportRevision == lastPlannerDependencyTransportRevision)
+        {
+            return;
+        }
+
+        lastPlannerDependencyLocalRevision = localRevision;
+        lastPlannerDependencyTransportRevision = transportRevision;
+        plannerDependencyRevisionTracker.Observe(BuildDependencySemantic());
     }
 
     private static DadPlannerRunSemantic BuildPlannerRunSemantic(DadVisibleRunState runState)
@@ -2374,7 +2355,7 @@ public sealed class Plugin : IDalamudPlugin
             DisbandSummary = standaloneCrewDisbandSummary,
             SelectedPresetName = formation.IsActive
                 ? formation.SourcePresetName
-                : GetSelectedPlannerGroup()?.DisplayName ?? "(select a saved preset)",
+                : plannerSnapshot.SelectedGroup?.DisplayName ?? "(select a saved preset)",
             ResolvedPresetName = formation.IsActive
                 ? formation.EffectivePresetName
                 : "(unresolved)",
@@ -2404,22 +2385,42 @@ public sealed class Plugin : IDalamudPlugin
             return snapshot;
         }
 
-        if (TryBuildCrewFormationSelection(
-                plannerSnapshot.CuratedPool,
-                out var selection,
-                out var selectionBlocker))
+        var selectedGroup = plannerSnapshot.SelectedGroup;
+        if (selectedGroup != null)
         {
-            snapshot.ResolvedPresetName = selection.EffectiveGroup.DisplayName;
-            snapshot.ResolvedMode = selection.Classification.Mode;
+            var requestPreview = selectedGroup.LevelingMode?.Enabled == true
+                ? plannerSnapshot.SchedulerPreview.PlannerRequestPreview
+                : plannerSnapshot.RequestPreview;
+            var activityPreview = requestPreview.PlannerPreview;
+            var allianceValidation = DadAlliancePartyFinderRules.ValidateEffectiveSlots(
+                activityPreview.SelectedCharacters);
+            var classification = DadCrewToolsRules.Classify(
+                activityPreview.ActivityMode,
+                allianceValidation.AllianceACount,
+                allianceValidation.AllianceBCount,
+                allianceValidation.AllianceCCount,
+                DadPlannerSlotRules.CountPrimarySlots(selectedGroup.Slots));
+            snapshot.ResolvedPresetName = FirstNonEmpty(
+                plannerSnapshot.SchedulerPreview.PresetName,
+                activityPreview.SelectedPlannerGroupName,
+                activityPreview.DisplayName,
+                selectedGroup.DisplayName);
+            snapshot.ResolvedMode = classification.Mode;
             var createBlocker = FirstNonEmpty(
-                BuildCrewSelectionBlocker(selection),
-                BuildCrewFormationOperationalBlocker(selection.Classification.Mode));
+                classification.BlockedReason,
+                requestPreview.CanSchedule && requestPreview.Request != null
+                    ? string.Empty
+                    : FirstNonEmpty(
+                        requestPreview.BlockedReason,
+                        requestPreview.StatusSummary,
+                        "The selected preset is not schedulable."),
+                BuildCrewFormationOperationalBlocker(classification.Mode));
             snapshot.FirstBlocker = createBlocker;
             snapshot.CanCreateGroup = string.IsNullOrWhiteSpace(createBlocker);
         }
         else
         {
-            snapshot.FirstBlocker = selectionBlocker;
+            snapshot.FirstBlocker = "Select a saved preset before using Crew Tools.";
         }
 
         var disbandBlocker = BuildStandaloneCrewDisbandBlocker();
@@ -4546,6 +4547,7 @@ public sealed class Plugin : IDalamudPlugin
         var isRemoteAuthorityView = authorityView.Kind is not DadAuthorityViewKind.LocalOnly and not DadAuthorityViewKind.NoRemoteAuthority;
         var visibleRun = localRun.Status != DadRunStatus.Idle ? localRun : authorityView.PreferredRun;
         var runState = new DadVisibleRunState(localRun, authorityRun, visibleRun, isRemoteAuthorityView, authorityView);
+        plannerRunRevisionTracker.Observe(BuildPlannerRunSemantic(runState));
         LogVisibleRunStateTransition(runState);
         return runState;
     }
@@ -6114,6 +6116,7 @@ public sealed class Plugin : IDalamudPlugin
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
             Configuration.LocalOnlyModeEnabled));
+        RunFrameworkStep("PlannerDependencyRevision", AdvancePlannerDependencyRevision);
         RunFrameworkStep("AutoPartyRelayAttach", AttachAutoPartyRelayAfterValidatedBootstrap);
         RunFrameworkStep("AutoPartyEndpoint", () => AutoPartyEndpointService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("AlliancePartyFinder", AlliancePartyFinderService.Update);
@@ -6181,6 +6184,7 @@ internal sealed record DadPlannerUiSnapshot
     public IReadOnlyList<DadRosterAccountOption> AccountOptions { get; init; } = [];
     public IReadOnlyList<DadLaunchProfile> LaunchProfiles { get; init; } = [];
     public IReadOnlyList<DadPlannerGroup> PlannerGroups { get; init; } = [];
+    public DadPlannerGroup? SelectedGroup { get; init; }
     public IReadOnlyList<DadPlannerLanePreviewSnapshot> LanePreviews { get; init; } = [];
     public DadPlannerDutyOption? SelectedDuty { get; init; }
     public IReadOnlyList<DadPlannerRouletteOption> RouletteOptions { get; init; } = [];

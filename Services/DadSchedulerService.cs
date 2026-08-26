@@ -31,6 +31,8 @@ public sealed class DadSchedulerService
     private readonly DadSemanticRevisionTracker<DadSchedulerPlannerSemantic> plannerSemanticRevisionTracker = new();
     private readonly DadSemanticRevisionTracker<DadLaunchProfilePlannerSemantic>
         launchProfileSemanticRevisionTracker = new();
+    private DadSchedulerUiRevision plannerUiRevision;
+    private bool plannerUiRevisionDirty = true;
     private DadStrictPlannerRevalidationTracker strictRevalidationTracker = new();
     private DadSchedulerPresetPhase? lastLoggedSchedulerPhase;
     private bool dependencyGateCommitted;
@@ -168,6 +170,7 @@ public sealed class DadSchedulerService
         this.rosterCatalogService = rosterCatalogService;
         this.log = log;
         RecoverAbandonedScheduleRun();
+        AdvancePlannerUiRevision();
     }
 
     public DadSchedulerPresetState CurrentState => BuildVisibleState();
@@ -344,6 +347,9 @@ public sealed class DadSchedulerService
     }
 
     internal DadSchedulerUiRevision GetPlannerUiRevision()
+        => plannerUiRevision;
+
+    private void AdvancePlannerUiRevision()
     {
         var schedulerSemantic = new DadSchedulerPlannerSemantic(
             currentState.SchedulerRunId,
@@ -464,11 +470,21 @@ public sealed class DadSchedulerService
             .Concat(pendingRewardProbeCancellations.Values.Select(static pending => (DateTime?)pending.NextAttemptUtc))
             .Where(candidate => candidate.HasValue && candidate.Value > now)
             .Min();
-        return new DadSchedulerUiRevision(
+        plannerUiRevision = new DadSchedulerUiRevision(
             plannerSemanticRevisionTracker.Observe(schedulerSemantic),
             launchProfileSemanticRevisionTracker.Observe(launchProfileSemantic),
             validUntilUtc);
+        plannerUiRevisionDirty = false;
     }
+
+    private void MarkPlannerUiRevisionDirty()
+        => plannerUiRevisionDirty = true;
+
+    private bool HasPlannerUiRuntimeWork()
+        => IsSchedulerActive ||
+           configuration.ActiveScheduleRun?.IsActive == true ||
+           (configuration.SchedulerQueue?.Count ?? 0) > 0 ||
+           HasPendingCleanup;
 
     public DadSchedulerQueueSnapshot GetQueueSnapshot()
     {
@@ -542,6 +558,7 @@ public sealed class DadSchedulerService
         }.Normalize();
         configuration.Schedules.Add(schedule);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return schedule.Clone();
     }
 
@@ -576,6 +593,7 @@ public sealed class DadSchedulerService
         duplicate.Normalize();
         configuration.Schedules.Add(duplicate);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return duplicate.Clone();
     }
 
@@ -592,6 +610,7 @@ public sealed class DadSchedulerService
 
         configuration.Schedules.Remove(schedule);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return true;
     }
 
@@ -614,6 +633,7 @@ public sealed class DadSchedulerService
         var index = configuration.Schedules.IndexOf(existing);
         configuration.Schedules[index] = normalized;
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return normalized.Clone();
     }
 
@@ -648,7 +668,10 @@ public sealed class DadSchedulerService
 
         var result = DadScheduleRules.AttachSavedPlan(schedule, group, DateTime.UtcNow);
         if (result.Added)
+        {
             configuration.Save();
+            MarkPlannerUiRevisionDirty();
+        }
         return result;
     }
 
@@ -721,6 +744,7 @@ public sealed class DadSchedulerService
 
         var state = BeginScheduleRun(schedule, dryRun, manualRun: true, requestedBy, DateTime.UtcNow);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return state.Clone();
     }
 
@@ -749,6 +773,7 @@ public sealed class DadSchedulerService
             DateTime.UtcNow);
         FinalizeScheduleRun(configuration.ActiveScheduleRun);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return true;
     }
 
@@ -836,6 +861,7 @@ public sealed class DadSchedulerService
         result.ActiveRun = retryState.Clone();
         result.Summary = retryState.Summary;
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return result;
     }
 
@@ -877,6 +903,7 @@ public sealed class DadSchedulerService
 
         configuration.SchedulerQueue.Add(job);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return new DadSchedulerEnqueueResult
         {
             Disposition = DadSchedulerEnqueueDisposition.Added,
@@ -919,6 +946,7 @@ public sealed class DadSchedulerService
 
         configuration.SchedulerQueue.Add(job);
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return job.Clone();
     }
 
@@ -934,6 +962,7 @@ public sealed class DadSchedulerService
                 ? $"Scheduler job {jobId} cancelled before start."
                 : reason);
             configuration.Save();
+            MarkPlannerUiRevisionDirty();
             return true;
         }
 
@@ -942,6 +971,7 @@ public sealed class DadSchedulerService
              string.Equals(currentState.JobId, jobId, StringComparison.OrdinalIgnoreCase)))
         {
             CancelLevelingOperation(string.IsNullOrWhiteSpace(reason) ? $"Leveling Mode job {jobId} cancelled." : reason);
+            MarkPlannerUiRevisionDirty();
             return true;
         }
 
@@ -950,6 +980,7 @@ public sealed class DadSchedulerService
             currentState.IsActive)
         {
             Cancel(string.IsNullOrWhiteSpace(reason) ? $"Scheduler job {jobId} cancelled." : reason);
+            MarkPlannerUiRevisionDirty();
             return true;
         }
 
@@ -990,6 +1021,7 @@ public sealed class DadSchedulerService
             Summary = "Scheduler account data cleared.",
         };
         nextRefreshUtc = DateTime.MinValue;
+        MarkPlannerUiRevisionDirty();
         return clearedJobs;
     }
 
@@ -1030,7 +1062,10 @@ public sealed class DadSchedulerService
         }
 
         if (imported > 0)
+        {
             configuration.Save();
+            MarkPlannerUiRevisionDirty();
+        }
 
         return imported;
     }
@@ -1086,6 +1121,7 @@ public sealed class DadSchedulerService
         var index = configuration.LaunchProfiles.IndexOf(existing);
         configuration.LaunchProfiles[index] = incoming;
         configuration.Save();
+        MarkPlannerUiRevisionDirty();
         return new DadLaunchProfileUpdateAck
         {
             RequestId = request.RequestId,
@@ -1656,18 +1692,28 @@ public sealed class DadSchedulerService
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
         Func<DadRunRequest, DadRunResult> startPlannerRequest,
         Func<DadRunResult>? visibleRunProvider = null)
-        => UpdateCore(
+    {
+        var hadRuntimeWork = HasPlannerUiRuntimeWork();
+        UpdateCore(
             groupResolver,
             plannerPreviewBuilder,
             (request, _) => startPlannerRequest(request),
             visibleRunProvider);
+        if (plannerUiRevisionDirty || hadRuntimeWork || HasPlannerUiRuntimeWork())
+            AdvancePlannerUiRevision();
+    }
 
     internal void UpdateWithScheduleRepeatBoundary(
         Func<string, DadPlannerGroup?> groupResolver,
         Func<string, DadPlannerRunRequestPreview?> plannerPreviewBuilder,
         Func<DadRunRequest, DadScheduleRepeatBoundary, DadRunResult> startPlannerRequest,
         Func<DadRunResult>? visibleRunProvider = null)
-        => UpdateCore(groupResolver, plannerPreviewBuilder, startPlannerRequest, visibleRunProvider);
+    {
+        var hadRuntimeWork = HasPlannerUiRuntimeWork();
+        UpdateCore(groupResolver, plannerPreviewBuilder, startPlannerRequest, visibleRunProvider);
+        if (plannerUiRevisionDirty || hadRuntimeWork || HasPlannerUiRuntimeWork())
+            AdvancePlannerUiRevision();
+    }
 
     private void UpdateCore(
         Func<string, DadPlannerGroup?> groupResolver,
@@ -2493,6 +2539,7 @@ public sealed class DadSchedulerService
     {
         if (pendingTakeoverCancellations.Count == 0)
             return;
+        MarkPlannerUiRevisionDirty();
 
         var now = DateTime.UtcNow;
         var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
@@ -2567,6 +2614,7 @@ public sealed class DadSchedulerService
     {
         if (pendingEarlyAssignmentCancellations.Count == 0)
             return;
+        MarkPlannerUiRevisionDirty();
 
         var now = DateTime.UtcNow;
         var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
@@ -2628,6 +2676,7 @@ public sealed class DadSchedulerService
     {
         if (pendingRewardProbeCancellations.Count == 0)
             return;
+        MarkPlannerUiRevisionDirty();
 
         var now = DateTime.UtcNow;
         foreach (var pair in pendingRewardProbeCancellations.ToList())

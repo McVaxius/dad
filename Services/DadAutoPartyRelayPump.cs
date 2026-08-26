@@ -1363,7 +1363,12 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return local;
 
         var generation = Math.Max(1, configuration.RevocationGeneration);
-        participantBridge.DeauthenticateIsland(islandId, generation, reason, utcNow());
+        participantBridge.DeauthenticateIsland(
+            islandId,
+            generation,
+            reason,
+            utcNow(),
+            sendIdentityRevocation: false);
         inboundProposalService.RemoveSender(islandId);
         RemoveInboundRuntimeTargets((_, target) =>
             string.Equals(target.SenderIslandId, islandId, StringComparison.Ordinal));
@@ -2653,6 +2658,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var decision = service.AcceptPairingEstablished(established);
         if (decision.Allowed)
         {
+            participantBridge.ReactivateIsland(established.PeerIslandId.Value);
             if (intentMessageId != Guid.Empty)
             {
                 lock (gate)
@@ -3125,6 +3131,14 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     private ValueTask<DispatchResult> DispatchDeauthenticationAsync(DeauthenticationNotice notice)
     {
+        var currentPairing = configuration.Pairings.FirstOrDefault(item =>
+            item.IsActive && string.Equals(item.IslandId, notice.PeerIslandId.Value, StringComparison.Ordinal));
+        if (currentPairing != null &&
+            !string.Equals(currentPairing.TranscriptHash, notice.PairingTranscriptHash, StringComparison.Ordinal))
+        {
+            return ValueTask.FromResult(DispatchResult.Deny("dad-deauthentication-route-mismatch"));
+        }
+
         var pairing = configuration.Pairings.FirstOrDefault(item =>
             item.IsActive && string.Equals(item.IslandId, notice.PeerIslandId.Value, StringComparison.Ordinal) &&
             string.Equals(item.TranscriptHash, notice.PairingTranscriptHash, StringComparison.Ordinal));
@@ -3139,7 +3153,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 notice.PeerIslandId.Value,
                 notice.RevocationGeneration,
                 notice.SafeReason,
-                utcNow());
+                utcNow(),
+                sendIdentityRevocation: false);
             inboundProposalService.RemoveSender(notice.PeerIslandId.Value);
             RemoveInboundRuntimeTargets((_, target) =>
                 string.Equals(target.SenderIslandId, notice.PeerIslandId.Value, StringComparison.Ordinal));
@@ -3151,7 +3166,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             pairing.IslandId,
             notice.RevocationGeneration,
             notice.SafeReason,
-            utcNow());
+            utcNow(),
+            sendIdentityRevocation: false);
         inboundProposalService.RemoveSender(pairing.IslandId);
         RemoveInboundRuntimeTargets((_, target) =>
             string.Equals(target.SenderIslandId, pairing.IslandId, StringComparison.Ordinal));
