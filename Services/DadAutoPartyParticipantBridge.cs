@@ -72,7 +72,6 @@ internal sealed record DadAutoPartyParticipantSnapshot(
         LeaseExpiresAt > now;
 
     public bool CommandRouteActive(DateTimeOffset now) =>
-        Stage >= DadAutoPartyParticipantStage.Ready &&
         Stage < DadAutoPartyParticipantStage.Revoked &&
         ProposalExpiresAt > now;
 
@@ -174,7 +173,7 @@ internal sealed class DadAutoPartyParticipantBridge
         if (remoteSlots.Count == 0)
             return true;
 
-        if (configuration is not { Enabled: true, IsRegistrationActive: true })
+        if (configuration is not { IsRegistrationActive: true })
             return Fail("AutoParty registration is not active for registered-island participants.", out blocker);
 
         var authorityBlocker = directoryAuthorityGate?.Invoke(remoteSlots, now);
@@ -337,27 +336,21 @@ internal sealed class DadAutoPartyParticipantBridge
                 !SameSlot(runtime.Slot, slot))
             {
                 blocker = $"{slot.SlotId} is waiting for its exact AutoParty runtime proposal binding.";
-                return BuildParticipant(proposalId, slot, null, blocker, now);
+                return BuildParticipant(proposalId, slot, null, routeActive: false, blocker);
             }
 
             var snapshot = ToSnapshot(proposalId, proposal, runtime);
-            if (!snapshot.CommandRouteActive(now))
+            if (!HasActiveCommandBinding(proposal, runtime, now))
             {
-                blocker = snapshot.Stage switch
-                {
-                    DadAutoPartyParticipantStage.ProposalPending =>
-                        $"{slot.SlotId} is waiting for authenticated AutoParty reservation evidence.",
-                    DadAutoPartyParticipantStage.PreflightPending =>
-                        $"{slot.SlotId} is waiting for authenticated AutoParty preflight evidence.",
-                    DadAutoPartyParticipantStage.LeasePending =>
-                        $"{slot.SlotId} is waiting for its authenticated AutoParty command route.",
-                    _ => $"{slot.SlotId} AutoParty route is unavailable ({snapshot.SafeCode}).",
-                };
-                return BuildParticipant(proposalId, slot, snapshot, blocker, now);
+                blocker = $"{slot.SlotId} AutoParty command route is unavailable ({snapshot.SafeCode}).";
+                return BuildParticipant(proposalId, slot, snapshot, routeActive: false, blocker);
             }
 
             blocker = string.Empty;
-            return BuildParticipant(proposalId, slot, snapshot, snapshot.SafeCode, now);
+            var status = snapshot.Stage < DadAutoPartyParticipantStage.Ready
+                ? "Authenticated registered-island command route is bound; participant readiness is not requested."
+                : snapshot.SafeCode;
+            return BuildParticipant(proposalId, slot, snapshot, routeActive: true, status);
         }
     }
 
@@ -401,7 +394,7 @@ internal sealed class DadAutoPartyParticipantBridge
             if (!TryGetSlot(proposalId, slotId, out _, out var slot) ||
                 slot.InviteTarget == null || slot.InviteTargetExpiresAt <= now)
             {
-                blocker = $"{slotId} is waiting for a fresh endpoint-encrypted invite target.";
+                blocker = $"{slotId} Form command payload is waiting for a fresh endpoint-encrypted invite target.";
                 return false;
             }
             target = slot.InviteTarget.Clone();
@@ -711,8 +704,7 @@ internal sealed class DadAutoPartyParticipantBridge
         {
             Sweep(now);
             if (!TryGetSlot(proposalId, slotId, out var proposal, out var slot) ||
-                slot.Stage < DadAutoPartyParticipantStage.Ready ||
-                slot.Stage >= DadAutoPartyParticipantStage.Revoked || proposal.ExpiresAt <= now)
+                !HasActiveCommandBinding(proposal, slot, now))
             {
                 safeCode = "dad-remote-operation-route-unavailable";
                 return false;
@@ -720,8 +712,12 @@ internal sealed class DadAutoPartyParticipantBridge
             var allowed = kind switch
             {
                 ExecutionOperationKind.Form =>
-                    slot.Stage is DadAutoPartyParticipantStage.Ready or DadAutoPartyParticipantStage.FormPending or
-                        DadAutoPartyParticipantStage.Formed,
+                    slot.Stage is DadAutoPartyParticipantStage.ProposalPending or
+                        DadAutoPartyParticipantStage.PreflightPending or
+                        DadAutoPartyParticipantStage.LeasePending or
+                        DadAutoPartyParticipantStage.Ready or
+                        DadAutoPartyParticipantStage.FormPending or DadAutoPartyParticipantStage.Formed or
+                        DadAutoPartyParticipantStage.Settled,
                 ExecutionOperationKind.Queue => !proposal.FormationOnly &&
                     slot.Stage is DadAutoPartyParticipantStage.Formed or DadAutoPartyParticipantStage.QueuePending or
                         DadAutoPartyParticipantStage.Queued,
@@ -810,6 +806,8 @@ internal sealed class DadAutoPartyParticipantBridge
             }
 
             var operationId = Guid.NewGuid();
+            var restartsExecutionPlan = kind == ExecutionOperationKind.Form &&
+                                        slot.Stage == DadAutoPartyParticipantStage.Settled;
             var command = new DadAutoPartyParticipantCommand(
                 operationId,
                 DadAutoPartyParticipantCommandKind.Execution,
@@ -845,6 +843,11 @@ internal sealed class DadAutoPartyParticipantBridge
                 moduleReference,
                 now,
                 now + OperationLifetime);
+            if (restartsExecutionPlan)
+            {
+                slot.NextModuleIndex = 0;
+                slot.ActiveModuleReference = null;
+            }
             slot.Stage = PendingStage(kind);
             slot.ObservedAt = now;
             slot.SafeCode = "dad-remote-operation-pending";
@@ -864,7 +867,7 @@ internal sealed class DadAutoPartyParticipantBridge
             Sweep(now);
             if (!TryAcceptHeader(receipt.Header, receipt.ProposalId, now, out safeCode) ||
                 !operations.TryGetValue(receipt.OperationId, out var operation) ||
-                operation.ProposalId != receipt.ProposalId || operation.Kind != receipt.Kind || operation.Completed ||
+                operation.ProposalId != receipt.ProposalId || operation.Kind != receipt.Kind ||
                 !SameModuleReference(operation.ModuleReference, receipt.ModuleReference) ||
                 !TryGetSlot(receipt.ProposalId, operation.SlotId, out var proposal, out var slot) ||
                 !string.Equals(receipt.OwnerId.Value, slot.Slot.OwnerId, StringComparison.Ordinal) ||
@@ -890,6 +893,24 @@ internal sealed class DadAutoPartyParticipantBridge
             {
                 safeCode = "dad-remote-operation-party-proof-invalid";
                 return false;
+            }
+            if (operation.Completed)
+            {
+                if (receipt.Outcome == ExecutionOutcome.Denied ||
+                    receipt.ObservedStateGeneration < slot.StateGeneration)
+                {
+                    CommitReplay(receipt.Header);
+                    safeCode = "dad-remote-operation-denied-after-dispatch";
+                    return false;
+                }
+
+                slot.StateGeneration = receipt.ObservedStateGeneration;
+                if (requiresPartyProof)
+                    slot.ObservedPartyContentIds = receipt.ObservedPartyContentIds;
+                slot.ObservedAt = now;
+                CommitReplay(receipt.Header);
+                safeCode = receipt.SafeCode;
+                return true;
             }
             if (receipt.Outcome == ExecutionOutcome.Denied ||
                 receipt.ObservedStateGeneration < slot.StateGeneration)
@@ -1361,7 +1382,6 @@ internal sealed class DadAutoPartyParticipantBridge
                          string.Equals(slot.Slot.IslandId, command.IslandId, StringComparison.Ordinal) &&
                          !slot.IsTerminal))
             {
-                slot.Stage = DadAutoPartyParticipantStage.Ready;
                 slot.ObservedAt = now;
                 slot.SafeCode = "dad-remote-command-route-active";
             }
@@ -1550,6 +1570,33 @@ internal sealed class DadAutoPartyParticipantBridge
     private bool IsIslandRevoked(string islandId)
         => revokedIslands.ContainsKey(islandId);
 
+    private bool HasActiveCommandBinding(
+        ProposalRuntime proposal,
+        SlotRuntime runtime,
+        DateTimeOffset now)
+    {
+        var slot = runtime.Slot;
+        if (proposal.ExpiresAt <= now || runtime.Stage >= DadAutoPartyParticipantStage.Revoked ||
+            configuration is not { IsRegistrationActive: true } || IsIslandRevoked(slot.IslandId) ||
+            configuration.Deauthentications.Any(item =>
+                string.Equals(item.PeerIslandId, slot.IslandId, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(directoryAuthorityGate?.Invoke([slot], now)))
+            return false;
+
+        var matches = currentRemoteBindingsProvider()
+            .Where(binding => binding.IsValid &&
+                string.Equals(binding.OwnerId, slot.OwnerId, StringComparison.Ordinal) &&
+                string.Equals(binding.IslandId, slot.IslandId, StringComparison.Ordinal) &&
+                string.Equals(binding.OpaqueCharacterId, slot.OpaqueCharacterId, StringComparison.Ordinal) &&
+                string.Equals(binding.RequestedJobId, slot.RequiredJobId?.ToString(), StringComparison.Ordinal))
+            .Take(2)
+            .ToArray();
+        return matches.Length == 1 && matches[0].OwnsQueueAuthority == slot.IsLeader;
+    }
+
     private void TrimSessions()
     {
         while (proposals.Count > MaximumRetainedSessions)
@@ -1593,64 +1640,44 @@ internal sealed class DadAutoPartyParticipantBridge
         Guid proposalId,
         DadFrozenRunSlot slot,
         DadAutoPartyParticipantSnapshot? snapshot,
-        string status,
-        DateTimeOffset now)
+        bool routeActive,
+        string status)
     {
-        var routeActive = snapshot?.CommandRouteActive(now) == true;
-        var leaseActive = snapshot?.LeaseActive(now) == true;
         return new DadParticipantSnapshot
         {
             WorkerSessionId = RuntimeWorkerId(proposalId, slot.SlotId),
             RegisteredIslandId = slot.IslandId,
             RunId = snapshot?.RunId ?? string.Empty,
             State = routeActive ? DadParticipantState.Discovered : DadParticipantState.Stale,
-            ClaimState = leaseActive ? DadClaimState.Granted : DadClaimState.None,
-            LeaseState = leaseActive ? DadParticipantLeaseState.Granted : DadParticipantLeaseState.None,
-            IsAvailable = routeActive,
-            IsEligibleForRun = routeActive,
-            PostArReady = routeActive,
-            WorldReadyStable = routeActive,
-            Dependencies = routeActive ? CreateReadyDependencies(snapshot!.StateGeneration, now) :
-                DadDependencySnapshot.CreateChecking(summary: "Waiting for authenticated AutoParty command dispatch."),
-            LastHeartbeatUtc = snapshot?.ObservedAt.UtcDateTime ?? now.UtcDateTime,
+            ClaimState = DadClaimState.None,
+            LeaseState = DadParticipantLeaseState.None,
+            IsAvailable = false,
+            IsEligibleForRun = false,
+            PostArReady = false,
+            WorldReadyStable = false,
+            Dependencies = DadDependencySnapshot.CreateChecking(
+                summary: "Registered-island dependency readiness is not requested."),
+            LastHeartbeatUtc = default,
             ActiveCharacterKey = new DadCharacterKey($"remote-{slot.SlotId}"),
             AvailableCharacterKeys = [new DadCharacterKey($"remote-{slot.SlotId}")],
             Character = new DadAcquiredCharacter
             {
                 CharacterKey = $"remote-{slot.SlotId}",
                 Source = DadCharacterSource.PeerRuntime,
-                Freshness = leaseActive ? DadSnapshotFreshness.Live : DadSnapshotFreshness.Unknown,
-                LastSeenUtc = snapshot?.ObservedAt.UtcDateTime,
-                CurrentJobId = slot.RequiredJobId,
-                Readiness = leaseActive ? DadReadinessState.Ready : DadReadinessState.Deferred,
-                SnapshotQuality = "AutoParty authenticated runtime evidence",
+                Freshness = DadSnapshotFreshness.Unknown,
+                LastSeenUtc = null,
+                CurrentJobId = null,
+                Readiness = DadReadinessState.Deferred,
+                SnapshotQuality = "AutoParty authenticated command identity",
             },
             AssignedSlotId = slot.SlotId,
             DesiredCharacterKey = $"remote-{slot.SlotId}",
-            LeaseIssuedUtc = leaseActive ? snapshot!.ObservedAt.UtcDateTime : null,
-            LeaseRenewedUtc = leaseActive ? snapshot!.ObservedAt.UtcDateTime : null,
-            LeaseExpiresUtc = snapshot?.LeaseExpiresAt?.UtcDateTime,
+            LeaseIssuedUtc = null,
+            LeaseRenewedUtc = null,
+            LeaseExpiresUtc = null,
             StatusText = status,
         };
     }
-
-    private static DadDependencySnapshot CreateReadyDependencies(long revision, DateTimeOffset now)
-        => new()
-        {
-            Revision = Math.Max(1, revision),
-            CheckedAtUtc = now.UtcDateTime,
-            AggregateState = DadDependencyState.Ready,
-            OperatorSummary = "Remote endpoint preflight confirmed required plugins.",
-            Entries = DadDependencyRules.Requirements.Select(requirement => new DadDependencyEntry
-            {
-                RequirementId = requirement.RequirementId,
-                DisplayName = requirement.DisplayName,
-                AcceptedInternalNames = [.. requirement.AcceptedInternalNames],
-                MinimumVersion = requirement.MinimumVersion,
-                State = DadDependencyState.Ready,
-                OperatorSummary = "Authenticated remote preflight ready.",
-            }).ToList(),
-        };
 
     private static DadWorkerSessionId RuntimeWorkerId(Guid proposalId, string slotId)
         => new($"autoparty-{proposalId:N}-{slotId.ToLowerInvariant()}");

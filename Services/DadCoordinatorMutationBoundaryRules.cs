@@ -77,7 +77,7 @@ internal static class DadCoordinatorMutationBoundaryRules
 
             if (!string.IsNullOrWhiteSpace(slotBlocker))
                 resolutionBlockers.Add(slotBlocker);
-            else if (!participant.WorldReadyStable)
+            else if (slot.RouteKind == DadRunSlotRouteKind.LanWorker && !participant.WorldReadyStable)
                 resolutionBlockers.Add($"{slot.SlotId} exact character '{slot.CharacterKey}' is not world-ready-stable at the coordinator mutation boundary.");
         }
 
@@ -168,14 +168,9 @@ internal static class DadCoordinatorMutationBoundaryRules
             !string.Equals(participant.RegisteredIslandId, slot.IslandId, StringComparison.Ordinal) ||
             !Same(participant.WorkerSessionId.Value, expectedWorker) ||
             !string.Equals(participant.RunId, plan.Request.RequestId, StringComparison.Ordinal) ||
-            participant.State == DadParticipantState.Stale ||
-            !participant.IsAvailable ||
-            !participant.IsEligibleForRun ||
-            !participant.PostArReady ||
-            !participant.WorldReadyStable ||
-            !participant.Dependencies.IsReady)
+            participant.State == DadParticipantState.Stale)
         {
-            return $"{slot.SlotId} is waiting for its exact active registered-island command route.";
+            return $"{slot.SlotId} is missing its exact nonexpired registered-island command identity.";
         }
 
         return string.Empty;
@@ -196,5 +191,23 @@ internal static class DadCoordinatorMutationBoundaryRules
     {
         blocker = reason;
         return false;
+    }
+}
+
+internal static class DadCoordinatorRoutePhaseRules
+{
+    public static DadRunPhase ResolveEntryPhase(DadRunPlan plan, DadRunSlotManifest? manifest)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (manifest?.Slots.Count > 0 && manifest.Slots.All(static slot =>
+                slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland))
+        {
+            return DadRunPhase.AssemblingParty;
+        }
+
+        var requiresLanDiscovery = plan.RequiresRemoteParticipants ||
+            (manifest?.Slots.Any(static slot =>
+                slot.RouteKind == DadRunSlotRouteKind.LanWorker && slot.RequiredJobId.HasValue) ?? false);
+        return requiresLanDiscovery ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots;
     }
 }

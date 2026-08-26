@@ -22,6 +22,11 @@ internal interface IDadTitleMovieDismissalTarget
     DadWakeTakeoverActionResult DismissExactTitleMovie();
 }
 
+internal interface IDadAuthenticatedAutoPartyWakeTarget
+{
+    void ObserveAuthenticatedAutoPartyWake(DadWakeTakeoverRequestDto request);
+}
+
 public sealed class DadWakeTakeoverService : IDisposable
 {
     private static readonly TimeSpan OperationRetention = TimeSpan.FromHours(1);
@@ -73,7 +78,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             var validation = ValidateRequest(request);
             if (!string.IsNullOrWhiteSpace(validation))
                 return Blocked(request, null, validation);
-            if (target is DadWakeTakeoverTarget runtimeTarget)
+            if (target is IDadAuthenticatedAutoPartyWakeTarget runtimeTarget)
                 runtimeTarget.ObserveAuthenticatedAutoPartyWake(request);
 
             PruneOperations();
@@ -1107,41 +1112,8 @@ public sealed class DadWakeTakeoverService : IDisposable
                 operation.UpdatedAtUtc = utcNow();
                 return;
             }
-
-            var now = utcNow();
-            var activeCharacter = snapshot.Participant.ActiveCharacterKey;
-            if (!snapshot.Participant.IsAvailable || !snapshot.Participant.WorldReadyStable)
-            {
-                operation.RelogTransitionObserved = true;
-                operation.StableWrongCharacterSinceUtc = null;
-                operation.Summary = BuildRelogWaitSummary(operation, snapshot);
-                return;
-            }
-
-            if (!operation.RelogSourceCharacterKey.IsEmpty &&
-                !string.Equals(
-                    activeCharacter.Value,
-                    operation.RelogSourceCharacterKey.Value,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                operation.RelogTransitionObserved = true;
-            }
-
-            operation.StableWrongCharacterSinceUtc ??= now;
-            var provenNoEffect = !operation.RelogTransitionObserved &&
-                                 operation.RelogAcceptedAtUtc.HasValue &&
-                                 now - operation.RelogAcceptedAtUtc.Value >= TimeSpan.FromSeconds(15);
-            if (operation.RelogTransitionObserved || provenNoEffect)
-            {
-                BeginNextEpoch(
-                    operation,
-                    operation.RelogTransitionObserved
-                        ? $"Relog settled world-stable on {activeCharacter}; retrying target {operation.ActiveRequest.CharacterKey}."
-                        : $"Relog had no transition effect for 15 seconds on {activeCharacter}; retrying target {operation.ActiveRequest.CharacterKey}.");
-                return;
-            }
-
             operation.Summary = BuildRelogWaitSummary(operation, snapshot);
+            operation.UpdatedAtUtc = utcNow();
             return;
         }
 

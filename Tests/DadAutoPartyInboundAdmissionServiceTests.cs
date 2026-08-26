@@ -53,7 +53,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     [InlineData("wake")]
     [InlineData("readiness")]
     [InlineData("dependencies")]
-    public void WakeReadinessAndDependencyBarriersRemainBlocked(string barrier)
+    public void WakeReadinessAndDependencyBarriersRemainBlockedButExposeInvitePayload(string barrier)
     {
         var fixture = new Fixture();
         fixture.WakeOverride = (route, request) =>
@@ -86,7 +86,9 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
                 _ => DadAutoPartyInboundAdmissionService.ReadinessBlocked,
             },
             result.SafeBlocker);
-        Assert.Empty(result.InviteTargets);
+        var inviteTarget = Assert.Single(result.InviteTargets);
+        Assert.Equal("run-inbound-admission", inviteTarget.RunId);
+        Assert.Equal("Slot2", inviteTarget.SlotId);
         Assert.Equal(0, fixture.ClaimCalls);
     }
 

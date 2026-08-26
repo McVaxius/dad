@@ -7,8 +7,14 @@
 - Exact reciprocal re-pairing clears only that peer's legacy pair tombstone and owner veto. Old-transcript notices cannot
   revoke the new route, while admin blocks, unrelated revocations, authentication, and runtime safety gates remain intact.
 - Registered Dad-island proposal, Form, Queue, Settle, Cancel, and Restore stages now advance when their authenticated
-  relay commands are accepted, without session, readiness, execution, or completion receipts. Mixed groups retain every
-  existing LAN acknowledgement, proof, relogging rule, readiness gate, and five-second cadence.
+  relay commands are accepted, without session, readiness, execution, or completion receipts. Mixed groups retain LAN
+  acknowledgements, proof, readiness gates, and the five-second reset/relog command barrier.
+- An accepted LAN relog command is now single-dispatch for its frozen takeover target. If runtime identity briefly remains
+  unavailable or reports the prior character after login, DAD waits for the target without starting a second relog epoch.
+- Sender coordination treats each exact nonexpired registered-island proposal binding as a command destination immediately.
+  All-island rosters enter party assembly directly; mixed rosters discover, ready, claim, and lease only LAN slots. The
+  encrypted invite locator remains required Form command data, with no Dad-island readiness, Post-AR, world, dependency,
+  lease, acknowledgement, or PartyList ceremony.
 - Authenticated receivers retain the frozen run/slot context and publish invitation locators before relog/job readiness,
   then execute the existing bounded takeover, job, formation, queue, settlement, cancellation, and restoration paths
   locally without emitting execution-operation receipts. Idle AutoRetainer is immediately eligible for the existing
@@ -22,6 +28,8 @@
   local character can publish without AutoRetainer or post-AR readiness, while remote routes retain their existing gates.
 - The Plan tab now reads update-owned semantic revisions and derives Crew Tools readiness from its existing planner
   snapshot, avoiding repeated full roster, scheduler, dependency, and formation-preview work during rendering.
+- Registered-island coordinators can now send proposals while their local AutoParty receiver toggle is off. Active
+  registration remains required, and receiving islands still enforce their own toggle before acceptance and execution.
 
 ## 2026-08-22 — epoch trust hold, terminal mailbox recovery, and UI projection repair (local-only, unpublished)
 - DAD now reads both epoch control slots before ordinary mailbox traffic, retains separate locally authenticated

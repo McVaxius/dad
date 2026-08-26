@@ -626,33 +626,18 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(remoteSlots);
-        DateTimeOffset? completed;
-        lock (gate)
-            completed = lastPrivateDirectoryCompletedAt;
-        if (!completed.HasValue || now - completed.Value >= DirectoryRefreshInterval)
-        {
-            _ = EnsurePrivateDirectoryAuthority(immediate: true);
-            return "AutoParty paired directory authority is missing or stale; an automatic refresh was queued.";
-        }
-
-        var directory = service.GetDirectorySnapshot();
         foreach (var slot in remoteSlots)
         {
-            var matches = directory.Listings.Where(listing =>
-                    string.Equals(listing.OwnerId, slot.OwnerId, StringComparison.Ordinal) &&
-                    string.Equals(listing.SharingIslandId, slot.IslandId, StringComparison.Ordinal) &&
-                    string.Equals(listing.OpaqueCharacterId, slot.OpaqueCharacterId, StringComparison.Ordinal) &&
-                    slot.RequiredJobId.HasValue && listing.AllowedJobIds.Contains(
-                        slot.RequiredJobId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        StringComparer.Ordinal) &&
-                    listing.ExpiresAtUtc > now.UtcDateTime &&
-                    directory.OnlineIslandIds.Contains(listing.SharingIslandId))
+            var matches = configuration.Pairings.Where(pairing =>
+                    pairing.IsActive &&
+                    pairing.ExpiresAtUtc > now.UtcDateTime &&
+                    string.Equals(pairing.OwnerId, slot.OwnerId, StringComparison.Ordinal) &&
+                    string.Equals(pairing.IslandId, slot.IslandId, StringComparison.Ordinal))
                 .Take(2)
                 .ToArray();
             if (matches.Length == 1)
                 continue;
-            _ = EnsurePrivateDirectoryAuthority(immediate: true);
-            return $"{slot.SlotId} no longer has one fresh reachable AutoParty directory authority; an automatic refresh was queued.";
+            return $"{slot.SlotId} no longer has one exact active AutoParty pairing authority.";
         }
         return null;
     }

@@ -884,6 +884,30 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task RegisteredCommandAuthorityDoesNotRequireDirectoryPresenceButStillExpires()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        await using var pump = fixture.CreatePump();
+        var slot = new DadFrozenRunSlot
+        {
+            SlotId = "Slot2",
+            RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+            OwnerId = PumpFixture.PeerOwner,
+            IslandId = PumpFixture.PeerIsland,
+            OpaqueCharacterId = "opaque-peer",
+            RequiredJobId = 19,
+        };
+
+        Assert.Null(pump.GetRemoteAuthorityBlocker([slot], DateTimeOffset.UtcNow));
+
+        Assert.Single(fixture.Configuration.Pairings).ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);
+        Assert.Contains(
+            "pairing authority",
+            pump.GetRemoteAuthorityBlocker([slot], DateTimeOffset.UtcNow),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task PairedDirectoryRequestsPrivateLabelsInSixteenHandleBatchesAndKeepsCommunityOpaque()
     {
         var now = DateTimeOffset.UtcNow;
@@ -1468,7 +1492,9 @@ public sealed class DadAutoPartyRelayPumpTests
             out var safeCode), safeCode);
         Assert.Equal("Slot2", slotId);
         AssertNativeInviteTarget(expectedTarget, retainedTarget);
-        Assert.Contains(fixture.Transport.Sent, item =>
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<Reservation>() ||
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PreflightResult>() ||
             item.PayloadType == ProtocolContractRegistry.GetTypeId<SessionLease>());
         Assert.Contains(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ParticipantInviteLocator>());
@@ -1476,7 +1502,7 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
-    public async Task PendingInboundAdmissionEmitsNoPrematureNegativePreflightAndReevaluatesToReady()
+    public async Task PendingInboundAdmissionEmitsNoReadinessCeremonyAndReevaluatesToInviteLocator()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
         var listing = new DadAutoPartyListing
@@ -1524,9 +1550,12 @@ public sealed class DadAutoPartyRelayPumpTests
         pump.UpdateFramework();
         await pump.ProcessOnceAsync();
 
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<Reservation>() ||
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<PreflightResult>() ||
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<SessionLease>());
         Assert.Contains(fixture.Transport.Sent, item =>
-            item.PayloadType == ProtocolContractRegistry.GetTypeId<PreflightResult>() &&
-            fixture.Open<PreflightResult>(item).Ready);
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<ParticipantInviteLocator>());
     }
 
     [Fact]
@@ -2010,12 +2039,8 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal((ulong)1234, expectedInviter.ContentId);
         Assert.Equal("Peer Character", expectedInviter.CharacterName);
         Assert.Contains(fixture.Transport.Acknowledged, item => item.EnvelopeId == delivery.EnvelopeId);
-        var receiptEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
-        var receipt = fixture.Open<ExecutionOperationReceipt>(receiptEnvelope);
-        Assert.Equal(ExecutionOutcome.Denied, receipt.Outcome);
-        Assert.Equal("dad-partylist-proof-required", receipt.SafeCode);
-        Assert.True(receipt.ObservedPartyContentIds.IsDefaultOrEmpty);
     }
 
     [Fact]
@@ -2155,7 +2180,7 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
-    public async Task AuthoritativeFormReceiptPropagatesContentIds()
+    public async Task AuthoritativeFormResultRemainsLocalWithoutExecutionReceipt()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
         await using var pump = fixture.CreatePump();
@@ -2195,11 +2220,9 @@ public sealed class DadAutoPartyRelayPumpTests
         pump.UpdateFramework();
         await pump.ProcessOnceAsync();
 
-        var receiptEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
-        var receipt = fixture.Open<ExecutionOperationReceipt>(receiptEnvelope);
-        Assert.Equal(ExecutionOutcome.Completed, receipt.Outcome);
-        Assert.Equal(new ulong[] { 1001, 2002 }, receipt.ObservedPartyContentIds);
+        Assert.Equal(0, pump.Snapshot.PendingExecutionCount);
     }
 
     [Fact]
@@ -2308,7 +2331,7 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
-    public async Task ExecutionReceiptEchoesExactModuleReferenceWithoutPartyProof()
+    public async Task ExactQueueModuleReferenceExecutesWithoutOutboundReceipt()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
         await using var pump = fixture.CreatePump();
@@ -2334,15 +2357,13 @@ public sealed class DadAutoPartyRelayPumpTests
         pump.UpdateFramework();
         await pump.ProcessOnceAsync();
 
-        var envelope = Assert.Single(fixture.Transport.Sent, item =>
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
-        var receipt = fixture.Open<ExecutionOperationReceipt>(envelope);
-        Assert.Equal(module, receipt.ModuleReference);
-        Assert.True(receipt.ObservedPartyContentIds.IsDefaultOrEmpty);
+        Assert.Equal(0, pump.Snapshot.PendingExecutionCount);
     }
 
     [Fact]
-    public async Task AcceptedQueueIsPolledUntilCompletedBeforeReceipt()
+    public async Task AcceptedQueueIsPolledUntilCompletedWithoutOutboundReceipt()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
         var execution = new AcceptedThenCompletedExecutionFacade();
@@ -2371,12 +2392,9 @@ public sealed class DadAutoPartyRelayPumpTests
         await pump.ProcessOnceAsync();
 
         Assert.Equal(2, execution.QueueCalls);
-        var envelope = Assert.Single(fixture.Transport.Sent, item =>
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
-        var receipt = fixture.Open<ExecutionOperationReceipt>(envelope);
-        Assert.Equal(ExecutionOutcome.Completed, receipt.Outcome);
-        Assert.Equal("dad-test-queue-complete", receipt.SafeCode);
-        Assert.Equal(module, receipt.ModuleReference);
+        Assert.Equal(0, pump.Snapshot.PendingExecutionCount);
     }
 
     [Fact]

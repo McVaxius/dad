@@ -263,7 +263,120 @@ public sealed class DadAutoPartyParticipantBridgeTests
     }
 
     [Fact]
-    public void ReservationThroughRestoreRejectsReplayAndWaitsForCompletedReceipts()
+    public void ExactProposalBindingIsCommandReadyBeforeReadinessLeaseOrProposalDispatch()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var configuration = ActiveConfiguration();
+        configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        var bridge = new DadAutoPartyParticipantBridge(configuration);
+        var (plan, manifest, proposalId) = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+        Assert.True(bridge.TryBindRun(plan, manifest, now, out var blocker), blocker);
+
+        var participant = bridge.ResolveParticipant(proposalId, manifest.Slots[0], now, out blocker);
+
+        Assert.Empty(blocker);
+        Assert.Equal(DadParticipantState.Discovered, participant.State);
+        Assert.False(participant.IsAvailable);
+        Assert.False(participant.IsEligibleForRun);
+        Assert.False(participant.PostArReady);
+        Assert.False(participant.WorldReadyStable);
+        Assert.False(participant.Dependencies.IsReady);
+        Assert.Equal(DadClaimState.None, participant.ClaimState);
+        Assert.Equal(DadParticipantLeaseState.None, participant.LeaseState);
+        Assert.Contains("readiness is not requested", participant.StatusText, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(bridge.ObserveInviteTarget(
+            Header(RemoteIsland, LocalIsland, now),
+            proposalId,
+            new OwnerId(RemoteOwner),
+            new OpaqueCharacterId(RemoteCharacter),
+            new DadWorkerSessionId("private-worker"),
+            new DadAccountKey("private-account"),
+            new DadCharacterKey("private-character"),
+            1001,
+            "Private Character",
+            21,
+            now.AddMinutes(2),
+            now,
+            out _));
+        Assert.True(bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            null,
+            inviter: null,
+            partyInviteTargets: [],
+            now,
+            out _));
+
+        var batch = bridge.LeasePendingCommands(8, TimeSpan.FromSeconds(10), now);
+        Assert.Equal(2, batch.Commands.Count);
+        Assert.Equal(
+            2,
+            bridge.AcknowledgePendingCommands(
+                batch.DispatchLeaseId,
+                batch.Commands.Select(static command => command.CommandId).ToList(),
+                now));
+        Assert.Equal(
+            DadAutoPartyParticipantStage.Formed,
+            bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
+    }
+
+    [Fact]
+    public void RevokedExpiredMismatchedDeauthenticatedAndUnregisteredRoutesRemainUnavailable()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        var unregisteredConfiguration = ActiveConfiguration();
+        unregisteredConfiguration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        unregisteredConfiguration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        var unregistered = new DadAutoPartyParticipantBridge(unregisteredConfiguration);
+        var (plan, manifest, _) = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+        Assert.False(unregistered.TryBindRun(plan, manifest, now, out _));
+
+        var deauthenticatedConfiguration = ActiveConfiguration();
+        deauthenticatedConfiguration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        deauthenticatedConfiguration.Deauthentications.Add(new DadAutoPartyDeauthentication
+        {
+            PeerIslandId = RemoteIsland,
+        });
+        var deauthenticated = new DadAutoPartyParticipantBridge(deauthenticatedConfiguration);
+        (plan, manifest, _) = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+        Assert.False(deauthenticated.TryBindRun(plan, manifest, now, out _));
+
+        var configuration = ActiveConfiguration();
+        configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        var bridge = new DadAutoPartyParticipantBridge(configuration);
+        var runtime = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+        Assert.True(bridge.TryBindRun(runtime.Plan, runtime.Manifest, now, out var blocker), blocker);
+
+        var mismatched = runtime.Manifest.Slots[0].Clone();
+        mismatched.OpaqueCharacterId = "different-character";
+        Assert.Equal(
+            DadParticipantState.Stale,
+            bridge.ResolveParticipant(runtime.ProposalId, mismatched, now, out _).State);
+
+        Assert.Equal(
+            DadParticipantState.Stale,
+            bridge.ResolveParticipant(
+                runtime.ProposalId,
+                runtime.Manifest.Slots[0],
+                now.AddMinutes(31),
+                out _).State);
+
+        var revokedConfiguration = ActiveConfiguration();
+        revokedConfiguration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        var revoked = new DadAutoPartyParticipantBridge(revokedConfiguration);
+        runtime = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+        Assert.True(revoked.TryBindRun(runtime.Plan, runtime.Manifest, now, out blocker), blocker);
+        revoked.DeauthenticateIsland(RemoteIsland, 1, "dad-test-revoked", now);
+        Assert.Equal(
+            DadParticipantState.Stale,
+            revoked.ResolveParticipant(runtime.ProposalId, runtime.Manifest.Slots[0], now, out _).State);
+    }
+
+    [Fact]
+    public void ReservationThroughRestoreRejectsReplayAndAcceptsLateValidatedReceipts()
     {
         var now = DateTimeOffset.UtcNow;
         var configuration = ActiveConfiguration();
@@ -343,7 +456,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
             2,
             now), now, out _));
         Assert.Equal(
-            DadAutoPartyParticipantStage.FormPending,
+            DadAutoPartyParticipantStage.Formed,
             bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
         Assert.True(bridge.ObserveOperationReceipt(Receipt(
             form,
@@ -585,6 +698,41 @@ public sealed class DadAutoPartyParticipantBridgeTests
         Assert.Equal(
             DadAutoPartyParticipantStage.Settled,
             bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
+    }
+
+    [Fact]
+    public void SettledCommandRouteCanStartTheNextRepeatWithoutReadinessCeremony()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (bridge, proposalId, _) = FormedBridge(now, DadModuleId.PremadeDuty);
+        CompleteModuleOperation(bridge, proposalId, ExecutionOperationKind.Queue, 0, 3, now);
+        CompleteModuleOperation(bridge, proposalId, ExecutionOperationKind.Settle, 0, 4, now);
+        Assert.Equal(
+            DadAutoPartyParticipantStage.Settled,
+            bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
+
+        Assert.True(bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            null,
+            inviter: null,
+            partyInviteTargets: [],
+            now,
+            out var formCode), formCode);
+        LeaseAndAcknowledgeSingle(bridge, now);
+        var repeated = bridge.GetSnapshot(proposalId, "Slot1", now)!;
+        Assert.Equal(DadAutoPartyParticipantStage.Formed, repeated.Stage);
+        Assert.Equal(0, repeated.NextModuleIndex);
+
+        Assert.True(bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Queue,
+            0,
+            inviter: null,
+            now,
+            out var queueCode), queueCode);
     }
 
     [Fact]

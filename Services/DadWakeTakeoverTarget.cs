@@ -4,7 +4,10 @@ using dad.Models;
 
 namespace dad.Services;
 
-public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMovieDismissalTarget
+public sealed class DadWakeTakeoverTarget :
+    IDadWakeTakeoverTarget,
+    IDadTitleMovieDismissalTarget,
+    IDadAuthenticatedAutoPartyWakeTarget
 {
     private readonly Configuration configuration;
     private readonly ConfigManager configManager;
@@ -155,6 +158,10 @@ public sealed class DadWakeTakeoverTarget : IDadWakeTakeoverTarget, IDadTitleMov
         authenticatedAutoPartySlotId = request.SlotId;
         presenceService.ObserveAuthenticatedAutoPartyWake(request.SchedulerRunId, request.SlotId);
     }
+
+    void IDadAuthenticatedAutoPartyWakeTarget.ObserveAuthenticatedAutoPartyWake(
+        DadWakeTakeoverRequestDto request)
+        => ObserveAuthenticatedAutoPartyWake(request);
 
     public DadWakeTakeoverActionResult ArmCharacterPostprocess(string operationToken)
         => autoRetainer.ArmCharacterPostprocessRequest(operationToken)

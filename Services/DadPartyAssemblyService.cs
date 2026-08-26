@@ -186,7 +186,7 @@ public sealed class DadPartyAssemblyService
         for (var index = 0; index < ordered.Count; index++)
         {
             var participant = ordered[index];
-            if (!participant.PostArReady)
+            if (string.IsNullOrWhiteSpace(participant.RegisteredIslandId) && !participant.PostArReady)
             {
                 blocker = $"{participant.Character.CharacterKey} is not post-AR ready.";
                 return [];

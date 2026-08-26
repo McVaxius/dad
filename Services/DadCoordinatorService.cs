@@ -371,6 +371,7 @@ public sealed class DadCoordinatorService
         {
             var currentParticipants = BuildOnlineParticipantSet(pool, liveCoordinatorTruth);
             foreach (var workerSessionId in acceptedManifest.Slots
+                         .Where(static slot => slot.RouteKind == DadRunSlotRouteKind.LanWorker)
                          .Select(static slot => slot.WorkerSessionId)
                          .Where(workerSessionId => !workerSessionId.IsEmpty &&
                              !string.Equals(
@@ -477,14 +478,24 @@ public sealed class DadCoordinatorService
         configuration.PersistedActiveRun = CurrentResult.Clone();
         configuration.Save();
 
-        var requiresDiscovery = RequiresParticipantDiscovery(plan, acceptedManifest);
-        Transition(requiresDiscovery ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
-            requiresDiscovery ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
-            requiresDiscovery
-                ? $"Dad Coordinator waiting for {plan.RequiredParticipantCount} participant(s)."
-                : plan.Orchestration.LocalOnlyOverride
-                    ? "Local-only Dad orchestration is ready to claim local slot."
-                    : "Single-worker Dad orchestration is ready to claim local slot.");
+        var entryPhase = DadCoordinatorRoutePhaseRules.ResolveEntryPhase(plan, acceptedManifest);
+        var lanSlotCount = acceptedManifest?.Slots.Count(static slot =>
+            slot.RouteKind == DadRunSlotRouteKind.LanWorker) ?? plan.RequiredParticipantCount;
+        Transition(
+            entryPhase,
+            entryPhase == DadRunPhase.DiscoveringParticipants
+                ? DadRunStatus.WaitingForParticipants
+                : DadRunStatus.Running,
+            entryPhase switch
+            {
+                DadRunPhase.AssemblingParty =>
+                    "Registered-island command routes are bound; assembling the Dad party.",
+                DadRunPhase.DiscoveringParticipants =>
+                    $"Dad Coordinator waiting for {lanSlotCount} LAN participant(s).",
+                _ when plan.Orchestration.LocalOnlyOverride =>
+                    "Local-only Dad orchestration is ready to claim local slot.",
+                _ => "Single-worker Dad orchestration is ready to claim local slot.",
+            });
 
         log.Information("[dad] Planned run {RequestId}: {Summary}", plan.Request.RequestId, plan.Summary);
         return PublishAndClone();
@@ -678,7 +689,7 @@ public sealed class DadCoordinatorService
                     autoPartyCancellationTeardowns[instruction.SlotId] = instruction;
             }
         }
-        CurrentResult.ActiveTaskStatus = "Waiting for authenticated endpoint Cancel and Restore acknowledgements.";
+        CurrentResult.ActiveTaskStatus = "Waiting for sender-side authenticated endpoint Cancel and Restore dispatch.";
         CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
         UpdateAutoPartyCancellation();
         return true;
@@ -788,7 +799,7 @@ public sealed class DadCoordinatorService
         if (pendingSlots.Count > 0)
         {
             CurrentResult.ActiveTaskStatus =
-                $"Waiting for authenticated endpoint Cancel and Restore acknowledgements from {string.Join(", ", pendingSlots)}.";
+                $"Waiting for sender-side authenticated endpoint Cancel and Restore dispatch for {string.Join(", ", pendingSlots)}.";
             CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
             CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
             Publish();
@@ -1075,7 +1086,9 @@ public sealed class DadCoordinatorService
         }
 
         blockers.AddRange(activeParticipants
-            .Where(static participant => participant.State is DadParticipantState.WaitingForRequiredCharacter or DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale)
+            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                (participant.State is DadParticipantState.WaitingForRequiredCharacter or
+                    DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
             .Select(static participant => string.IsNullOrWhiteSpace(participant.StatusText) ? participant.State.ToString() : participant.StatusText));
 
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
@@ -1113,7 +1126,12 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        Transition(DadRunPhase.ClaimingSlots, DadRunStatus.Running, $"All {activeParticipants.Count} participant(s) are ready; issuing leases.");
+        var lanParticipantCount = activeSlotManifest.Slots.Count(static slot =>
+            slot.RouteKind == DadRunSlotRouteKind.LanWorker);
+        Transition(
+            DadRunPhase.ClaimingSlots,
+            DadRunStatus.Running,
+            $"All {lanParticipantCount} LAN participant(s) are ready; issuing LAN leases.");
     }
 
     private void UpdateClaims()
@@ -1125,10 +1143,9 @@ public sealed class DadCoordinatorService
             return;
 
         var livenessBlockers = activeParticipants
-            .Where(static participant => participant.State is
-                DadParticipantState.WaitingForRequiredCharacter or
-                DadParticipantState.WaitingForPostArReady or
-                DadParticipantState.Stale)
+            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                (participant.State is DadParticipantState.WaitingForRequiredCharacter or
+                    DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
             .Select(static participant => string.IsNullOrWhiteSpace(participant.StatusText)
                 ? $"{participant.AssignedSlotId} exact frozen assignment is not ready."
                 : participant.StatusText)
@@ -1148,27 +1165,18 @@ public sealed class DadCoordinatorService
         var blockers = new List<string>();
         foreach (var participant in activeParticipants)
         {
-            if (participant.State is DadParticipantState.WaitingForRequiredCharacter or DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale)
+            var frozenSlot = activeSlotManifest.Slots.Single(slot =>
+                string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
+            if (frozenSlot.RouteKind == DadRunSlotRouteKind.LanWorker &&
+                (participant.State is DadParticipantState.WaitingForRequiredCharacter or
+                    DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
             {
                 blockers.Add(string.IsNullOrWhiteSpace(participant.StatusText) ? $"{participant.ActiveCharacterKey} is not ready." : participant.StatusText);
                 continue;
             }
 
-            var frozenSlot = activeSlotManifest.Slots.Single(slot =>
-                string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
             if (frozenSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
-            {
-                if (!TryGetActiveAutoPartyProposalId(out var proposalId) ||
-                    autoPartyParticipantBridge?.GetSnapshot(
-                        proposalId,
-                        frozenSlot.SlotId,
-                        DateTimeOffset.UtcNow) is not { } remoteSnapshot ||
-                    !remoteSnapshot.CommandRouteActive(DateTimeOffset.UtcNow))
-                {
-                    blockers.Add($"{frozenSlot.SlotId} is waiting for its active AutoParty command route.");
-                }
                 continue;
-            }
 
             var request = new DadClaimRequestDto
             {
@@ -1233,10 +1241,10 @@ public sealed class DadCoordinatorService
                 return;
             }
 
-            CurrentResult.Phase = activeParticipants.Any(static participant => participant.State is
-                DadParticipantState.WaitingForRequiredCharacter or
-                DadParticipantState.WaitingForPostArReady or
-                DadParticipantState.Stale)
+            CurrentResult.Phase = activeParticipants.Any(static participant =>
+                string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                (participant.State is DadParticipantState.WaitingForRequiredCharacter or
+                    DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
                 ? DadRunPhase.WaitingForReadiness
                 : DadRunPhase.ClaimingSlots;
             CurrentResult.Status = DadRunStatus.WaitingForParticipants;
@@ -1246,7 +1254,7 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        Transition(DadRunPhase.AssemblingParty, DadRunStatus.Running, "Leases granted; assembling Dad party.");
+        Transition(DadRunPhase.AssemblingParty, DadRunStatus.Running, "LAN leases granted; assembling Dad party.");
     }
 
     private void UpdateAssembly()
@@ -1326,7 +1334,7 @@ public sealed class DadCoordinatorService
                 }
                 else
                 {
-                    blockers.Add($"{instruction.SlotId} is waiting for authenticated AutoParty Form proof.");
+                    blockers.Add($"{instruction.SlotId} is waiting for sender-side authenticated AutoParty Form dispatch.");
                 }
                 continue;
             }
@@ -1369,7 +1377,7 @@ public sealed class DadCoordinatorService
                 else
                 {
                     participant.State = DadParticipantState.AssemblyPending;
-                    blockers.Add($"{instruction.SlotId} is waiting for authenticated AutoParty Form proof.");
+                    blockers.Add($"{instruction.SlotId} is waiting for sender-side authenticated AutoParty Form dispatch.");
                 }
                 continue;
             }
@@ -1992,7 +2000,7 @@ public sealed class DadCoordinatorService
             }
             participant.State = DadParticipantState.QueuePending;
             participant.StatusText = safeCode;
-            pending.Add($"{participant.AssignedSlotId} is waiting for its exact authenticated Queue receipt.");
+            pending.Add($"{participant.AssignedSlotId} is waiting for sender-side authenticated Queue dispatch.");
         }
         return true;
     }
@@ -2173,7 +2181,7 @@ public sealed class DadCoordinatorService
                 module,
                 BuildWorkerProgressResult(
                     module,
-                    $"LAN worker command acknowledgements {workerStatuses.Count}/{lanParticipantCount}; authenticated endpoint Queue receipts remain fail-closed until exact. {summary}".Trim()),
+                    $"LAN worker command acknowledgements {workerStatuses.Count}/{lanParticipantCount}; authenticated endpoint Queue dispatch is pending. {summary}".Trim()),
                 replaceExisting: activeStepResultIndex >= 0);
             return;
         }
@@ -2183,8 +2191,8 @@ public sealed class DadCoordinatorService
             BuildWorkerProgressResult(
                 module,
                 barrierRequired && !workerStatuses.Values.Any(static status => status.Role == DadWorkerExecutionRole.QueueLeader)
-                    ? $"ADS prequeue barrier dispatched {workerStatuses.Count}/{Math.Max(1, lanParticipantCount - 1)} LAN non-leader worker(s); waiting for every worker and authenticated endpoint to reach queue-ready."
-                    : $"Assigned {workerStatuses.Count} LAN worker(s) and received exact Queue receipts from authenticated endpoints; waiting for execution status."),
+                    ? $"ADS prequeue barrier dispatched {workerStatuses.Count}/{Math.Max(1, lanParticipantCount - 1)} LAN non-leader worker(s); waiting for every LAN worker and authenticated endpoint sender dispatch to reach queue-ready."
+                    : $"Assigned {workerStatuses.Count} LAN worker(s) and sent authenticated endpoint Queue commands; waiting for execution status."),
             replaceExisting: activeStepResultIndex >= 0);
     }
 
@@ -2425,7 +2433,7 @@ public sealed class DadCoordinatorService
                     module,
                     BuildWorkerProgressResult(
                         module,
-                        $"All {lanParticipantCount} LAN worker(s) are terminal; waiting for exact authenticated endpoint Settle receipts."),
+                        $"All {lanParticipantCount} LAN worker(s) are terminal; waiting for sender-side authenticated endpoint Settle dispatch."),
                     replaceExisting: true);
                 return;
             }
@@ -2710,12 +2718,22 @@ public sealed class DadCoordinatorService
         CurrentResult.Leases = GetCurrentLeaseSnapshots();
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
 
-        var requiresDiscovery = RequiresParticipantDiscovery(nextPlan, activeSlotManifest);
-        Transition(requiresDiscovery ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots,
-            requiresDiscovery ? DadRunStatus.WaitingForParticipants : DadRunStatus.Running,
-            requiresDiscovery
-                ? $"Stop policy continuing; waiting for {nextPlan.RequiredParticipantCount} participant(s). {stopProgress.Summary}"
-                : $"Stop policy continuing; local runner ready for next run. {stopProgress.Summary}");
+        var entryPhase = DadCoordinatorRoutePhaseRules.ResolveEntryPhase(nextPlan, activeSlotManifest);
+        var lanSlotCount = activeSlotManifest?.Slots.Count(static slot =>
+            slot.RouteKind == DadRunSlotRouteKind.LanWorker) ?? nextPlan.RequiredParticipantCount;
+        Transition(
+            entryPhase,
+            entryPhase == DadRunPhase.DiscoveringParticipants
+                ? DadRunStatus.WaitingForParticipants
+                : DadRunStatus.Running,
+            entryPhase switch
+            {
+                DadRunPhase.AssemblingParty =>
+                    $"Stop policy continuing; registered-island command routes are bound. {stopProgress.Summary}",
+                DadRunPhase.DiscoveringParticipants =>
+                    $"Stop policy continuing; waiting for {lanSlotCount} LAN participant(s). {stopProgress.Summary}",
+                _ => $"Stop policy continuing; local runner ready for next run. {stopProgress.Summary}",
+            });
         return true;
     }
 
@@ -3441,15 +3459,7 @@ public sealed class DadCoordinatorService
         if (activePlan == null)
             return [];
 
-        var leases = claimService.GetLeasesForRun(activePlan.Request.RequestId).ToList();
-        if (TryGetActiveAutoPartyProposalId(out var proposalId) && autoPartyParticipantBridge != null)
-        {
-            leases.AddRange(autoPartyParticipantBridge.GetLeaseSnapshots(
-                proposalId,
-                DateTimeOffset.UtcNow));
-        }
-
-        return leases
+        return claimService.GetLeasesForRun(activePlan.Request.RequestId)
             .DistinctBy(
                 static lease => $"{lease.RunId}|{lease.SlotId}|{lease.OwningWorkerSessionId.Value}",
                 StringComparer.OrdinalIgnoreCase)
@@ -3706,10 +3716,6 @@ public sealed class DadCoordinatorService
         return participant;
     }
 
-    private static bool RequiresParticipantDiscovery(DadRunPlan plan, DadRunSlotManifest? manifest)
-        => plan.RequiresRemoteParticipants ||
-           (manifest?.Slots.Any(static slot => slot.RequiredJobId.HasValue) ?? false);
-
     private bool TryBeginLocalRequestedJobPreparation(
         DadRunPlan plan,
         DadRunSlotManifest? manifest,
@@ -3721,6 +3727,7 @@ public sealed class DadCoordinatorService
 
         var localRequestedSlots = manifest.Slots
             .Where(slot =>
+                slot.RouteKind == DadRunSlotRouteKind.LanWorker &&
                 slot.RequiredJobId.HasValue &&
                 string.Equals(
                     slot.WorkerSessionId.Value,

@@ -161,6 +161,98 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
         Assert.Contains("frozen worker session", sessionBlocker, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void AllRegisteredIslandRosterEntersAssemblyWithoutDiscoveryOrClaims()
+    {
+        var (plan, manifest, _) = BuildRegisteredIslandBoundary();
+
+        var phase = DadCoordinatorRoutePhaseRules.ResolveEntryPhase(plan, manifest);
+
+        Assert.Equal(DadRunPhase.AssemblingParty, phase);
+    }
+
+    [Fact]
+    public void MixedRosterKeepsDiscoveryForLanSlotsOnly()
+    {
+        var (plan, manifest, _) = BuildRegisteredIslandBoundary();
+        manifest.ExpectedPartySize = 2;
+        manifest.Slots.Add(new DadFrozenRunSlot
+        {
+            SlotId = "Slot2",
+            RouteKind = DadRunSlotRouteKind.LanWorker,
+            AccountKey = new DadAccountKey("account-lan"),
+            CharacterKey = new DadCharacterKey("Lan Character@World"),
+            ContentId = 2002,
+            WorkerSessionId = new DadWorkerSessionId("worker-lan"),
+            RequiredJobId = 21,
+        });
+        plan.RequiredParticipantCount = 2;
+
+        Assert.Equal(
+            DadRunPhase.DiscoveringParticipants,
+            DadCoordinatorRoutePhaseRules.ResolveEntryPhase(plan, manifest));
+    }
+
+    [Fact]
+    public void RegisteredIslandMutationUsesOnlyFrozenCommandIdentity()
+    {
+        var (plan, manifest, proposalId) = BuildRegisteredIslandBoundary();
+        var projected = new DadParticipantSnapshot
+        {
+            WorkerSessionId = new DadWorkerSessionId($"autoparty-{proposalId:N}-slot1"),
+            RegisteredIslandId = "island-remote",
+            RunId = plan.Request.RequestId,
+            AssignedSlotId = "Slot1",
+            State = DadParticipantState.Discovered,
+            IsAvailable = false,
+            IsEligibleForRun = false,
+            PostArReady = false,
+            WorldReadyStable = false,
+            Dependencies = DadDependencySnapshot.CreateChecking(summary: "Not requested."),
+        };
+
+        var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            [],
+            new DadAccountKey(CoordinatorAccount),
+            null,
+            out var resolved,
+            out var blocker,
+            (_, _) => projected);
+
+        Assert.True(accepted, blocker);
+        Assert.Empty(blocker);
+        Assert.Same(projected, Assert.Single(resolved));
+    }
+
+    [Fact]
+    public void RegisteredIslandMutationRejectsMismatchedCommandIdentity()
+    {
+        var (plan, manifest, proposalId) = BuildRegisteredIslandBoundary();
+        var mismatched = new DadParticipantSnapshot
+        {
+            WorkerSessionId = new DadWorkerSessionId($"autoparty-{proposalId:N}-slot1"),
+            RegisteredIslandId = "different-island",
+            RunId = plan.Request.RequestId,
+            AssignedSlotId = "Slot1",
+            State = DadParticipantState.Discovered,
+        };
+
+        var accepted = DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            [],
+            new DadAccountKey(CoordinatorAccount),
+            null,
+            out _,
+            out var blocker,
+            (_, _) => mismatched);
+
+        Assert.False(accepted);
+        Assert.Contains("command identity", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static (DadRunPlan Plan, DadRunSlotManifest Manifest, List<DadParticipantSnapshot> Runtime, DadParticipantSnapshot LiveCoordinator) BuildBoundary()
     {
         var references = Enumerable.Range(1, 4)
@@ -256,6 +348,60 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
                 DadCharacterSource.LocalRuntime),
             "unrelated-account");
         return (plan, manifest, runtime, liveCoordinator);
+    }
+
+    private static (DadRunPlan Plan, DadRunSlotManifest Manifest, Guid ProposalId) BuildRegisteredIslandBoundary()
+    {
+        var proposalId = Guid.NewGuid();
+        var orchestration = new DadOrchestrationIntent
+        {
+            AutoPartyProposalId = proposalId.ToString("D"),
+            QueueAuthority = DadQueueAuthority.Leader,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
+            RosterIntent = new DadRosterIntent
+            {
+                ExpectedPartySize = 1,
+                RequireRemoteParticipants = true,
+                RequireExactCharacters = true,
+            },
+        };
+        var request = new DadRunRequest
+        {
+            RequestId = $"registered-{Guid.NewGuid():N}",
+            Orchestration = orchestration,
+            PremadeDuty = new DadPremadeDutyTask(),
+        };
+        var plan = new DadRunPlan
+        {
+            Request = request,
+            Orchestration = orchestration,
+            RequiredParticipantCount = 1,
+            RequiresRemoteParticipants = true,
+            LeaderCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+            InviterCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+        };
+        var manifest = new DadRunSlotManifest
+        {
+            RequestId = request.RequestId,
+            ExpectedPartySize = 1,
+            LeaderCharacterKey = plan.LeaderCharacterKey,
+            InviterCharacterKey = plan.InviterCharacterKey,
+            Slots =
+            [
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot1",
+                    RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+                    OwnerId = "owner-remote",
+                    IslandId = "island-remote",
+                    OpaqueCharacterId = "opaque-remote",
+                    RequiredJobId = 19,
+                    IsLeader = true,
+                    IsInviter = true,
+                },
+            ],
+        };
+        return (plan, manifest, proposalId);
     }
 
     private static DadParticipantSnapshot LiveCoordinator(

@@ -368,10 +368,11 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void AcceptedRelogIsNeverDuplicatedInFlightAndAProvenNoEffectStartsANewEpoch()
+    public void AcceptedRelogWithoutObservableEffectWaitsWithoutReplay()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
+        target.ResolveCorrectCharacterFromRequest = true;
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         var waiting = StartRelog(service, target, clock);
         Assert.NotNull(waiting.RelogIssuedUtc);
@@ -382,14 +383,52 @@ public sealed class DadWakeTakeoverServiceTests
             service.Update();
         }
 
-        var nextEpoch = service.Handle(StatusRequest());
+        var waitingForTarget = service.Handle(StatusRequest());
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
-        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, nextEpoch.Phase);
-        Assert.Contains("epoch 2", nextEpoch.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waitingForTarget.Phase);
+        Assert.Contains("issued once", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("retry", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
 
         clock.Advance(TimeSpan.FromSeconds(5));
-        StartRelog(service, target, clock, expectedRelogCount: 2);
-        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+
+        ActivateTargetCharacter(target);
+        service.Update();
+
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Fact]
+    public void AcceptedRelogAfterLoginTransitionWaitsForTargetWithoutReplay()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.ResolveCorrectCharacterFromRequest = true;
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+
+        target.Snapshot.Participant.IsAvailable = false;
+        target.Snapshot.Participant.WorldReadyStable = false;
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+
+        target.Snapshot.Participant.IsAvailable = true;
+        target.Snapshot.Participant.WorldReadyStable = true;
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+
+        var waitingForTarget = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waitingForTarget.Phase);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Contains("issued once", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
+
+        ActivateTargetCharacter(target);
+        service.Update();
+
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
     }
 
     [Theory]
