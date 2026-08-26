@@ -16,10 +16,11 @@
 - Wake cancellation, failure, disconnect, Stop All, authenticated Restore, and disposal no longer relog the pre-run
   character. DAD releases its owned leases and restores the captured AutoRetainer Multi Mode state on the character that
   is currently loaded.
-- Sender coordination treats each exact nonexpired registered-island proposal binding as a command destination immediately.
-  All-island rosters enter party assembly directly; mixed rosters discover, ready, claim, and lease only LAN slots. The
-  encrypted invite locator remains required Form command data, with no Dad-island readiness, Post-AR, world, dependency,
-  lease, acknowledgement, or PartyList ceremony.
+- Sender coordination keeps each exact nonexpired registered-island proposal binding sufficient after its one-way command
+  dispatch without rechecking live directory projection. All-island rosters enter party assembly directly; mixed rosters
+  discover, ready, claim, lease, and validate travel only for LAN slots. The encrypted invite locator remains required
+  Form command data, with no Dad-island readiness, Post-AR, world/location, dependency, lease, acknowledgement, or
+  PartyList ceremony.
 - Authenticated receivers retain the frozen run/slot context and publish invitation locators before relog/job readiness,
   then execute the existing bounded takeover, job, formation, queue, settlement, cancellation, and restoration paths
   locally without emitting execution-operation receipts. Idle AutoRetainer is immediately eligible for the existing

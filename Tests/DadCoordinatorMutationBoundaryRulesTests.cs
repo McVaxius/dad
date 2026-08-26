@@ -253,6 +253,87 @@ public sealed class DadCoordinatorMutationBoundaryRulesTests
         Assert.Contains("command identity", blocker, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void MixedRosterStillRequiresLanPostArAndWorldReadiness()
+    {
+        var (plan, manifest, proposalId) = BuildRegisteredIslandBoundary();
+        var lanSlot = new DadFrozenRunSlot
+        {
+            SlotId = "Slot2",
+            RouteKind = DadRunSlotRouteKind.LanWorker,
+            AccountKey = new DadAccountKey("account-lan"),
+            CharacterKey = new DadCharacterKey("Lan Character@World"),
+            ContentId = 2002,
+            WorkerSessionId = new DadWorkerSessionId("worker-lan"),
+            RequiredJobId = 21,
+        };
+        manifest.Slots.Add(lanSlot);
+        manifest.ExpectedPartySize = 2;
+        plan.RequiredParticipantCount = 2;
+        var island = new DadParticipantSnapshot
+        {
+            WorkerSessionId = new DadWorkerSessionId($"autoparty-{proposalId:N}-slot1"),
+            RegisteredIslandId = "island-remote",
+            RunId = plan.Request.RequestId,
+            AssignedSlotId = "Slot1",
+            State = DadParticipantState.Discovered,
+            IsAvailable = false,
+            IsEligibleForRun = false,
+            PostArReady = false,
+            WorldReadyStable = false,
+        };
+        var lan = new DadParticipantSnapshot
+        {
+            WorkerSessionId = lanSlot.WorkerSessionId,
+            ManagedAccountKey = lanSlot.AccountKey,
+            ActiveCharacterKey = lanSlot.CharacterKey,
+            Character = Character(
+                lanSlot.CharacterKey.Value,
+                lanSlot.AccountKey.Value,
+                lanSlot.ContentId,
+                DadCharacterSource.PeerRuntime),
+            IsAvailable = true,
+            IsEligibleForRun = true,
+            State = DadParticipantState.Discovered,
+            PostArReady = false,
+            WorldReadyStable = false,
+        };
+
+        Assert.False(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            [lan],
+            new DadAccountKey(CoordinatorAccount),
+            null,
+            out _,
+            out var postArBlocker,
+            (_, _) => island));
+        Assert.Contains("post-AR readiness", postArBlocker, StringComparison.OrdinalIgnoreCase);
+
+        lan.PostArReady = true;
+        Assert.False(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            [lan],
+            new DadAccountKey(CoordinatorAccount),
+            null,
+            out _,
+            out var worldBlocker,
+            (_, _) => island));
+        Assert.Contains("world-ready-stable", worldBlocker, StringComparison.OrdinalIgnoreCase);
+
+        lan.WorldReadyStable = true;
+        Assert.True(DadCoordinatorMutationBoundaryRules.TryResolveStrictParticipants(
+            plan,
+            manifest,
+            [lan],
+            new DadAccountKey(CoordinatorAccount),
+            null,
+            out _,
+            out var blocker,
+            (_, _) => island), blocker);
+    }
+
     private static (DadRunPlan Plan, DadRunSlotManifest Manifest, List<DadParticipantSnapshot> Runtime, DadParticipantSnapshot LiveCoordinator) BuildBoundary()
     {
         var references = Enumerable.Range(1, 4)

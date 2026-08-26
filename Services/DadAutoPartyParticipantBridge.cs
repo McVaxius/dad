@@ -340,7 +340,7 @@ internal sealed class DadAutoPartyParticipantBridge
             }
 
             var snapshot = ToSnapshot(proposalId, proposal, runtime);
-            if (!HasActiveCommandBinding(proposal, runtime, now))
+            if (!snapshot.CommandRouteActive(now))
             {
                 blocker = $"{slot.SlotId} AutoParty command route is unavailable ({snapshot.SafeCode}).";
                 return BuildParticipant(proposalId, slot, snapshot, routeActive: false, blocker);

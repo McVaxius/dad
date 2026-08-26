@@ -1070,7 +1070,7 @@ public sealed class DadCoordinatorService
         {
             var travelProof = DadCoordinatorTravelRules.ValidateParticipants(
                 activeSlotManifest.CoordinatorTravelTarget,
-                activeParticipants,
+                DadCoordinatorTravelRules.SelectLanParticipants(activeParticipants),
                 DateTime.UtcNow);
             if (travelProof.ImmutableTargetChanged)
             {
@@ -3247,7 +3247,7 @@ public sealed class DadCoordinatorService
         {
             var travelProof = DadCoordinatorTravelRules.ValidateParticipants(
                 activeSlotManifest.CoordinatorTravelTarget,
-                refreshedParticipants,
+                DadCoordinatorTravelRules.SelectLanParticipants(refreshedParticipants),
                 DateTime.UtcNow);
             if (!travelProof.Ready)
             {

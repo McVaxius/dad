@@ -263,27 +263,18 @@ public sealed class DadAutoPartyParticipantBridgeTests
     }
 
     [Fact]
-    public void ExactProposalBindingIsCommandReadyBeforeReadinessLeaseOrProposalDispatch()
+    public void DispatchedProposalBindingRemainsCommandReadyWithoutReplyOrLiveDirectoryRefresh()
     {
         var now = DateTimeOffset.UtcNow;
         var configuration = ActiveConfiguration();
         configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
         var bridge = new DadAutoPartyParticipantBridge(configuration);
+        var directoryAvailable = true;
+        bridge.ConfigureDirectoryAuthorityGate((_, _) => directoryAvailable
+            ? null
+            : "Current directory refresh is unavailable.");
         var (plan, manifest, proposalId) = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
         Assert.True(bridge.TryBindRun(plan, manifest, now, out var blocker), blocker);
-
-        var participant = bridge.ResolveParticipant(proposalId, manifest.Slots[0], now, out blocker);
-
-        Assert.Empty(blocker);
-        Assert.Equal(DadParticipantState.Discovered, participant.State);
-        Assert.False(participant.IsAvailable);
-        Assert.False(participant.IsEligibleForRun);
-        Assert.False(participant.PostArReady);
-        Assert.False(participant.WorldReadyStable);
-        Assert.False(participant.Dependencies.IsReady);
-        Assert.Equal(DadClaimState.None, participant.ClaimState);
-        Assert.Equal(DadParticipantLeaseState.None, participant.LeaseState);
-        Assert.Contains("readiness is not requested", participant.StatusText, StringComparison.OrdinalIgnoreCase);
 
         Assert.True(bridge.ObserveInviteTarget(
             Header(RemoteIsland, LocalIsland, now),
@@ -320,6 +311,21 @@ public sealed class DadAutoPartyParticipantBridgeTests
         Assert.Equal(
             DadAutoPartyParticipantStage.Formed,
             bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
+
+        directoryAvailable = false;
+        configuration.RemoteBindings.Clear();
+        var participant = bridge.ResolveParticipant(proposalId, manifest.Slots[0], now, out blocker);
+
+        Assert.Empty(blocker);
+        Assert.Equal(DadParticipantState.Discovered, participant.State);
+        Assert.False(participant.IsAvailable);
+        Assert.False(participant.IsEligibleForRun);
+        Assert.False(participant.PostArReady);
+        Assert.False(participant.WorldReadyStable);
+        Assert.False(participant.Dependencies.IsReady);
+        Assert.Equal(DadClaimState.None, participant.ClaimState);
+        Assert.Equal(DadParticipantLeaseState.None, participant.LeaseState);
+        Assert.Equal("dad-remote-form-dispatched", participant.StatusText);
     }
 
     [Fact]

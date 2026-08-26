@@ -130,6 +130,12 @@ public static class DadCoordinatorTravelRules
         };
     }
 
+    internal static IReadOnlyList<DadParticipantSnapshot> SelectLanParticipants(
+        IEnumerable<DadParticipantSnapshot> participants)
+        => participants
+            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            .ToList();
+
     public static bool IsFreshComplete(DadWorldLocationObservation? location, DateTime nowUtc)
     {
         if (location is not { IsComplete: true })
