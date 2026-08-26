@@ -368,31 +368,91 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void AcceptedRelogWithoutObservableEffectWaitsWithoutReplay()
+    public void AcceptedRelogDoesNotVerifyDestinationInTheCommandCycle()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
-        target.ResolveCorrectCharacterFromRequest = true;
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        Prepare(service, target);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        var relogAt = clock.Now.AddSeconds(5);
+        service.Handle(Go(DadWakeCommitKind.Relog, relogAt));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var capturesAfterCommand = 0;
+        target.OnCapture = _ =>
+        {
+            if (target.Actions.Contains("RelogCharacter"))
+                capturesAfterCommand++;
+        };
+
+        service.Update();
+
+        target.OnCapture = null;
+        Assert.Equal(0, capturesAfterCommand);
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.GetActiveStatus()!.Phase);
+        Assert.Equal("Other Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Fact]
+    public void StableSourceWaitsIndefinitelyWithoutRelogReplay()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         var waiting = StartRelog(service, target, clock);
         Assert.NotNull(waiting.RelogIssuedUtc);
 
-        for (var update = 0; update < 3; update++)
-        {
-            clock.Advance(TimeSpan.FromSeconds(5));
-            service.Update();
-        }
+        clock.Advance(TimeSpan.FromHours(6));
+        service.Update();
 
         var waitingForTarget = service.Handle(StatusRequest());
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
         Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waitingForTarget.Phase);
-        Assert.Contains("issued once", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("retry", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DadWakeTakeoverStatus.RelogIssued, waitingForTarget.Status);
+        Assert.Contains("source character", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Other Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
 
-        clock.Advance(TimeSpan.FromSeconds(5));
-        service.Update();
+        for (var update = 0; update < 5; update++)
+            service.Update();
+
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
 
+    [Fact]
+    public void SourceWorldInstabilityAloneDoesNotProveIdentityTransition()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+
+        target.Snapshot.Participant.WorldReadyStable = false;
+        service.Update();
+        target.Snapshot.Participant.WorldReadyStable = true;
+        service.Update();
+
+        var waiting = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waiting.Phase);
+        Assert.Equal(DadWakeTakeoverStatus.RelogIssued, waiting.Status);
+        Assert.Contains("source character", waiting.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Fact]
+    public void SourceDisappearsThenExactTargetCompletesWithoutRelogReplay()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+
+        target.Snapshot.Participant.IsAvailable = false;
+        target.Snapshot.Participant.WorldReadyStable = false;
+        service.Update();
+
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
         ActivateTargetCharacter(target);
         service.Update();
 
@@ -401,34 +461,47 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void AcceptedRelogAfterLoginTransitionWaitsForTargetWithoutReplay()
+    public void SourceReturningAfterIdentityTransitionFailsWithoutRelogReplay()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
-        target.ResolveCorrectCharacterFromRequest = true;
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         StartRelog(service, target, clock);
 
         target.Snapshot.Participant.IsAvailable = false;
         target.Snapshot.Participant.WorldReadyStable = false;
-        clock.Advance(TimeSpan.FromSeconds(5));
         service.Update();
-
         target.Snapshot.Participant.IsAvailable = true;
         target.Snapshot.Participant.WorldReadyStable = true;
-        clock.Advance(TimeSpan.FromSeconds(5));
         service.Update();
 
-        var waitingForTarget = service.Handle(StatusRequest());
-        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, waitingForTarget.Phase);
+        var failed = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, failed.Status);
+        Assert.Contains("returned after live identity-transition proof", failed.BlockedReason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
-        Assert.Contains("issued once", waitingForTarget.Summary, StringComparison.OrdinalIgnoreCase);
+    }
 
-        ActivateTargetCharacter(target);
+    [Fact]
+    public void DifferentStableWrongCharacterFailsAfterTransitionProofWithoutRelogReplay()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+
+        target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Unexpected Character@World");
+        target.Snapshot.Participant.Character.CharacterKey = "Unexpected Character@World";
+        target.Snapshot.Participant.Character.ContentId = 30;
+        target.Snapshot.Participant.IsAvailable = true;
+        target.Snapshot.Participant.WorldReadyStable = true;
         service.Update();
 
-        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        var failed = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, failed.Status);
+        Assert.Contains("instead of frozen target", failed.BlockedReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("after identity-transition proof", failed.BlockedReason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.DoesNotContain("RelogTarget:Other Character@World", target.Actions);
     }
 
     [Theory]
@@ -498,8 +571,7 @@ public sealed class DadWakeTakeoverServiceTests
         var target = FakeTarget.Valid(wrongCharacter: true);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         StartRelog(service, target, clock);
-        target.Snapshot.CorrectCharacter = true;
-        target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Target Character@World");
+        ActivateTargetCharacter(target);
 
         clock.Advance(TimeSpan.FromSeconds(5));
         service.Update();
@@ -509,7 +581,29 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void CompletedTakeoverRestoresPriorCharacterBeforeExactMultiModeState()
+    public void WaitingForCharacterUsesForcedLiveCaptureInsteadOfCachedParticipantIdentity()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        target.CaptureForceFlags.Clear();
+        target.OnCapture = forceExternalRefresh =>
+        {
+            if (forceExternalRefresh)
+                ActivateTargetCharacter(target);
+        };
+
+        service.Update();
+
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        Assert.NotEmpty(target.CaptureForceFlags);
+        Assert.All(target.CaptureForceFlags, Assert.True);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Fact]
+    public void CompletedTakeoverRestoresMultiModeOnCurrentTargetWithoutCharacterRestoration()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
@@ -519,42 +613,81 @@ public sealed class DadWakeTakeoverServiceTests
         service.Update();
         Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
 
-        target.ResolveCorrectCharacterFromRequest = true;
-        target.AutoApplyRelogTarget = true;
         var cancel = Request();
         cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
-        var pending = service.Handle(cancel);
-        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(pending));
-
-        target.Snapshot.DadOwnsCharacterPostprocess = true;
-        service.OnCharacterPostprocessReady();
-        service.Update();
-        service.Update();
-
         var restored = service.Handle(cancel);
         Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(restored));
-        Assert.Equal("Other Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.Equal("Target Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
         Assert.True(target.Snapshot.MultiModeEnabled);
-        Assert.Equal(1, target.Actions.Count(static action =>
-            action == "RelogTarget:Other Character@World"));
-        Assert.True(
-            target.Actions.IndexOf("RelogTarget:Other Character@World") <
-            target.Actions.LastIndexOf("SetMultiMode:True"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.DoesNotContain("RelogTarget:Other Character@World", target.Actions);
 
         service.Update();
-        Assert.Equal(1, target.Actions.Count(static action =>
-            action == "RelogTarget:Other Character@World"));
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
     }
 
     [Fact]
-    public void CancellationAfterResetRestoresMultiModeWithoutRelogWhenPriorCharacterIsStillActive()
+    public void DisconnectAfterReadyCleansUpInPlaceWithoutCharacterRestoration()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ActivateTargetCharacter(target);
+        service.Update();
+
+        service.OnCoordinatorDisconnected();
+
+        Assert.Equal("Target Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.True(target.Snapshot.MultiModeEnabled);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.DoesNotContain("RelogTarget:Other Character@World", target.Actions);
+    }
+
+    [Fact]
+    public void StopAllAfterReadyCleansUpInPlaceWithoutCharacterRestoration()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ActivateTargetCharacter(target);
+        service.Update();
+
+        service.StopAll("Stop-all in-place cleanup test.");
+
+        Assert.Equal("Target Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.True(target.Snapshot.MultiModeEnabled);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.DoesNotContain("RelogTarget:Other Character@World", target.Actions);
+    }
+
+    [Fact]
+    public void DisposalAfterReadyCleansUpInPlaceWithoutCharacterRestoration()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ActivateTargetCharacter(target);
+        service.Update();
+
+        service.Dispose();
+
+        Assert.Equal("Target Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+        Assert.True(target.Snapshot.MultiModeEnabled);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.DoesNotContain("RelogTarget:Other Character@World", target.Actions);
+    }
+
+    [Fact]
+    public void CancellationAfterResetRestoresMultiModeOnCurrentCharacterWithoutRelog()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         Prepare(service, target);
         ExecuteGo(service, clock, DadWakeCommitKind.Reset);
-        target.ResolveCorrectCharacterFromRequest = true;
         var cancel = Request();
         cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
 
@@ -600,11 +733,9 @@ public sealed class DadWakeTakeoverServiceTests
         var target = FakeTarget.Valid(wrongCharacter: true);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         StartRelog(service, target, clock);
-        target.Snapshot.CorrectCharacter = true;
+        ActivateTargetCharacter(target);
         target.Snapshot.PostArReady = false;
         target.Snapshot.Participant.PostArReady = false;
-        target.Snapshot.Participant.WorldReadyStable = true;
-        target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Target Character@World");
 
         service.Update();
 
@@ -640,7 +771,7 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.Equal(3, target.Actions.Count(static action => action == "Finish:Stop"));
 
         ExecuteGo(service, clock, DadWakeCommitKind.Relog);
-        target.Snapshot.CorrectCharacter = true;
+        ActivateTargetCharacter(target);
         service.Update();
 
         Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
@@ -654,8 +785,7 @@ public sealed class DadWakeTakeoverServiceTests
         var target = FakeTarget.Valid(wrongCharacter: true);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
         StartRelog(service, target, clock);
-        target.Snapshot.CorrectCharacter = true;
-        target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Target Character@World");
+        ActivateTargetCharacter(target);
         target.OnSuppressionReleased = () => target.Snapshot.Participant.WorldReadyStable = false;
 
         service.Update();
@@ -1531,6 +1661,7 @@ public sealed class DadWakeTakeoverServiceTests
         target.Snapshot.Participant.WorldReadyStable = true;
         target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Target Character@World");
         target.Snapshot.Participant.Character.CharacterKey = "Target Character@World";
+        target.Snapshot.Participant.Character.ContentId = 20;
         target.Snapshot.LifestreamAvailable = true;
         target.Snapshot.LifestreamBusy = false;
         target.Snapshot.TitleSurface = DadTitleSurface.None;
@@ -1669,7 +1800,6 @@ public sealed class DadWakeTakeoverServiceTests
         public bool DismissTitleMovieAccepted { get; set; } = true;
         public bool ThrowOnTitleLogin { get; set; }
         public bool ResolveCorrectCharacterFromRequest { get; set; }
-        public bool AutoApplyRelogTarget { get; set; }
 
         public static FakeTarget Valid(bool wrongCharacter)
         {
@@ -1870,17 +2000,7 @@ public sealed class DadWakeTakeoverServiceTests
         {
             Actions.Add(command.ToString());
             if (command == DadWakeTakeoverCommand.RelogCharacter)
-            {
                 Actions.Add($"RelogTarget:{request.CharacterKey.Value}");
-                if (AutoApplyRelogTarget)
-                {
-                    Snapshot.Participant.ActiveCharacterKey = request.CharacterKey;
-                    Snapshot.Participant.Character.CharacterKey = request.CharacterKey.Value;
-                    Snapshot.Participant.IsAvailable = true;
-                    Snapshot.Participant.WorldReadyStable = true;
-                    Snapshot.CorrectCharacter = true;
-                }
-            }
             OnCommandExecuted?.Invoke(command);
             return DadWakeTakeoverActionResult.Accepted();
         }

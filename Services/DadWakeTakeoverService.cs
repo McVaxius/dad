@@ -392,7 +392,7 @@ public sealed class DadWakeTakeoverService : IDisposable
                 BuildReadinessWaitSummary(snapshot),
                 releaseReservation: operation.ReservationRequested && !IsOwnedReservationWait(snapshot));
         }
-        if (!TryCaptureOriginalState(operation, snapshot, out var captureBlocker))
+        if (!TryCaptureOriginalMultiModeState(operation, snapshot, out var captureBlocker))
             return Block(operation, captureBlocker, cleanup: true);
 
         DadVermaxionReservationStatus? reservation = null;
@@ -479,25 +479,21 @@ public sealed class DadWakeTakeoverService : IDisposable
         return BuildResult(operation, snapshot);
     }
 
-    private static bool TryCaptureOriginalState(
+    private static bool TryCaptureOriginalMultiModeState(
         OperationState operation,
         DadWakeTakeoverTargetSnapshot snapshot,
         out string blocker)
     {
         blocker = string.Empty;
-        if (operation.OriginalStateCaptured)
+        if (operation.OriginalMultiModeStateCaptured)
             return true;
-        var participant = snapshot.Participant;
-        if (participant == null || participant.ActiveCharacterKey.IsEmpty ||
-            !participant.IsAvailable || !participant.WorldReadyStable ||
-            !snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy)
+        if (!snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy)
         {
-            blocker = "Exact pre-takeover character and AutoRetainer Multi Mode state could not be proven; no takeover mutation was allowed.";
+            blocker = "The pre-takeover AutoRetainer Multi Mode state could not be proven; no takeover mutation was allowed.";
             return false;
         }
-        operation.OriginalCharacterKey = participant.ActiveCharacterKey;
         operation.OriginalMultiModeEnabled = snapshot.MultiModeEnabled;
-        operation.OriginalStateCaptured = true;
+        operation.OriginalMultiModeStateCaptured = true;
         return true;
     }
 
@@ -588,6 +584,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         operation.TitleIdleOwnershipProven = true;
 
+        if (!TryCaptureOriginalMultiModeState(operation, snapshot, out var captureBlocker))
+            return Block(operation, captureBlocker, cleanup: true);
+
         if (snapshot.MultiModeEnabled && !operation.TitleIdleMultiModeDisableAttempted)
         {
             // Mark before invoking so rejection, reentrancy, or a lost reply can never repeat the
@@ -633,21 +632,13 @@ public sealed class DadWakeTakeoverService : IDisposable
             return BuildResult(operation, snapshot);
         }
 
-        if (operation.TitleIdleNextLoginAttemptUtc.HasValue && utcNow() < operation.TitleIdleNextLoginAttemptUtc.Value)
-        {
-            operation.Summary = $"Lifestream explicitly rejected the prior title login; waiting for the five-second retry cadence and fresh CanAutoLogin proof before attempt {operation.TitleIdleLoginAttemptCount + 1}.";
-            operation.UpdatedAtUtc = utcNow();
-            return BuildResult(operation, snapshot);
-        }
-
         if (!operation.TitleIdleRelogCommandAttempted)
         {
-            // Mark before invoking: an exception is uncertain and must never replay. Only an
-            // explicit false proves that Lifestream did not enqueue the login and permits retry.
+            // Mark before invoking so no reply, rejection, exception, or reentrancy can ever
+            // produce a second login command for this frozen target.
             operation.TitleIdleRelogCommandAttempted = true;
             operation.RelogCommandAttempted = true;
             operation.AnyTakeoverMutation = true;
-            operation.TitleIdleLoginAttemptCount++;
             DadLifestreamLoginResult login;
             try
             {
@@ -659,28 +650,13 @@ public sealed class DadWakeTakeoverService : IDisposable
                     DadLifestreamLoginOutcome.Uncertain,
                     $"Lifestream title-login invocation threw {exception.GetType().Name}.");
             }
-            if (login.Outcome == DadLifestreamLoginOutcome.ExplicitFalse)
-            {
-                operation.TitleIdleRelogCommandAttempted = false;
-                operation.RelogCommandAttempted = false;
-                operation.TitleIdleNextLoginAttemptUtc = utcNow() + TimeSpan.FromSeconds(5);
-                operation.Summary = $"{login.Summary} DAD will retry only after the five-second cadence and a fresh exact title/route/CanAutoLogin proof.";
-                operation.UpdatedAtUtc = utcNow();
-                return BuildResult(operation, snapshot);
-            }
-            if (login.Outcome == DadLifestreamLoginOutcome.Uncertain)
-            {
+            if (login.Outcome != DadLifestreamLoginOutcome.Accepted)
                 return Block(
                     operation,
-                    $"{login.Summary} The title login will not replay because the IPC outcome is uncertain.",
+                    $"{login.Summary} The one-shot title login will not replay.",
                     cleanup: true);
-            }
 
-            var issuedAt = utcNow();
-            operation.RelogIssuedUtc = issuedAt;
-            operation.RelogAcceptedAtUtc = issuedAt;
-            operation.RelogTransitionObserved = true;
-            operation.TitleIdleNextLoginAttemptUtc = null;
+            operation.RelogIssuedUtc = utcNow();
         }
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
@@ -879,7 +855,10 @@ public sealed class DadWakeTakeoverService : IDisposable
             if (operation.Phase == DadWakeTakeoverPhase.ResetCommitted)
                 ExecuteReset(operation);
             else
+            {
                 ExecuteRelog(operation);
+                return;
+            }
         }
 
         if (operation.Phase == DadWakeTakeoverPhase.WaitingForCharacter)
@@ -979,67 +958,85 @@ public sealed class DadWakeTakeoverService : IDisposable
             Block(operation, blocker, cleanup: true);
             return;
         }
+        if (IsExactStableLiveDestination(snapshot.Participant, operation.ActiveRequest.CharacterKey))
+        {
+            operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
+            operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
+            operation.Summary = "Correct character required no relog; verifying the pre-AR destination gate.";
+            operation.UpdatedAtUtc = utcNow();
+            VerifyDestination(operation);
+            return;
+        }
         if (!CanExecuteRelogNow(operation, snapshot))
         {
-            if (snapshot.AccountMatches && snapshot.CharacterKnownToAccount &&
-                IsWorldReadyStable(snapshot) &&
-                (!snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed || snapshot.ExternalAutomationHeld))
-            {
-                BeginNextEpoch(operation, "Committed relog lost its operation-owned safety lease; returning to the readiness handshake.");
-                return;
-            }
             operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
             operation.UpdatedAtUtc = utcNow();
             return;
         }
 
-        if (!snapshot.CorrectCharacter && !operation.RelogCommandAttempted)
+        if (operation.RelogCommandAttempted)
+            return;
+
+        if (!HasCompleteLiveIdentity(snapshot.Participant))
         {
-            if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
-                return;
-
-            // Nothing may intervene between this forced safety read and the relog command.
-            snapshot = Capture(operation, forceExternalRefresh: true);
-            blocker = ValidateCoreTarget(snapshot, operation.ActiveRequest);
-            if (!string.IsNullOrWhiteSpace(blocker))
-            {
-                Block(operation, blocker, cleanup: true);
-                return;
-            }
-            if (!CanExecuteRelogNow(operation, snapshot))
-            {
-                operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
-                operation.UpdatedAtUtc = utcNow();
-                return;
-            }
-            if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
-                return;
-
-            operation.RelogCommandAttempted = true;
-            operation.AnyTakeoverMutation = true;
-            var relog = Invoke(
-                () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.ActiveRequest),
-                $"send /ays relog {operation.ActiveRequest.CharacterKey}");
-            if (!relog.Success)
-            {
-                BeginNextEpoch(operation, relog.Error);
-                return;
-            }
-            var issuedAt = utcNow();
-            operation.RelogIssuedUtc = issuedAt;
-            operation.RelogAcceptedAtUtc = issuedAt;
-            operation.RelogSourceCharacterKey = snapshot.Participant.ActiveCharacterKey;
-            operation.RelogTransitionObserved = false;
-            operation.StableWrongCharacterSinceUtc = snapshot.Participant.WorldReadyStable ? issuedAt : null;
+            operation.Summary = "Committed relog is waiting for a complete live source character identity; no command was issued.";
+            operation.UpdatedAtUtc = utcNow();
+            return;
         }
+
+        if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
+            return;
+
+        // Nothing may intervene between this forced safety read and the relog command.
+        snapshot = Capture(operation, forceExternalRefresh: true);
+        blocker = ValidateCoreTarget(snapshot, operation.ActiveRequest);
+        if (!string.IsNullOrWhiteSpace(blocker))
+        {
+            Block(operation, blocker, cleanup: true);
+            return;
+        }
+        if (IsExactStableLiveDestination(snapshot.Participant, operation.ActiveRequest.CharacterKey))
+        {
+            operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
+            operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
+            operation.Summary = "Correct character required no relog; verifying the pre-AR destination gate.";
+            operation.UpdatedAtUtc = utcNow();
+            VerifyDestination(operation);
+            return;
+        }
+        if (!CanExecuteRelogNow(operation, snapshot))
+        {
+            operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
+            operation.UpdatedAtUtc = utcNow();
+            return;
+        }
+        if (!HasCompleteLiveIdentity(snapshot.Participant))
+        {
+            operation.Summary = "Committed relog is waiting for a complete live source character identity; no command was issued.";
+            operation.UpdatedAtUtc = utcNow();
+            return;
+        }
+        if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
+            return;
+
+        operation.RelogSourceCharacterKey = snapshot.Participant.ActiveCharacterKey;
+        operation.RelogIdentityTransitionObserved = false;
+        operation.RelogCommandAttempted = true;
+        operation.AnyTakeoverMutation = true;
+        var relog = Invoke(
+            () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.ActiveRequest),
+            $"send /ays relog {operation.ActiveRequest.CharacterKey}");
+        if (!relog.Success)
+        {
+            Block(operation, $"{relog.Error} The one-shot relog command will not replay.", cleanup: true);
+            return;
+        }
+        operation.RelogIssuedUtc = utcNow();
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
-        operation.Summary = snapshot.CorrectCharacter
-            ? "Correct character required no relog; verifying the pre-AR destination gate."
-            : $"Relog issued for {operation.ActiveRequest.CharacterKey}; retaining DAD suppression through login.";
+        operation.Summary = $"Relog issued for {operation.ActiveRequest.CharacterKey}; retaining DAD suppression through login.";
         operation.UpdatedAtUtc = utcNow();
-        VerifyDestination(operation);
     }
 
     private bool PrepareHomeWorldBeforeRelog(
@@ -1100,26 +1097,62 @@ public sealed class DadWakeTakeoverService : IDisposable
             Block(operation, blocker, cleanup: true);
             return;
         }
-        if (!snapshot.CorrectCharacter)
+        var participant = snapshot.Participant;
+        if (!HasCompleteLiveIdentity(participant))
         {
-            if (operation.TitleIdleRelogCommandAttempted)
+            if (operation.RelogCommandAttempted)
             {
-                operation.Summary = !snapshot.Participant.IsAvailable
-                    ? "AutoRetainer title login started a transition; waiting for a local character without timeout."
-                    : !snapshot.Participant.WorldReadyStable
-                        ? "AutoRetainer title login is waiting for world/login stability without timeout."
-                        : $"AutoRetainer title login settled on {snapshot.Participant.ActiveCharacterKey} instead of {operation.ActiveRequest.CharacterKey}; waiting without replay or another command.";
-                operation.UpdatedAtUtc = utcNow();
-                return;
+                operation.RelogIdentityTransitionObserved = true;
+                operation.Summary = "A real relog identity transition was observed; waiting for a complete live local character identity with a nonzero Content ID.";
             }
-            operation.Summary = BuildRelogWaitSummary(operation, snapshot);
+            else
+            {
+                operation.Summary = "Waiting for a complete live local character identity with a nonzero Content ID.";
+            }
             operation.UpdatedAtUtc = utcNow();
             return;
         }
-
-        if (!IsDestinationReady(snapshot))
+        if (!participant.WorldReadyStable)
         {
-            operation.Summary = $"Waiting for {operation.ActiveRequest.CharacterKey} world-ready stability with AutoRetainer off.";
+            if (operation.RelogCommandAttempted &&
+                !operation.RelogSourceCharacterKey.IsEmpty &&
+                !string.Equals(
+                    participant.ActiveCharacterKey.Value,
+                    operation.RelogSourceCharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                operation.RelogIdentityTransitionObserved = true;
+            }
+            operation.Summary = "Waiting for live world/login stability; the relog command will not replay.";
+            operation.UpdatedAtUtc = utcNow();
+            return;
+        }
+        if (IsExactLiveDestination(participant, operation.ActiveRequest.CharacterKey))
+        {
+            if (operation.RelogCommandAttempted)
+                operation.RelogIdentityTransitionObserved = true;
+        }
+        else
+        {
+            var sourceStillLoaded = !operation.RelogSourceCharacterKey.IsEmpty &&
+                                    string.Equals(
+                                        participant.ActiveCharacterKey.Value,
+                                        operation.RelogSourceCharacterKey.Value,
+                                        StringComparison.OrdinalIgnoreCase);
+            if (sourceStillLoaded && !operation.RelogIdentityTransitionObserved)
+            {
+                operation.Summary = $"Relog was accepted once, but source character {operation.RelogSourceCharacterKey} is still loaded; waiting without timeout for actual identity-transition evidence.";
+                operation.UpdatedAtUtc = utcNow();
+                return;
+            }
+
+            operation.RelogIdentityTransitionObserved = true;
+            Block(
+                operation,
+                sourceStillLoaded
+                    ? $"Source character {operation.RelogSourceCharacterKey} returned after live identity-transition proof instead of frozen target {operation.ActiveRequest.CharacterKey}."
+                    : $"The one-shot relog settled on live character {participant.ActiveCharacterKey} instead of frozen target {operation.ActiveRequest.CharacterKey} after identity-transition proof.",
+                cleanup: true);
             return;
         }
 
@@ -1161,11 +1194,20 @@ public sealed class DadWakeTakeoverService : IDisposable
             Block(operation, blocker, cleanup: true);
             return;
         }
-        if (!IsDestinationReady(snapshot))
+        if (HasCompleteLiveIdentity(snapshot.Participant) &&
+            snapshot.Participant.WorldReadyStable &&
+            !IsExactLiveDestination(snapshot.Participant, operation.ActiveRequest.CharacterKey))
         {
-            operation.Summary = snapshot.CorrectCharacter
-                ? "Destination changed while DAD leases were releasing; waiting for world/AR/Lifestream safety to stabilize again."
-                : BuildRelogWaitSummary(operation, snapshot);
+            Block(
+                operation,
+                $"The one-shot relog settled on live character {snapshot.Participant.ActiveCharacterKey} instead of frozen target {operation.ActiveRequest.CharacterKey} after identity-transition proof.",
+                cleanup: true);
+            return;
+        }
+        if (!IsExactStableLiveDestination(snapshot.Participant, operation.ActiveRequest.CharacterKey))
+        {
+            operation.Summary = BuildLiveDestinationWaitSummary(operation, snapshot);
+            operation.UpdatedAtUtc = utcNow();
             return;
         }
 
@@ -1179,19 +1221,15 @@ public sealed class DadWakeTakeoverService : IDisposable
             activeOperationKey = string.Empty;
     }
 
-    private static string BuildRelogWaitSummary(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+    private static string BuildLiveDestinationWaitSummary(
+        OperationState operation,
+        DadWakeTakeoverTargetSnapshot snapshot)
     {
-        if (!snapshot.Participant.IsAvailable)
-            return "Relog command started a login transition; waiting for a local character without timeout.";
+        if (!HasCompleteLiveIdentity(snapshot.Participant))
+            return "Waiting for a complete live local character identity with a nonzero Content ID; the relog command will not replay.";
         if (!snapshot.Participant.WorldReadyStable)
-            return "Relog command started a world/login transition; waiting for stability without timeout.";
-        if (snapshot.AutoRetainerBusy)
-            return "Relog command is in progress; AutoRetainer is busy.";
-        if (!snapshot.LifestreamAvailable || snapshot.LifestreamBusy)
-            return "Relog command is in progress; Lifestream is busy or unavailable.";
-        if (snapshot.MultiModeEnabled || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed)
-            return "Waiting for the committed relog destination with Multi Mode off and DAD suppression ownership verified.";
-        return $"Relog was issued once; waiting without timeout for {operation.ActiveRequest.CharacterKey}. Cancel to stop.";
+            return "Waiting for live world/login stability; the relog command will not replay.";
+        return $"Relog was issued once; waiting for fresh live target {operation.ActiveRequest.CharacterKey}.";
     }
 
     private DadWakeTakeoverResultDto Cancel(OperationState operation, string reason)
@@ -1220,7 +1258,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         if (RequiresRestoration(operation))
         {
             operation.RestorationRequested = true;
-            operation.Summary = $"{operation.BlockedReason} Restoring the exact pre-takeover character and Multi Mode state.";
+            operation.Summary = $"{operation.BlockedReason} Releasing DAD ownership and restoring Multi Mode on the currently loaded character.";
             operation.UpdatedAtUtc = utcNow();
             AdvanceRestoration(operation);
             return BuildResult(operation);
@@ -1241,110 +1279,44 @@ public sealed class DadWakeTakeoverService : IDisposable
     private void AdvanceRestoration(OperationState operation)
     {
         operation.RestorationRequested = true;
-        operation.CoordinatorAvailable = true;
-        if (!operation.RestorationStarted)
+        operation.CoordinatorAvailable = false;
+        operation.RestorationStarted = true;
+        operation.CleanupReleaseReservation = true;
+        operation.CleanupPending = !TryCleanupOwnedLeases(
+            operation,
+            retryAtNextBoundary: false,
+            releaseReservation: true);
+        if (operation.CleanupPending)
         {
-            operation.CleanupReleaseReservation = true;
-            operation.CleanupPending = !TryCleanupOwnedLeases(
-                operation,
-                retryAtNextBoundary: false,
-                releaseReservation: true);
-            if (operation.CleanupPending)
-            {
-                operation.Summary = "Waiting for DAD-owned takeover state to release before restoring the prior character.";
-                operation.UpdatedAtUtc = utcNow();
-                return;
-            }
-            BeginRestoration(operation);
+            operation.Summary = "Waiting for DAD-owned takeover state to release before restoring Multi Mode in place.";
+            operation.UpdatedAtUtc = utcNow();
+            return;
         }
 
         var restorationSnapshot = Capture(operation, forceExternalRefresh: true);
-        if (TryFinishRestoration(operation, restorationSnapshot))
-            return;
-        if (operation.Phase == DadWakeTakeoverPhase.Ready && !restorationSnapshot.CorrectCharacter)
-        {
-            operation.RestorationStarted = false;
-            BeginRestoration(operation);
-        }
-
-        if (operation.Phase is DadWakeTakeoverPhase.AwaitingArHook or DadWakeTakeoverPhase.PostprocessOwned)
-            Prepare(operation);
-        AdvanceDueOperation(operation);
-        if (!operation.RestorationStarted || operation.RestorationComplete)
-            return;
-
-        if (operation.Phase == DadWakeTakeoverPhase.Prepared)
-        {
-            var reset = CloneRequest(operation.ActiveRequest);
-            reset.MessageKind = DadWakeTakeoverMessageKind.Go;
-            reset.CommitKind = DadWakeCommitKind.Reset;
-            reset.ExecutionTimeUtc = utcNow();
-            Commit(operation, reset);
-            AdvanceDueOperation(operation);
-        }
-        if (operation.Phase == DadWakeTakeoverPhase.ResetVerified)
-        {
-            var relog = CloneRequest(operation.ActiveRequest);
-            relog.MessageKind = DadWakeTakeoverMessageKind.Go;
-            relog.CommitKind = DadWakeCommitKind.Relog;
-            relog.ExecutionTimeUtc = utcNow();
-            Commit(operation, relog);
-            AdvanceDueOperation(operation);
-        }
-        if (operation.Phase == DadWakeTakeoverPhase.Ready)
-            _ = TryFinishRestoration(operation, Capture(operation, forceExternalRefresh: true));
-    }
-
-    private void BeginRestoration(OperationState operation)
-    {
-        operation.ActiveRequest = CloneRequest(operation.Request);
-        operation.ActiveRequest.CharacterKey = operation.OriginalCharacterKey;
-        operation.ActiveRequest.RequestedAtUtc = utcNow();
-        operation.RestorationStarted = true;
-        operation.Phase = DadWakeTakeoverPhase.AwaitingArHook;
-        operation.Status = DadWakeTakeoverStatus.Pending;
-        operation.CommitKind = DadWakeCommitKind.None;
-        operation.ExecutionTimeUtc = null;
-        operation.Acknowledgement = DadWakeAcknowledgementState.Pending;
-        operation.PreparationStarted = true;
-        operation.CoordinatorAvailable = true;
-        operation.VermaxionMutationAuthorization = DadVermaxionMutationAuthorization.None;
-        operation.ReservationRequested = false;
-        operation.ReservationAttemptToken = string.Empty;
-        operation.CharacterPostprocessArmed = false;
-        operation.SuppressionAcquired = false;
-        operation.MultiModeDisableAttempted = false;
-        operation.DisableAutoRetainerAttempted = false;
-        operation.ResetCommandAttempted = false;
-        operation.RelogCommandAttempted = false;
-        operation.ResetIssuedUtc = null;
-        operation.RelogIssuedUtc = null;
-        operation.ReadyUtc = null;
-        operation.RelogAcceptedAtUtc = null;
-        operation.RelogSourceCharacterKey = new DadCharacterKey(string.Empty);
-        operation.RelogTransitionObserved = false;
-        operation.StableWrongCharacterSinceUtc = null;
-        operation.HomeWorldReturnGate = new DadHomeWorldReturnGate();
-        operation.HomeWorldReturnStarted = false;
-        operation.NextEpochEligibleUtc = null;
-        operation.Summary = $"Restoring prior character {operation.OriginalCharacterKey} before restoring AutoRetainer Multi Mode.";
-        operation.UpdatedAtUtc = utcNow();
-        activeOperationKey = DadWakePolicyRules.BuildOperationKey(operation.Request);
+        _ = TryFinishRestoration(operation, restorationSnapshot);
     }
 
     private bool TryFinishRestoration(
         OperationState operation,
         DadWakeTakeoverTargetSnapshot snapshot)
     {
-        if (!operation.RestorationStarted || operation.RestorationComplete ||
-            !snapshot.CorrectCharacter || !IsWorldMutationSafe(snapshot))
+        if (!operation.RestorationStarted || operation.RestorationComplete)
             return false;
 
         if (snapshot.MultiModeEnabled != operation.OriginalMultiModeEnabled)
         {
+            if (!HasCompleteLiveIdentity(snapshot.Participant) ||
+                !snapshot.Participant.WorldReadyStable ||
+                !snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy)
+            {
+                operation.Summary = "Waiting for a stable loaded character and idle AutoRetainer before restoring Multi Mode in place.";
+                operation.UpdatedAtUtc = utcNow();
+                return false;
+            }
             if (operation.RestorationMultiModeAttempted)
             {
-                operation.Summary = "Prior character is restored, but exact AutoRetainer Multi Mode verification is still pending; the state write will not replay.";
+                operation.Summary = "Exact in-place AutoRetainer Multi Mode verification is still pending; the state write will not replay.";
                 operation.UpdatedAtUtc = utcNow();
                 return false;
             }
@@ -1353,26 +1325,15 @@ public sealed class DadWakeTakeoverService : IDisposable
                 () => target.SetMultiModeEnabled(operation.OriginalMultiModeEnabled),
                 $"restore AutoRetainer Multi Mode to {operation.OriginalMultiModeEnabled}");
             snapshot = Capture(operation, forceExternalRefresh: true);
-            if (!restored.Success || !snapshot.CorrectCharacter || !IsWorldMutationSafe(snapshot) ||
+            if (!restored.Success ||
                 snapshot.MultiModeEnabled != operation.OriginalMultiModeEnabled)
             {
                 operation.Summary = string.IsNullOrWhiteSpace(restored.Error)
-                    ? "Prior character is restored, but exact AutoRetainer Multi Mode verification failed closed."
+                    ? "Exact in-place AutoRetainer Multi Mode verification failed closed."
                     : restored.Error;
                 operation.UpdatedAtUtc = utcNow();
                 return false;
             }
-        }
-
-        operation.CleanupPending = !TryCleanupOwnedLeases(
-            operation,
-            retryAtNextBoundary: false,
-            releaseReservation: true);
-        if (operation.CleanupPending)
-        {
-            operation.Summary = "Prior character and Multi Mode state are restored; waiting for temporary DAD takeover ownership to release.";
-            operation.UpdatedAtUtc = utcNow();
-            return false;
         }
 
         operation.RestorationComplete = true;
@@ -1381,8 +1342,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.Status = DadWakeTakeoverStatus.Blocked;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
         operation.Summary = string.IsNullOrWhiteSpace(operation.BlockedReason)
-            ? "Exact pre-takeover character and AutoRetainer Multi Mode state restored."
-            : $"{operation.BlockedReason} Exact pre-takeover character and AutoRetainer Multi Mode state restored.";
+            ? "DAD ownership released and AutoRetainer Multi Mode restored on the currently loaded character."
+            : $"{operation.BlockedReason} DAD ownership released and AutoRetainer Multi Mode restored on the currently loaded character.";
         operation.UpdatedAtUtc = utcNow();
         ClearActiveOperationIfMatches(operation);
         return true;
@@ -1413,7 +1374,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             operation.Phase = DadWakeTakeoverPhase.Cancelled;
             operation.Status = DadWakeTakeoverStatus.Blocked;
             operation.Acknowledgement = DadWakeAcknowledgementState.Pending;
-            operation.Summary = $"{operation.BlockedReason} Restoring the exact pre-takeover character and Multi Mode state.";
+            operation.Summary = $"{operation.BlockedReason} Releasing DAD ownership and restoring Multi Mode on the currently loaded character.";
             operation.UpdatedAtUtc = utcNow();
             if (cleanup)
             {
@@ -1613,10 +1574,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.RelogCommandAttempted = false;
         operation.ResetIssuedUtc = null;
         operation.RelogIssuedUtc = null;
-        operation.RelogAcceptedAtUtc = null;
         operation.RelogSourceCharacterKey = new DadCharacterKey(string.Empty);
-        operation.RelogTransitionObserved = false;
-        operation.StableWrongCharacterSinceUtc = null;
+        operation.RelogIdentityTransitionObserved = false;
         operation.HomeWorldReturnGate = new DadHomeWorldReturnGate();
         operation.HomeWorldReturnStarted = false;
         operation.TitleIdleOwnershipProven = false;
@@ -1625,8 +1584,6 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.TitleIdlePostMutationInvalidated = false;
         operation.TitleMovieDismissalAttempted = false;
         operation.TitleIdleRelogCommandAttempted = false;
-        operation.TitleIdleLoginAttemptCount = 0;
-        operation.TitleIdleNextLoginAttemptUtc = null;
         operation.Summary = $"Takeover epoch {operation.Epoch} queued for a fresh reservation after retryable outcome: {reason} Next reserve attempt begins after the five-second cadence.";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
@@ -1716,10 +1673,24 @@ public sealed class DadWakeTakeoverService : IDisposable
     private static bool IsWorldMutationSafe(DadWakeTakeoverTargetSnapshot snapshot)
         => IsWorldAndLocalServicesSafe(snapshot) && !snapshot.ExternalAutomationHeld;
 
-    private static bool IsDestinationReady(DadWakeTakeoverTargetSnapshot snapshot)
-        => snapshot.CorrectCharacter &&
-           IsWorldMutationSafe(snapshot) &&
-           !snapshot.MultiModeEnabled;
+    private static bool HasCompleteLiveIdentity(DadParticipantSnapshot participant)
+        => participant.IsAvailable &&
+           !participant.ActiveCharacterKey.IsEmpty &&
+           participant.Character.ContentId != 0;
+
+    private static bool IsExactLiveDestination(
+        DadParticipantSnapshot participant,
+        DadCharacterKey targetCharacterKey)
+        => HasCompleteLiveIdentity(participant) &&
+           string.Equals(
+               participant.ActiveCharacterKey.Value,
+               targetCharacterKey.Value,
+               StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsExactStableLiveDestination(
+        DadParticipantSnapshot participant,
+        DadCharacterKey targetCharacterKey)
+        => participant.WorldReadyStable && IsExactLiveDestination(participant, targetCharacterKey);
 
     private static bool IsExternalAutomationBlocking(DadWakeTakeoverTargetSnapshot snapshot)
         => snapshot.ExternalAutomationHeld &&
@@ -2013,7 +1984,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         => phase is DadWakeTakeoverPhase.Ready or DadWakeTakeoverPhase.Blocked or DadWakeTakeoverPhase.Cancelled;
 
     private static bool RequiresRestoration(OperationState operation)
-        => operation.OriginalStateCaptured && operation.AnyTakeoverMutation && !operation.RestorationComplete;
+        => operation.OriginalMultiModeStateCaptured &&
+           operation.AnyTakeoverMutation &&
+           !operation.RestorationComplete;
 
     private static DateTime EnsureUtc(DateTime value)
         => value.Kind == DateTimeKind.Utc ? value : DateTime.SpecifyKind(value, DateTimeKind.Utc);
@@ -2028,6 +2001,17 @@ public sealed class DadWakeTakeoverService : IDisposable
             foreach (var operation in operations.Values.Where(static operation =>
                          !IsTerminal(operation.Phase) || operation.CleanupPending || RequiresRestoration(operation)))
             {
+                if (RequiresRestoration(operation))
+                {
+                    if (string.IsNullOrWhiteSpace(operation.BlockedReason))
+                        operation.BlockedReason = "Wake takeover disposed.";
+                    operation.Phase = DadWakeTakeoverPhase.Cancelled;
+                    operation.Status = DadWakeTakeoverStatus.Blocked;
+                    operation.Acknowledgement = DadWakeAcknowledgementState.Pending;
+                    operation.RestorationRequested = true;
+                    AdvanceRestoration(operation);
+                    continue;
+                }
                 operation.CleanupPending = !TryCleanupOwnedLeases(operation, retryAtNextBoundary: false);
                 if (!operation.CleanupPending && operation.Phase == DadWakeTakeoverPhase.Cancelled &&
                     !RequiresRestoration(operation))
@@ -2076,13 +2060,11 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool DisableAutoRetainerAttempted { get; set; }
         public bool ResetCommandAttempted { get; set; }
         public bool RelogCommandAttempted { get; set; }
+        public DadCharacterKey RelogSourceCharacterKey { get; set; } = new(string.Empty);
+        public bool RelogIdentityTransitionObserved { get; set; }
         public int Epoch { get; set; } = 1;
         public DateTime EpochStartedAtUtc { get; set; }
         public DateTime? NextEpochEligibleUtc { get; set; }
-        public DateTime? RelogAcceptedAtUtc { get; set; }
-        public DadCharacterKey RelogSourceCharacterKey { get; set; } = new(string.Empty);
-        public bool RelogTransitionObserved { get; set; }
-        public DateTime? StableWrongCharacterSinceUtc { get; set; }
         public DadHomeWorldReturnGate HomeWorldReturnGate { get; set; } = new();
         public bool HomeWorldReturnStarted { get; set; }
         public bool TitleIdleOwnershipProven { get; set; }
@@ -2091,10 +2073,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool TitleIdlePostMutationInvalidated { get; set; }
         public bool TitleMovieDismissalAttempted { get; set; }
         public bool TitleIdleRelogCommandAttempted { get; set; }
-        public int TitleIdleLoginAttemptCount { get; set; }
-        public DateTime? TitleIdleNextLoginAttemptUtc { get; set; }
-        public bool OriginalStateCaptured { get; set; }
-        public DadCharacterKey OriginalCharacterKey { get; set; } = new(string.Empty);
+        public bool OriginalMultiModeStateCaptured { get; set; }
         public bool OriginalMultiModeEnabled { get; set; }
         public bool AnyTakeoverMutation { get; set; }
         public bool RestorationRequested { get; set; }

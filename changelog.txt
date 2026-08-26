@@ -9,8 +9,13 @@
 - Registered Dad-island proposal, Form, Queue, Settle, Cancel, and Restore stages now advance when their authenticated
   relay commands are accepted, without session, readiness, execution, or completion receipts. Mixed groups retain LAN
   acknowledgements, proof, readiness gates, and the five-second reset/relog command barrier.
-- An accepted LAN relog command is now single-dispatch for its frozen takeover target. If runtime identity briefly remains
-  unavailable or reports the prior character after login, DAD waits for the target without starting a second relog epoch.
+- An accepted LAN relog command is now single-dispatch for its frozen takeover target. WaitingForCharacter polls fresh
+  Dalamud live identity only: a nonzero Content ID, exact Name@HomeWorld target match, and stable world state complete the
+  takeover; the still-loaded source remains an ordinary wait until identity-transition proof, while a stable live mismatch
+  after that proof fails without another relog.
+- Wake cancellation, failure, disconnect, Stop All, authenticated Restore, and disposal no longer relog the pre-run
+  character. DAD releases its owned leases and restores the captured AutoRetainer Multi Mode state on the character that
+  is currently loaded.
 - Sender coordination treats each exact nonexpired registered-island proposal binding as a command destination immediately.
   All-island rosters enter party assembly directly; mixed rosters discover, ready, claim, and lease only LAN slots. The
   encrypted invite locator remains required Form command data, with no Dad-island readiness, Post-AR, world, dependency,

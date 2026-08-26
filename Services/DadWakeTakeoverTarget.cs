@@ -102,10 +102,12 @@ public sealed class DadWakeTakeoverTarget :
             ClientRouteConnected = true,
             AccountMatches = identity.AccountMatches,
             CharacterKnownToAccount = identity.CharacterKnownToAccount,
-            CorrectCharacter = string.Equals(
-                participant.ActiveCharacterKey.Value,
-                request.CharacterKey.Value,
-                StringComparison.OrdinalIgnoreCase),
+            CorrectCharacter = participant.IsAvailable &&
+                               participant.Character.ContentId != 0 &&
+                               string.Equals(
+                                   participant.ActiveCharacterKey.Value,
+                                   request.CharacterKey.Value,
+                                   StringComparison.OrdinalIgnoreCase),
             TitleSurface = title.Surface,
             TitleSurfaceEvidenceFresh = title.IsFresh(nowUtc),
             TitleClientLoggedOut = title.ClientLoggedOut,
