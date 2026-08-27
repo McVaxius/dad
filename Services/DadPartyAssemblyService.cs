@@ -96,6 +96,7 @@ public sealed class DadPartyAssemblyService
             manifest: null,
             participants.FirstOrDefault(static participant => participant.IsAuthority)?.WorkerSessionId
             ?? new DadWorkerSessionId(string.Empty),
+            runtimeInviteTargets: null,
             out blocker);
 
     internal List<DadAssemblyInstructionDto> BuildInstructions(
@@ -104,11 +105,27 @@ public sealed class DadPartyAssemblyService
         DadRunSlotManifest manifest,
         DadWorkerSessionId authorityWorkerSessionId,
         out string blocker)
+        => BuildInstructions(
+            plan,
+            participants,
+            manifest,
+            authorityWorkerSessionId,
+            runtimeInviteTargets: null,
+            out blocker);
+
+    internal List<DadAssemblyInstructionDto> BuildInstructions(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        DadRunSlotManifest manifest,
+        DadWorkerSessionId authorityWorkerSessionId,
+        IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
+        out string blocker)
         => BuildInstructionsCore(
             plan,
             participants,
             manifest,
             authorityWorkerSessionId,
+            runtimeInviteTargets,
             out blocker);
 
     private static List<DadAssemblyInstructionDto> BuildInstructionsCore(
@@ -116,6 +133,7 @@ public sealed class DadPartyAssemblyService
         IReadOnlyList<DadParticipantSnapshot> participants,
         DadRunSlotManifest? manifest,
         DadWorkerSessionId authorityWorkerSessionId,
+        IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
         out string blocker)
     {
         blocker = string.Empty;
@@ -138,7 +156,11 @@ public sealed class DadPartyAssemblyService
             : OrderFrozenParticipants(manifest, participants, out blocker);
         if (!string.IsNullOrWhiteSpace(blocker))
             return [];
-        if (!string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) &&
+        var slotOneIsRegisteredIsland = manifest?.Slots.SingleOrDefault(static slot =>
+            string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase))
+            ?.RouteKind == DadRunSlotRouteKind.RegisteredIsland;
+        if (!slotOneIsRegisteredIsland &&
+            !string.IsNullOrWhiteSpace(plan.LeaderCharacterKey) &&
             ordered.Count > 0 &&
             !string.Equals(ordered[0].ActiveCharacterKey, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))
         {
@@ -153,6 +175,7 @@ public sealed class DadPartyAssemblyService
                 plan,
                 manifest,
                 ordered,
+                runtimeInviteTargets,
                 out frozenInviter,
                 out inviteTargets,
                 out blocker))
@@ -163,7 +186,13 @@ public sealed class DadPartyAssemblyService
         for (var index = 0; index < ordered.Count; index++)
         {
             var participant = ordered[index];
-            if (!participant.PostArReady)
+            var isLanParticipant = manifest == null
+                ? string.IsNullOrWhiteSpace(participant.RegisteredIslandId)
+                : manifest.Slots.Single(slot => string.Equals(
+                    slot.SlotId,
+                    participant.AssignedSlotId,
+                    StringComparison.OrdinalIgnoreCase)).RouteKind == DadRunSlotRouteKind.LanWorker;
+            if (isLanParticipant && !participant.PostArReady)
             {
                 blocker = $"{participant.Character.CharacterKey} is not post-AR ready.";
                 return [];
@@ -196,12 +225,28 @@ public sealed class DadPartyAssemblyService
         DadRunSlotManifest manifest,
         DadWorkerSessionId authorityWorkerSessionId,
         out string blocker)
+        => BuildTeardownInstructions(
+            plan,
+            participants,
+            manifest,
+            authorityWorkerSessionId,
+            runtimeInviteTargets: null,
+            out blocker);
+
+    internal List<DadAssemblyInstructionDto> BuildTeardownInstructions(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        DadRunSlotManifest manifest,
+        DadWorkerSessionId authorityWorkerSessionId,
+        IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
+        out string blocker)
     {
         var instructions = BuildInstructions(
             plan,
             participants,
             manifest,
             authorityWorkerSessionId,
+            runtimeInviteTargets,
             out blocker);
         if (!string.IsNullOrWhiteSpace(blocker) || instructions.Count == 0)
             return [];
@@ -240,12 +285,24 @@ public sealed class DadPartyAssemblyService
         DadRunPlan plan,
         IReadOnlyList<DadParticipantSnapshot> participants,
         IReadOnlyList<DadPartyMemberSnapshot> partyMembers)
+        => EvaluatePartyMembership(plan, participants, partyMembers, runtimeInviteTargets: null);
+
+    internal DadPartyMembershipDecision EvaluatePartyMembership(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants,
+        IReadOnlyList<DadPartyMemberSnapshot> partyMembers,
+        IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets)
     {
         if (plan.RequiredParticipantCount <= 1)
             return new DadPartyMembershipDecision(DadPartyMembershipDisposition.Ready, "Single-participant run needs no PartyList proof.");
 
         var expectedContentIds = participants
-            .Select(static participant => participant.Character.ContentId)
+            .Select(participant => participant.Character.ContentId != 0
+                ? participant.Character.ContentId
+                : runtimeInviteTargets != null &&
+                  runtimeInviteTargets.TryGetValue(participant.AssignedSlotId, out var target)
+                    ? target.ContentId
+                    : 0)
             .Where(static contentId => contentId != 0)
             .ToHashSet();
         if (expectedContentIds.Count != plan.RequiredParticipantCount)
@@ -318,21 +375,29 @@ public sealed class DadPartyAssemblyService
         {
             var matches = participants.Where(participant =>
                     string.Equals(participant.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(
-                        participant.WorkerSessionId.Value,
-                        slot.WorkerSessionId.Value,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    DadRosterIdentity.SameAccount(participant.ManagedAccountKey, slot.AccountKey) &&
-                    DadRosterIdentity.SameCharacter(
-                        participant.ActiveCharacterKey,
-                        participant.Character.ContentId,
-                        slot.CharacterKey,
-                        slot.ContentId))
+                    (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland
+                        ? !string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                          string.Equals(
+                              participant.RegisteredIslandId,
+                              slot.IslandId,
+                              StringComparison.Ordinal) &&
+                          !participant.WorkerSessionId.IsEmpty
+                        : string.Equals(
+                              participant.WorkerSessionId.Value,
+                              slot.WorkerSessionId.Value,
+                              StringComparison.OrdinalIgnoreCase) &&
+                          DadRosterIdentity.SameAccount(participant.ManagedAccountKey, slot.AccountKey) &&
+                          DadRosterIdentity.SameCharacter(
+                              participant.ActiveCharacterKey,
+                              participant.Character.ContentId,
+                              slot.CharacterKey,
+                              slot.ContentId)))
                 .ToList();
             if (matches.Count != 1)
             {
-                blocker =
-                    $"{slot.SlotId} must resolve to one exact frozen worker/account/character/Content-ID row; found {matches.Count}.";
+                blocker = slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland
+                    ? $"{slot.SlotId} must resolve to one exact active registered-island runtime row; found {matches.Count}."
+                    : $"{slot.SlotId} must resolve to one exact frozen worker/account/character/Content-ID row; found {matches.Count}.";
                 return [];
             }
 
@@ -346,6 +411,7 @@ public sealed class DadPartyAssemblyService
         DadRunPlan plan,
         DadRunSlotManifest manifest,
         IReadOnlyList<DadParticipantSnapshot> ordered,
+        IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
         out DadExpectedPartyInviter inviter,
         out List<DadNativePartyInviteTarget> inviteTargets,
         out string blocker)
@@ -357,13 +423,23 @@ public sealed class DadPartyAssemblyService
             slot.IsLeader &&
             slot.IsInviter &&
             string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase));
+        var remoteSlotOne = slotOne?.RouteKind == DadRunSlotRouteKind.RegisteredIsland;
         if (slotOne == null ||
             manifest.Slots.Count(static slot => slot.IsLeader) != 1 ||
             manifest.Slots.Count(static slot => slot.IsInviter) != 1 ||
             !string.Equals(manifest.LeaderCharacterKey, manifest.InviterCharacterKey, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(manifest.LeaderCharacterKey, slotOne.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(plan.LeaderCharacterKey, slotOne.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(plan.InviterCharacterKey, slotOne.CharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+            (remoteSlotOne
+                ? !string.Equals(
+                      manifest.LeaderCharacterKey,
+                      DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+                      StringComparison.OrdinalIgnoreCase) ||
+                  !string.Equals(
+                      plan.LeaderCharacterKey,
+                      DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+                      StringComparison.OrdinalIgnoreCase)
+                : !string.Equals(manifest.LeaderCharacterKey, slotOne.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
+                  !string.Equals(plan.LeaderCharacterKey, slotOne.CharacterKey.Value, StringComparison.OrdinalIgnoreCase)) ||
+            !string.Equals(plan.InviterCharacterKey, plan.LeaderCharacterKey, StringComparison.OrdinalIgnoreCase))
         {
             blocker = "Party assembly requires one exact frozen Slot1 leader and inviter.";
             return false;
@@ -371,10 +447,16 @@ public sealed class DadPartyAssemblyService
 
         var leader = ordered.SingleOrDefault(participant =>
             string.Equals(participant.AssignedSlotId, slotOne.SlotId, StringComparison.OrdinalIgnoreCase));
+        var remoteLeaderTarget = slotOne.RouteKind == DadRunSlotRouteKind.RegisteredIsland &&
+                                 runtimeInviteTargets != null &&
+                                 runtimeInviteTargets.TryGetValue(slotOne.SlotId, out var resolvedLeaderTarget)
+            ? resolvedLeaderTarget
+            : null;
         if (leader == null ||
-            string.IsNullOrWhiteSpace(leader.Character.CharacterName) ||
-            leader.Character.WorldId == 0 ||
-            leader.Character.WorldId > ushort.MaxValue)
+            (remoteLeaderTarget == null &&
+             (string.IsNullOrWhiteSpace(leader.Character.CharacterName) ||
+              leader.Character.WorldId == 0 ||
+              leader.Character.WorldId > ushort.MaxValue)))
         {
             blocker = "Frozen Slot1 inviter is missing its exact name or World ID.";
             return false;
@@ -383,27 +465,33 @@ public sealed class DadPartyAssemblyService
         inviter = new DadExpectedPartyInviter
         {
             RunId = plan.Request.RequestId,
-            WorkerSessionId = slotOne.WorkerSessionId,
-            AccountKey = slotOne.AccountKey,
-            CharacterKey = slotOne.CharacterKey,
-            ContentId = slotOne.ContentId,
-            CharacterName = leader.Character.CharacterName,
-            WorldId = (ushort)leader.Character.WorldId,
+            WorkerSessionId = remoteLeaderTarget?.WorkerSessionId ?? slotOne.WorkerSessionId,
+            AccountKey = remoteLeaderTarget?.AccountKey ?? slotOne.AccountKey,
+            CharacterKey = remoteLeaderTarget?.CharacterKey ?? slotOne.CharacterKey,
+            ContentId = remoteLeaderTarget?.ContentId ?? slotOne.ContentId,
+            CharacterName = remoteLeaderTarget?.CharacterName ?? leader.Character.CharacterName,
+            WorldId = remoteLeaderTarget?.WorldId ?? (ushort)leader.Character.WorldId,
         };
 
         foreach (var slot in manifest.Slots.Where(static slot => !slot.IsLeader))
         {
             var participant = ordered.Single(candidate =>
                 string.Equals(candidate.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase));
-            if (string.IsNullOrWhiteSpace(participant.Character.CharacterName) ||
-                participant.Character.WorldId == 0 ||
-                participant.Character.WorldId > ushort.MaxValue)
+            var remoteTarget = slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland &&
+                               runtimeInviteTargets != null &&
+                               runtimeInviteTargets.TryGetValue(slot.SlotId, out var resolvedRemoteTarget)
+                ? resolvedRemoteTarget
+                : null;
+            if (remoteTarget == null &&
+                (string.IsNullOrWhiteSpace(participant.Character.CharacterName) ||
+                 participant.Character.WorldId == 0 ||
+                 participant.Character.WorldId > ushort.MaxValue))
             {
                 blocker = $"{slot.SlotId} invite target is missing its exact name or World ID.";
                 return false;
             }
 
-            inviteTargets.Add(new DadNativePartyInviteTarget
+            inviteTargets.Add(remoteTarget?.Clone() ?? new DadNativePartyInviteTarget
             {
                 RunId = plan.Request.RequestId,
                 ModuleId = plan.CompositeModuleId,
@@ -423,9 +511,17 @@ public sealed class DadPartyAssemblyService
     public static bool IsParticipantInParty(
         DadParticipantSnapshot participant,
         IReadOnlyList<DadPartyMemberSnapshot> partyMembers)
+        => IsParticipantInParty(participant, partyMembers, runtimeInviteTarget: null);
+
+    internal static bool IsParticipantInParty(
+        DadParticipantSnapshot participant,
+        IReadOnlyList<DadPartyMemberSnapshot> partyMembers,
+        DadNativePartyInviteTarget? runtimeInviteTarget)
     {
         var characterKey = participant.ActiveCharacterKey.Value;
-        var contentId = participant.Character.ContentId;
+        var contentId = participant.Character.ContentId != 0
+            ? participant.Character.ContentId
+            : runtimeInviteTarget?.ContentId ?? 0;
         if (contentId != 0)
             return partyMembers.Any(member => member.ContentId == contentId);
 

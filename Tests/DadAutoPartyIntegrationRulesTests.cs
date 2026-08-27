@@ -1,8 +1,6 @@
 using System.Collections.Immutable;
-using System.Security.Cryptography;
 using System.Text.Json;
 using AutoParty.Contracts;
-using AutoParty.Core.Cryptography;
 using dad.Models;
 using dad.Services;
 using Xunit;
@@ -127,193 +125,11 @@ public sealed class DadAutoPartyIntegrationRulesTests
     }
 
     [Fact]
-    public async Task PilotFixtureCreatesOnlyArtifactBoundFormationPlanAfterLocalPairing()
-    {
-        var localFingerprint = new string('A', 64);
-        var peerFingerprint = new string('B', 64);
-        var artifactHash = new string('c', 64);
-        var configuration = new Configuration
-        {
-            AutoParty = new DadAutoPartyConfiguration
-            {
-                RegisteredOwnerId = "owner-local",
-                RegisteredIslandId = "island-local",
-                RegistrationFingerprint = localFingerprint,
-                PilotArtifactSha256 = artifactHash,
-                OwnerAcceptanceConfirmed = true,
-                Pairings =
-                [
-                    new DadAutoPartyPairing
-                    {
-                        OwnerId = "owner-peer",
-                        IslandId = "island-peer",
-                        PublicKeyFingerprint = peerFingerprint,
-                        KeyGeneration = 1,
-                        ConfirmedAtUtc = DateTime.UtcNow,
-                    },
-                ],
-            },
-        };
-        var saved = 0;
-        var service = new DadAutoPartyPilotFixtureService(configuration, () => saved++);
-        var fixture = new DadAutoPartyPilotFixture(
-            DadAutoPartyPilotFixtureService.FixtureSchema,
-            true,
-            55,
-            localFingerprint,
-            artifactHash,
-            [
-                new(localFingerprint, "19", true, true),
-                new(peerFingerprint, "24", true, false),
-            ]);
-        var path = Path.Combine(Path.GetTempPath(), $"dad-pilot-{Guid.NewGuid():N}.json");
-        try
-        {
-            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(fixture, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-
-            var result = await service.ImportAsync(path);
-
-            Assert.True(result.Succeeded, result.SafeCode);
-            Assert.Equal("dad-pilot-formation-fixture-imported", result.SafeCode);
-            Assert.Equal(1, saved);
-            var group = Assert.Single(configuration.PlannerGroups);
-            Assert.True(group.AutoPartyFormationOnly);
-            Assert.Equal(DadPlannerActivityMode.DutyPremade, group.ActivityMode);
-            Assert.Equal((uint)55, group.DutyContentFinderConditionId);
-            Assert.Equal([19u, 24u], group.Slots.Select(slot => slot.RequiredJobId!.Value));
-            Assert.Equal(localFingerprint, configuration.AutoParty.PilotQueueAuthorityFingerprint);
-            Assert.Equal(2, configuration.AutoParty.RemoteBindings.Count);
-            Assert.Single(configuration.AutoParty.RemoteBindings, binding => binding.OwnsQueueAuthority);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    [Fact]
-    public async Task PilotFixtureRejectsQueueAuthorityThatDoesNotOwnTheFixture()
-    {
-        var localFingerprint = new string('A', 64);
-        var peerFingerprint = new string('B', 64);
-        var configuration = new Configuration
-        {
-            AutoParty = new DadAutoPartyConfiguration
-            {
-                RegisteredOwnerId = "owner-local",
-                RegisteredIslandId = "island-local",
-                RegistrationFingerprint = localFingerprint,
-                PilotArtifactSha256 = new string('c', 64),
-                OwnerAcceptanceConfirmed = true,
-                Pairings =
-                [
-                    new DadAutoPartyPairing
-                    {
-                        OwnerId = "owner-peer",
-                        IslandId = "island-peer",
-                        PublicKeyFingerprint = peerFingerprint,
-                        KeyGeneration = 1,
-                        ConfirmedAtUtc = DateTime.UtcNow,
-                    },
-                ],
-            },
-        };
-        var service = new DadAutoPartyPilotFixtureService(configuration, () => throw new InvalidOperationException());
-        var fixture = new DadAutoPartyPilotFixture(
-            DadAutoPartyPilotFixtureService.FixtureSchema,
-            true,
-            55,
-            peerFingerprint,
-            configuration.AutoParty.PilotArtifactSha256,
-            [
-                new(localFingerprint, "19", true, true),
-                new(peerFingerprint, "24", true, false),
-            ]);
-        var path = Path.Combine(Path.GetTempPath(), $"dad-pilot-{Guid.NewGuid():N}.json");
-        try
-        {
-            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(fixture, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-
-            var result = await service.ImportAsync(path);
-
-            Assert.False(result.Succeeded);
-            Assert.Equal("dad-pilot-fixture-mismatch", result.SafeCode);
-            Assert.Empty(configuration.PlannerGroups);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    [Fact]
-    public async Task RegistrationAndPairingStayReviewGated()
-    {
-        var configuration = new DadAutoPartyConfiguration { Enabled = true };
-        var identityStore = new FakeIdentityStore();
-        using var service = Service(configuration, identityStore);
-        var registration = new DadAutoPartyRegistrationImport(
-            Owner,
-            LocalIsland,
-            new string('A', 64),
-            1,
-            [1, 2, 3, 4]);
-
-        var result = await service.ImportRegistrationAsync(registration, confirmReplacement: false);
-        var challenge = service.BeginPairing(
-            new OwnerIdentity(new OwnerId(Owner), new IslandId(SenderIsland), new string('A', 64), 1),
-            new IslandIdentity(new IslandId(SenderIsland), new OwnerId(Owner), new string('A', 64), 1));
-
-        Assert.False(result.Allowed);
-        Assert.Equal("dad-registration-disabled-pending-review", result.SafeCode);
-        Assert.Null(challenge);
-        Assert.Equal(0, identityStore.StoreCalls);
-        Assert.Equal(string.Empty, configuration.EndpointIdentityReference);
-    }
-
-    [Fact]
-    public async Task ExplicitRegistrationUsesOpaqueIdentityReferenceAndRequiresReplacementConfirmation()
-    {
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            PairingEnabled = true,
-            OwnerAcceptanceConfirmed = true,
-            EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-            PilotArtifactSha256 = new string('a', 64),
-        };
-        var identityStore = new FakeIdentityStore();
-        using var service = Service(configuration, identityStore);
-        var package = RegistrationPackage(Owner, LocalIsland);
-        var registration = package.Registration;
-
-        var first = await service.ImportRegistrationAsync(registration, confirmReplacement: false);
-        var deniedReplacement = await service.ImportRegistrationAsync(registration, confirmReplacement: false);
-        var replaced = await service.ImportRegistrationAsync(registration, confirmReplacement: true);
-
-        Assert.True(first.Allowed);
-        Assert.False(deniedReplacement.Allowed);
-        Assert.Equal("dad-registration-replacement-confirmation-required", deniedReplacement.SafeCode);
-        Assert.True(replaced.Allowed);
-        Assert.StartsWith("identity-", configuration.EndpointIdentityReference, StringComparison.Ordinal);
-        Assert.Equal(package.SigningPublicKey, configuration.SigningPublicKey);
-        Assert.Equal(package.EncryptionPublicKey, configuration.EncryptionPublicKey);
-        Assert.Equal(2, identityStore.StoreCalls);
-        Assert.Equal(1, identityStore.DeleteCalls);
-        CryptographicOperations.ZeroMemory(registration.ProtectedIdentityMaterial);
-    }
-
-    [Fact]
     public void ProposalBoundGrantIsConsumedExactlyOnceAndPersisted()
     {
         var proposalId = Guid.NewGuid();
         var saves = 0;
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            RegisteredOwnerId = Owner,
-            RegisteredIslandId = LocalIsland,
-        };
+        var configuration = ActiveConfiguration();
         configuration.Pairings.Add(Pairing());
         var grant = Grant(proposalId);
         configuration.Grants.Add(grant);
@@ -332,6 +148,87 @@ public sealed class DadAutoPartyIntegrationRulesTests
         Assert.Equal(1, grant.MaximumUses);
         Assert.Equal(proposalId.ToString("D"), grant.ProposalId);
         Assert.Equal(1, saves);
+    }
+
+    [Fact]
+    public void PersistedReadyOwnedSessionRestoresExactLeaseAuthorization()
+    {
+        const string requesterOwner = "owner-requester";
+        var proposalId = Guid.NewGuid();
+        var configuration = ActiveConfiguration();
+        configuration.Pairings.Add(Pairing(requesterOwner));
+        using var service = Service(configuration, new FakeIdentityStore());
+        var proposal = OwnedProposal(proposalId, requesterOwner);
+        var ownedParticipants = proposal.Participants;
+        const SessionPermission permissions = SessionPermission.Reserve | SessionPermission.Preflight |
+                                              SessionPermission.FormParty | SessionPermission.Queue |
+                                              SessionPermission.Execute | SessionPermission.Cancel |
+                                              SessionPermission.Complete;
+        var reservation = new Reservation(
+            ResponseHeader(proposal.Header, 8),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(Owner),
+            new OpaqueCharacterId(Character),
+            7,
+            8);
+        var preflight = new PreflightResult(
+            ResponseHeader(proposal.Header, 9),
+            proposalId,
+            new OwnerId(Owner),
+            Ready: true,
+            ReadinessGeneration: 1,
+            ExpectedStateGeneration: 8,
+            SafeBlockers: [],
+            ObservedStateGeneration: 9);
+        var lease = new SessionLease(
+            ResponseHeader(proposal.Header, 10),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(Owner),
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            permissions,
+            ExpectedStateGeneration: 9,
+            ObservedStateGeneration: 10);
+        var state = new DadAutoPartyInboundProposalState(
+            proposal,
+            ownedParticipants,
+            DateTimeOffset.UtcNow,
+            [reservation],
+            preflight,
+            lease,
+            [],
+            9,
+            "dad-inbound-admission-ready");
+
+        var restored = service.RestoreOwnedProposalSession(state, permissions);
+        var authorized = service.Policy.AuthorizeExecution(new ExecutionOperation(
+            proposal.Header,
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(Owner),
+            ExecutionOperationKind.Form,
+            new ActivityId(Activity),
+            new OpaqueCharacterId(Character),
+            new JobId(Job),
+            null,
+            lease.ObservedStateGeneration,
+            false));
+
+        Assert.True(restored.Allowed, restored.SafeCode);
+        Assert.Equal(lease.ObservedStateGeneration, restored.StateGeneration);
+        Assert.True(authorized.Allowed, authorized.SafeCode);
+        Assert.Equal(lease.ObservedStateGeneration, authorized.StateGeneration);
+        Assert.Equal(1, service.Policy.ActiveSessionCount);
+
+        var tamperedConfiguration = ActiveConfiguration();
+        tamperedConfiguration.Pairings.Add(Pairing(requesterOwner));
+        using var tamperedService = Service(tamperedConfiguration, new FakeIdentityStore());
+        var denied = tamperedService.RestoreOwnedProposalSession(
+            state with { Lease = lease with { ExpectedStateGeneration = 8 } },
+            permissions);
+        Assert.False(denied.Allowed);
+        Assert.Equal("dad-owned-session-restore-invalid", denied.SafeCode);
     }
 
     [Fact]
@@ -357,12 +254,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
     public void ProposalIngressUsesTheCompleteProtocolHeaderValidator()
     {
         var proposalId = Guid.NewGuid();
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            RegisteredOwnerId = Owner,
-            RegisteredIslandId = LocalIsland,
-        };
+        var configuration = ActiveConfiguration();
         configuration.Pairings.Add(Pairing());
         configuration.Grants.Add(Grant(proposalId));
         using var service = Service(configuration, new FakeIdentityStore());
@@ -415,12 +307,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
     public void RejectedProposalDoesNotPoisonTheValidRetransmitReplaySlot()
     {
         var proposalId = Guid.NewGuid();
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            RegisteredOwnerId = Owner,
-            RegisteredIslandId = LocalIsland,
-        };
+        var configuration = ActiveConfiguration();
         configuration.Pairings.Add(Pairing());
         configuration.Grants.Add(Grant(proposalId));
         using var service = Service(configuration, new FakeIdentityStore());
@@ -517,7 +404,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
             locator: Locator());
         var observed = DadAutoPartyFakeExecutionFacade.CreateObservedPartyReceipt(
             proposalId,
-            memberCount: 4,
+            [101, 102, 103, 104],
             fixture.Generation);
 
         var prepared = await service.Execution.PrepareAsync(prepare, profile);
@@ -534,6 +421,8 @@ public sealed class DadAutoPartyIntegrationRulesTests
         Assert.Equal(ExecutionOutcome.Completed, reserved.Outcome);
         Assert.Equal(DadRunPhase.GroupReady, formed.Phase);
         Assert.Equal("dad-group-ready", formed.SafeCode);
+        Assert.NotNull(formed.PartyReceipt);
+        Assert.True(formed.PartyReceipt.ContentIds.SequenceEqual([101UL, 102UL, 103UL, 104UL]));
         Assert.Equal(ExecutionOutcome.Denied, queued.Outcome);
         Assert.Equal("dad-formation-only-queue-denied", queued.SafeCode);
         Assert.Equal(ExecutionOutcome.Denied, settled.Outcome);
@@ -580,10 +469,48 @@ public sealed class DadAutoPartyIntegrationRulesTests
 
         var result = await service.Execution.FormAsync(
             Operation(proposalId, fixture.Generation, ExecutionOperationKind.Form, locator: expired),
-            DadAutoPartyFakeExecutionFacade.CreateObservedPartyReceipt(proposalId, 4, fixture.Generation));
+            DadAutoPartyFakeExecutionFacade.CreateObservedPartyReceipt(
+                proposalId,
+                [101, 102, 103, 104],
+                fixture.Generation));
 
         Assert.Equal(ExecutionOutcome.Denied, result.Outcome);
         Assert.Equal("dad-invite-locator-invalid", result.SafeCode);
+    }
+
+    [Fact]
+    public async Task FormRequiresExactOrderedUniqueNonzeroPartyListProof()
+    {
+        var fixture = AuthorizedFixture();
+        using var service = fixture.Service;
+        var proposalId = fixture.Proposal.ProposalId;
+        await service.Execution.PrepareAsync(
+            Operation(proposalId, fixture.Generation, ExecutionOperationKind.Prepare),
+            null);
+        await service.Execution.ReserveAsync(
+            Operation(proposalId, fixture.Generation, ExecutionOperationKind.Reserve));
+        var valid = DadAutoPartyFakeExecutionFacade.CreateObservedPartyReceipt(
+            proposalId,
+            [101, 102, 103, 104],
+            fixture.Generation);
+
+        var countMismatch = await service.Execution.FormAsync(
+            Operation(proposalId, fixture.Generation, ExecutionOperationKind.Form, locator: Locator()),
+            valid with { MemberCount = 3 });
+        var reordered = await service.Execution.FormAsync(
+            Operation(proposalId, fixture.Generation, ExecutionOperationKind.Form, locator: Locator()),
+            valid with { ContentIds = [102, 101, 103, 104] });
+
+        Assert.Equal("dad-observed-party-receipt-invalid", countMismatch.SafeCode);
+        Assert.Equal("dad-observed-party-receipt-invalid", reordered.SafeCode);
+        Assert.Throws<ArgumentException>(() => DadAutoPartyFakeExecutionFacade.CreateObservedPartyReceipt(
+            proposalId,
+            [101, 101],
+            fixture.Generation));
+        Assert.Throws<ArgumentException>(() => DadAutoPartyFakeExecutionFacade.CreateObservedPartyReceipt(
+            proposalId,
+            [0],
+            fixture.Generation));
     }
 
     [Fact]
@@ -654,360 +581,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
 
         Assert.Equal(DadAutoPartyComponentState.NotReady, status.Transport.State);
         Assert.Equal(DadAutoPartyComponentState.NotReady, status.Policy.State);
-        Assert.Equal(DadAutoPartyComponentState.Disabled, status.Execution.State);
-    }
-
-    [Fact]
-    public void PairingAndExecutionRequireReceiptPairingAndLocalEnablement()
-    {
-        var configuration = new DadAutoPartyConfiguration { Enabled = true };
-        using var service = Service(configuration, new FakeIdentityStore());
-
-        var pairingDenied = service.SetPairingEnabled(true);
-        configuration.OwnerAcceptanceConfirmed = true;
-        configuration.EnrollmentReceiptId = Guid.NewGuid().ToString("D");
-        configuration.PilotArtifactSha256 = new string('b', 64);
-        var pairingEnabled = service.SetPairingEnabled(true);
-        var executionDenied = service.SetExecutionEnabled(true);
-
-        Assert.False(pairingDenied.Allowed);
-        Assert.Equal("dad-pairing-registration-pending", pairingDenied.SafeCode);
-        Assert.True(pairingEnabled.Allowed);
-        Assert.False(executionDenied.Allowed);
-        Assert.Equal("dad-execution-prerequisites-pending", executionDenied.SafeCode);
-    }
-
-    [Fact]
-    public void RevokedPairingsCannotSatisfyExecutionEnablement()
-    {
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            PairingEnabled = true,
-            OwnerAcceptanceConfirmed = true,
-            EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-            PilotArtifactSha256 = new string('A', 64),
-            PilotPlannerGroupId = "pilot-plan",
-            PilotQueueAuthorityFingerprint = new string('B', 64),
-            PilotCourierProbeVerified = true,
-        };
-        var revoked = Pairing();
-        revoked.RevokedAtUtc = DateTime.UtcNow;
-        configuration.Pairings.Add(revoked);
-        using var service = Service(configuration, new FakeIdentityStore());
-
-        var result = service.SetExecutionEnabled(true);
-
-        Assert.False(result.Allowed);
-        Assert.False(configuration.ExecutionEnabled);
-        Assert.Equal("dad-execution-prerequisites-pending", result.SafeCode);
-    }
-
-    [Fact]
-    public void PilotExchangeRootApplyRequiresAllThreeGatesDisabled()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-root-gate", Guid.NewGuid().ToString("N"));
-        var configuration = new DadAutoPartyConfiguration { Enabled = true };
-        using var service = Service(configuration, new FakeIdentityStore());
-
-        var enabled = service.ApplyPilotExchangeRoot(root);
-        configuration.Enabled = false;
-        configuration.PairingEnabled = true;
-        var pairing = service.ApplyPilotExchangeRoot(root);
-        configuration.PairingEnabled = false;
-        configuration.ExecutionEnabled = true;
-        var execution = service.ApplyPilotExchangeRoot(root);
-
-        Assert.All([enabled, pairing, execution], decision =>
-        {
-            Assert.False(decision.Allowed);
-            Assert.Equal("dad-pilot-exchange-root-gates-enabled", decision.SafeCode);
-        });
-        Assert.False(Directory.Exists(root));
-    }
-
-    [Fact]
-    public void PilotExchangeRootApplyCreatesManagedFoldersAndUpdatesDerivedPathsImmediately()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-root-apply", Guid.NewGuid().ToString("N"));
-        var configuration = new DadAutoPartyConfiguration();
-        var saved = 0;
-        using var service = new DadAutoPartyService(
-            configuration,
-            new FakeIdentityStore(),
-            static () => true,
-            () => saved++,
-            static () => true);
-        try
-        {
-            var result = service.ApplyPilotExchangeRoot(root + Path.DirectorySeparatorChar);
-
-            Assert.True(result.Allowed, result.SafeCode);
-            Assert.Equal("dad-pilot-exchange-root-applied", result.SafeCode);
-            Assert.Equal(Path.GetFullPath(root), configuration.PilotExchangeRoot);
-            Assert.Equal(Path.Combine(root, "pilot-courier"), configuration.CourierRootPath);
-            Assert.Equal(Path.Combine(root, "pilot-input"), configuration.GetPilotInputRoot());
-            Assert.Equal(Path.Combine(root, "pilot-receipts"), configuration.GetPilotReceiptRoot());
-            Assert.Equal(Path.Combine(root, "pilot-input", "pilot-fixture.json"), configuration.GetPilotFixturePath());
-            Assert.Equal(1, saved);
-            Assert.All(new[] { "pilot-input", "pilot-receipts", "pilot-courier", "plugin" },
-                folder => Assert.True(Directory.Exists(Path.Combine(root, folder))));
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-                Directory.Delete(root, true);
-        }
-    }
-
-    [Fact]
-    public void PilotExchangeRootApplyFailsWithSafeCodeWhenTargetIsUnavailable()
-    {
-        var file = Path.Combine(Path.GetTempPath(), $"dad-autoparty-root-file-{Guid.NewGuid():N}");
-        File.WriteAllText(file, "not-a-directory");
-        try
-        {
-            var configuration = new DadAutoPartyConfiguration();
-            using var service = Service(configuration, new FakeIdentityStore());
-
-            var result = service.ApplyPilotExchangeRoot(Path.Combine(file, "share"));
-
-            Assert.False(result.Allowed);
-            Assert.Equal("dad-pilot-exchange-root-unavailable", result.SafeCode);
-            Assert.DoesNotContain(file, result.SafeCode, StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(DadAutoPartyConfiguration.DefaultPilotExchangeRoot, configuration.PilotExchangeRoot);
-        }
-        finally
-        {
-            File.Delete(file);
-        }
-    }
-
-    [Theory]
-    [InlineData("relative\\pilot")]
-    [InlineData("C:\\")]
-    public void PilotExchangeRootApplyRejectsRelativeAndDriveRootPaths(string root)
-    {
-        var configuration = new DadAutoPartyConfiguration();
-        using var service = Service(configuration, new FakeIdentityStore());
-
-        var result = service.ApplyPilotExchangeRoot(root);
-
-        Assert.False(result.Allowed);
-        Assert.Equal("dad-pilot-exchange-root-invalid", result.SafeCode);
-    }
-
-    [Fact]
-    public async Task PublicIdentityExportContainsNoPrivateKeyAndReceiptIsArtifactBound()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var configuration = new DadAutoPartyConfiguration();
-            var packages = new DadAutoPartyIdentityPackageService(
-                configuration,
-                new FakeIdentityStore(),
-                static () => { });
-            var generated = await packages.GenerateAsync("Pilot_A");
-            var exported = await packages.ExportPublicAsync(root);
-            var identityJson = await File.ReadAllTextAsync(exported.OutputPath);
-            var receiptPath = Path.Combine(root, "Pilot_A.apregistration");
-            var receipt = new DadAutoPartyEnrollmentReceipt(
-                DadAutoPartyIdentityPackageService.EnrollmentReceiptSchema,
-                Guid.NewGuid().ToString("D"),
-                configuration.RegisteredOwnerId,
-                configuration.RegisteredIslandId,
-                1,
-                configuration.RegistrationFingerprint,
-                new string('c', 64),
-                true,
-                DateTime.UtcNow,
-                [new DadAutoPartyEnrollmentPeer(
-                    "owner-peer",
-                    "island-peer",
-                    new string('D', 64),
-                    1)]);
-            await File.WriteAllTextAsync(receiptPath, JsonSerializer.Serialize(receipt));
-
-            var imported = await packages.ImportEnrollmentReceiptAsync(receiptPath);
-
-            Assert.True(generated.Succeeded);
-            Assert.True(exported.Succeeded);
-            Assert.DoesNotContain("PrivateKey", identityJson, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("SigningPrivate", identityJson, StringComparison.OrdinalIgnoreCase);
-            Assert.True(imported.Succeeded);
-            Assert.True(configuration.OwnerAcceptanceConfirmed);
-            Assert.Equal(new string('c', 64), configuration.PilotArtifactSha256);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-                Directory.Delete(root, true);
-        }
-    }
-
-    [Fact]
-    public async Task FileCourierIsOutboundOnlyBoundedAndIdempotent()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-courier", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(root, "pilot-courier"));
-        try
-        {
-            var configuration = new DadAutoPartyConfiguration
-            {
-                Enabled = true,
-                RegisteredIslandId = LocalIsland,
-                OwnerAcceptanceConfirmed = true,
-                EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-                PilotExchangeRoot = root,
-            };
-            using var courier = new DadAutoPartyFileCourierAdapter(configuration);
-            var envelope = OpaqueEnvelope.Create(
-                AutoPartyProtocol.CurrentVersion,
-                Guid.NewGuid(),
-                new IslandId(LocalIsland),
-                new IslandId(SenderIsland),
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
-                1,
-                "test",
-                [1, 2, 3]);
-
-            var health = await courier.GetHealthAsync();
-            var first = await courier.SendAsync(envelope);
-            var duplicate = await courier.SendAsync(envelope);
-
-            Assert.Equal(AutoPartyTransportHealthState.Ready, health.State);
-            Assert.True(first.Accepted);
-            Assert.True(duplicate.Accepted);
-            Assert.Equal("dad-file-courier-already-enqueued", duplicate.SafeCode);
-            Assert.Single(Directory.GetFiles(root, "*.apout", SearchOption.AllDirectories));
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-                Directory.Delete(root, true);
-        }
-    }
-
-    [Fact]
-    public async Task FailedAcknowledgementRetainsInboxForRetry()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-ack-retry", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(root, "pilot-courier"));
-        try
-        {
-            var senderConfiguration = ProbeConfiguration(SenderIsland, LocalIsland, root);
-            var receiverConfiguration = ProbeConfiguration(LocalIsland, SenderIsland, root);
-            using var sender = new DadAutoPartyFileCourierAdapter(senderConfiguration);
-            using var receiver = new DadAutoPartyFileCourierAdapter(receiverConfiguration);
-            var envelope = Envelope();
-            Assert.True((await sender.SendAsync(envelope)).Accepted);
-            var outboxPath = Assert.Single(Directory.GetFiles(root, "*.apout", SearchOption.AllDirectories));
-            var inboxFolder = Path.Combine(root, "pilot-courier", "inbox", IslandFolder(LocalIsland));
-            Directory.CreateDirectory(inboxFolder);
-            var inboxPath = Path.Combine(inboxFolder, $"{envelope.EnvelopeId:N}.apin");
-            File.Move(outboxPath, inboxPath);
-            await foreach (var received in receiver.ReceiveAsync())
-                Assert.Equal(envelope.EnvelopeId, received.EnvelopeId);
-            var acknowledgementFolder = Path.Combine(
-                root,
-                "pilot-courier",
-                "acknowledgements",
-                IslandFolder(LocalIsland));
-            Directory.CreateDirectory(acknowledgementFolder);
-            var acknowledgementPath = Path.Combine(acknowledgementFolder, $"{envelope.EnvelopeId:N}.apack");
-            Directory.CreateDirectory(acknowledgementPath);
-            var acknowledgement = new AutoPartyTransportAcknowledgement(envelope.EnvelopeId, "dad-ack-test");
-
-            var failure = await Record.ExceptionAsync(() => receiver.AcknowledgeAsync(acknowledgement).AsTask());
-            Assert.True(failure is IOException or UnauthorizedAccessException, failure?.GetType().FullName);
-            Assert.True(File.Exists(inboxPath));
-            Directory.Delete(acknowledgementPath);
-            await receiver.AcknowledgeAsync(acknowledgement);
-
-            Assert.False(File.Exists(inboxPath));
-            Assert.True(File.Exists(acknowledgementPath));
-        }
-        finally
-        {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
-        }
-    }
-
-    [Fact]
-    public async Task ExistingFileCourierUsesAppliedRootWithoutPluginReload()
-    {
-        var firstRoot = Path.Combine(Path.GetTempPath(), "dad-autoparty-dynamic-a", Guid.NewGuid().ToString("N"));
-        var secondRoot = Path.Combine(Path.GetTempPath(), "dad-autoparty-dynamic-b", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(firstRoot, "pilot-courier"));
-        try
-        {
-            var configuration = new DadAutoPartyConfiguration
-            {
-                PilotExchangeRoot = firstRoot,
-                RegisteredIslandId = LocalIsland,
-                OwnerAcceptanceConfirmed = true,
-                EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-            };
-            using var courier = new DadAutoPartyFileCourierAdapter(configuration);
-            using var service = Service(configuration, new FakeIdentityStore());
-
-            var applied = service.ApplyPilotExchangeRoot(secondRoot);
-            configuration.Enabled = true;
-            var health = await courier.GetHealthAsync();
-            var delivery = OpaqueEnvelope.Create(
-                AutoPartyProtocol.CurrentVersion,
-                Guid.NewGuid(),
-                new IslandId(LocalIsland),
-                new IslandId(SenderIsland),
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddMinutes(1),
-                1,
-                "test",
-                [1, 2, 3]);
-            var sent = await courier.SendAsync(delivery);
-
-            Assert.True(applied.Allowed, applied.SafeCode);
-            Assert.Equal(AutoPartyTransportHealthState.Ready, health.State);
-            Assert.True(sent.Accepted, sent.SafeCode);
-            Assert.Empty(Directory.GetFiles(firstRoot, "*.apout", SearchOption.AllDirectories));
-            Assert.Single(Directory.GetFiles(secondRoot, "*.apout", SearchOption.AllDirectories));
-        }
-        finally
-        {
-            if (Directory.Exists(firstRoot))
-                Directory.Delete(firstRoot, true);
-            if (Directory.Exists(secondRoot))
-                Directory.Delete(secondRoot, true);
-        }
-    }
-
-    [Fact]
-    public async Task HistoricalPilotCourierProbeIsRetiredFromActiveRuntime()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "dad-autoparty-probe", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(root, "pilot-courier"));
-        try
-        {
-            var sender = ProbeConfiguration(SenderIsland, LocalIsland, root);
-            using var senderService = Service(sender, new FakeIdentityStore());
-            senderService.AttachVerifiedCourier(new DadAutoPartyFileCourierAdapter(sender));
-
-            var sent = await senderService.SendPilotCourierProbeAsync();
-            senderService.Update(dadPluginEnabled: true);
-
-            Assert.False(sent.Succeeded);
-            Assert.Equal("dad-file-courier-retired", sent.SafeCode);
-            Assert.Empty(Directory.GetFiles(root, "*.apout", SearchOption.AllDirectories));
-            Assert.Empty(Directory.GetFiles(root, "*.apack", SearchOption.AllDirectories));
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-                Directory.Delete(root, true);
-        }
+        Assert.Equal(DadAutoPartyComponentState.NotReady, status.Execution.State);
     }
 
     [Fact]
@@ -1032,15 +606,7 @@ public sealed class DadAutoPartyIntegrationRulesTests
     [Fact]
     public async Task PrivacyPurgeRemovesLocalAuthorityAndEndpointIdentity()
     {
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            PairingEnabled = true,
-            ExecutionEnabled = true,
-            EndpointIdentityReference = "identity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            RegisteredOwnerId = Owner,
-            RegisteredIslandId = LocalIsland,
-        };
+        var configuration = ActiveConfiguration();
         configuration.Listings.Add(new DadAutoPartyListing
         {
             ListingId = Guid.NewGuid().ToString("D"),
@@ -1057,8 +623,8 @@ public sealed class DadAutoPartyIntegrationRulesTests
         Assert.True(result.Purged);
         Assert.True(result.IdentityDeleted);
         Assert.False(configuration.Enabled);
-        Assert.False(configuration.PairingEnabled);
-        Assert.False(configuration.ExecutionEnabled);
+        Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.RegistrationState);
+        Assert.Equal(string.Empty, configuration.WebhookCredentialReference);
         Assert.Equal(string.Empty, configuration.EndpointIdentityReference);
         Assert.Empty(configuration.Pairings);
         Assert.Empty(configuration.Grants);
@@ -1071,16 +637,11 @@ public sealed class DadAutoPartyIntegrationRulesTests
         TimeSpan? leaseDuration = null)
     {
         var proposalId = Guid.NewGuid();
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            ExecutionEnabled = true,
-            RegisteredOwnerId = Owner,
-            RegisteredIslandId = LocalIsland,
-        };
+        var configuration = ActiveConfiguration();
         configuration.Pairings.Add(Pairing());
         configuration.Grants.Add(Grant(proposalId));
         var service = Service(configuration, new FakeIdentityStore(), localSafetyAllowsExecution);
+        service.ConfigureExecutionFacade(new DadAutoPartyFakeExecutionFacade(service.Policy));
         var proposal = Proposal(proposalId);
         var accepted = service.AcceptProposal(proposal, SessionPermission.All);
         Assert.True(accepted.Allowed);
@@ -1115,15 +676,57 @@ public sealed class DadAutoPartyIntegrationRulesTests
         return new(service, configuration, proposal, lease.StateGeneration);
     }
 
-    private static DadAutoPartyPairing Pairing()
+    private static DadAutoPartyPairing Pairing(string ownerId = Owner)
         => new()
         {
-            OwnerId = Owner,
+            PairingId = Guid.NewGuid().ToString("D"),
+            OwnerId = ownerId,
             IslandId = SenderIsland,
+            HomeGuildScope = "guild-peer",
             PublicKeyFingerprint = new string('A', 64),
+            LocalFingerprint = new string('B', 64),
+            TranscriptHash = new string('C', 64),
+            LocalSharePolicy = SharePolicy(),
+            PeerSharePolicy = SharePolicy(),
+            ExpiresAtUtc = DateTime.UtcNow + TimeSpan.FromMinutes(10),
             KeyGeneration = 1,
+            SigningPublicKey = Convert.ToBase64String(new byte[AutoPartyProtocol.Ed25519PublicKeyBytes]),
+            AgreementPublicKey = Convert.ToBase64String(new byte[AutoPartyProtocol.X25519KeyBytes]),
             ConfirmedAtUtc = DateTime.UtcNow,
         };
+
+    private static DadAutoPartySharePolicy SharePolicy() => new()
+    {
+        Mode = DadAutoPartyCharacterShareMode.SpecificCharacter,
+        CharacterHandles = [Character],
+        Enabled = true,
+        Revision = 1,
+        UpdatedAtUtc = DateTime.UtcNow,
+    };
+
+    private static DadAutoPartyConfiguration ActiveConfiguration() => new()
+    {
+        Enabled = true,
+        RegistrationState = DadAutoPartyRegistrationState.Active,
+        RegistrationId = Guid.NewGuid().ToString("D"),
+        RouteId = "route-local",
+        CentralBotApplicationId = "123456789",
+        HomeGuildScope = "guild-home",
+        WebhookCredentialReference = "webhook-mailbox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        UplinkEpochId = "11111111-1111-4111-8111-111111111111",
+        DownlinkEpochId = "22222222-2222-4222-8222-222222222222",
+        MailboxEpochGeneration = 1,
+        RelayKeyGeneration = 1,
+        RelaySigningPublicKey = Convert.ToBase64String(new byte[32]),
+        RelayAgreementPublicKey = Convert.ToBase64String(new byte[32]),
+        EndpointIdentityReference = "identity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        RegisteredOwnerId = Owner,
+        RegisteredIslandId = LocalIsland,
+        RegistrationFingerprint = new string('E', 64),
+        EndpointAlias = "local",
+        SigningPublicKey = Convert.ToBase64String(new byte[32]),
+        EncryptionPublicKey = Convert.ToBase64String(new byte[32]),
+    };
 
     private static DadAutoPartyGrant Grant(Guid proposalId)
         => new()
@@ -1140,73 +743,6 @@ public sealed class DadAutoPartyIntegrationRulesTests
             ExpiresAtUtc = DateTime.UtcNow + TimeSpan.FromMinutes(20),
             MaximumUses = 1,
         };
-
-    private static RegistrationContext RegistrationPackage(string ownerId, string islandId)
-    {
-        var signingPrivate = RandomNumberGenerator.GetBytes(32);
-        var encryptionPrivate = RandomNumberGenerator.GetBytes(32);
-        var signingPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(signingPrivate);
-        var encryptionPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(encryptionPrivate);
-        try
-        {
-            var fingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
-                ownerId,
-                islandId,
-                1,
-                signingPublic,
-                encryptionPublic);
-            var material = JsonSerializer.SerializeToUtf8Bytes(new DadAutoPartyPrivateIdentityPackage(
-                ownerId,
-                islandId,
-                1,
-                Convert.ToBase64String(signingPrivate),
-                Convert.ToBase64String(encryptionPrivate)));
-            return new(
-                new DadAutoPartyRegistrationImport(ownerId, islandId, fingerprint, 1, material),
-                Convert.ToBase64String(signingPublic),
-                Convert.ToBase64String(encryptionPublic));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(signingPrivate);
-            CryptographicOperations.ZeroMemory(encryptionPrivate);
-            CryptographicOperations.ZeroMemory(signingPublic);
-            CryptographicOperations.ZeroMemory(encryptionPublic);
-        }
-    }
-
-    private static DadAutoPartyConfiguration ProbeConfiguration(
-        string localIsland,
-        string peerIsland,
-        string root)
-    {
-        var configuration = new DadAutoPartyConfiguration
-        {
-            Enabled = true,
-            PairingEnabled = true,
-            RegisteredOwnerId = "owner-" + localIsland,
-            RegisteredIslandId = localIsland,
-            OwnerAcceptanceConfirmed = true,
-            EnrollmentReceiptId = Guid.NewGuid().ToString("D"),
-            PilotExchangeRoot = root,
-            PilotPlannerGroupId = "pilot-group",
-            PilotQueueAuthorityFingerprint = new string('C', 64),
-        };
-        configuration.Pairings.Add(new DadAutoPartyPairing
-        {
-            OwnerId = "owner-" + peerIsland,
-            IslandId = peerIsland,
-            PublicKeyFingerprint = new string(localIsland == LocalIsland ? 'A' : 'B', 64),
-            KeyGeneration = 1,
-            ConfirmedAtUtc = DateTime.UtcNow,
-        });
-        return configuration;
-    }
-
-    private static string IslandFolder(string islandId) =>
-        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(islandId)))[..32]
-            .ToLowerInvariant();
-
     private static DadAutoPartyService Service(
         DadAutoPartyConfiguration configuration,
         IDadAutoPartyEndpointIdentityStore identityStore,
@@ -1230,6 +766,63 @@ public sealed class DadAutoPartyIntegrationRulesTests
                 new OpaqueCharacterId(Character),
                 new JobId(Job))),
             "effective-content-hash");
+
+    private static RunProposal OwnedProposal(Guid proposalId, string requesterOwner)
+        => new(
+            Header(),
+            proposalId,
+            new OwnerId(requesterOwner),
+            new ActivityId(Activity),
+            [
+                new ParticipantRequest(
+                    new OwnerId(Owner),
+                    new IslandId(LocalIsland),
+                    new OpaqueCharacterId(Character),
+                    new JobId(Job)),
+            ],
+            "effective-content-hash",
+            new EndpointExecutionPlan(
+                $"run-{proposalId:N}",
+                FormationOnly: false,
+                RequirePostArReady: true,
+                ParticipantReadyTimeoutSeconds: 120,
+                AssemblyTimeoutSeconds: 90,
+                LeaseDurationSeconds: 300,
+                RepairPolicy: new EndpointRepairPolicy(false, 75, "self"),
+                Participants:
+                [
+                    new EndpointExecutionParticipant(
+                        "Slot1",
+                        new OwnerId(Owner),
+                        new IslandId(LocalIsland),
+                        new OpaqueCharacterId(Character),
+                        new JobId(Job),
+                        EndpointExecutionRole.QueueLeader,
+                        IsInviter: true),
+                ],
+                Modules:
+                [
+                    new EndpointExecutionModule(
+                        0,
+                        nameof(DadModuleId.PremadeDuty),
+                        new ActivityId(Activity),
+                        "Fixture Duty",
+                        "duty-finder-duty",
+                        1,
+                        0,
+                        Unsynced: false,
+                        ExpectedPartySize: 1),
+                ]));
+
+    private static ContractHeader ResponseHeader(ContractHeader proposalHeader, long generation)
+        => proposalHeader with
+        {
+            MessageId = Guid.NewGuid(),
+            IdempotencyKey = Guid.NewGuid().ToString("N"),
+            SenderIslandId = new IslandId(LocalIsland),
+            RecipientIslandId = new IslandId(SenderIsland),
+            Generation = generation,
+        };
 
     private static ExecutionOperation Operation(
         Guid proposalId,
@@ -1292,12 +885,6 @@ public sealed class DadAutoPartyIntegrationRulesTests
         DadAutoPartyConfiguration Configuration,
         RunProposal Proposal,
         long Generation);
-
-    private sealed record RegistrationContext(
-        DadAutoPartyRegistrationImport Registration,
-        string SigningPublicKey,
-        string EncryptionPublicKey);
-
     private sealed class FakeIdentityStore : IDadAutoPartyEndpointIdentityStore
     {
         public int StoreCalls { get; private set; }

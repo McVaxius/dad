@@ -176,6 +176,7 @@ internal sealed class DadPresetCrewEditor
 
             if (ImGui.SmallButton($"Remove##{idPrefix}-remove-{index}"))
             {
+                DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                 group.Slots.RemoveAt(index);
                 changed(group);
                 break;
@@ -270,10 +271,13 @@ internal sealed class DadPresetCrewEditor
     {
         var selectedAccount = accountOptions.FirstOrDefault(option =>
             string.Equals(option.AccountKey.Value, slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase));
+        var pairedIsland = ResolveActivePairedIsland(slot);
         var preview = slot.RequiredAccountKey.IsEmpty
             ? slot.SharedIdentity == null
                 ? "(missing)"
-                : $"Shared {ShortSharedToken(slot.SharedIdentity.AccountToken)} - remap"
+                : pairedIsland == null
+                    ? $"Shared {ShortSharedToken(slot.SharedIdentity.AccountToken)} - remap"
+                    : PairingLabel(pairedIsland, showDetails)
             : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatAccountOption(selectedAccount, showDetails);
         ImGui.SetNextItemWidth(-1f);
         var open = ImGui.BeginCombo($"##{idPrefix}-account-{index}", preview);
@@ -286,6 +290,7 @@ internal sealed class DadPresetCrewEditor
                 var label = $"{FormatAccountOption(option, showDetails)} ({option.AssignedCharacterCount})";
                 if (ImGui.Selectable(label, selected))
                 {
+                    DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                     var accountChanged = !string.Equals(
                         slot.RequiredAccountKey.Value,
                         option.AccountKey.Value,
@@ -309,6 +314,35 @@ internal sealed class DadPresetCrewEditor
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
+            var pairedIslands = plugin.Configuration.AutoParty.Pairings
+                .Where(static pairing => pairing.IsActive)
+                .OrderBy(pairing => PairingLabel(pairing), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (pairedIslands.Count > 0)
+            {
+                ImGui.Separator();
+                foreach (var pairing in pairedIslands)
+                {
+                    var selected = pairedIsland != null && string.Equals(
+                        pairedIsland.IslandId,
+                        pairing.IslandId,
+                        StringComparison.Ordinal);
+                    if (!ImGui.Selectable(PairingLabel(pairing, showDetails), selected))
+                        continue;
+                    DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
+                    slot.RequiredAccountKey = new DadAccountKey(string.Empty);
+                    slot.RequiredCharacterKey = new DadCharacterKey(string.Empty);
+                    slot.RequiredJobId = null;
+                    slot.SharedIdentity = new DadSharedIdentityPlaceholder
+                    {
+                        AccountToken = pairing.IslandId,
+                        CharacterLabel = $"{PairingLabel(pairing)} - select an authorized character",
+                        RequiresCharacter = true,
+                    };
+                    changed(group);
+                    QueuePairedDirectoryRequest();
+                }
+            }
             ImGui.EndCombo();
         }
         if (hovered)
@@ -323,6 +357,12 @@ internal sealed class DadPresetCrewEditor
         string idPrefix,
         Action<DadPlannerGroup> changed)
     {
+        var pairedIsland = ResolveActivePairedIsland(slot);
+        if (pairedIsland != null)
+        {
+            DrawPairedIslandCharacter(group, slot, index, idPrefix, pairedIsland, changed);
+            return;
+        }
         var needsAccount = slot.RequiredAccountKey.IsEmpty;
         var preview = needsAccount
             ? slot.SharedIdentity == null
@@ -455,6 +495,176 @@ internal sealed class DadPresetCrewEditor
             ImGui.SetTooltip(preview);
     }
 
+    private void DrawPairedIslandCharacter(
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index,
+        string idPrefix,
+        DadAutoPartyPairing pairing,
+        Action<DadPlannerGroup> changed)
+    {
+        var listings = GetAuthorizedListings(pairing);
+        var selectedListing = listings.FirstOrDefault(listing => string.Equals(
+            listing.OpaqueCharacterId,
+            slot.SharedIdentity?.IdentityToken,
+            StringComparison.Ordinal));
+        var preview = selectedListing?.DisplayLabel ?? "Select authorized shared character";
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.BeginDisabled(listings.Count == 0);
+        if (ImGui.BeginCombo($"##{idPrefix}-paired-character-{index}", preview))
+        {
+            foreach (var listing in listings)
+            {
+                var jobs = ParseAdvertisedJobs(listing);
+                var selected = string.Equals(
+                    listing.OpaqueCharacterId,
+                    slot.SharedIdentity?.IdentityToken,
+                    StringComparison.Ordinal);
+                if (ImGui.Selectable(
+                        $"{listing.DisplayLabel} | jobs {string.Join(", ", jobs)}",
+                        selected) &&
+                    DadAutoPartyCrewSlotBindingRules.TryBind(
+                        plugin.Configuration.AutoParty,
+                        slot,
+                        pairing,
+                        listing,
+                        jobs[0],
+                        out _))
+                {
+                    changed(group);
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        ImGui.EndDisabled();
+        if (listings.Count == 0)
+        {
+            ImGui.TextDisabled("No current authorized character listings from this Paired DAD.");
+            ImGui.SameLine();
+            var refreshInProgress = plugin.PairedDirectoryRefreshInProgress;
+            var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
+            ImGui.BeginDisabled(refreshInProgress || refreshCooldown > TimeSpan.Zero);
+            if (ImGui.SmallButton($"Refresh##{idPrefix}-paired-refresh-{index}"))
+                QueuePairedDirectoryRequest();
+            ImGui.EndDisabled();
+            if (refreshInProgress)
+                ImGui.TextDisabled("Paired DAD refresh is processing...");
+            else if (refreshCooldown > TimeSpan.Zero)
+                ImGui.TextDisabled(
+                    $"Paired DAD refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
+
+            var publication = plugin.AutoPartyEndpointService.ListingPublicationSnapshot;
+            if (publication.Attempted)
+            {
+                ImGui.TextDisabled(publication.OperatorStatus);
+                var nextAttempt = publication.NextAttemptAtUtc.HasValue
+                    ? $"{(publication.Allowed ? "next publication" : "next retry")} " +
+                      publication.NextAttemptAtUtc.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)
+                    : "next retry not scheduled";
+                ImGui.TextDisabled(
+                    $"Published/queued {publication.PublishedOrQueuedListingCount} | " +
+                    $"last attempt {publication.LastAttemptAtUtc!.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} | " +
+                    $"{nextAttempt}.");
+            }
+
+            var lastRefresh = plugin.LastPairedDirectoryRefresh;
+            if (lastRefresh.CompletedAtUtc != DateTime.MinValue)
+                ImGui.TextDisabled(lastRefresh.OperatorStatus);
+        }
+        if (slot.SharedIdentity?.BindingId is { Length: > 0 } &&
+            ImGui.SmallButton($"Clear shared##{idPrefix}-paired-clear-{index}"))
+        {
+            DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
+            slot.RequiredJobId = null;
+            slot.SharedIdentity = null;
+            changed(group);
+        }
+    }
+
+    private void DrawPairedIslandJob(
+        DadPlannerGroup group,
+        DadPlannerGroupSlot slot,
+        int index,
+        string idPrefix,
+        DadAutoPartyPairing pairing,
+        Action<DadPlannerGroup> changed)
+    {
+        var listing = GetAuthorizedListings(pairing).FirstOrDefault(candidate => string.Equals(
+            candidate.OpaqueCharacterId,
+            slot.SharedIdentity?.IdentityToken,
+            StringComparison.Ordinal));
+        var jobs = listing == null ? [] : ParseAdvertisedJobs(listing);
+        if (listing == null || jobs.Count == 0)
+        {
+            ImGui.TextDisabled("Unavailable");
+            return;
+        }
+        var selectedJob = jobs.Contains(slot.RequiredJobId ?? 0)
+            ? slot.RequiredJobId!.Value
+            : jobs[0];
+        var selectedIndex = jobs.IndexOf(selectedJob);
+        var labels = jobs.Select(ResolveClassJobAbbrev).ToArray();
+        ImGui.SetNextItemWidth(-1f);
+        if (ImGui.Combo($"##{idPrefix}-paired-job-{index}", ref selectedIndex, labels, labels.Length) &&
+            DadAutoPartyCrewSlotBindingRules.TryBind(
+                plugin.Configuration.AutoParty,
+                slot,
+                pairing,
+                listing,
+                jobs[selectedIndex],
+                out _))
+        {
+            changed(group);
+        }
+    }
+
+    private List<DadAutoPartyListing> GetAuthorizedListings(DadAutoPartyPairing pairing)
+        => plugin.AutoPartyService.GetDirectorySnapshot().Listings
+            .Where(listing => listing.ExpiresAtUtc > DateTime.UtcNow && listing.Available &&
+                              string.Equals(listing.SharingIslandId, pairing.IslandId, StringComparison.Ordinal) &&
+                              string.Equals(listing.OwnerId, pairing.OwnerId, StringComparison.Ordinal) &&
+                              ParseAdvertisedJobs(listing).Count > 0)
+            .OrderBy(static listing => listing.DisplayLabel, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static listing => listing.ListingId, StringComparer.Ordinal)
+            .Take(128)
+            .ToList();
+
+    private static List<uint> ParseAdvertisedJobs(DadAutoPartyListing listing)
+        => listing.AllowedJobIds
+            .Select(static value => uint.TryParse(value, out var jobId) ? jobId : 0)
+            .Where(DadRosterCharacterMerge.IsCombatJob)
+            .Distinct()
+            .Order()
+            .ToList();
+
+    private DadAutoPartyPairing? ResolveActivePairedIsland(DadPlannerGroupSlot slot)
+    {
+        if (!slot.RequiredAccountKey.IsEmpty || slot.SharedIdentity == null)
+            return null;
+        var islandId = slot.SharedIdentity.AccountToken?.Trim() ?? string.Empty;
+        return plugin.Configuration.AutoParty.Pairings.FirstOrDefault(pairing =>
+            pairing.IsActive && string.Equals(pairing.IslandId, islandId, StringComparison.Ordinal));
+    }
+
+    private string PairingLabel(DadAutoPartyPairing pairing, bool showDetails = false)
+    {
+        var label = plugin.Configuration.AutoParty.PairedDadAliases.TryGetValue(
+            pairing.IslandId,
+            out var alias) && !string.IsNullOrWhiteSpace(alias)
+            ? alias
+            : !string.IsNullOrWhiteSpace(pairing.PeerEndpointAlias)
+                ? pairing.PeerEndpointAlias
+                : "Paired DAD";
+        return showDetails ? $"{label} [{pairing.IslandId}]" : label;
+    }
+
+    private void QueuePairedDirectoryRequest()
+    {
+        plugin.TryStartPairedDirectoryRefresh();
+    }
+
     private void DrawCharacterFilters(
         IReadOnlyList<DadAcquiredCharacter> characters,
         string idPrefix,
@@ -529,6 +739,12 @@ internal sealed class DadPresetCrewEditor
         string idPrefix,
         Action<DadPlannerGroup> changed)
     {
+        var pairedIsland = ResolveActivePairedIsland(slot);
+        if (pairedIsland != null)
+        {
+            DrawPairedIslandJob(group, slot, index, idPrefix, pairedIsland, changed);
+            return;
+        }
         var selectedCharacter = ResolveCharacter(plannerSnapshot, slot);
         var allOptions = BuildJobOptions(selectedCharacter);
         var options = FilterJobOptions(allOptions, slot.RequiredRole);

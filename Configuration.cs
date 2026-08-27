@@ -17,7 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     [NonSerialized]
     private DadConfigurationPersistenceCoordinator? persistenceCoordinator;
 
-    public int Version { get; set; } = 8;
+    public int Version { get; set; } = DadAutoPartyConfigurationMigration.CurrentVersion;
     public bool PluginEnabled { get; set; } = false;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
@@ -135,12 +135,11 @@ public sealed class Configuration : IPluginConfiguration
             changed = true;
         }
 
-        // Version 6 moves discovery and pairing into DAD itself. The Discord connection is deliberately
-        // disabled on migration; existing AutoParty identity and historical courier fields are retained.
+        // Version 6 historically introduced per-DAD Discord discovery. Schema 9 retires that transport;
+        // older blobs still advance through the version ledger before the schema-9 cleanup below.
         if (Version < 6)
         {
             AutoParty ??= new DadAutoPartyConfiguration();
-            AutoParty.DiscordEnabled = false;
             Version = 6;
             changed = true;
         }
@@ -154,29 +153,56 @@ public sealed class Configuration : IPluginConfiguration
             changed = true;
         }
 
-        // Version 8 makes active Discord trust explicitly operator-pinned to the signing-key
-        // fingerprint and persists bounded outbound pairing challenges across restarts. Existing
-        // Discord pairings predate that confirmation, so retain them for audit but revoke them;
-        // the operator must review the full fingerprint and re-pair.
+        // Version 8 was the final per-DAD Discord trust schema. Its active trust is intentionally not
+        // carried across the central-mailbox boundary introduced by schema 9.
         if (Version < 8)
         {
             AutoParty ??= new DadAutoPartyConfiguration();
-            AutoParty.Pairings ??= [];
-            AutoParty.OutboundPairingChallenges ??= [];
-            AutoParty.EndpointKeyGeneration = Math.Max(
-                1,
-                AutoParty.DiscordBinding?.KeyGeneration ?? 1);
-            foreach (var pairing in AutoParty.Pairings.Where(static pairing =>
-                         pairing != null &&
-                         pairing.ApplicationId != 0 &&
-                         (string.IsNullOrWhiteSpace(pairing.SigningKeyFingerprint) ||
-                          !pairing.OperatorFingerprintConfirmedAtUtc.HasValue) &&
-                         pairing.RevokedAtUtc == null))
-            {
-                pairing.RevokedAtUtc = DateTime.UtcNow;
-            }
-            AutoParty.OutboundPairingChallenges.Clear();
             Version = 8;
+            changed = true;
+        }
+
+        // Version 9 replaces the local Discord bot and measured-pilot/file-courier trust with one
+        // central bot-provisioned webhook mailbox. Endpoint key material is preserved, while every
+        // P1218 route, pairing, listing, grant, and pilot-derived binding is discarded fail-closed.
+        // The old DPAPI token reference is retained only as a retryable deletion job; once deletion
+        // succeeds it is nulled and omitted from the next saved configuration.
+        if (Version < 9)
+        {
+            AutoParty ??= new DadAutoPartyConfiguration();
+            var legacyTokenReference = DadAutoPartyConfiguration.NormalizeTokenReference(
+                AutoParty.LegacyDiscordTokenReference);
+            AutoParty.LegacyDiscordTokenReference = string.IsNullOrWhiteSpace(legacyTokenReference)
+                ? null
+                : legacyTokenReference;
+            AutoParty.LegacyDiscordTokenCleanupPending = AutoParty.LegacyDiscordTokenReference != null;
+            AutoParty.LegacyDiscordTokenCleanupWarning = AutoParty.LegacyDiscordTokenCleanupPending
+                ? "dad-autoparty-legacy-token-cleanup-pending"
+                : string.Empty;
+            AutoParty.Enabled = false;
+            AutoParty.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+            AutoParty.RegistrationId = string.Empty;
+            AutoParty.RouteId = string.Empty;
+            AutoParty.CentralBotApplicationId = string.Empty;
+            AutoParty.HomeGuildScope = string.Empty;
+            AutoParty.WebhookCredentialReference = string.Empty;
+            AutoParty.UplinkEpochId = string.Empty;
+            AutoParty.DownlinkEpochId = string.Empty;
+            AutoParty.MailboxEpochGeneration = 0;
+            AutoParty.DirectoryGeneration = 1;
+            AutoParty.RelayKeyGeneration = 1;
+            AutoParty.RelaySigningPublicKey = string.Empty;
+            AutoParty.RelayAgreementPublicKey = string.Empty;
+            AutoParty.BootstrapExpiresAtUtc = default;
+            AutoParty.Pairings.Clear();
+            AutoParty.PendingPairings.Clear();
+            AutoParty.Grants.Clear();
+            AutoParty.Listings.Clear();
+            AutoParty.RemoteBindings.Clear();
+            AutoParty.Deauthentications.Clear();
+            AutoParty.RevocationGeneration = Math.Max(1, AutoParty.RevocationGeneration + 1);
+            AutoParty.StateGeneration = Math.Max(1, AutoParty.StateGeneration + 1);
+            Version = 9;
             changed = true;
         }
 
@@ -185,17 +211,7 @@ public sealed class Configuration : IPluginConfiguration
             AutoParty = new DadAutoPartyConfiguration();
             changed = true;
         }
-        var priorPilotExchangeRoot = AutoParty.PilotExchangeRoot;
-        var priorCourierRootPath = AutoParty.CourierRootPath;
         AutoParty.Normalize();
-        changed |= !string.Equals(
-                       priorPilotExchangeRoot,
-                       AutoParty.PilotExchangeRoot,
-                       StringComparison.Ordinal) ||
-                   !string.Equals(
-                       priorCourierRootPath,
-                       AutoParty.CourierRootPath,
-                       StringComparison.Ordinal);
 
         if (AutoPartyFleet == null)
         {
@@ -268,4 +284,95 @@ public sealed class Configuration : IPluginConfiguration
 
     public void Save()
         => persistenceCoordinator?.MarkDirty();
+}
+
+internal static class DadAutoPartyConfigurationMigration
+{
+    internal const int CurrentVersion = 12;
+
+    internal static bool Migrate(
+        Configuration configuration,
+        IDadAutoPartyEndpointIdentityStore identityStore,
+        IDadAutoPartyWebhookCredentialStore webhookStore)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(identityStore);
+        ArgumentNullException.ThrowIfNull(webhookStore);
+
+        if (configuration.Version >= CurrentVersion)
+        {
+            var changed = configuration.MigrateTransportSettings();
+            changed |= DadAutoPartyRegistrationRecovery.ReconcileAtStartup(
+                configuration.AutoParty,
+                identityStore,
+                webhookStore);
+            return changed;
+        }
+
+        if (configuration.Version == 10)
+        {
+            configuration.AutoParty ??= new DadAutoPartyConfiguration();
+            configuration.AutoParty.PendingPairings.Clear();
+            configuration.AutoParty.ClearPairingAttempt();
+            configuration.AutoParty.Normalize();
+            configuration.AutoParty.Pairings = configuration.AutoParty.Pairings
+                .Where(static pairing => pairing.IsActive || pairing.RevokedAtUtc != null)
+                .ToList();
+            configuration.Version = 11;
+        }
+
+        if (configuration.Version == 11)
+        {
+            configuration.AutoParty ??= new DadAutoPartyConfiguration();
+            configuration.AutoParty.Normalize();
+            configuration.Version = CurrentVersion;
+            _ = DadAutoPartyRegistrationRecovery.ReconcileAtStartup(
+                configuration.AutoParty,
+                identityStore,
+                webhookStore);
+            return true;
+        }
+
+        var autoParty = configuration.AutoParty;
+        DiscardReferencedFile(
+            autoParty?.EndpointIdentityReference,
+            identityStore.DeleteAsync);
+        DiscardReferencedFile(
+            autoParty?.WebhookCredentialReference,
+            webhookStore.DeleteAsync);
+
+        configuration.AutoParty = new DadAutoPartyConfiguration();
+        configuration.MigrateTransportSettings();
+        configuration.AutoParty = new DadAutoPartyConfiguration();
+        configuration.Version = CurrentVersion;
+        return true;
+    }
+
+    private static void DiscardReferencedFile(
+        string? reference,
+        Func<string, CancellationToken, ValueTask<bool>> deleteAsync)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+            return;
+
+        try
+        {
+            _ = deleteAsync(reference, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        catch (ArgumentException)
+        {
+            // Malformed references are untrusted configuration data, not filesystem targets.
+        }
+        catch (IOException)
+        {
+            throw ResetFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw ResetFailure();
+        }
+    }
+
+    private static InvalidOperationException ResetFailure()
+        => new("AutoParty schema-12 protected-state reset could not complete.");
 }

@@ -99,10 +99,16 @@ public sealed partial class DadAutoPartyDpapiEndpointIdentityStore : IDadAutoPar
     {
         cancellationToken.ThrowIfCancellationRequested();
         var path = ResolvePath(identityReference);
-        if (!File.Exists(path))
+        var existed = File.Exists(path);
+        try
+        {
+            File.Delete(path);
+        }
+        catch (DirectoryNotFoundException)
+        {
             return ValueTask.FromResult(false);
-        File.Delete(path);
-        return ValueTask.FromResult(true);
+        }
+        return ValueTask.FromResult(existed);
     }
 
     private string ResolvePath(string identityReference)

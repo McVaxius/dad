@@ -1,5 +1,349 @@
 # dad — changelog
 
+## 2026-08-25 — Command-driven Dad-island AutoParty execution (local-only, unpublished)
+- Crew Formation now routes travel proof, LAN readiness, party assembly, and teardown from each frozen manifest slot's
+  route kind. A locally registered LAN Slot1 remains the exact local inviter while registered-island slots continue
+  through the authenticated endpoint bridge; local endpoint registration is preserved throughout.
+- Established pairings remain authoritative until explicit revocation or deregistration; the old establishment-delivery
+  timestamp no longer expires a confirmed relationship. Webhook 401, 403, and 404 recovery now replaces only broken
+  mailbox credentials, epochs, relay keys, and temporary directory/session state while retaining endpoint identity,
+  registration route, aliases, pairings, deauthentication history, saved Crew bindings, and plans for same-identity
+  replacement bootstrap.
+- Authenticated paired character names now persist through the existing listing and saved Crew label fields. Opaque
+  directory refreshes, relogs, plugin reloads, and expired private-label deliveries no longer downgrade a known
+  `Name@World` label to its synthetic placeholder or **(real name incoming)**.
+- Pair removal is now a confirmed, reversible **Unpair** action. It ends only the selected relationship, retains the
+  separate confirmed deregistration path, and permits a later fresh reciprocal fingerprint exchange while preserving
+  the endpoint identity used for registration recovery.
+- Exact reciprocal re-pairing clears only that peer's legacy pair tombstone and owner veto. Old-transcript notices cannot
+  revoke the new route, while admin blocks, unrelated revocations, authentication, and runtime safety gates remain intact.
+- Registered Dad-island proposal, Form, Queue, Settle, Cancel, and Restore stages now advance when their authenticated
+  relay commands are accepted, without session, readiness, execution, or completion receipts. Mixed groups retain LAN
+  acknowledgements, proof, readiness gates, and the five-second reset/relog command barrier.
+- An accepted LAN relog command is now single-dispatch for its frozen takeover target. WaitingForCharacter polls fresh
+  Dalamud live identity only: a nonzero Content ID, exact Name@HomeWorld target match, and stable world state complete the
+  takeover; the still-loaded source remains an ordinary wait until identity-transition proof, while a stable live mismatch
+  after that proof fails without another relog.
+- Wake cancellation, failure, disconnect, Stop All, authenticated Restore, and disposal no longer relog the pre-run
+  character. DAD releases its owned leases and restores the captured AutoRetainer Multi Mode state on the character that
+  is currently loaded.
+- Sender coordination keeps each exact nonexpired registered-island proposal binding sufficient after its one-way command
+  dispatch without rechecking live directory projection. All-island rosters enter party assembly directly; mixed rosters
+  discover, ready, claim, lease, and validate travel only for LAN slots. The encrypted invite locator remains required
+  Form command data, with no Dad-island readiness, Post-AR, world/location, dependency, lease, acknowledgement, or
+  PartyList ceremony.
+- Authenticated receivers retain the frozen run/slot context and publish invitation locators before relog/job readiness,
+  then execute the existing bounded takeover, job, formation, queue, settlement, cancellation, and restoration paths
+  locally without emitting execution-operation receipts. Idle AutoRetainer is immediately eligible for the existing
+  one-shot suppression/disable/reset flow; active AutoRetainer work still waits until idle.
+- Dad-island leaders accept only the exact bundled inviter and dispatch both same-world and cross-world invitations
+  immediately, then every 30 seconds through 4:30 with failure at 5:00. Successful Form dispatch completes remote leader
+  assembly without remote PartyList proof, while LAN invitation behavior is unchanged.
+- Pairing offers only **This character** or one explicitly selected character; Community sharing is unchanged. DAD remains
+  `0.5.0.9`; configuration schema 12, protocol/package metadata, public APIs, and all wire shapes remain unchanged.
+- Completed pairings and sharing changes now trigger reciprocal listing publication automatically. The exact logged-in
+  local character can publish without AutoRetainer or post-AR readiness, while remote routes retain their existing gates.
+- The Plan tab now reads update-owned semantic revisions and derives Crew Tools readiness from its existing planner
+  snapshot, avoiding repeated full roster, scheduler, dependency, and formation-preview work during rendering.
+- Registered-island coordinators can now send proposals while their local AutoParty receiver toggle is off. Active
+  registration remains required, and receiving islands still enforce their own toggle before acceptance and execution.
+
+## 2026-08-22 — epoch trust hold, terminal mailbox recovery, and UI projection repair (local-only, unpublished)
+- DAD now reads both epoch control slots before ordinary mailbox traffic, retains separate locally authenticated
+  acknowledgements until central clears them, reconstructs the global hold after restart, and reacknowledges a restored
+  announcement. Application pages, semantic acknowledgements, and presence remain held until both directions are clear.
+- Webhook 401, 403, and 404 responses now terminally detach and stop the adapter, attempt deletion of the exact protected
+  credential, and clear registration-dependent trust on the framework thread. Endpoint identity, Crew/planner data,
+  sharing preferences, and the enabled setting remain available for normal registration.
+- Reusable typed process-local projection caches now use semantic equality, explicit invalidation, and optional expiry.
+  Heavy planner data is composed immutably with a separately cached scheduler preview; timestamp-only roster and scheduler
+  refreshes no longer rebuild it, while semantic changes and the next readiness boundary still do.
+- The AutoParty window caches its labelled directory, online state, and sorted pairing rows through the nearest listing or
+  authenticated-label expiry. Its workflow follows enablement, registration, pairing/sharing, community and peers,
+  private directory, freeform party, then owner controls; fresh pairing and Community selectors start at **This character**.
+- DAD remains `0.5.0.9`; configuration schema 12, `Dad.AutoParty.Protocol 0.2.0-preview.7`, package metadata, and all wire
+  contracts remain unchanged.
+
+## 2026-08-22 - Mixed-party admission and local-sharing visibility repair (local-only, unpublished)
+- Mixed AutoParty manifest binding now freezes each LAN **Any** slot to the exact combat job reported by its one
+  world-ready live worker snapshot. Wrong character, Content ID, stale snapshot, missing job, and noncombat job evidence
+  fail before proposal dispatch; explicit LAN jobs and registered-island jobs remain unchanged.
+- Automatic publication and manual paired-directory refresh now project one process-local local-sharing outcome with the
+  published/queued count, last attempt, and next publish or retry time. XA Database contract-v6 roster failures use a
+  direct local-sharing blocker, while an empty peer directory points the operator to the peer DAD's local-sharing status.
+- Unresolved paired-character rows and selectors retain their synthetic opaque labels with **(real name incoming)** until
+  the authenticated private character label arrives. Community Available listings and persisted opaque placeholders are
+  unchanged.
+- DAD remains `0.5.0.9`; configuration schema 12, the vendored AutoParty protocol package, AutoParty source and versions,
+  and all existing wire contracts remain unchanged.
+
+## 2026-08-22 - Automatic clean-break AP5 invalidation and truthful paired refresh (local-only, unpublished)
+- Protected mailbox credentials now carry their originating protocol version and require exactly two UPLINK plus two
+  DOWNLINK page references. Missing or mismatched protocol stamps now best-effort delete the protected credential and
+  immediately clear registration, epoch, relay, pairing, pending-operation, grant, listing, route, deauthentication, and
+  pairing-attempt trust even if deletion fails. DAD advances its state generation, preserves its enabled setting,
+  endpoint identity/keypair, owner/island identity, fingerprint, alias, Crew identities, and sharing choices, then returns
+  directly to ordinary new registration without an owner-confirmation/reset panel. One-page, malformed, wrong-island,
+  stale, conflicting, and split-generation current-protocol credentials or descriptors remain rejected and unacknowledged.
+- Ordinary same-protocol epoch rotation still accepts only an authenticated matching-direction pair for the current island
+  at one newer generation. DAD persists the protected pair and configuration before acknowledgement; failed persistence
+  stays degraded and unacknowledged.
+- The shared planner/main-window paired refresh now reports a published count only after every current authorized listing
+  chunk receives a positive central receipt, then waits for the final validated and applied directory response. Received
+  counts include only distinct active-pairing characters with a current route, availability, expiry, and recognized combat
+  job; negative receipts, malformed pages, expiry, cancellation, reset, deregistration, disposal, and the 60-second timeout
+  complete with truthful counts.
+- The existing vendored `Dad.AutoParty.Protocol 0.2.0-preview.7`, package hash/lock metadata, DAD `0.5.0.9`, configuration
+  schema 12, and current AutoParty database schema remain unchanged; automatic invalidation requires no package rebuild.
+
+## 2026-08-21 - Paired DAD character-list refresh (local-only, unpublished)
+- Added one nonblocking paired-directory refresh path used by the planner and the main window. It refreshes the current
+  source roster, builds and queues the current authorized AutoParty listings, then requests the paired directory without
+  using historical pairing entries as character data.
+- The main window now exposes a full-width accent refresh button with an in-memory 60-second countdown and visible
+  publication/received counts. Current-roster or publication failures report zero instead of reusing stale listings.
+
+## 2026-08-20 — Complete paired rosters and remote scheduler slots (local-only, unpublished)
+- AutoParty listing publication now sends one complete, ordered snapshot as size-valid chunks inside the existing 8 KiB
+  envelope. All supported listings are retained, empty and fitting rosters remain one chunk, and inputs above the existing
+  256-listing limit fail closed instead of being trimmed.
+- Private directory pages now carry snapshot identity and within-island listing positions. DAD stages the full query,
+  rejects mixed or non-contiguous parts, and replaces an island's listings only after its complete snapshot arrives.
+- Scheduler slots backed by a registered AutoParty island remain remotely managed through rebuilds. They bypass LAN-only
+  roster, dependency, launch, requested-job, wake/relog, takeover, and readiness gates, while LAN slots retain their
+  existing behavior and continue through the AutoParty authorization, frozen manifest, participant bridge, and
+  coordinator dispatch path.
+- Vendored `Dad.AutoParty.Protocol 0.2.0-preview.6` through the existing local NuGet workflow with SHA-256
+  `88a5b8ac6700190b58e9956af6b91b254419784d84eb548a85db925f7d621b4d`. Wire schema version 4 is intentionally
+  incompatible with older envelopes; DAD public version `0.5.0.9`, LAN/public IPC, and configuration schema are unchanged.
+
+## 2026-08-20 — Automatic paired directory and private character labels (local-only, unpublished)
+- Crew publication now includes an offline XADB character only when one fresh, reachable, ownership-proven DAD route can
+  relog it. Runtime admission consumes that same private route snapshot without Fleet Matrix rows or a pre-existing live
+  character; stale, peer-owned, unowned, ambiguous, and unroutable rows remain unavailable. Wire listings retain only the
+  existing opaque character, job, activity, availability, revision, and expiry fields.
+- Every first eligible listing publication and five-minute publication pass now refreshes DAD's local XADB full-roster
+  view first. Missing or degraded contract-v6 roster proof fails closed and retries on the existing publication cadence;
+  login and manual **Refresh** remain immediate but optional triggers.
+- Community sharing no longer suppresses listings authorized by private pairings. Disabled Community updates retain a
+  disabled, empty wire policy while carrying private-pair listings, while enabled Community selection is intersected only
+  on its wire clone. The existing 256-listing bound remains unchanged.
+- The paired directory now refreshes automatically after active registration, after pairing, every five minutes, and when
+  a remote launch lacks fresh authority. Identical outstanding queries coalesce and expire; manual **Refresh** remains an
+  optional immediate override. Missing, stale, offline, or ambiguous launch authority blocks and queues a refresh.
+- Completed webhook delivery replays now resend the retained semantic application acknowledgement as well as fragment
+  receipts, so a lost semantic acknowledgement can clear centrally without redelivering the application payload.
+- Inbound admission now distinguishes pending guarded takeover from terminal denial. Pending proposals send no premature
+  negative preflight; DAD drives the existing VERMAXION/AutoRetainer prepare, reset, relog, and exact-character gates and
+  publishes runtime invite targets only after verified readiness.
+- Wake takeover now captures the exact prior character and AutoRetainer Multi Mode state before mutation. Success, failure,
+  cancellation, expiry, and authenticated restoration relog the prior character first, then restore and verify the exact
+  previous Multi Mode state before releasing cancellation ownership. This restoration state remains process-local.
+- Advanced DAD configuration to schema 12 with normalized, island-keyed paired aliases. Legacy per-pair aliases migrate
+  locally into the bounded map, survive pairing replacement and deauthentication, and clear only with deregistration,
+  purge, or local identity replacement. Aliases remain outside every wire contract.
+- Crew retains manual **Refresh** as an optional override. Stable aliases fall back to the peer endpoint alias and then
+  **Paired DAD**; technical island IDs appear only with **Details** and are never saved into the Crew placeholder.
+- Paired directory pages now trigger direct label requests in batches of at most 16 opaque handles. The peer returns
+  `CharacterName@World` only for handles still published, available, and authorized by that exact active pairing; both
+  contracts use the existing signed X25519-sealed DAD-to-DAD route, so AutoParty sees only opaque envelopes.
+- Decrypted labels live only in a process-local overlay bound to the current pairing and exact listing revision/expiry.
+  Picker and saved Crew-slot presentation use the private label while it is current, then fall back to the persisted
+  opaque placeholder on expiry, removal, offline presence, revocation, deauthentication, or unload. Unpaired Community
+  listings remain opaque.
+- Vendored `Dad.AutoParty.Protocol 0.2.0-preview.5` through the existing local NuGet workflow with SHA-256
+  `3fb8ea0c02d03354bfe85e02833b8cb27bb9d116c3f5c571b544f34ec02c1a46`. Wire schema version 3, DAD public version
+  `0.5.0.9`, LAN/public IPC, AutoParty services and storage, and `Z:\dad.bat` behavior remain unchanged.
+
+## 2026-08-18 — Reciprocal APP1 pairing and courier repair (local-only, unpublished)
+- Replaced island-ID initiation, six-digit confirmation, and editable long-term fingerprint fields with one read-only
+  signed `APP1` fingerprint, explicit copy/regenerate/cancel controls, peer paste input, independent sharing scope, and
+  reciprocal submission. The first central intent creates no peer prompt; the inverse establishes both routes. Normal UI
+  uses endpoint aliases or **Paired DAD**, while `/dad debug` alone exposes copyable technical island IDs.
+- Advanced DAD configuration to schema 11 while preserving schema-10 registration, protected identity/mailbox references,
+  epochs, keys, active/revoked routes, transcript hashes, grants, listings, bindings, Crew data, and ordinary settings.
+  Migration drops only obsolete pending one-sided pairing/code state; schema 9 and older retain the existing fail-closed
+  reset. Raw peer clipboard text is discarded after validated submission, while the selected sharing scope and characters
+  remain visible and restore after reopening until establishment, explicit cancellation, or expiry. An already-active peer
+  fingerprint is rejected locally instead of starting another doomed attempt.
+- Batched only contiguous fragments from one delivery into each legal `AP2` page, retained the 1,900-character and
+  256-item bounds, and advanced durable UPLINK/DOWNLINK cursors only through gap-free acknowledgements. Signed page payloads
+  use the protocol package's bounded compact encoding so normal 256-byte fragments genuinely batch. Idle polling stays
+  10 seconds and active transfer, partial assembly, delivery, or acknowledgement work uses 2 seconds.
+- Vendored `Dad.AutoParty.Protocol 0.2.0-preview.4` through the existing local NuGet workflow with SHA-256
+  `f54652f13f9ea115b547f03411e7174d5388eb425f5e69a9e933b7587d34a9dd`. Protocol envelope v3, LAN/public IPC behavior,
+  credentials, active routes, and public DAD version `0.5.0.9` remain unchanged.
+
+## 2026-08-18 — Pairing confirmation retry repair (local-only, unpublished)
+- Local pairing approval now requires both confirmation values and a valid sharing policy, keeps the entered fingerprint
+  and code after rejection with an inline mismatch prompt, and clears them only after approval is saved and queued. Opening
+  the window or receiving a different pending pairing resets stale confirmation state.
+
+## 2026-08-17 — Durable authenticated mailbox epoch rotation (local-only, unpublished)
+- Authenticated UPLINK and DOWNLINK rotations are now exposed for persistence only after both descriptors are valid,
+  retain the registered island and relay-key binding, share one generation, and are newer than durable configuration.
+- DAD replaces the existing DPAPI mailbox credential atomically at the same reference, then commits both epoch IDs and
+  their generation from the framework update thread without restarting the current adapter. Each generation receives at
+  most one attempt; a failed current attempt reports `dad-webhook-epoch-persist-failed` and gates new pairing.
+- Startup now completes an interrupted post-replacement save by advancing configuration from a protected newer epoch pair.
+  Protected rollback, split generations, same-generation ID conflicts, and island or relay-key mismatches remain in the
+  existing recovery-available path instead of starting an inconsistently bound mailbox.
+
+## 2026-08-16 — Curated Crew sharing and paired-island Crew slots (local-only, unpublished)
+- AutoParty now publishes DAD's active curated Crew instead of Fleet Matrix staging. Existing local Fleet opaque IDs
+  are retained where available, new active Crew identities are stored with AutoParty, departed Crew identities and
+  local sharing references are pruned, and listings carry each Crew member's permitted combat jobs and live availability.
+- Private pairing and same-guild Community Available now both offer **This character**, **Specific characters**, and
+  **All characters** scopes. Private selections retain their existing paired-route policies; Community remains a
+  `CharacterList` policy and does not create a bilateral route.
+- Active paired islands can have a local alias and appear as isolated Paired DAD choices in the normal Crew editor.
+  Selecting an authorized remote listing saves one exact opaque slot binding and advertised job; changing, clearing,
+  removing, or deauthenticating the route leaves other Crew-slot bindings intact and blocks stale remote slots.
+
+## 2026-08-15 — Pairing completion clarity and approval tracing (local-only, unpublished)
+- The receiving DAD now shows the pairing-code entry unmasked. Once an owner saves a local approval, the editable
+  fingerprint, code, and sharing controls are replaced with an explicit waiting state until central accepts it; the
+  existing bilateral approval requirement and activation gate are unchanged.
+- Added bounded `dad-pairing` diagnostics for approval queueing, central approval-receipt acceptance or rejection, and
+  received peer approval. These lines contain only a stage and normalized safe code—never codes, fingerprints,
+  identifiers, or message contents.
+
+## 2026-08-14 — AutoParty presence and mailbox repair (local-only, unpublished)
+- Added bounded `dad-mailbox` lifecycle diagnostics for adapter start, ready, refresh, stop, and failure transitions,
+  plus initial presence publication, the first consecutive publication failure, and recovery. Idle ten-second presence
+  polls remain silent; the lines carry only stage and safe code.
+- Pairing notices now use the same fingerprint-derived `ed25519:` and `x25519:` endpoint key IDs as registration
+  challenges, preserving the existing key generation and public-key bytes so central recognizes the registered identity.
+- Added pairing-only diagnostic lifecycle lines through local notice queueing, adapter acceptance or safe-code denial,
+  courier transfer progress, central acceptance, expiry, inbound pending-notice decisions, and exact relay receipts.
+  Retry reporting is deduplicated in existing process-local delivery state; confirmation material, protected identifiers,
+  credentials, ciphertext, and message contents remain absent from the diagnostics.
+- Persisted the authenticated central directory generation from registration receipts and now use it for private listing
+  updates instead of DAD's unrelated local state generation. Existing schema-10 configurations default to generation 1;
+  Active recovery preserves it, while deregistration and identity reset restore the default.
+- Kept a running current mailbox Ready across handled fetch, publish, acknowledgement, presence, queue, and delivery
+  failures while retaining the exact raw activity code. Starting, refresh, binding failure, fatal pump termination, and
+  disposal remain lifecycle blockers and continue to gate pairing.
+- Made pairing explicitly one-sided and blocked repeated initiation while a local challenge or central pending route is
+  live. Progress now follows one exact pairing ID, prefers central's winning pending route during crossing attempts,
+  suppresses the losing local code from that card, and reports when a pairing notice waits behind listing fragments.
+- An exact same-identity bootstrap refresh for an already-Active registration now keeps both registration and recovery
+  Active while replacing the protected mailbox credential, detaches the obsolete runtime adapter, and rebinds through
+  the existing stop/start lifecycle. Pairing remains gated while the replacement mailbox reports refreshing, queued
+  relay work survives the handoff, and no registration hello or receipt is required. Provisional, expired, and
+  recovery-available imports remain receipt-gated.
+- Replaced the rotating registration/connection status line with separate Registration & mailbox, Mailbox activity, and
+  Island pairing checklist cards derived only from current protected configuration and runtime snapshots. Courier
+  fragment progress and raw activity codes remain technical mailbox detail; registration stays complete from Active plus
+  Ready, and pairing becomes complete only from the saved local approval, central acceptance, peer approval, and active
+  pairing record. Closing or restarting the window creates no checklist state.
+- A disabled Community Available `CharacterList` with zero selected characters now remains unchanged in saved state while
+  transport canonicalizes it to a disabled, empty, wire-valid policy and publishes no listings, so recovery and initial
+  pre-pairing publication cannot widen sharing.
+- Recovered same-identity registrations from validated protected identity and mailbox material at startup, treating the
+  registration ID encoded in the saved route as authoritative without discarding pairings, pending pairings, or share
+  policy. Missing or inconsistent protected material remains unregistered and never silently creates a new identity.
+- Registration challenge generation now permits exact-identity Active recovery without changing registration or trust state,
+  refuses activation-pending state, reuses the original routed ID for recovery, and reuses a first-registration pending ID
+  across repeated copies. Bootstrap recovery validates the saved route, owner, island, fingerprint, public keys, and protected
+  identity before replacing mailbox material while preserving pairing and sharing state. The window distinguishes new
+  registration, recovery, and genuinely lost identity; identity replacement requires the owner deregistration command plus
+  an explicit local confirmation and intentionally clears the old trust state.
+- A negative relay receipt for an initiated `PairingNotice` now completes that process-local pairing attempt, removes it from
+  the awaiting set, and never requeues or retransmits the notice. The exact returned safe code is shown beside the pairing
+  controls; accepted notices still follow the existing bilateral pending-approval path.
+- Preserved active central registration and bilateral pairing across ordinary DAD and central-service restarts while keeping
+  current reachability process-only. DAD now starts peers offline until new authenticated activity arrives; paired peers
+  remain visible as online or offline, and an offline directory entry clears cached usable listings.
+- Repaired the AP2 mailbox direction boundary: DAD polls distinct UPLINK and DOWNLINK message slots every 10 seconds,
+  processes UPLINK acknowledgements before publishing the next fragment, and writes acknowledgements back to the epoch
+  slot matching their direction. Acknowledgements are bound to the exact page generation, including current-epoch
+  announcements repeated after restart.
+- Added signed, epoch-bound presence immediately after adapter startup and every idle 10-second cycle without queuing
+  keep-alives behind unresolved traffic. More than 60 seconds without central acceptance of authenticated application or
+  presence traffic means offline.
+- Advanced only the unpublished exact local package dependency to `Dad.AutoParty.Protocol 0.2.0-preview.3`. Public DAD
+  version `0.5.0.9`, protocol schema v3, configuration schema 10, registration formats, database state, LAN/public IPC,
+  deployment, Discord, services, and clients remain unchanged.
+- Vendored preview.3 with SHA-256 `398dc012459d67507cdc652ae27ed290f4495722c09ed9814dea0841097b8510`,
+  refreshed both exact lock files, and verified the focused DAD AutoParty/mailbox scope 66/66.
+
+## 2026-08-13 — narrow AutoParty pairing and Community Available correction (local-only, unpublished)
+- The AutoParty window now shows and copies this DAD's island ID, accepts a peer island ID for direct bilateral pairing,
+  explains the two-sided approval, and keeps pairing/directory controls disabled until relay acknowledgement makes the
+  registration Active. The bootstrap DM input is no longer password-masked.
+- Pairing approval now uses local-character checkboxes and offers only one character, selected characters, or all
+  characters for that peer. The old full-roster standing toggle is replaced by a default-empty **Community Available**
+  selector with an explicit Save action.
+- Normal configuration loading converts the legacy `PromiscuousAllSameGuild` standing policy to disabled `CharacterList`
+  without a schema bump or protected-state reset. Selected same-guild community characters still require a current relay
+  attestation, and an active private pairing has exclusive policy precedence.
+- APR1/APB1 registration formats, schema 10, public DAD version `0.5.0.9`, public IPC, clients, deployment, and services
+  remain unchanged; the later presence/mailbox repair above advances the unpublished package and AP2 courier behavior.
+
+## 2026-08-13 — DM registration and private AP2 transport guidance (local-only, unpublished)
+- DAD's AutoParty window and README now instruct owners to enable bot DMs, expect only
+  `registration-bootstrap-sent-check-dms` in the guild, and import the raw `APB1` token or exact
+  `registration-bootstrap-ready` wrapper from the bot's single DM.
+- Closed-DM feedback and clean retry are explicit. The window keeps registration/connection, last-exchange, queue/epoch,
+  and operation safe codes visible without relying on Discord transport-channel access; that channel is documented as
+  private encrypted machine traffic rather than notifications or an audit record.
+- Fresh locked restores pass; focused importer/UI tests pass 21/21; all DAD AutoParty tests pass 145/145; and the complete
+  Debug suite passes 1721/1723 with only the known installed Dalamud/ClientStructs identity-pin drift. The no-deploy x64
+  Debug build succeeds with zero errors and three unchanged nullable warnings.
+- The existing strict raw/wrapped APB1 importer is unchanged, as are schema 10, public version `0.5.0.9`, APR1/APB1/AP2,
+  `IAutoPartyTransportAdapter`, Pascal-case private identity JSON, and protocol package `0.2.0-preview.2`. No Discord,
+  service, client, Release, publication, commit, or push action occurred.
+
+## 2026-08-13 — compact one-message AutoParty registration (local-only, unpublished)
+- Updated the exact local protocol consumer to `Dad.AutoParty.Protocol 0.2.0-preview.2` with its checked package SHA-256,
+  both locked content hashes, and explicit `System.Formats.Cbor.dll` ownership in packaged and developer runtime copies.
+- DAD now emits signed `APR1` challenges and imports either a raw endpoint-encrypted `APB1` bootstrap or the exact complete
+  `registration-bootstrap-ready` Discord code-block response. Extra prose, partial or multiple tokens, legacy packages,
+  malformed data, tamper, expiry, replay, and wrong recipients fail closed.
+- Kept schema 10 and Pascal-case private identity JSON unchanged. Registration cryptography, key sizes, expiry/recipient
+  binding, replay protection, and the `AP2` mailbox protocol remain unchanged; credential-bearing plaintext is not
+  compressed.
+- Focused schema/identity/bootstrap/package-workflow Debug tests pass, the DAD AutoParty aggregate passes 144/144, and the
+  complete Debug suite passes 1720/1722; only the two known installed Dalamud/ClientStructs identity pins fail. The x64
+  Debug no-deploy build succeeds with zero errors and three unchanged nullable warnings. Version `0.5.0.9`, Discord,
+  services, clients, Release artifacts, publication, commit, and push remain unchanged.
+
+## 2026-08-13 — AutoParty schema-10 development-state reset (local-only, unpublished)
+- Bumped new DAD configurations to schema 10. Loading schema 9 or earlier now removes the two protected AutoParty files
+  referenced by the prior endpoint and mailbox settings before any AutoParty service is initialized, then replaces the
+  complete AutoParty configuration with disabled, unregistered defaults. Plans, schedules, account pointers, ordinary DAD
+  settings, and AutoParty Fleet data remain intact.
+- Missing and malformed references are accepted as already discarded. A valid referenced file that Windows refuses to
+  remove aborts plugin startup before the version can be saved, so the next load retries; no protected file is backed up.
+- Kept current Pascal-case private identity JSON and signed registration-challenge behavior unchanged. Legacy camel-case
+  private identity JSON remains invalid. No compatibility codec, reset UI, protocol change, public API change, or README
+  workflow change was added.
+- Fresh local validation: both locked restores passed from the checked-in package through an isolated cache, and all 12
+  focused schema/identity tests passed. The AutoParty aggregate passed 142/143 and the known webhook timing test passed on
+  isolated rerun. The complete Debug suite passed 1,718/1,721; apart from the same timing test, its two failures were the
+  unrelated installed Dalamud and ClientStructs pin checks. The final Debug x64 build with an empty development-copy
+  destination succeeded with zero warnings and zero errors.
+- Version `0.5.0.9`, Release artifacts, packaging, publication, Discord, `W:\`, and live clients are unchanged.
+
+## 2026-08-12 — P1219 central AutoParty production runtime completion (local-only, unpublished)
+- Replaced synthetic production execution authority with the existing DAD runtime. Authenticated inbound admission now owns
+  exact worker wake, readiness, dependency, claim, and lease barriers; Form requires authoritative PartyList membership;
+  Queue dispatches the exact frozen module to the exact worker; and Settle waits for that worker's terminal result.
+- Preserved Slot 1 authority and carried exact follower invite targets through endpoint-encrypted, memory-only relay state.
+  Registered-island participants remain outside LAN worker dispatch/counts, and formation-only runs stop at `GroupReady`.
+- Routed successful, failed, timed-out, Stop-all, and operator-cancelled registered-island runs through authenticated Cancel
+  and Restore acknowledgements, including immutable manifest slots not yet projected into the active participant list.
+  Restore no longer claims that an integration profile was restored when production did not apply one.
+- Kept the fake execution facade as explicit unit-test support only and removed the unreferenced former coordinator wrapper.
+  A disabled but bootstrapped endpoint continues its registration/control plane while execution remains denied; an
+  unbootstrapped disabled endpoint never touches its adapter.
+- Fresh local validation: locked AutoParty and DAD restores passed; AutoParty Debug/Release builds passed with zero errors
+  and zero warnings; 76 focused central-service tests passed; DAD Debug/Release builds passed with zero errors; and all 137
+  DAD AutoParty tests passed. The broader DAD suite passed 1,713/1,715; its two failures are unrelated installed API-binary
+  pin checks after local Dalamud/ClientStructs drift. No Discord, service, remote-PC, publication, or live-client action ran.
+- Public version `0.5.0.9`, DAD `main`, manifests, packaging, publication, and live state are unchanged.
+
 ## 2026-08-08 — I159 Daily Roulette direct-entry classification (local-only, unpublished)
 - A verified exact mapped Daily Roulette Join callback now permits the territory gate to capture an immediate nonzero bound-duty territory when no queue, commence, or loading-transition observation occurs first.
 - The temporary Join marker clears on run reset and before DAD starts a new roulette selection cycle. Existing duty-entry, completion, exit, repeat, participant-observer, schedule, and requeue behavior are unchanged.

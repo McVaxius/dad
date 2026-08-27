@@ -38,7 +38,9 @@ public sealed class DadAllianceRecruitmentInstructionDto
     public string LeaderName { get; set; } = string.Empty;
     public string LeaderWorld { get; set; } = string.Empty;
     public DadWorkerSessionId TargetWorkerSessionId { get; set; } = new(string.Empty);
-    public ulong TargetApplicationId { get; set; }
+    public string TargetIslandId { get; set; } = string.Empty;
+    public string TargetOwnerId { get; set; } = string.Empty;
+    public string TargetOpaqueCharacterId { get; set; } = string.Empty;
     public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
     public string TargetCharacterName { get; set; } = string.Empty;
     public string TargetCharacterWorld { get; set; } = string.Empty;
@@ -52,7 +54,7 @@ public sealed class DadAllianceRecruitmentInstructionDto
     public DateTime IssuedAtUtc { get; set; } = DateTime.UtcNow;
 
     public string DedupeKey
-        => $"{RecruitmentId.Trim()}|{TargetCharacterKey.Value.Trim()}";
+        => $"{RecruitmentId.Trim()}|{(string.IsNullOrWhiteSpace(TargetOpaqueCharacterId) ? TargetCharacterKey.Value.Trim() : TargetOpaqueCharacterId.Trim())}";
 
     public DadAllianceRecruitmentInstructionDto Clone()
         => new()
@@ -64,7 +66,9 @@ public sealed class DadAllianceRecruitmentInstructionDto
             LeaderName = LeaderName,
             LeaderWorld = LeaderWorld,
             TargetWorkerSessionId = TargetWorkerSessionId,
-            TargetApplicationId = TargetApplicationId,
+            TargetIslandId = TargetIslandId,
+            TargetOwnerId = TargetOwnerId,
+            TargetOpaqueCharacterId = TargetOpaqueCharacterId,
             TargetCharacterKey = TargetCharacterKey,
             TargetCharacterName = TargetCharacterName,
             TargetCharacterWorld = TargetCharacterWorld,
@@ -84,6 +88,9 @@ public sealed class DadAllianceRecruitmentCancellationDto
     public string RecruitmentId { get; set; } = string.Empty;
     public DadWorkerSessionId CoordinatorWorkerSessionId { get; set; } = new(string.Empty);
     public DadWorkerSessionId TargetWorkerSessionId { get; set; } = new(string.Empty);
+    public string TargetIslandId { get; set; } = string.Empty;
+    public string TargetOwnerId { get; set; } = string.Empty;
+    public string TargetOpaqueCharacterId { get; set; } = string.Empty;
     public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
     public long StopGeneration { get; set; }
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
@@ -94,6 +101,8 @@ public sealed class DadAllianceRecruitmentResultDto
 {
     public string RecruitmentId { get; set; } = string.Empty;
     public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
+    public string ParticipantOwnerId { get; set; } = string.Empty;
+    public string TargetOpaqueCharacterId { get; set; } = string.Empty;
     public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
     public string TargetCharacterName { get; set; } = string.Empty;
     public string TargetCharacterWorld { get; set; } = string.Empty;
@@ -118,6 +127,8 @@ public sealed class DadAllianceRecruitmentResultDto
         {
             RecruitmentId = RecruitmentId,
             WorkerSessionId = WorkerSessionId,
+            ParticipantOwnerId = ParticipantOwnerId,
+            TargetOpaqueCharacterId = TargetOpaqueCharacterId,
             TargetCharacterKey = TargetCharacterKey,
             TargetCharacterName = TargetCharacterName,
             TargetCharacterWorld = TargetCharacterWorld,
@@ -136,7 +147,7 @@ public sealed class DadAllianceRecruitmentResultDto
 
 /// <summary>
 /// Hub-safe status projection. It deliberately excludes the PF passcode, native
-/// listing payloads, signing keys, transport secrets, and Discord tokens.
+/// listing payloads, signing keys, transport secrets, and mailbox credentials.
 /// </summary>
 public sealed class DadAlliancePfUiSnapshotDto
 {
@@ -179,11 +190,195 @@ public sealed class DadAllianceRecruitmentTarget
     public string SlotId { get; set; } = string.Empty;
     public DadAllianceAssignment Assignment { get; set; }
     public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
-    public ulong DiscordApplicationId { get; set; }
+    public string RegisteredIslandId { get; set; } = string.Empty;
+    public string OwnerId { get; set; } = string.Empty;
+    public string OpaqueCharacterId { get; set; } = string.Empty;
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
     public ulong ContentId { get; set; }
     public string CharacterName { get; set; } = string.Empty;
     public string WorldName { get; set; } = string.Empty;
+}
+
+internal static class DadAllianceAutoPartyContractMapping
+{
+    public static AutoParty.Contracts.AllianceRecruitmentOperation ToRecruitOperation(
+        DadAllianceRecruitmentInstructionDto instruction,
+        AutoParty.Contracts.ContractHeader header,
+        Guid operationId)
+    {
+        ArgumentNullException.ThrowIfNull(instruction);
+        var validShape = instruction.CreateListingAsHost
+            ? instruction.AssignedAlliance == DadAllianceAssignment.A &&
+              instruction.State == DadAllianceRecruitmentState.CreatingListing
+            : instruction.State == DadAllianceRecruitmentState.Searching;
+        if (!validShape)
+        {
+            throw new ArgumentException(
+                "Alliance recruitment host/state authority contradicts the protocol contract.",
+                nameof(instruction));
+        }
+        ValidateTargetRoute(
+            header,
+            instruction.TargetIslandId,
+            instruction.TargetOwnerId,
+            instruction.TargetOpaqueCharacterId);
+        return new AutoParty.Contracts.AllianceRecruitmentOperation(
+            header,
+            operationId,
+            ParseRecruitmentId(instruction.RecruitmentId),
+            AutoParty.Contracts.AllianceRecruitmentOperationKind.Recruit,
+            new AutoParty.Contracts.OwnerId(instruction.TargetOwnerId),
+            new AutoParty.Contracts.OpaqueCharacterId(instruction.TargetOpaqueCharacterId),
+            instruction.LeaderName,
+            instruction.LeaderWorld,
+            (AutoParty.Contracts.AllianceAssignment)(int)instruction.AssignedAlliance,
+            instruction.CreateListingAsHost,
+            instruction.Passcode,
+            instruction.Attempt,
+            (AutoParty.Contracts.AllianceRecruitmentState)(int)instruction.State,
+            instruction.StopGeneration,
+            "dad-alliance-recruit");
+    }
+
+    public static AutoParty.Contracts.AllianceRecruitmentOperation ToCancelOperation(
+        DadAllianceRecruitmentCancellationDto cancellation,
+        AutoParty.Contracts.ContractHeader header,
+        Guid operationId)
+    {
+        ArgumentNullException.ThrowIfNull(cancellation);
+        ValidateTargetRoute(
+            header,
+            cancellation.TargetIslandId,
+            cancellation.TargetOwnerId,
+            cancellation.TargetOpaqueCharacterId);
+        var safeCode = DadAutoPartyConfiguration.NormalizeSafeCode(cancellation.Reason);
+        return new AutoParty.Contracts.AllianceRecruitmentOperation(
+            header,
+            operationId,
+            ParseRecruitmentId(cancellation.RecruitmentId),
+            AutoParty.Contracts.AllianceRecruitmentOperationKind.Cancel,
+            new AutoParty.Contracts.OwnerId(cancellation.TargetOwnerId),
+            new AutoParty.Contracts.OpaqueCharacterId(cancellation.TargetOpaqueCharacterId),
+            string.Empty,
+            string.Empty,
+            AutoParty.Contracts.AllianceAssignment.None,
+            false,
+            0,
+            0,
+            AutoParty.Contracts.AllianceRecruitmentState.Stopped,
+            cancellation.StopGeneration,
+            safeCode.Length == 0 ? "dad-alliance-cancel" : safeCode);
+    }
+
+    public static DadAllianceRecruitmentInstructionDto FromRecruitOperation(
+        AutoParty.Contracts.AllianceRecruitmentOperation operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (operation.Kind != AutoParty.Contracts.AllianceRecruitmentOperationKind.Recruit)
+            throw new ArgumentException("Expected an Alliance recruitment operation.", nameof(operation));
+        return new DadAllianceRecruitmentInstructionDto
+        {
+            RecruitmentId = operation.RecruitmentId.ToString("N"),
+            TargetIslandId = operation.Header.RecipientIslandId.Value,
+            TargetOwnerId = operation.TargetOwnerId.Value,
+            TargetOpaqueCharacterId = operation.TargetCharacterId.Value,
+            LeaderName = operation.LeaderName,
+            LeaderWorld = operation.LeaderWorld,
+            AssignedAlliance = (DadAllianceAssignment)(int)operation.AssignedAlliance,
+            CreateListingAsHost = operation.CreateListingAsHost,
+            Passcode = operation.Passcode,
+            Attempt = operation.Attempt,
+            State = (DadAllianceRecruitmentState)(int)operation.RequestedState,
+            StopGeneration = operation.StopGeneration,
+            IssuedAtUtc = operation.Header.IssuedAt.UtcDateTime,
+        };
+    }
+
+    public static DadAllianceRecruitmentCancellationDto FromCancelOperation(
+        AutoParty.Contracts.AllianceRecruitmentOperation operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (operation.Kind != AutoParty.Contracts.AllianceRecruitmentOperationKind.Cancel)
+            throw new ArgumentException("Expected an Alliance cancellation operation.", nameof(operation));
+        return new DadAllianceRecruitmentCancellationDto
+        {
+            RecruitmentId = operation.RecruitmentId.ToString("N"),
+            TargetIslandId = operation.Header.RecipientIslandId.Value,
+            TargetOwnerId = operation.TargetOwnerId.Value,
+            TargetOpaqueCharacterId = operation.TargetCharacterId.Value,
+            StopGeneration = operation.StopGeneration,
+            RequestedAtUtc = operation.Header.IssuedAt.UtcDateTime,
+            Reason = operation.SafeCode,
+        };
+    }
+
+    public static AutoParty.Contracts.AllianceRecruitmentReceipt ToReceipt(
+        DadAllianceRecruitmentResultDto result,
+        AutoParty.Contracts.ContractHeader header,
+        Guid operationId)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (string.IsNullOrWhiteSpace(result.ParticipantOwnerId) ||
+            string.IsNullOrWhiteSpace(result.TargetOpaqueCharacterId))
+        {
+            throw new ArgumentException("Alliance central receipt identity is incomplete.", nameof(result));
+        }
+        return new AutoParty.Contracts.AllianceRecruitmentReceipt(
+            header,
+            operationId,
+            ParseRecruitmentId(result.RecruitmentId),
+            new AutoParty.Contracts.OwnerId(result.ParticipantOwnerId),
+            new AutoParty.Contracts.OpaqueCharacterId(result.TargetOpaqueCharacterId),
+            (AutoParty.Contracts.AllianceAssignment)(int)result.ExpectedAlliance,
+            (AutoParty.Contracts.AllianceAssignment)(int)result.ObservedAlliance,
+            result.Attempt,
+            (AutoParty.Contracts.AllianceRecruitmentState)(int)result.State,
+            (AutoParty.Contracts.AllianceRecruitmentResultKind)(int)result.ResultKind,
+            result.Retryable,
+            result.StopGeneration,
+            $"dad-alliance-{result.ResultKind.ToString().ToLowerInvariant()}");
+    }
+
+    public static DadAllianceRecruitmentResultDto FromReceipt(
+        AutoParty.Contracts.AllianceRecruitmentReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        return new DadAllianceRecruitmentResultDto
+        {
+            RecruitmentId = receipt.RecruitmentId.ToString("N"),
+            ParticipantOwnerId = receipt.ParticipantOwnerId.Value,
+            TargetOpaqueCharacterId = receipt.TargetCharacterId.Value,
+            ExpectedAlliance = (DadAllianceAssignment)(int)receipt.ExpectedAlliance,
+            ObservedAlliance = (DadAllianceAssignment)(int)receipt.ObservedAlliance,
+            Attempt = receipt.Attempt,
+            State = (DadAllianceRecruitmentState)(int)receipt.State,
+            ResultKind = (DadAllianceRecruitmentResultKind)(int)receipt.ResultKind,
+            Retryable = receipt.Retryable,
+            StopGeneration = receipt.StopGeneration,
+            ObservedAtUtc = receipt.Header.IssuedAt.UtcDateTime,
+            Summary = receipt.SafeCode,
+        };
+    }
+
+    private static Guid ParseRecruitmentId(string value)
+        => Guid.TryParse(value, out var parsed) && parsed != Guid.Empty
+            ? parsed
+            : throw new ArgumentException("Alliance recruitment id must be a non-empty GUID.", nameof(value));
+
+    private static void ValidateTargetRoute(
+        AutoParty.Contracts.ContractHeader header,
+        string islandId,
+        string ownerId,
+        string opaqueCharacterId)
+    {
+        ArgumentNullException.ThrowIfNull(header);
+        if (!string.Equals(header.RecipientIslandId.Value, islandId, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(ownerId) ||
+            string.IsNullOrWhiteSpace(opaqueCharacterId))
+        {
+            throw new ArgumentException("Alliance central target route is incomplete or contradicts the contract header.");
+        }
+    }
 }
 
 public sealed class DadAlliancePartyFinderStatus
@@ -261,39 +456,3 @@ public sealed class DadAlliancePartyFinderStatus
             Results = Results.Select(static result => result.Clone()).ToList(),
         };
 }
-
-public sealed class DadAllianceDiscordEnvelope
-{
-    public string Schema { get; set; } = "dad.alliance-pf/v1";
-    public long TimestampUnixMs { get; set; }
-    public string Nonce { get; set; } = string.Empty;
-    public long KeyGeneration { get; set; } = 1;
-    public ulong ApplicationId { get; set; }
-    public ulong BotUserId { get; set; }
-    public DadAutoPartyRole Role { get; set; }
-    public string CoordinatorIdentity { get; set; } = string.Empty;
-    public DadWorkerSessionId CoordinatorWorkerSessionId { get; set; } = new(string.Empty);
-    public string EndpointFingerprint { get; set; } = string.Empty;
-    public ulong TargetApplicationId { get; set; }
-    public DadWorkerSessionId TargetWorkerSessionId { get; set; } = new(string.Empty);
-    public string RecruitmentId { get; set; } = string.Empty;
-    public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
-    public string TargetCharacterName { get; set; } = string.Empty;
-    public string TargetCharacterWorld { get; set; } = string.Empty;
-    public ulong TargetContentId { get; set; }
-    public string LeaderName { get; set; } = string.Empty;
-    public string LeaderWorld { get; set; } = string.Empty;
-    public int Passcode { get; set; }
-    public DadAllianceAssignment AssignedAlliance { get; set; }
-    public int Attempt { get; set; }
-    public DadAllianceRecruitmentState State { get; set; }
-    public long StopGeneration { get; set; }
-    public string Signature { get; set; } = string.Empty;
-}
-
-public sealed record DadAllianceDiscordValidationContext(
-    ulong MessageAuthorId,
-    ulong LocalApplicationId,
-    DadCharacterKey LocalCharacterKey,
-    DadAutoPartyPairing? CoordinatorPairing,
-    DateTime UtcNow);

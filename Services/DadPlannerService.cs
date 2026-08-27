@@ -7,12 +7,19 @@ public sealed class DadPlannerService
     private readonly DadPresetProviderService presetProviderService;
     private readonly DadModuleRegistry moduleRegistry;
     private readonly Configuration configuration;
+    private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
 
-    public DadPlannerService(DadPresetProviderService presetProviderService, DadModuleRegistry moduleRegistry, Configuration configuration)
+    public DadPlannerService(
+        DadPresetProviderService presetProviderService,
+        DadModuleRegistry moduleRegistry,
+        Configuration configuration,
+        Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null)
     {
         this.presetProviderService = presetProviderService;
         this.moduleRegistry = moduleRegistry;
         this.configuration = configuration;
+        this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ??
+            (() => configuration.AutoParty.RemoteBindings);
     }
 
     public DadRunPlan? BuildPlan(
@@ -34,6 +41,7 @@ public sealed class DadPlannerService
                 request,
                 pool,
                 configuration,
+                currentRemoteBindingsProvider(),
                 activeCoordinatorCharacter,
                 requireLiveReadiness,
                 allowWakeableCoordinatorLeader,
@@ -398,9 +406,13 @@ public sealed class DadPlannerService
             request.Orchestration.RosterIntent.ExpectedPartySize,
             modules.Max(static module => module.ExpectedPartySize));
         var localCharacterKey = activeCoordinatorCharacter?.CharacterKey ?? string.Empty;
-        var firstPrimaryCharacterKey = request.Orchestration.RequiredRosterCharacters?
-            .FirstOrDefault()?.CharacterKey.Value ?? string.Empty;
-        var leaderCharacterKey = string.IsNullOrWhiteSpace(request.Orchestration.PreferredLeaderCharacterKey)
+        var firstPrimary = request.Orchestration.RequiredRosterCharacters?.FirstOrDefault();
+        var registeredIslandLeader = firstPrimary != null &&
+                                     !string.IsNullOrWhiteSpace(firstPrimary.SharedIdentityToken);
+        var firstPrimaryCharacterKey = firstPrimary?.CharacterKey.Value ?? string.Empty;
+        var leaderCharacterKey = registeredIslandLeader
+            ? DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority
+            : string.IsNullOrWhiteSpace(request.Orchestration.PreferredLeaderCharacterKey)
             ? requiredParticipantCount > 1 && !string.IsNullOrWhiteSpace(firstPrimaryCharacterKey)
                 ? firstPrimaryCharacterKey
                 : localCharacterKey
@@ -420,6 +432,7 @@ public sealed class DadPlannerService
                 requireLiveReadiness,
                 allowWakeableCoordinatorLeader,
                 activeCoordinatorCharacter,
+                registeredIslandLeader,
                 out rejectionReason))
             return null;
 
@@ -460,6 +473,7 @@ public sealed class DadPlannerService
         bool requireLiveReadiness,
         bool allowWakeableCoordinatorLeader,
         DadAcquiredCharacter? activeCoordinatorCharacter,
+        bool registeredIslandLeader,
         out string rejectionReason)
     {
         rejectionReason = string.Empty;
@@ -478,34 +492,48 @@ public sealed class DadPlannerService
             return false;
         }
 
-        var leader = ResolveAuthorityCharacter(pool, leaderCharacterKey, activeCoordinatorCharacter);
-        if (leader == null)
+        if (registeredIslandLeader)
         {
-            rejectionReason = $"Party leader '{leaderCharacterKey}' is not known to Dad.";
-            return false;
+            if (!string.Equals(
+                    leaderCharacterKey,
+                    DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+                    StringComparison.Ordinal))
+            {
+                rejectionReason = "Registered-island Slot1 has no runtime queue-authority marker.";
+                return false;
+            }
         }
-
-        var coordinatorAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
-        if (!DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
-                request,
-                leader,
-                coordinatorAccountKey,
-                activeCoordinatorCharacter,
-                requireExactLocalIdentity: requireLiveReadiness,
-                allowWakeableCoordinatorLeader: !requireLiveReadiness && allowWakeableCoordinatorLeader,
-                out rejectionReason))
-            return false;
-
-        if (requireLiveReadiness && !IsConnectedForRuntime(leader))
+        else
         {
-            rejectionReason = $"Party leader '{leaderCharacterKey}' is not live/ready at runtime.";
-            return false;
-        }
+            var leader = ResolveAuthorityCharacter(pool, leaderCharacterKey, activeCoordinatorCharacter);
+            if (leader == null)
+            {
+                rejectionReason = $"Party leader '{leaderCharacterKey}' is not known to Dad.";
+                return false;
+            }
 
-        if (requireLiveReadiness && leader.Blockers.Any(IsLocalIsolationReason))
-        {
-            rejectionReason = $"Party leader '{leaderCharacterKey}' is local-only/isolated and cannot queue the Dad party.";
-            return false;
+            var coordinatorAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
+            if (!DadFullPartyExecutionRules.TryValidatePlannedCoordinatorLeader(
+                    request,
+                    leader,
+                    coordinatorAccountKey,
+                    activeCoordinatorCharacter,
+                    requireExactLocalIdentity: requireLiveReadiness,
+                    allowWakeableCoordinatorLeader: !requireLiveReadiness && allowWakeableCoordinatorLeader,
+                    out rejectionReason))
+                return false;
+
+            if (requireLiveReadiness && !IsConnectedForRuntime(leader))
+            {
+                rejectionReason = $"Party leader '{leaderCharacterKey}' is not live/ready at runtime.";
+                return false;
+            }
+
+            if (requireLiveReadiness && leader.Blockers.Any(IsLocalIsolationReason))
+            {
+                rejectionReason = $"Party leader '{leaderCharacterKey}' is local-only/isolated and cannot queue the Dad party.";
+                return false;
+            }
         }
 
         if (request.Orchestration.InviteAuthority == DadInviteAuthority.External)
@@ -528,6 +556,7 @@ public sealed class DadPlannerService
 
         if (!string.Equals(inviterCharacterKey, leaderCharacterKey, StringComparison.OrdinalIgnoreCase) ||
             (!request.Orchestration.PreferredInviterCharacterKey.IsEmpty &&
+             !registeredIslandLeader &&
              !string.Equals(
                  request.Orchestration.PreferredInviterCharacterKey.Value,
                  leaderCharacterKey,

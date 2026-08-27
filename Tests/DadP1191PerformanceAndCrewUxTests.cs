@@ -32,26 +32,28 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             () => now);
         configuration!.AttachPersistenceCoordinator(persistence);
 
-        if (configuration.MigrateTransportSettings())
+        var identityStore = new MissingAutoPartyIdentityStore();
+        var webhookStore = new MissingAutoPartyWebhookStore();
+        if (DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore))
             configuration.Save();
 
-        Assert.Equal(8, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         Assert.False(configuration.AutoParty.Enabled);
-        Assert.False(configuration.AutoParty.PairingEnabled);
-        Assert.False(configuration.AutoParty.ExecutionEnabled);
-        Assert.False(configuration.AutoParty.DiscordEnabled);
+        Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.AutoParty.RegistrationState);
         Assert.Equal(string.Empty, configuration.AutoParty.EndpointIdentityReference);
         Assert.Equal(string.Empty, configuration.AutoParty.RegisteredOwnerId);
         Assert.Equal(string.Empty, configuration.AutoParty.RegisteredIslandId);
         Assert.Empty(configuration.AutoParty.Pairings);
+        Assert.Empty(configuration.AutoParty.PendingPairings);
         Assert.Empty(configuration.AutoParty.Grants);
         Assert.Empty(configuration.AutoParty.Listings);
+        Assert.Empty(configuration.AutoParty.Deauthentications);
         Assert.Equal(0, saveCount);
         now = now.AddMilliseconds(250);
         Assert.True(persistence.Update());
         Assert.Equal(1, saveCount);
         Assert.DoesNotContain("ProfileCatalogCache", JsonSerializer.Serialize(configuration), StringComparison.Ordinal);
-        Assert.False(configuration.MigrateTransportSettings());
+        Assert.False(DadAutoPartyConfigurationMigration.Migrate(configuration, identityStore, webhookStore));
         Assert.False(persistence.Update());
         Assert.Equal(1, saveCount);
     }
@@ -114,9 +116,10 @@ public sealed class DadP1191PerformanceAndCrewUxTests
     }
 
     [Fact]
-    public void RevisionSnapshotCacheRebuildsOnlyWhenCatalogOrTransportChanges()
+    public void TypedProjectionCacheReusesSemanticKeysAndHonorsExpiryAndInvalidation()
     {
-        var cache = new DadRevisionSnapshotCache<object>();
+        var cache = new DadProjectionCache<(long Catalog, long Transport), object>();
+        var now = new DateTime(2026, 8, 22, 12, 0, 0, DateTimeKind.Utc);
         var builds = 0;
         object Build()
         {
@@ -124,12 +127,60 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             return new object();
         }
 
-        var first = cache.GetOrCreate(1, 1, Build);
-        Assert.Same(first, cache.GetOrCreate(1, 1, Build));
-        Assert.NotSame(first, cache.GetOrCreate(2, 1, Build));
+        var first = cache.GetOrCreate((1, 1), Build, now, now.AddMinutes(1));
+        Assert.Same(first, cache.GetOrCreate((1, 1), Build, now.AddSeconds(59), now.AddMinutes(2)));
+        Assert.NotSame(first, cache.GetOrCreate((2, 1), Build, now, now.AddMinutes(1)));
         Assert.Equal(2, builds);
-        cache.GetOrCreate(2, 2, Build);
+        cache.GetOrCreate((2, 1), Build, now.AddMinutes(1));
         Assert.Equal(3, builds);
+        cache.Invalidate();
+        cache.GetOrCreate((2, 1), Build, now.AddMinutes(1));
+        Assert.Equal(4, builds);
+    }
+
+    [Fact]
+    public void SemanticRevisionTrackerAdvancesOnlyForDirectSemanticChanges()
+    {
+        var tracker = new DadSemanticRevisionTracker<DadOrderedSemantic<string>>();
+
+        Assert.Equal(1, tracker.Observe(new DadOrderedSemantic<string>(["alpha", "beta"])));
+        Assert.Equal(1, tracker.Observe(new DadOrderedSemantic<string>(["alpha", "beta"])));
+        Assert.Equal(2, tracker.Observe(new DadOrderedSemantic<string>(["alpha", "gamma"])));
+    }
+
+    [Fact]
+    public void PlannerCachesUseSemanticRevisionsExpiryAndImmutableComposition()
+    {
+        var pluginSource = ReadRepositorySource("Plugin.cs");
+        var schedulerSource = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var plannerStart = pluginSource.IndexOf(
+            "internal DadPlannerUiSnapshot GetPlannerUiSnapshot",
+            StringComparison.Ordinal);
+        var plannerEnd = pluginSource.IndexOf(
+            "private IReadOnlyList<DadPlannerLanePreviewSnapshot>",
+            plannerStart,
+            StringComparison.Ordinal);
+        var planner = pluginSource[plannerStart..plannerEnd];
+        var schedulerStart = schedulerSource.IndexOf(
+            "internal DadSchedulerUiRevision GetPlannerUiRevision",
+            StringComparison.Ordinal);
+        var schedulerEnd = schedulerSource.IndexOf(
+            "public DadSchedulerQueueSnapshot GetQueueSnapshot",
+            schedulerStart,
+            StringComparison.Ordinal);
+        var scheduler = schedulerSource[schedulerStart..schedulerEnd];
+
+        Assert.Contains("DadProjectionCache<DadPlannerUiCacheKey", pluginSource, StringComparison.Ordinal);
+        Assert.Contains("plannerRosterRevisionTracker.Observe", planner, StringComparison.Ordinal);
+        Assert.Contains("GetPlannerSemanticRevision", planner, StringComparison.Ordinal);
+        Assert.Contains("schedulerRevision.ValidUntilUtc", planner, StringComparison.Ordinal);
+        Assert.Contains("with { SchedulerPreview = schedulerPreview }", planner, StringComparison.Ordinal);
+        Assert.DoesNotContain("SchedulerPreview = cached", planner, StringComparison.Ordinal);
+        Assert.DoesNotContain("LastUpdatedUtc.Ticks", planner, StringComparison.Ordinal);
+        Assert.DoesNotContain("SnapshotUtc?.Ticks", planner, StringComparison.Ordinal);
+        Assert.DoesNotContain("new HashCode", scheduler, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdatedAtUtc", scheduler, StringComparison.Ordinal);
+        Assert.DoesNotContain("NextTakeoverStatusCheckUtc", scheduler[..scheduler.IndexOf("validUntilUtc", StringComparison.Ordinal)], StringComparison.Ordinal);
     }
 
     [Fact]
@@ -209,4 +260,14 @@ public sealed class DadP1191PerformanceAndCrewUxTests
                 },
             ],
         };
+
+    private static string ReadRepositorySource(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "dad.csproj")))
+            directory = directory.Parent;
+        var repositoryRoot = directory?.FullName ?? throw new DirectoryNotFoundException(
+            "Could not locate the DAD repository root from the test output directory.");
+        return File.ReadAllText(Path.Combine([repositoryRoot, .. pathParts]));
+    }
 }

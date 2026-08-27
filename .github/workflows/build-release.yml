@@ -31,8 +31,8 @@ jobs:
         shell: pwsh
         run: |
           $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
-          $package = Join-Path $packageDir "Dad.AutoParty.Protocol.0.1.0-preview.2.nupkg"
-          $expectedHash = "475964fad1a400125b0a80a3ac4ab28e45150d5390d97e992fcf6dfb8dd09ac5"
+          $package = Join-Path $packageDir "Dad.AutoParty.Protocol.0.2.0-preview.7.nupkg"
+          $expectedHash = "484335cccb87c36c74558a33fed8fc26b04456e487a2c03927a391ce3c1fc7ea"
 
           if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
             throw "Vendored AutoParty package is missing: $package"
@@ -41,11 +41,6 @@ jobs:
           $actualHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualHash -ne $expectedHash) {
             throw "Vendored AutoParty package hash mismatch. Expected $expectedHash, got $actualHash."
-          }
-
-          dotnet nuget add source $packageDir --name autoparty-local
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to register the vendored AutoParty NuGet source."
           }
 
       - name: Download Dalamud
@@ -62,17 +57,21 @@ jobs:
 
           Expand-Archive -Force -LiteralPath $archive -DestinationPath "$env:AppData\XIVLauncher\addon\Hooks\dev\"
 
+      - name: Restore
+        run: |
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
+          $nugetSource = "https://api.nuget.org/v3/index.json"
+          dotnet restore "${{ env.PROJECT_PATH }}" -r win --locked-mode --source $packageDir --source $nugetSource
+          dotnet restore "Tests\dad.Tests.csproj" --locked-mode --source $packageDir --source $nugetSource
+
       - name: Build
         run: |
-          dotnet restore -r win "${{ env.PROJECT_PATH }}"
-          dotnet build "${{ env.PROJECT_PATH }}" --configuration Release -p:Platform=x64 --no-restore
+          dotnet build "${{ env.PROJECT_PATH }}" --configuration Release -p:Platform=x64 -p:DadDevPluginOutput= --no-restore
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
 
-      # Review H8: gate the release on the test suite (previously CI never ran the tests).
       - name: Test
-        continue-on-error: true
-        run: dotnet test "Tests\dad.Tests.csproj" --configuration Release
+        run: dotnet test "Tests\dad.Tests.csproj" --configuration Release -p:Platform=x64 --no-restore
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
 

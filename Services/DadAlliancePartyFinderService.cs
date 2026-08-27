@@ -8,15 +8,18 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 {
     private readonly DadPresenceService presenceService;
     private readonly DadTransportService transportService;
-    private readonly DadAutoPartyDiscordService discordService;
+    private readonly DadAutoPartyEndpointService endpointService;
     private readonly DadAlliancePartyFinderNativeGateway nativeGateway;
     private readonly DadAlliancePfAuditLog audit;
     private readonly Func<DadAlliancePartyFinderActionContext, string> conflictBlocker;
     private readonly Func<string> coordinatorIdentity;
+    private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
+    private readonly Func<IReadOnlyList<DadAutoPartyCrewCandidate>> currentLocalCrewProvider;
     private readonly IPluginLog log;
     private readonly DadAllianceDeliveryDedupe receiverDedupe = new();
     private readonly ConcurrentQueue<Action> frameworkCompletions = new();
-    private readonly ConcurrentQueue<DadAllianceRecruitmentInstructionDto> discordInstructions = new();
+    private readonly ConcurrentQueue<DadAllianceCentralOperationContext> centralOperations = new();
+    private readonly ConcurrentQueue<DadAllianceCentralReceiptContext> centralReceipts = new();
     private readonly Dictionary<string, DadAllianceRecruitmentTarget> coordinatorTargets = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadAllianceRecruitmentInstructionDto> coordinatorInstructions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadAllianceRecruitmentResultDto> coordinatorResults = new(StringComparer.OrdinalIgnoreCase);
@@ -32,7 +35,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private bool coordinatorHostOwnsRecruitment;
     private int coordinatorHostDispatchAttempts;
     private int coordinatorHostCleanupAttempts;
-    private readonly List<ulong> discordMessageIds = [];
+    private readonly List<Guid> centralDeliveryIds = [];
     private readonly DadAlliancePartyFinderCreateCycleCoordinator createCycles =
         new();
     private readonly object statusGate = new();
@@ -73,22 +76,27 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     internal DadAlliancePartyFinderService(
         DadPresenceService presenceService,
         DadTransportService transportService,
-        DadAutoPartyDiscordService discordService,
+        DadAutoPartyEndpointService endpointService,
         DadAlliancePartyFinderNativeGateway nativeGateway,
         DadAlliancePfAuditLog audit,
         Func<DadAlliancePartyFinderActionContext, string> conflictBlocker,
         Func<string> coordinatorIdentity,
-        IPluginLog log)
+        IPluginLog log,
+        Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null,
+        Func<IReadOnlyList<DadAutoPartyCrewCandidate>>? currentLocalCrewProvider = null)
     {
         this.presenceService = presenceService;
         this.transportService = transportService;
-        this.discordService = discordService;
+        this.endpointService = endpointService;
         this.nativeGateway = nativeGateway;
         this.audit = audit;
         this.conflictBlocker = conflictBlocker;
         this.coordinatorIdentity = coordinatorIdentity;
+        this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ?? (() => []);
+        this.currentLocalCrewProvider = currentLocalCrewProvider ?? (() => []);
         this.log = log;
-        discordService.AllianceRecruitmentReceived += QueueDiscordInstruction;
+        endpointService.AllianceRecruitmentReceived += QueueCentralInstruction;
+        endpointService.AllianceRecruitmentReceiptReceived += QueueCentralReceipt;
     }
 
     public DadAlliancePartyFinderStatus GetStatus()
@@ -407,8 +415,10 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 
         while (frameworkCompletions.TryDequeue(out var completion))
             completion();
-        while (discordInstructions.TryDequeue(out var instruction))
-            AcceptDiscordInstructionOnFramework(instruction);
+        while (centralOperations.TryDequeue(out var operation))
+            AcceptCentralOperationOnFramework(operation);
+        while (centralReceipts.TryDequeue(out var receipt))
+            AcceptCentralReceiptOnFramework(receipt);
 
         UpdateReceiver();
         UpdateCoordinator();
@@ -452,6 +462,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 {
                     RecruitmentId = cancellation.RecruitmentId,
                     WorkerSessionId = presenceService.WorkerSessionId,
+                    ParticipantOwnerId = cancellation.TargetOwnerId,
+                    TargetOpaqueCharacterId = cancellation.TargetOpaqueCharacterId,
                     TargetCharacterKey = cancellation.TargetCharacterKey,
                     ExpectedAlliance = DadAllianceAssignment.A,
                     ObservedAlliance = DadAllianceAssignment.A,
@@ -484,6 +496,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         {
             RecruitmentId = cancellation.RecruitmentId,
             WorkerSessionId = presenceService.WorkerSessionId,
+            ParticipantOwnerId = cancellation.TargetOwnerId,
+            TargetOpaqueCharacterId = cancellation.TargetOpaqueCharacterId,
             TargetCharacterKey = cancellation.TargetCharacterKey,
             ExpectedAlliance = receiverInstruction.AssignedAlliance,
             ObservedAlliance = nativeGateway.ObserveAlliance(receiverInstruction.TargetContentId),
@@ -559,6 +573,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 RecruitmentId = receiverInstruction.RecruitmentId,
                 CoordinatorWorkerSessionId = receiverInstruction.CoordinatorWorkerSessionId,
                 TargetWorkerSessionId = presenceService.WorkerSessionId,
+                TargetIslandId = receiverInstruction.TargetIslandId,
+                TargetOwnerId = receiverInstruction.TargetOwnerId,
+                TargetOpaqueCharacterId = receiverInstruction.TargetOpaqueCharacterId,
                 TargetCharacterKey = receiverInstruction.TargetCharacterKey,
                 StopGeneration = nextGeneration,
                 Reason = reason,
@@ -567,7 +584,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 
         foreach (var target in coordinatorTargets.Values)
             QueueCancellation(target, nextGeneration, reason);
-        QueueDiscordCleanup();
+        QueueCentralCleanup();
         Audit("stop", null, 0, string.Empty, reason);
         operationCancellation.Dispose();
         operationCancellation = new CancellationTokenSource();
@@ -579,7 +596,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             return;
         Stop("Alliance PF service disposed.");
         disposed = true;
-        discordService.AllianceRecruitmentReceived -= QueueDiscordInstruction;
+        endpointService.AllianceRecruitmentReceived -= QueueCentralInstruction;
+        endpointService.AllianceRecruitmentReceiptReceived -= QueueCentralReceipt;
         operationCancellation.Cancel();
         operationCancellation.Dispose();
         nativeGateway.Dispose();
@@ -687,7 +705,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     status.Summary = cleanup.Summary;
                     status.UpdatedAtUtc = DateTime.UtcNow;
                 }
-                QueueDiscordCleanup();
+                QueueCentralCleanup();
                 Audit("recruitment-ended", null, 0, string.Empty, cleanup.Summary);
             }
             else if (cleanup.Kind == DadAllianceNativeStepKind.Blocked)
@@ -802,7 +820,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     status.Results = BuildCoordinatorResultList();
                     status.UpdatedAtUtc = now;
                 }
-                QueueDiscordCleanup();
+                QueueCentralCleanup();
                 Audit("remote-host-recruitment-ended", coordinatorHostResult, 0, string.Empty, coordinatorHostResult.Summary);
                 return;
             }
@@ -898,7 +916,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             LeaderName = host.CharacterName,
             LeaderWorld = host.WorldName,
             TargetWorkerSessionId = host.WorkerSessionId,
-            TargetApplicationId = host.DiscordApplicationId,
+            TargetIslandId = host.RegisteredIslandId,
+            TargetOwnerId = host.OwnerId,
+            TargetOpaqueCharacterId = host.OpaqueCharacterId,
             TargetCharacterKey = host.CharacterKey,
             TargetCharacterName = host.CharacterName,
             TargetCharacterWorld = host.WorldName,
@@ -925,6 +945,22 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         DadAllianceRecruitmentInstructionDto instruction,
         long dispatchedGeneration)
     {
+        DadAllianceCentralSendResult relay;
+        try
+        {
+            relay = await endpointService.SendAllianceInstructionAsync(
+                    instruction,
+                    operationCancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
+        {
+            relay = new(false, Guid.Empty, "dad-alliance-central-cancelled");
+        }
+        catch
+        {
+            relay = new(false, Guid.Empty, "dad-alliance-central-send-failed");
+        }
         try
         {
             var result = await transportService.SendAllianceRecruitmentInstructionAsync(
@@ -955,7 +991,14 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 }
                 coordinatorHostAccepted = true;
                 coordinatorHostResult = result.Clone();
-                Audit("remote-host-transport-delivery", result, 0, string.Empty, "Authenticated hub host delivery completed.");
+                if (relay.Sent)
+                    centralDeliveryIds.Add(relay.MessageId);
+                Audit(
+                    "remote-host-transport-delivery",
+                    result,
+                    0,
+                    string.Empty,
+                    $"hub=delivered; central={relay.SafeCode}");
             });
         }
         catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
@@ -974,7 +1017,14 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     coordinatorHostTarget!,
                     exception.Message,
                     instruction.Attempt);
-                Audit("remote-host-transport-failure", coordinatorHostResult, 0, exception.Message, "Remote host delivery will retry.");
+                if (relay.Sent)
+                    centralDeliveryIds.Add(relay.MessageId);
+                Audit(
+                    "remote-host-transport-failure",
+                    coordinatorHostResult,
+                    0,
+                    exception.Message,
+                    $"Hub delivery will retry; central={relay.SafeCode}");
             });
         }
     }
@@ -994,6 +1044,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 RecruitmentId = current.RecruitmentId,
                 CoordinatorWorkerSessionId = presenceService.WorkerSessionId,
                 TargetWorkerSessionId = host.WorkerSessionId,
+                TargetIslandId = host.RegisteredIslandId,
+                TargetOwnerId = host.OwnerId,
+                TargetOpaqueCharacterId = host.OpaqueCharacterId,
                 TargetCharacterKey = host.CharacterKey,
                 StopGeneration = stopGeneration,
                 Reason = reason,
@@ -1015,6 +1068,19 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         DadAllianceRecruitmentInstructionDto instruction,
         long dispatchedGeneration)
     {
+        DadAllianceCentralSendResult relay;
+        try
+        {
+            relay = await endpointService.SendAllianceCancellationAsync(
+                    cancellation,
+                    instruction,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            relay = new(false, Guid.Empty, "dad-alliance-central-cancellation-failed");
+        }
         try
         {
             var result = await transportService.SendAllianceRecruitmentCancellationAsync(
@@ -1044,6 +1110,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     return;
                 }
                 coordinatorHostResult = result.Clone();
+                if (relay.Sent)
+                    centralDeliveryIds.Add(relay.MessageId);
             });
         }
         catch (Exception exception)
@@ -1059,6 +1127,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     coordinatorHostTarget!,
                     $"Remote Slot1 cleanup response failed: {exception.Message}",
                     instruction.Attempt);
+                if (relay.Sent)
+                    centralDeliveryIds.Add(relay.MessageId);
             });
         }
     }
@@ -1427,7 +1497,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             LeaderName = current.LeaderName,
             LeaderWorld = current.LeaderWorld,
             TargetWorkerSessionId = target.WorkerSessionId,
-            TargetApplicationId = target.DiscordApplicationId,
+            TargetIslandId = target.RegisteredIslandId,
+            TargetOwnerId = target.OwnerId,
+            TargetOpaqueCharacterId = target.OpaqueCharacterId,
             TargetCharacterKey = target.CharacterKey,
             TargetCharacterName = target.CharacterName,
             TargetCharacterWorld = target.WorldName,
@@ -1458,13 +1530,15 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             participant,
             instruction,
             cancellationToken);
-        var discordTask = discordService.SendAllianceInstructionAsync(
+        var relayTask = endpointService.SendAllianceInstructionAsync(
             instruction,
             cancellationToken).AsTask();
         DadAllianceRecruitmentResultDto? hubResult = null;
         Exception? hubFailure = null;
-        (bool Sent, ulong MessageId, string SafeCode) discord =
-            (false, 0, "dad-alliance-discord-not-attempted");
+        var relay = new DadAllianceCentralSendResult(
+            false,
+            Guid.Empty,
+            "dad-alliance-central-not-attempted");
         try
         {
             hubResult = await hubTask.ConfigureAwait(false);
@@ -1480,15 +1554,15 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 
         try
         {
-            discord = await discordTask.ConfigureAwait(false);
+            relay = await relayTask.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            discord = (false, 0, "dad-alliance-discord-cancelled");
+            relay = new(false, Guid.Empty, "dad-alliance-central-cancelled");
         }
         catch (Exception)
         {
-            discord = (false, 0, "dad-alliance-discord-send-failed");
+            relay = new(false, Guid.Empty, "dad-alliance-central-send-failed");
         }
 
         if (hubFailure is OperationCanceledException && cancellationToken.IsCancellationRequested)
@@ -1505,7 +1579,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                     null,
                     0,
                     string.Empty,
-                    "Pending hub/Discord delivery was cancelled by Stop.");
+                    "Pending hub/central delivery was cancelled by Stop.");
             });
             return;
         }
@@ -1564,14 +1638,14 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 return;
             }
             coordinatorResults[instruction.TargetCharacterKey.Value] = hubResult!;
-            if (discord.Sent)
-                discordMessageIds.Add(discord.MessageId);
+            if (relay.Sent)
+                centralDeliveryIds.Add(relay.MessageId);
             Audit(
                 "transport-delivery",
                 hubResult!,
                 0,
                 string.Empty,
-                $"hub=delivered; discord={discord.SafeCode}");
+                $"hub=delivered; central={relay.SafeCode}");
         });
     }
 
@@ -1583,16 +1657,10 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         var blocker = DadAlliancePartyFinderRules.ValidateInstruction(instruction);
         var local = presenceService.BuildLiveSafetySnapshot();
         if (string.IsNullOrWhiteSpace(blocker) &&
-            instruction.CreateListingAsHost &&
-            string.Equals(transport, "discord", StringComparison.OrdinalIgnoreCase))
-        {
-            blocker = "Remote Slot1 PF host instructions require authenticated hub transport.";
-        }
-        if (string.IsNullOrWhiteSpace(blocker) &&
             requireConnectedCoordinator &&
             !transportService.IsWorkerOnline(instruction.CoordinatorWorkerSessionId))
         {
-            blocker = "The authenticated DAD hub cannot currently prove the Discord coordinator is connected.";
+            blocker = "The authenticated DAD hub cannot currently prove the central-route coordinator is connected.";
         }
         if (string.IsNullOrWhiteSpace(blocker) &&
             (!string.Equals(
@@ -1614,6 +1682,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             {
                 RecruitmentId = instruction.RecruitmentId,
                 WorkerSessionId = presenceService.WorkerSessionId,
+                ParticipantOwnerId = instruction.TargetOwnerId,
+                TargetOpaqueCharacterId = instruction.TargetOpaqueCharacterId,
                 TargetCharacterKey = instruction.TargetCharacterKey,
                 ExpectedAlliance = instruction.AssignedAlliance,
                 Attempt = instruction.Attempt,
@@ -1661,6 +1731,8 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         {
             RecruitmentId = instruction.RecruitmentId,
             WorkerSessionId = presenceService.WorkerSessionId,
+            ParticipantOwnerId = instruction.TargetOwnerId,
+            TargetOpaqueCharacterId = instruction.TargetOpaqueCharacterId,
             TargetCharacterKey = instruction.TargetCharacterKey,
             TargetCharacterName = instruction.TargetCharacterName,
             TargetCharacterWorld = instruction.TargetCharacterWorld,
@@ -1681,11 +1753,206 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         return receiverResult.Clone();
     }
 
-    private void QueueDiscordInstruction(DadAllianceRecruitmentInstructionDto instruction)
-        => discordInstructions.Enqueue(instruction);
+    private void QueueCentralInstruction(DadAllianceCentralOperationContext operation)
+        => centralOperations.Enqueue(operation);
 
-    private void AcceptDiscordInstructionOnFramework(DadAllianceRecruitmentInstructionDto instruction)
-        => AcceptInstruction(instruction, "discord", requireConnectedCoordinator: true);
+    private void QueueCentralReceipt(DadAllianceCentralReceiptContext receipt)
+        => centralReceipts.Enqueue(receipt);
+
+    private void AcceptCentralOperationOnFramework(DadAllianceCentralOperationContext context)
+    {
+        DadAllianceRecruitmentResultDto result;
+        if (context.Instruction != null)
+        {
+            if (TryHydrateCentralInstruction(context, context.Instruction, out var instruction, out var blocker))
+            {
+                result = AcceptInstruction(instruction, "central", requireConnectedCoordinator: false);
+            }
+            else
+            {
+                result = BuildCentralRejectedResult(context.Instruction, blocker);
+            }
+        }
+        else if (context.Cancellation != null)
+        {
+            var cancellation = context.Cancellation;
+            var current = receiverInstruction;
+            if (current != null &&
+                string.Equals(current.RecruitmentId, cancellation.RecruitmentId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    current.TargetOpaqueCharacterId,
+                    cancellation.TargetOpaqueCharacterId,
+                    StringComparison.Ordinal))
+            {
+                cancellation.CoordinatorWorkerSessionId = current.CoordinatorWorkerSessionId;
+                cancellation.TargetWorkerSessionId = current.TargetWorkerSessionId;
+                cancellation.TargetCharacterKey = current.TargetCharacterKey;
+                result = AcceptCancellation(cancellation);
+            }
+            else
+            {
+                result = BuildCentralRejectedCancellation(cancellation);
+            }
+        }
+        else
+        {
+            return;
+        }
+
+        var queued = endpointService.QueueAllianceReceipt(context.OperationId, result);
+        Audit(
+            queued.Allowed ? "central-operation" : "central-receipt-rejected",
+            result,
+            0,
+            queued.Allowed ? string.Empty : queued.SafeCode,
+            queued.SafeCode);
+    }
+
+    private bool TryHydrateCentralInstruction(
+        DadAllianceCentralOperationContext context,
+        DadAllianceRecruitmentInstructionDto source,
+        out DadAllianceRecruitmentInstructionDto instruction,
+        out string blocker)
+    {
+        instruction = source.Clone();
+        blocker = string.Empty;
+        var local = presenceService.BuildLiveSafetySnapshot();
+        var rows = currentLocalCrewProvider()
+            .Where(candidate => candidate != null &&
+                          string.Equals(candidate.Identity.OpaqueCharacterId, source.TargetOpaqueCharacterId, StringComparison.Ordinal) &&
+                          string.Equals(candidate.Character.CharacterKey, local.ActiveCharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        if (rows.Count != 1 || local.WorkerSessionId.IsEmpty || local.ActiveCharacterKey.IsEmpty ||
+            local.Character.ContentId == 0 || string.IsNullOrWhiteSpace(local.Character.CharacterName) ||
+            string.IsNullOrWhiteSpace(local.Character.WorldName))
+        {
+            blocker = "dad-alliance-central-target-not-local";
+            return false;
+        }
+
+        instruction.CoordinatorWorkerSessionId = new DadWorkerSessionId(context.SenderIslandId);
+        instruction.CoordinatorIdentity = context.SenderIslandId;
+        instruction.TargetWorkerSessionId = local.WorkerSessionId;
+        instruction.TargetCharacterKey = local.ActiveCharacterKey;
+        instruction.TargetCharacterName = local.Character.CharacterName;
+        instruction.TargetCharacterWorld = local.Character.WorldName;
+        instruction.TargetContentId = local.Character.ContentId;
+        blocker = DadAlliancePartyFinderRules.ValidateInstruction(instruction);
+        return blocker.Length == 0;
+    }
+
+    private static DadAllianceRecruitmentResultDto BuildCentralRejectedResult(
+        DadAllianceRecruitmentInstructionDto instruction,
+        string blocker)
+        => new()
+        {
+            RecruitmentId = instruction.RecruitmentId,
+            ParticipantOwnerId = instruction.TargetOwnerId,
+            TargetOpaqueCharacterId = instruction.TargetOpaqueCharacterId,
+            ExpectedAlliance = instruction.AssignedAlliance,
+            Attempt = instruction.Attempt,
+            State = DadAllianceRecruitmentState.Blocked,
+            ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+            Retryable = false,
+            StopGeneration = instruction.StopGeneration,
+            Summary = blocker,
+        };
+
+    private DadAllianceRecruitmentResultDto BuildCentralRejectedCancellation(
+        DadAllianceRecruitmentCancellationDto cancellation)
+        => new()
+        {
+            RecruitmentId = cancellation.RecruitmentId,
+            ParticipantOwnerId = cancellation.TargetOwnerId,
+            TargetOpaqueCharacterId = cancellation.TargetOpaqueCharacterId,
+            ExpectedAlliance = DadAlliancePartyFinderRules.IsConcreteAssignment(receiverResult.ExpectedAlliance)
+                ? receiverResult.ExpectedAlliance
+                : DadAllianceAssignment.A,
+            Attempt = Math.Max(0, receiverResult.Attempt),
+            State = DadAllianceRecruitmentState.Blocked,
+            ResultKind = DadAllianceRecruitmentResultKind.Blocked,
+            Retryable = false,
+            StopGeneration = cancellation.StopGeneration,
+            Summary = "dad-alliance-central-cancellation-unmatched",
+        };
+
+    private void AcceptCentralReceiptOnFramework(DadAllianceCentralReceiptContext context)
+    {
+        var instruction = context.Instruction;
+        var result = context.Result.Clone();
+        result.WorkerSessionId = instruction.TargetWorkerSessionId;
+        result.TargetCharacterKey = instruction.TargetCharacterKey;
+        result.TargetCharacterName = instruction.TargetCharacterName;
+        result.TargetCharacterWorld = instruction.TargetCharacterWorld;
+        result.TargetContentId = instruction.TargetContentId;
+
+        if (coordinatorHostInstruction != null &&
+            IsSameInstruction(coordinatorHostInstruction, instruction))
+        {
+            var valid = context.Cancellation == null
+                ? DadAlliancePartyFinderRules.TryValidateAsyncResult(
+                    coordinatorOperationGeneration,
+                    coordinatorOperationGeneration,
+                    instruction,
+                    result,
+                    presenceService.WorkerSessionId,
+                    out var blocker)
+                : DadAlliancePartyFinderRules.TryValidateAsyncCancellationResult(
+                    coordinatorOperationGeneration,
+                    coordinatorOperationGeneration,
+                    context.Cancellation,
+                    instruction,
+                    result,
+                    out blocker);
+            if (!valid)
+            {
+                AuditLateCompletion(coordinatorOperationGeneration, instruction, blocker);
+                return;
+            }
+            coordinatorHostAccepted = true;
+            coordinatorHostResult = result;
+            Audit("central-host-receipt", result, 0, string.Empty, result.Summary);
+            return;
+        }
+
+        var target = coordinatorInstructions
+            .SingleOrDefault(pair => IsSameInstruction(pair.Value, instruction));
+        if (string.IsNullOrWhiteSpace(target.Key))
+        {
+            AuditLateCompletion(
+                coordinatorOperationGeneration,
+                instruction,
+                "Central Alliance receipt no longer has an active target.");
+            return;
+        }
+        var targetValid = context.Cancellation == null
+            ? DadAlliancePartyFinderRules.TryValidateAsyncResult(
+                coordinatorOperationGeneration,
+                coordinatorOperationGeneration,
+                instruction,
+                result,
+                presenceService.WorkerSessionId,
+                out var resultBlocker)
+            : DadAlliancePartyFinderRules.TryValidateAsyncCancellationResult(
+                coordinatorOperationGeneration,
+                coordinatorOperationGeneration,
+                context.Cancellation,
+                instruction,
+                result,
+                out resultBlocker);
+        if (!targetValid)
+        {
+            AuditLateCompletion(coordinatorOperationGeneration, instruction, resultBlocker);
+            return;
+        }
+        if (coordinatorResults.TryGetValue(target.Key, out var current) &&
+            current.ResultKind == DadAllianceRecruitmentResultKind.Succeeded &&
+            result.ResultKind != DadAllianceRecruitmentResultKind.Succeeded)
+            return;
+        coordinatorResults[target.Key] = result;
+        Audit("central-receipt", result, 0, string.Empty, result.Summary);
+    }
 
     private bool TryBuildTargets(
         IReadOnlyList<DadPresetCharacterSlot> slots,
@@ -1704,6 +1971,22 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 
         foreach (var slot in slots)
         {
+            var opaqueCharacterId = (slot.SharedIdentityToken ?? string.Empty).Trim();
+            DadAutoPartyRemoteBinding? registeredBinding = null;
+            if (opaqueCharacterId.Length > 0)
+            {
+                var bindings = currentRemoteBindingsProvider()
+                    .Where(binding => binding.IsValid &&
+                        string.Equals(binding.OpaqueCharacterId, opaqueCharacterId, StringComparison.Ordinal))
+                    .ToList();
+                if (bindings.Count != 1)
+                {
+                    blocker = $"{slot.SlotId} registered-island identity does not resolve to one current runtime binding.";
+                    return false;
+                }
+                registeredBinding = bindings[0];
+            }
+
             var matches = participants.Where(participant =>
                     participant.IsAvailable &&
                     participant.WorldReadyStable &&
@@ -1728,7 +2011,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 SlotId = slot.SlotId,
                 Assignment = slot.AllianceAssignment,
                 WorkerSessionId = participant.WorkerSessionId,
-                DiscordApplicationId = participant.DiscordApplicationId,
+                RegisteredIslandId = registeredBinding?.IslandId ?? participant.RegisteredIslandId,
+                OwnerId = registeredBinding?.OwnerId ?? string.Empty,
+                OpaqueCharacterId = opaqueCharacterId,
                 CharacterKey = new DadCharacterKey(slot.CharacterKey),
                 ContentId = slot.ContentId.GetValueOrDefault(),
                 CharacterName = participant.Character.CharacterName,
@@ -1764,33 +2049,65 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     {
         var participant = ResolveParticipant(target.WorkerSessionId);
         var current = GetStatus();
-        if (participant == null || string.IsNullOrWhiteSpace(current.RecruitmentId))
+        if (participant == null || string.IsNullOrWhiteSpace(current.RecruitmentId) ||
+            !coordinatorInstructions.TryGetValue(target.CharacterKey.Value, out var instruction))
             return;
+        var cancellation = new DadAllianceRecruitmentCancellationDto
+        {
+            RecruitmentId = current.RecruitmentId,
+            CoordinatorWorkerSessionId = presenceService.WorkerSessionId,
+            TargetWorkerSessionId = target.WorkerSessionId,
+            TargetIslandId = target.RegisteredIslandId,
+            TargetOwnerId = target.OwnerId,
+            TargetOpaqueCharacterId = target.OpaqueCharacterId,
+            TargetCharacterKey = target.CharacterKey,
+            StopGeneration = stopGeneration,
+            Reason = reason,
+        };
         ObserveBackground(
-            transportService.SendAllianceRecruitmentCancellationAsync(
+            DispatchCancellationBestEffortAsync(
             participant,
-            new DadAllianceRecruitmentCancellationDto
-            {
-                RecruitmentId = current.RecruitmentId,
-                CoordinatorWorkerSessionId = presenceService.WorkerSessionId,
-                TargetWorkerSessionId = target.WorkerSessionId,
-                TargetCharacterKey = target.CharacterKey,
-                StopGeneration = stopGeneration,
-                Reason = reason,
-            },
-            CancellationToken.None),
-            "hub cancellation");
+            cancellation,
+            instruction),
+            "hub/central cancellation");
     }
 
-    private void QueueDiscordCleanup()
+    private async Task DispatchCancellationBestEffortAsync(
+        DadParticipantSnapshot participant,
+        DadAllianceRecruitmentCancellationDto cancellation,
+        DadAllianceRecruitmentInstructionDto instruction)
     {
-        var messageIds = discordMessageIds.ToList();
-        discordMessageIds.Clear();
+        var hubTask = transportService.SendAllianceRecruitmentCancellationAsync(
+            participant,
+            cancellation,
+            CancellationToken.None);
+        DadAllianceCentralSendResult relay;
+        try
+        {
+            relay = await endpointService.SendAllianceCancellationAsync(
+                    cancellation,
+                    instruction,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            relay = new(false, Guid.Empty, "dad-alliance-central-cancellation-failed");
+        }
+        _ = await hubTask.ConfigureAwait(false);
+        if (relay.Sent)
+            frameworkCompletions.Enqueue(() => centralDeliveryIds.Add(relay.MessageId));
+    }
+
+    private void QueueCentralCleanup()
+    {
+        var messageIds = centralDeliveryIds.ToList();
+        centralDeliveryIds.Clear();
         if (messageIds.Count == 0)
             return;
         ObserveBackground(
-            discordService.DeleteAllianceMessagesBestEffortAsync(messageIds),
-            "Discord instruction cleanup");
+            endpointService.ForgetAllianceDeliveriesBestEffortAsync(messageIds),
+            "central instruction cleanup");
     }
 
     private void ObserveBackground(Task task, string operation)
@@ -1884,7 +2201,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         coordinatorHostOwnsRecruitment = false;
         coordinatorHostDispatchAttempts = 0;
         coordinatorHostCleanupAttempts = 0;
-        discordMessageIds.Clear();
+        centralDeliveryIds.Clear();
         grabRequested = false;
         cleanupRequested = false;
         cleanupTerminalPartial = false;
@@ -2095,7 +2412,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.Results = BuildCoordinatorResultList();
             status.UpdatedAtUtc = DateTime.UtcNow;
         }
-        QueueDiscordCleanup();
+        QueueCentralCleanup();
         Audit(
             "operator-cleanup-observed",
             coordinatorHostResult,
@@ -2133,7 +2450,9 @@ public sealed class DadAlliancePartyFinderService : IDisposable
            string.Equals(current.LeaderName, dispatched.LeaderName, StringComparison.Ordinal) &&
            string.Equals(current.LeaderWorld, dispatched.LeaderWorld, StringComparison.Ordinal) &&
            Same(current.TargetWorkerSessionId.Value, dispatched.TargetWorkerSessionId.Value) &&
-           current.TargetApplicationId == dispatched.TargetApplicationId &&
+           string.Equals(current.TargetIslandId, dispatched.TargetIslandId, StringComparison.Ordinal) &&
+           string.Equals(current.TargetOwnerId, dispatched.TargetOwnerId, StringComparison.Ordinal) &&
+           string.Equals(current.TargetOpaqueCharacterId, dispatched.TargetOpaqueCharacterId, StringComparison.Ordinal) &&
            Same(current.TargetCharacterKey.Value, dispatched.TargetCharacterKey.Value) &&
            string.Equals(current.TargetCharacterName, dispatched.TargetCharacterName, StringComparison.Ordinal) &&
            string.Equals(current.TargetCharacterWorld, dispatched.TargetCharacterWorld, StringComparison.Ordinal) &&
@@ -2263,10 +2582,10 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             SubmitDispatched = current.CreateSubmitDispatched,
             ElapsedMilliseconds = elapsedMilliseconds,
             StopGeneration = result?.StopGeneration ?? current.StopGeneration,
-            Transport = eventName.Contains("discord", StringComparison.OrdinalIgnoreCase)
-                ? "discord"
+            Transport = eventName.Contains("central", StringComparison.OrdinalIgnoreCase)
+                ? "central"
                 : eventName.Contains("transport", StringComparison.OrdinalIgnoreCase)
-                    ? "hub+discord"
+                    ? "hub+central"
                     : string.Empty,
             State = (result?.State ?? current.State).ToString(),
             Error = error,

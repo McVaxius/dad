@@ -56,9 +56,6 @@ public static class DadSchedulerRoutingRules
         {
             Phase: DadWakeTakeoverPhase.Cancelled,
             AcknowledgementState: DadWakeAcknowledgementState.Executed,
-        } or
-        {
-            Phase: DadWakeTakeoverPhase.Ready,
         };
 
     public static bool IsTakeoverCancellationComplete(
@@ -159,7 +156,6 @@ public static class DadSchedulerRoutingRules
     public static bool RequiresTakeoverCancellation(DadSchedulerSlotState slot)
         => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline &&
            !string.IsNullOrWhiteSpace(slot.OperationToken) &&
-           slot.TakeoverPhase != DadWakeTakeoverPhase.Ready &&
            !(slot.TakeoverPhase == DadWakeTakeoverPhase.Cancelled &&
              slot.AcknowledgementState == DadWakeAcknowledgementState.Executed);
 

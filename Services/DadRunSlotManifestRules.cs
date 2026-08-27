@@ -1,21 +1,40 @@
+using System.Globalization;
 using dad.Models;
 
 namespace dad.Services;
 
 internal static class DadRunSlotManifestRules
 {
+    internal const string RegisteredIslandSlotOneAuthority = "autoparty-registered-slot1";
+
     public static bool RequiresFrozenRoster(DadRunPlan plan)
         => plan.RequiredParticipantCount > 1 ||
            plan.RequiresRemoteParticipants ||
-           (plan.Orchestration?.RequiredRosterCharacters?.Any(static reference => reference.RequiredJobId.HasValue) ?? false);
+           (plan.Orchestration?.RequiredRosterCharacters?.Any(static reference =>
+               reference.RequiredJobId.HasValue ||
+               !string.IsNullOrWhiteSpace(reference.SharedIdentityToken)) ?? false);
+
+    internal static DadFrozenRunSlot? FindInstructionSlot(
+        DadRunSlotManifest? manifest,
+        DadAssemblyInstructionDto instruction)
+        => manifest?.Slots.SingleOrDefault(slot =>
+            string.Equals(slot.SlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase));
 
     public static bool TryCreate(
         DadRunPlan plan,
         out DadRunSlotManifest manifest,
         out string blocker)
+        => TryCreate(plan, [], out manifest, out blocker);
+
+    public static bool TryCreate(
+        DadRunPlan plan,
+        IReadOnlyList<DadAutoPartyRemoteBinding> currentRemoteBindings,
+        out DadRunSlotManifest manifest,
+        out string blocker)
     {
         manifest = new DadRunSlotManifest();
         blocker = string.Empty;
+        currentRemoteBindings ??= [];
 
         if (!RequiresFrozenRoster(plan))
             return true;
@@ -78,6 +97,26 @@ internal static class DadRunSlotManifestRules
         {
             var reference = roster[index];
             var slotId = DadPlannerSlotRules.FormatSlotId(index + 1);
+            if (!string.IsNullOrWhiteSpace(reference.SharedIdentityToken))
+            {
+                if (!reference.AccountKey.IsEmpty || !reference.CharacterKey.IsEmpty || reference.ContentId != 0)
+                    return Fail($"{slotId} cannot mix a registered-island identity with LAN account or character identity.", out blocker);
+                if (!TryBuildRegisteredIslandSlot(
+                        slotId,
+                        reference,
+                        currentRemoteBindings,
+                        isLeader: index == 0,
+                        isInviter: index == 0 && isMultiplayer,
+                        out var registeredIslandSlot,
+                        out blocker))
+                {
+                    return false;
+                }
+
+                slots.Add(registeredIslandSlot);
+                continue;
+            }
+
             if (reference.AccountKey.IsEmpty || reference.CharacterKey.IsEmpty || reference.ContentId == 0)
             {
                 return Fail(
@@ -96,6 +135,7 @@ internal static class DadRunSlotManifestRules
             slots.Add(new DadFrozenRunSlot
             {
                 SlotId = slotId,
+                RouteKind = DadRunSlotRouteKind.LanWorker,
                 AccountKey = reference.AccountKey,
                 CharacterKey = reference.CharacterKey,
                 ContentId = reference.ContentId,
@@ -106,32 +146,60 @@ internal static class DadRunSlotManifestRules
             });
         }
 
-        var duplicateAccount = slots
+        var lanSlots = slots
+            .Where(static slot => slot.RouteKind == DadRunSlotRouteKind.LanWorker)
+            .ToList();
+        var duplicateAccount = lanSlots
             .GroupBy(static slot => Normalize(slot.AccountKey.Value), StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(static group => group.Count() > 1);
         if (duplicateAccount != null)
             return Fail($"Managed account '{duplicateAccount.First().AccountKey}' is assigned to more than one frozen slot.", out blocker);
 
-        var duplicateCharacter = slots
+        var duplicateCharacter = lanSlots
             .GroupBy(static slot => Normalize(slot.CharacterKey.Value), StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(static group => group.Count() > 1);
         if (duplicateCharacter != null)
             return Fail($"Character '{duplicateCharacter.First().CharacterKey}' is assigned to more than one frozen slot.", out blocker);
 
-        var duplicateContentId = slots
+        var duplicateContentId = lanSlots
             .GroupBy(static slot => slot.ContentId)
             .FirstOrDefault(static group => group.Count() > 1);
         if (duplicateContentId != null)
             return Fail($"Content ID {duplicateContentId.Key} is assigned to more than one frozen slot.", out blocker);
 
-        if (!Same(slots[0].CharacterKey.Value, plan.LeaderCharacterKey) ||
-            !slots[0].IsLeader ||
-            slots.Count(static slot => slot.IsLeader) != 1)
+        var registeredIslandSlots = slots
+            .Where(static slot => slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            .ToList();
+        for (var leftIndex = 0; leftIndex < registeredIslandSlots.Count; leftIndex++)
+        {
+            var left = registeredIslandSlots[leftIndex];
+            for (var rightIndex = leftIndex + 1; rightIndex < registeredIslandSlots.Count; rightIndex++)
+            {
+                var right = registeredIslandSlots[rightIndex];
+                if (Same(left.OwnerId, right.OwnerId) &&
+                    Same(left.IslandId, right.IslandId) &&
+                    Same(left.OpaqueCharacterId, right.OpaqueCharacterId))
+                {
+                    return Fail("A registered-island character route is assigned to more than one frozen slot.", out blocker);
+                }
+            }
+        }
+
+        if (!slots[0].IsLeader || slots.Count(static slot => slot.IsLeader) != 1)
+            return Fail("Slot1 must be the one exact queue leader.", out blocker);
+
+        if (slots[0].RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+        {
+            if (!Same(plan.LeaderCharacterKey, RegisteredIslandSlotOneAuthority))
+                return Fail("Registered-island Slot1 is missing its runtime queue-authority marker.", out blocker);
+        }
+        else if (!Same(slots[0].CharacterKey.Value, plan.LeaderCharacterKey))
+        {
             return Fail($"Slot1 must be the one exact queue leader '{plan.LeaderCharacterKey}'.", out blocker);
+        }
 
         if (isMultiplayer &&
-            (!Same(slots[0].CharacterKey.Value, plan.InviterCharacterKey) ||
-             !slots[0].IsInviter ||
+            (!Same(plan.InviterCharacterKey, plan.LeaderCharacterKey) || !slots[0].IsInviter ||
              slots.Count(static slot => slot.IsInviter) != 1))
         {
             return Fail($"Party inviter '{plan.InviterCharacterKey}' must be the one exact frozen Slot1.", out blocker);
@@ -194,6 +262,18 @@ internal static class DadRunSlotManifestRules
 
         foreach (var slot in bound.Slots)
         {
+            if (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            {
+                slot.WorkerSessionId = new DadWorkerSessionId(string.Empty);
+                continue;
+            }
+
+            if (slot.RouteKind != DadRunSlotRouteKind.LanWorker)
+            {
+                blocker = $"{slot.SlotId} has an unsupported frozen participant route.";
+                return false;
+            }
+
             var matches = onlineParticipants
                 .Where(participant =>
                     !participant.WorkerSessionId.IsEmpty &&
@@ -216,8 +296,61 @@ internal static class DadRunSlotManifestRules
             }
 
             slot.WorkerSessionId = session;
+            if (!slot.RequiredJobId.HasValue &&
+                !TryFreezeLiveAnyJob(slot, matches[0], out blocker))
+            {
+                return false;
+            }
         }
 
+        return true;
+    }
+
+    private static bool TryFreezeLiveAnyJob(
+        DadFrozenRunSlot slot,
+        DadParticipantSnapshot participant,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (!Same(participant.ManagedAccountKey.Value, slot.AccountKey.Value) ||
+            !Same(participant.ActiveCharacterKey.Value, slot.CharacterKey.Value) ||
+            !Same(participant.Character.CharacterKey, slot.CharacterKey.Value))
+        {
+            return Fail(
+                $"{slot.SlotId} Any job requires the exact world-ready character '{slot.CharacterKey}' on account '{slot.AccountKey}'.",
+                out blocker);
+        }
+
+        if (participant.Character.ContentId != slot.ContentId)
+        {
+            return Fail(
+                $"{slot.SlotId} Any job requires Content ID {slot.ContentId}; worker '{slot.WorkerSessionId}' reports {participant.Character.ContentId}.",
+                out blocker);
+        }
+
+        if (!participant.Character.IsLiveConnected || !participant.WorldReadyStable)
+        {
+            return Fail(
+                $"{slot.SlotId} Any job requires one current world-ready live snapshot for '{slot.CharacterKey}'.",
+                out blocker);
+        }
+
+        if (!participant.Character.CurrentJobId.HasValue)
+        {
+            return Fail(
+                $"{slot.SlotId} Any job cannot freeze because the live snapshot has no current class/job.",
+                out blocker);
+        }
+
+        var currentJobId = participant.Character.CurrentJobId.Value;
+        if (!DadRosterCharacterMerge.IsCombatJob(currentJobId))
+        {
+            return Fail(
+                $"{slot.SlotId} Any job cannot freeze live class/job {currentJobId} because it is not a combat job.",
+                out blocker);
+        }
+
+        slot.RequiredJobId = currentJobId;
         return true;
     }
 
@@ -228,6 +361,12 @@ internal static class DadRunSlotManifestRules
         out string blocker)
     {
         blocker = string.Empty;
+        if (slot.RouteKind != DadRunSlotRouteKind.LanWorker)
+        {
+            blocker = $"{slot.SlotId} registered-island readiness must be resolved through AutoParty before LAN participant resolution.";
+            return BuildWaitingSnapshot(slot, DadParticipantState.Stale, blocker);
+        }
+
         var matches = currentParticipants
             .Where(participant => Same(participant.WorkerSessionId.Value, slot.WorkerSessionId.Value))
             .ToList();
@@ -305,6 +444,63 @@ internal static class DadRunSlotManifestRules
         participant.State = state;
         participant.StatusText = blocker;
         return participant;
+    }
+
+    private static bool TryBuildRegisteredIslandSlot(
+        string slotId,
+        DadRosterCharacterRef reference,
+        IReadOnlyList<DadAutoPartyRemoteBinding> currentRemoteBindings,
+        bool isLeader,
+        bool isInviter,
+        out DadFrozenRunSlot slot,
+        out string blocker)
+    {
+        slot = new DadFrozenRunSlot();
+        blocker = string.Empty;
+        var identityToken = Normalize(reference.SharedIdentityToken);
+        if (identityToken.Length == 0)
+            return Fail($"{slotId} has an invalid registered-island identity token.", out blocker);
+
+        var matches = currentRemoteBindings
+            .Where(static binding => binding != null)
+            .Select(static binding => binding.Clone().Normalize())
+            .Where(binding => binding.IsValid && Same(binding.OpaqueCharacterId, identityToken))
+            .ToList();
+        if (matches.Count == 0)
+            return Fail($"{slotId} has no current valid registered-island binding.", out blocker);
+        if (matches.Count != 1)
+            return Fail($"{slotId} has ambiguous current registered-island bindings.", out blocker);
+
+        var binding = matches[0];
+        if (binding.OwnsQueueAuthority != isLeader)
+        {
+            return Fail(
+                isLeader
+                    ? "Registered-island Slot1 must carry the one explicit queue-authority binding."
+                    : $"{slotId} registered-island binding cannot own Slot1 queue authority.",
+                out blocker);
+        }
+        if (!uint.TryParse(binding.RequestedJobId, NumberStyles.None, CultureInfo.InvariantCulture, out var requestedJobId) ||
+            !DadRosterCharacterMerge.IsCombatJob(requestedJobId))
+        {
+            return Fail($"{slotId} registered-island binding does not request a positive combat job.", out blocker);
+        }
+
+        if (reference.RequiredJobId.HasValue && reference.RequiredJobId.Value != requestedJobId)
+            return Fail($"{slotId} requested job contradicts its current registered-island binding.", out blocker);
+
+        slot = new DadFrozenRunSlot
+        {
+            SlotId = slotId,
+            RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+            OpaqueCharacterId = binding.OpaqueCharacterId,
+            OwnerId = binding.OwnerId,
+            IslandId = binding.IslandId,
+            RequiredJobId = requestedJobId,
+            IsLeader = isLeader,
+            IsInviter = isInviter,
+        };
+        return true;
     }
 
     private static bool TryBuildModulePayload(
@@ -419,7 +615,8 @@ internal static class DadRunSlotManifestRules
                 !Same(left[index].CharacterKey.Value, right[index].CharacterKey.Value) ||
                 left[index].ContentId != right[index].ContentId ||
                 left[index].RequiredJobId != right[index].RequiredJobId ||
-                left[index].AdsLootMode != right[index].AdsLootMode)
+                left[index].AdsLootMode != right[index].AdsLootMode ||
+                !Same(left[index].SharedIdentityToken, right[index].SharedIdentityToken))
             {
                 return false;
             }

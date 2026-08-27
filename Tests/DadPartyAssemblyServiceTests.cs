@@ -373,6 +373,47 @@ public sealed class DadPartyAssemblyServiceTests
     }
 
     [Fact]
+    public void RegisteredIslandAssemblyDoesNotRequireReadinessPostArWorldOrDependencies()
+    {
+        var service = new DadPartyAssemblyService();
+        var plan = Plan(DadQueueAuthority.Leader);
+        plan.LeaderCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority;
+        plan.InviterCharacterKey = plan.LeaderCharacterKey;
+        var slotOne = RegisteredParticipant("Slot1", "island-one");
+        var slotTwo = RegisteredParticipant("Slot2", "island-two");
+        var manifest = new DadRunSlotManifest
+        {
+            RequestId = "run",
+            ExpectedPartySize = 2,
+            LeaderCharacterKey = plan.LeaderCharacterKey,
+            InviterCharacterKey = plan.InviterCharacterKey,
+            Slots =
+            [
+                RegisteredSlot("Slot1", "owner-one", "island-one", "opaque-one", isLeader: true),
+                RegisteredSlot("Slot2", "owner-two", "island-two", "opaque-two", isLeader: false),
+            ],
+        };
+        var targets = new Dictionary<string, DadNativePartyInviteTarget>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Slot1"] = InviteTarget("Slot1", 1001, "Leader", "worker-one"),
+            ["Slot2"] = InviteTarget("Slot2", 2002, "Follower", "worker-two"),
+        };
+
+        var instructions = service.BuildInstructions(
+            plan,
+            [slotTwo, slotOne],
+            manifest,
+            new DadWorkerSessionId("coordinator-worker"),
+            targets,
+            out var blocker);
+
+        Assert.Empty(blocker);
+        Assert.Equal(2, instructions.Count);
+        Assert.Equal(DadAssemblyInstructionKind.FormParty, instructions[0].InstructionKind);
+        Assert.Equal(DadAssemblyInstructionKind.JoinParty, instructions[1].InstructionKind);
+    }
+
+    [Fact]
     public void ExactTeardownDispatchesLeaderBeforeEveryFollowerAndAggregatesFailures()
     {
         var instructions = new[]
@@ -499,6 +540,62 @@ public sealed class DadPartyAssemblyServiceTests
             PostArReady = true,
             AssignedSlotId = slot,
             WorkerSessionId = new DadWorkerSessionId(characterKey),
+        };
+
+    private static DadParticipantSnapshot RegisteredParticipant(string slotId, string islandId)
+        => new()
+        {
+            ActiveCharacterKey = new DadCharacterKey($"remote-{slotId}"),
+            Character = new DadAcquiredCharacter
+            {
+                CharacterKey = $"remote-{slotId}",
+                Readiness = DadReadinessState.Deferred,
+            },
+            AssignedSlotId = slotId,
+            WorkerSessionId = new DadWorkerSessionId($"autoparty-proposal-{slotId.ToLowerInvariant()}"),
+            RegisteredIslandId = islandId,
+            State = DadParticipantState.Discovered,
+            IsAvailable = false,
+            IsEligibleForRun = false,
+            PostArReady = false,
+            WorldReadyStable = false,
+            Dependencies = DadDependencySnapshot.CreateChecking(summary: "Not requested."),
+        };
+
+    private static DadFrozenRunSlot RegisteredSlot(
+        string slotId,
+        string ownerId,
+        string islandId,
+        string characterId,
+        bool isLeader)
+        => new()
+        {
+            SlotId = slotId,
+            RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+            OwnerId = ownerId,
+            IslandId = islandId,
+            OpaqueCharacterId = characterId,
+            RequiredJobId = 19,
+            IsLeader = isLeader,
+            IsInviter = isLeader,
+        };
+
+    private static DadNativePartyInviteTarget InviteTarget(
+        string slotId,
+        ulong contentId,
+        string name,
+        string workerId)
+        => new()
+        {
+            RunId = "run",
+            ModuleId = DadModuleId.PremadeDuty,
+            SlotId = slotId,
+            AccountKey = new DadAccountKey($"account-{slotId}"),
+            CharacterKey = new DadCharacterKey($"{name}@Alpha"),
+            ContentId = contentId,
+            CharacterName = name,
+            WorldId = 1,
+            WorkerSessionId = new DadWorkerSessionId(workerId),
         };
 
     private static DadFrozenRunSlot FrozenSlot(

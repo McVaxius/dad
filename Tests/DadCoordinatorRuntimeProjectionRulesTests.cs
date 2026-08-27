@@ -38,8 +38,18 @@ public sealed class DadCoordinatorRuntimeProjectionRulesTests
         {
             Slots =
             [
-                new DadFrozenRunSlot { SlotId = "Slot1", AccountKey = new DadAccountKey("account-w") },
-                new DadFrozenRunSlot { SlotId = "Slot2", AccountKey = new DadAccountKey("account-x") },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot1",
+                    AccountKey = new DadAccountKey("account-w"),
+                    RequiredJobId = 19,
+                },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot2",
+                    AccountKey = new DadAccountKey("account-x"),
+                    RequiredJobId = 19,
+                },
             ],
         };
 
@@ -58,6 +68,72 @@ public sealed class DadCoordinatorRuntimeProjectionRulesTests
             static _ => true);
 
         Assert.Equal(["worker-w", "worker-x"], projected.Select(static participant => participant.WorkerSessionId.Value).ToArray());
+    }
+
+    [Fact]
+    public void MixedLanAndDadIslandDiscoveryResolvesTheExactLocalCharacterWithoutWaitingForItself()
+    {
+        var local = Participant("worker-w", "account-w", isLocal: true);
+        local.ActiveCharacterKey = new DadCharacterKey("Local Character@World");
+        local.Character = new DadAcquiredCharacter
+        {
+            AccountId = "account-w",
+            CharacterKey = "Local Character@World",
+            ContentId = 1001,
+            CurrentJobId = 19,
+            Freshness = DadSnapshotFreshness.Live,
+            Readiness = DadReadinessState.Ready,
+        };
+        local.WorldReadyStable = true;
+        local.RegisteredIslandId = "island-local";
+        var localSlot = new DadFrozenRunSlot
+        {
+            SlotId = "Slot1",
+            RouteKind = DadRunSlotRouteKind.LanWorker,
+            AccountKey = new DadAccountKey("account-w"),
+            CharacterKey = new DadCharacterKey("Local Character@World"),
+            ContentId = 1001,
+            WorkerSessionId = new DadWorkerSessionId("worker-w"),
+            RequiredJobId = 19,
+            IsLeader = true,
+            IsInviter = true,
+        };
+
+        var projected = DadCoordinatorRuntimeProjectionRules.BuildFrozenParticipantSet(
+            local,
+            [local.Clone()],
+            new HashSet<string>(["worker-w"], StringComparer.OrdinalIgnoreCase),
+            static _ => true);
+        var resolved = DadRunSlotManifestRules.ResolveSlot(
+            localSlot,
+            projected,
+            requirePostArReady: false,
+            out var blocker);
+        var dadIsland = new DadParticipantSnapshot
+        {
+            RegisteredIslandId = "island-remote",
+            AssignedSlotId = "Slot2",
+            State = DadParticipantState.Discovered,
+        };
+        var manifest = new DadRunSlotManifest
+        {
+            Slots =
+            [
+                localSlot,
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot2",
+                    RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+                    IslandId = "island-remote",
+                },
+            ],
+        };
+
+        Assert.Empty(blocker);
+        Assert.Equal(DadParticipantState.Discovered, resolved.State);
+        Assert.True(resolved.IsLocalClient);
+        Assert.Equal("island-local", resolved.RegisteredIslandId);
+        Assert.Same(resolved, Assert.Single(DadCoordinatorTravelRules.SelectLanParticipants(manifest, [resolved, dadIsland])));
     }
 
     [Fact]

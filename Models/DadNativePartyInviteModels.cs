@@ -129,6 +129,12 @@ public sealed class DadNativePartyInviteAttemptTracker
             blocker = $"Native party invite target identity changed after it was frozen for {target.SlotId}.";
             return null;
         }
+        if (state.AuthenticatedIslandCadence == true)
+        {
+            blocker = $"Native party invite cadence changed after it was frozen for {target.SlotId}.";
+            return null;
+        }
+        state.AuthenticatedIslandCadence = false;
 
         if (partyListContainsContentId)
         {
@@ -165,6 +171,90 @@ public sealed class DadNativePartyInviteAttemptTracker
             AttemptedAtUtc = nowUtc,
             NextAttemptAtUtc = state.NextAttemptAtUtc,
         };
+    }
+
+    internal IReadOnlyList<DadNativePartyInviteAttempt> TryDispatchAuthenticatedIsland(
+        DadNativePartyInviteTarget target,
+        bool partyListContainsContentId,
+        DateTime nowUtc,
+        IDadNativePartyInviteDispatcher dispatcher,
+        out string blocker)
+    {
+        blocker = Validate(target);
+        if (!string.IsNullOrWhiteSpace(blocker))
+            return [];
+
+        BeginRun(target.RunId);
+        if (runConfirmed)
+            return [];
+
+        nowUtc = EnsureUtc(nowUtc);
+        if (!targets.TryGetValue(target.ContentId, out var state))
+        {
+            state = new TargetAttemptState
+            {
+                FrozenTarget = target.Clone(),
+                AuthenticatedIslandCadence = true,
+                StartedAtUtc = nowUtc,
+                NextAttemptAtUtc = nowUtc,
+            };
+            targets[target.ContentId] = state;
+        }
+        else if (!SameFrozenIdentity(state.FrozenTarget, target))
+        {
+            blocker = $"Native party invite target identity changed after it was frozen for {target.SlotId}.";
+            return [];
+        }
+        else if (state.AuthenticatedIslandCadence != true)
+        {
+            blocker = $"Native party invite cadence changed after it was frozen for {target.SlotId}.";
+            return [];
+        }
+
+        if (partyListContainsContentId)
+        {
+            state.PartyConfirmed = true;
+            return [];
+        }
+        if (state.PartyConfirmed)
+            return [];
+
+        var deadline = state.StartedAtUtc + TimeSpan.FromMinutes(5);
+        if (nowUtc >= deadline)
+        {
+            blocker = $"Dad-island party invitation failed at five minutes for {target.CharacterKey}.";
+            return [];
+        }
+        if (nowUtc < state.NextAttemptAtUtc ||
+            state.NextAttemptAtUtc > state.StartedAtUtc + TimeSpan.FromMinutes(4.5))
+            return [];
+
+        state.AttemptNumber++;
+        var sameWorldResult = dispatcher.InviteSameWorld(
+            state.FrozenTarget.ContentId,
+            state.FrozenTarget.CharacterName,
+            state.FrozenTarget.WorldId);
+        var crossWorldResult = dispatcher.InviteCrossWorld(state.FrozenTarget.ContentId, 0);
+        state.NextAttemptAtUtc = state.StartedAtUtc + TimeSpan.FromSeconds(state.AttemptNumber * 30);
+        return
+        [
+            new DadNativePartyInviteAttempt
+            {
+                InviteType = DadNativePartyInviteType.SameWorld,
+                AttemptNumber = state.AttemptNumber,
+                DispatchResult = sameWorldResult,
+                AttemptedAtUtc = nowUtc,
+                NextAttemptAtUtc = state.NextAttemptAtUtc,
+            },
+            new DadNativePartyInviteAttempt
+            {
+                InviteType = DadNativePartyInviteType.CrossWorldContentId,
+                AttemptNumber = state.AttemptNumber,
+                DispatchResult = crossWorldResult,
+                AttemptedAtUtc = nowUtc,
+                NextAttemptAtUtc = state.NextAttemptAtUtc,
+            },
+        ];
     }
 
     public bool ConfirmRun(string runId)
@@ -225,6 +315,8 @@ public sealed class DadNativePartyInviteAttemptTracker
     private sealed class TargetAttemptState
     {
         public DadNativePartyInviteTarget FrozenTarget { get; init; } = new();
+        public bool? AuthenticatedIslandCadence { get; set; }
+        public DateTime StartedAtUtc { get; set; } = DateTime.MinValue;
         public int AttemptNumber { get; set; }
         public DateTime NextAttemptAtUtc { get; set; } = DateTime.MinValue;
         public bool PartyConfirmed { get; set; }

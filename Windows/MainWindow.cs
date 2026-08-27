@@ -296,6 +296,42 @@ public sealed class MainWindow : Window, IDisposable
             DadUi.EndCard();
         }
 
+        var refreshInProgress = plugin.PairedDirectoryRefreshInProgress;
+        var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
+        ImGui.BeginDisabled(refreshInProgress || refreshCooldown > TimeSpan.Zero);
+        if (DadUi.Button(
+                "Refresh paired DAD character lists",
+                DadUiTone.Accent,
+                new Vector2(-1f, 34f)))
+        {
+            plugin.TryStartPairedDirectoryRefresh();
+        }
+        ImGui.EndDisabled();
+        if (refreshInProgress)
+            ImGui.TextDisabled("Refreshing the current source roster and paired AutoParty directory...");
+        else if (refreshCooldown > TimeSpan.Zero)
+            ImGui.TextDisabled($"Paired DAD refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
+
+        var lastRefresh = plugin.LastPairedDirectoryRefresh;
+        if (lastRefresh.CompletedAtUtc != DateTime.MinValue)
+            ImGui.TextDisabled(
+                $"Last paired DAD refresh: {lastRefresh.OperatorStatus} | " +
+                $"published {lastRefresh.PublishedListingCount} | received {lastRefresh.ReceivedListingCount}.");
+
+        var publication = plugin.AutoPartyEndpointService.ListingPublicationSnapshot;
+        if (publication.Attempted)
+        {
+            ImGui.TextDisabled($"Local sharing: {publication.OperatorStatus}");
+            var nextAttempt = publication.NextAttemptAtUtc.HasValue
+                ? $"{(publication.Allowed ? "next publication" : "next retry")} " +
+                  publication.NextAttemptAtUtc.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)
+                : "next retry not scheduled";
+            ImGui.TextDisabled(
+                $"Published/queued {publication.PublishedOrQueuedListingCount} | " +
+                $"last attempt {publication.LastAttemptAtUtc!.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} | " +
+                $"{nextAttempt}.");
+        }
+
         var pluginEnabled = configuration.PluginEnabled;
         if (ImGui.Checkbox("DAD enabled", ref pluginEnabled))
             plugin.SetPluginEnabled(pluginEnabled, printStatus: false);

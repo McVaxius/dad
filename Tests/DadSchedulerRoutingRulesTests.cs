@@ -7,7 +7,7 @@ namespace dad.Tests;
 public sealed class DadSchedulerRoutingRulesTests
 {
     [Fact]
-    public void TakeoverCancellationCompletionRequiresExecutedCancelledOrReady()
+    public void TakeoverCancellationCompletionRequiresExecutedCancellationAfterRestoration()
     {
         Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(null));
         Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
@@ -25,7 +25,7 @@ public sealed class DadSchedulerRoutingRulesTests
             Phase = DadWakeTakeoverPhase.Cancelled,
             AcknowledgementState = DadWakeAcknowledgementState.Executed,
         }));
-        Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
+        Assert.False(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(new DadWakeTakeoverResultDto
         {
             Phase = DadWakeTakeoverPhase.Ready,
         }));
@@ -52,6 +52,10 @@ public sealed class DadSchedulerRoutingRulesTests
 
         offline.TakeoverPhase = DadWakeTakeoverPhase.Blocked;
         offline.AcknowledgementState = DadWakeAcknowledgementState.Rejected;
+        Assert.True(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
+
+        offline.TakeoverPhase = DadWakeTakeoverPhase.Ready;
+        offline.AcknowledgementState = DadWakeAcknowledgementState.Executed;
         Assert.True(DadSchedulerRoutingRules.RequiresTakeoverCancellation(offline));
     }
 

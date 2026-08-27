@@ -203,8 +203,14 @@ public sealed class DadRosterCharacterRef
     public ulong ContentId { get; set; }
     public uint? RequiredJobId { get; set; }
     public DadAdsLootMode? AdsLootMode { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string SharedIdentityToken { get; set; } = string.Empty;
 
-    public bool IsEmpty => AccountKey.IsEmpty && CharacterKey.IsEmpty && ContentId == 0;
+    public bool IsEmpty =>
+        AccountKey.IsEmpty &&
+        CharacterKey.IsEmpty &&
+        ContentId == 0 &&
+        string.IsNullOrWhiteSpace(SharedIdentityToken);
 
     public DadRosterCharacterRef Clone()
         => new()
@@ -214,6 +220,7 @@ public sealed class DadRosterCharacterRef
             ContentId = ContentId,
             RequiredJobId = RequiredJobId,
             AdsLootMode = AdsLootMode,
+            SharedIdentityToken = SharedIdentityToken,
         };
 }
 
@@ -243,7 +250,12 @@ public static class DadRosterIdentity
                 : new DadAccountKey(string.Empty);
 
     public static string BuildKey(DadRosterCharacterRef reference)
-        => BuildKey(reference.AccountKey, reference.CharacterKey, reference.ContentId);
+    {
+        var sharedIdentityToken = Normalize(reference.SharedIdentityToken);
+        return sharedIdentityToken.Length > 0
+            ? $"shared:{sharedIdentityToken}"
+            : BuildKey(reference.AccountKey, reference.CharacterKey, reference.ContentId);
+    }
 
     public static string BuildKey(DadRosterCharacter character)
         => BuildKey(character.AccountKey, character.CharacterKey, character.ContentId);

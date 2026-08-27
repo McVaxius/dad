@@ -231,6 +231,69 @@ public sealed class DadCoordinatorTravelRulesTests
         Assert.True(changed.ImmutableTargetChanged);
     }
 
+    [Fact]
+    public void MixedPartyTravelIgnoresRegisteredIslandWithoutLocationButStillRequiresLanProof()
+    {
+        var coordinator = Participant("coordinator", "account-coordinator", "Lead@Home", 111, "slot1",
+            Location(20, "TargetDC", 3, "TargetWorld", 2, "North America", Now));
+        Assert.True(DadCoordinatorTravelRules.TryFreezeTarget("run", coordinator, Now, out var target, out var blocker), blocker);
+        var client = Participant("client", "account-a", "Client@Home", 222, "slot2",
+            Location(20, "TargetDC", 7, "VisitorWorld", 2, "North America", Now));
+        var registeredIsland = Participant(
+            "autoparty-proposal-slot3",
+            string.Empty,
+            "remote-slot3",
+            0,
+            "slot3",
+            null);
+        registeredIsland.RegisteredIslandId = "island-remote";
+        registeredIsland.IsAvailable = false;
+        registeredIsland.PostArReady = false;
+        registeredIsland.WorldReadyStable = false;
+        var manifest = new DadRunSlotManifest
+        {
+            Slots =
+            [
+                new DadFrozenRunSlot
+                {
+                    SlotId = "slot1",
+                    RouteKind = DadRunSlotRouteKind.LanWorker,
+                    WorkerSessionId = coordinator.WorkerSessionId,
+                },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "slot2",
+                    RouteKind = DadRunSlotRouteKind.LanWorker,
+                    WorkerSessionId = client.WorkerSessionId,
+                },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "slot3",
+                    RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+                    IslandId = "island-remote",
+                },
+            ],
+        };
+
+        var participants = new[] { coordinator, client, registeredIsland };
+        var ready = DadCoordinatorTravelRules.ValidateParticipants(
+            target,
+            DadCoordinatorTravelRules.SelectLanParticipants(manifest, participants),
+            Now);
+
+        Assert.True(ready.Ready, ready.Summary);
+        Assert.Contains("2 participant(s)", ready.Summary, StringComparison.Ordinal);
+
+        client.CurrentLocation = null;
+        var blocked = DadCoordinatorTravelRules.ValidateParticipants(
+            target,
+            DadCoordinatorTravelRules.SelectLanParticipants(manifest, participants),
+            Now);
+
+        Assert.False(blocked.Ready);
+        Assert.Contains("slot2", blocked.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static DadClientTravelContext Context(uint currentDcId, uint targetDcId, uint targetRegionId, uint homeRegionId)
     {
         var participant = Participant(

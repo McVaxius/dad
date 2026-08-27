@@ -103,18 +103,28 @@
     <Compile Include="..\Services\DadAutoPartyExecutionFacade.cs" Link="DadAutoPartyExecutionFacade.cs" />
     <Compile Include="..\Services\DadAutoPartyEndpointIdentityStore.cs" Link="DadAutoPartyEndpointIdentityStore.cs" />
     <Compile Include="..\Services\DadAutoPartyIdentityPackageService.cs" Link="DadAutoPartyIdentityPackageService.cs" />
-    <Compile Include="..\Services\DadAutoPartyFileCourierAdapter.cs" Link="DadAutoPartyFileCourierAdapter.cs" />
-    <Compile Include="..\Services\DadAutoPartyPilotFixtureService.cs" Link="DadAutoPartyPilotFixtureService.cs" />
     <Compile Include="..\Services\DadAutoPartySchedulerAuthorizationRules.cs" Link="DadAutoPartySchedulerAuthorizationRules.cs" />
     <Compile Include="..\Services\DadAutoPartyService.cs" Link="DadAutoPartyService.cs" />
     <Compile Include="..\Services\DadAutoPartyDiscordTokenStore.cs" Link="DadAutoPartyDiscordTokenStore.cs" />
+    <Compile Include="..\Services\DadAutoPartyWebhookCredentialStore.cs" Link="DadAutoPartyWebhookCredentialStore.cs" />
+    <Compile Include="..\Services\DadAutoPartyWebhookTransportAdapter.cs" Link="DadAutoPartyWebhookTransportAdapter.cs" />
+    <Compile Include="..\Services\DadAutoPartyProgressProjection.cs" Link="DadAutoPartyProgressProjection.cs" />
+    <Compile Include="..\Services\DadAutoPartyEndpointService.cs" Link="DadAutoPartyEndpointService.cs" />
+    <Compile Include="..\Services\DadAutoPartyParticipantBridge.cs" Link="DadAutoPartyParticipantBridge.cs" />
+    <Compile Include="..\Services\DadAutoPartySemanticKeyResolver.cs" Link="DadAutoPartySemanticKeyResolver.cs" />
+    <Compile Include="..\Services\DadAutoPartyPendingOperationStore.cs" Link="DadAutoPartyPendingOperationStore.cs" />
+    <Compile Include="..\Services\DadAutoPartyInboundProposalService.cs" Link="DadAutoPartyInboundProposalService.cs" />
+    <Compile Include="..\Services\DadAutoPartyInboundAdmissionService.cs" Link="DadAutoPartyInboundAdmissionService.cs" />
+    <Compile Include="..\Services\DadAutoPartyInboundExecutionRules.cs" Link="DadAutoPartyInboundExecutionRules.cs" />
+    <Compile Include="..\Services\DadAutoPartyRelayPump.cs" Link="DadAutoPartyRelayPump.cs" />
+    <Compile Include="..\Services\DadAutoPartyRuntimeRequestRules.cs" Link="DadAutoPartyRuntimeRequestRules.cs" />
     <Compile Include="..\Services\DadAutoPartySigningService.cs" Link="DadAutoPartySigningService.cs" />
-    <Compile Include="..\Services\DadAutoPartyPairingProtocol.cs" Link="DadAutoPartyPairingProtocol.cs" />
-    <Compile Include="..\Services\DadAutoPartyDiscordInboundRules.cs" Link="DadAutoPartyDiscordInboundRules.cs" />
-    <Compile Include="..\Services\DadDiscordReconnectBackoff.cs" Link="DadDiscordReconnectBackoff.cs" />
-    <Compile Include="..\Services\DadMeasuredPilotService.cs" Link="DadMeasuredPilotService.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetTsv.cs" Link="DadAutoPartyFleetTsv.cs" />
     <Compile Include="..\Services\DadAutoPartyFleetMatrixService.cs" Link="DadAutoPartyFleetMatrixService.cs" />
+    <Compile Include="..\Services\DadAutoPartyFreeformRules.cs" Link="DadAutoPartyFreeformRules.cs" />
+    <Compile Include="..\Services\DadAutoPartyListingPublicationRules.cs" Link="DadAutoPartyListingPublicationRules.cs" />
+    <Compile Include="..\Services\DadAutoPartyCrewSharingRules.cs" Link="DadAutoPartyCrewSharingRules.cs" />
+    <Compile Include="..\Services\DadAutoPartyCrewSlotBindingRules.cs" Link="DadAutoPartyCrewSlotBindingRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderRules.cs" Link="DadAlliancePartyFinderRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderPresetRules.cs" Link="DadAlliancePartyFinderPresetRules.cs" />
     <Compile Include="..\Services\DadAlliancePartyFinderCreateFlow.cs" Link="DadAlliancePartyFinderCreateFlow.cs" />
@@ -128,12 +138,11 @@
     <Compile Include="..\Services\DadCrewFormationPlannerRules.cs" Link="DadCrewFormationPlannerRules.cs" />
     <Compile Include="..\Services\DadPlannerService.cs" Link="DadPlannerService.cs" />
     <Compile Include="..\Services\DadGameCommandExecutor.cs" Link="DadGameCommandExecutor.cs" />
-    <Compile Include="..\Services\DadAllianceDiscordProtocol.cs" Link="DadAllianceDiscordProtocol.cs" />
     <Compile Include="..\Services\DadAlliancePfAuditLog.cs" Link="DadAlliancePfAuditLog.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.1.0-preview.2]" />
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.7]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
   </ItemGroup>
 </Project>

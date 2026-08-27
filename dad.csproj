@@ -28,16 +28,10 @@
   <ItemGroup>
     <None Include="dad.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="$(PkgBouncyCastle_Cryptography)\lib\net461\BouncyCastle.Cryptography.dll"
-          Link="BouncyCastle.Cryptography.PowerShell51.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Condition="Exists('$(PkgBouncyCastle_Cryptography)\lib\net461\BouncyCastle.Cryptography.dll')" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.1.0-preview.2]" />
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.7]" />
     <PackageReference Include="ECommons" Version="[3.2.1.15]" />
-    <PackageReference Include="BouncyCastle.Cryptography" Version="[2.6.2]" PrivateAssets="all" GeneratePathProperty="true" />
-    <PackageReference Include="Discord.Net.WebSocket" Version="[3.20.1]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
   </ItemGroup>
 
@@ -54,24 +48,17 @@
       <PluginFiles Include="$(TargetPath)" />
       <PluginFiles Include="$(TargetDir)$(AssemblyName).json" />
       <PluginFiles Include="images\icon.png" />
-      <PluginRuntimeFiles Include="$(TargetDir)Discord.Net.Core.dll" Condition="Exists('$(TargetDir)Discord.Net.Core.dll')" />
-      <PluginRuntimeFiles Include="$(TargetDir)Discord.Net.Dave.dll" Condition="Exists('$(TargetDir)Discord.Net.Dave.dll')" />
-      <PluginRuntimeFiles Include="$(TargetDir)Discord.Net.Rest.dll" Condition="Exists('$(TargetDir)Discord.Net.Rest.dll')" />
-      <PluginRuntimeFiles Include="$(TargetDir)Discord.Net.WebSocket.dll" Condition="Exists('$(TargetDir)Discord.Net.WebSocket.dll')" />
-      <PluginRuntimeFiles Include="$(TargetDir)Newtonsoft.Json.dll" Condition="Exists('$(TargetDir)Newtonsoft.Json.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)BouncyCastle.Cryptography.dll" Condition="Exists('$(TargetDir)BouncyCastle.Cryptography.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)AutoParty.Contracts.dll" Condition="Exists('$(TargetDir)AutoParty.Contracts.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)AutoParty.Core.dll" Condition="Exists('$(TargetDir)AutoParty.Core.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)ECommons.dll" Condition="Exists('$(TargetDir)ECommons.dll')" />
+      <PluginRuntimeFiles Include="$(TargetDir)System.Formats.Cbor.dll" Condition="Exists('$(TargetDir)System.Formats.Cbor.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)System.Interactive.Async.dll" Condition="Exists('$(TargetDir)System.Interactive.Async.dll')" />
-      <PowerShell51Verifier Include="$(PkgBouncyCastle_Cryptography)\lib\net461\BouncyCastle.Cryptography.dll" Condition="Exists('$(PkgBouncyCastle_Cryptography)\lib\net461\BouncyCastle.Cryptography.dll')" />
     </ItemGroup>
 
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(PluginOutput)" />
     <Copy SourceFiles="@(PluginRuntimeFiles)" DestinationFolder="$(PluginOutput)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(PowerShell51Verifier)" DestinationFiles="$(PluginOutput)\BouncyCastle.Cryptography.PowerShell51.dll" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(DadDevPluginOutput)" Condition="'$(DadDevPluginOutput)' != ''" />
     <Copy SourceFiles="@(PluginRuntimeFiles)" DestinationFolder="$(DadDevPluginOutput)" SkipUnchangedFiles="true" Condition="'$(DadDevPluginOutput)' != ''" />
-    <Copy SourceFiles="@(PowerShell51Verifier)" DestinationFiles="$(DadDevPluginOutput)\BouncyCastle.Cryptography.PowerShell51.dll" SkipUnchangedFiles="true" Condition="'$(DadDevPluginOutput)' != ''" />
   </Target>
 </Project>

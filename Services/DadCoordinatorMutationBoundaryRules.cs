@@ -11,7 +11,8 @@ internal static class DadCoordinatorMutationBoundaryRules
         DadAccountKey coordinatorAccountKey,
         DadParticipantSnapshot? liveCoordinatorTruth,
         out List<DadParticipantSnapshot> resolvedParticipants,
-        out string blocker)
+        out string blocker,
+        Func<Guid, DadFrozenRunSlot, DadParticipantSnapshot?>? registeredIslandResolver = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(manifest);
@@ -31,19 +32,52 @@ internal static class DadCoordinatorMutationBoundaryRules
             return Fail("The frozen participant manifest no longer matches the accepted coordinator plan.", out blocker);
         }
 
+        var hasRegisteredIslandSlots = manifest.Slots.Any(static slot =>
+            slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland);
+        var proposalId = Guid.Empty;
+        if (hasRegisteredIslandSlots &&
+            (!Guid.TryParse(plan.Orchestration.AutoPartyProposalId, out proposalId) ||
+             proposalId == Guid.Empty))
+        {
+            return Fail(
+                "Strict coordinator mutation validation is missing its runtime AutoParty proposal binding.",
+                out blocker);
+        }
+
         var resolutionBlockers = new List<string>();
         foreach (var slot in manifest.Slots)
         {
-            var participant = DadRunSlotManifestRules.ResolveSlot(
-                slot,
-                currentParticipants,
-                plan.Orchestration.RequirePostArReady,
-                out var slotBlocker);
+            DadParticipantSnapshot participant;
+            string slotBlocker;
+            if (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+            {
+                participant = registeredIslandResolver?.Invoke(proposalId, slot) ?? new DadParticipantSnapshot
+                {
+                    AssignedSlotId = slot.SlotId,
+                    RegisteredIslandId = slot.IslandId,
+                    State = DadParticipantState.Stale,
+                    StatusText = $"{slot.SlotId} is waiting for its exact AutoParty runtime lease.",
+                };
+                slotBlocker = ValidateRegisteredIslandParticipant(
+                    plan,
+                    proposalId,
+                    slot,
+                    participant,
+                    DateTime.UtcNow);
+            }
+            else
+            {
+                participant = DadRunSlotManifestRules.ResolveSlot(
+                    slot,
+                    currentParticipants,
+                    plan.Orchestration.RequirePostArReady,
+                    out slotBlocker);
+            }
             resolvedParticipants.Add(participant);
 
             if (!string.IsNullOrWhiteSpace(slotBlocker))
                 resolutionBlockers.Add(slotBlocker);
-            else if (!participant.WorldReadyStable)
+            else if (slot.RouteKind == DadRunSlotRouteKind.LanWorker && !participant.WorldReadyStable)
                 resolutionBlockers.Add($"{slot.SlotId} exact character '{slot.CharacterKey}' is not world-ready-stable at the coordinator mutation boundary.");
         }
 
@@ -70,7 +104,8 @@ internal static class DadCoordinatorMutationBoundaryRules
         var leaderSlot = leaderSlots[0];
         var slotOneParticipants = resolvedParticipants.Where(participant =>
             Same(participant.AssignedSlotId, leaderSlot.SlotId) &&
-            Same(participant.WorkerSessionId.Value, leaderSlot.WorkerSessionId.Value)).ToList();
+            (leaderSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland ||
+             Same(participant.WorkerSessionId.Value, leaderSlot.WorkerSessionId.Value))).ToList();
         if (slotOneParticipants.Count != 1)
         {
             return Fail(
@@ -79,6 +114,17 @@ internal static class DadCoordinatorMutationBoundaryRules
         }
 
         var slotOne = slotOneParticipants[0];
+        if (leaderSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+        {
+            blocker = ValidateRegisteredIslandParticipant(
+                plan,
+                proposalId,
+                leaderSlot,
+                slotOne,
+                DateTime.UtcNow);
+            return string.IsNullOrWhiteSpace(blocker);
+        }
+
         if (!DadRosterIdentity.SameAccount(slotOne.ManagedAccountKey, leaderSlot.AccountKey) ||
             !Same(slotOne.ActiveCharacterKey.Value, leaderSlot.CharacterKey.Value) ||
             slotOne.Character.ContentId != leaderSlot.ContentId ||
@@ -109,6 +155,27 @@ internal static class DadCoordinatorMutationBoundaryRules
             out blocker);
     }
 
+    private static string ValidateRegisteredIslandParticipant(
+        DadRunPlan plan,
+        Guid proposalId,
+        DadFrozenRunSlot slot,
+        DadParticipantSnapshot participant,
+        DateTime nowUtc)
+    {
+        var expectedWorker = $"autoparty-{proposalId:N}-{slot.SlotId.ToLowerInvariant()}";
+        if (slot.RouteKind != DadRunSlotRouteKind.RegisteredIsland ||
+            !Same(participant.AssignedSlotId, slot.SlotId) ||
+            !string.Equals(participant.RegisteredIslandId, slot.IslandId, StringComparison.Ordinal) ||
+            !Same(participant.WorkerSessionId.Value, expectedWorker) ||
+            !string.Equals(participant.RunId, plan.Request.RequestId, StringComparison.Ordinal) ||
+            participant.State == DadParticipantState.Stale)
+        {
+            return $"{slot.SlotId} is missing its exact nonexpired registered-island command identity.";
+        }
+
+        return string.Empty;
+    }
+
     private static DadAccountKey ResolveAccount(DadAcquiredCharacter? character)
         => character == null
             ? new DadAccountKey(string.Empty)
@@ -124,5 +191,23 @@ internal static class DadCoordinatorMutationBoundaryRules
     {
         blocker = reason;
         return false;
+    }
+}
+
+internal static class DadCoordinatorRoutePhaseRules
+{
+    public static DadRunPhase ResolveEntryPhase(DadRunPlan plan, DadRunSlotManifest? manifest)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (manifest?.Slots.Count > 0 && manifest.Slots.All(static slot =>
+                slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland))
+        {
+            return DadRunPhase.AssemblingParty;
+        }
+
+        var requiresLanDiscovery = plan.RequiresRemoteParticipants ||
+            (manifest?.Slots.Any(static slot =>
+                slot.RouteKind == DadRunSlotRouteKind.LanWorker && slot.RequiredJobId.HasValue) ?? false);
+        return requiresLanDiscovery ? DadRunPhase.DiscoveringParticipants : DadRunPhase.ClaimingSlots;
     }
 }

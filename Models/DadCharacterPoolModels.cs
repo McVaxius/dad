@@ -586,6 +586,8 @@ public sealed class DadPresetCharacterSlot
     public DadSlotAssignmentMode AssignmentMode { get; set; } = DadSlotAssignmentMode.Auto;
     public ulong? ContentId { get; set; }
     public string CharacterKey { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string SharedIdentityToken { get; set; } = string.Empty;
     public bool AllowSubstitution { get; set; }
     public bool IsSubstitution { get; set; }
     public DadCharacterSource? SelectedSource { get; set; }

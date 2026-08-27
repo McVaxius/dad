@@ -1,6 +1,7 @@
 using dad.Models;
 using dad.Services;
 using Newtonsoft.Json;
+using System.Collections.Immutable;
 using Xunit;
 
 namespace dad.Tests;
@@ -28,10 +29,13 @@ public sealed class DadAllianceSchemaPropagationTests
             """;
         var configuration = JsonConvert.DeserializeObject<Configuration>(legacyJson)!;
 
-        var changed = configuration.MigrateTransportSettings();
+        var changed = DadAutoPartyConfigurationMigration.Migrate(
+            configuration,
+            new MissingAutoPartyIdentityStore(),
+            new MissingAutoPartyWebhookStore());
 
         Assert.True(changed);
-        Assert.Equal(8, configuration.Version);
+        Assert.Equal(12, configuration.Version);
         var slots = Assert.Single(configuration.PlannerGroups).Slots;
         Assert.All(slots, static slot => Assert.Equal(DadAllianceAssignment.None, slot.AllianceAssignment));
         Assert.False(DadAlliancePartyFinderRules.ValidateSavedRows(slots).IsValid);
@@ -84,7 +88,9 @@ public sealed class DadAllianceSchemaPropagationTests
             LeaderName = "Host Example",
             LeaderWorld = "Alpha",
             TargetWorkerSessionId = new DadWorkerSessionId("target-worker"),
-            TargetApplicationId = 300,
+            TargetIslandId = "island-target",
+            TargetOwnerId = "owner-target",
+            TargetOpaqueCharacterId = "opaque-target",
             TargetCharacterKey = new DadCharacterKey("Target Example@Beta"),
             TargetCharacterName = "Target Example",
             TargetCharacterWorld = "Beta",
@@ -106,7 +112,9 @@ public sealed class DadAllianceSchemaPropagationTests
         Assert.Equal(instruction.LeaderName, restored.LeaderName);
         Assert.Equal(instruction.LeaderWorld, restored.LeaderWorld);
         Assert.Equal(instruction.TargetWorkerSessionId, restored.TargetWorkerSessionId);
-        Assert.Equal(instruction.TargetApplicationId, restored.TargetApplicationId);
+        Assert.Equal(instruction.TargetIslandId, restored.TargetIslandId);
+        Assert.Equal(instruction.TargetOwnerId, restored.TargetOwnerId);
+        Assert.Equal(instruction.TargetOpaqueCharacterId, restored.TargetOpaqueCharacterId);
         Assert.Equal(instruction.TargetCharacterKey, restored.TargetCharacterKey);
         Assert.Equal(instruction.TargetContentId, restored.TargetContentId);
         Assert.Equal(DadAllianceAssignment.G, restored.AssignedAlliance);
@@ -115,6 +123,181 @@ public sealed class DadAllianceSchemaPropagationTests
         Assert.Equal(DadAllianceRecruitmentState.RetryWaiting, restored.State);
         Assert.Equal(5, restored.StopGeneration);
         Assert.Empty(DadAlliancePartyFinderRules.ValidateInstruction(restored));
+    }
+
+    [Fact]
+    public void AllianceRoutingUsesRegisteredIslandsWithoutDiscordEnvelopeModels()
+    {
+        var instructionProperties = typeof(DadAllianceRecruitmentInstructionDto)
+            .GetProperties()
+            .Select(static property => property.Name)
+            .ToList();
+        var targetProperties = typeof(DadAllianceRecruitmentTarget)
+            .GetProperties()
+            .Select(static property => property.Name)
+            .ToList();
+        var assembly = typeof(DadAllianceRecruitmentInstructionDto).Assembly;
+
+        Assert.Contains(nameof(DadAllianceRecruitmentInstructionDto.TargetIslandId), instructionProperties);
+        Assert.DoesNotContain("TargetApplicationId", instructionProperties);
+        Assert.Contains(nameof(DadAllianceRecruitmentTarget.RegisteredIslandId), targetProperties);
+        Assert.Contains(nameof(DadAllianceRecruitmentTarget.OwnerId), targetProperties);
+        Assert.Contains(nameof(DadAllianceRecruitmentTarget.OpaqueCharacterId), targetProperties);
+        Assert.DoesNotContain("DiscordApplicationId", targetProperties);
+        Assert.Null(assembly.GetType("dad.Models.DadAllianceDiscordEnvelope", throwOnError: false));
+        Assert.Null(assembly.GetType("dad.Models.DadAllianceDiscordValidationContext", throwOnError: false));
+    }
+
+    [Fact]
+    public void RegisteredIslandAllianceContractsMapOnlyTypedCentralIdentity()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var header = ContractHeader("requester-island", "target-island", now);
+        var recruitmentId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        var instruction = new DadAllianceRecruitmentInstructionDto
+        {
+            RecruitmentId = recruitmentId.ToString("N"),
+            CoordinatorWorkerSessionId = new DadWorkerSessionId("private-coordinator-worker"),
+            CoordinatorIdentity = "private-coordinator-identity",
+            LeaderName = "Leader Example",
+            LeaderWorld = "Alpha",
+            TargetWorkerSessionId = new DadWorkerSessionId("private-target-worker"),
+            TargetIslandId = "target-island",
+            TargetOwnerId = "target-owner",
+            TargetOpaqueCharacterId = "opaque-target",
+            TargetCharacterKey = new DadCharacterKey("Private Target@Beta"),
+            TargetCharacterName = "Private Target",
+            TargetCharacterWorld = "Beta",
+            TargetContentId = 1234,
+            AssignedAlliance = DadAllianceAssignment.A,
+            CreateListingAsHost = true,
+            Passcode = 6789,
+            Attempt = 3,
+            State = DadAllianceRecruitmentState.CreatingListing,
+            StopGeneration = 4,
+            IssuedAtUtc = now.UtcDateTime.AddMinutes(-5),
+        };
+
+        var operation = DadAllianceAutoPartyContractMapping.ToRecruitOperation(
+            instruction,
+            header,
+            operationId);
+        Assert.NotEmpty(AutoParty.Contracts.CanonicalCborCodec.EncodeUnsigned(operation));
+        var restoredInstruction = DadAllianceAutoPartyContractMapping.FromRecruitOperation(operation);
+
+        Assert.Equal(operationId, operation.OperationId);
+        Assert.Equal(recruitmentId, operation.RecruitmentId);
+        Assert.Equal("target-owner", operation.TargetOwnerId.Value);
+        Assert.Equal("opaque-target", operation.TargetCharacterId.Value);
+        Assert.Equal("target-island", restoredInstruction.TargetIslandId);
+        Assert.Equal(recruitmentId.ToString("N"), restoredInstruction.RecruitmentId);
+        Assert.Equal("target-owner", restoredInstruction.TargetOwnerId);
+        Assert.Equal("opaque-target", restoredInstruction.TargetOpaqueCharacterId);
+        Assert.True(restoredInstruction.TargetWorkerSessionId.IsEmpty);
+        Assert.True(restoredInstruction.TargetCharacterKey.IsEmpty);
+        Assert.Equal(string.Empty, restoredInstruction.TargetCharacterName);
+        Assert.Equal(0UL, restoredInstruction.TargetContentId);
+        Assert.Equal(string.Empty, restoredInstruction.CoordinatorIdentity);
+        Assert.Equal(now.UtcDateTime, restoredInstruction.IssuedAtUtc);
+        Assert.True(restoredInstruction.CreateListingAsHost);
+        Assert.Equal(DadAllianceAssignment.A, restoredInstruction.AssignedAlliance);
+        Assert.Equal(DadAllianceRecruitmentState.CreatingListing, restoredInstruction.State);
+
+        var nonHostInstruction = instruction.Clone();
+        nonHostInstruction.CreateListingAsHost = false;
+        nonHostInstruction.AssignedAlliance = DadAllianceAssignment.G;
+        nonHostInstruction.State = DadAllianceRecruitmentState.Searching;
+        var nonHostOperation = DadAllianceAutoPartyContractMapping.ToRecruitOperation(
+            nonHostInstruction,
+            header,
+            Guid.NewGuid());
+        Assert.NotEmpty(AutoParty.Contracts.CanonicalCborCodec.EncodeUnsigned(nonHostOperation));
+        var restoredNonHost = DadAllianceAutoPartyContractMapping.FromRecruitOperation(nonHostOperation);
+        Assert.False(restoredNonHost.CreateListingAsHost);
+        Assert.Equal(DadAllianceAssignment.G, restoredNonHost.AssignedAlliance);
+        Assert.Equal(DadAllianceRecruitmentState.Searching, restoredNonHost.State);
+
+        var contradictoryHost = instruction.Clone();
+        contradictoryHost.AssignedAlliance = DadAllianceAssignment.G;
+        Assert.Throws<ArgumentException>(() => DadAllianceAutoPartyContractMapping.ToRecruitOperation(
+            contradictoryHost,
+            header,
+            Guid.NewGuid()));
+        var contradictoryNonHost = nonHostInstruction.Clone();
+        contradictoryNonHost.State = DadAllianceRecruitmentState.CreatingListing;
+        Assert.Throws<ArgumentException>(() => DadAllianceAutoPartyContractMapping.ToRecruitOperation(
+            contradictoryNonHost,
+            header,
+            Guid.NewGuid()));
+
+        var cancellation = new DadAllianceRecruitmentCancellationDto
+        {
+            RecruitmentId = recruitmentId.ToString("D"),
+            TargetIslandId = "target-island",
+            TargetOwnerId = "target-owner",
+            TargetOpaqueCharacterId = "opaque-target",
+            TargetWorkerSessionId = new DadWorkerSessionId("private-target-worker"),
+            TargetCharacterKey = new DadCharacterKey("Private Target@Beta"),
+            StopGeneration = 5,
+            RequestedAtUtc = now.UtcDateTime.AddMinutes(-5),
+            Reason = "dad-owner-stop",
+        };
+        var cancelOperation = DadAllianceAutoPartyContractMapping.ToCancelOperation(
+            cancellation,
+            header,
+            Guid.NewGuid());
+        Assert.NotEmpty(AutoParty.Contracts.CanonicalCborCodec.EncodeUnsigned(cancelOperation));
+        var restoredCancellation = DadAllianceAutoPartyContractMapping.FromCancelOperation(cancelOperation);
+        Assert.Equal(AutoParty.Contracts.AllianceRecruitmentOperationKind.Cancel, cancelOperation.Kind);
+        Assert.Equal(recruitmentId.ToString("N"), restoredCancellation.RecruitmentId);
+        Assert.Equal("target-owner", restoredCancellation.TargetOwnerId);
+        Assert.Equal("opaque-target", restoredCancellation.TargetOpaqueCharacterId);
+        Assert.True(restoredCancellation.TargetWorkerSessionId.IsEmpty);
+        Assert.True(restoredCancellation.TargetCharacterKey.IsEmpty);
+        Assert.Equal(now.UtcDateTime, restoredCancellation.RequestedAtUtc);
+
+        var result = new DadAllianceRecruitmentResultDto
+        {
+            RecruitmentId = recruitmentId.ToString("D"),
+            ParticipantOwnerId = "target-owner",
+            TargetOpaqueCharacterId = "opaque-target",
+            WorkerSessionId = new DadWorkerSessionId("private-target-worker"),
+            TargetCharacterKey = new DadCharacterKey("Private Target@Beta"),
+            TargetCharacterName = "Private Target",
+            TargetContentId = 1234,
+            ExpectedAlliance = DadAllianceAssignment.G,
+            ObservedAlliance = DadAllianceAssignment.G,
+            Attempt = 3,
+            State = DadAllianceRecruitmentState.Complete,
+            ResultKind = DadAllianceRecruitmentResultKind.Succeeded,
+            StopGeneration = 4,
+            Summary = "Private native details must not cross central transport.",
+        };
+        var receipt = DadAllianceAutoPartyContractMapping.ToReceipt(result, header, operationId);
+        Assert.NotEmpty(AutoParty.Contracts.CanonicalCborCodec.EncodeUnsigned(receipt));
+        var restoredResult = DadAllianceAutoPartyContractMapping.FromReceipt(receipt);
+        Assert.Equal("target-owner", receipt.ParticipantOwnerId.Value);
+        Assert.Equal("opaque-target", receipt.TargetCharacterId.Value);
+        Assert.Equal("target-owner", restoredResult.ParticipantOwnerId);
+        Assert.Equal(recruitmentId.ToString("N"), restoredResult.RecruitmentId);
+        Assert.Equal("opaque-target", restoredResult.TargetOpaqueCharacterId);
+        Assert.True(restoredResult.WorkerSessionId.IsEmpty);
+        Assert.True(restoredResult.TargetCharacterKey.IsEmpty);
+        Assert.Equal(string.Empty, restoredResult.TargetCharacterName);
+        Assert.Equal(0UL, restoredResult.TargetContentId);
+        Assert.Equal("dad-alliance-succeeded", restoredResult.Summary);
+
+        var wireProperties = typeof(AutoParty.Contracts.AllianceRecruitmentOperation)
+            .GetProperties()
+            .Select(static property => property.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.DoesNotContain(nameof(DadAllianceRecruitmentInstructionDto.TargetWorkerSessionId), wireProperties);
+        Assert.DoesNotContain(nameof(DadAllianceRecruitmentInstructionDto.TargetCharacterKey), wireProperties);
+        Assert.DoesNotContain(nameof(DadAllianceRecruitmentInstructionDto.TargetCharacterName), wireProperties);
+        Assert.DoesNotContain(nameof(DadAllianceRecruitmentInstructionDto.TargetContentId), wireProperties);
+        Assert.DoesNotContain(nameof(DadAllianceRecruitmentInstructionDto.CoordinatorIdentity), wireProperties);
+        Assert.DoesNotContain(nameof(DadAllianceRecruitmentInstructionDto.IssuedAtUtc), wireProperties);
     }
 
     [Fact]
@@ -359,4 +542,23 @@ public sealed class DadAllianceSchemaPropagationTests
         => Assert.Equal(
             [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.G],
             group.Slots.Select(static slot => slot.AllianceAssignment).ToArray());
+
+    private static AutoParty.Contracts.ContractHeader ContractHeader(
+        string senderIsland,
+        string recipientIsland,
+        DateTimeOffset now)
+        => new(
+            AutoParty.Contracts.AutoPartyProtocol.CurrentVersion,
+            Guid.NewGuid(),
+            $"alliance-test-{Guid.NewGuid():N}",
+            new AutoParty.Contracts.IslandId(senderIsland),
+            new AutoParty.Contracts.IslandId(recipientIsland),
+            now,
+            now.AddMinutes(5),
+            1,
+            1,
+            1,
+            1,
+            AutoParty.Contracts.ContractHeader.CreateNonce(new byte[AutoParty.Contracts.AutoPartyProtocol.ContractNonceBytes]),
+            ImmutableArray<int>.Empty);
 }

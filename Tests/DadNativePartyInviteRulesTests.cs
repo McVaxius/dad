@@ -131,6 +131,40 @@ public sealed class DadNativePartyInviteRulesTests
     }
 
     [Fact]
+    public void AuthenticatedIslandInvitesBothWaysImmediatelyEveryThirtySecondsThroughFourThirtyThenFailsAtFiveMinutes()
+    {
+        var dispatcher = new FakeDispatcher(true);
+        var tracker = new DadNativePartyInviteAttemptTracker();
+        var target = Target(21, 21);
+
+        for (var attempt = 0; attempt <= 9; attempt++)
+        {
+            var dispatched = tracker.TryDispatchAuthenticatedIsland(
+                target,
+                partyListContainsContentId: false,
+                Start.AddSeconds(attempt * 30),
+                dispatcher,
+                out var blocker);
+            Assert.Empty(blocker);
+            Assert.Collection(
+                dispatched,
+                same => Assert.Equal(DadNativePartyInviteType.SameWorld, same.InviteType),
+                cross => Assert.Equal(DadNativePartyInviteType.CrossWorldContentId, cross.InviteType));
+        }
+
+        var terminal = tracker.TryDispatchAuthenticatedIsland(
+            target,
+            partyListContainsContentId: false,
+            Start.AddMinutes(5),
+            dispatcher,
+            out var terminalBlocker);
+
+        Assert.Empty(terminal);
+        Assert.Contains("failed at five minutes", terminalBlocker, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(20, dispatcher.CallCount);
+    }
+
+    [Fact]
     public void ExactPartyListContentIdStopsAttemptsAndRunConfirmationIsConsumedOnce()
     {
         var dispatcher = new FakeDispatcher(true);

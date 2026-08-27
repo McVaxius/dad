@@ -410,7 +410,7 @@ public sealed class DadAlliancePartyFinderRulesTests
     }
 
     [Fact]
-    public void HubAndDiscordCopiesDeduplicateByRecruitmentAndTarget()
+    public void HubAndCentralCopiesDeduplicateByRecruitmentAndTarget()
     {
         var dedupe = new DadAllianceDeliveryDedupe();
         var recruitmentId = Guid.NewGuid().ToString("N");

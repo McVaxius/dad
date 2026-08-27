@@ -1,23 +1,42 @@
 using AutoParty.Contracts;
+using System.Collections.Immutable;
+using System.Text.Json.Serialization;
 
 namespace dad.Models;
 
 public sealed class DadAutoPartyConfiguration
 {
-    public const string DefaultPilotExchangeRoot = @"Z:\autopartypilot";
-
     public bool Enabled { get; set; }
-    public bool PairingEnabled { get; set; }
-    public bool ExecutionEnabled { get; set; }
-    public bool DiscordEnabled { get; set; }
-    public string DiscordTokenReference { get; set; } = string.Empty;
-    public ulong DiscordGuildId { get; set; }
-    public ulong DiscordChannelId { get; set; }
-    public ulong DiscordApplicationId { get; set; }
-    public ulong DiscordBotUserId { get; set; }
-    public ulong DiscordPresenceMessageId { get; set; }
-    public DadAutoPartyDiscordBinding DiscordBinding { get; set; } = new();
-    public DadMeasuredPilotCampaign MeasuredPilot { get; set; } = new();
+    public DadAutoPartyRegistrationState RegistrationState { get; set; }
+    public string RegistrationId { get; set; } = string.Empty;
+    public string RouteId { get; set; } = string.Empty;
+    public string CentralBotApplicationId { get; set; } = string.Empty;
+    public string HomeGuildScope { get; set; } = string.Empty;
+    public string WebhookCredentialReference { get; set; } = string.Empty;
+    public string UplinkEpochId { get; set; } = string.Empty;
+    public string DownlinkEpochId { get; set; } = string.Empty;
+    public long MailboxEpochGeneration { get; set; }
+    public long DirectoryGeneration { get; set; } = 1;
+    public long RelayKeyGeneration { get; set; } = 1;
+    public string RelaySigningPublicKey { get; set; } = string.Empty;
+    public string RelayAgreementPublicKey { get; set; } = string.Empty;
+    public DateTime BootstrapExpiresAtUtc { get; set; }
+    public bool LegacyDiscordTokenCleanupPending { get; set; }
+    public string LegacyDiscordTokenCleanupWarning { get; set; } = string.Empty;
+
+    // Schema-9 migration-only aliases. They load the old JSON names so the DPAPI token can be
+    // retired, then normalize to null/zero and disappear from the next saved configuration.
+    [JsonPropertyName("DiscordTokenReference")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LegacyDiscordTokenReference { get; set; }
+
+    [JsonPropertyName("DiscordApplicationId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public ulong LegacyDiscordApplicationId { get; set; }
+
+    [JsonPropertyName("DiscordBotUserId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public ulong LegacyDiscordBotUserId { get; set; }
     public string EndpointIdentityReference { get; set; } = string.Empty;
     public string RegisteredOwnerId { get; set; } = string.Empty;
     public string RegisteredIslandId { get; set; } = string.Empty;
@@ -26,30 +45,88 @@ public sealed class DadAutoPartyConfiguration
     public string SigningPublicKey { get; set; } = string.Empty;
     public string EncryptionPublicKey { get; set; } = string.Empty;
     public long EndpointKeyGeneration { get; set; } = 1;
-    public string EnrollmentReceiptId { get; set; } = string.Empty;
-    public string PilotArtifactSha256 { get; set; } = string.Empty;
-    public bool OwnerAcceptanceConfirmed { get; set; }
-    public string PilotExchangeRoot { get; set; } = DefaultPilotExchangeRoot;
-    public string CourierRootPath { get; set; } = @"Z:\autopartypilot\pilot-courier";
-    public string PilotPlannerGroupId { get; set; } = string.Empty;
-    public string PilotQueueAuthorityFingerprint { get; set; } = string.Empty;
-    public bool PilotCourierProbeVerified { get; set; }
+    public long RevocationGeneration { get; set; } = 1;
     public long StateGeneration { get; set; } = 1;
+    public DadAutoPartySharePolicy StandingSharePolicy { get; set; } = new()
+    {
+        Mode = DadAutoPartyCharacterShareMode.CharacterList,
+        Enabled = false,
+    };
+    public DadAutoPartyCrewShareScope StandingShareScope { get; set; } =
+        DadAutoPartyCrewShareScope.CurrentCharacter;
+    public List<DadAutoPartyCrewIdentity> CrewIdentities { get; set; } = [];
+    public Dictionary<string, string> PairedDadAliases { get; set; } = new(StringComparer.Ordinal);
     public List<DadAutoPartyPairing> Pairings { get; set; } = [];
     public List<DadAutoPartyGrant> Grants { get; set; } = [];
     public List<DadAutoPartyListing> Listings { get; set; } = [];
     public List<DadAutoPartyRemoteBinding> RemoteBindings { get; set; } = [];
+    [JsonIgnore]
     public List<DadAutoPartyPairing> PendingPairings { get; set; } = [];
-    public List<DadAutoPartyOutboundPairingChallenge> OutboundPairingChallenges { get; set; } = [];
+    public List<DadAutoPartyDeauthentication> Deauthentications { get; set; } = [];
+    public string PairingInviteToken { get; set; } = string.Empty;
+    public string PairingAttemptId { get; set; } = string.Empty;
+    public DateTime PairingAttemptExpiresAtUtc { get; set; }
+    public bool PairingAttemptSubmitted { get; set; }
+    public string PairingPeerAttemptId { get; set; } = string.Empty;
+    public string PairingPeerIslandId { get; set; } = string.Empty;
+    public string PairingPeerInviteFingerprint { get; set; } = string.Empty;
+    public DadAutoPartySharePolicy PairingAttemptSharePolicy { get; set; } = new();
+    public string PairingIntentMessageId { get; set; } = string.Empty;
+    public string PairingCancellationMessageId { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public DadAutoPartyRegistrationRecoveryState RegistrationRecoveryState { get; internal set; }
+
+    public bool HasDurableRegistrationMaterial =>
+        !string.IsNullOrWhiteSpace(RouteId) &&
+        !string.IsNullOrWhiteSpace(WebhookCredentialReference) &&
+        Guid.TryParse(UplinkEpochId, out _) &&
+        Guid.TryParse(DownlinkEpochId, out _) &&
+        !string.Equals(UplinkEpochId, DownlinkEpochId, StringComparison.Ordinal) &&
+        MailboxEpochGeneration >= 1 &&
+        RelayKeyGeneration >= 1 &&
+        !string.IsNullOrWhiteSpace(RelaySigningPublicKey) &&
+        !string.IsNullOrWhiteSpace(RelayAgreementPublicKey);
+
+    public bool HasImportedBootstrap =>
+        (RegistrationState is DadAutoPartyRegistrationState.BootstrapImported or DadAutoPartyRegistrationState.Active) &&
+        Guid.TryParse(RegistrationId, out _) &&
+        HasDurableRegistrationMaterial;
+
+    public bool IsRegistrationActive =>
+        RegistrationState == DadAutoPartyRegistrationState.Active && HasImportedBootstrap;
 
     public DadAutoPartyConfiguration Normalize()
     {
+        RegistrationId = Guid.TryParse(RegistrationId, out var registrationId)
+            ? registrationId.ToString("D")
+            : string.Empty;
+        RouteId = NormalizeIdentifier(RouteId);
+        CentralBotApplicationId = NormalizeSnowflake(CentralBotApplicationId);
+        HomeGuildScope = NormalizeIdentifier(HomeGuildScope);
+        WebhookCredentialReference = NormalizeMailboxReference(WebhookCredentialReference);
+        UplinkEpochId = Guid.TryParse(UplinkEpochId, out var epochId)
+            ? epochId.ToString("D")
+            : string.Empty;
+        DownlinkEpochId = Guid.TryParse(DownlinkEpochId, out var downlinkEpochId)
+            ? downlinkEpochId.ToString("D")
+            : string.Empty;
+        MailboxEpochGeneration = Math.Max(0, MailboxEpochGeneration);
+        DirectoryGeneration = Math.Max(1, DirectoryGeneration);
+        RelayKeyGeneration = Math.Max(1, RelayKeyGeneration);
+        RelaySigningPublicKey = NormalizePublicKey(RelaySigningPublicKey);
+        RelayAgreementPublicKey = NormalizePublicKey(RelayAgreementPublicKey);
+        LegacyDiscordTokenReference = NormalizeTokenReference(LegacyDiscordTokenReference);
+        if (string.IsNullOrWhiteSpace(LegacyDiscordTokenReference))
+        {
+            LegacyDiscordTokenReference = null;
+            LegacyDiscordTokenCleanupPending = false;
+            LegacyDiscordTokenCleanupWarning = string.Empty;
+        }
+        LegacyDiscordTokenCleanupWarning = NormalizeSafeCode(LegacyDiscordTokenCleanupWarning);
+        LegacyDiscordApplicationId = 0;
+        LegacyDiscordBotUserId = 0;
         EndpointIdentityReference = NormalizeIdentifier(EndpointIdentityReference);
-        DiscordTokenReference = NormalizeTokenReference(DiscordTokenReference);
-        if (DiscordGuildId == 0 || DiscordChannelId == 0)
-            DiscordEnabled = false;
-        DiscordBinding = (DiscordBinding ?? new DadAutoPartyDiscordBinding()).Normalize();
-        MeasuredPilot = (MeasuredPilot ?? new DadMeasuredPilotCampaign()).Normalize();
         RegisteredOwnerId = NormalizeIdentifier(RegisteredOwnerId);
         RegisteredIslandId = NormalizeIdentifier(RegisteredIslandId);
         RegistrationFingerprint = NormalizeFingerprint(RegistrationFingerprint);
@@ -57,15 +134,39 @@ public sealed class DadAutoPartyConfiguration
         SigningPublicKey = NormalizePublicKey(SigningPublicKey);
         EncryptionPublicKey = NormalizePublicKey(EncryptionPublicKey);
         EndpointKeyGeneration = Math.Max(1, EndpointKeyGeneration);
-        EnrollmentReceiptId = Guid.TryParse(EnrollmentReceiptId, out var receiptId)
-            ? receiptId.ToString("D")
-            : string.Empty;
-        PilotArtifactSha256 = NormalizeSha256(PilotArtifactSha256);
-        PilotExchangeRoot = NormalizePilotExchangeRoot(PilotExchangeRoot);
-        CourierRootPath = Path.Combine(PilotExchangeRoot, "pilot-courier");
-        PilotPlannerGroupId = NormalizeIdentifier(PilotPlannerGroupId);
-        PilotQueueAuthorityFingerprint = NormalizeFingerprint(PilotQueueAuthorityFingerprint);
+        RevocationGeneration = Math.Max(1, RevocationGeneration);
         StateGeneration = Math.Max(1, StateGeneration);
+        StandingSharePolicy = (StandingSharePolicy ?? new DadAutoPartySharePolicy
+        {
+            Mode = DadAutoPartyCharacterShareMode.CharacterList,
+            Enabled = false,
+        }).Normalize();
+        if (StandingSharePolicy.Mode != DadAutoPartyCharacterShareMode.CharacterList)
+        {
+            StandingSharePolicy.Mode = DadAutoPartyCharacterShareMode.CharacterList;
+            StandingSharePolicy.CharacterHandles.Clear();
+            StandingSharePolicy.Enabled = false;
+        }
+        if (!Enum.IsDefined(StandingShareScope))
+            StandingShareScope = DadAutoPartyCrewShareScope.CurrentCharacter;
+        CrewIdentities = (CrewIdentities ?? [])
+            .Where(static identity => identity != null)
+            .Select(static identity => identity!.Normalize())
+            .Where(static identity => identity.IsValid)
+            .DistinctBy(static identity => identity.RosterIdentityKey, StringComparer.OrdinalIgnoreCase)
+            .Take(256)
+            .ToList();
+        PairedDadAliases = (PairedDadAliases ?? new Dictionary<string, string>())
+            .Select(static pair => new KeyValuePair<string, string>(
+                NormalizeIdentifier(pair.Key),
+                NormalizeAlias(pair.Value)))
+            .Where(static pair => !string.IsNullOrWhiteSpace(pair.Key) &&
+                                  !string.IsNullOrWhiteSpace(pair.Value))
+            .GroupBy(static pair => pair.Key, StringComparer.Ordinal)
+            .Select(static group => group.First())
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .Take(256)
+            .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal);
         Pairings = (Pairings ?? [])
             .Where(static pairing => pairing != null)
             .Select(static pairing => pairing!.Normalize())
@@ -73,6 +174,16 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static pairing => pairing.IslandId, StringComparer.Ordinal)
             .Take(256)
             .ToList();
+        foreach (var pairing in Pairings)
+        {
+            var legacyAlias = pairing.TakeLegacyLocalAlias();
+            if (!string.IsNullOrWhiteSpace(legacyAlias) &&
+                PairedDadAliases.Count < 256 &&
+                !PairedDadAliases.ContainsKey(pairing.IslandId))
+            {
+                PairedDadAliases.Add(pairing.IslandId, legacyAlias);
+            }
+        }
         Grants = (Grants ?? [])
             .Where(static grant => grant is { IsValid: true })
             .DistinctBy(static grant => grant.GrantId, StringComparer.Ordinal)
@@ -92,21 +203,44 @@ public sealed class DadAutoPartyConfiguration
             .DistinctBy(static binding => binding.FleetRowId, StringComparer.OrdinalIgnoreCase)
             .Take(256)
             .ToList();
-        PendingPairings = (PendingPairings ?? [])
-            .Where(static pairing => pairing != null)
-            .Select(static pairing => pairing!.Normalize())
-            .Where(static pairing => pairing.IsValid)
-            .DistinctBy(static pairing => pairing.IslandId, StringComparer.Ordinal)
-            .Take(16)
+        PendingPairings = [];
+        Deauthentications = (Deauthentications ?? [])
+            .Where(static item => item != null)
+            .Select(static item => item!.Normalize())
+            .Where(static item => item.IsValid)
+            .OrderByDescending(static item => item.RevokedAtUtc)
+            .DistinctBy(static item => item.PeerIslandId, StringComparer.Ordinal)
+            .Take(256)
             .ToList();
-        OutboundPairingChallenges = (OutboundPairingChallenges ?? [])
-            .Where(static challenge => challenge != null)
-            .Select(static challenge => challenge!.Normalize())
-            .Where(static challenge => challenge.IsValid)
-            .OrderByDescending(static challenge => challenge.CreatedAtUtc)
-            .DistinctBy(static challenge => challenge.RequestNonce, StringComparer.Ordinal)
-            .Take(16)
-            .ToList();
+        PairingInviteToken = (PairingInviteToken ?? string.Empty).Trim();
+        PairingAttemptId = Guid.TryParse(PairingAttemptId, out var pairingAttemptId)
+            ? pairingAttemptId.ToString("D")
+            : string.Empty;
+        PairingPeerAttemptId = Guid.TryParse(PairingPeerAttemptId, out var peerAttemptId)
+            ? peerAttemptId.ToString("D")
+            : string.Empty;
+        PairingPeerIslandId = NormalizeIdentifier(PairingPeerIslandId);
+        PairingPeerInviteFingerprint = NormalizeFingerprint(PairingPeerInviteFingerprint);
+        PairingAttemptSharePolicy = (PairingAttemptSharePolicy ?? new DadAutoPartySharePolicy()).Normalize();
+        PairingIntentMessageId = Guid.TryParse(PairingIntentMessageId, out var intentMessageId)
+            ? intentMessageId.ToString("D")
+            : string.Empty;
+        PairingCancellationMessageId = Guid.TryParse(
+            PairingCancellationMessageId,
+            out var cancellationMessageId)
+            ? cancellationMessageId.ToString("D")
+            : string.Empty;
+        var pairingAttemptValid = PairingInviteToken.StartsWith(
+                                      PairingCopyPasteCodec.Prefix,
+                                      StringComparison.Ordinal) &&
+                                  PairingInviteToken.Length <=
+                                      AutoPartyProtocol.MaximumPairingInviteCharacters &&
+                                  !string.IsNullOrWhiteSpace(PairingAttemptId) &&
+                                  PairingAttemptExpiresAtUtc != default;
+        if (!pairingAttemptValid)
+            ClearPairingAttempt();
+        if (!HasImportedBootstrap && RegistrationState != DadAutoPartyRegistrationState.Unregistered)
+            RegistrationState = DadAutoPartyRegistrationState.Unregistered;
         return this;
     }
 
@@ -114,17 +248,23 @@ public sealed class DadAutoPartyConfiguration
         => new()
         {
             Enabled = Enabled,
-            PairingEnabled = PairingEnabled,
-            ExecutionEnabled = ExecutionEnabled,
-            DiscordEnabled = DiscordEnabled,
-            DiscordTokenReference = DiscordTokenReference,
-            DiscordGuildId = DiscordGuildId,
-            DiscordChannelId = DiscordChannelId,
-            DiscordApplicationId = DiscordApplicationId,
-            DiscordBotUserId = DiscordBotUserId,
-            DiscordPresenceMessageId = DiscordPresenceMessageId,
-            DiscordBinding = DiscordBinding.Clone(),
-            MeasuredPilot = MeasuredPilot.Clone(),
+            RegistrationState = RegistrationState,
+            RegistrationId = RegistrationId,
+            RouteId = RouteId,
+            CentralBotApplicationId = CentralBotApplicationId,
+            HomeGuildScope = HomeGuildScope,
+            WebhookCredentialReference = WebhookCredentialReference,
+            UplinkEpochId = UplinkEpochId,
+            DownlinkEpochId = DownlinkEpochId,
+            MailboxEpochGeneration = MailboxEpochGeneration,
+            DirectoryGeneration = DirectoryGeneration,
+            RelayKeyGeneration = RelayKeyGeneration,
+            RelaySigningPublicKey = RelaySigningPublicKey,
+            RelayAgreementPublicKey = RelayAgreementPublicKey,
+            BootstrapExpiresAtUtc = BootstrapExpiresAtUtc,
+            LegacyDiscordTokenCleanupPending = LegacyDiscordTokenCleanupPending,
+            LegacyDiscordTokenCleanupWarning = LegacyDiscordTokenCleanupWarning,
+            LegacyDiscordTokenReference = LegacyDiscordTokenReference,
             EndpointIdentityReference = EndpointIdentityReference,
             RegisteredOwnerId = RegisteredOwnerId,
             RegisteredIslandId = RegisteredIslandId,
@@ -133,22 +273,71 @@ public sealed class DadAutoPartyConfiguration
             SigningPublicKey = SigningPublicKey,
             EncryptionPublicKey = EncryptionPublicKey,
             EndpointKeyGeneration = EndpointKeyGeneration,
-            EnrollmentReceiptId = EnrollmentReceiptId,
-            PilotArtifactSha256 = PilotArtifactSha256,
-            OwnerAcceptanceConfirmed = OwnerAcceptanceConfirmed,
-            PilotExchangeRoot = PilotExchangeRoot,
-            CourierRootPath = CourierRootPath,
-            PilotPlannerGroupId = PilotPlannerGroupId,
-            PilotQueueAuthorityFingerprint = PilotQueueAuthorityFingerprint,
-            PilotCourierProbeVerified = PilotCourierProbeVerified,
+            RevocationGeneration = RevocationGeneration,
             StateGeneration = StateGeneration,
+            StandingSharePolicy = StandingSharePolicy.Clone(),
+            StandingShareScope = StandingShareScope,
+            CrewIdentities = CrewIdentities.Select(static identity => identity.Clone()).ToList(),
+            PairedDadAliases = new Dictionary<string, string>(PairedDadAliases, StringComparer.Ordinal),
             Pairings = Pairings.Select(static pairing => pairing.Clone()).ToList(),
             Grants = Grants.Select(static grant => grant with { }).ToList(),
             Listings = Listings.Select(static listing => listing.Clone()).ToList(),
             RemoteBindings = RemoteBindings.Select(static binding => binding.Clone()).ToList(),
             PendingPairings = PendingPairings.Select(static pairing => pairing.Clone()).ToList(),
-            OutboundPairingChallenges = OutboundPairingChallenges.Select(static challenge => challenge.Clone()).ToList(),
+            Deauthentications = Deauthentications.Select(static item => item.Clone()).ToList(),
+            PairingInviteToken = PairingInviteToken,
+            PairingAttemptId = PairingAttemptId,
+            PairingAttemptExpiresAtUtc = PairingAttemptExpiresAtUtc,
+            PairingAttemptSubmitted = PairingAttemptSubmitted,
+            PairingPeerAttemptId = PairingPeerAttemptId,
+            PairingPeerIslandId = PairingPeerIslandId,
+            PairingPeerInviteFingerprint = PairingPeerInviteFingerprint,
+            PairingAttemptSharePolicy = PairingAttemptSharePolicy.Clone(),
+            PairingIntentMessageId = PairingIntentMessageId,
+            PairingCancellationMessageId = PairingCancellationMessageId,
         };
+
+    public void ClearPairingAttempt()
+    {
+        PairingInviteToken = string.Empty;
+        PairingAttemptId = string.Empty;
+        PairingAttemptExpiresAtUtc = default;
+        PairingAttemptSubmitted = false;
+        PairingPeerAttemptId = string.Empty;
+        PairingPeerIslandId = string.Empty;
+        PairingPeerInviteFingerprint = string.Empty;
+        PairingAttemptSharePolicy = new DadAutoPartySharePolicy();
+        PairingIntentMessageId = string.Empty;
+        PairingCancellationMessageId = string.Empty;
+    }
+
+    internal void ClearRegistrationAndTrust()
+    {
+        RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.NewRegistration;
+        RegistrationId = string.Empty;
+        RouteId = string.Empty;
+        CentralBotApplicationId = string.Empty;
+        HomeGuildScope = string.Empty;
+        WebhookCredentialReference = string.Empty;
+        UplinkEpochId = string.Empty;
+        DownlinkEpochId = string.Empty;
+        MailboxEpochGeneration = 0;
+        DirectoryGeneration = 1;
+        RelayKeyGeneration = 1;
+        RelaySigningPublicKey = string.Empty;
+        RelayAgreementPublicKey = string.Empty;
+        BootstrapExpiresAtUtc = default;
+        PairedDadAliases.Clear();
+        Pairings.Clear();
+        PendingPairings.Clear();
+        ClearPairingAttempt();
+        Grants.Clear();
+        Listings.Clear();
+        RemoteBindings.Clear();
+        Deauthentications.Clear();
+        StateGeneration++;
+    }
 
     internal static string NormalizeIdentifier(string? value)
         => (value ?? string.Empty).Trim() is { Length: <= 128 } normalized
@@ -161,6 +350,33 @@ public sealed class DadAutoPartyConfiguration
         return normalized.Length == 46 &&
                normalized.StartsWith("discord-token-", StringComparison.Ordinal) &&
                normalized[14..].All(char.IsAsciiHexDigit)
+            ? normalized
+            : string.Empty;
+    }
+
+    internal static string NormalizeMailboxReference(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.Length == 48 &&
+               normalized.StartsWith("webhook-mailbox-", StringComparison.Ordinal) &&
+               normalized[16..].All(char.IsAsciiHexDigit)
+            ? normalized
+            : string.Empty;
+    }
+
+    internal static string NormalizeSnowflake(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return normalized.Length is >= 1 and <= 24 && normalized.All(char.IsAsciiDigit)
+            ? normalized
+            : string.Empty;
+    }
+
+    internal static string NormalizeSafeCode(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.Length is > 0 and <= 128 && normalized.All(character =>
+            character is >= 'a' and <= 'z' || char.IsAsciiDigit(character) || character is '-' or '.')
             ? normalized
             : string.Empty;
     }
@@ -211,47 +427,56 @@ public sealed class DadAutoPartyConfiguration
             : string.Empty;
     }
 
-    public string GetPilotInputRoot() => Path.Combine(PilotExchangeRoot, "pilot-input");
+}
 
-    public string GetPilotReceiptRoot() => Path.Combine(PilotExchangeRoot, "pilot-receipts");
+public enum DadAutoPartyCrewShareScope
+{
+    CurrentCharacter = 1,
+    SpecificCharacters = 2,
+    AllCharacters = 3,
+}
 
-    public string GetPilotFixturePath() => Path.Combine(GetPilotInputRoot(), "pilot-fixture.json");
+/// <summary>
+/// Stable local-to-opaque mapping for an active DAD Crew row. It is intentionally kept with
+/// AutoParty rather than Fleet Matrix so publishing does not depend on matrix staging.
+/// </summary>
+public sealed class DadAutoPartyCrewIdentity
+{
+    public string RosterIdentityKey { get; set; } = string.Empty;
+    public string OpaqueCharacterId { get; set; } = string.Empty;
 
-    public string GetPilotCourierRoot() => Path.Combine(PilotExchangeRoot, "pilot-courier");
+    public bool IsValid =>
+        !string.IsNullOrWhiteSpace(RosterIdentityKey) &&
+        !string.IsNullOrWhiteSpace(OpaqueCharacterId);
 
-    public string GetPilotPluginRoot() => Path.Combine(PilotExchangeRoot, "plugin");
-
-    public static bool TryNormalizePilotExchangeRoot(string? value, out string normalized)
+    public DadAutoPartyCrewIdentity Normalize()
     {
-        var candidate = (value ?? string.Empty).Trim();
-        normalized = string.Empty;
-        if (string.IsNullOrWhiteSpace(candidate) || !Path.IsPathFullyQualified(candidate))
-            return false;
-        try
-        {
-            var fullPath = Path.GetFullPath(candidate).TrimEnd(
-                Path.DirectorySeparatorChar,
-                Path.AltDirectorySeparatorChar);
-            var pathRoot = Path.GetPathRoot(fullPath)?.TrimEnd(
-                Path.DirectorySeparatorChar,
-                Path.AltDirectorySeparatorChar);
-            if (string.IsNullOrWhiteSpace(fullPath) ||
-                string.IsNullOrWhiteSpace(pathRoot) ||
-                string.Equals(fullPath, pathRoot, StringComparison.OrdinalIgnoreCase))
-                return false;
-            normalized = fullPath;
-            return true;
-        }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return false;
-        }
+        RosterIdentityKey = DadAutoPartyConfiguration.NormalizeIdentifier(RosterIdentityKey);
+        OpaqueCharacterId = DadAutoPartyConfiguration.NormalizeIdentifier(OpaqueCharacterId);
+        return this;
     }
 
-    private static string NormalizePilotExchangeRoot(string? value)
-        => TryNormalizePilotExchangeRoot(value, out var normalized)
-            ? normalized
-            : DefaultPilotExchangeRoot;
+    public DadAutoPartyCrewIdentity Clone() => new()
+    {
+        RosterIdentityKey = RosterIdentityKey,
+        OpaqueCharacterId = OpaqueCharacterId,
+    };
+}
+
+public enum DadAutoPartyRegistrationState
+{
+    Unregistered = 0,
+    BootstrapImported = 1,
+    Active = 2,
+    Quarantined = 3,
+}
+
+public enum DadAutoPartyRegistrationRecoveryState
+{
+    NewRegistration = 0,
+    Active = 1,
+    RecoveryAvailable = 2,
+    IdentityLost = 3,
 }
 
 public sealed class DadAutoPartyRemoteBinding
@@ -296,135 +521,182 @@ public sealed class DadAutoPartyRemoteBinding
 
 public sealed class DadAutoPartyPairing
 {
+    public string PairingId { get; set; } = string.Empty;
     public string OwnerId { get; set; } = string.Empty;
     public string IslandId { get; set; } = string.Empty;
+    public string HomeGuildScope { get; set; } = string.Empty;
+    // Schema-12 migration-only shim. Normalize moves this value into PairedDadAliases and clears it.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LocalAlias { get; set; }
     public string PublicKeyFingerprint { get; set; } = string.Empty;
+    public string LocalFingerprint { get; set; } = string.Empty;
+    public string TranscriptHash { get; set; } = string.Empty;
+    public DadAutoPartySharePolicy LocalSharePolicy { get; set; } = new();
+    public DadAutoPartySharePolicy PeerSharePolicy { get; set; } = new();
+    public DateTime ExpiresAtUtc { get; set; }
     public long KeyGeneration { get; set; } = 1;
-    public ulong ApplicationId { get; set; }
-    public ulong BotUserId { get; set; }
     public string SigningPublicKey { get; set; } = string.Empty;
-    public string SigningKeyFingerprint { get; set; } = string.Empty;
-    public string PairingRequestNonce { get; set; } = string.Empty;
-    public DateTime? PairingRequestExpiresAtUtc { get; set; }
-    public DateTime? OperatorFingerprintConfirmedAtUtc { get; set; }
-    public DadAutoPartyRole Role { get; set; }
+    public string AgreementPublicKey { get; set; } = string.Empty;
+    public string PeerEndpointAlias { get; set; } = string.Empty;
     public DateTime ConfirmedAtUtc { get; set; }
     public DateTime? RevokedAtUtc { get; set; }
 
     public bool IsValid =>
-        !string.IsNullOrWhiteSpace(OwnerId) &&
+        Guid.TryParse(PairingId, out _) &&
         !string.IsNullOrWhiteSpace(IslandId) &&
         !string.IsNullOrWhiteSpace(PublicKeyFingerprint) &&
+        !string.IsNullOrWhiteSpace(LocalFingerprint) &&
+        !string.IsNullOrWhiteSpace(TranscriptHash) &&
+        KeyGeneration >= 1 &&
+        !string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey)) &&
+        !string.IsNullOrWhiteSpace(DadAutoPartyConfiguration.NormalizePublicKey(AgreementPublicKey)) &&
+        ExpiresAtUtc != default;
+
+    public bool IsActive =>
+        IsValid && RevokedAtUtc == null &&
         ConfirmedAtUtc != default;
 
     public DadAutoPartyPairing Normalize()
     {
+        PairingId = Guid.TryParse(PairingId, out var pairingId) ? pairingId.ToString("D") : string.Empty;
         OwnerId = DadAutoPartyConfiguration.NormalizeIdentifier(OwnerId);
         IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
+        HomeGuildScope = DadAutoPartyConfiguration.NormalizeIdentifier(HomeGuildScope);
+        var localAlias = DadAutoPartyConfiguration.NormalizeAlias(LocalAlias);
+        LocalAlias = string.IsNullOrWhiteSpace(localAlias) ? null : localAlias;
         PublicKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(PublicKeyFingerprint);
+        LocalFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(LocalFingerprint);
+        TranscriptHash = DadAutoPartyConfiguration.NormalizeFingerprint(TranscriptHash);
+        LocalSharePolicy = (LocalSharePolicy ?? new DadAutoPartySharePolicy()).Normalize();
+        PeerSharePolicy = (PeerSharePolicy ?? new DadAutoPartySharePolicy()).Normalize();
         SigningPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey);
-        SigningKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(SigningKeyFingerprint);
-        PairingRequestNonce = Guid.TryParseExact(PairingRequestNonce, "N", out var requestNonce)
-            ? requestNonce.ToString("N")
-            : string.Empty;
+        AgreementPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(AgreementPublicKey);
+        PeerEndpointAlias = DadAutoPartyConfiguration.NormalizeAlias(PeerEndpointAlias);
         KeyGeneration = Math.Max(1, KeyGeneration);
         return this;
     }
 
+    internal string TakeLegacyLocalAlias()
+    {
+        var alias = DadAutoPartyConfiguration.NormalizeAlias(LocalAlias);
+        LocalAlias = null;
+        return alias;
+    }
+
+    public bool ShouldSerializeLocalAlias() => false;
+
     public DadAutoPartyPairing Clone()
         => new()
         {
+            PairingId = PairingId,
             OwnerId = OwnerId,
             IslandId = IslandId,
+            HomeGuildScope = HomeGuildScope,
             PublicKeyFingerprint = PublicKeyFingerprint,
+            LocalFingerprint = LocalFingerprint,
+            TranscriptHash = TranscriptHash,
+            LocalSharePolicy = LocalSharePolicy.Clone(),
+            PeerSharePolicy = PeerSharePolicy.Clone(),
+            ExpiresAtUtc = ExpiresAtUtc,
             KeyGeneration = KeyGeneration,
-            ApplicationId = ApplicationId,
-            BotUserId = BotUserId,
             SigningPublicKey = SigningPublicKey,
-            SigningKeyFingerprint = SigningKeyFingerprint,
-            PairingRequestNonce = PairingRequestNonce,
-            PairingRequestExpiresAtUtc = PairingRequestExpiresAtUtc,
-            OperatorFingerprintConfirmedAtUtc = OperatorFingerprintConfirmedAtUtc,
-            Role = Role,
+            AgreementPublicKey = AgreementPublicKey,
+            PeerEndpointAlias = PeerEndpointAlias,
             ConfirmedAtUtc = ConfirmedAtUtc,
             RevokedAtUtc = RevokedAtUtc,
         };
 }
 
-public sealed class DadAutoPartyOutboundPairingChallenge
+public enum DadAutoPartyCharacterShareMode
 {
-    public string RequestNonce { get; set; } = string.Empty;
-    public ulong ApplicationId { get; set; }
-    public ulong BotUserId { get; set; }
-    public string IslandId { get; set; } = string.Empty;
-    public string EndpointFingerprint { get; set; } = string.Empty;
-    public string SigningPublicKey { get; set; } = string.Empty;
-    public string SigningKeyFingerprint { get; set; } = string.Empty;
-    public long KeyGeneration { get; set; } = 1;
-    public DadAutoPartyRole Role { get; set; }
-    public DateTime CreatedAtUtc { get; set; }
-    public DateTime ExpiresAtUtc { get; set; }
-    public DateTime OperatorConfirmedAtUtc { get; set; }
-    public DateTime? UsedAtUtc { get; set; }
-    public DateTime? RevokedAtUtc { get; set; }
+    SpecificCharacter = 1,
+    CharacterList = 2,
+    AllCharactersForPeer = 3,
+    PromiscuousAllSameGuild = 4,
+}
+
+public sealed class DadAutoPartySharePolicy
+{
+    public DadAutoPartyCharacterShareMode Mode { get; set; } = DadAutoPartyCharacterShareMode.SpecificCharacter;
+    public List<string> CharacterHandles { get; set; } = [];
+    public bool Enabled { get; set; }
+    public long Revision { get; set; } = 1;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public bool IsValid =>
-        Guid.TryParseExact(RequestNonce, "N", out _) &&
-        ApplicationId != 0 && BotUserId != 0 &&
-        !string.IsNullOrWhiteSpace(IslandId) &&
-        !string.IsNullOrWhiteSpace(EndpointFingerprint) &&
-        !string.IsNullOrWhiteSpace(SigningPublicKey) &&
-        !string.IsNullOrWhiteSpace(SigningKeyFingerprint) &&
-        Enum.IsDefined(typeof(DadAutoPartyRole), Role) &&
-        CreatedAtUtc != default && ExpiresAtUtc > CreatedAtUtc &&
-        OperatorConfirmedAtUtc >= CreatedAtUtc;
+        Enum.IsDefined(Mode) && Revision >= 1 && UpdatedAtUtc != default &&
+        (!Enabled || Mode is DadAutoPartyCharacterShareMode.AllCharactersForPeer or
+            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild || CharacterHandles.Count > 0);
 
-    public DadAutoPartyOutboundPairingChallenge Normalize()
+    public DadAutoPartySharePolicy Normalize()
     {
-        RequestNonce = Guid.TryParseExact(RequestNonce, "N", out var nonce)
-            ? nonce.ToString("N")
-            : string.Empty;
-        IslandId = DadAutoPartyConfiguration.NormalizeIdentifier(IslandId);
-        EndpointFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(EndpointFingerprint);
-        SigningPublicKey = DadAutoPartyConfiguration.NormalizePublicKey(SigningPublicKey);
-        SigningKeyFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(SigningKeyFingerprint);
-        KeyGeneration = Math.Max(1, KeyGeneration);
+        if (!Enum.IsDefined(Mode))
+            Mode = DadAutoPartyCharacterShareMode.SpecificCharacter;
+        CharacterHandles = (CharacterHandles ?? [])
+            .Select(DadAutoPartyConfiguration.NormalizeIdentifier)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .Take(256)
+            .ToList();
+        if (Mode is DadAutoPartyCharacterShareMode.AllCharactersForPeer or
+            DadAutoPartyCharacterShareMode.PromiscuousAllSameGuild)
+            CharacterHandles.Clear();
+        Revision = Math.Max(1, Revision);
+        if (UpdatedAtUtc == default)
+            UpdatedAtUtc = DateTime.UtcNow;
+        if (Enabled &&
+            (Mode is DadAutoPartyCharacterShareMode.SpecificCharacter or DadAutoPartyCharacterShareMode.CharacterList) &&
+            CharacterHandles.Count == 0)
+            Enabled = false;
         return this;
     }
 
-    public DadAutoPartyOutboundPairingChallenge Clone() => new()
+    public DadAutoPartySharePolicy Clone() => new()
     {
-        RequestNonce = RequestNonce,
-        ApplicationId = ApplicationId,
-        BotUserId = BotUserId,
-        IslandId = IslandId,
-        EndpointFingerprint = EndpointFingerprint,
-        SigningPublicKey = SigningPublicKey,
-        SigningKeyFingerprint = SigningKeyFingerprint,
-        KeyGeneration = KeyGeneration,
-        Role = Role,
-        CreatedAtUtc = CreatedAtUtc,
-        ExpiresAtUtc = ExpiresAtUtc,
-        OperatorConfirmedAtUtc = OperatorConfirmedAtUtc,
-        UsedAtUtc = UsedAtUtc,
-        RevokedAtUtc = RevokedAtUtc,
+        Mode = Mode,
+        CharacterHandles = [.. CharacterHandles],
+        Enabled = Enabled,
+        Revision = Revision,
+        UpdatedAtUtc = UpdatedAtUtc,
     };
 }
 
-public enum DadAutoPartyRole
+public sealed class DadAutoPartyDeauthentication
 {
-    Client = 0,
-    Coordinator = 1,
-}
+    public string DeauthenticationId { get; set; } = string.Empty;
+    public string PeerIslandId { get; set; } = string.Empty;
+    public string PairingTranscriptHash { get; set; } = string.Empty;
+    public long RevocationGeneration { get; set; }
+    public string SafeReason { get; set; } = string.Empty;
+    public DateTime RevokedAtUtc { get; set; }
 
-public enum DadAutoPartyDiscordConnectionState
-{
-    Disabled = 0,
-    Connecting = 1,
-    Ready = 2,
-    Stale = 3,
-    Disconnected = 4,
-    Blocked = 5,
+    public bool IsValid =>
+        Guid.TryParse(DeauthenticationId, out _) &&
+        !string.IsNullOrWhiteSpace(PeerIslandId) &&
+        !string.IsNullOrWhiteSpace(PairingTranscriptHash) &&
+        RevocationGeneration >= 1 &&
+        !string.IsNullOrWhiteSpace(SafeReason) &&
+        RevokedAtUtc != default;
+
+    public DadAutoPartyDeauthentication Normalize()
+    {
+        DeauthenticationId = Guid.TryParse(DeauthenticationId, out var id) ? id.ToString("D") : string.Empty;
+        PeerIslandId = DadAutoPartyConfiguration.NormalizeIdentifier(PeerIslandId);
+        PairingTranscriptHash = DadAutoPartyConfiguration.NormalizeFingerprint(PairingTranscriptHash);
+        RevocationGeneration = Math.Max(1, RevocationGeneration);
+        SafeReason = DadAutoPartyConfiguration.NormalizeSafeCode(SafeReason);
+        return this;
+    }
+
+    public DadAutoPartyDeauthentication Clone() => new()
+    {
+        DeauthenticationId = DeauthenticationId,
+        PeerIslandId = PeerIslandId,
+        PairingTranscriptHash = PairingTranscriptHash,
+        RevocationGeneration = RevocationGeneration,
+        SafeReason = SafeReason,
+        RevokedAtUtc = RevokedAtUtc,
+    };
 }
 
 public enum DadAutoPartyPairingHealth
@@ -437,258 +709,10 @@ public enum DadAutoPartyPairingHealth
     Blocked = 5,
 }
 
-public sealed class DadAutoPartyDiscordBinding
-{
-    public ulong ApplicationId { get; set; }
-    public ulong BotUserId { get; set; }
-    public string DadIdentity { get; set; } = string.Empty;
-    public string EndpointFingerprint { get; set; } = string.Empty;
-    public long KeyGeneration { get; set; } = 1;
-
-    public bool IsComplete =>
-        ApplicationId != 0 && BotUserId != 0 &&
-        !string.IsNullOrWhiteSpace(DadIdentity) &&
-        !string.IsNullOrWhiteSpace(EndpointFingerprint);
-
-    public DadAutoPartyDiscordBinding Normalize()
-    {
-        DadIdentity = DadAutoPartyConfiguration.NormalizeIdentifier(DadIdentity);
-        EndpointFingerprint = DadAutoPartyConfiguration.NormalizeFingerprint(EndpointFingerprint);
-        KeyGeneration = Math.Max(1, KeyGeneration);
-        return this;
-    }
-
-    public DadAutoPartyDiscordBinding Clone() => new()
-    {
-        ApplicationId = ApplicationId,
-        BotUserId = BotUserId,
-        DadIdentity = DadIdentity,
-        EndpointFingerprint = EndpointFingerprint,
-        KeyGeneration = KeyGeneration,
-    };
-}
-
-public sealed record DadAutoPartyDiscordHealth(
-    DadAutoPartyDiscordConnectionState State,
-    string SafeCode,
-    DateTime ObservedAtUtc,
-    DateTime? LastPresenceAtUtc,
-    ulong ApplicationId,
-    ulong BotUserId,
-    bool PermissionsValid)
-{
-    public bool IsHealthy =>
-        State == DadAutoPartyDiscordConnectionState.Ready && PermissionsValid &&
-        LastPresenceAtUtc.HasValue && DateTime.UtcNow - LastPresenceAtUtc.Value <= TimeSpan.FromMinutes(3);
-}
-
-public sealed record DadAutoPartyDiscoveredClient(
-    ulong ApplicationId,
-    ulong BotUserId,
-    string DadIdentity,
-    string EndpointFingerprint,
-    string SigningPublicKey,
-    string SigningKeyFingerprint,
-    long KeyGeneration,
-    DadAutoPartyRole Role,
-    DateTime LastSeenUtc,
-    DadAutoPartyPairingHealth PairingHealth,
-    string Blocker);
-
 public sealed record DadAutoPartyLanPresence(
-    ulong ApplicationId = 0,
+    string RegisteredIslandId = "",
     string EndpointFingerprint = "",
     DadAutoPartyPairingHealth PairingHealth = DadAutoPartyPairingHealth.Disabled);
-
-public enum DadAutoPartyPairingMessageKind
-{
-    Presence = 0,
-    PairRequest = 1,
-    PairAccept = 2,
-    PairReject = 3,
-    Revoke = 4,
-}
-
-public sealed class DadAutoPartyPairingEnvelope
-{
-    public string Schema { get; set; } = "dad.pairing/v1";
-    public DadAutoPartyPairingMessageKind Kind { get; set; }
-    public long TimestampUnixMs { get; set; }
-    public string Nonce { get; set; } = string.Empty;
-    public string PairingRequestNonce { get; set; } = string.Empty;
-    public long KeyGeneration { get; set; } = 1;
-    public ulong ApplicationId { get; set; }
-    public ulong BotUserId { get; set; }
-    public DadAutoPartyRole Role { get; set; }
-    public string DadIdentity { get; set; } = string.Empty;
-    public string EndpointFingerprint { get; set; } = string.Empty;
-    public string SigningPublicKey { get; set; } = string.Empty;
-    public ulong TargetApplicationId { get; set; }
-    public string TargetDadIdentity { get; set; } = string.Empty;
-    public string Signature { get; set; } = string.Empty;
-}
-
-public enum DadMeasuredPilotState
-{
-    NotStarted = 0,
-    Active = 1,
-    EvaluationIncomplete = 2,
-    Passed = 3,
-    HardFailed = 4,
-}
-
-public enum DadMeasuredPilotOrigin
-{
-    Unknown = 0,
-    Plans = 1,
-    Schedules = 2,
-}
-
-public enum DadMeasuredPilotEventKind
-{
-    CampaignStarted = 0,
-    CampaignResumed = 1,
-    RunStarted = 2,
-    RunTerminal = 3,
-    StopAll = 4,
-    DiscordHealth = 5,
-    PairingRevoked = 6,
-    PairingRestored = 7,
-    ReceiptWritten = 8,
-    SafetyViolation = 9,
-}
-
-public sealed class DadMeasuredPilotEvent
-{
-    public string EventId { get; set; } = Guid.NewGuid().ToString("N");
-    public DadMeasuredPilotEventKind Kind { get; set; }
-    public DateTime ObservedAtUtc { get; set; } = DateTime.UtcNow;
-    public string RunId { get; set; } = string.Empty;
-    public string SafeCode { get; set; } = string.Empty;
-}
-
-public sealed class DadMeasuredPilotRunEvidence
-{
-    public string RunId { get; set; } = string.Empty;
-    public DadMeasuredPilotOrigin Origin { get; set; }
-    public DateTime StartedAtUtc { get; set; }
-    public DateTime CompletedAtUtc { get; set; }
-    public bool Terminal { get; set; }
-    public bool DryRun { get; set; }
-    public bool Successful { get; set; }
-    public int ParticipantCount { get; set; }
-    public List<ulong> HealthyApplicationIds { get; set; } = [];
-    public bool FormationVerified { get; set; }
-    public bool ReadinessBeforeQueueVerified { get; set; }
-    public bool RequestedJobRun { get; set; }
-    public bool RequestedJobMatched { get; set; }
-    public bool RequestedJobSwitched { get; set; }
-    public bool LeaseCleanupVerified { get; set; }
-    public bool ClaimCleanupVerified { get; set; }
-    public bool SchedulerCleanupVerified { get; set; }
-    public string ProfileRestoration { get; set; } = "not-applicable";
-    public string FailureCode { get; set; } = string.Empty;
-
-    public bool Qualifies => Terminal && !DryRun && Successful && ParticipantCount >= 2 &&
-        HealthyApplicationIds.Distinct().Count() >= 2 && FormationVerified &&
-        ReadinessBeforeQueueVerified && (!RequestedJobRun || RequestedJobMatched) &&
-        LeaseCleanupVerified && ClaimCleanupVerified && SchedulerCleanupVerified;
-}
-
-public sealed class DadMeasuredPilotCampaign
-{
-    public string CampaignId { get; set; } = string.Empty;
-    public DadMeasuredPilotState State { get; set; }
-    public DateTime? StartedAtUtc { get; set; }
-    public DateTime? StoppedAtUtc { get; set; }
-    public string CoordinatorIdentity { get; set; } = string.Empty;
-    public string AssemblySha256 { get; set; } = string.Empty;
-    public List<DadMeasuredPilotRunEvidence> Runs { get; set; } = [];
-    public List<DadMeasuredPilotEvent> Events { get; set; } = [];
-    public List<string> SafetyViolations { get; set; } = [];
-    public bool StopAllVerified { get; set; }
-    public bool RecoveryRunVerified { get; set; }
-    public bool RecoveryRunRequired { get; set; }
-    public bool DiscordReconnectCycleVerified { get; set; }
-    public bool RevokeExclusionVerified { get; set; }
-    public bool RePairVerified { get; set; }
-    public string ReceiptPath { get; set; } = string.Empty;
-
-    public DadMeasuredPilotCampaign Normalize()
-    {
-        CampaignId = Guid.TryParse(CampaignId, out var id) ? id.ToString("D") : string.Empty;
-        CoordinatorIdentity = DadAutoPartyConfiguration.NormalizeIdentifier(CoordinatorIdentity);
-        AssemblySha256 = DadAutoPartyConfiguration.NormalizeSha256(AssemblySha256);
-        Runs = (Runs ?? []).Where(static run => !string.IsNullOrWhiteSpace(run.RunId))
-            .DistinctBy(static run => run.RunId, StringComparer.Ordinal).TakeLast(256).ToList();
-        Events = (Events ?? []).TakeLast(2048).ToList();
-        SafetyViolations = (SafetyViolations ?? []).Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.Ordinal).Take(32).ToList();
-        ReceiptPath = ReceiptPath?.Trim() ?? string.Empty;
-        return this;
-    }
-
-    public DadMeasuredPilotCampaign Clone() => new()
-    {
-        CampaignId = CampaignId,
-        State = State,
-        StartedAtUtc = StartedAtUtc,
-        StoppedAtUtc = StoppedAtUtc,
-        CoordinatorIdentity = CoordinatorIdentity,
-        AssemblySha256 = AssemblySha256,
-        Runs = Runs.Select(static run => new DadMeasuredPilotRunEvidence
-        {
-            RunId = run.RunId,
-            Origin = run.Origin,
-            StartedAtUtc = run.StartedAtUtc,
-            CompletedAtUtc = run.CompletedAtUtc,
-            Terminal = run.Terminal,
-            DryRun = run.DryRun,
-            Successful = run.Successful,
-            ParticipantCount = run.ParticipantCount,
-            HealthyApplicationIds = [.. run.HealthyApplicationIds],
-            FormationVerified = run.FormationVerified,
-            ReadinessBeforeQueueVerified = run.ReadinessBeforeQueueVerified,
-            RequestedJobRun = run.RequestedJobRun,
-            RequestedJobMatched = run.RequestedJobMatched,
-            RequestedJobSwitched = run.RequestedJobSwitched,
-            LeaseCleanupVerified = run.LeaseCleanupVerified,
-            ClaimCleanupVerified = run.ClaimCleanupVerified,
-            SchedulerCleanupVerified = run.SchedulerCleanupVerified,
-            ProfileRestoration = run.ProfileRestoration,
-            FailureCode = run.FailureCode,
-        }).ToList(),
-        Events = Events.Select(static e => new DadMeasuredPilotEvent
-        {
-            EventId = e.EventId,
-            Kind = e.Kind,
-            ObservedAtUtc = e.ObservedAtUtc,
-            RunId = e.RunId,
-            SafeCode = e.SafeCode,
-        }).ToList(),
-        SafetyViolations = [.. SafetyViolations],
-        StopAllVerified = StopAllVerified,
-        RecoveryRunVerified = RecoveryRunVerified,
-        RecoveryRunRequired = RecoveryRunRequired,
-        DiscordReconnectCycleVerified = DiscordReconnectCycleVerified,
-        RevokeExclusionVerified = RevokeExclusionVerified,
-        RePairVerified = RePairVerified,
-        ReceiptPath = ReceiptPath,
-    };
-}
-
-public sealed record DadMeasuredPilotEvaluation(
-    DadMeasuredPilotState State,
-    int QualifyingSuccesses,
-    int PlanSuccesses,
-    int ScheduleSuccesses,
-    int RequestedJobSuccesses,
-    int RequestedJobSwitches,
-    IReadOnlyList<string> Missing,
-    IReadOnlyList<string> SafetyViolations)
-{
-    public bool Passed => State == DadMeasuredPilotState.Passed;
-}
 
 public sealed record DadAutoPartyGrant
 {
@@ -729,24 +753,59 @@ internal sealed record DadAutoPartyPrivateIdentityPackage(
 public sealed class DadAutoPartyListing
 {
     public string ListingId { get; set; } = string.Empty;
+    public string OwnerId { get; set; } = string.Empty;
+    public string SharingIslandId { get; set; } = string.Empty;
+    public string SharingEndpointAlias { get; set; } = string.Empty;
+    public DadAutoPartyCharacterShareMode EffectiveShareMode { get; set; } =
+        DadAutoPartyCharacterShareMode.SpecificCharacter;
+    public string EffectivePolicyHash { get; set; } = string.Empty;
     public string OpaqueCharacterId { get; set; } = string.Empty;
+    public string DisplayLabel { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string OpaqueDisplayLabel { get; set; } = string.Empty;
+
     public List<string> AllowedJobIds { get; set; } = [];
     public List<string> AllowedActivityIds { get; set; } = [];
+    public bool Available { get; set; } = true;
+    public long Revision { get; set; } = 1;
     public DateTime ExpiresAtUtc { get; set; }
+
+    [JsonIgnore]
+    public DateTime? TransientRouteExpiresAtUtc { get; set; }
+
+    [JsonIgnore]
+    public bool HasCurrentTransientRoute =>
+        TransientRouteExpiresAtUtc is { } expiresAt && expiresAt > DateTime.UtcNow;
 
     public bool IsValid =>
         Guid.TryParse(ListingId, out _) &&
+        !string.IsNullOrWhiteSpace(OwnerId) &&
+        !string.IsNullOrWhiteSpace(SharingIslandId) &&
+        Enum.IsDefined(EffectiveShareMode) &&
         !string.IsNullOrWhiteSpace(OpaqueCharacterId) &&
+        !string.IsNullOrWhiteSpace(DisplayLabel) &&
         AllowedJobIds.Count > 0 &&
         AllowedActivityIds.Count > 0 &&
+        Revision >= 1 &&
         ExpiresAtUtc != default;
 
     public DadAutoPartyListing Normalize()
     {
         ListingId = Guid.TryParse(ListingId, out var id) ? id.ToString("D") : string.Empty;
+        OwnerId = DadAutoPartyConfiguration.NormalizeIdentifier(OwnerId);
+        SharingIslandId = DadAutoPartyConfiguration.NormalizeIdentifier(SharingIslandId);
+        SharingEndpointAlias = DadAutoPartyConfiguration.NormalizeAlias(SharingEndpointAlias);
+        if (!Enum.IsDefined(EffectiveShareMode))
+            EffectiveShareMode = DadAutoPartyCharacterShareMode.SpecificCharacter;
+        EffectivePolicyHash = DadAutoPartyConfiguration.NormalizeIdentifier(EffectivePolicyHash);
         OpaqueCharacterId = DadAutoPartyConfiguration.NormalizeIdentifier(OpaqueCharacterId);
+        DisplayLabel = (DisplayLabel ?? string.Empty).Trim();
+        if (DisplayLabel.Length > 96)
+            DisplayLabel = string.Empty;
         AllowedJobIds = NormalizeValues(AllowedJobIds);
         AllowedActivityIds = NormalizeValues(AllowedActivityIds);
+        Revision = Math.Max(1, Revision);
         return this;
     }
 
@@ -754,10 +813,20 @@ public sealed class DadAutoPartyListing
         => new()
         {
             ListingId = ListingId,
+            OwnerId = OwnerId,
+            SharingIslandId = SharingIslandId,
+            SharingEndpointAlias = SharingEndpointAlias,
+            EffectiveShareMode = EffectiveShareMode,
+            EffectivePolicyHash = EffectivePolicyHash,
             OpaqueCharacterId = OpaqueCharacterId,
+            DisplayLabel = DisplayLabel,
+            OpaqueDisplayLabel = OpaqueDisplayLabel,
             AllowedJobIds = [.. AllowedJobIds],
             AllowedActivityIds = [.. AllowedActivityIds],
+            Available = Available,
+            Revision = Revision,
             ExpiresAtUtc = ExpiresAtUtc,
+            TransientRouteExpiresAtUtc = TransientRouteExpiresAtUtc,
         };
 
     private static List<string> NormalizeValues(IEnumerable<string>? values)
@@ -849,68 +918,14 @@ public sealed record DadAutoPartyPublicIdentity(
     string Fingerprint,
     DateTime GeneratedAtUtc);
 
-public sealed record DadAutoPartyEnrollmentReceipt(
-    string Schema,
-    string ReceiptId,
-    string OwnerId,
-    string IslandId,
-    long KeyGeneration,
-    string IdentityFingerprint,
-    string PilotArtifactSha256,
-    bool OwnerAcceptanceConfirmed,
-    DateTime AcceptedAtUtc,
-    IReadOnlyList<DadAutoPartyEnrollmentPeer> Peers);
-
-public sealed record DadAutoPartyEnrollmentPeer(
-    string OwnerId,
-    string IslandId,
-    string IdentityFingerprint,
-    long KeyGeneration);
-
-public sealed record DadAutoPartyPilotStatusReceipt(
-    string Schema,
-    string Alias,
-    string IdentityFingerprint,
-    string PilotArtifactSha256,
-    bool TransportEnabled,
-    bool PairingEnabled,
-    bool ExecutionEnabled,
-    bool OwnerAcceptanceConfirmed,
-    bool FormationOnlyFixtureReady,
-    bool CourierProbeVerified,
-    int PairingCount,
-    DateTime GeneratedAtUtc);
-
-public sealed record DadAutoPartyPilotFixture(
-    string Schema,
-    bool FormationOnly,
-    uint ContentFinderConditionId,
-    string QueueAuthorityFingerprint,
-    string PilotArtifactSha256,
-    IReadOnlyList<DadAutoPartyPilotParticipant> Participants);
-
-public sealed record DadAutoPartyPilotParticipant(
-    string IdentityFingerprint,
-    string RequestedJobId,
-    bool OwnerConsentConfirmed,
-    bool OwnsQueueAuthority);
-
 public sealed record DadAutoPartyIdentityOperationResult(
     bool Succeeded,
     string SafeCode,
     string OutputPath = "");
 
-public sealed record DadAutoPartyPairingChallenge(
-    Guid ChallengeId,
-    string OwnerId,
-    string IslandId,
-    string PublicKeyFingerprint,
-    long KeyGeneration,
-    string ConfirmationCode,
-    DateTime ExpiresAtUtc);
-
 public sealed record DadAutoPartyObservedPartyReceipt(
     int MemberCount,
+    ImmutableArray<ulong> ContentIds,
     string ObservedStateHash,
     DateTime ObservedAtUtc);
 
@@ -929,3 +944,141 @@ public sealed record DadAutoPartyPrivacyResult(
     bool Purged,
     bool IdentityDeleted,
     string SafeCode);
+
+public sealed record DadAutoPartyWebhookCredential(
+    string WebhookId,
+    string WebhookToken,
+    string ChannelId)
+{
+    public int OriginatingProtocolVersion { get; init; }
+    public CourierEpochDescriptor? UplinkEpoch { get; init; }
+    public CourierEpochDescriptor? DownlinkEpoch { get; init; }
+    public EndpointPublicKeys? RelayPublicKeys { get; init; }
+
+    public bool IsValid =>
+        DadAutoPartyConfiguration.NormalizeSnowflake(WebhookId) == WebhookId &&
+        DadAutoPartyConfiguration.NormalizeSnowflake(ChannelId) == ChannelId &&
+        WebhookToken.Length is >= 32 and <= 256 &&
+        WebhookToken.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.');
+
+    public bool HasProvisionedMailbox =>
+        IsValid &&
+        OriginatingProtocolVersion == AutoPartyProtocol.CurrentVersion &&
+        IsEpochValid(UplinkEpoch, CourierDirection.Uplink) &&
+        IsEpochValid(DownlinkEpoch, CourierDirection.Downlink) &&
+        UplinkEpoch!.IslandId == DownlinkEpoch!.IslandId &&
+        UplinkEpoch.EpochId != DownlinkEpoch.EpochId &&
+        UplinkEpoch.EpochGeneration == DownlinkEpoch.EpochGeneration &&
+        UplinkEpoch.PageCount == 2 &&
+        DownlinkEpoch.PageCount == 2 &&
+        RelayPublicKeys is { KeyVersion: >= 1 } &&
+        !RelayPublicKeys.Ed25519PublicKey.IsDefault &&
+        !RelayPublicKeys.X25519PublicKey.IsDefault &&
+        RelayPublicKeys.Ed25519PublicKey.Length == AutoPartyProtocol.Ed25519PublicKeyBytes &&
+        RelayPublicKeys.X25519PublicKey.Length == AutoPartyProtocol.X25519KeyBytes;
+
+    public override string ToString() => "DadAutoPartyWebhookCredential([redacted])";
+
+    private static bool IsEpochValid(CourierEpochDescriptor? epoch, CourierDirection direction) =>
+        epoch != null &&
+        epoch.EpochId != Guid.Empty &&
+        epoch.PageCount == 2 &&
+        epoch.EpochGeneration >= 1 &&
+        !epoch.PageReferences.IsDefault &&
+        epoch.Direction == direction &&
+        epoch.StartsAt.Offset == TimeSpan.Zero &&
+        epoch.RotatesAt > epoch.StartsAt &&
+        epoch.OverlapEndsAt > epoch.RotatesAt &&
+        epoch.PageReferences.Length == epoch.PageCount &&
+        epoch.PageReferences
+            .OrderBy(static page => page.PageNumber)
+            .Select(static page => page.PageNumber)
+            .SequenceEqual(Enumerable.Range(1, epoch.PageCount)) &&
+        epoch.PageReferences.All(page =>
+            DadAutoPartyConfiguration.NormalizeSnowflake(page.MessageReference) == page.MessageReference);
+}
+
+public sealed record DadAutoPartyBootstrapImport(
+    Guid RegistrationId,
+    string OwnerId,
+    string IslandId,
+    string EndpointFingerprint,
+    string CentralBotApplicationId,
+    string HomeGuildScope,
+    string RouteId,
+    DadAutoPartyWebhookCredential Mailbox,
+    CourierEpochDescriptor UplinkEpoch,
+    CourierEpochDescriptor DownlinkEpoch,
+    EndpointPublicKeys RelayPublicKeys,
+    DateTime BootstrapExpiresAtUtc);
+
+public enum DadAutoPartyEndpointConnectionState
+{
+    Disabled = 0,
+    NotRegistered = 1,
+    Connecting = 2,
+    Ready = 3,
+    Degraded = 4,
+    Quarantined = 5,
+}
+
+public sealed record DadAutoPartyEndpointSnapshot(
+    DadAutoPartyEndpointConnectionState State,
+    string SafeCode,
+    DateTime ObservedAtUtc,
+    DateTime? LastSuccessfulExchangeAtUtc,
+    int PendingOutboundCount,
+    int PendingAcknowledgementCount,
+    int BufferedInboundCount,
+    long EpochGeneration)
+{
+    public static DadAutoPartyEndpointSnapshot Disabled(string safeCode = "dad-autoparty-disabled") =>
+        new(DadAutoPartyEndpointConnectionState.Disabled, safeCode, DateTime.UtcNow, null, 0, 0, 0, 0);
+}
+
+public sealed record DadAutoPartyListingPublicationResult(
+    bool Allowed,
+    string SafeCode,
+    int PublishedListingCount);
+
+public sealed record DadAutoPartyListingPublicationSnapshot(
+    bool Attempted,
+    bool Allowed,
+    string SafeCode,
+    int PublishedOrQueuedListingCount,
+    DateTime? LastAttemptAtUtc,
+    DateTime? NextAttemptAtUtc)
+{
+    public string OperatorStatus => FormatOperatorStatus(SafeCode);
+
+    public static DadAutoPartyListingPublicationSnapshot NotRun() =>
+        new(false, false, "dad-listing-publication-not-run", 0, null, null);
+
+    internal static string FormatOperatorStatus(string safeCode)
+        => string.Equals(
+            safeCode,
+            "dad-listing-publication-roster-unavailable",
+            StringComparison.Ordinal)
+            ? "Local sharing blocked: XA Database contract-v6 full roster is unavailable"
+            : safeCode;
+}
+
+public sealed record DadPairedDirectoryRefreshResult(
+    bool Allowed,
+    string SafeCode,
+    int PublishedListingCount,
+    int ReceivedListingCount,
+    DateTime CompletedAtUtc)
+{
+    public string OperatorStatus => Allowed && ReceivedListingCount == 0
+        ? "No peer listings received. Inspect the peer DAD's local-sharing status."
+        : DadAutoPartyListingPublicationSnapshot.FormatOperatorStatus(SafeCode);
+
+    public static DadPairedDirectoryRefreshResult NotRun(string safeCode = "dad-paired-directory-refresh-not-run") =>
+        new(false, safeCode, 0, 0, DateTime.MinValue);
+}
+
+public sealed record DadAutoPartyDirectorySnapshot(
+    long StateGeneration,
+    IReadOnlyList<DadAutoPartyListing> Listings,
+    IReadOnlySet<string> OnlineIslandIds);

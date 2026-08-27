@@ -41,6 +41,9 @@ public sealed class DadPresenceService
     private DateTime nextOceTravelCapacityRefreshUtc = DateTime.MinValue;
     private string lastTravelTransition = string.Empty;
     private string partyTeardownRunId = string.Empty;
+    private string authenticatedAutoPartyRunId = string.Empty;
+    private string authenticatedAutoPartySlotId = string.Empty;
+    private bool requestedJobPreparationBypassesPostAr;
 
     internal DadPresenceService(
         Configuration configuration,
@@ -97,6 +100,14 @@ public sealed class DadPresenceService
     public void ConfigureOceTravelCapacityProofProvider(Func<DadAccountKey, DadOceTravelCapacityProof> provider)
         => oceTravelCapacityProofProvider = provider ?? oceTravelCapacityProofProvider;
 
+    internal void ObserveAuthenticatedAutoPartyWake(string runId, string slotId)
+    {
+        if (string.IsNullOrWhiteSpace(runId) || string.IsNullOrWhiteSpace(slotId))
+            return;
+        authenticatedAutoPartyRunId = runId.Trim();
+        authenticatedAutoPartySlotId = slotId.Trim();
+    }
+
     public void Update(DadCharacterPool pool, string endpoint = "")
     {
         var nowUtc = DateTime.UtcNow;
@@ -132,7 +143,7 @@ public sealed class DadPresenceService
             MachineName = Environment.MachineName,
             ProcessId = Environment.ProcessId,
             Endpoint = endpoint,
-            DiscordApplicationId = autoPartyPresence.ApplicationId,
+            RegisteredIslandId = autoPartyPresence.RegisteredIslandId,
             AutoPartyEndpointFingerprint = autoPartyPresence.EndpointFingerprint,
             AutoPartyPairingHealth = autoPartyPresence.PairingHealth,
             RunId = currentRunId,
@@ -336,6 +347,8 @@ public sealed class DadPresenceService
         requiredAccountKey = request.RequiredAccountKey;
         requiredCharacterKey = request.RequiredCharacterKey;
         assignedSlotId = request.AssignedSlotId;
+        requestedJobPreparationBypassesPostAr =
+            !request.RequirePostArReady && IsAuthenticatedAutoPartyRun(request.RunId, request.AssignedSlotId);
         if (request.CoordinatorTravelTarget != null)
             currentTravelAssignment = request.Clone();
         CurrentParticipant.Role = DadOrchestrationRole.Participant;
@@ -476,7 +489,9 @@ public sealed class DadPresenceService
             or DadAssemblyInstructionKind.LeaveParty)
             return HandlePartyTeardownInstruction(instruction);
 
-        if (!CurrentParticipant.PostArReady)
+        var authenticatedAutoPartyInstruction =
+            IsAuthenticatedAutoPartyRun(instruction.RunId, instruction.SlotId);
+        if (!CurrentParticipant.PostArReady && !authenticatedAutoPartyInstruction)
         {
             CurrentParticipant.State = DadParticipantState.WaitingForPostArReady;
             CurrentParticipant.StatusText = "Waiting for post-AR readiness.";
@@ -493,7 +508,7 @@ public sealed class DadPresenceService
 
         var summary = instruction.Summary;
         if (instruction.InstructionKind == DadAssemblyInstructionKind.FormParty)
-            return HandleFormPartyInstruction(instruction);
+            return HandleFormPartyInstruction(instruction, authenticatedAutoPartyInstruction);
 
         if (instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty)
         {
@@ -531,14 +546,32 @@ public sealed class DadPresenceService
         };
     }
 
-    private DadRunStepResultDto HandleFormPartyInstruction(DadAssemblyInstructionDto instruction)
+    private DadRunStepResultDto HandleFormPartyInstruction(
+        DadAssemblyInstructionDto instruction,
+        bool authenticatedAutoPartyInstruction)
     {
         var members = partyInviteGateway.ReadAuthoritativePartyMembers();
         var summaries = new List<string>();
         foreach (var target in instruction.InviteTargets)
         {
             var alreadyJoined = members.Any(member => member.ContentId == target.ContentId);
-            var attempt = partyInviteGateway.TryInvite(target, alreadyJoined, out var blocker);
+            string blocker;
+            string? attemptSummary;
+            if (authenticatedAutoPartyInstruction)
+            {
+                attemptSummary = partyInviteGateway
+                    .TryInviteAuthenticatedIsland(target, alreadyJoined, out blocker)
+                    ?.Summary;
+            }
+            else
+            {
+                var attempt = partyInviteGateway.TryInvite(target, alreadyJoined, out blocker);
+                attemptSummary = attempt == null
+                    ? null
+                    : attempt.DispatchResult
+                        ? $"Invited {target.CharacterKey} with {attempt.InviteType} attempt {attempt.AttemptNumber}."
+                        : $"Invite dispatch returned false for {target.CharacterKey}; guarded retry remains active.";
+            }
             if (!string.IsNullOrWhiteSpace(blocker))
             {
                 return new DadRunStepResultDto
@@ -556,12 +589,8 @@ public sealed class DadPresenceService
 
             if (alreadyJoined)
                 continue;
-            if (attempt != null)
-            {
-                summaries.Add(attempt.DispatchResult
-                    ? $"Invited {target.CharacterKey} with {attempt.InviteType} attempt {attempt.AttemptNumber}."
-                    : $"Invite dispatch returned false for {target.CharacterKey}; guarded retry remains active.");
-            }
+            if (!string.IsNullOrWhiteSpace(attemptSummary))
+                summaries.Add(attemptSummary);
         }
 
         members = partyInviteGateway.ReadAuthoritativePartyMembers();
@@ -1393,14 +1422,16 @@ public sealed class DadPresenceService
             return;
         }
 
-        if (!CurrentParticipant.PostArReady &&
+        var postArReady = CurrentParticipant.PostArReady ||
+                          requestedJobPreparationBypassesPostAr && CurrentParticipant.WorldReadyStable;
+        if (!postArReady &&
             !requestedJobPreparationGate.TryGet(expected, out _))
         {
             CurrentParticipant.RequestedJobPreparation = null;
             return;
         }
 
-        var (safeToEquip, unsafeReason) = CurrentParticipant.PostArReady
+        var (safeToEquip, unsafeReason) = postArReady
             ? EvaluateRequestedJobEquipSafety(localCharacter)
             : (false, "The exact character is waiting for post-AR readiness.");
         var nowUtc = DateTime.UtcNow;
@@ -1487,6 +1518,7 @@ public sealed class DadPresenceService
     {
         requestedJobPreparationGate.Reset();
         requestedJobPreparationKey = null;
+        requestedJobPreparationBypassesPostAr = false;
         CurrentParticipant.RequestedJobPreparation = null;
         lastRequestedJobPreparationTransition = string.Empty;
     }
@@ -1504,7 +1536,13 @@ public sealed class DadPresenceService
         requiredAccountKey = new DadAccountKey(string.Empty);
         requiredCharacterKey = new DadCharacterKey(string.Empty);
         assignedSlotId = string.Empty;
+        authenticatedAutoPartyRunId = string.Empty;
+        authenticatedAutoPartySlotId = string.Empty;
     }
+
+    private bool IsAuthenticatedAutoPartyRun(string runId, string slotId)
+        => string.Equals(authenticatedAutoPartyRunId, runId?.Trim(), StringComparison.Ordinal) &&
+           string.Equals(authenticatedAutoPartySlotId, slotId?.Trim(), StringComparison.OrdinalIgnoreCase);
 
     private void ResetClientTravel()
     {

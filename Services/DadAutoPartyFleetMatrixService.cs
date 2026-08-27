@@ -523,9 +523,7 @@ public sealed class DadAutoPartyFleetMatrixService
             DutyUnsynced = blueprint.DutyUnsynced,
             DutyExpectedPartySize = slots.Count,
             Slots = slots,
-            AutoPartyProposalId = formationOnly
-                ? StableId("autoparty-proposal-v1", blueprint.BlueprintId, crew.CrewSetId)
-                : string.Empty,
+            AutoPartyProposalId = string.Empty,
             AutoPartyFormationOnly = formationOnly,
             IsTemplate = false,
             ScheduleEnabled = false,
