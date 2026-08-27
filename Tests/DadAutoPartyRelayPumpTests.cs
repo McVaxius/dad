@@ -2088,13 +2088,13 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Contains(fixture.Configuration.Deauthentications, item =>
             item.PeerIslandId == PumpFixture.PeerIsland);
         Assert.Equal("Stable_DAD", fixture.Configuration.PairedDadAliases[PumpFixture.PeerIsland]);
-        Assert.True(fixture.Bridge.PendingCommandCount > 0);
+        Assert.Equal(0, fixture.Bridge.PendingCommandCount);
 
         await pump.ProcessOnceAsync();
 
         Assert.Contains(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<DeauthenticationNotice>());
-        Assert.Contains(fixture.Transport.Sent, item =>
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<Revocation>());
     }
 

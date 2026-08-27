@@ -152,6 +152,9 @@ public sealed class DadP1191PerformanceAndCrewUxTests
     public void PlannerCachesUseSemanticRevisionsExpiryAndImmutableComposition()
     {
         var pluginSource = ReadRepositorySource("Plugin.cs");
+        var characterIntelligenceSource = ReadRepositorySource(
+            "Services",
+            "DadCharacterIntelligenceService.cs");
         var schedulerSource = ReadRepositorySource("Services", "DadSchedulerService.cs");
         var plannerStart = pluginSource.IndexOf(
             "internal DadPlannerUiSnapshot GetPlannerUiSnapshot",
@@ -171,7 +174,8 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         var scheduler = schedulerSource[schedulerStart..schedulerEnd];
 
         Assert.Contains("DadProjectionCache<DadPlannerUiCacheKey", pluginSource, StringComparison.Ordinal);
-        Assert.Contains("plannerRosterRevisionTracker.Observe", planner, StringComparison.Ordinal);
+        Assert.Contains("CharacterIntelligenceService.PlannerSemanticRevision", planner, StringComparison.Ordinal);
+        Assert.Contains("plannerSemanticRevisionTracker.Observe", characterIntelligenceSource, StringComparison.Ordinal);
         Assert.Contains("GetPlannerSemanticRevision", planner, StringComparison.Ordinal);
         Assert.Contains("schedulerRevision.ValidUntilUtc", planner, StringComparison.Ordinal);
         Assert.Contains("with { SchedulerPreview = schedulerPreview }", planner, StringComparison.Ordinal);
