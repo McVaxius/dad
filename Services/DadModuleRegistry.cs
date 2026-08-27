@@ -26,6 +26,7 @@ public sealed class DadModuleRegistry
             [DadModuleId.CustomDuty] = BuildCapability(DadModuleId.CustomDuty, "Custom Duty", 1, false, true, true, "Typed ContentFinderCondition custom duty routes through the guarded local or premade executor based on configured party size.", string.Empty, canStartQueue: true, canTrackCompletion: true, canRequeue: true, canExecuteLiveQueue: true),
             [DadModuleId.Squadron] = BuildCapability(DadModuleId.Squadron, "Squadron", 1, false, true, false, "Squadron command mission planner is available; live addon callbacks are guarded/deferred until in-game validation.", "Squadron command mission queue start is not enabled until callback validation is complete."),
             [DadModuleId.VariantVvd] = BuildCapability(DadModuleId.VariantVvd, "Variant / VVD", 1, false, true, true, "Variant/VVD planner is available; live queue callbacks are guarded/deferred until in-game validation and ADS solving coverage are ready.", "Variant/VVD queue start is not enabled until callback validation is complete."),
+            [DadModuleId.LootGoblin] = BuildCapability(DadModuleId.LootGoblin, "LootGoblin", 1, false, true, true, "LootGoblin configured-map helper IPC is live for Slot1-owned start, status, cancellation, completion, and ordinary DAD party formation.", string.Empty, canStartQueue: true, canTrackCompletion: true, canRequeue: true, canExecuteLiveQueue: true),
         };
     }
 

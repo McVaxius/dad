@@ -4061,6 +4061,7 @@ public sealed class DadCoordinatorService
                request.PremadeDuty != null ||
                request.DailyMsq != null ||
                request.Mogtome != null ||
+               request.LootGoblin != null ||
                request.Commendation != null ||
                request.Astrope != null;
     }

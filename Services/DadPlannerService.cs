@@ -262,6 +262,21 @@ public sealed class DadPlannerService
             });
         }
 
+        if (request.LootGoblin != null)
+        {
+            var capability = moduleRegistry.GetCapability(DadModuleId.LootGoblin);
+            var expectedPartySize = Math.Clamp(request.LootGoblin.ExpectedPartySize, 1, 8);
+            modules.Add(new DadPlannedModuleExecution
+            {
+                ModuleId = DadModuleId.LootGoblin,
+                DisplayName = "LootGoblin",
+                OwnerLabel = capability.OwnerLabel,
+                ExpectedPartySize = expectedPartySize,
+                RequiresPeers = expectedPartySize > 1,
+                Summary = $"LootGoblin configured-map run with party {expectedPartySize}",
+            });
+        }
+
         if (request.Commendation != null)
         {
             if (request.Commendation.Attempts <= 0)

@@ -580,6 +580,9 @@ internal static class DadRunSlotManifestRules
                 payload.Unsynced = request.VariantVvd.Unsynced;
                 expectedPartySize = request.VariantVvd.ExpectedPartySize;
                 break;
+            case DadModuleId.LootGoblin when request.LootGoblin != null:
+                expectedPartySize = Math.Clamp(request.LootGoblin.ExpectedPartySize, 1, 8);
+                break;
             default:
                 blocker = $"Module '{module.ModuleId}' does not have one matching request payload.";
                 return false;

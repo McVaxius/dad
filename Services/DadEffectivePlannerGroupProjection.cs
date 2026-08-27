@@ -96,6 +96,10 @@ public static class DadEffectivePlannerGroupProjection
                 requestedPartySize <= 0 ? 1 : requestedPartySize,
                 DadPlannerSlotRules.MinSlotNumber,
                 DadPlannerSlotRules.MaxSlotNumber),
+            DadPlannerActivityMode.LootGoblin => Math.Clamp(
+                requestedPartySize <= 0 ? 1 : requestedPartySize,
+                1,
+                8),
             _ => null,
         };
 

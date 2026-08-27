@@ -9,12 +9,22 @@
   Queue then fails closed on missing, mismatched, unavailable, or failed required local application state.
 - Proposal-owned temporary FrenRider overlays are released only for their exact owner during Restore, proposal expiry or
   security teardown, guarded disband, or unload. Permanent application preserves the receiver's local acceptance policy.
-  After exact group proof, Use FrenRider sends one `/fr on` per run through the existing one-shot gate on local/LAN clients
-  and after registered-island profile proof; Force Commands and Do Nothing remain no-ops at that boundary.
+  Group-ready acknowledgement now first proves the exact run, stored coordinator authority, assigned slot, local
+  account/character/Content ID, frozen Slot1 inviter and follower targets, then requires authoritative PartyList Content
+  IDs to equal the frozen group. Missing members defer; duplicates, extras, and contradictory identities fail before
+  combat-mode selection. Only then can Use FrenRider send one `/fr on` through the existing one-shot gate; Force Commands
+  and Do Nothing remain no-ops that acknowledge only the proven exact group. Registered-island profile handling and later
+  duty-entry suppression remain unchanged.
 - Added default-on, runtime-only Krangler privacy leasing while a registered-island group is actively being formed or run
-  by a direct plan, scheduler job, or authenticated inbound proposal. Idle and LAN-only DAD release it. DAD owns one
-  process token, reacquires after plugin changes, releases on disable or disposal, never mutates Krangler configuration,
-  and shows the effective lease beside Krangle controls.
+  by locally initiated Create, Plan, Schedule, or direct-run work. Idle and LAN-only DAD release it. DAD owns one process
+  token, reacquires after plugin changes, releases on disable or disposal, never mutates Krangler configuration, and
+  shows the effective lease beside Krangle controls.
+- Added a live 1-8-slot Farm Loops LootGoblin lane using ordinary DAD planning, scheduling, exact formation, completion,
+  and teardown. Frozen Slot1 alone starts and polls the existing LootGoblin configured-map gather/run contract with the
+  exact DAD run ID; followers pass exact worker validation and terminal-succeed as passive party holders. The lane keeps
+  optional pre-duty repair, bypasses ADS loot configuration and Duty Finder observation/barriers, correlates every IPC
+  response ID, and requires exact terminal cancellation acknowledgement. Registered-island Slot1 additionally requires
+  LootGoblin readiness on that endpoint; followers do not.
 - Any-job readiness now waits for the connected character's live combat job and level, while explicit-job rows retain
   their pre-login level-ledger path.
 - Questionable compatibility now supports both the legacy cosmetic `PluginInfo` adapter and 7.5.13's nested provider,
@@ -29,8 +39,9 @@
 - Added `/dad quick` and `/dad qp`: a session-only Coordinator panel that sends one registered slash command to one or all
   connected Client DADs through the existing authenticated, default-off remote-command route. It adds no protocol shape,
   key hook, chat injection, retry, saved command, or history.
-- DAD remains `0.5.0.9` and configuration schema 12. The vendored and pinned protocol package is now
-  `Dad.AutoParty.Protocol 0.2.0-preview.8`; wire schema remains version 5.
+- DAD remains `0.5.0.9` and configuration schema 12. The vendored and pinned protocol package remains
+  `Dad.AutoParty.Protocol 0.2.0-preview.8`, and the AutoParty wire schema remains version 5. LAN `DadHubProtocol` is now
+  version 5 so peers lacking exact FrenRider activation or LootGoblin semantics fail the handshake before party mutation.
 
 ## 2026-08-25 — Command-driven Dad-island AutoParty execution (local-only, unpublished)
 - Crew Formation now routes travel proof, LAN readiness, party assembly, and teardown from each frozen manifest slot's

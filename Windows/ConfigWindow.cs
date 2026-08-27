@@ -418,7 +418,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.TextDisabled(plugin.KranglerPrivacyLeaseService.Snapshot.Status);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Runtime-only lease while a registered-island group is actively being formed or run by a direct plan, scheduler job, or authenticated inbound proposal. Idle and LAN-only DAD do not acquire it; DAD never changes Krangler's saved appearance settings.");
+            ImGui.SetTooltip("Runtime-only lease while locally initiated Create, Plan, Schedule, or direct-run work is actively forming or running a registered-island group. Idle and LAN-only DAD do not acquire it; DAD never changes Krangler's saved appearance settings.");
 
         var mode = configuration.DtrBarMode;
         if (ImGui.Combo("Server info display", ref mode, DtrModes, DtrModes.Length))

@@ -158,11 +158,35 @@ public sealed class DadWorkerExecutionService
             {
                 var cancelledCommandId = activeCommand.CommandId;
                 var cancelledRunId = activeCommand.RunId;
+                DadRunStepResultDto? executorCancellation = null;
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
                     status.ModuleId == DadModuleId.Mogtome)
-                    queueExecutionService.CancelActiveExecutor(cancel.Reason);
+                    executorCancellation = queueExecutionService.CancelActiveExecutor(cancel.Reason);
                 else if (participantQueueContent != null)
                     queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
+
+                if (status.ModuleId == DadModuleId.LootGoblin &&
+                    activeCommand.Role == DadWorkerExecutionRole.QueueLeader &&
+                    !IsAcknowledgedLootGoblinCancellation(executorCancellation, cancelledRunId))
+                {
+                    var failure = executorCancellation == null || string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
+                        ? "LootGoblin did not acknowledge exact terminal cancellation."
+                        : executorCancellation.FailureReason;
+                    if (executorCancellation != null)
+                        status.StepResult = executorCancellation.Clone();
+                    Finish(DadWorkerExecutionState.Failed, false, failure, failure);
+                    DrainPendingForRun(cancel.RunId);
+                    pendingCommands.ReleaseOwnershipIfIdle(activeCommand != null);
+                    return new DadWorkerExecutionAck
+                    {
+                        CommandId = cancelledCommandId,
+                        RunId = cancelledRunId,
+                        WorkerSessionId = presenceService.WorkerSessionId,
+                        Accepted = false,
+                        Summary = status.Summary,
+                        Status = status.Clone(),
+                    };
+                }
 
                 Finish(DadWorkerExecutionState.Cancelled, false, cancel.Reason, cancel.Reason);
                 DrainPendingForRun(cancel.RunId);
@@ -223,9 +247,13 @@ public sealed class DadWorkerExecutionService
 
             var runId = activeCommand?.RunId ?? status.RunId;
             var commandId = activeCommand?.CommandId ?? status.CommandId;
+            var activeLootGoblinLeader = activeCommand?.Role == DadWorkerExecutionRole.QueueLeader &&
+                                         status.ModuleId == DadModuleId.LootGoblin;
             if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
                 queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
-            queueExecutionService.CancelAll(reason);
+            var executorCancellation = queueExecutionService.CancelAll(reason);
+            var lootGoblinCancellationAcknowledged = !activeLootGoblinLeader ||
+                IsAcknowledgedLootGoblinCancellation(executorCancellation, runId);
             activeCommand = null;
             if (!string.IsNullOrWhiteSpace(runId))
                 cancelledRuns.Record(runId);
@@ -237,18 +265,33 @@ public sealed class DadWorkerExecutionService
                 CommandId = commandId,
                 RunId = runId,
                 WorkerSessionId = presenceService.WorkerSessionId,
-                State = hadWork ? DadWorkerExecutionState.Cancelled : DadWorkerExecutionState.Idle,
+                State = hadWork
+                    ? lootGoblinCancellationAcknowledged
+                        ? DadWorkerExecutionState.Cancelled
+                        : DadWorkerExecutionState.Failed
+                    : DadWorkerExecutionState.Idle,
                 IsTerminal = hadWork,
                 UpdatedAtUtc = DateTime.UtcNow,
-                Summary = hadWork ? reason : "No local DAD worker execution was active.",
-                FailureReason = hadWork ? reason : string.Empty,
+                Summary = hadWork
+                    ? lootGoblinCancellationAcknowledged
+                        ? reason
+                        : string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
+                            ? "LootGoblin did not acknowledge exact terminal cancellation."
+                            : executorCancellation.FailureReason
+                    : "No local DAD worker execution was active.",
+                FailureReason = hadWork && !lootGoblinCancellationAcknowledged
+                    ? string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
+                        ? "LootGoblin did not acknowledge exact terminal cancellation."
+                        : executorCancellation.FailureReason
+                    : hadWork ? reason : string.Empty,
+                StepResult = activeLootGoblinLeader ? executorCancellation.Clone() : new DadRunStepResultDto(),
             };
             return new DadWorkerExecutionAck
             {
                 CommandId = commandId,
                 RunId = runId,
                 WorkerSessionId = presenceService.WorkerSessionId,
-                Accepted = true,
+                Accepted = lootGoblinCancellationAcknowledged,
                 Summary = status.Summary,
                 Status = status.Clone(),
             };
@@ -367,6 +410,13 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
+        if (module.ModuleId == DadModuleId.LootGoblin &&
+            command.Role == DadWorkerExecutionRole.Participant)
+        {
+            CompletePassiveLootGoblinParticipant(command, module, localAssignment);
+            return;
+        }
+
         preDutyRepairService.Begin(command.Plan.Request, module.ModuleId, DateTime.UtcNow);
         UpdatePrequeuePreparation();
     }
@@ -423,6 +473,13 @@ public sealed class DadWorkerExecutionService
             status.Summary = repairDecision.Summary;
             status.UpdatedAtUtc = DateTime.UtcNow;
             commandStatuses[activeCommand.CommandId] = status.Clone();
+            return;
+        }
+
+        if (module.ModuleId == DadModuleId.LootGoblin)
+        {
+            prequeuePrepared = true;
+            BeginQueueWork(activeCommand, module);
             return;
         }
 
@@ -645,7 +702,7 @@ public sealed class DadWorkerExecutionService
                                    condition[ConditionFlag.WaitingForDutyFinder] ||
                                    condition[ConditionFlag.BoundByDuty] ||
                                    condition[ConditionFlag.BoundByDuty56];
-        var valid = queueOrDutyCommitted
+        var valid = status.ModuleId != DadModuleId.LootGoblin && queueOrDutyCommitted
             ? DadWorkerCommandValidationRules.TryValidateMutationIdentity(
                 activeCommand,
                 localRuntime,
@@ -732,6 +789,51 @@ public sealed class DadWorkerExecutionService
         status.StepResult = step;
         Finish(DadWorkerExecutionState.Completed, true, step.Summary, string.Empty);
     }
+
+    private void CompletePassiveLootGoblinParticipant(
+        DadWorkerExecutionCommand command,
+        DadPlannedModuleExecution module,
+        DadParticipantSnapshot localAssignment)
+    {
+        var summary = $"{localAssignment.AssignedSlotId} passed exact worker validation and is holding the LootGoblin party passively; frozen Slot1 owns map gather, open, and run IPC.";
+        var now = DateTime.UtcNow;
+        status.StepResult = new DadRunStepResultDto
+        {
+            RunId = command.RunId,
+            ModuleId = module.ModuleId,
+            StepName = "LootGoblin passive party holder",
+            ParticipantState = DadParticipantState.Completed,
+            Success = true,
+            Summary = summary,
+            ExecutorStatus = new DadModuleExecutionStatusDto
+            {
+                RunId = command.RunId,
+                ModuleId = module.ModuleId,
+                DisplayName = module.DisplayName,
+                Phase = DadRunPhase.InDutyOrTask,
+                Status = DadRunStatus.Completed,
+                StepName = "PassivePartyHolder",
+                CanStart = true,
+                IsActive = false,
+                StartedAtUtc = now,
+                UpdatedAtUtc = now,
+                CompletedAtUtc = now,
+                Summary = summary,
+            },
+            ReportedAtUtc = now,
+        };
+        Finish(DadWorkerExecutionState.Completed, true, summary, string.Empty);
+    }
+
+    private static bool IsAcknowledgedLootGoblinCancellation(
+        DadRunStepResultDto? result,
+        string expectedRunId)
+        => result != null &&
+           string.Equals(result.RunId, expectedRunId, StringComparison.Ordinal) &&
+           result.ModuleId == DadModuleId.LootGoblin &&
+           result.ParticipantState == DadParticipantState.Cancelled &&
+           result.ExecutorStatus.Status == DadRunStatus.Cancelled &&
+           !result.ExecutorStatus.IsActive;
 
     private void LogParticipantQueueTransition(DadLocalDutyQueuePulse pulse)
     {

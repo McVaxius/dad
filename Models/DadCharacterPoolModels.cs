@@ -89,6 +89,7 @@ public enum DadPlannerActivityMode
     TrustLeveling = 13,
     Squadron = 14,
     VariantVvd = 15,
+    LootGoblin = 16,
 }
 
 public enum DadPlannerRunFamily

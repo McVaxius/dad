@@ -22,6 +22,7 @@ public sealed class DadPresetProviderService
         DadPlannerActivityMode.CustomDuty,
         DadPlannerActivityMode.Squadron,
         DadPlannerActivityMode.VariantVvd,
+        DadPlannerActivityMode.LootGoblin,
     ];
 
     private static readonly DadPlannerLaneDefinition[] PlannerLaneDefinitions =
@@ -178,6 +179,24 @@ public sealed class DadPresetProviderService
             RequiresRemoteParty = true,
             UsesExternalHelper = true,
             NextAction = "Manual-test leader/participant helper ownership, status, stop, and attempt limit.",
+        },
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.LootGoblin,
+            RunFamily = DadPlannerRunFamily.FarmLoops,
+            ModuleId = DadModuleId.LootGoblin,
+            DisplayName = "LootGoblin",
+            Summary = "Ordinary DAD party formation with Slot1-only configured-map gather/run ownership through narrow LootGoblin IPC.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Helper IPC live",
+            AccentColorHex = "#A855F7",
+            DefaultAuthorityMode = DadAuthorityMode.ServerDad,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.Leader,
+            ExpectedPartySize = 1,
+            RequiresRemoteParty = true,
+            UsesExternalHelper = true,
+            NextAction = "Select a 1-8 slot group; frozen Slot1 gathers, opens, and runs the first active configured map while followers hold the party.",
         },
         new()
         {
@@ -979,6 +998,12 @@ public sealed class DadPresetProviderService
                     Attempts = 1,
                 };
                 break;
+            case DadPlannerActivityMode.LootGoblin:
+                request.LootGoblin = new DadLootGoblinTask
+                {
+                    ExpectedPartySize = Math.Clamp(requestedPartySize, 1, 8),
+                };
+                break;
             case DadPlannerActivityMode.Commendation:
                 request.Commendation = new DadCommendationTask
                 {
@@ -1074,6 +1099,7 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.CustomDuty => "Custom Duty",
             DadPlannerActivityMode.Squadron => "Squadron",
             DadPlannerActivityMode.VariantVvd => "Variant / VVD",
+            DadPlannerActivityMode.LootGoblin => "LootGoblin",
             _ => activityMode.ToString(),
         };
 
@@ -1199,6 +1225,7 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.CustomDuty => "Custom Duty",
             DadPlannerActivityMode.Squadron => "Squadron",
             DadPlannerActivityMode.VariantVvd => "Variant / VVD",
+            DadPlannerActivityMode.LootGoblin => "LootGoblin",
             _ => options.ActivityName,
         };
         options.PresetName = options.ActivityMode switch
@@ -1218,6 +1245,7 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.CustomDuty => "Custom Duty",
             DadPlannerActivityMode.Squadron => "Squadron",
             DadPlannerActivityMode.VariantVvd => "Variant / VVD",
+            DadPlannerActivityMode.LootGoblin => "LootGoblin Group",
             _ => "Dad Planner",
         };
         var lane = ResolveLaneDefinition(options.ActivityMode);
@@ -2025,6 +2053,15 @@ public sealed class DadPresetProviderService
             };
         }
 
+        if (request.LootGoblin != null)
+        {
+            return new
+            {
+                request.LootGoblin.ExpectedPartySize,
+                policy = "ConfiguredMapGatherAndRun",
+            };
+        }
+
         if (request.Dungeon != null)
         {
             return new
@@ -2150,6 +2187,13 @@ public sealed class DadPresetProviderService
                 => Math.Clamp(options.DutyExpectedPartySize > 0
                     ? options.DutyExpectedPartySize
                     : selectedDuty?.QueueSize ?? lane.ExpectedPartySize, 1, 4),
+            DadPlannerActivityMode.LootGoblin
+                => selectedGroup == null
+                    ? 1
+                    : Math.Clamp(
+                        DadPlannerSlotRules.CountPrimarySlots(selectedGroup.Slots),
+                        1,
+                        8),
             _ when lane.RequiresRemoteParty => Math.Max(1, lane.ExpectedPartySize),
             _ => 1,
         };

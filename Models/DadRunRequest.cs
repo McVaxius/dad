@@ -51,6 +51,7 @@ public sealed class DadRunRequest
     public DadCustomDutyTask? CustomDuty { get; set; }
     public DadSquadronTask? Squadron { get; set; }
     public DadVariantVvdTask? VariantVvd { get; set; }
+    public DadLootGoblinTask? LootGoblin { get; set; }
 
     public int GetConfiguredTaskCount()
     {
@@ -68,6 +69,7 @@ public sealed class DadRunRequest
         if (CustomDuty != null) count++;
         if (Squadron != null) count++;
         if (VariantVvd != null) count++;
+        if (LootGoblin != null) count++;
         return count;
     }
 
@@ -139,6 +141,9 @@ public sealed class DadRunRequest
         if (VariantVvd != null)
             parts.Add($"Variant/VVD ({VariantVvd.DutyName} #{VariantVvd.ContentFinderConditionId}, party {VariantVvd.ExpectedPartySize})");
 
+        if (LootGoblin != null)
+            parts.Add($"LootGoblin configured-map run (party {LootGoblin.ExpectedPartySize})");
+
         if (parts.Count == 0)
             return "No dad tasks configured.";
 
@@ -200,6 +205,7 @@ public sealed class DadRunRequest
                 _ when CustomDuty != null => DadModuleId.CustomDuty,
                 _ when Squadron != null => DadModuleId.Squadron,
                 _ when VariantVvd != null => DadModuleId.VariantVvd,
+                _ when LootGoblin != null => DadModuleId.LootGoblin,
                 _ => DadModuleId.Duty,
             };
         }
@@ -271,6 +277,7 @@ public sealed class DadRunRequest
                     DadModuleId.CustomDuty => "CustomDuty",
                     DadModuleId.Squadron => "Squadron",
                     DadModuleId.VariantVvd => "VariantVvd",
+                    DadModuleId.LootGoblin => "LootGoblin",
                     _ => Orchestration.LocalOnlyOverride ? "LocalOnly" : "ServerDad",
                 };
         }
@@ -297,6 +304,9 @@ public sealed class DadRunRequest
 
         if (VariantVvd != null)
             return Math.Clamp(VariantVvd.ExpectedPartySize, 1, 4);
+
+        if (LootGoblin != null)
+            return Math.Clamp(LootGoblin.ExpectedPartySize, 1, 8);
 
         if (Dungeon?.QueueViaLanParty == true)
             return 4;
@@ -525,6 +535,17 @@ public sealed class DadVariantVvdTask
     public int ExpectedPartySize { get; set; } = 1;
     public bool Unsynced { get; set; }
     public int Attempts { get; set; } = 1;
+}
+
+public sealed class DadLootGoblinTask
+{
+    private int expectedPartySize = 1;
+
+    public int ExpectedPartySize
+    {
+        get => expectedPartySize;
+        set => expectedPartySize = Math.Clamp(value, 1, 8);
+    }
 }
 
 public static class DadBlundervilleModes

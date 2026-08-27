@@ -20,11 +20,13 @@ public sealed class DadPresenceService
     private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
     private Func<DadDependencySnapshot> dependencySnapshotProvider = static () => DadDependencySnapshot.CreateChecking();
     private Func<DadAutoPartyLanPresence> autoPartyPresenceProvider = static () => new();
+    private Func<bool> lootGoblinReadinessProvider = static () => false;
     private string currentRunId = string.Empty;
     private DadWorkerSessionId currentAuthorityWorkerSessionId = new(string.Empty);
     private DadAuthorityMode currentAuthorityMode = DadAuthorityMode.ServerDad;
     private DadAccountKey requiredAccountKey = new(string.Empty);
     private DadCharacterKey requiredCharacterKey = new(string.Empty);
+    private ulong requiredContentId;
     private string assignedSlotId = string.Empty;
     private DadRequestedJobPreparationKey? requestedJobPreparationKey;
     private string lastRequestedJobPreparationTransition = string.Empty;
@@ -97,6 +99,9 @@ public sealed class DadPresenceService
 
     public void ConfigureAutoPartyPresenceProvider(Func<DadAutoPartyLanPresence> provider)
         => autoPartyPresenceProvider = provider ?? (static () => new DadAutoPartyLanPresence());
+
+    public void ConfigureLootGoblinReadinessProvider(Func<bool> provider)
+        => lootGoblinReadinessProvider = provider ?? (static () => false);
 
     public void ConfigureOceTravelCapacityProofProvider(Func<DadAccountKey, DadOceTravelCapacityProof> provider)
         => oceTravelCapacityProofProvider = provider ?? oceTravelCapacityProofProvider;
@@ -216,6 +221,7 @@ public sealed class DadPresenceService
         currentAuthorityMode = authorityMode;
         requiredAccountKey = new DadAccountKey(string.Empty);
         requiredCharacterKey = new DadCharacterKey(string.Empty);
+        requiredContentId = 0;
         assignedSlotId = string.Empty;
         CurrentParticipant.Role = DadOrchestrationRole.Leader;
         CurrentParticipant.WorkerRole = GetConfiguredWorkerRole();
@@ -256,6 +262,7 @@ public sealed class DadPresenceService
 
         requiredAccountKey = slot.AccountKey;
         requiredCharacterKey = slot.CharacterKey;
+        requiredContentId = slot.ContentId;
         assignedSlotId = slot.SlotId;
         SetRequestedJobPreparation(key);
         return true;
@@ -350,6 +357,7 @@ public sealed class DadPresenceService
         currentAuthorityMode = request.AuthorityMode;
         requiredAccountKey = request.RequiredAccountKey;
         requiredCharacterKey = request.RequiredCharacterKey;
+        requiredContentId = request.RequiredContentId;
         assignedSlotId = request.AssignedSlotId;
         requestedJobPreparationBypassesPostAr =
             !request.RequirePostArReady && IsAuthenticatedAutoPartyRun(request.RunId, request.AssignedSlotId);
@@ -430,6 +438,17 @@ public sealed class DadPresenceService
             return BuildReadyResponse(blockerSummary: CurrentParticipant.StatusText, acceptedAssignment: true);
         }
 
+        if (request.ModuleId == DadModuleId.LootGoblin &&
+            DadPlannerSlotRules.IsLeaderSlot(request.AssignedSlotId) &&
+            !lootGoblinReadinessProvider())
+        {
+            CurrentParticipant.State = DadParticipantState.Assigned;
+            CurrentParticipant.StatusText = "Frozen Slot1 is waiting for LootGoblin IPC readiness.";
+            return BuildReadyResponse(
+                blockerSummary: CurrentParticipant.StatusText,
+                acceptedAssignment: true);
+        }
+
         CurrentParticipant.State = DadParticipantState.Ready;
         CurrentParticipant.StatusText = "Worker ready for Dad Coordinator lease.";
         return BuildReadyResponse(blockerSummary: string.Empty, acceptedAssignment: true);
@@ -448,6 +467,13 @@ public sealed class DadPresenceService
                 Summary = "Worker run mismatch during assembly.",
                 FailureReason = "Assembly instruction targeted a different run.",
             };
+        }
+
+        if (instruction.InstructionKind == DadAssemblyInstructionKind.ActivateFrenRider)
+        {
+            var authorityBlocker = ValidateFrozenPartyInstruction(instruction);
+            if (!string.IsNullOrWhiteSpace(authorityBlocker))
+                return BuildFrenRiderActivationFailure(instruction, authorityBlocker);
         }
 
         if (!string.IsNullOrWhiteSpace(instruction.RequiredCharacterKey) &&
@@ -555,6 +581,10 @@ public sealed class DadPresenceService
 
     private DadRunStepResultDto HandleFrenRiderActivationInstruction(DadAssemblyInstructionDto instruction)
     {
+        var partyProof = ValidateFrenRiderPartyProof(instruction);
+        if (partyProof != null)
+            return partyProof;
+
         if (configuration.CombatRotationMode != DadCombatRotationMode.UseFrenRider)
         {
             return new DadRunStepResultDto
@@ -606,6 +636,99 @@ public sealed class DadPresenceService
             Summary = summary,
             FailureReason = status == DadFrenRiderEntryEnableStatus.Failed ? summary : string.Empty,
             BlockedReason = succeeded ? string.Empty : summary,
+        };
+    }
+
+    private DadRunStepResultDto? ValidateFrenRiderPartyProof(DadAssemblyInstructionDto instruction)
+    {
+        var members = partyInviteGateway.ReadAuthoritativePartyMembersIncludingDuplicates();
+        var expectedIds = instruction.InviteTargets
+            .Select(static target => target.ContentId)
+            .Append(instruction.FrozenInviter.ContentId)
+            .ToHashSet();
+        var observedIds = members.Select(static member => member.ContentId).ToList();
+        var duplicateIds = observedIds
+            .GroupBy(static contentId => contentId)
+            .Where(static group => group.Key == 0 || group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToList();
+        var unexpectedIds = observedIds
+            .Where(contentId => !expectedIds.Contains(contentId))
+            .Distinct()
+            .ToList();
+        // The AutoParty wire deliberately gives registered-island followers only Slot1 plus their
+        // own locator. Preserve that authenticated path by combining those exact identities with
+        // the already-proven endpoint-plan party count; ordinary DAD and Slot1 still prove all CIDs.
+        var authenticatedAutoPartyFollower =
+            IsAuthenticatedAutoPartyRun(instruction.RunId, instruction.SlotId) &&
+            !DadPlannerSlotRules.IsLeaderSlot(instruction.SlotId) &&
+            instruction.InviteTargets.Count == 1 &&
+            instruction.ExpectedPartySize is >= 2 and <= 8;
+
+        if (expectedIds.Count != instruction.InviteTargets.Count + 1 ||
+            expectedIds.Contains(0) ||
+            duplicateIds.Count > 0 ||
+            (unexpectedIds.Count > 0 &&
+             (!authenticatedAutoPartyFollower || observedIds.Count > instruction.ExpectedPartySize)))
+        {
+            var reason = duplicateIds.Count > 0
+                ? $"Authoritative PartyList contains duplicate or zero Content IDs: {string.Join(",", duplicateIds)}."
+                : unexpectedIds.Count > 0
+                    ? $"Authoritative PartyList contains extra Content IDs outside the frozen group: {string.Join(",", unexpectedIds)}."
+                    : "Frozen FrenRider party identities are missing, duplicate, or contradictory.";
+            return BuildFrenRiderActivationFailure(instruction, reason, members);
+        }
+
+        var observedSet = observedIds.ToHashSet();
+        var missingIds = expectedIds.Except(observedSet).ToList();
+        var missingAuthenticatedPartyMembers = authenticatedAutoPartyFollower &&
+                                               observedIds.Count < instruction.ExpectedPartySize;
+        if (missingIds.Count > 0 || missingAuthenticatedPartyMembers)
+        {
+            var expectedCount = authenticatedAutoPartyFollower
+                ? instruction.ExpectedPartySize
+                : expectedIds.Count;
+            var missingSummary = missingIds.Count > 0
+                ? $"; missing frozen Content IDs {string.Join(",", missingIds)}"
+                : string.Empty;
+            var summary = $"Waiting for exact authoritative PartyList membership {observedIds.Count}/{expectedCount}{missingSummary}.";
+            CurrentParticipant.State = DadParticipantState.AssemblyPending;
+            CurrentParticipant.StatusText = summary;
+            return new DadRunStepResultDto
+            {
+                RunId = instruction.RunId,
+                ModuleId = instruction.ModuleId,
+                StepName = "GroupReadyFrenRider",
+                ParticipantState = CurrentParticipant.State,
+                Deferred = true,
+                Summary = summary,
+                BlockedReason = summary,
+                AuthoritativePartyMembers = members.Select(static member => member.Clone()).ToList(),
+            };
+        }
+
+        return null;
+    }
+
+    private DadRunStepResultDto BuildFrenRiderActivationFailure(
+        DadAssemblyInstructionDto instruction,
+        string reason,
+        IReadOnlyList<DadPartyMemberSnapshot>? members = null)
+    {
+        CurrentParticipant.State = DadParticipantState.Failed;
+        CurrentParticipant.StatusText = reason;
+        return new DadRunStepResultDto
+        {
+            RunId = instruction.RunId,
+            ModuleId = instruction.ModuleId,
+            StepName = "GroupReadyFrenRider",
+            ParticipantState = CurrentParticipant.State,
+            Summary = reason,
+            FailureReason = reason,
+            BlockedReason = reason,
+            AuthoritativePartyMembers = (members ?? partyInviteGateway.ReadAuthoritativePartyMembers())
+                .Select(static member => member.Clone())
+                .ToList(),
         };
     }
 
@@ -750,6 +873,41 @@ public sealed class DadPresenceService
 
     private string ValidateFrozenPartyInstruction(DadAssemblyInstructionDto instruction)
     {
+        var activation = instruction.InstructionKind == DadAssemblyInstructionKind.ActivateFrenRider;
+        if (activation &&
+            (currentAuthorityWorkerSessionId.IsEmpty ||
+             instruction.AuthorityWorkerSessionId.IsEmpty ||
+             !string.Equals(
+                 currentAuthorityWorkerSessionId.Value,
+                 instruction.AuthorityWorkerSessionId.Value,
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Group-ready FrenRider authority contradicts the stored coordinator session.";
+        }
+        if (activation &&
+            (string.IsNullOrWhiteSpace(assignedSlotId) ||
+             !string.Equals(assignedSlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Group-ready FrenRider slot contradicts the stored frozen assignment.";
+        }
+        if (activation &&
+            (requiredAccountKey.IsEmpty ||
+             requiredCharacterKey.IsEmpty ||
+             requiredContentId == 0 ||
+             !DadRosterIdentity.SameAccount(CurrentParticipant.ManagedAccountKey, requiredAccountKey) ||
+             !DadRosterIdentity.SameCharacter(
+                 CurrentParticipant.ActiveCharacterKey,
+                 CurrentParticipant.Character.ContentId,
+                 requiredCharacterKey,
+                 requiredContentId) ||
+             !string.Equals(
+                 instruction.RequiredCharacterKey.Value,
+                 requiredCharacterKey.Value,
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            return "This worker no longer matches the stored group-ready account, character, and Content-ID assignment.";
+        }
+
         var inviter = instruction.FrozenInviter;
         var blocker = DadPartyInvitationAcceptanceTracker.Validate(inviter);
         if (!string.IsNullOrWhiteSpace(blocker))
@@ -770,9 +928,13 @@ public sealed class DadPresenceService
         var duplicateTargetWorker = instruction.InviteTargets
             .GroupBy(static target => target.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(static group => string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
+        var duplicateTargetSlot = instruction.InviteTargets
+            .GroupBy(static target => target.SlotId, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
         if (duplicateTarget != null ||
             duplicateTargetCharacter != null ||
             duplicateTargetWorker != null ||
+            duplicateTargetSlot != null ||
             instruction.InviteTargets.Any(target =>
                 target.AccountKey.IsEmpty ||
                 target.CharacterKey.IsEmpty ||
@@ -781,14 +943,22 @@ public sealed class DadPresenceService
                 target.WorldId == 0 ||
                 target.ContentId == inviter.ContentId ||
                 string.Equals(target.CharacterKey.Value, inviter.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
+                target.ModuleId != instruction.ModuleId ||
                 string.IsNullOrWhiteSpace(target.RunId) ||
                 !string.Equals(target.RunId, instruction.RunId, StringComparison.Ordinal)))
         {
             return "Frozen Slot1 invite targets are missing, duplicate, include Slot1, or contradict the assembly run.";
         }
 
-        if (instruction.InstructionKind is DadAssemblyInstructionKind.FormParty or DadAssemblyInstructionKind.DisbandParty)
+        var localIsSlotOne = instruction.InstructionKind is DadAssemblyInstructionKind.FormParty or DadAssemblyInstructionKind.DisbandParty ||
+                             activation && DadPlannerSlotRules.IsLeaderSlot(instruction.SlotId);
+        if (localIsSlotOne)
         {
+            if (activation &&
+                !string.Equals(inviter.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                return "Frozen Slot1 inviter does not match this group-ready worker session.";
+            }
             if (!DadRosterIdentity.SameAccount(CurrentParticipant.ManagedAccountKey, inviter.AccountKey) ||
                 !DadRosterIdentity.SameCharacter(
                     CurrentParticipant.ActiveCharacterKey,
@@ -802,6 +972,7 @@ public sealed class DadPresenceService
         else
         {
             var localTargets = instruction.InviteTargets.Where(target =>
+                (!activation || string.Equals(target.SlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase)) &&
                 string.Equals(target.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
                 DadRosterIdentity.SameAccount(target.AccountKey, CurrentParticipant.ManagedAccountKey) &&
                 DadRosterIdentity.SameCharacter(
@@ -1598,6 +1769,7 @@ public sealed class DadPresenceService
         currentAuthorityMode = configuration.LocalOnlyModeEnabled ? DadAuthorityMode.LocalOnly : DadAuthorityMode.ServerDad;
         requiredAccountKey = new DadAccountKey(string.Empty);
         requiredCharacterKey = new DadCharacterKey(string.Empty);
+        requiredContentId = 0;
         assignedSlotId = string.Empty;
         authenticatedAutoPartyRunId = string.Empty;
         authenticatedAutoPartySlotId = string.Empty;

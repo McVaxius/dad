@@ -5092,6 +5092,7 @@ public sealed class MainWindow : Window, IDisposable
             DadPlannerActivityMode.PremadeDuty => run.ModuleId == DadModuleId.PremadeDuty,
             DadPlannerActivityMode.Blunderville => run.ModuleId == DadModuleId.Blunderville,
             DadPlannerActivityMode.Mogtome => run.ModuleId == DadModuleId.Mogtome,
+            DadPlannerActivityMode.LootGoblin => run.ModuleId == DadModuleId.LootGoblin,
             DadPlannerActivityMode.Commendation => run.ModuleId == DadModuleId.Commendation,
             DadPlannerActivityMode.Astrope => run.ModuleId == DadModuleId.Astrope,
             DadPlannerActivityMode.LocalDuty => run.ModuleId == DadModuleId.Duty,

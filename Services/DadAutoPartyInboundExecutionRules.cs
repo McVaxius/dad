@@ -356,6 +356,12 @@ internal static class DadAutoPartyInboundExecutionRules
                     Unsynced = module.Unsynced,
                 };
                 break;
+            case DadModuleId.LootGoblin:
+                request.LootGoblin = new DadLootGoblinTask
+                {
+                    ExpectedPartySize = Math.Clamp(module.ExpectedPartySize, 1, 8),
+                };
+                break;
             default:
                 return false;
         }

@@ -28,6 +28,9 @@ internal static class DadPlannerWarningRules
         if (request.Mogtome != null)
             warnings.Add("MOGTOME uses the solo DAD-owned helper IPC lane; the helper owns its party coordination.");
 
+        if (request.LootGoblin != null)
+            warnings.Add("LootGoblin uses ordinary DAD formation; frozen Slot1 alone owns configured-map gather, open, run, status, and cancellation IPC while followers hold the party passively.");
+
         if (request.Msq != null)
             warnings.Add("MSQ solo progression uses selected duty with Trust then Duty Support fallback.");
 

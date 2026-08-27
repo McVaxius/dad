@@ -121,6 +121,7 @@ public enum DadModuleId
     Squadron,
     VariantVvd,
     Mixed,
+    LootGoblin = 15,
 }
 
 public enum DadTransportMode
@@ -448,6 +449,7 @@ public sealed class DadAssemblyInstructionDto
     public DadAssemblyInstructionKind InstructionKind { get; set; } = DadAssemblyInstructionKind.None;
     public DadExpectedPartyInviter FrozenInviter { get; set; } = new();
     public List<DadNativePartyInviteTarget> InviteTargets { get; set; } = [];
+    public int ExpectedPartySize { get; set; }
     public string Summary { get; set; } = string.Empty;
 
     public DadAssemblyInstructionDto Clone()
@@ -461,6 +463,7 @@ public sealed class DadAssemblyInstructionDto
             InstructionKind = InstructionKind,
             FrozenInviter = FrozenInviter.Clone(),
             InviteTargets = InviteTargets.Select(static target => target.Clone()).ToList(),
+            ExpectedPartySize = ExpectedPartySize,
             Summary = Summary,
         };
 }

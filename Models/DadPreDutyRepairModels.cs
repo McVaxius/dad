@@ -64,6 +64,7 @@ public static class DadPreDutyRepairRules
             DadModuleId.PremadeDuty or
             DadModuleId.DailyMsq or
             DadModuleId.Mogtome or
+            DadModuleId.LootGoblin or
             DadModuleId.Commendation or
             DadModuleId.CustomDuty;
     }
@@ -77,6 +78,7 @@ public static class DadPreDutyRepairRules
             request.PremadeDuty != null ||
             request.DailyMsq != null ||
             request.Mogtome != null ||
+            request.LootGoblin != null ||
             request.Commendation != null ||
             request.CustomDuty != null);
 }

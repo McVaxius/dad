@@ -13,6 +13,7 @@ public sealed class DadQueueExecutionService
     private readonly DadPremadeDutyExecutor dailyRouletteExecutor;
     private readonly DadBlundervilleExecutor blundervilleExecutor;
     private readonly DadMogtomeExecutor mogtomeExecutor;
+    private readonly DadLootGoblinExecutor lootGoblinExecutor;
     private readonly DadCommendationExecutor commendationExecutor;
     private readonly DadAstropeExecutor astropeExecutor;
     private readonly DadCustomDutyExecutor customDutyExecutor;
@@ -24,6 +25,7 @@ public sealed class DadQueueExecutionService
     public DadQueueExecutionService(
         DadModuleRegistry moduleRegistry,
         DadMogtomeIpcService mogtomeIpcService,
+        DadLootGoblinIpcService lootGoblinIpcService,
         DadDutyQueueService dutyQueueService,
         DadLocalDutyQueueService localDutyQueueService,
         DadNpcDutyQueueService npcDutyQueueService,
@@ -69,6 +71,7 @@ public sealed class DadQueueExecutionService
                 .FirstOrDefault(blocker => blocker.Capability == "CanStartQueue")?.Summary
                  ?? moduleRegistry.GetCapability(DadModuleId.Blunderville).Notes);
         mogtomeExecutor = new DadMogtomeExecutor(mogtomeIpcService);
+        lootGoblinExecutor = new DadLootGoblinExecutor(lootGoblinIpcService);
         commendationExecutor = new DadCommendationExecutor(
             moduleRegistry,
             _ => dutyQueueService.DescribeCommendationExecutionDeferral());
@@ -146,7 +149,10 @@ public sealed class DadQueueExecutionService
            !string.Equals(commendation.StopMode, DadCommendationStopModes.Attempts, StringComparison.OrdinalIgnoreCase);
 
     public void SetWorkerRole(DadWorkerExecutionRole role)
-        => mogtomeExecutor.SetWorkerRole(role);
+    {
+        mogtomeExecutor.SetWorkerRole(role);
+        lootGoblinExecutor.SetWorkerRole(role);
+    }
 
     public DadRunStepResultDto UpdateActiveExecutor()
         => NormalizeReportedModule(activeExecutor?.Update() ?? new DadRunStepResultDto());
@@ -260,6 +266,7 @@ public sealed class DadQueueExecutionService
             DadModuleId.DailyMsq => dailyRouletteExecutor,
             DadModuleId.Blunderville => blundervilleExecutor,
             DadModuleId.Mogtome => mogtomeExecutor,
+            DadModuleId.LootGoblin => lootGoblinExecutor,
             DadModuleId.Commendation => commendationExecutor,
             DadModuleId.Astrope => astropeExecutor,
             DadModuleId.CustomDuty => customDutyExecutor,

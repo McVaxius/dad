@@ -1520,6 +1520,161 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
         };
 }
 
+public sealed class DadLootGoblinExecutor : IDadModuleExecutor
+{
+    private readonly DadLootGoblinIpcService ipc;
+    private DadModuleExecutionStatusDto status = new();
+    private DadWorkerExecutionRole workerRole = DadWorkerExecutionRole.QueueLeader;
+
+    public DadLootGoblinExecutor(DadLootGoblinIpcService ipc)
+    {
+        this.ipc = ipc;
+    }
+
+    public string ExecutorId => "DadLootGoblinExecutor";
+    public DadModuleId ModuleId => DadModuleId.LootGoblin;
+
+    public void SetWorkerRole(DadWorkerExecutionRole role)
+        => workerRole = role;
+
+    public DadModuleExecutionStatusDto CanStart(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        var expectedPartySize = Math.Clamp(
+            plan.Request.LootGoblin?.ExpectedPartySize ?? plan.RequiredParticipantCount,
+            1,
+            8);
+        var exactParty = participants.Count == expectedPartySize;
+        var ownsSlotOne = workerRole == DadWorkerExecutionRole.QueueLeader;
+        var ready = ownsSlotOne && exactParty && ipc.IsReady();
+        var summary = !ownsSlotOne
+            ? "LootGoblin IPC is restricted to frozen Slot1 queue authority."
+            : !exactParty
+                ? $"LootGoblin requires the exact frozen party size {expectedPartySize}; received {participants.Count}."
+                : ready
+                    ? "LootGoblin is ready for the frozen Slot1 configured-map run."
+                    : "LootGoblin IPC is unavailable.";
+        return new DadModuleExecutionStatusDto
+        {
+            RunId = plan.Request.RequestId,
+            ModuleId = DadModuleId.LootGoblin,
+            DisplayName = "LootGoblin",
+            Phase = DadRunPhase.QueuePreparing,
+            Status = ready ? DadRunStatus.Running : DadRunStatus.Failed,
+            StepName = ExecutorId,
+            CanStart = ready,
+            Deferred = false,
+            RetryAttempt = 0,
+            MaxRetryAttempts = 0,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Summary = summary,
+            FailureReason = ready ? string.Empty : summary,
+            BlockedReason = ready ? string.Empty : summary,
+        };
+    }
+
+    public DadRunStepResultDto Start(
+        DadRunPlan plan,
+        IReadOnlyList<DadParticipantSnapshot> participants)
+    {
+        status = CanStart(plan, participants);
+        status.StartedAtUtc = DateTime.UtcNow;
+        if (!status.CanStart)
+        {
+            status.CompletedAtUtc = status.StartedAtUtc;
+            return BuildStep();
+        }
+
+        ApplyHelperStatus(ipc.Start(plan.Request.RequestId));
+        return BuildStep();
+    }
+
+    public DadRunStepResultDto Update()
+    {
+        if (status.IsActive)
+            ApplyHelperStatus(ipc.GetStatus(status.RunId));
+        return BuildStep();
+    }
+
+    public DadRunStepResultDto Cancel(string reason)
+    {
+        var helper = ipc.Cancel(status.RunId);
+        if (helper.Accepted &&
+            helper.Terminal &&
+            !helper.Success &&
+            string.Equals(helper.State, "Cancelled", StringComparison.Ordinal))
+        {
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.CompletedAtUtc = status.UpdatedAtUtc;
+            status.Phase = DadRunPhase.Finalizing;
+            status.Status = DadRunStatus.Cancelled;
+            status.IsActive = false;
+            status.Summary = string.IsNullOrWhiteSpace(helper.Message)
+                ? string.IsNullOrWhiteSpace(reason) ? "LootGoblin configured-map run cancelled." : reason
+                : helper.Message;
+            status.FailureReason = string.Empty;
+            status.BlockedReason = string.Empty;
+            return BuildStep();
+        }
+
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = status.UpdatedAtUtc;
+        status.Phase = DadRunPhase.Finalizing;
+        status.Status = DadRunStatus.Failed;
+        status.IsActive = false;
+        status.Summary = string.IsNullOrWhiteSpace(helper.Message)
+            ? "LootGoblin did not acknowledge exact terminal cancellation."
+            : helper.Message;
+        status.FailureReason = status.Summary;
+        status.BlockedReason = status.Summary;
+        return BuildStep();
+    }
+
+    public DadModuleExecutionStatusDto GetStatus()
+        => status.Clone();
+
+    private void ApplyHelperStatus(DadLootGoblinMapGatherStatus helper)
+    {
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.Summary = string.IsNullOrWhiteSpace(helper.Message)
+            ? $"LootGoblin map-gather state: {helper.State}."
+            : helper.Message;
+        status.RetryAttempt = 0;
+        status.MaxRetryAttempts = 0;
+        status.IsActive = helper.Accepted && !helper.Terminal;
+        status.Phase = helper.Terminal ? DadRunPhase.Finalizing : DadRunPhase.InDutyOrTask;
+        status.Status = helper.Terminal
+            ? helper.Accepted && helper.Success ? DadRunStatus.Completed : DadRunStatus.Failed
+            : helper.Accepted ? DadRunStatus.Running : DadRunStatus.Failed;
+        status.FailureReason = status.Status == DadRunStatus.Failed ? status.Summary : string.Empty;
+        status.BlockedReason = status.FailureReason;
+        if (helper.Terminal || !helper.Accepted)
+            status.CompletedAtUtc = DateTime.UtcNow;
+    }
+
+    private DadRunStepResultDto BuildStep()
+        => new()
+        {
+            RunId = status.RunId,
+            ModuleId = DadModuleId.LootGoblin,
+            StepName = "LootGoblin",
+            ParticipantState = status.Status switch
+            {
+                DadRunStatus.Completed => DadParticipantState.Completed,
+                DadRunStatus.Cancelled => DadParticipantState.Cancelled,
+                DadRunStatus.Failed => DadParticipantState.Failed,
+                _ => DadParticipantState.Running,
+            },
+            Success = status.Status is DadRunStatus.Running or DadRunStatus.Completed,
+            Summary = status.Summary,
+            FailureReason = status.FailureReason,
+            BlockedReason = status.BlockedReason,
+            ExecutorStatus = status.Clone(),
+            ReportedAtUtc = DateTime.UtcNow,
+        };
+}
+
 public sealed class DadCommendationExecutor(
     DadModuleRegistry moduleRegistry,
     Func<DadRunPlan, string> queueBlockerFactory)

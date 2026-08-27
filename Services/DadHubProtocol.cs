@@ -183,9 +183,9 @@ internal sealed class DadHubProtocolException : IOException
 
 internal static class DadHubProtocol
 {
-    // Version 4 adds typed alliance-PF instruction, cancellation, result, and sanitized UI snapshot
-    // messages. Mixed builds are rejected before any alliance recruitment can be coordinated.
-    public const int CurrentVersion = 4;
+    // Version 5 requires the exact group-ready FrenRider authority proof and LootGoblin module
+    // semantics. Mixed builds are rejected before either peer can mutate party or module state.
+    public const int CurrentVersion = 5;
     public const int MaxFrameBytes = 256 * 1024;
     private const int HeaderBytes = sizeof(int);
 

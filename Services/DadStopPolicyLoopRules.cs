@@ -12,6 +12,7 @@ public static class DadStopPolicyLoopRules
             or DadModuleId.PremadeDuty
             or DadModuleId.DailyMsq
             or DadModuleId.Mogtome
+            or DadModuleId.LootGoblin
             or DadModuleId.Commendation
             or DadModuleId.CustomDuty;
 }

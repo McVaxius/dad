@@ -212,6 +212,17 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     }
 
     public IReadOnlyList<DadPartyMemberSnapshot> ReadAuthoritativePartyMembers()
+        => ReadAuthoritativePartyMembersCore()
+            .DistinctBy(static member => member.ContentId)
+            .Select(static member => member.Clone())
+            .ToList();
+
+    internal IReadOnlyList<DadPartyMemberSnapshot> ReadAuthoritativePartyMembersIncludingDuplicates()
+        => ReadAuthoritativePartyMembersCore()
+            .Select(static member => member.Clone())
+            .ToList();
+
+    private List<DadPartyMemberSnapshot> ReadAuthoritativePartyMembersCore()
     {
         RequireFrameworkThread();
         var members = new List<DadPartyMemberSnapshot>();
@@ -252,10 +263,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             });
         }
 
-        return members
-            .DistinctBy(static member => member.ContentId)
-            .Select(static member => member.Clone())
-            .ToList();
+        return members;
     }
 
     public void UpdateAcceptance()

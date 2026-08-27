@@ -181,11 +181,20 @@ internal static class DadAutoPartyListingPublicationRules
             DadPlannerActivityMode.CustomDuty => DadModuleId.CustomDuty,
             DadPlannerActivityMode.Squadron => DadModuleId.Squadron,
             DadPlannerActivityMode.VariantVvd => DadModuleId.VariantVvd,
+            DadPlannerActivityMode.LootGoblin => DadModuleId.LootGoblin,
             _ => DadModuleId.None,
         };
 
     private static uint ResolveActivityIdentity(DadPlannerGroup plan, DadModuleId module)
     {
+        if (module == DadModuleId.LootGoblin)
+        {
+            return (uint)Math.Clamp(
+                DadPlannerSlotRules.CountPrimarySlots(plan.Slots),
+                1,
+                8);
+        }
+
         if (plan.DutyContentFinderConditionId != 0)
             return plan.DutyContentFinderConditionId;
         if (plan.RouletteTarget?.ContentFinderConditionId > 0)

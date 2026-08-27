@@ -15,6 +15,7 @@ public static class DadParticipantQueueFollowThroughRules
     public static bool IsObserveAcceptOnlyLane(DadRunPlan plan, DadPlannedModuleExecution module)
         => plan.RequiredParticipantCount > 1 &&
            module.ModuleId != DadModuleId.Mogtome &&
+           module.ModuleId != DadModuleId.LootGoblin &&
            (module.ModuleId == DadModuleId.PremadeDuty ||
             module.ModuleId == DadModuleId.DailyMsq && plan.Request.DailyMsq != null ||
             module.ModuleId == DadModuleId.Duty && plan.Request.Dungeon?.QueueViaLanParty == true ||

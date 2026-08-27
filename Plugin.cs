@@ -90,6 +90,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadCombatRotationService CombatRotationService { get; }
     internal DadFrenRiderProfileTransferService FrenRiderProfileTransferService { get; }
     public DadMogtomeIpcService MogtomeIpcService { get; }
+    public DadLootGoblinIpcService LootGoblinIpcService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
     public DadWorkerExecutionService WorkerExecutionService { get; }
     public DadSchedulerService SchedulerService { get; }
@@ -398,9 +399,12 @@ public sealed class Plugin : IDalamudPlugin
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
         PresenceService.ConfigureCombatRotationService(CombatRotationService);
         MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
+        LootGoblinIpcService = new DadLootGoblinIpcService(PluginInterface);
+        PresenceService.ConfigureLootGoblinReadinessProvider(LootGoblinIpcService.IsReady);
         QueueExecutionService = new DadQueueExecutionService(
             ModuleRegistry,
             MogtomeIpcService,
+            LootGoblinIpcService,
             DutyQueueService,
             LocalDutyQueueService,
             NpcDutyQueueService,
@@ -3082,6 +3086,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var activationInstruction = assemblyInstruction.Clone();
         activationInstruction.InstructionKind = DadAssemblyInstructionKind.ActivateFrenRider;
+        activationInstruction.ExpectedPartySize = context.ExecutionPlan.Participants.Length;
         activationInstruction.Summary =
             "Exact DAD group formation is complete; apply the selected FrenRider group-ready mode.";
         var result = string.Equals(
@@ -5508,8 +5513,7 @@ public sealed class Plugin : IDalamudPlugin
         => Configuration.PluginEnabled &&
            Configuration.KranglerPrivacyLeaseEnabled &&
            (RunCoordinatorService.HasActiveRegisteredIslandWork ||
-            SchedulerService.HasActiveRegisteredIslandWork ||
-            autoPartyRelayPump.HasActiveInboundRegisteredIslandWork);
+            SchedulerService.HasActiveRegisteredIslandWork);
 
     public void ToggleDebugUi()
         => SetDebugUiEnabled(!Configuration.DebugUiEnabled);
