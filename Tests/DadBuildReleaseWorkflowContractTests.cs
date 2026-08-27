@@ -24,16 +24,16 @@ public sealed class DadBuildReleaseWorkflowContractTests
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "dotnet restore \"${{ env.PROJECT_PATH }}\" -r win --locked-mode --source $packageDir --source $nugetSource",
+            "dotnet restore \"${{ env.PROJECT_PATH }}\" -r win --locked-mode --source $nugetSource --source $packageDir",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "dotnet restore \"Tests\\dad.Tests.csproj\" --locked-mode --source $packageDir --source $nugetSource",
+            "dotnet restore \"Tests\\dad.Tests.csproj\" --locked-mode --source $nugetSource --source $packageDir",
             workflow,
             StringComparison.Ordinal);
         var testLock = ReadRepositorySource("Tests", "packages.lock.json");
         Assert.Contains(
-            "wYHBCm9ONln2DPBDk/aP3VnHlPf4nCijsF9blIR7RjLiojGpohDUmLWZrMdXJDxkFLcD9ghpxPGmiWgroPYpbw==",
+            "9y3NTkB7jeKYODY+kfNjXBCRGmy9f0vCXEuWbnrbnMp2xhUjM+m+v/FenUWjXL9RZ+gO+OSA0PgVMkCfPMKtbw==",
             testLock,
             StringComparison.Ordinal);
         Assert.Contains(

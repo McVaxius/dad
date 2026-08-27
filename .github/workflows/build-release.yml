@@ -61,8 +61,8 @@ jobs:
         run: |
           $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
           $nugetSource = "https://api.nuget.org/v3/index.json"
-          dotnet restore "${{ env.PROJECT_PATH }}" -r win --locked-mode --source $packageDir --source $nugetSource
-          dotnet restore "Tests\dad.Tests.csproj" --locked-mode --source $packageDir --source $nugetSource
+          dotnet restore "${{ env.PROJECT_PATH }}" -r win --locked-mode --source $nugetSource --source $packageDir
+          dotnet restore "Tests\dad.Tests.csproj" --locked-mode --source $nugetSource --source $packageDir
 
       - name: Build
         run: |
