@@ -481,6 +481,140 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Equal(proposal.ActivityId, execution.Modules[0].ActivityId);
     }
 
+    [Fact]
+    public async Task IslandProfileFormAndQueueAdvanceOnCourierAcceptanceWithoutRelayReceiptWait()
+    {
+        var frame = FrenRiderProfileCodec.Encode("{\"frenName\":\"Remote\",\"enabled\":true}");
+        using var fixture = new PumpFixture(
+            DadAutoPartyRegistrationState.Active,
+            includePeer: true,
+            useFrenRider: true,
+            remoteProfileProvider: _ => new DadAutoPartyRemoteProfileResult(true, frame, "ok"));
+        fixture.Configuration.RemoteBindings.Add(new DadAutoPartyRemoteBinding
+        {
+            FleetRowId = "row-remote",
+            OpaqueCharacterId = "opaque-remote",
+            OwnerId = PumpFixture.PeerOwner,
+            IslandId = PumpFixture.PeerIsland,
+            RequestedJobId = "19",
+            OwnsQueueAuthority = true,
+            OwnerConsentConfirmed = true,
+        });
+        await using var pump = fixture.CreatePump();
+
+        await pump.ProcessOnceAsync();
+        var directoryEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+        var directory = fixture.Open<DirectoryQuery>(directoryEnvelope);
+        Assert.Equal(1, pump.Snapshot.AwaitingRelayReceiptCount);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("directory-receipt"),
+            Guid.NewGuid(),
+            directory.Header.MessageId,
+            true,
+            "directory-complete")));
+        await pump.ProcessOnceAsync();
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        fixture.Transport.Sent.Clear();
+
+        var runtime = RemoteRuntime();
+        var proposalId = Guid.Parse(runtime.Plan.Orchestration.AutoPartyProposalId);
+        var now = DateTimeOffset.UtcNow;
+        Assert.True(fixture.Bridge.TryBindRun(runtime.Plan, runtime.Manifest, now, out var blocker), blocker);
+
+        await pump.ProcessOnceAsync();
+
+        Assert.Collection(
+            fixture.Transport.Sent,
+            sent => Assert.Equal(ProtocolContractRegistry.GetTypeId<RunProposal>(), sent.PayloadType),
+            sent => Assert.Equal(ProtocolContractRegistry.GetTypeId<IntegrationProfile>(), sent.PayloadType));
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        Assert.Equal(0, fixture.Bridge.PendingCommandCount);
+
+        Assert.True(fixture.Bridge.ObserveReservation(new Reservation(
+            fixture.PeerHeader("reservation"),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(PumpFixture.PeerOwner),
+            new OpaqueCharacterId("opaque-remote"),
+            1,
+            1), now, out blocker), blocker);
+        Assert.True(fixture.Bridge.ObservePreflight(new PreflightResult(
+            fixture.PeerHeader("preflight"),
+            proposalId,
+            new OwnerId(PumpFixture.PeerOwner),
+            true,
+            1,
+            1,
+            ImmutableArray<string>.Empty,
+            1), now, out blocker), blocker);
+        Assert.True(fixture.Bridge.ObserveLease(new SessionLease(
+            fixture.PeerHeader("lease"),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(PumpFixture.PeerOwner),
+            now.AddMinutes(10),
+            SessionPermission.All,
+            1,
+            1), now, out blocker), blocker);
+        Assert.True(fixture.Bridge.ObserveInviteTarget(
+            fixture.PeerHeader("invite-target"),
+            proposalId,
+            new OwnerId(PumpFixture.PeerOwner),
+            new OpaqueCharacterId("opaque-remote"),
+            new DadWorkerSessionId("private-worker"),
+            new DadAccountKey("private-account"),
+            new DadCharacterKey("private-character"),
+            2002,
+            "Private Peer",
+            21,
+            now.AddMinutes(2),
+            now,
+            out blocker), blocker);
+
+        Assert.True(fixture.Bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            null,
+            null,
+            [],
+            now,
+            out blocker), blocker);
+        await pump.ProcessOnceAsync();
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        Assert.True(fixture.Bridge.IsOperationComplete(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            now));
+
+        Assert.True(fixture.Bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Queue,
+            0,
+            null,
+            now,
+            out blocker), blocker);
+        await pump.ProcessOnceAsync();
+
+        var participantTypes = fixture.Transport.Sent
+            .Select(static sent => sent.PayloadType)
+            .ToList();
+        Assert.Equal(
+            [
+                ProtocolContractRegistry.GetTypeId<RunProposal>(),
+                ProtocolContractRegistry.GetTypeId<IntegrationProfile>(),
+                ProtocolContractRegistry.GetTypeId<ExecutionOperation>(),
+                ProtocolContractRegistry.GetTypeId<ExecutionOperation>(),
+            ],
+            participantTypes);
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        Assert.DoesNotContain(ProtocolContractRegistry.GetTypeId<IntegrationProfileReceipt>(), participantTypes);
+        Assert.DoesNotContain(ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>(), participantTypes);
+    }
+
 
     [Fact]
     public async Task UnpairedDirectRouteRequiresMatchingUnexpiredCentralAttestation()
@@ -1511,6 +1645,8 @@ public sealed class DadAutoPartyRelayPumpTests
         var proposalId = Guid.NewGuid();
         var runId = $"run-{Guid.NewGuid():N}";
         var proposal = PeerProposalForLocalParticipant(fixture, proposalId, runId);
+        var now = proposal.Header.IssuedAt;
+        var expiredTargets = new List<DadAutoPartyExpiredRuntimeTarget>();
         var expectedTarget = NativeInviteTarget(runId, "Slot2", "Private Local", 1001);
         await using var pump = fixture.CreatePump(
             _ => new DadAutoPartyListingPublication(policy, [listing]),
@@ -1519,7 +1655,9 @@ public sealed class DadAutoPartyRelayPumpTests
                 true,
                 "dad-inbound-admission-ready",
                 ["Slot2"],
-                [expectedTarget]));
+                [expectedTarget]),
+            utcNow: () => now,
+            expiredRuntimeTargetHandler: expiredTargets.Add);
         var delivery = fixture.SealPeer(proposal);
         fixture.Transport.Inbound.Enqueue(delivery);
 
@@ -1542,6 +1680,109 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Contains(fixture.Transport.Sent, item =>
             item.PayloadType == ProtocolContractRegistry.GetTypeId<ParticipantInviteLocator>());
         Assert.Equal(0, fixture.PendingStore.SaveCount);
+
+        now = proposal.Header.ExpiresAt.AddSeconds(1);
+        await pump.ProcessOnceAsync();
+        pump.UpdateFramework();
+
+        var expired = Assert.Single(expiredTargets);
+        Assert.Equal(proposalId, expired.ProposalId);
+        Assert.Equal(PumpFixture.PeerIsland, expired.SenderIslandId);
+        Assert.Equal(PumpFixture.LocalOwner, expired.OwnerId);
+        Assert.Equal("opaque-local", expired.OpaqueCharacterId);
+        Assert.False(pump.TryGetInboundRuntimeTarget(
+            proposalId,
+            new OpaqueCharacterId("opaque-local"),
+            out _,
+            out _,
+            out _));
+    }
+
+    [Fact]
+    public async Task AuthenticatedIntegrationProfileIsStoredAndAcknowledgedWithoutApplicationReceipt()
+    {
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
+        var listing = new DadAutoPartyListing
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = "opaque-local",
+            DisplayLabel = "Shared local character",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = ["dad-duty-1"],
+            Available = true,
+            Revision = 1,
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10),
+        };
+        var policy = Assert.Single(fixture.Configuration.Pairings).LocalSharePolicy.Clone();
+        var proposalId = Guid.NewGuid();
+        var runId = $"run-{Guid.NewGuid():N}";
+        var proposal = PeerProposalForLocalParticipant(fixture, proposalId, runId);
+        proposal = proposal with
+        {
+            ExecutionPlan = proposal.ExecutionPlan! with { UseFrenRider = true },
+        };
+        await using var pump = fixture.CreatePump(
+            _ => new DadAutoPartyListingPublication(policy, [listing]),
+            inboundAdmission: _ => new DadAutoPartyInboundAdmissionResult(
+                runId,
+                true,
+                "dad-inbound-admission-ready",
+                ["Slot2"],
+                [NativeInviteTarget(runId, "Slot2", "Private Local", 1001)]));
+
+        await pump.ProcessOnceAsync();
+        var directoryEnvelope = Assert.Single(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<DirectoryQuery>());
+        var directory = fixture.Open<DirectoryQuery>(directoryEnvelope);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("directory-receipt"),
+            Guid.NewGuid(),
+            directory.Header.MessageId,
+            true,
+            "directory-complete")));
+        await pump.ProcessOnceAsync();
+        fixture.Transport.Sent.Clear();
+
+        var proposalDelivery = fixture.SealPeer(proposal);
+        fixture.Transport.Inbound.Enqueue(proposalDelivery);
+        await pump.ProcessOnceAsync();
+        pump.UpdateFramework();
+        await pump.ProcessOnceAsync();
+
+        var frame = FrenRiderProfileCodec.Encode("{\"frenName\":\"Inbound\",\"enabled\":true}");
+        var profileHeader = fixture.PeerHeader("integration-profile") with
+        {
+            ExpiresAt = proposal.Header.ExpiresAt,
+        };
+        var profile = new IntegrationProfile(
+            profileHeader,
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(PumpFixture.LocalOwner),
+            EnableLevelSync: false,
+            EnableUnrestrictedParty: false,
+            EnableMinimumItemLevel: false,
+            EnableSilenceEcho: false,
+            ["FrenRider"],
+            "frenrider-profile",
+            ExpectedStateGeneration: 1,
+            new OpaqueCharacterId("opaque-local"),
+            frame);
+        var profileDelivery = fixture.SealPeer(profile);
+        fixture.Transport.Inbound.Enqueue(profileDelivery);
+
+        await pump.ProcessOnceAsync();
+
+        Assert.Contains(fixture.Transport.Acknowledged, item =>
+            item.EnvelopeId == proposalDelivery.EnvelopeId);
+        Assert.Contains(fixture.Transport.Acknowledged, item =>
+            item.EnvelopeId == profileDelivery.EnvelopeId);
+        Assert.Equal(0, pump.Snapshot.AwaitingRelayReceiptCount);
+        Assert.DoesNotContain(fixture.Transport.Sent, item =>
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<IntegrationProfileReceipt>() ||
+            item.PayloadType == ProtocolContractRegistry.GetTypeId<ExecutionOperationReceipt>());
     }
 
     [Fact]
@@ -3643,7 +3884,11 @@ public sealed class DadAutoPartyRelayPumpTests
         public DadAutoPartyService Service { get; }
         public DadAutoPartyParticipantBridge Bridge { get; }
 
-        public PumpFixture(DadAutoPartyRegistrationState state, bool includePeer = false)
+        public PumpFixture(
+            DadAutoPartyRegistrationState state,
+            bool includePeer = false,
+            bool useFrenRider = false,
+            Func<DadAutoPartyRemoteProfileRequest, DadAutoPartyRemoteProfileResult>? remoteProfileProvider = null)
         {
             LocalSigningPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(LocalSigningPrivate);
             LocalAgreementPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(LocalAgreementPrivate);
@@ -3694,7 +3939,10 @@ public sealed class DadAutoPartyRelayPumpTests
             Connector.AttachVerifiedAdapter(Transport);
             Service = new DadAutoPartyService(Configuration, IdentityStore, static () => true, static () => { });
             // DadAutoPartyService owns a separate connector; the pump intentionally uses the fixture connector.
-            Bridge = new DadAutoPartyParticipantBridge(Configuration);
+            Bridge = new DadAutoPartyParticipantBridge(
+                Configuration,
+                useFrenRiderProvider: () => useFrenRider,
+                remoteProfileProvider: remoteProfileProvider);
             fixtureResolver = new FixtureResolver(this);
         }
 
@@ -3703,7 +3951,8 @@ public sealed class DadAutoPartyRelayPumpTests
             IDadAutoPartyInboundProposalStore? inboundProposalStore = null,
             Action<string>? diagnostic = null,
             Func<RunProposal, DadAutoPartyInboundAdmissionResult>? inboundAdmission = null,
-            Func<DateTimeOffset>? utcNow = null)
+            Func<DateTimeOffset>? utcNow = null,
+            Action<DadAutoPartyExpiredRuntimeTarget>? expiredRuntimeTargetHandler = null)
             => new(
                 Configuration,
                 IdentityStore,
@@ -3716,7 +3965,8 @@ public sealed class DadAutoPartyRelayPumpTests
                 inboundAdmission: inboundAdmission,
                 utcNow: utcNow,
                 delay: static (_, _) => Task.CompletedTask,
-                diagnostic: diagnostic);
+                diagnostic: diagnostic,
+                expiredRuntimeTargetHandler: expiredRuntimeTargetHandler);
 
         public ContractHeader RelayHeader(string purpose, DateTimeOffset? now = null)
         {

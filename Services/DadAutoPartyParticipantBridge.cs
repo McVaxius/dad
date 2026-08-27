@@ -31,6 +31,23 @@ internal enum DadAutoPartyParticipantCommandKind
     Execution = 1,
     Revocation = 2,
     ProposalRenewal = 3,
+    IntegrationProfile = 4,
+}
+
+internal sealed record DadAutoPartyRemoteProfileRequest(
+    string OwnerId,
+    string IslandId,
+    string OpaqueCharacterId,
+    Guid ProposalId,
+    string DisplayLabel);
+
+internal sealed record DadAutoPartyRemoteProfileResult(
+    bool Success,
+    ImmutableArray<byte> FramedProfile,
+    string SafeCode)
+{
+    public static DadAutoPartyRemoteProfileResult Unavailable(string safeCode)
+        => new(false, [], safeCode);
 }
 
 internal sealed record DadAutoPartyParticipantRequest(
@@ -107,7 +124,8 @@ internal sealed record DadAutoPartyParticipantCommand(
     string SafeCode = "",
     bool FormationOnly = false,
     DateTimeOffset? PreviousProposalExpiresAt = null,
-    long RenewalGeneration = 0);
+    long RenewalGeneration = 0,
+    ImmutableArray<byte> FrenRiderProfile = default);
 
 internal sealed record DadAutoPartyParticipantCommandBatch(
     Guid DispatchLeaseId,
@@ -135,6 +153,9 @@ internal sealed class DadAutoPartyParticipantBridge
     private readonly DadAutoPartyConfiguration? configuration;
     private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
     private readonly Func<IReadOnlyList<DadAutoPartyCrewCandidate>> currentLocalCrewProvider;
+    private readonly Func<bool> useFrenRiderProvider;
+    private readonly Func<DadAutoPartyRemoteProfileRequest, DadAutoPartyRemoteProfileResult>
+        remoteProfileProvider;
     private readonly Dictionary<Guid, ProposalRuntime> proposals = [];
     private readonly Dictionary<Guid, PendingOperation> operations = [];
     private readonly Dictionary<Guid, DateTimeOffset> replayedMessages = [];
@@ -146,12 +167,17 @@ internal sealed class DadAutoPartyParticipantBridge
     public DadAutoPartyParticipantBridge(
         DadAutoPartyConfiguration? configuration,
         Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null,
-        Func<IReadOnlyList<DadAutoPartyCrewCandidate>>? currentLocalCrewProvider = null)
+        Func<IReadOnlyList<DadAutoPartyCrewCandidate>>? currentLocalCrewProvider = null,
+        Func<bool>? useFrenRiderProvider = null,
+        Func<DadAutoPartyRemoteProfileRequest, DadAutoPartyRemoteProfileResult>? remoteProfileProvider = null)
     {
         this.configuration = configuration;
         this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ??
             (() => configuration?.RemoteBindings ?? []);
         this.currentLocalCrewProvider = currentLocalCrewProvider ?? (() => []);
+        this.useFrenRiderProvider = useFrenRiderProvider ?? (() => false);
+        this.remoteProfileProvider = remoteProfileProvider ??
+            (_ => DadAutoPartyRemoteProfileResult.Unavailable("dad-frenrider-profile-provider-unavailable"));
     }
 
     public void ConfigureDirectoryAuthorityGate(
@@ -227,11 +253,13 @@ internal sealed class DadAutoPartyParticipantBridge
                 bindings.Add((slot, matches[0]));
             }
 
+            var useFrenRider = useFrenRiderProvider();
             var activityId = BuildActivityId(manifest, plan.Orchestration.AutoPartyFormationOnly);
             if (!TryBuildExecutionPlan(
                     plan,
                     manifest,
                     activityId,
+                    useFrenRider,
                     out var participants,
                     out var executionPlan,
                     out blocker))
@@ -239,11 +267,55 @@ internal sealed class DadAutoPartyParticipantBridge
                 return false;
             }
 
+            var frozenProfiles = new Dictionary<string, ImmutableArray<byte>>(StringComparer.OrdinalIgnoreCase);
+            if (useFrenRider)
+            {
+                foreach (var (slot, _) in bindings.OrderBy(static pair =>
+                             DadPlannerSlotRules.GetSlotSortKey(pair.Slot.SlotId)))
+                {
+                    DadAutoPartyRemoteProfileResult resolved;
+                    try
+                    {
+                        resolved = remoteProfileProvider(new DadAutoPartyRemoteProfileRequest(
+                            slot.OwnerId,
+                            slot.IslandId,
+                            slot.OpaqueCharacterId,
+                            proposalId,
+                            string.IsNullOrWhiteSpace(slot.CharacterKey.Value)
+                                ? slot.SlotId
+                                : slot.CharacterKey.Value));
+                    }
+                    catch
+                    {
+                        return Fail($"{slot.SlotId} FrenRider remote profile could not be resolved.", out blocker);
+                    }
+
+                    if (!resolved.Success || resolved.FramedProfile.IsDefaultOrEmpty)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(resolved.SafeCode)
+                            ? "profile unavailable"
+                            : resolved.SafeCode;
+                        return Fail($"{slot.SlotId} FrenRider remote profile is unavailable ({detail}).", out blocker);
+                    }
+                    try
+                    {
+                        _ = FrenRiderProfileCodec.Decode(resolved.FramedProfile);
+                    }
+                    catch (ProtocolException)
+                    {
+                        return Fail($"{slot.SlotId} FrenRider remote profile is invalid or oversized.", out blocker);
+                    }
+                    if (!frozenProfiles.TryAdd(slot.SlotId, ImmutableArray.CreateRange(resolved.FramedProfile)))
+                        return Fail($"{slot.SlotId} FrenRider remote profile route is duplicated.", out blocker);
+                }
+            }
+
             var proposalCommandCount = bindings
                 .Select(static pair => pair.Slot.IslandId)
                 .Distinct(StringComparer.Ordinal)
                 .Count();
-            if (pendingCommands.Count + proposalCommandCount > MaximumPendingCommands)
+            var profileCommandCount = frozenProfiles.Count;
+            if (pendingCommands.Count + proposalCommandCount + profileCommandCount > MaximumPendingCommands)
                 return Fail("AutoParty relay command capacity is unavailable for atomic run admission.", out blocker);
 
             var runtime = new ProposalRuntime(
@@ -284,6 +356,33 @@ internal sealed class DadAutoPartyParticipantBridge
                     runtime.ExpiresAt,
                     Participants: participants,
                     ExecutionPlan: executionPlan)))
+                {
+                    proposals.Remove(proposalId);
+                    RemoveCommandsForProposal(proposalId);
+                    return Fail("AutoParty relay command capacity changed during atomic run admission.", out blocker);
+                }
+            }
+            foreach (var slot in runtime.Slots.Values
+                         .OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.Slot.SlotId)))
+            {
+                if (!frozenProfiles.TryGetValue(slot.Slot.SlotId, out var framedProfile))
+                    continue;
+                if (!Enqueue(new DadAutoPartyParticipantCommand(
+                        Guid.NewGuid(),
+                        DadAutoPartyParticipantCommandKind.IntegrationProfile,
+                        proposalId,
+                        runtime.RunId,
+                        slot.Slot.SlotId,
+                        slot.Slot.OwnerId,
+                        slot.Slot.IslandId,
+                        slot.Slot.OpaqueCharacterId,
+                        slot.Slot.RequiredJobId!.Value,
+                        activityId,
+                        null,
+                        1,
+                        now,
+                        runtime.ExpiresAt,
+                        FrenRiderProfile: framedProfile)))
                 {
                     proposals.Remove(proposalId);
                     RemoveCommandsForProposal(proposalId);
@@ -1388,6 +1487,16 @@ internal sealed class DadAutoPartyParticipantBridge
             return;
         }
 
+        if (command.CommandKind == DadAutoPartyParticipantCommandKind.IntegrationProfile)
+        {
+            if (TryGetSlot(command.ProposalId, command.SlotId, out _, out var profiled) && !profiled.IsTerminal)
+            {
+                profiled.ObservedAt = now;
+                profiled.SafeCode = "dad-remote-integration-profile-dispatched";
+            }
+            return;
+        }
+
         if (command.CommandKind != DadAutoPartyParticipantCommandKind.Execution ||
             command.OperationKind is not { } kind ||
             !operations.TryGetValue(command.CommandId, out var operation) || operation.Completed ||
@@ -1728,6 +1837,7 @@ internal sealed class DadAutoPartyParticipantBridge
         DadRunPlan plan,
         DadRunSlotManifest manifest,
         string activityId,
+        bool useFrenRider,
         out IReadOnlyList<DadAutoPartyParticipantRequest> participantRequests,
         out EndpointExecutionPlan executionPlan,
         out string blocker)
@@ -1905,7 +2015,8 @@ internal sealed class DadAutoPartyParticipantBridge
                 repairPolicy.ThresholdPercent,
                 repairPolicy.AdsMode),
             projected.ToImmutableArray(),
-            modules);
+            modules,
+            useFrenRider);
         return true;
     }
 
@@ -2183,5 +2294,8 @@ internal sealed class DadAutoPartyParticipantBridge
                 .Select(static target => target.Clone())
                 .ToList(),
             Participants = command.Participants?.Select(static participant => participant with { }).ToList(),
+            FrenRiderProfile = command.FrenRiderProfile.IsDefault
+                ? default
+                : ImmutableArray.CreateRange(command.FrenRiderProfile),
         };
 }

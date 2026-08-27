@@ -50,6 +50,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         var snapshot = plugin.BuildMiniStatusSnapshot();
         DrawHeader(snapshot);
         DrawNavigationControls();
+        DrawAutoParty(snapshot.AutoParty);
         DrawEmergencyStop();
         DrawRun(snapshot);
         DrawInboundTakeover(snapshot.LocalTakeover);
@@ -119,6 +120,50 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         ImGui.SameLine();
         if (DadUi.Button("Generate issue report"))
             plugin.GenerateIssueReport();
+    }
+
+    private void DrawAutoParty(DadMiniAutoPartySnapshot autoParty)
+    {
+        DadUi.Section("AutoParty", "Private endpoint readiness, reciprocal pairing, directory, and exact formation state.");
+        DadUi.KeyValue("Enablement", autoParty.Enabled ? "Enabled" : "Disabled", 92f);
+        DadUi.KeyValue("Endpoint", autoParty.EndpointState, 92f);
+        DadUi.KeyValue(
+            "Pairing",
+            $"{autoParty.ActivePairingCount} reciprocal | {autoParty.OnlinePairingCount} online",
+            92f);
+        DadUi.KeyValue("Directory", autoParty.DirectoryState, 92f);
+        DadUi.KeyValue(
+            "Formation",
+            $"{autoParty.ExactFormationPhase} | {Text(autoParty.ExactFormationSummary)}",
+            92f);
+        if (!string.IsNullOrWhiteSpace(autoParty.FirstBlocker))
+            DrawStateText($"Blocker: {autoParty.FirstBlocker}", MiniState.Warning);
+
+        if (DadUi.Button("Open AutoParty", DadUiTone.Accent))
+            plugin.OpenAutoPartyUi();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!autoParty.DirectoryRefreshEligible);
+        if (DadUi.Button(autoParty.DirectoryRefreshInProgress ? "Refreshing…" : "Refresh paired directory"))
+            plugin.TryStartPairedDirectoryRefresh();
+        ImGui.EndDisabled();
+        if (!autoParty.DirectoryRefreshEligible &&
+            autoParty.DirectoryRefreshCooldownRemaining > TimeSpan.Zero)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled($"{Math.Ceiling(autoParty.DirectoryRefreshCooldownRemaining.TotalSeconds):0}s cooldown");
+        }
+
+        var disbandLabel = IsPending("autoparty-disband")
+            ? "Confirm AutoParty disband"
+            : "Guarded AutoParty disband";
+        ImGui.BeginDisabled(!autoParty.CanGuardedDisband);
+        if (DadUi.Button(disbandLabel, DadUiTone.Warning))
+            Guarded("autoparty-disband", () => plugin.RequestAutoPartyFormationDisband());
+        ImGui.EndDisabled();
+        if (!autoParty.CanGuardedDisband && !string.IsNullOrWhiteSpace(autoParty.GuardedDisbandBlocker))
+            ImGui.TextDisabled(autoParty.GuardedDisbandBlocker);
+        else if (IsPending("autoparty-disband"))
+            DrawStateText("Click Confirm AutoParty disband within five seconds.", MiniState.Warning);
     }
 
     private void DrawEmergencyStop()

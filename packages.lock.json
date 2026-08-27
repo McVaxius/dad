@@ -4,9 +4,9 @@
     "net10.0-windows7.0": {
       "Dad.AutoParty.Protocol": {
         "type": "Direct",
-        "requested": "[0.2.0-preview.7, 0.2.0-preview.7]",
-        "resolved": "0.2.0-preview.7",
-        "contentHash": "FUYWEyTOnW/j2x3zHXAMlvFZeQ9wPgavefhh26q02OioRX2EzKZrAG4cBpVRIsU6j8qOcXLTEa24JoW/y0fvaw==",
+        "requested": "[0.2.0-preview.8, 0.2.0-preview.8]",
+        "resolved": "0.2.0-preview.8",
+        "contentHash": "9y3NTkB7jeKYODY+kfNjXBCRGmy9f0vCXEuWbnrbnMp2xhUjM+m+v/FenUWjXL9RZ+gO+OSA0PgVMkCfPMKtbw==",
         "dependencies": {
           "BouncyCastle.Cryptography": "[2.6.2]",
           "System.Formats.Cbor": "[10.0.9]"

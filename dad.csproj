@@ -6,9 +6,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.5.0.9</Version>
-    <FileVersion>0.5.0.9</FileVersion>
-    <AssemblyVersion>0.5.0.9</AssemblyVersion>
+    <Version>0.5.0.10</Version>
+    <FileVersion>0.5.0.10</FileVersion>
+    <AssemblyVersion>0.5.0.10</AssemblyVersion>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
@@ -30,7 +30,7 @@
     <None Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.7]" />
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.8]" />
     <PackageReference Include="ECommons" Version="[3.2.1.15]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
   </ItemGroup>

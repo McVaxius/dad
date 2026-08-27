@@ -50,6 +50,144 @@ public sealed class DadAutoPartyParticipantBridgeTests
     }
 
     [Fact]
+    public void FrenRiderProfileIsFrozenBeforeOperationsAndDispatchAdvancesWithoutApplicationReceipt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var configuration = ActiveConfiguration();
+        configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        var firstFrame = FrenRiderProfileCodec.Encode("{\"frenName\":\"Frozen\",\"enabled\":false}");
+        var replacementFrame = FrenRiderProfileCodec.Encode("{\"frenName\":\"Changed\",\"enabled\":true}");
+        var currentFrame = firstFrame;
+        var profileCalls = 0;
+        var bridge = new DadAutoPartyParticipantBridge(
+            configuration,
+            useFrenRiderProvider: static () => true,
+            remoteProfileProvider: _ =>
+            {
+                profileCalls++;
+                return new DadAutoPartyRemoteProfileResult(true, currentFrame, "ok");
+            });
+        var (plan, manifest, proposalId) = Runtime(
+            new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+
+        Assert.True(bridge.TryBindRun(plan, manifest, now, out var blocker), blocker);
+        currentFrame = replacementFrame;
+
+        var initial = bridge.LeasePendingCommands(8, TimeSpan.FromSeconds(10), now);
+        Assert.Collection(
+            initial.Commands,
+            proposal =>
+            {
+                Assert.Equal(DadAutoPartyParticipantCommandKind.Proposal, proposal.CommandKind);
+                Assert.True(Assert.IsType<EndpointExecutionPlan>(proposal.ExecutionPlan).UseFrenRider);
+            },
+            profile =>
+            {
+                Assert.Equal(DadAutoPartyParticipantCommandKind.IntegrationProfile, profile.CommandKind);
+                Assert.Equal(firstFrame, profile.FrenRiderProfile);
+            });
+        Assert.Equal(1, profileCalls);
+        Assert.Equal(2, bridge.AcknowledgePendingCommands(
+            initial.DispatchLeaseId,
+            initial.Commands.Select(static command => command.CommandId).ToList(),
+            now));
+
+        Assert.True(bridge.ObserveReservation(new Reservation(
+            Header(RemoteIsland, LocalIsland, now),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(RemoteOwner),
+            new OpaqueCharacterId(RemoteCharacter),
+            ExpectedStateGeneration: 1,
+            ObservedStateGeneration: 1), now, out blocker), blocker);
+        Assert.True(bridge.ObservePreflight(new PreflightResult(
+            Header(RemoteIsland, LocalIsland, now),
+            proposalId,
+            new OwnerId(RemoteOwner),
+            Ready: true,
+            ReadinessGeneration: 1,
+            ExpectedStateGeneration: 1,
+            SafeBlockers: ImmutableArray<string>.Empty,
+            ObservedStateGeneration: 1), now, out blocker), blocker);
+        Assert.True(bridge.ObserveLease(new SessionLease(
+            Header(RemoteIsland, LocalIsland, now),
+            Guid.NewGuid(),
+            proposalId,
+            new OwnerId(RemoteOwner),
+            now.AddMinutes(10),
+            SessionPermission.All,
+            ExpectedStateGeneration: 1,
+            ObservedStateGeneration: 1), now, out blocker), blocker);
+        Assert.True(bridge.ObserveInviteTarget(
+            Header(RemoteIsland, LocalIsland, now),
+            proposalId,
+            new OwnerId(RemoteOwner),
+            new OpaqueCharacterId(RemoteCharacter),
+            new DadWorkerSessionId("private-worker"),
+            new DadAccountKey("private-account"),
+            new DadCharacterKey("private-character"),
+            1001,
+            "Private Character",
+            21,
+            now.AddMinutes(2),
+            now,
+            out blocker), blocker);
+
+        Assert.True(bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            null,
+            inviter: null,
+            partyInviteTargets: [],
+            now,
+            out blocker), blocker);
+        var form = LeaseAndAcknowledgeSingle(bridge, now);
+        Assert.Equal(ExecutionOperationKind.Form, form.OperationKind);
+        Assert.True(bridge.IsOperationComplete(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Form,
+            now));
+
+        Assert.True(bridge.RequestOperation(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Queue,
+            moduleIndex: 0,
+            inviter: null,
+            now,
+            out blocker), blocker);
+        var queue = LeaseAndAcknowledgeSingle(bridge, now);
+        Assert.Equal(ExecutionOperationKind.Queue, queue.OperationKind);
+        Assert.True(bridge.IsOperationComplete(
+            proposalId,
+            "Slot1",
+            ExecutionOperationKind.Queue,
+            now));
+        Assert.Equal(1, profileCalls);
+    }
+
+    [Fact]
+    public void FrenRiderBindFailureIsAtomicBeforeAnyCommandIsSent()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var configuration = ActiveConfiguration();
+        configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        var bridge = new DadAutoPartyParticipantBridge(
+            configuration,
+            useFrenRiderProvider: static () => true,
+            remoteProfileProvider: static _ =>
+                DadAutoPartyRemoteProfileResult.Unavailable("profile-missing"));
+        var (plan, manifest, _) = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+
+        Assert.False(bridge.TryBindRun(plan, manifest, now, out var blocker));
+        Assert.Contains("profile-missing", blocker, StringComparison.Ordinal);
+        Assert.Equal(0, bridge.PendingCommandCount);
+        Assert.Empty(bridge.LeasePendingCommands(8, TimeSpan.FromSeconds(10), now).Commands);
+    }
+
+    [Fact]
     public void LocalAnyJobFreezesLiveCombatJobAndProposalCarriesFullExecutionPlan()
     {
         var now = DateTimeOffset.UtcNow;

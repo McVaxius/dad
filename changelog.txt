@@ -1,5 +1,30 @@
 # dad — changelog
 
+## 2026-08-27 — one-way FrenRider dispatch and coordinated privacy controls (local-only, unpublished)
+- Registered-island runs can now freeze and send one exact FrenRider profile before that participant's execution
+  operations. Courier acceptance advances dispatch immediately: DAD does not request, correlate, or await profile or
+  execution receipts, while relay-control receipts and transport-fragment acknowledgements remain unchanged.
+- Receiving islands authenticate and validate the profile against the proposal, sender, owner, and opaque character.
+  Form applies it only after authoritative local PartyList proof under the receiver's Off, Temporary, or Permanent policy;
+  Queue then fails closed on missing, mismatched, unavailable, or failed required local application state.
+- Proposal-owned temporary FrenRider overlays are released only for their exact owner during Restore, proposal expiry or
+  security teardown, guarded disband, or unload. Permanent application preserves the receiver's local acceptance policy,
+  and the legacy local/LAN duty-entry IPC
+  path remains unchanged.
+- Added default-on, runtime-only Krangler privacy leasing. DAD owns one process token, reacquires after plugin changes,
+  releases on disable or disposal, never mutates Krangler configuration, and shows the effective lease beside Krangle
+  controls.
+- Any-job readiness now waits for the connected character's live combat job and level, while explicit-job rows retain
+  their pre-login level-ledger path.
+- Questionable compatibility now supports both the legacy cosmetic `PluginInfo` adapter and 7.5.13's nested provider,
+  requirement, and recommended-plugin shapes without changing ownership of the runtime bridge fields. Runtime reflection
+  incompatibility warns at most once per character load; cosmetic-only failures remain non-fatal and silent.
+- Added an AutoParty guide plus Mini Status projections for enablement, endpoint readiness, pairing/private-directory
+  state, exact-formation phase, and first blocker. Mini Status reuses the guarded paired refresh, opens the full AutoParty
+  window for registration/pairing/party creation, and exposes only the existing five-second preflighted disband action.
+- DAD remains `0.5.0.9` and configuration schema 12. The vendored and pinned protocol package is now
+  `Dad.AutoParty.Protocol 0.2.0-preview.8`; wire schema remains version 5.
+
 ## 2026-08-25 — Command-driven Dad-island AutoParty execution (local-only, unpublished)
 - Crew Formation now routes travel proof, LAN readiness, party assembly, and teardown from each frozen manifest slot's
   route kind. A locally registered LAN Slot1 remains the exact local inviter while registered-island slots continue

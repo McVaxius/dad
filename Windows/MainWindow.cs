@@ -353,13 +353,16 @@ public sealed class MainWindow : Window, IDisposable
         if (DadUi.Button("Guide", DadUiTone.Accent))
             plugin.OpenSetupWizard();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Open the six guided DAD workflows at any time.");
+            ImGui.SetTooltip("Open the seven guided DAD workflows at any time.");
 
         ImGui.SameLine();
         if (DadUi.Button(plugin.KrangleService.Enabled ? "Show character names" : "Hide character names"))
             plugin.ToggleKrangleOperatorNames();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Changes local operator labels only. Run contracts keep their real identities.");
+
+        ImGui.SameLine();
+        ImGui.TextDisabled(plugin.KranglerPrivacyLeaseService.Snapshot.Status);
 
         ImGui.SameLine();
         if (DadUi.Button("Support on Ko-fi", DadUiTone.Accent))
