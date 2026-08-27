@@ -16,11 +16,11 @@ public sealed class DadBuildReleaseWorkflowContractTests
         Assert.True(test > restore);
         Assert.True(upload > test);
         Assert.Contains(
-            "Dad.AutoParty.Protocol.0.2.0-preview.7.nupkg",
+            "Dad.AutoParty.Protocol.0.2.0-preview.8.nupkg",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "24fd930e9f582a9615b3f2bd969cc77b4bc31ea4203a1904a3d660cd48ac9e96",
+            "57180c2d3641cfaa664d4bff9acf5196e1fab72eef8d31e70116dab9f5f4a650",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(

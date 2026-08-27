@@ -209,6 +209,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.FirstPreset,
             DadGuideFlow.Crew,
             DadGuideFlow.Schedule,
+            DadGuideFlow.AutoParty,
         };
         var useTwoColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 42f;
         if (ImGui.BeginTable("dad-guide-task-cards", useTwoColumns ? 2 : 1, ImGuiTableFlags.SizingStretchSame))
@@ -347,6 +348,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
             case DadGuideFlow.Schedule:
                 DrawScheduleStep();
                 break;
+            case DadGuideFlow.AutoParty:
+                DrawAutoPartyStep();
+                break;
         }
     }
 
@@ -359,8 +363,95 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.FirstPreset => BuildPresetSteps(),
             DadGuideFlow.Crew => BuildCrewSteps(),
             DadGuideFlow.Schedule => BuildScheduleSteps(),
+            DadGuideFlow.AutoParty => BuildAutoPartySteps(),
             _ => [],
         };
+
+    private IReadOnlyList<GuideStep> BuildAutoPartySteps()
+    {
+        var status = plugin.BuildMiniAutoPartySnapshot();
+        var firstFormationComplete = status.ExactFormationRecognized &&
+                                     status.ExactFormationPhase is nameof(DadCrewFormationPhase.RegularGroupReady)
+                                         or nameof(DadCrewFormationPhase.Disbanding)
+                                         or nameof(DadCrewFormationPhase.Completed);
+        return
+        [
+            new GuideStep(
+                "Enable AutoParty",
+                "The opt-in switch for encrypted AutoParty endpoint and formation work.",
+                "AutoParty remains inert until explicitly enabled.",
+                "AutoParty reports Enabled.",
+                status.Enabled,
+                "Open AutoParty and enable it."),
+            new GuideStep(
+                "Register endpoint",
+                "The endpoint identity and private encrypted mailbox assigned by the central bot.",
+                "Registration gives this DAD an authenticated island route without exposing party contracts in public channels.",
+                "Registration is active and the endpoint reports Ready.",
+                status.EndpointReady,
+                status.EndpointState),
+            new GuideStep(
+                "Pair reciprocally",
+                "One verified APP1 fingerprint submitted in each direction.",
+                "Both owners must establish the exact private trust route before sharing characters.",
+                "At least one reciprocal pairing is active.",
+                status.ActivePairingCount > 0,
+                "Complete reciprocal pairing in the full AutoParty window."),
+            new GuideStep(
+                "Refresh private directory",
+                "The existing guarded paired-directory publication and refresh action.",
+                "Exact formation can select only current private listings authorized by the paired owner.",
+                "At least one private listing from a reciprocal pairing is present.",
+                status.PrivateDirectoryListingCount > 0,
+                status.DirectoryState),
+            new GuideStep(
+                "Create first exact formation",
+                "Selection and creation remain in the full AutoParty window.",
+                "The formation freezes exact local and remote identities before party work begins.",
+                "The exact freeform formation reaches GroupReady.",
+                firstFormationComplete,
+                status.FirstBlocker),
+            new GuideStep(
+                "Guarded disband",
+                "The existing exact-formation disband action.",
+                "DAD releases only the held AutoParty formation and refuses unrelated party ownership.",
+                "The exact formation finishes its guarded disband.",
+                status.GuardedDisbandComplete,
+                status.CanGuardedDisband
+                    ? "The exact formation is ready for guarded disband."
+                    : status.GuardedDisbandBlocker),
+        ];
+    }
+
+    private void DrawAutoPartyStep()
+    {
+        var status = plugin.BuildMiniAutoPartySnapshot();
+        DrawStatusRow("AutoParty", status.Enabled ? "Enabled" : "Disabled");
+        DrawStatusRow("Endpoint", status.EndpointState);
+        DrawStatusRow("Reciprocal pairings", $"{status.ActivePairingCount} active | {status.OnlinePairingCount} online");
+        DrawStatusRow("Private directory", status.DirectoryState);
+        DrawStatusRow("Exact formation", $"{status.ExactFormationPhase} | {status.ExactFormationSummary}");
+        ImGui.TextWrapped("Registration, pairing, character selection, and party creation stay in the full AutoParty window.");
+        if (DadUi.Button("Open AutoParty", DadUiTone.Accent))
+            plugin.OpenAutoPartyUi();
+
+        if (stepIndex == 3)
+        {
+            ImGui.SameLine();
+            ImGui.BeginDisabled(!status.DirectoryRefreshEligible);
+            if (DadUi.Button(status.DirectoryRefreshInProgress ? "Refreshing…" : "Refresh paired directory"))
+                plugin.TryStartPairedDirectoryRefresh();
+            ImGui.EndDisabled();
+            if (status.DirectoryRefreshCooldownRemaining > TimeSpan.Zero)
+                ImGui.TextDisabled($"Normal refresh cooldown: {Math.Ceiling(status.DirectoryRefreshCooldownRemaining.TotalSeconds):0}s remaining.");
+        }
+        else if (stepIndex == 5)
+        {
+            ImGui.TextWrapped(status.CanGuardedDisband
+                ? "The exact formation is ready. Use its guarded Disband party action in AutoParty."
+                : status.GuardedDisbandBlocker);
+        }
+    }
 
     private IReadOnlyList<GuideStep> BuildNameDadSteps()
     {
@@ -1565,8 +1656,16 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.FirstPreset => CommitPresetStep(),
             DadGuideFlow.Crew => CommitCrewStep(),
             DadGuideFlow.Schedule => CommitScheduleStep(),
+            DadGuideFlow.AutoParty => CommitAutoPartyStep(),
             _ => true,
         };
+
+    private bool CommitAutoPartyStep()
+    {
+        var steps = BuildAutoPartySteps();
+        var current = steps[Math.Clamp(stepIndex, 0, steps.Count - 1)];
+        return current.Ready || Reject(current.Blocker);
+    }
 
     private bool CommitNameDadStep()
     {
@@ -2147,6 +2246,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
             case DadGuideFlow.Schedule:
                 plugin.OpenMainTab(DadMainWindowTab.Presets, DadPresetsWindowTab.Scheduler);
                 break;
+            case DadGuideFlow.AutoParty:
+                plugin.OpenAutoPartyUi();
+                break;
         }
     }
 
@@ -2200,6 +2302,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.FirstPreset => "CREATE A PRESET",
             DadGuideFlow.Crew => "BUILD THE CREW",
             DadGuideFlow.Schedule => "BUILD A SCHEDULE",
+            DadGuideFlow.AutoParty => "SET UP AUTOPARTY",
             _ => "DAD GUIDE",
         };
 
@@ -2212,6 +2315,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadGuideFlow.FirstPreset => "Choose content, assign every inline character field, and validate without running.",
             DadGuideFlow.Crew => "Refresh ownership and fix stale or unassigned roster rows.",
             DadGuideFlow.Schedule => "Order saved presets, set repeats/cadence, and complete a dry-run.",
+            DadGuideFlow.AutoParty => "Register, pair, list privately, form the first exact party, and disband it safely.",
             _ => string.Empty,
         };
 

@@ -412,6 +412,14 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Changes local DAD labels only. Saved identities and run contracts stay unchanged.");
 
+        var kranglerPrivacy = configuration.KranglerPrivacyLeaseEnabled;
+        if (ImGui.Checkbox("Use Krangler name/chat privacy while DAD is enabled", ref kranglerPrivacy))
+            plugin.SetKranglerPrivacyLeaseEnabled(kranglerPrivacy);
+        ImGui.SameLine();
+        ImGui.TextDisabled(plugin.KranglerPrivacyLeaseService.Snapshot.Status);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Runtime-only lease. DAD does not change or save Krangler's configured appearance features.");
+
         var mode = configuration.DtrBarMode;
         if (ImGui.Combo("Server info display", ref mode, DtrModes, DtrModes.Length))
         {

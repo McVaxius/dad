@@ -30,6 +30,12 @@ internal sealed record DadAutoPartyTransientRouteSnapshot(
     string PolicyHash,
     DateTimeOffset ValidUntil);
 
+internal sealed record DadAutoPartyExpiredRuntimeTarget(
+    Guid ProposalId,
+    string SenderIslandId,
+    string OwnerId,
+    string OpaqueCharacterId);
+
 internal sealed record DadAllianceCentralOperationContext(
     Guid OperationId,
     string SenderIslandId,
@@ -84,6 +90,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly Func<DateTime, DadAutoPartyListingPublication>? inboundListingPublicationProvider;
     private readonly Func<RunProposal, DadAutoPartyListingPublication, DadAutoPartyInboundAdmissionResult>? inboundAdmission;
     private readonly Func<Guid, string, bool>? restoreInboundProposal;
+    private readonly Action<DadAutoPartyExpiredRuntimeTarget>? expiredRuntimeTargetHandler;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly Action<string> diagnostic;
@@ -92,7 +99,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private readonly Dictionary<Guid, PendingOutboundContract> awaitingRelayReceipts = [];
     private readonly Dictionary<Guid, IAutoPartyContract> participantContracts = [];
     private readonly Queue<PendingExecution> pendingExecutions = [];
-    private readonly Dictionary<Guid, IntegrationProfile> pendingProfiles = [];
+    private readonly Queue<DadAutoPartyExpiredRuntimeTarget> expiredRuntimeTargets = [];
+    private readonly Dictionary<InboundProfileKey, IntegrationProfile> pendingProfiles = [];
     private readonly Dictionary<Guid, PendingDirectoryQuery> directoryQueries = [];
     private readonly Dictionary<Guid, PendingPairedLabelRequest> pairedLabelRequests = [];
     private readonly Dictionary<string, PublishedPairedLabel> publishedPairedLabels =
@@ -149,7 +157,8 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         Func<RunProposal, DadAutoPartyListingPublication, DadAutoPartyInboundAdmissionResult>?
             inboundAdmissionWithPublication = null,
         Func<Guid, string, bool>? restoreInboundProposal = null,
-        Func<RunProposal, DateTimeOffset, DateTimeOffset, bool>? renewInboundProposal = null)
+        Func<RunProposal, DateTimeOffset, DateTimeOffset, bool>? renewInboundProposal = null,
+        Action<DadAutoPartyExpiredRuntimeTarget>? expiredRuntimeTargetHandler = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.identityStore = identityStore ?? throw new ArgumentNullException(nameof(identityStore));
@@ -170,6 +179,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                                     ? null
                                     : (proposal, _) => inboundAdmission(proposal));
         this.restoreInboundProposal = restoreInboundProposal;
+        this.expiredRuntimeTargetHandler = expiredRuntimeTargetHandler;
         this.delay = delay ?? Task.Delay;
         this.diagnostic = diagnostic ?? (_ => { });
         this.saveConfiguration = saveConfiguration ?? (() => { });
@@ -198,10 +208,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             var key = new InboundRuntimeTargetKey(proposalId, characterId.Value);
             if (!inboundRuntimeTargets.TryGetValue(key, out var retained) || retained.ExpiresAt <= now)
-            {
-                inboundRuntimeTargets.Remove(key);
                 return false;
-            }
             slotId = retained.SlotId;
             target = retained.Target.Clone();
             safeCode = "dad-inbound-runtime-target-ready";
@@ -225,10 +232,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             var key = new InboundRuntimeTargetKey(proposalId, characterId.Value);
             if (!inboundRuntimeTargets.TryGetValue(key, out var retained) || retained.ExpiresAt <= now)
-            {
-                inboundRuntimeTargets.Remove(key);
                 return false;
-            }
             context = new DadAutoPartyInboundExecutionContext(
                 retained.ExecutionPlan,
                 retained.Target.Clone(),
@@ -247,7 +251,39 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         if (proposalId == Guid.Empty || string.IsNullOrWhiteSpace(characterId.Value))
             return;
         lock (gate)
+        {
             inboundRuntimeTargets.Remove(new InboundRuntimeTargetKey(proposalId, characterId.Value));
+            foreach (var key in pendingProfiles.Keys.Where(key =>
+                         key.ProposalId == proposalId &&
+                         string.Equals(key.CharacterId, characterId.Value, StringComparison.Ordinal)).ToList())
+                pendingProfiles.Remove(key);
+        }
+    }
+
+    internal bool TryGetInboundIntegrationProfile(
+        Guid proposalId,
+        string senderIslandId,
+        string ownerId,
+        OpaqueCharacterId characterId,
+        out IntegrationProfile profile)
+    {
+        profile = null!;
+        if (proposalId == Guid.Empty ||
+            !IsBoundedLocatorValue(senderIslandId, AutoPartyProtocol.MaximumIdentifierLength) ||
+            !IsBoundedLocatorValue(ownerId, AutoPartyProtocol.MaximumIdentifierLength) ||
+            !IsBoundedLocatorValue(characterId.Value, AutoPartyProtocol.MaximumIdentifierLength))
+            return false;
+        lock (gate)
+        {
+            var key = new InboundProfileKey(proposalId, senderIslandId, ownerId, characterId.Value);
+            if (!pendingProfiles.TryGetValue(key, out profile!) || profile.Header.ExpiresAt <= utcNow())
+            {
+                pendingProfiles.Remove(key);
+                profile = null!;
+                return false;
+            }
+            return true;
+        }
     }
 
     public DadAutoPartyPairingAttemptResult? LastPairingAttemptResult { get; private set; }
@@ -1412,6 +1448,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     public void UpdateFramework()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        DispatchExpiredRuntimeTargetsFramework();
         PrepareInboundResponsesFramework();
         ObserveActiveExecution();
         if (activeExecution != null)
@@ -1568,6 +1605,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         authenticator = null;
         RemoveTransientRoutes(static (_, _) => true);
+        RemoveInboundRuntimeTargets(static (_, _) => true);
         lock (gate)
         {
             if (completePendingOperations)
@@ -1594,7 +1632,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 awaitingRelayReceipts.Remove(messageId);
             pendingAllianceOutbound.Clear();
             pendingAllianceInbound.Clear();
-            inboundRuntimeTargets.Clear();
+            pendingProfiles.Clear();
             runtimeAdmissionValidatedProposalIds.Clear();
         }
         keyResolver?.Dispose();
@@ -2145,7 +2183,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                         binding.Target.Clone(),
                         plan,
                         state.Proposal.Header.SenderIslandId.Value,
-                        state.Proposal.RequesterOwnerId.Value,
+                        binding.Participant.OwnerId.Value,
                         runtimeExpiry);
             }
         }
@@ -2272,6 +2310,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 if (IsRelayControl(pending.Contract))
                     awaitingRelayReceipts[pending.Contract.Header.MessageId] = pending;
             }
+            RefreshSnapshotCounts();
         }
     }
 
@@ -2313,6 +2352,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     {
                         DadAutoPartyParticipantCommandKind.Proposal => BuildRunProposal(command),
                         DadAutoPartyParticipantCommandKind.ProposalRenewal => BuildProposalRenewal(command),
+                        DadAutoPartyParticipantCommandKind.IntegrationProfile => BuildIntegrationProfile(command),
                         DadAutoPartyParticipantCommandKind.Execution => BuildExecutionOperation(command),
                         DadAutoPartyParticipantCommandKind.Revocation => BuildRevocation(command),
                         _ => throw new InvalidOperationException("dad-relay-participant-command-invalid"),
@@ -2362,6 +2402,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 PreflightResult value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 SessionLease value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 ParticipantInviteLocator value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
+                IntegrationProfile value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 ExecutionOperation value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 ExecutionOperationReceipt value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
                 AllianceRecruitmentOperation value => await SealAndSendAsync(value, cancellationToken).ConfigureAwait(false),
@@ -2606,6 +2647,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             return DispatchResult.Deny(result.SafeCode);
         pendingOperationStore.ClearDeregistration(pending.DeregistrationId);
         inboundProposalService.Clear();
+        RemoveInboundRuntimeTargets(static (_, _) => true);
         lock (gate)
         {
             foreach (var query in directoryQueries.Values.ToList())
@@ -2624,7 +2666,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             pendingAllianceInbound.Clear();
             pendingInboundProposalEvaluations.Clear();
             pendingInboundProposalIds.Clear();
-            inboundRuntimeTargets.Clear();
+            pendingProfiles.Clear();
         }
         ResetSecurity();
         return DispatchResult.Allow(result.SafeCode);
@@ -3227,9 +3269,9 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                      related.Contract.Header.ExpiresAt > utcNow())
                 _ = TryEnqueueControl(related.Contract);
         }
+        UpdateSnapshot(receipt.SafeCode);
         if (related?.Contract is PairingIntent or PairingAttemptCancellation)
         {
-            UpdateSnapshot(receipt.SafeCode);
             return ValueTask.FromResult(DispatchResult.Allow(receipt.SafeCode));
         }
         if (listingReceipt)
@@ -3496,9 +3538,50 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         lock (gate)
         {
+            if (!inboundProposalService.TryGetActive(profile.ProposalId, out var state) ||
+                state.Proposal.ExecutionPlan is not { UseFrenRider: true } plan ||
+                profile.Header.SenderIslandId != state.Proposal.Header.SenderIslandId ||
+                !string.Equals(profile.Header.RecipientIslandId.Value, configuration.RegisteredIslandId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(profile.OwnerId.Value, configuration.RegisteredOwnerId, StringComparison.Ordinal) ||
+                profile.Header.ExpiresAt > state.Proposal.Header.ExpiresAt ||
+                plan.Participants.Count(participant =>
+                    participant.OwnerId == profile.OwnerId &&
+                    string.Equals(participant.OwnerIslandId.Value, configuration.RegisteredIslandId,
+                        StringComparison.Ordinal) &&
+                    participant.CharacterId == profile.CharacterId) != 1 ||
+                state.OwnedParticipants.Count(participant =>
+                    participant.OwnerId == profile.OwnerId &&
+                    participant.OwnerIslandId.Value == configuration.RegisteredIslandId &&
+                    participant.CharacterId == profile.CharacterId) != 1)
+            {
+                return ValueTask.FromResult(DispatchResult.Deny("dad-integration-profile-route-mismatch"));
+            }
+            try
+            {
+                _ = FrenRiderProfileCodec.Decode(profile.FrenRiderProfile);
+            }
+            catch (ProtocolException)
+            {
+                return ValueTask.FromResult(DispatchResult.Deny("dad-integration-profile-invalid"));
+            }
+
+            var key = new InboundProfileKey(
+                profile.ProposalId,
+                profile.Header.SenderIslandId.Value,
+                profile.OwnerId.Value,
+                profile.CharacterId.Value);
+            if (pendingProfiles.TryGetValue(key, out var existing))
+            {
+                var same = existing.ProfileId == profile.ProfileId &&
+                           existing.FrenRiderProfile.AsSpan().SequenceEqual(profile.FrenRiderProfile.AsSpan());
+                return ValueTask.FromResult(same
+                    ? DispatchResult.Allow("dad-integration-profile-idempotent")
+                    : DispatchResult.Deny("dad-integration-profile-conflict"));
+            }
             if (pendingProfiles.Count >= MaximumPendingOutbound)
-                pendingProfiles.Remove(pendingProfiles.Keys.First());
-            pendingProfiles[profile.ProposalId] = profile;
+                return ValueTask.FromResult(DispatchResult.Deny("dad-integration-profile-capacity"));
+            pendingProfiles.Add(key, profile);
         }
         return ValueTask.FromResult(DispatchResult.Allow("dad-integration-profile-recorded"));
     }
@@ -3604,7 +3687,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         var operation = pending.Operation;
         IntegrationProfile? profile;
         lock (gate)
-            pendingProfiles.TryGetValue(operation.ProposalId, out profile);
+            pendingProfiles.TryGetValue(new InboundProfileKey(
+                operation.ProposalId,
+                operation.Header.SenderIslandId.Value,
+                operation.OwnerId.Value,
+                operation.CharacterId.Value), out profile);
         return operation.Kind switch
         {
             ExecutionOperationKind.Prepare => service.Execution.PrepareAsync(operation, profile),
@@ -4035,6 +4122,32 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             command.RenewalGeneration);
     }
 
+    private IntegrationProfile BuildIntegrationProfile(DadAutoPartyParticipantCommand command)
+    {
+        if (command.FrenRiderProfile.IsDefaultOrEmpty)
+            throw new InvalidOperationException("dad-relay-integration-profile-missing");
+        _ = FrenRiderProfileCodec.Decode(command.FrenRiderProfile);
+        return new IntegrationProfile(
+            CreateHeader(
+                new IslandId(command.IslandId),
+                $"integration-profile-{command.CommandId:N}",
+                Min(command.ExpiresAt, utcNow() + TimeSpan.FromMinutes(30)),
+                command.CommandId,
+                command.ExpectedStateGeneration),
+            command.CommandId,
+            command.ProposalId,
+            new OwnerId(command.OwnerId),
+            EnableLevelSync: false,
+            EnableUnrestrictedParty: false,
+            EnableMinimumItemLevel: false,
+            EnableSilenceEcho: false,
+            ["FrenRider"],
+            "frenrider-profile",
+            command.ExpectedStateGeneration,
+            new OpaqueCharacterId(command.OpaqueCharacterId),
+            command.FrenRiderProfile);
+    }
+
     private ExecutionOperation BuildExecutionOperation(DadAutoPartyParticipantCommand command)
     {
         if (command.OperationKind == null)
@@ -4294,6 +4407,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
             PreflightResult value => CanonicalCborCodec.EncodeUnsigned(value),
             SessionLease value => CanonicalCborCodec.EncodeUnsigned(value),
             ParticipantInviteLocator value => CanonicalCborCodec.EncodeUnsigned(value),
+            IntegrationProfile value => CanonicalCborCodec.EncodeUnsigned(value),
             ExecutionOperation value => CanonicalCborCodec.EncodeUnsigned(value),
             ExecutionOperationReceipt value => CanonicalCborCodec.EncodeUnsigned(value),
             AllianceRecruitmentOperation value => CanonicalCborCodec.EncodeUnsigned(value),
@@ -4529,7 +4643,15 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 .Select(static pair => pair.Key)
                 .ToList();
             foreach (var key in keys)
+            {
+                QueueExpiredRuntimeTargetLocked(key, inboundRuntimeTargets[key]);
                 inboundRuntimeTargets.Remove(key);
+                foreach (var profileKey in pendingProfiles.Keys.Where(profileKey =>
+                             profileKey.ProposalId == key.ProposalId &&
+                             string.Equals(profileKey.CharacterId, key.OpaqueCharacterId,
+                                 StringComparison.Ordinal)).ToList())
+                    pendingProfiles.Remove(profileKey);
+            }
             return keys.Count;
         }
     }
@@ -4622,7 +4744,51 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 foreach (var key in inboundRuntimeTargets.Keys
                              .Where(key => key.ProposalId == proposalId)
                              .ToList())
+                {
+                    QueueExpiredRuntimeTargetLocked(key, inboundRuntimeTargets[key]);
                     inboundRuntimeTargets.Remove(key);
+                    foreach (var profileKey in pendingProfiles.Keys.Where(profileKey =>
+                                 profileKey.ProposalId == key.ProposalId &&
+                                 string.Equals(profileKey.CharacterId, key.OpaqueCharacterId,
+                                     StringComparison.Ordinal)).ToList())
+                        pendingProfiles.Remove(profileKey);
+                }
+            }
+        }
+    }
+
+    private void QueueExpiredRuntimeTargetLocked(
+        InboundRuntimeTargetKey key,
+        InboundRuntimeTarget target)
+    {
+        if (expiredRuntimeTargetHandler == null)
+            return;
+        expiredRuntimeTargets.Enqueue(new DadAutoPartyExpiredRuntimeTarget(
+            key.ProposalId,
+            target.SenderIslandId,
+            target.OwnerId,
+            key.OpaqueCharacterId));
+    }
+
+    private void DispatchExpiredRuntimeTargetsFramework()
+    {
+        if (expiredRuntimeTargetHandler == null)
+            return;
+        List<DadAutoPartyExpiredRuntimeTarget> expired = [];
+        lock (gate)
+        {
+            while (expiredRuntimeTargets.Count > 0)
+                expired.Add(expiredRuntimeTargets.Dequeue());
+        }
+        foreach (var target in expired)
+        {
+            try
+            {
+                expiredRuntimeTargetHandler(target);
+            }
+            catch (Exception)
+            {
+                diagnostic("dad-inbound-runtime-target-cleanup-failed");
             }
         }
     }
@@ -4637,6 +4803,20 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 SafeCode = DadAutoPartyConfiguration.NormalizeSafeCode(safeCode) is { Length: > 0 } normalized
                     ? normalized
                     : "dad-relay-status-invalid",
+                ObservedAt = utcNow(),
+                PendingOutboundCount = pendingOutbound.Count,
+                AwaitingRelayReceiptCount = awaitingRelayReceipts.Count,
+                PendingExecutionCount = pendingExecutions.Count + (activeExecution == null ? 0 : 1),
+            });
+        }
+    }
+
+    private void RefreshSnapshotCounts()
+    {
+        lock (gate)
+        {
+            Volatile.Write(ref snapshot, Snapshot with
+            {
                 ObservedAt = utcNow(),
                 PendingOutboundCount = pendingOutbound.Count,
                 AwaitingRelayReceiptCount = awaitingRelayReceipts.Count,
@@ -5043,6 +5223,12 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         DateTimeOffset ValidUntil);
 
     private readonly record struct InboundRuntimeTargetKey(Guid ProposalId, string OpaqueCharacterId);
+
+    private readonly record struct InboundProfileKey(
+        Guid ProposalId,
+        string SenderIslandId,
+        string OwnerId,
+        string CharacterId);
 
     private sealed record InboundRuntimeTarget(
         string SlotId,

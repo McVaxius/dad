@@ -13,6 +13,7 @@ public enum DadGuideFlow
     FirstPreset,
     Crew,
     Schedule,
+    AutoParty,
 }
 
 internal sealed record DadGuideProgress(
@@ -73,6 +74,7 @@ internal static class DadGuideReadiness
             DadGuideFlow.FirstPreset => BuildFirstPresetProgress(plugin),
             DadGuideFlow.Crew => BuildCrewProgress(plugin),
             DadGuideFlow.Schedule => BuildScheduleProgress(plugin),
+            DadGuideFlow.AutoParty => BuildAutoPartyProgress(plugin),
             _ => new DadGuideProgress(DadGuideFlow.Landing, "DAD Guide", 0, 0, "Choose a guided task."),
         };
 
@@ -179,6 +181,26 @@ internal static class DadGuideReadiness
                 (schedule?.Entries.Count > 0, "Add presets in the order they should run."),
                 (entriesValid, "Replace entries that reference missing presets."),
                 (lastDryRun?.Success == true, "Run a successful dry-run for this schedule."),
+            ]);
+    }
+
+    private static DadGuideProgress BuildAutoPartyProgress(Plugin plugin)
+    {
+        var snapshot = plugin.BuildMiniAutoPartySnapshot();
+        var firstFormationComplete = snapshot.ExactFormationRecognized &&
+                                     snapshot.ExactFormationPhase is nameof(DadCrewFormationPhase.RegularGroupReady)
+                                         or nameof(DadCrewFormationPhase.Disbanding)
+                                         or nameof(DadCrewFormationPhase.Completed);
+        return Progress(
+            DadGuideFlow.AutoParty,
+            "Set up AutoParty",
+            [
+                (snapshot.Enabled, "Enable AutoParty in its full window."),
+                (snapshot.EndpointReady, "Register this endpoint and wait for its private mailbox to become ready."),
+                (snapshot.ActivePairingCount > 0, "Complete reciprocal pairing with another DAD."),
+                (snapshot.PrivateDirectoryListingCount > 0, "Refresh the paired private directory until a listing is available."),
+                (firstFormationComplete, "Create the first exact formation in the full AutoParty window."),
+                (snapshot.GuardedDisbandComplete, "Use guarded disband to release the exact held formation."),
             ]);
     }
 

@@ -1,3 +1,5 @@
+using dad.Services;
+
 namespace dad.Models;
 
 public sealed class DadMiniStatusSnapshot
@@ -20,6 +22,113 @@ public sealed class DadMiniStatusSnapshot
     public string RecentFailure { get; set; } = string.Empty;
     public DadStopAllStatus? LastStopAll { get; set; }
     public DadWakeTakeoverResultDto? LocalTakeover { get; set; }
+    public DadMiniAutoPartySnapshot AutoParty { get; set; } = new();
+}
+
+public sealed class DadMiniAutoPartySnapshot
+{
+    public bool Enabled { get; set; }
+    public bool EndpointReady { get; set; }
+    public string EndpointState { get; set; } = string.Empty;
+    public int ActivePairingCount { get; set; }
+    public int OnlinePairingCount { get; set; }
+    public int PrivateDirectoryListingCount { get; set; }
+    public string DirectoryState { get; set; } = string.Empty;
+    public bool DirectoryRefreshEligible { get; set; }
+    public bool DirectoryRefreshInProgress { get; set; }
+    public TimeSpan DirectoryRefreshCooldownRemaining { get; set; }
+    public bool ExactFormationRecognized { get; set; }
+    public string ExactFormationPhase { get; set; } = string.Empty;
+    public string ExactFormationSummary { get; set; } = string.Empty;
+    public bool GuardedDisbandComplete { get; set; }
+    public bool CanGuardedDisband { get; set; }
+    public string GuardedDisbandBlocker { get; set; } = string.Empty;
+    public string FirstBlocker { get; set; } = string.Empty;
+}
+
+internal static class DadMiniAutoPartyProjection
+{
+    internal static DadMiniAutoPartySnapshot Build(
+        bool dadEnabled,
+        DadAutoPartyConfiguration configuration,
+        DadAutoPartyEndpointSnapshot endpoint,
+        DadAutoPartyDirectorySnapshot directory,
+        DadCrewFormationStatus formation,
+        bool refreshInProgress,
+        TimeSpan refreshCooldownRemaining,
+        DadPairedDirectoryRefreshResult lastRefresh,
+        bool canGuardedDisband,
+        string guardedDisbandBlocker)
+    {
+        var activePairings = configuration.Pairings
+            .Where(static pairing => pairing.IsActive)
+            .ToList();
+        var activeIslands = activePairings
+            .Select(static pairing => pairing.IslandId)
+            .ToHashSet(StringComparer.Ordinal);
+        var onlinePairings = activeIslands.Count(directory.OnlineIslandIds.Contains);
+        var privateListings = directory.Listings.Count(listing =>
+            activeIslands.Contains(listing.SharingIslandId));
+        var endpointReady = configuration.IsRegistrationActive &&
+                            endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
+        var exactFormation =
+            DadAutoPartyFreeformRules.IsFreeformGroupId(formation.SourceGroupId) &&
+            string.Equals(formation.SourceGroupId, formation.EffectiveGroupId, StringComparison.Ordinal);
+        var directoryState = refreshInProgress
+            ? "Refreshing paired directory."
+            : privateListings > 0
+                ? $"{privateListings} private listing(s) from reciprocal pairings."
+                : lastRefresh.CompletedAtUtc != DateTime.MinValue
+                    ? lastRefresh.OperatorStatus
+                    : "Paired directory has not been refreshed yet.";
+        var firstBlocker = !dadEnabled
+            ? "Enable DAD."
+            : !configuration.Enabled
+                ? "Enable AutoParty."
+                : !endpointReady
+                    ? "Complete endpoint registration and wait for mailbox readiness."
+                    : activePairings.Count == 0
+                        ? "Complete reciprocal pairing with another DAD."
+                        : privateListings == 0
+                            ? "Refresh the paired private directory and resolve its first listing blocker."
+                            : formation.Phase == DadCrewFormationPhase.Blocked && exactFormation
+                                ? string.IsNullOrWhiteSpace(formation.BlockedReason)
+                                    ? formation.Summary
+                                    : formation.BlockedReason
+                                : !exactFormation
+                                    ? "Create the first exact formation from the full AutoParty window."
+                                    : string.Empty;
+
+        return new DadMiniAutoPartySnapshot
+        {
+            Enabled = configuration.Enabled,
+            EndpointReady = endpointReady,
+            EndpointState = endpointReady
+                ? "Ready"
+                : $"{endpoint.State} | {endpoint.SafeCode}",
+            ActivePairingCount = activePairings.Count,
+            OnlinePairingCount = onlinePairings,
+            PrivateDirectoryListingCount = privateListings,
+            DirectoryState = directoryState,
+            DirectoryRefreshEligible = dadEnabled &&
+                                       configuration.Enabled &&
+                                       endpointReady &&
+                                       activePairings.Count > 0 &&
+                                       !refreshInProgress &&
+                                       refreshCooldownRemaining <= TimeSpan.Zero,
+            DirectoryRefreshInProgress = refreshInProgress,
+            DirectoryRefreshCooldownRemaining = refreshCooldownRemaining,
+            ExactFormationRecognized = exactFormation,
+            ExactFormationPhase = exactFormation ? formation.Phase.ToString() : "Idle",
+            ExactFormationSummary = exactFormation
+                ? formation.Summary
+                : "No exact AutoParty freeform formation is active or retained.",
+            GuardedDisbandComplete = exactFormation && formation.Phase == DadCrewFormationPhase.Completed,
+            CanGuardedDisband = canGuardedDisband,
+            GuardedDisbandBlocker = guardedDisbandBlocker,
+            FirstBlocker = firstBlocker,
+        };
+    }
 }
 
 public static class DadMiniStatusSnapshotBuilder

@@ -357,8 +357,17 @@ public static class DadLevelSeekEvaluator
             }
 
             var character = matches[0];
-            var jobId = slot.RequiredJobId ?? character.CurrentJobId;
-            var level = ResolveLevel(character, jobId);
+            var explicitJob = slot.RequiredJobId is > 0;
+            var jobId = explicitJob
+                ? slot.RequiredJobId
+                : character.IsLiveConnected && character.CurrentJobId is > 0
+                    ? character.CurrentJobId
+                    : null;
+            var level = explicitJob
+                ? ResolveExplicitJobLevel(character, jobId)
+                : jobId.HasValue && character.CurrentLevel is > 0
+                    ? character.CurrentLevel
+                    : null;
             var state = !jobId.HasValue || !level.HasValue
                 ? DadLevelSeekRowState.Unknown
                 : level.Value < target
@@ -366,9 +375,17 @@ public static class DadLevelSeekEvaluator
                     : DadLevelSeekRowState.Satisfied;
             var summary = state switch
             {
-                DadLevelSeekRowState.Satisfied => $"{slot.SlotId} job {jobId} is level {level}, meeting target {target}.",
-                DadLevelSeekRowState.BelowTarget => $"{slot.SlotId} job {jobId} is level {level}, below target {target}.",
-                _ => $"{slot.SlotId} required level is unknown for target {target}.",
+                DadLevelSeekRowState.Satisfied when explicitJob =>
+                    $"{slot.SlotId} job {jobId} is level {level}, meeting target {target} (exact job evidence).",
+                DadLevelSeekRowState.Satisfied =>
+                    $"{slot.SlotId} live job {jobId} is level {level}, meeting target {target}.",
+                DadLevelSeekRowState.BelowTarget when explicitJob =>
+                    $"{slot.SlotId} job {jobId} is level {level}, below target {target} (exact job evidence).",
+                DadLevelSeekRowState.BelowTarget =>
+                    $"{slot.SlotId} live job {jobId} is level {level}, below target {target}.",
+                _ when !explicitJob =>
+                    $"{slot.SlotId} requires a live current job and level for Any job target {target}; evidence is unknown.",
+                _ => $"{slot.SlotId} required job {jobId} level is unknown for target {target}.",
             };
             rows.Add(new DadLevelSeekRowEvaluation(slot.SlotId, target, jobId, level, state, summary));
         }
@@ -411,7 +428,7 @@ public static class DadLevelSeekEvaluator
                string.Equals(character.AccountAlias?.Trim(), slot.RequiredAccountKey.Value, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static int? ResolveLevel(DadAcquiredCharacter character, uint? jobId)
+    private static int? ResolveExplicitJobLevel(DadAcquiredCharacter character, uint? jobId)
     {
         if (!jobId.HasValue || jobId.Value == 0)
             return null;
@@ -419,7 +436,7 @@ public static class DadLevelSeekEvaluator
         if (character.JobLevels.TryGetValue(jobId.Value, out var level) && level > 0)
             return level;
 
-        return character.CurrentJobId == jobId && character.CurrentLevel is > 0
+        return character.IsLiveConnected && character.CurrentJobId == jobId && character.CurrentLevel is > 0
             ? character.CurrentLevel
             : null;
     }

@@ -273,6 +273,9 @@ public sealed class DadP1178PresetRulesTests
             AccountId = key == "one" ? "account1" : "account2",
             CurrentJobId = currentJob,
             CurrentLevel = currentLevel,
+            Source = DadCharacterSource.LocalRuntime,
+            Freshness = DadSnapshotFreshness.Live,
+            Readiness = DadReadinessState.Ready,
             JobLevels = currentJob.HasValue && currentLevel.HasValue
                 ? new Dictionary<uint, int> { [currentJob.Value] = currentLevel.Value }
                 : [],

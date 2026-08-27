@@ -10,6 +10,7 @@ using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.IoC;
 using Dalamud.Interface.Windowing;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using ClassJob = Lumina.Excel.Sheets.ClassJob;
@@ -45,6 +46,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     public ConfigManager ConfigManager { get; }
@@ -72,6 +74,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadRosterCatalogService RosterCatalogService { get; }
     public DadProfileDirectoryService ProfileDirectoryService { get; }
     public DadKrangleService KrangleService { get; }
+    internal DadKranglerPrivacyLeaseService KranglerPrivacyLeaseService { get; }
     public DadShareService ShareService { get; }
     internal DadCharacterFilterSessionState CharacterFilterSessionState { get; } = new();
     public DadPresetPlannerOptions PlannerOptions => Configuration.PlannerOptions;
@@ -85,6 +88,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadNpcDutyQueueService NpcDutyQueueService { get; }
     public DadDutySupportAdsService DutySupportAdsService { get; }
     public DadCombatRotationService CombatRotationService { get; }
+    internal DadFrenRiderProfileTransferService FrenRiderProfileTransferService { get; }
     public DadMogtomeIpcService MogtomeIpcService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
     public DadWorkerExecutionService WorkerExecutionService { get; }
@@ -124,6 +128,9 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadConfigurationPersistenceCoordinator configurationPersistence;
     private readonly CancellationTokenSource backgroundCancellation = new();
     private readonly HashSet<(Guid ProposalId, string CharacterId)> completedInboundAutoPartyForms = [];
+    private readonly Dictionary<DadFrenRiderProfileOwnership, DadFrenRiderProfileApplicationResult>
+        inboundFrenRiderProfileOutcomes = [];
+    private readonly object inboundFrenRiderProfileGate = new();
     private readonly object authorityCacheGate = new();
     private IDtrBarEntry? dtrEntry;
     private DadRunResult? cachedAuthorityRun;
@@ -282,10 +289,13 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Save,
             () => Configuration.PluginEnabled,
             autoPartyWebhookStore);
+        FrenRiderProfileTransferService = new DadFrenRiderProfileTransferService(PluginInterface, Log);
         AutoPartyParticipantBridge = new DadAutoPartyParticipantBridge(
             Configuration.AutoParty,
             GetCurrentAutoPartyRemoteBindings,
-            GetCurrentAutoPartyCrewCandidates);
+            GetCurrentAutoPartyCrewCandidates,
+            () => Configuration.CombatRotationMode == DadCombatRotationMode.UseFrenRider,
+            FrenRiderProfileTransferService.ResolveAndEncode);
         AutoPartyEndpointService = new DadAutoPartyEndpointService(
             Configuration.AutoParty,
             autoPartyWebhookStore,
@@ -348,6 +358,7 @@ public sealed class Plugin : IDalamudPlugin
             restoreInboundProposal: autoPartyInboundAdmissionService.RestoreProposal,
             renewInboundProposal: (proposal, previousExpiresAt, newExpiresAt) =>
                 AutoPartyService.RenewOwnedProposal(proposal.ProposalId, previousExpiresAt, newExpiresAt).Allowed,
+            expiredRuntimeTargetHandler: ReleaseExpiredInboundFrenRiderProfile,
             diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode),
             saveConfiguration: Configuration.Save);
         AutoPartyParticipantBridge.ConfigureDirectoryAuthorityGate(
@@ -365,6 +376,9 @@ public sealed class Plugin : IDalamudPlugin
         PresenceService.ConfigureOceTravelCapacityProofProvider(RosterCatalogService.BuildLocalOceTravelCapacityProof);
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
+        KranglerPrivacyLeaseService = new DadKranglerPrivacyLeaseService(PluginInterface, Log);
+        KranglerPrivacyLeaseService.SetDesired(
+            Configuration.PluginEnabled && Configuration.KranglerPrivacyLeaseEnabled);
         ShareService = new DadShareService(forceKrangle: KrangleService.KrangleName);
         ModuleRegistry = new DadModuleRegistry();
         PresetProviderService = new DadPresetProviderService(
@@ -569,7 +583,19 @@ public sealed class Plugin : IDalamudPlugin
             DutySupportAdsService,
             CombatRotationService,
             Log);
-        QuestionableBridge = new DadQuestionableReflectionBridge(PluginInterface, Framework, DutyIpcService, Log, () => Configuration.QuestionableBridgeEnabled);
+        QuestionableBridge = new DadQuestionableReflectionBridge(
+            PluginInterface,
+            Framework,
+            DutyIpcService,
+            Log,
+            () => Configuration.QuestionableBridgeEnabled,
+            message => NotificationManager.AddNotification(new Notification
+            {
+                Type = NotificationType.Warning,
+                Title = PluginInfo.DisplayName,
+                Content = message,
+                InitialDuration = TimeSpan.FromSeconds(10),
+            }));
 
         Log.Information("[dad] Plugin loaded.");
     }
@@ -583,6 +609,8 @@ public sealed class Plugin : IDalamudPlugin
             RequestedAtUtc = DateTime.UtcNow,
             Reason = "DAD unloading.",
         });
+        ReleaseAllInboundFrenRiderProfiles();
+        KranglerPrivacyLeaseService.Dispose();
         backgroundCancellation.Cancel();
         backgroundTasks.Dispose();
         PartyInviteGateway.Reset();
@@ -645,6 +673,8 @@ public sealed class Plugin : IDalamudPlugin
     public void TogglePresetBatchWizardUi() => presetBatchWizardWindow.Toggle();
 
     public void ToggleAutoPartyUi() => autoPartyWindow.Toggle();
+
+    public void OpenAutoPartyUi() => autoPartyWindow.IsOpen = true;
 
     public void OpenSetupWizard() => setupWizardWindow.OpenLanding();
 
@@ -2542,18 +2572,45 @@ public sealed class Plugin : IDalamudPlugin
 
     internal string RequestAutoPartyFormationDisband()
     {
-        var formation = SchedulerService.GetCrewFormationStatus();
-        var stagedGroupId = autoPartyRuntimeBindingStore.StagedGroupId;
-        if (!formation.IsActive ||
-            !DadAutoPartyFreeformRules.IsFreeformGroupId(formation.SourceGroupId) ||
-            !string.Equals(formation.SourceGroupId, formation.EffectiveGroupId, StringComparison.Ordinal) ||
-            !string.Equals(formation.SourceGroupId, stagedGroupId, StringComparison.Ordinal))
+        if (!CanDisbandAutoPartyFormation(out var unavailable))
         {
-            const string unavailable = "No exact AutoParty freeform formation is active for guarded disband.";
             PrintStatus(unavailable);
             return unavailable;
         }
         return RequestCrewToolsDisband();
+    }
+
+    internal bool CanDisbandAutoPartyFormation(out string blocker)
+    {
+        var formation = SchedulerService.GetCrewFormationStatus();
+        var exactFreeform = formation.IsActive &&
+                            DadAutoPartyFreeformRules.IsFreeformGroupId(formation.SourceGroupId) &&
+                            string.Equals(formation.SourceGroupId, formation.EffectiveGroupId, StringComparison.Ordinal) &&
+                            string.Equals(
+                                formation.SourceGroupId,
+                                autoPartyRuntimeBindingStore.StagedGroupId,
+                                StringComparison.Ordinal);
+        if (!exactFreeform)
+        {
+            blocker = "No exact AutoParty freeform formation is active for guarded disband.";
+            return false;
+        }
+        if (formation.Mode != DadCrewFormationMode.RegularParty ||
+            formation.Phase != DadCrewFormationPhase.RegularGroupReady)
+        {
+            blocker = "Guarded disband becomes available when the exact AutoParty formation reaches GroupReady.";
+            return false;
+        }
+        if (!DadCrewToolsRules.IsExactRegularGroupReady(
+                RunCoordinatorService.GetLocalResult(),
+                formation.RequestId))
+        {
+            blocker = "The local coordinator does not hold the exact AutoParty formation run at GroupReady.";
+            return false;
+        }
+
+        blocker = string.Empty;
+        return true;
     }
 
     private DadCrewFormationStatus BlockFreeformFormation(
@@ -2653,6 +2710,8 @@ public sealed class Plugin : IDalamudPlugin
                 CancellationState = DadRunCancellationState.Finalized,
                 Reason = "Authenticated AutoParty restoration complete.",
             });
+            if (!ReleaseInboundFrenRiderProfile(operation, context, out var releaseSafeCode))
+                return ValueTask.FromResult(Denied(releaseSafeCode));
             autoPartyRelayPump.RemoveInboundExecutionContext(operation.ProposalId, operation.CharacterId);
             return ValueTask.FromResult(Completed(
                 DadRunPhase.Finalizing,
@@ -2681,11 +2740,8 @@ public sealed class Plugin : IDalamudPlugin
 
         if (operation.Kind == ExecutionOperationKind.Prepare)
         {
-            if (profile != null &&
-                (profile.ProposalId != operation.ProposalId ||
-                 profile.OwnerId != operation.OwnerId ||
-                 profile.ExpectedStateGeneration != operation.ExpectedStateGeneration))
-                return ValueTask.FromResult(Denied("dad-profile-contract-mismatch"));
+            if (!TryValidateInboundFrenRiderProfile(operation, context, profile, out var profileSafeCode))
+                return ValueTask.FromResult(Denied(profileSafeCode));
             return ValueTask.FromResult(Completed(DadRunPhase.Planning, "dad-inbound-prepare-authorized"));
         }
         if (operation.Kind == ExecutionOperationKind.Reserve)
@@ -2700,6 +2756,9 @@ public sealed class Plugin : IDalamudPlugin
                     DadRunPhase.AssemblingParty,
                     "dad-inbound-form-execution-pending"));
             }
+            if (operation.Kind == ExecutionOperationKind.Queue &&
+                !IsInboundFrenRiderQueueAllowed(operation, context, out var profileBlocker))
+                return ValueTask.FromResult(Denied(profileBlocker));
             if (!DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(
                     operation,
                     context,
@@ -2894,6 +2953,8 @@ public sealed class Plugin : IDalamudPlugin
                 followerObservedContentIds.Contains(inviter.ContentId) &&
                 followerObservedContentIds.Contains(localTarget.ContentId))
             {
+                if (!TryApplyInboundFrenRiderProfile(operation, runtimeContext, out var followerProfileSafeCode))
+                    return ValueTask.FromResult(Denied(followerProfileSafeCode));
                 completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
                 return ValueTask.FromResult(new DadAutoPartyExecutionResult(
                     operation.OperationId,
@@ -2901,7 +2962,9 @@ public sealed class Plugin : IDalamudPlugin
                     operation.Kind,
                     ExecutionOutcome.Completed,
                     operation.FormationOnly ? DadRunPhase.GroupReady : DadRunPhase.AssemblingParty,
-                    "dad-inbound-follower-party-proof-complete",
+                    runtimeContext.ExecutionPlan.UseFrenRider
+                        ? followerProfileSafeCode
+                        : "dad-inbound-follower-party-proof-complete",
                     operation.ExpectedStateGeneration,
                     new DadAutoPartyObservedPartyReceipt(
                         followerObservedContentIds.Length,
@@ -2940,6 +3003,8 @@ public sealed class Plugin : IDalamudPlugin
                 operation.ExpectedStateGeneration));
         }
 
+        if (!TryApplyInboundFrenRiderProfile(operation, runtimeContext, out var profileSafeCode))
+            return ValueTask.FromResult(Denied(profileSafeCode));
         completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
         return ValueTask.FromResult(new DadAutoPartyExecutionResult(
             operation.OperationId,
@@ -2947,7 +3012,9 @@ public sealed class Plugin : IDalamudPlugin
             operation.Kind,
             ExecutionOutcome.Completed,
             operation.FormationOnly ? DadRunPhase.GroupReady : DadRunPhase.AssemblingParty,
-            operation.FormationOnly ? "dad-inbound-group-ready" : "dad-inbound-form-complete",
+            runtimeContext.ExecutionPlan.UseFrenRider
+                ? profileSafeCode
+                : operation.FormationOnly ? "dad-inbound-group-ready" : "dad-inbound-form-complete",
             operation.ExpectedStateGeneration,
             new DadAutoPartyObservedPartyReceipt(
                 observedContentIds.Length,
@@ -2955,6 +3022,191 @@ public sealed class Plugin : IDalamudPlugin
                 "partylist-authoritative",
                 DateTime.UtcNow)));
     }
+
+    private bool TryValidateInboundFrenRiderProfile(
+        ExecutionOperation operation,
+        DadAutoPartyInboundExecutionContext context,
+        IntegrationProfile? profile,
+        out string safeCode)
+    {
+        safeCode = "dad-inbound-frenrider-profile-not-required";
+        if (!context.ExecutionPlan.UseFrenRider)
+            return true;
+        if (profile == null ||
+            profile.ProposalId != operation.ProposalId ||
+            profile.OwnerId != operation.OwnerId ||
+            profile.CharacterId != operation.CharacterId ||
+            !string.Equals(profile.Header.SenderIslandId.Value, context.SenderIslandId, StringComparison.Ordinal) ||
+            !string.Equals(profile.Header.RecipientIslandId.Value, Configuration.AutoParty.RegisteredIslandId,
+                StringComparison.Ordinal) ||
+            !string.Equals(context.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal) ||
+            profile.EnabledIntegrationIds.Length != 1 ||
+            !string.Equals(profile.EnabledIntegrationIds[0], "FrenRider", StringComparison.Ordinal) ||
+            profile.EnableLevelSync || profile.EnableUnrestrictedParty || profile.EnableMinimumItemLevel ||
+            profile.EnableSilenceEcho ||
+            context.ExecutionPlan.Participants.Count(participant =>
+                string.Equals(participant.OwnerId.Value, operation.OwnerId.Value, StringComparison.Ordinal) &&
+                string.Equals(participant.OwnerIslandId.Value, Configuration.AutoParty.RegisteredIslandId,
+                    StringComparison.Ordinal) &&
+                string.Equals(participant.CharacterId.Value, operation.CharacterId.Value, StringComparison.Ordinal) &&
+                string.Equals(participant.SlotId, context.Target.SlotId, StringComparison.OrdinalIgnoreCase)) != 1)
+        {
+            safeCode = "dad-inbound-frenrider-profile-route-mismatch";
+            return false;
+        }
+
+        try
+        {
+            _ = FrenRiderProfileCodec.Decode(profile.FrenRiderProfile);
+            safeCode = "dad-inbound-frenrider-profile-ready";
+            return true;
+        }
+        catch (ProtocolException)
+        {
+            safeCode = "dad-inbound-frenrider-profile-invalid";
+            return false;
+        }
+    }
+
+    private bool TryApplyInboundFrenRiderProfile(
+        ExecutionOperation operation,
+        DadAutoPartyInboundExecutionContext context,
+        out string safeCode)
+    {
+        safeCode = "dad-inbound-frenrider-profile-not-required";
+        if (!context.ExecutionPlan.UseFrenRider)
+            return true;
+        var ownership = BuildFrenRiderProfileOwnership(operation, context);
+        lock (inboundFrenRiderProfileGate)
+        {
+            if (inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out var existing))
+            {
+                safeCode = existing.SafeCode;
+                return existing.Success;
+            }
+        }
+        if (!autoPartyRelayPump.TryGetInboundIntegrationProfile(
+                ownership.ProposalId,
+                ownership.SenderIslandId,
+                ownership.OwnerId,
+                operation.CharacterId,
+                out var profile) ||
+            !TryValidateInboundFrenRiderProfile(operation, context, profile, out safeCode))
+        {
+            lock (inboundFrenRiderProfileGate)
+                inboundFrenRiderProfileOutcomes[ownership] =
+                    DadFrenRiderProfileApplicationResult.Failed(safeCode);
+            return false;
+        }
+
+        string profileJson;
+        try
+        {
+            profileJson = FrenRiderProfileCodec.Decode(profile.FrenRiderProfile);
+        }
+        catch (ProtocolException)
+        {
+            safeCode = "dad-inbound-frenrider-profile-invalid";
+            lock (inboundFrenRiderProfileGate)
+                inboundFrenRiderProfileOutcomes[ownership] =
+                    DadFrenRiderProfileApplicationResult.Failed(safeCode);
+            return false;
+        }
+        var applied = FrenRiderProfileTransferService.Apply(ownership, profileJson);
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes[ownership] = applied;
+        safeCode = applied.SafeCode;
+        return applied.Success;
+    }
+
+    private bool IsInboundFrenRiderQueueAllowed(
+        ExecutionOperation operation,
+        DadAutoPartyInboundExecutionContext context,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        if (!context.ExecutionPlan.UseFrenRider)
+            return true;
+        var ownership = BuildFrenRiderProfileOwnership(operation, context);
+        DadFrenRiderProfileApplicationResult? outcome;
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
+        return DadFrenRiderInboundQueueRules.IsAllowed(
+            useFrenRider: true,
+            outcome: outcome,
+            frenRiderLoaded: CombatRotationService.IsFrenRiderLoaded(),
+            out blocker);
+    }
+
+    private bool ReleaseInboundFrenRiderProfile(
+        ExecutionOperation operation,
+        DadAutoPartyInboundExecutionContext context,
+        out string safeCode)
+    {
+        var ownership = BuildFrenRiderProfileOwnership(operation, context);
+        DadFrenRiderProfileApplicationResult? outcome;
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
+        if (outcome?.Outcome != DadFrenRiderProfileApplicationOutcome.TemporaryApplied)
+        {
+            lock (inboundFrenRiderProfileGate)
+                inboundFrenRiderProfileOutcomes.Remove(ownership);
+            safeCode = "dad-frenrider-profile-release-not-required";
+            return true;
+        }
+        if (!FrenRiderProfileTransferService.ReleaseTemporary(ownership, out safeCode))
+            return false;
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes.Remove(ownership);
+        return true;
+    }
+
+    private void ReleaseAllInboundFrenRiderProfiles()
+    {
+        DadFrenRiderProfileOwnership[] temporary;
+        lock (inboundFrenRiderProfileGate)
+            temporary = inboundFrenRiderProfileOutcomes
+                .Where(static pair => pair.Value.Outcome ==
+                                      DadFrenRiderProfileApplicationOutcome.TemporaryApplied)
+                .Select(static pair => pair.Key)
+                .ToArray();
+        foreach (var ownership in temporary)
+            _ = FrenRiderProfileTransferService.ReleaseTemporary(ownership, out _);
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes.Clear();
+    }
+
+    private void ReleaseExpiredInboundFrenRiderProfile(DadAutoPartyExpiredRuntimeTarget target)
+    {
+        var ownership = new DadFrenRiderProfileOwnership(
+            target.ProposalId,
+            target.SenderIslandId,
+            target.OwnerId,
+            target.OpaqueCharacterId);
+        completedInboundAutoPartyForms.Remove((target.ProposalId, target.OpaqueCharacterId));
+        DadFrenRiderProfileApplicationResult? outcome;
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
+        if (outcome?.Outcome == DadFrenRiderProfileApplicationOutcome.TemporaryApplied &&
+            !FrenRiderProfileTransferService.ReleaseTemporary(ownership, out var safeCode))
+        {
+            Log.Warning(
+                "[dad][FrenRiderProfile] Exact temporary profile cleanup failed after proposal expiry ({SafeCode}).",
+                safeCode);
+            return;
+        }
+        lock (inboundFrenRiderProfileGate)
+            inboundFrenRiderProfileOutcomes.Remove(ownership);
+    }
+
+    private static DadFrenRiderProfileOwnership BuildFrenRiderProfileOwnership(
+        ExecutionOperation operation,
+        DadAutoPartyInboundExecutionContext context)
+        => new(
+            operation.ProposalId,
+            context.SenderIslandId,
+            operation.OwnerId.Value,
+            operation.CharacterId.Value);
 
     private static bool MatchesInboundRuntimeTarget(
         DadParticipantSnapshot participant,
@@ -4561,7 +4813,7 @@ public sealed class Plugin : IDalamudPlugin
             runState,
             schedulerQueue.ActiveState,
             schedule.ActiveRun);
-        return DadMiniStatusSnapshotBuilder.BuildWithActivityDisplay(
+        var snapshot = DadMiniStatusSnapshotBuilder.BuildWithActivityDisplay(
             RunCoordinatorService.IsServerDad,
             runState.AuthorityView,
             TransportService.CurrentTransport,
@@ -4574,6 +4826,24 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.RunHistory,
             WakeTakeoverService.GetActiveStatus(),
             activityDisplay);
+        snapshot.AutoParty = BuildMiniAutoPartySnapshot();
+        return snapshot;
+    }
+
+    internal DadMiniAutoPartySnapshot BuildMiniAutoPartySnapshot()
+    {
+        var canDisband = CanDisbandAutoPartyFormation(out var disbandBlocker);
+        return DadMiniAutoPartyProjection.Build(
+            Configuration.PluginEnabled,
+            Configuration.AutoParty,
+            AutoPartyEndpointService.Snapshot,
+            AutoPartyService.GetDirectorySnapshot(),
+            SchedulerService.GetCrewFormationStatus(),
+            PairedDirectoryRefreshInProgress,
+            PairedDirectoryRefreshCooldownRemaining,
+            LastPairedDirectoryRefresh,
+            canDisband,
+            disbandBlocker);
     }
 
     public DadStopAllStatus RequestStopAll()
@@ -5115,6 +5385,8 @@ public sealed class Plugin : IDalamudPlugin
             });
         }
         Configuration.PluginEnabled = enabled;
+        KranglerPrivacyLeaseService.SetDesired(
+            enabled && Configuration.KranglerPrivacyLeaseEnabled);
         if (enabled && !wasEnabled)
             DependencyService.MarkDirty("DAD was enabled; checking required plugins.");
         Configuration.Save();
@@ -5136,6 +5408,13 @@ public sealed class Plugin : IDalamudPlugin
         PrintStatus(enabled
             ? "dad debug UI enabled. Verbose planner/runtime diagnostics are visible."
             : "dad debug UI disabled. Operator UI is compact.");
+    }
+
+    public void SetKranglerPrivacyLeaseEnabled(bool enabled)
+    {
+        Configuration.KranglerPrivacyLeaseEnabled = enabled;
+        Configuration.Save();
+        KranglerPrivacyLeaseService.SetDesired(Configuration.PluginEnabled && enabled);
     }
 
     public void ToggleDebugUi()
@@ -6100,6 +6379,8 @@ public sealed class Plugin : IDalamudPlugin
         });
 
         RunFrameworkStep("Dependencies", () => DependencyService.Update(Configuration.PluginEnabled));
+        RunFrameworkStep("KranglerPrivacyLease", () => KranglerPrivacyLeaseService.Update(
+            Configuration.PluginEnabled && Configuration.KranglerPrivacyLeaseEnabled));
         RunFrameworkStep("DependencyWindow", dependenciesWindow.Sync);
         RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
         RunFrameworkStep("VermaxionReservation", VermaxionIpcService.Update);
@@ -6165,6 +6446,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnLogin()
     {
+        QuestionableBridge.ResetCharacterLoadWarning();
         UpdateDtrBar();
         CharacterIntelligenceService.RefreshLocalCharacterPool("login", logRefresh: false);
         RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool);

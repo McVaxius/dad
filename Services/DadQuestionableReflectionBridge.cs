@@ -46,6 +46,10 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     private const string ConfigurationTypeName = "Questionable.Configuration";
     private const string PluginConfigComponentTypeName = "Questionable.Windows.ConfigComponents.PluginConfigComponent";
     private const string PluginInfoTypeName = "Questionable.Windows.ConfigComponents.PluginConfigComponent+PluginInfo";
+    private const string PluginProviderTypeName =
+        "Questionable.Windows.ConfigComponents.PluginConfigComponent+PluginProvider";
+    private const string PluginRequirementTypeName =
+        "Questionable.Windows.ConfigComponents.PluginConfigComponent+PluginRequirement";
     private const string PluginDetailInfoTypeName = "Questionable.Windows.ConfigComponents.PluginConfigComponent+PluginDetailInfo";
     private const string AutoDutyInternalName = "AutoDuty";
     private const string DadBridgeDisplayName = "Dad duty bridge";
@@ -61,12 +65,14 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     private readonly IPluginLog log;
     private readonly DadDutyIpcService dutyIpcService;
     private readonly DadQuestionableReflectionBridgeStatus status = new();
+    private readonly Action<string> runtimeIncompatibilityWarning;
     private volatile bool probeRequested = true;
     private DateTime nextProbeUtc = DateTime.MinValue;
     private string lastLoggedBlocker = string.Empty;
     private string lastLoggedCosmeticBlocker = string.Empty;
     private PatchOwnership? ownership;
     private CosmeticPatchOwnership? cosmeticOwnership;
+    private readonly DadQuestionableRuntimeWarningGate runtimeWarningGate = new();
 
     private sealed class SubscriberTarget
     {
@@ -137,13 +143,15 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         IFramework framework,
         DadDutyIpcService dutyIpcService,
         IPluginLog log,
-        Func<bool> isEnabled)
+        Func<bool> isEnabled,
+        Action<string>? runtimeIncompatibilityWarning = null)
     {
         this.pluginInterface = pluginInterface;
         this.framework = framework;
         this.dutyIpcService = dutyIpcService;
         this.log = log;
         this.isEnabled = isEnabled;
+        this.runtimeIncompatibilityWarning = runtimeIncompatibilityWarning ?? (_ => { });
 
         pluginInterface.ActivePluginsChanged += OnActivePluginsChanged;
         framework.Update += OnFrameworkUpdate;
@@ -151,6 +159,9 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
     public DadQuestionableReflectionBridgeStatus GetStatus()
         => status.Clone();
+
+    public void ResetCharacterLoadWarning()
+        => runtimeWarningGate.Reset();
 
     public void Dispose()
     {
@@ -294,6 +305,11 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             status.DutyGateEnabled = TryReadOwnedGate();
             status.PatchState = "Blocked by reflection incompatibility.";
             status.LastBlocker = FormatException(ex);
+            if (runtimeWarningGate.TryConsume())
+            {
+                runtimeIncompatibilityWarning(
+                    "DAD could not connect its duty bridge to this Questionable version. Duty routing through DAD is unavailable; see DAD status for details.");
+            }
             if (!string.Equals(lastLoggedBlocker, status.LastBlocker, StringComparison.Ordinal))
             {
                 lastLoggedBlocker = status.LastBlocker;
@@ -510,6 +526,179 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     }
 
     private PreparedCosmeticPatch PrepareCosmeticPatch(object questionableInstance)
+    {
+        var assembly = questionableInstance.GetType().Assembly;
+        var providerType = assembly.GetType(PluginProviderTypeName, throwOnError: false);
+        var requirementType = assembly.GetType(PluginRequirementTypeName, throwOnError: false);
+        switch (DadQuestionableCosmeticAdapterSelector.Select(
+                    providerType != null,
+                    requirementType != null))
+        {
+            case DadQuestionableCosmeticAdapter.CurrentPluginProviderRequirement:
+                return PrepareCurrentCosmeticPatch(questionableInstance, providerType!, requirementType!);
+            case DadQuestionableCosmeticAdapter.LegacyPluginInfo:
+                return PrepareLegacyCosmeticPatch(questionableInstance);
+            default:
+                throw Incompatible("Questionable current cosmetic model is only partially available.");
+        }
+    }
+
+    private PreparedCosmeticPatch PrepareCurrentCosmeticPatch(
+        object questionableInstance,
+        Type pluginProviderType,
+        Type pluginRequirementType)
+    {
+        var questionableType = questionableInstance.GetType();
+        var assembly = questionableType.Assembly;
+        var serviceProviderField = RequireField(questionableType, "_serviceProvider");
+        var serviceProviderValue = serviceProviderField.GetValue(questionableInstance)
+            ?? throw Incompatible("Questionable.QuestionablePlugin._serviceProvider returned null.");
+        if (serviceProviderValue is not IServiceProvider serviceProvider)
+        {
+            throw Incompatible(
+                $"Questionable.QuestionablePlugin._serviceProvider expected IServiceProvider, found {serviceProviderValue.GetType().FullName}.");
+        }
+
+        var pluginConfigComponentType = assembly.GetType(PluginConfigComponentTypeName, throwOnError: false)
+            ?? throw Incompatible($"Missing type {PluginConfigComponentTypeName}.");
+        var pluginDetailInfoType = assembly.GetType(PluginDetailInfoTypeName, throwOnError: false)
+            ?? throw Incompatible($"Missing type {PluginDetailInfoTypeName}.");
+        var pluginConfigComponent = serviceProvider.GetService(pluginConfigComponentType)
+            ?? throw Incompatible($"Questionable service provider returned null for {PluginConfigComponentTypeName}.");
+        RequireType(pluginConfigComponent.GetType(), PluginConfigComponentTypeName, "Questionable plugin config component");
+
+        var uriListType = typeof(IReadOnlyList<Uri>);
+        var providerListType = typeof(IReadOnlyList<>).MakeGenericType(pluginProviderType);
+        var detailListType = typeof(List<>).MakeGenericType(pluginDetailInfoType);
+        var extraLinkType = typeof((string Label, Uri Uri)?);
+        var providerConstructor = RequireUniqueConstructor(
+            pluginProviderType,
+            typeof(string),
+            typeof(string),
+            typeof(Uri),
+            typeof(Uri),
+            uriListType);
+        var requirementConstructor = RequireUniqueConstructor(
+            pluginRequirementType,
+            typeof(string),
+            typeof(string),
+            providerListType,
+            typeof(string),
+            detailListType,
+            extraLinkType);
+
+        var providerDisplayNameProperty = RequireReadableProperty(pluginProviderType, "DisplayName", typeof(string));
+        var providerInternalNameProperty = RequireReadableProperty(pluginProviderType, "InternalName", typeof(string));
+        var providerWebsiteProperty = RequireReadableProperty(pluginProviderType, "WebsiteUri", typeof(Uri));
+        var providerRepositoryProperty = RequireReadableProperty(pluginProviderType, "DalamudRepositoryUri", typeof(Uri));
+        _ = RequireReadableProperty(pluginProviderType, "DalamudRepositoryAliases", uriListType);
+        var groupNameProperty = RequireReadableProperty(pluginRequirementType, "GroupName", typeof(string));
+        var descriptionProperty = RequireReadableProperty(pluginRequirementType, "Description", typeof(string));
+        var providersProperty = RequireReadableProperty(pluginRequirementType, "Providers", providerListType);
+        var configCommandProperty = RequireReadableProperty(pluginRequirementType, "ConfigCommand", typeof(string));
+        var detailsToCheckProperty = RequireReadableProperty(pluginRequirementType, "DetailsToCheck", detailListType);
+        var extraLinkProperty = RequireReadableProperty(pluginRequirementType, "ExtraLink", extraLinkType);
+
+        var expectedListType = typeof(IReadOnlyList<>).MakeGenericType(pluginRequirementType);
+        var recommendedPluginsField = RequireField(pluginConfigComponentType, "_recommendedPlugins");
+        if (recommendedPluginsField.FieldType != expectedListType)
+        {
+            throw Incompatible(
+                $"{PluginConfigComponentTypeName}._recommendedPlugins expected {expectedListType.FullName}, found {recommendedPluginsField.FieldType.FullName}.");
+        }
+        var currentList = recommendedPluginsField.GetValue(pluginConfigComponent)
+            ?? throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins returned null.");
+        if (!expectedListType.IsInstanceOfType(currentList))
+        {
+            throw Incompatible(
+                $"{PluginConfigComponentTypeName}._recommendedPlugins value does not implement {expectedListType.FullName}.");
+        }
+
+        var sourceList = currentList;
+        if (cosmeticOwnership != null &&
+            ReferenceEquals(cosmeticOwnership.QuestionableInstance, questionableInstance) &&
+            ReferenceEquals(cosmeticOwnership.PluginConfigComponent, pluginConfigComponent) &&
+            ReferenceEquals(currentList, cosmeticOwnership.ReplacementList))
+        {
+            sourceList = cosmeticOwnership.OriginalList;
+        }
+        if (sourceList is not System.Collections.IEnumerable sourceEntries)
+            throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins value is not enumerable.");
+
+        var entries = sourceEntries.Cast<object>().ToList();
+        if (entries.Any(entry => entry == null || !pluginRequirementType.IsInstanceOfType(entry)))
+            throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins contains an incompatible requirement.");
+        var autoDutyIndexes = entries
+            .Select((entry, index) => new
+            {
+                Index = index,
+                Providers = providersProperty.GetValue(entry) as System.Collections.IEnumerable,
+            })
+            .Where(candidate => candidate.Providers != null && candidate.Providers.Cast<object>().Count(provider =>
+                pluginProviderType.IsInstanceOfType(provider) &&
+                string.Equals(
+                    providerInternalNameProperty.GetValue(provider) as string,
+                    AutoDutyInternalName,
+                    StringComparison.Ordinal)) == 1)
+            .Select(static candidate => candidate.Index)
+            .ToList();
+        if (autoDutyIndexes.Count != 1)
+        {
+            throw Incompatible(
+                $"{PluginConfigComponentTypeName}._recommendedPlugins expected exactly one {AutoDutyInternalName} requirement, found {autoDutyIndexes.Count}.");
+        }
+
+        var dadRepositoryUri = new Uri(DadRepositoryUrl);
+        var replacementProvider = providerConstructor.Invoke(
+            [DadBridgeDisplayName, PluginInfo.InternalName, dadRepositoryUri, null, null]);
+        if (replacementProvider == null || !pluginProviderType.IsInstanceOfType(replacementProvider))
+            throw Incompatible($"{PluginProviderTypeName} constructor returned an incompatible value.");
+        ValidatePropertyValue(providerDisplayNameProperty, replacementProvider, DadBridgeDisplayName);
+        ValidatePropertyValue(providerInternalNameProperty, replacementProvider, PluginInfo.InternalName);
+        ValidatePropertyValue(providerWebsiteProperty, replacementProvider, dadRepositoryUri);
+        ValidatePropertyValue(providerRepositoryProperty, replacementProvider, null);
+
+        var replacementProviders = Array.CreateInstance(pluginProviderType, 1);
+        replacementProviders.SetValue(replacementProvider, 0);
+        if (!providerListType.IsInstanceOfType(replacementProviders))
+            throw Incompatible($"Dad provider list does not implement {providerListType.FullName}.");
+        var replacementEntry = requirementConstructor.Invoke(
+            [DadBridgeDisplayName, DadBridgeDetails, replacementProviders, PluginInfo.Command, null, null]);
+        if (replacementEntry == null || !pluginRequirementType.IsInstanceOfType(replacementEntry))
+            throw Incompatible($"{PluginRequirementTypeName} constructor returned an incompatible value.");
+        ValidatePropertyValue(groupNameProperty, replacementEntry, DadBridgeDisplayName);
+        ValidatePropertyValue(descriptionProperty, replacementEntry, DadBridgeDetails);
+        ValidatePropertyValue(providersProperty, replacementEntry, replacementProviders);
+        ValidatePropertyValue(configCommandProperty, replacementEntry, PluginInfo.Command);
+        ValidatePropertyValue(detailsToCheckProperty, replacementEntry, null);
+        ValidatePropertyValue(extraLinkProperty, replacementEntry, null);
+
+        var replacementIndex = autoDutyIndexes[0];
+        var replacementList = Array.CreateInstance(pluginRequirementType, entries.Count);
+        var expectedEntries = new List<object>(entries.Count);
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var expectedEntry = index == replacementIndex ? replacementEntry : entries[index];
+            expectedEntries.Add(expectedEntry);
+            replacementList.SetValue(expectedEntry, index);
+        }
+        if (!expectedListType.IsInstanceOfType(replacementList))
+            throw Incompatible($"Dad replacement list does not implement {expectedListType.FullName}.");
+
+        return new PreparedCosmeticPatch
+        {
+            QuestionableInstance = questionableInstance,
+            PluginConfigComponent = pluginConfigComponent,
+            RecommendedPluginsField = recommendedPluginsField,
+            OriginalList = sourceList,
+            ReplacementList = replacementList,
+            ReplacementEntry = replacementEntry,
+            ReplacementIndex = replacementIndex,
+            ExpectedEntries = expectedEntries,
+        };
+    }
+
+    private PreparedCosmeticPatch PrepareLegacyCosmeticPatch(object questionableInstance)
     {
         var questionableType = questionableInstance.GetType();
         var assembly = questionableType.Assembly;

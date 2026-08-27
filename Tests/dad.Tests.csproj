@@ -139,10 +139,13 @@
     <Compile Include="..\Services\DadPlannerService.cs" Link="DadPlannerService.cs" />
     <Compile Include="..\Services\DadGameCommandExecutor.cs" Link="DadGameCommandExecutor.cs" />
     <Compile Include="..\Services\DadAlliancePfAuditLog.cs" Link="DadAlliancePfAuditLog.cs" />
+    <Compile Include="..\Services\DadQuestionableCompatibilityRules.cs" Link="DadQuestionableCompatibilityRules.cs" />
+    <Compile Include="..\Services\DadKranglerPrivacyLeaseService.cs" Link="DadKranglerPrivacyLeaseService.cs" />
+    <Compile Include="..\Services\DadFrenRiderInboundQueueRules.cs" Link="DadFrenRiderInboundQueueRules.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.7]" />
+    <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.8]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
   </ItemGroup>
 </Project>

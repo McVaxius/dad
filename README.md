@@ -19,8 +19,8 @@ integrations, and everyday commands.
 ```powershell
 $packageSource = (Resolve-Path -LiteralPath '.\.github\nuget').Path
 $nugetSource = 'https://api.nuget.org/v3/index.json'
-$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.7.nupkg'
-$expectedHash = '484335cccb87c36c74558a33fed8fc26b04456e487a2c03927a391ce3c1fc7ea'
+$package = Join-Path $packageSource 'Dad.AutoParty.Protocol.0.2.0-preview.8.nupkg'
+$expectedHash = '57180c2d3641cfaa664d4bff9acf5196e1fab72eef8d31e70116dab9f5f4a650'
 
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw 'The vendored Dad.AutoParty.Protocol package is missing.'

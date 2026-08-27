@@ -24,6 +24,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool DebugUiEnabled { get; set; }
     public bool SetupWizardLoaded { get; set; }
     public bool KrangleOperatorNamesEnabled { get; set; }
+    public bool KranglerPrivacyLeaseEnabled { get; set; } = true;
     public bool ShowCharacterConflictSummary { get; set; }
     public bool DtrBarEnabled { get; set; } = true;
     public int DtrBarMode { get; set; } = 1;
