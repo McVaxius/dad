@@ -186,7 +186,13 @@ public sealed class DadPartyAssemblyService
         for (var index = 0; index < ordered.Count; index++)
         {
             var participant = ordered[index];
-            if (string.IsNullOrWhiteSpace(participant.RegisteredIslandId) && !participant.PostArReady)
+            var isLanParticipant = manifest == null
+                ? string.IsNullOrWhiteSpace(participant.RegisteredIslandId)
+                : manifest.Slots.Single(slot => string.Equals(
+                    slot.SlotId,
+                    participant.AssignedSlotId,
+                    StringComparison.OrdinalIgnoreCase)).RouteKind == DadRunSlotRouteKind.LanWorker;
+            if (isLanParticipant && !participant.PostArReady)
             {
                 blocker = $"{participant.Character.CharacterKey} is not post-AR ready.";
                 return [];

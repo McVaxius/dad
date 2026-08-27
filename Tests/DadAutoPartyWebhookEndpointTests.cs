@@ -1884,7 +1884,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.NotFound)]
-    public async Task TerminalWebhookInvalidationDeletesExactCredentialAndClearsOnlyRegistrationTrust(
+    public async Task TerminalWebhookInvalidationEntersReplacementRecoveryAndPreservesDurableTrust(
         HttpStatusCode terminalStatus)
     {
         using var crypto = new CryptoFixture();
@@ -1912,14 +1912,44 @@ public sealed class DadAutoPartyWebhookEndpointTests
             RosterIdentityKey = "account-test|character-test",
             OpaqueCharacterId = "opaque-test",
         });
-        configuration.Pairings.Add(ProgressPairing(
+        var pairing = ProgressPairing(
             Guid.NewGuid(),
             "island-peer-terminal",
-            DateTime.UtcNow.AddHours(1)));
+            DateTime.UtcNow.AddHours(1));
+        pairing.ConfirmedAtUtc = DateTime.UtcNow;
+        configuration.Pairings.Add(pairing);
+        configuration.PairedDadAliases[pairing.IslandId] = "Terminal_DAD";
         configuration.Listings.Add(Listing("island-peer-terminal"));
+        configuration.Grants.Add(new DadAutoPartyGrant());
+        configuration.RemoteBindings.Add(new DadAutoPartyRemoteBinding
+        {
+            FleetRowId = "crew-slot-terminal",
+            OpaqueCharacterId = "opaque-terminal",
+            OwnerId = pairing.OwnerId,
+            IslandId = pairing.IslandId,
+            RequestedJobId = "19",
+            OwnsQueueAuthority = true,
+            OwnerConsentConfirmed = true,
+        });
+        configuration.Deauthentications.Add(new DadAutoPartyDeauthentication
+        {
+            DeauthenticationId = Guid.NewGuid().ToString("D"),
+            PeerIslandId = "island-peer-revoked",
+            PairingTranscriptHash = new string('4', 64),
+            RevocationGeneration = 2,
+            SafeReason = "dad-test-deauthenticated",
+            RevokedAtUtc = DateTime.UtcNow,
+        });
         var endpointAlias = configuration.EndpointAlias;
         var ownerId = configuration.RegisteredOwnerId;
         var islandId = configuration.RegisteredIslandId;
+        var registrationId = configuration.RegistrationId;
+        var routeId = configuration.RouteId;
+        var centralBotApplicationId = configuration.CentralBotApplicationId;
+        var homeGuildScope = configuration.HomeGuildScope;
+        var fingerprint = configuration.RegistrationFingerprint;
+        var signingPublicKey = configuration.SigningPublicKey;
+        var encryptionPublicKey = configuration.EncryptionPublicKey;
         var saves = 0;
         using var handler = new ScriptedWebhookHandler(
             CourierTextCodec.EmptySlotContent,
@@ -1942,18 +1972,35 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         Assert.False(configuration.IsRegistrationActive);
         Assert.Equal(DadAutoPartyRegistrationState.Unregistered, configuration.RegistrationState);
-        Assert.Equal(DadAutoPartyRegistrationRecoveryState.NewRegistration, configuration.RegistrationRecoveryState);
+        Assert.Equal(DadAutoPartyRegistrationRecoveryState.RecoveryAvailable, configuration.RegistrationRecoveryState);
         Assert.Equal(string.Empty, configuration.WebhookCredentialReference);
+        Assert.Equal(string.Empty, configuration.UplinkEpochId);
+        Assert.Equal(string.Empty, configuration.DownlinkEpochId);
+        Assert.Equal(0, configuration.MailboxEpochGeneration);
+        Assert.Equal(1, configuration.DirectoryGeneration);
+        Assert.Equal(1, configuration.RelayKeyGeneration);
+        Assert.Equal(string.Empty, configuration.RelaySigningPublicKey);
+        Assert.Equal(string.Empty, configuration.RelayAgreementPublicKey);
         Assert.Equal(credentialReference, credentialStore.LastDeletedReference);
         Assert.Null(credentialStore.StoredCredential);
-        Assert.Empty(configuration.Pairings);
+        Assert.Same(pairing, Assert.Single(configuration.Pairings));
+        Assert.True(pairing.IsActive);
+        Assert.Equal("Terminal_DAD", configuration.PairedDadAliases[pairing.IslandId]);
         Assert.Empty(configuration.Listings);
         Assert.Empty(configuration.Grants);
-        Assert.Empty(configuration.RemoteBindings);
+        Assert.Equal("crew-slot-terminal", Assert.Single(configuration.RemoteBindings).FleetRowId);
+        Assert.Equal("island-peer-revoked", Assert.Single(configuration.Deauthentications).PeerIslandId);
         Assert.Equal(identityReference, configuration.EndpointIdentityReference);
         Assert.Equal(endpointAlias, configuration.EndpointAlias);
         Assert.Equal(ownerId, configuration.RegisteredOwnerId);
         Assert.Equal(islandId, configuration.RegisteredIslandId);
+        Assert.Equal(registrationId, configuration.RegistrationId);
+        Assert.Equal(routeId, configuration.RouteId);
+        Assert.Equal(centralBotApplicationId, configuration.CentralBotApplicationId);
+        Assert.Equal(homeGuildScope, configuration.HomeGuildScope);
+        Assert.Equal(fingerprint, configuration.RegistrationFingerprint);
+        Assert.Equal(signingPublicKey, configuration.SigningPublicKey);
+        Assert.Equal(encryptionPublicKey, configuration.EncryptionPublicKey);
         Assert.Single(configuration.CrewIdentities);
         Assert.True(configuration.StandingSharePolicy.Enabled);
         Assert.Equal(DadAutoPartyCrewShareScope.AllCharacters, configuration.StandingShareScope);
@@ -1961,6 +2008,102 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Equal(DadAutoPartyEndpointConnectionState.Disabled, endpoint.Snapshot.State);
         Assert.Equal("dad-webhook-not-registered", endpoint.Snapshot.SafeCode);
         Assert.Equal(1, saves);
+
+        var replacement = await endpoint.ImportBootstrapCopyPasteAsync(
+            crypto.CreateBootstrapCopyPaste(Guid.Parse(registrationId), routeId: routeId));
+        Assert.True(replacement.Allowed, replacement.SafeCode);
+        Assert.Equal(DadAutoPartyRegistrationState.BootstrapImported, configuration.RegistrationState);
+        Assert.Same(pairing, Assert.Single(configuration.Pairings));
+        Assert.Equal("crew-slot-terminal", Assert.Single(configuration.RemoteBindings).FleetRowId);
+
+        var activated = endpoint.MarkRegistrationActive(
+            Guid.Parse(registrationId),
+            crypto.UplinkEpoch.EpochId,
+            crypto.UplinkEpoch.EpochGeneration);
+        Assert.True(activated.Allowed, activated.SafeCode);
+
+        var proposalId = Guid.NewGuid();
+        var orchestration = new DadOrchestrationIntent
+        {
+            AutoPartyProposalId = proposalId.ToString("D"),
+            QueueAuthority = DadQueueAuthority.Leader,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
+            RosterIntent = new DadRosterIntent
+            {
+                ExpectedPartySize = 1,
+                RequireRemoteParticipants = true,
+            },
+        };
+        var request = new DadRunRequest
+        {
+            RequestId = $"replacement-{proposalId:N}",
+            Orchestration = orchestration,
+        };
+        var plan = new DadRunPlan
+        {
+            Request = request,
+            Orchestration = orchestration,
+            RequiredParticipantCount = 1,
+            RequiresRemoteParticipants = true,
+            LeaderCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+            InviterCharacterKey = DadRunSlotManifestRules.RegisteredIslandSlotOneAuthority,
+            CompositeModuleId = DadModuleId.PremadeDuty,
+            Modules =
+            [
+                new DadPlannedModuleExecution
+                {
+                    ModuleId = DadModuleId.PremadeDuty,
+                    DisplayName = "Replacement continuity",
+                    ExpectedPartySize = 1,
+                    RequiresPeers = true,
+                },
+            ],
+        };
+        var manifest = new DadRunSlotManifest
+        {
+            RequestId = request.RequestId,
+            ExpectedPartySize = 1,
+            LeaderCharacterKey = plan.LeaderCharacterKey,
+            InviterCharacterKey = plan.InviterCharacterKey,
+            Modules =
+            [
+                new DadFrozenModulePayload
+                {
+                    ModuleId = DadModuleId.PremadeDuty,
+                    DutyName = "Replacement continuity",
+                    ExpectedPartySize = 1,
+                },
+            ],
+            Slots =
+            [
+                new DadFrozenRunSlot
+                {
+                    SlotId = "Slot1",
+                    RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+                    OwnerId = pairing.OwnerId,
+                    IslandId = pairing.IslandId,
+                    OpaqueCharacterId = "opaque-terminal",
+                    RequiredJobId = 19,
+                    IsLeader = true,
+                    IsInviter = true,
+                },
+            ],
+        };
+        using var service = new DadAutoPartyService(
+            configuration,
+            identityStore,
+            static () => true,
+            static () => { });
+        var bridge = new DadAutoPartyParticipantBridge(configuration);
+        await using var pump = new DadAutoPartyRelayPump(
+            configuration,
+            identityStore,
+            connector,
+            service,
+            bridge,
+            new MemoryPendingOperationStore());
+        bridge.ConfigureDirectoryAuthorityGate(pump.GetRemoteAuthorityBlocker);
+        Assert.True(bridge.TryBindRun(plan, manifest, DateTimeOffset.UtcNow, out var blocker), blocker);
     }
 
     [Theory]

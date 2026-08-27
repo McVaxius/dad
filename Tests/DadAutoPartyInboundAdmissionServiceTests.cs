@@ -213,6 +213,66 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     }
 
     [Fact]
+    public void DadIslandTakeoverDeliversResetThenRelogBeforeWakeAndClaim()
+    {
+        var fixture = new Fixture();
+        var phase = DadWakeTakeoverPhase.Prepared;
+        fixture.TakeoverOverride = (_, request) =>
+        {
+            if (request.MessageKind == DadWakeTakeoverMessageKind.Go)
+            {
+                phase = request.CommitKind switch
+                {
+                    DadWakeCommitKind.Reset => DadWakeTakeoverPhase.ResetVerified,
+                    DadWakeCommitKind.Relog => DadWakeTakeoverPhase.Ready,
+                    _ => phase,
+                };
+            }
+
+            return new DadWakeTakeoverResultDto
+            {
+                SchedulerRunId = request.SchedulerRunId,
+                SlotId = request.SlotId,
+                AccountKey = request.AccountKey,
+                CharacterKey = request.CharacterKey,
+                OperationToken = request.OperationToken,
+                Status = phase == DadWakeTakeoverPhase.Ready
+                    ? DadWakeTakeoverStatus.Ready
+                    : DadWakeTakeoverStatus.Pending,
+                Phase = phase,
+                AcknowledgementState = DadWakeAcknowledgementState.Accepted,
+                Snapshot = Fixture.ReadySnapshot(),
+            };
+        };
+
+        var resetPending = fixture.Service.Admit(Proposal(), fixture.Publication);
+        var relogPending = fixture.Service.Admit(Proposal(), fixture.Publication);
+        var ready = fixture.Service.Admit(Proposal(), fixture.Publication);
+
+        Assert.Equal(DadAutoPartyInboundAdmissionDisposition.Pending, resetPending.Disposition);
+        Assert.Equal(DadAutoPartyInboundAdmissionDisposition.Pending, relogPending.Disposition);
+        Assert.True(ready.Ready, ready.SafeBlocker);
+        Assert.All(new[] { resetPending, relogPending }, result => Assert.Single(result.InviteTargets));
+        var commits = fixture.TakeoverRequests
+            .Where(static request => request.MessageKind == DadWakeTakeoverMessageKind.Go)
+            .ToList();
+        Assert.Collection(
+            commits,
+            reset =>
+            {
+                Assert.Equal(DadWakeCommitKind.Reset, reset.CommitKind);
+                Assert.Equal(Now.UtcDateTime.AddSeconds(1), reset.ExecutionTimeUtc);
+            },
+            relog =>
+            {
+                Assert.Equal(DadWakeCommitKind.Relog, relog.CommitKind);
+                Assert.Equal(Now.UtcDateTime.AddSeconds(1), relog.ExecutionTimeUtc);
+            });
+        Assert.Equal(1, fixture.WakeCalls);
+        Assert.Equal(1, fixture.ClaimCalls);
+    }
+
+    [Fact]
     public void ProposalExpiryRestoresTheFrozenTakeoverBeforeRemoval()
     {
         var fixture = new Fixture();

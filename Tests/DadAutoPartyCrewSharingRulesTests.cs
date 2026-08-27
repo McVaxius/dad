@@ -207,7 +207,7 @@ public sealed class DadAutoPartyCrewSharingRulesTests
     }
 
     [Fact]
-    public void SavedCrewBindingPersistsOpaquePlaceholderWhileRuntimePresentationUsesPrivateLabel()
+    public void SavedCrewBindingPersistsAuthenticatedPrivateLabel()
     {
         var configuration = new DadAutoPartyConfiguration();
         var pairing = ActivePairing();
@@ -225,7 +225,10 @@ public sealed class DadAutoPartyCrewSharingRulesTests
             out var blocker), blocker);
 
         Assert.Equal("Private Character@Private World", listing.DisplayLabel);
-        Assert.Equal("Shared character", slot.SharedIdentity!.CharacterLabel);
+        Assert.Equal("Private Character@Private World", slot.SharedIdentity!.CharacterLabel);
+        var restored = Newtonsoft.Json.JsonConvert.DeserializeObject<DadPlannerGroupSlot>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(slot));
+        Assert.Equal("Private Character@Private World", restored!.SharedIdentity!.CharacterLabel);
     }
 
     private static DadAcquiredCharacter Crew(

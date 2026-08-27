@@ -884,7 +884,7 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
-    public async Task RegisteredCommandAuthorityDoesNotRequireDirectoryPresenceButStillExpires()
+    public async Task EstablishedCommandAuthorityDoesNotExpireWithPairingDeliveryTimestamp()
     {
         using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active, includePeer: true);
         await using var pump = fixture.CreatePump();
@@ -901,10 +901,7 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.Null(pump.GetRemoteAuthorityBlocker([slot], DateTimeOffset.UtcNow));
 
         Assert.Single(fixture.Configuration.Pairings).ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);
-        Assert.Contains(
-            "pairing authority",
-            pump.GetRemoteAuthorityBlocker([slot], DateTimeOffset.UtcNow),
-            StringComparison.OrdinalIgnoreCase);
+        Assert.Null(pump.GetRemoteAuthorityBlocker([slot], DateTimeOffset.UtcNow));
     }
 
     [Fact]
@@ -1028,23 +1025,65 @@ public sealed class DadAutoPartyRelayPumpTests
             "Shared character community",
             directory.Listings.Single(item => item.OpaqueCharacterId == "opaque-community").DisplayLabel);
         Assert.Equal(
-            "Shared character 0001",
+            "Private Character@Private World",
             fixture.Configuration.Listings.Single(item =>
                 item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
 
-        var historicalObservation = DateTimeOffset.UtcNow.AddMinutes(-2);
-        Assert.True(fixture.Service.ApplyPairedListingLabels(
+        var refreshedListings = fixture.Configuration.Listings
+            .Where(item => item.SharingIslandId == PumpFixture.PeerIsland)
+            .Select(item =>
+            {
+                var refreshed = item.Clone();
+                refreshed.OpaqueDisplayLabel = string.Empty;
+                refreshed.DisplayLabel = pairedListings.Single(source =>
+                    source.CharacterHandle.Value == item.OpaqueCharacterId).DisplayLabel;
+                return refreshed;
+            })
+            .ToList();
+        var refreshDecision = fixture.Service.ApplyRemoteListings(
+            PumpFixture.PeerIsland,
+            "guild-peer",
+            new DadAutoPartySharePolicy
+            {
+                Enabled = true,
+                Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+                Revision = 2,
+                UpdatedAtUtc = now.UtcDateTime,
+            },
+            refreshedListings,
+            registeredRequesterAttested: false);
+        Assert.True(refreshDecision.Allowed, refreshDecision.SafeCode);
+        Assert.Equal(
+            "Private Character@Private World",
+            fixture.Service.GetDirectorySnapshot().Listings.Single(item =>
+                item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
+
+        var serializedConfiguration = JsonSerializer.Serialize(fixture.Configuration);
+        var reloadedConfiguration = JsonSerializer.Deserialize<DadAutoPartyConfiguration>(serializedConfiguration)!;
+        using (var reloadedService = new DadAutoPartyService(
+                   reloadedConfiguration,
+                   fixture.IdentityStore,
+                   static () => true,
+                   static () => { }))
+        {
+            reloadedService.ApplyDirectoryPresence(PumpFixture.PeerIsland, online: true);
+            Assert.Equal(
+                "Private Character@Private World",
+                reloadedService.GetDirectorySnapshot().Listings.Single(item =>
+                    item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
+        }
+
+        Assert.False(fixture.Service.ApplyPairedListingLabels(
             PumpFixture.PeerIsland,
             first.PairingId,
             first.PairingTranscriptHash,
             first.RequestedCharacters.Select(static handle => handle.Value).ToArray(),
             [new PairedListingLabel(first.RequestedCharacters[0], "Expired Character@Private World")],
-            historicalObservation.AddMinutes(1),
-            historicalObservation));
+            now.AddSeconds(-1),
+            now));
         var expiredLabelsDirectory = fixture.Service.GetDirectorySnapshot();
-        Assert.NotSame(directory, expiredLabelsDirectory);
         Assert.Equal(
-            "Shared character 0001 (real name incoming)",
+            "Private Character@Private World",
             expiredLabelsDirectory.Listings.Single(item =>
                 item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
 
@@ -1062,6 +1101,10 @@ public sealed class DadAutoPartyRelayPumpTests
         Assert.DoesNotContain(
             fixture.Transport.Acknowledged,
             item => item.EnvelopeId == expiredDelivery.EnvelopeId);
+        Assert.Equal(
+            "Private Character@Private World",
+            fixture.Service.GetDirectorySnapshot().Listings.Single(item =>
+                item.OpaqueCharacterId == first.RequestedCharacters[0].Value).DisplayLabel);
 
         fixture.Configuration.Listings.Single(item =>
             item.OpaqueCharacterId == first.RequestedCharacters[0].Value).ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);

@@ -250,11 +250,35 @@ public sealed class DadCoordinatorTravelRulesTests
         registeredIsland.IsAvailable = false;
         registeredIsland.PostArReady = false;
         registeredIsland.WorldReadyStable = false;
+        var manifest = new DadRunSlotManifest
+        {
+            Slots =
+            [
+                new DadFrozenRunSlot
+                {
+                    SlotId = "slot1",
+                    RouteKind = DadRunSlotRouteKind.LanWorker,
+                    WorkerSessionId = coordinator.WorkerSessionId,
+                },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "slot2",
+                    RouteKind = DadRunSlotRouteKind.LanWorker,
+                    WorkerSessionId = client.WorkerSessionId,
+                },
+                new DadFrozenRunSlot
+                {
+                    SlotId = "slot3",
+                    RouteKind = DadRunSlotRouteKind.RegisteredIsland,
+                    IslandId = "island-remote",
+                },
+            ],
+        };
 
         var participants = new[] { coordinator, client, registeredIsland };
         var ready = DadCoordinatorTravelRules.ValidateParticipants(
             target,
-            DadCoordinatorTravelRules.SelectLanParticipants(participants),
+            DadCoordinatorTravelRules.SelectLanParticipants(manifest, participants),
             Now);
 
         Assert.True(ready.Ready, ready.Summary);
@@ -263,7 +287,7 @@ public sealed class DadCoordinatorTravelRulesTests
         client.CurrentLocation = null;
         var blocked = DadCoordinatorTravelRules.ValidateParticipants(
             target,
-            DadCoordinatorTravelRules.SelectLanParticipants(participants),
+            DadCoordinatorTravelRules.SelectLanParticipants(manifest, participants),
             Now);
 
         Assert.False(blocked.Ready);

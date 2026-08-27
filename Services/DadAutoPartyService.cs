@@ -299,14 +299,30 @@ public sealed class DadAutoPartyService : IDisposable
                            DadAutoPartyShareRules.Allows(policy, item.OpaqueCharacterId, paired, sameGuild))
             .Select(item =>
             {
-                item!.SharingIslandId = islandId;
-                return item;
+                var acceptedListing = item!;
+                acceptedListing.SharingIslandId = islandId;
+                return acceptedListing;
             })
             .Take(256)
             .ToList();
+        if (paired)
+        {
+            foreach (var listing in accepted)
+            {
+                var knownLabel = configuration.Listings.FirstOrDefault(item =>
+                    string.Equals(item.OwnerId, listing.OwnerId, StringComparison.Ordinal) &&
+                    string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal) &&
+                    string.Equals(item.OpaqueCharacterId, listing.OpaqueCharacterId, StringComparison.Ordinal) &&
+                    IsAuthenticatedCharacterLabel(item.DisplayLabel));
+                if (knownLabel == null)
+                    continue;
+                listing.OpaqueDisplayLabel = listing.DisplayLabel;
+                listing.DisplayLabel = knownLabel.DisplayLabel;
+            }
+        }
         configuration.Listings.RemoveAll(item =>
             string.Equals(item.SharingIslandId, islandId, StringComparison.Ordinal));
-        configuration.Listings.AddRange(accepted!);
+        configuration.Listings.AddRange(accepted);
         lock (directoryPresenceGate)
         {
             if (PrunePairedLabelsLocked(now))
@@ -391,8 +407,9 @@ public sealed class DadAutoPartyService : IDisposable
         {
             foreach (var listing in sourceListings)
             {
-                listing.OpaqueDisplayLabel = listing.DisplayLabel;
-                var resolvedPrivateLabel = false;
+                if (string.IsNullOrWhiteSpace(listing.OpaqueDisplayLabel))
+                    listing.OpaqueDisplayLabel = listing.DisplayLabel;
+                var resolvedPrivateLabel = IsAuthenticatedCharacterLabel(listing.DisplayLabel);
                 if (labels.TryGetValue(
                         new PairedLabelKey(listing.SharingIslandId, listing.OpaqueCharacterId),
                     out var overlay) &&
@@ -472,7 +489,8 @@ public sealed class DadAutoPartyService : IDisposable
             .Take(AutoPartyProtocol.MaximumPairedListingLabelBatchSize)
             .ToHashSet(StringComparer.Ordinal);
         var supplied = (labels ?? [])
-            .Where(label => label != null && requested.Contains(label.CharacterHandle.Value))
+            .Where(label => label != null && requested.Contains(label.CharacterHandle.Value) &&
+                            IsAuthenticatedCharacterLabel(label.DisplayLabel))
             .DistinctBy(static label => label.CharacterHandle.Value, StringComparer.Ordinal)
             .ToList();
         if (labelsValidUntil <= observedAt)
@@ -480,6 +498,7 @@ public sealed class DadAutoPartyService : IDisposable
 
         var now = observedAt.UtcDateTime;
         var labelExpiresAtUtc = labelsValidUntil.UtcDateTime;
+        var persistentLabelsChanged = false;
         lock (directoryPresenceGate)
         {
             if (!onlineDirectoryIslands.Contains(islandId))
@@ -496,6 +515,17 @@ public sealed class DadAutoPartyService : IDisposable
                     string.Equals(item.OpaqueCharacterId, label.CharacterHandle.Value, StringComparison.Ordinal));
                 if (listing == null)
                     continue;
+                var displayLabel = label.DisplayLabel.Trim();
+                if (!string.Equals(listing.DisplayLabel, displayLabel, StringComparison.Ordinal))
+                {
+                    if (string.IsNullOrWhiteSpace(listing.OpaqueDisplayLabel) &&
+                        !IsAuthenticatedCharacterLabel(listing.DisplayLabel))
+                    {
+                        listing.OpaqueDisplayLabel = listing.DisplayLabel;
+                    }
+                    listing.DisplayLabel = displayLabel;
+                    persistentLabelsChanged = true;
+                }
                 var key = new PairedLabelKey(islandId, listing.OpaqueCharacterId);
                 var next = new PairedLabelOverlay(
                     pairingId,
@@ -503,13 +533,18 @@ public sealed class DadAutoPartyService : IDisposable
                     listing.Revision,
                     listing.ExpiresAtUtc,
                     labelExpiresAtUtc < listing.ExpiresAtUtc ? labelExpiresAtUtc : listing.ExpiresAtUtc,
-                    label.DisplayLabel);
+                    displayLabel);
                 if (!pairedLabelOverlay.TryGetValue(key, out var prior) || prior != next)
                     pairedLabelOverlay[key] = next;
             }
             PrunePairedLabelsLocked(now);
             if (!SamePairedLabels(priorLabels, pairedLabelOverlay))
                 directoryProjectionRevision++;
+        }
+        if (persistentLabelsChanged)
+        {
+            configuration.StateGeneration++;
+            saveConfiguration();
         }
         return true;
     }
@@ -735,7 +770,14 @@ public sealed class DadAutoPartyService : IDisposable
     {
         ThrowIfDisposed();
         StopAll("dad-webhook-mailbox-invalidated");
-        ClearRegistrationAndTrust();
+        lock (directoryPresenceGate)
+        {
+            if (onlineDirectoryIslands.Count > 0 || pairedLabelOverlay.Count > 0)
+                directoryProjectionRevision++;
+            onlineDirectoryIslands.Clear();
+            pairedLabelOverlay.Clear();
+        }
+        windowProjectionCache.Invalidate();
     }
 
     public void Dispose()
@@ -810,6 +852,15 @@ public sealed class DadAutoPartyService : IDisposable
         return !string.IsNullOrWhiteSpace(pairing.PeerEndpointAlias)
             ? pairing.PeerEndpointAlias
             : "Paired DAD";
+    }
+
+    internal static bool IsAuthenticatedCharacterLabel(string? value)
+    {
+        var label = (value ?? string.Empty).Trim();
+        if (label.Length is 0 or > AutoPartyProtocol.MaximumDisplayLabelLength || label.Any(char.IsControl))
+            return false;
+        var separator = label.IndexOf('@');
+        return separator > 0 && separator == label.LastIndexOf('@') && separator < label.Length - 1;
     }
 
     private static bool SamePairedLabels(

@@ -979,7 +979,7 @@ public sealed class DadCoordinatorService
         SkipCoordinatorTravelTarget:
 
         foreach (var participant in activeParticipants.Where(participant =>
-                     string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                     IsActiveManifestLanParticipant(participant) &&
                      runtimeParticipants.Count(runtime => string.Equals(
                          runtime.WorkerSessionId.Value,
                          participant.WorkerSessionId.Value,
@@ -1070,7 +1070,7 @@ public sealed class DadCoordinatorService
         {
             var travelProof = DadCoordinatorTravelRules.ValidateParticipants(
                 activeSlotManifest.CoordinatorTravelTarget,
-                DadCoordinatorTravelRules.SelectLanParticipants(activeParticipants),
+                DadCoordinatorTravelRules.SelectLanParticipants(activeSlotManifest, activeParticipants),
                 DateTime.UtcNow);
             if (travelProof.ImmutableTargetChanged)
             {
@@ -1086,7 +1086,7 @@ public sealed class DadCoordinatorService
         }
 
         blockers.AddRange(activeParticipants
-            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+            .Where(participant => IsActiveManifestLanParticipant(participant) &&
                 (participant.State is DadParticipantState.WaitingForRequiredCharacter or
                     DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
             .Select(static participant => string.IsNullOrWhiteSpace(participant.StatusText) ? participant.State.ToString() : participant.StatusText));
@@ -1143,7 +1143,7 @@ public sealed class DadCoordinatorService
             return;
 
         var livenessBlockers = activeParticipants
-            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+            .Where(participant => IsActiveManifestLanParticipant(participant) &&
                 (participant.State is DadParticipantState.WaitingForRequiredCharacter or
                     DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
             .Select(static participant => string.IsNullOrWhiteSpace(participant.StatusText)
@@ -1241,8 +1241,8 @@ public sealed class DadCoordinatorService
                 return;
             }
 
-            CurrentResult.Phase = activeParticipants.Any(static participant =>
-                string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+            CurrentResult.Phase = activeParticipants.Any(participant =>
+                IsActiveManifestLanParticipant(participant) &&
                 (participant.State is DadParticipantState.WaitingForRequiredCharacter or
                     DadParticipantState.WaitingForPostArReady or DadParticipantState.Stale))
                 ? DadRunPhase.WaitingForReadiness
@@ -1310,12 +1310,13 @@ public sealed class DadCoordinatorService
         IReadOnlyList<DadPartyMemberSnapshot> partyMembers = [];
         foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.FormParty))
         {
+            var frozenSlot = ResolveFrozenSlotForInstruction(instruction);
             var participant = ResolveParticipantForInstruction(instruction);
-            if (participant == null)
+            if (frozenSlot == null || participant == null)
                 continue;
 
             participant.State = DadParticipantState.AssemblyPending;
-            if (!string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            if (frozenSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
             {
                 if (!TryRequestAutoPartyFormOperation(instruction, participant, out var remoteBlocker))
                     blockers.Add(remoteBlocker);
@@ -1356,11 +1357,12 @@ public sealed class DadCoordinatorService
 
         foreach (var instruction in instructions.Where(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.JoinParty))
         {
+            var frozenSlot = ResolveFrozenSlotForInstruction(instruction);
             var participant = ResolveParticipantForInstruction(instruction);
-            if (participant == null)
+            if (frozenSlot == null || participant == null)
                 continue;
 
-            if (!string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+            if (frozenSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
             {
                 if (!TryRequestAutoPartyFormOperation(instruction, participant, out var remoteBlocker))
                     blockers.Add(remoteBlocker);
@@ -1533,9 +1535,33 @@ public sealed class DadCoordinatorService
         }
     }
 
+    private DadFrozenRunSlot? ResolveFrozenSlotForInstruction(DadAssemblyInstructionDto instruction)
+        => DadRunSlotManifestRules.FindInstructionSlot(activeSlotManifest, instruction);
+
     private DadParticipantSnapshot? ResolveParticipantForInstruction(DadAssemblyInstructionDto instruction)
-        => activeParticipants.FirstOrDefault(candidate =>
-            string.Equals(candidate.ActiveCharacterKey.Value, instruction.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase));
+    {
+        var slot = ResolveFrozenSlotForInstruction(instruction);
+        if (slot == null)
+            return null;
+
+        var matches = activeParticipants.Where(participant =>
+                string.Equals(participant.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                (slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland
+                    ? !string.IsNullOrWhiteSpace(participant.RegisteredIslandId) &&
+                      string.Equals(participant.RegisteredIslandId, slot.IslandId, StringComparison.Ordinal)
+                    : string.Equals(
+                          participant.WorkerSessionId.Value,
+                          slot.WorkerSessionId.Value,
+                          StringComparison.OrdinalIgnoreCase) &&
+                      DadRosterIdentity.SameAccount(participant.ManagedAccountKey, slot.AccountKey) &&
+                      DadRosterIdentity.SameCharacter(
+                          participant.ActiveCharacterKey,
+                          participant.Character.ContentId,
+                          slot.CharacterKey,
+                          slot.ContentId)))
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
 
     private IReadOnlyList<DadPartyMemberSnapshot> BuildLocalPartySnapshot(out string blocker)
     {
@@ -2988,9 +3014,10 @@ public sealed class DadCoordinatorService
 
                 foreach (var instruction in dispatchable)
                 {
+                    var frozenSlot = ResolveFrozenSlotForInstruction(instruction);
                     var participant = ResolveParticipantForInstruction(instruction);
                     DadRunStepResultDto? result;
-                    if (participant == null)
+                    if (frozenSlot == null || participant == null)
                     {
                         var reason =
                             $"{instruction.SlotId} no longer has its exact frozen worker/character route during teardown.";
@@ -3005,7 +3032,7 @@ public sealed class DadCoordinatorService
                             BlockedReason = reason,
                         };
                     }
-                    else if (!string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+                    else if (frozenSlot.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
                     {
                         result = RequestAutoPartyRestoreOperation(instruction, participant);
                     }
@@ -3247,7 +3274,7 @@ public sealed class DadCoordinatorService
         {
             var travelProof = DadCoordinatorTravelRules.ValidateParticipants(
                 activeSlotManifest.CoordinatorTravelTarget,
-                DadCoordinatorTravelRules.SelectLanParticipants(refreshedParticipants),
+                DadCoordinatorTravelRules.SelectLanParticipants(activeSlotManifest, refreshedParticipants),
                 DateTime.UtcNow);
             if (!travelProof.Ready)
             {
@@ -3362,6 +3389,15 @@ public sealed class DadCoordinatorService
             frozenSessions,
             transportService.IsWorkerOnline);
     }
+
+    private bool IsActiveManifestLanParticipant(DadParticipantSnapshot participant)
+        => activeSlotManifest?.Slots.Any(slot =>
+               slot.RouteKind == DadRunSlotRouteKind.LanWorker &&
+               string.Equals(slot.SlotId, participant.AssignedSlotId, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   slot.WorkerSessionId.Value,
+                   participant.WorkerSessionId.Value,
+                   StringComparison.OrdinalIgnoreCase)) == true;
 
     private bool TryGetActiveAutoPartyProposalId(out Guid proposalId)
     {

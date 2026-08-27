@@ -1,6 +1,17 @@
 # dad — changelog
 
 ## 2026-08-25 — Command-driven Dad-island AutoParty execution (local-only, unpublished)
+- Crew Formation now routes travel proof, LAN readiness, party assembly, and teardown from each frozen manifest slot's
+  route kind. A locally registered LAN Slot1 remains the exact local inviter while registered-island slots continue
+  through the authenticated endpoint bridge; local endpoint registration is preserved throughout.
+- Established pairings remain authoritative until explicit revocation or deregistration; the old establishment-delivery
+  timestamp no longer expires a confirmed relationship. Webhook 401, 403, and 404 recovery now replaces only broken
+  mailbox credentials, epochs, relay keys, and temporary directory/session state while retaining endpoint identity,
+  registration route, aliases, pairings, deauthentication history, saved Crew bindings, and plans for same-identity
+  replacement bootstrap.
+- Authenticated paired character names now persist through the existing listing and saved Crew label fields. Opaque
+  directory refreshes, relogs, plugin reloads, and expired private-label deliveries no longer downgrade a known
+  `Name@World` label to its synthetic placeholder or **(real name incoming)**.
 - Pair removal is now a confirmed, reversible **Unpair** action. It ends only the selected relationship, retains the
   separate confirmed deregistration path, and permits a later fresh reciprocal fingerprint exchange while preserving
   the endpoint identity used for registration recovery.

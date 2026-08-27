@@ -131,9 +131,14 @@ public static class DadCoordinatorTravelRules
     }
 
     internal static IReadOnlyList<DadParticipantSnapshot> SelectLanParticipants(
+        DadRunSlotManifest manifest,
         IEnumerable<DadParticipantSnapshot> participants)
-        => participants
-            .Where(static participant => string.IsNullOrWhiteSpace(participant.RegisteredIslandId))
+        => manifest.Slots
+            .Where(static slot => slot.RouteKind == DadRunSlotRouteKind.LanWorker)
+            .OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.SlotId))
+            .SelectMany(slot => participants.Where(participant =>
+                Same(participant.AssignedSlotId, slot.SlotId) &&
+                Same(participant.WorkerSessionId.Value, slot.WorkerSessionId.Value)))
             .ToList();
 
     public static bool IsFreshComplete(DadWorldLocationObservation? location, DateTime nowUtc)

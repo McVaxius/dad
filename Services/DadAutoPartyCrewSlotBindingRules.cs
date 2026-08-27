@@ -71,9 +71,11 @@ internal static class DadAutoPartyCrewSlotBindingRules
             IdentityToken = listing.OpaqueCharacterId,
             AccountToken = pairing.IslandId,
             BindingId = bindingId,
-            CharacterLabel = string.IsNullOrWhiteSpace(listing.OpaqueDisplayLabel)
+            CharacterLabel = DadAutoPartyService.IsAuthenticatedCharacterLabel(listing.DisplayLabel)
                 ? listing.DisplayLabel
-                : listing.OpaqueDisplayLabel,
+                : string.IsNullOrWhiteSpace(listing.OpaqueDisplayLabel)
+                    ? listing.DisplayLabel
+                    : listing.OpaqueDisplayLabel,
             RequiresCharacter = true,
         };
         return true;

@@ -14,6 +14,12 @@ internal static class DadRunSlotManifestRules
                reference.RequiredJobId.HasValue ||
                !string.IsNullOrWhiteSpace(reference.SharedIdentityToken)) ?? false);
 
+    internal static DadFrozenRunSlot? FindInstructionSlot(
+        DadRunSlotManifest? manifest,
+        DadAssemblyInstructionDto instruction)
+        => manifest?.Slots.SingleOrDefault(slot =>
+            string.Equals(slot.SlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase));
+
     public static bool TryCreate(
         DadRunPlan plan,
         out DadRunSlotManifest manifest,

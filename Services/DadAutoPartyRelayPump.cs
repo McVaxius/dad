@@ -630,7 +630,6 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         {
             var matches = configuration.Pairings.Where(pairing =>
                     pairing.IsActive &&
-                    pairing.ExpiresAtUtc > now.UtcDateTime &&
                     string.Equals(pairing.OwnerId, slot.OwnerId, StringComparison.Ordinal) &&
                     string.Equals(pairing.IslandId, slot.IslandId, StringComparison.Ordinal))
                 .Take(2)

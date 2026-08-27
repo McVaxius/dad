@@ -926,10 +926,23 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         if (!string.IsNullOrWhiteSpace(invalidatedCredentialReference))
             ObserveBackgroundDisposal(DeleteInvalidatedCredentialAsync(invalidatedCredentialReference));
 
-        if (autoPartyService != null)
-            autoPartyService.HandleTerminalMailboxInvalidation();
-        else
-            configuration.ClearRegistrationAndTrust();
+        autoPartyService?.HandleTerminalMailboxInvalidation();
+        configuration.RegistrationState = DadAutoPartyRegistrationState.Unregistered;
+        configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.RecoveryAvailable;
+        configuration.WebhookCredentialReference = string.Empty;
+        configuration.UplinkEpochId = string.Empty;
+        configuration.DownlinkEpochId = string.Empty;
+        configuration.MailboxEpochGeneration = 0;
+        configuration.DirectoryGeneration = 1;
+        configuration.RelayKeyGeneration = 1;
+        configuration.RelaySigningPublicKey = string.Empty;
+        configuration.RelayAgreementPublicKey = string.Empty;
+        configuration.BootstrapExpiresAtUtc = default;
+        configuration.PendingPairings.Clear();
+        configuration.ClearPairingAttempt();
+        configuration.Grants.Clear();
+        configuration.Listings.Clear();
+        configuration.StateGeneration++;
         saveConfiguration();
         nextListingPublishUtc = DateTime.MinValue;
         listingPublicationSnapshot = DadAutoPartyListingPublicationSnapshot.NotRun();
