@@ -42,27 +42,6 @@ public sealed class DadAllianceSchemaPropagationTests
     }
 
     [Fact]
-    public void HubProtocolFourRejectsMixedVersionThreeFrames()
-    {
-        Assert.Equal(4, DadHubProtocol.CurrentVersion);
-        var frame = DadHubProtocol.CreateFrame(
-            DadHubFrameKind.Hello,
-            new DadWorkerSessionId("worker-fixture"),
-            new DadWorkerSessionId(string.Empty),
-            "hello",
-            "correlation-fixture",
-            "{}",
-            string.Empty);
-        frame.ProtocolVersion = 3;
-
-        var error = Assert.Throws<DadHubProtocolException>(
-            () => DadHubProtocol.ValidateFrame(frame, string.Empty));
-
-        Assert.Equal("protocol-mismatch", error.Code);
-        Assert.Contains("4", error.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void ConfigAndIpcRoundTripsPreserveAllianceAssignment()
     {
         var group = GroupWithAssignments();

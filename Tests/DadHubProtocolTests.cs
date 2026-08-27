@@ -382,8 +382,10 @@ public sealed class DadHubProtocolTests
         DadHubProtocol.ValidateFrame(frame, "correct-secret");
     }
 
-    [Fact]
-    public void ProtocolMismatchFailsClearly()
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(1)]
+    public void ProtocolMismatchFailsClearly(int versionOffset)
     {
         var frame = DadHubProtocol.CreateFrame(
             DadHubFrameKind.Hello,
@@ -393,7 +395,7 @@ public sealed class DadHubProtocolTests
             "corr",
             "{}",
             string.Empty);
-        frame.ProtocolVersion++;
+        frame.ProtocolVersion = DadHubProtocol.CurrentVersion + versionOffset;
 
         var error = Assert.Throws<DadHubProtocolException>(
             () => DadHubProtocol.ValidateFrame(frame, string.Empty));
