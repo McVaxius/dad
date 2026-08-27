@@ -50,6 +50,7 @@ public sealed class DadCoordinatorService
     private readonly Dictionary<string, string> partyTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> workerCommandTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> coordinatorProvenanceTransitions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> groupReadyFrenRiderActivatedSlots = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<ulong, DateTime> firstPartyInviteAttemptUtcByContentId = [];
     private readonly HashSet<string> deliveredTravelAssignmentSlots = new(StringComparer.OrdinalIgnoreCase);
     private readonly DadRemoteAssignmentTracker remoteAssignmentTracker = new();
@@ -131,6 +132,13 @@ public sealed class DadCoordinatorService
     public bool IsReady => transportService.IsReady;
 
     public bool IsBusy => CurrentResult.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running;
+
+    internal bool HasActiveRegisteredIslandWork
+        => activePlan != null &&
+           (activeSlotManifest?.Slots.Any(static slot =>
+                slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland) == true ||
+            activeParticipants.Any(static participant =>
+                !string.IsNullOrWhiteSpace(participant.RegisteredIslandId)));
 
     internal bool HasPendingCancellationCleanup => pendingCoordinatorCancellations.Count > 0;
 
@@ -427,6 +435,7 @@ public sealed class DadCoordinatorService
         workerStatuses.Clear();
         workerCommands.Clear();
         missingWorkerSinceUtc.Clear();
+        groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
@@ -1450,26 +1459,6 @@ public sealed class DadCoordinatorService
             return;
         }
 
-        var registeredIslandLeader = activeSlotManifest.Slots.Single(static slot => slot.IsLeader)
-            .RouteKind == DadRunSlotRouteKind.RegisteredIsland;
-        if (registeredIslandLeader)
-        {
-            foreach (var participant in activeParticipants)
-            {
-                LogPartyTransition(
-                    activePlan,
-                    participant,
-                    "party-command-dispatched",
-                    "Registered-island Slot1 Form dispatch and every LAN join acknowledgement are complete.");
-            }
-
-            inviteRetryContinuationRunId = string.Empty;
-            TransitionAfterAssembly(
-                activePlan,
-                "Registered-island Slot1 assembly dispatched; every LAN participant acknowledgement is complete.");
-            return;
-        }
-
         var membership = partyAssemblyService.EvaluatePartyMembership(
             activePlan,
             activeParticipants,
@@ -1518,7 +1507,7 @@ public sealed class DadCoordinatorService
         }
 
         inviteRetryContinuationRunId = string.Empty;
-        TransitionAfterAssembly(activePlan, "Dad party assembly confirmed; preparing queue executor.");
+        TransitionAfterAssembly(activePlan, "Dad party assembly confirmed; preparing queue executor.", instructions);
     }
 
     private void PromotePersistentPartyInviteWarnings()
@@ -3886,8 +3875,14 @@ public sealed class DadCoordinatorService
         return true;
     }
 
-    private void TransitionAfterAssembly(DadRunPlan plan, string queueSummary)
+    private void TransitionAfterAssembly(
+        DadRunPlan plan,
+        string queueSummary,
+        IReadOnlyList<DadAssemblyInstructionDto>? assemblyInstructions = null)
     {
+        if (!TryActivateFrenRiderAfterAssembly(plan, assemblyInstructions))
+            return;
+
         if (plan.Orchestration.AutoPartyFormationOnly)
         {
             Transition(
@@ -3898,6 +3893,89 @@ public sealed class DadCoordinatorService
         }
 
         Transition(DadRunPhase.QueuePreparing, DadRunStatus.Running, queueSummary);
+    }
+
+    private bool TryActivateFrenRiderAfterAssembly(
+        DadRunPlan plan,
+        IReadOnlyList<DadAssemblyInstructionDto>? assemblyInstructions)
+    {
+        if (plan.RequiredParticipantCount <= 1)
+            return true;
+
+        var instructions = assemblyInstructions?.Select(static instruction => instruction.Clone()).ToList() ??
+            activeParticipants.Select((participant, index) => new DadAssemblyInstructionDto
+            {
+                RunId = plan.Request.RequestId,
+                AuthorityWorkerSessionId = presenceService.WorkerSessionId,
+                ModuleId = plan.CompositeModuleId,
+                SlotId = string.IsNullOrWhiteSpace(participant.AssignedSlotId)
+                    ? DadPlannerSlotRules.FormatSlotId(index + 1)
+                    : participant.AssignedSlotId,
+                RequiredCharacterKey = participant.Character.CharacterKey,
+                Summary = "Exact DAD group formation is complete; apply the selected FrenRider group-ready mode.",
+            }).ToList();
+        var pending = new List<string>();
+        foreach (var instruction in instructions)
+        {
+            var frozenSlot = ResolveFrozenSlotForInstruction(instruction);
+            if (frozenSlot?.RouteKind == DadRunSlotRouteKind.RegisteredIsland)
+                continue;
+            if (groupReadyFrenRiderActivatedSlots.Contains(instruction.SlotId))
+                continue;
+
+            var participant = frozenSlot == null && assemblyInstructions == null && activeParticipants.Count == 1
+                ? activeParticipants[0]
+                : ResolveParticipantForInstruction(instruction);
+            if (participant == null)
+            {
+                pending.Add($"{instruction.SlotId} is waiting for its exact group-ready FrenRider target.");
+                continue;
+            }
+
+            instruction.InstructionKind = DadAssemblyInstructionKind.ActivateFrenRider;
+            instruction.Summary = "Exact DAD group formation is complete; apply the selected FrenRider group-ready mode.";
+            var result = participant.IsLocalClient
+                ? presenceService.HandleAssemblyInstruction(instruction)
+                : transportService.SendAssemblyInstruction(participant, instruction);
+            if (result == null || result.Deferred)
+            {
+                pending.Add(result?.BlockedReason ??
+                            $"{instruction.SlotId} is waiting for its group-ready FrenRider acknowledgement.");
+                continue;
+            }
+
+            if (result.StepName is not "GroupReadyFrenRider" and not "GroupReadyFrenRiderNotRequired")
+            {
+                FinalizeRun(
+                    DadRunStatus.Failed,
+                    "DAD could not verify the group-ready FrenRider acknowledgement.",
+                    $"{instruction.SlotId} returned an unsupported activation acknowledgement.");
+                return false;
+            }
+
+            if (!result.Success)
+            {
+                var failure = string.IsNullOrWhiteSpace(result.FailureReason)
+                    ? result.Summary
+                    : result.FailureReason;
+                FinalizeRun(
+                    DadRunStatus.Failed,
+                    "DAD could not apply the selected FrenRider mode after exact group formation.",
+                    failure);
+                return false;
+            }
+
+            groupReadyFrenRiderActivatedSlots.Add(instruction.SlotId);
+            LogPartyTransition(plan, participant, "group-ready-frenrider", result.Summary);
+        }
+
+        if (pending.Count == 0)
+            return true;
+
+        CurrentResult.ActiveTaskStatus = string.Join(" | ", pending.Distinct(StringComparer.OrdinalIgnoreCase));
+        CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+        Publish();
+        return false;
     }
 
     private string ResolveSingleWorkerAssemblyBlocker(DadRunPlan plan, DadParticipantSnapshot participant)
@@ -4106,6 +4184,7 @@ public sealed class DadCoordinatorService
         workerStatuses.Clear();
         workerCommands.Clear();
         missingWorkerSinceUtc.Clear();
+        groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
         nextWorkerStatusPollUtc = DateTime.MinValue;
         loggedSingleWorkerSeed = false;

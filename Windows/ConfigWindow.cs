@@ -206,14 +206,14 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawSectionHeader("Integrations");
 
-        var questionableBridge = configuration.QuestionableBridgeEnabled;
-        if (ImGui.Checkbox("Enable AutoDuty / ADS handoff through Questionable", ref questionableBridge))
+        var questionableBridge = configuration.QuestionableBridgeOptInEnabled;
+        if (ImGui.Checkbox("Opt in to experimental AutoDuty / ADS handoff through Questionable", ref questionableBridge))
         {
-            configuration.QuestionableBridgeEnabled = questionableBridge;
+            configuration.QuestionableBridgeOptInEnabled = questionableBridge;
             configuration.Save();
         }
 
-        ImGui.TextWrapped("Disabling restores any patched Questionable values and stops the bridge. Leave on unless it causes issues.");
+        ImGui.TextWrapped("Off by default, including upgrades from the legacy default-on setting. This compatibility bridge patches Questionable runtime fields and may break after Questionable updates. Disabling restores any patched values DAD still owns.");
 
         DrawSectionHeader("Global completion defaults");
         ImGui.TextWrapped("Used by presets that do not define their own completion actions.");
@@ -413,12 +413,12 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.SetTooltip("Changes local DAD labels only. Saved identities and run contracts stay unchanged.");
 
         var kranglerPrivacy = configuration.KranglerPrivacyLeaseEnabled;
-        if (ImGui.Checkbox("Use Krangler name/chat privacy while DAD is enabled", ref kranglerPrivacy))
+        if (ImGui.Checkbox("Use Krangler privacy during active DAD-island work", ref kranglerPrivacy))
             plugin.SetKranglerPrivacyLeaseEnabled(kranglerPrivacy);
         ImGui.SameLine();
         ImGui.TextDisabled(plugin.KranglerPrivacyLeaseService.Snapshot.Status);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Runtime-only lease. DAD does not change or save Krangler's configured appearance features.");
+            ImGui.SetTooltip("Runtime-only lease while a registered-island group is actively being formed or run by a direct plan, scheduler job, or authenticated inbound proposal. Idle and LAN-only DAD do not acquire it; DAD never changes Krangler's saved appearance settings.");
 
         var mode = configuration.DtrBarMode;
         if (ImGui.Combo("Server info display", ref mode, DtrModes, DtrModes.Length))
@@ -503,6 +503,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.BulletText("/dad j -> jump DAD windows somewhere visible");
             ImGui.BulletText("/dad status -> print the live shell summary to chat");
             ImGui.BulletText("/dad mini -> toggle the compact cached status and Stop-all window");
+            ImGui.BulletText("/dad quick or /dad qp -> send one registered slash command to connected Client DADs");
             ImGui.BulletText("Offline Client DADs automatically show reconnect progress and retry until DAD is disabled");
             ImGui.BulletText("/dad wizard or /dad setup -> open the DAD Setup Guide");
             ImGui.BulletText("/dad debug, /dad debug on, /dad debug off -> toggle verbose UI diagnostics");

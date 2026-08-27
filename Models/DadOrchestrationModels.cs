@@ -169,6 +169,7 @@ public enum DadAssemblyInstructionKind
     DisbandParty,
     ReadyCheck,
     LeaveParty,
+    ActivateFrenRider,
 }
 
 public sealed class DadRunWaitPolicy

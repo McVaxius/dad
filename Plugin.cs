@@ -118,6 +118,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
     private readonly SetupWizardWindow setupWizardWindow;
     private readonly DadMiniStatusWindow miniStatusWindow;
+    private readonly DadQuickPanelWindow quickPanelWindow;
     private readonly DadClientReconnectWindow clientReconnectWindow;
     private readonly DadDependenciesWindow dependenciesWindow;
     private readonly DadAutoPartyFleetMatrixWindow autoPartyFleetMatrixWindow;
@@ -377,8 +378,6 @@ public sealed class Plugin : IDalamudPlugin
         ProfileDirectoryService = new DadProfileDirectoryService(Configuration, ConfigManager, PresenceService, TransportService, Log);
         KrangleService = new DadKrangleService(Configuration);
         KranglerPrivacyLeaseService = new DadKranglerPrivacyLeaseService(PluginInterface, Log);
-        KranglerPrivacyLeaseService.SetDesired(
-            Configuration.PluginEnabled && Configuration.KranglerPrivacyLeaseEnabled);
         ShareService = new DadShareService(forceKrangle: KrangleService.KrangleName);
         ModuleRegistry = new DadModuleRegistry();
         PresetProviderService = new DadPresetProviderService(
@@ -397,6 +396,7 @@ public sealed class Plugin : IDalamudPlugin
         LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
+        PresenceService.ConfigureCombatRotationService(CombatRotationService);
         MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
         QueueExecutionService = new DadQueueExecutionService(
             ModuleRegistry,
@@ -450,6 +450,7 @@ public sealed class Plugin : IDalamudPlugin
             Log,
             GetCurrentAutoPartyRemoteBindings,
             AutoPartyParticipantBridge);
+        KranglerPrivacyLeaseService.SetDesired(IsKranglerPrivacyLeaseDesired());
         autoPartyRelayPump.ConfigureFormExecutionHandler(ExecuteInboundAutoPartyForm);
         autoPartyRelayPump.ConfigureRegisteredIslandExecutionHandler(ExecuteInboundAutoPartyOperation);
         AlliancePartyFinderService = new DadAlliancePartyFinderService(
@@ -530,6 +531,7 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(this);
         setupWizardWindow = new SetupWizardWindow(this);
         miniStatusWindow = new DadMiniStatusWindow(this);
+        quickPanelWindow = new DadQuickPanelWindow(this);
         clientReconnectWindow = new DadClientReconnectWindow(this);
         dependenciesWindow = new DadDependenciesWindow(this);
         autoPartyFleetMatrixWindow = new DadAutoPartyFleetMatrixWindow(this);
@@ -539,6 +541,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(setupWizardWindow);
         WindowSystem.AddWindow(miniStatusWindow);
+        WindowSystem.AddWindow(quickPanelWindow);
         WindowSystem.AddWindow(clientReconnectWindow);
         WindowSystem.AddWindow(dependenciesWindow);
         WindowSystem.AddWindow(autoPartyFleetMatrixWindow);
@@ -552,7 +555,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} quick, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -588,7 +591,7 @@ public sealed class Plugin : IDalamudPlugin
             Framework,
             DutyIpcService,
             Log,
-            () => Configuration.QuestionableBridgeEnabled,
+            () => Configuration.QuestionableBridgeOptInEnabled,
             message => NotificationManager.AddNotification(new Notification
             {
                 Type = NotificationType.Warning,
@@ -657,6 +660,8 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleMiniStatusUi() => miniStatusWindow.Toggle();
 
     public void OpenMiniStatusUi() => miniStatusWindow.IsOpen = true;
+
+    public void ToggleQuickPanelUi() => quickPanelWindow.Toggle();
 
     public void DisableDadFromReconnectWindow()
     {
@@ -2955,6 +2960,26 @@ public sealed class Plugin : IDalamudPlugin
             {
                 if (!TryApplyInboundFrenRiderProfile(operation, runtimeContext, out var followerProfileSafeCode))
                     return ValueTask.FromResult(Denied(followerProfileSafeCode));
+                if (!TryActivateInboundFrenRiderAfterGroupReady(
+                        runtimeContext,
+                        participant,
+                        instruction,
+                        out var followerActivationPending,
+                        out var followerActivationSafeCode))
+                {
+                    return ValueTask.FromResult(Denied(followerActivationSafeCode));
+                }
+                if (followerActivationPending)
+                {
+                    return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                        operation.OperationId,
+                        operation.ProposalId,
+                        operation.Kind,
+                        ExecutionOutcome.Accepted,
+                        DadRunPhase.AssemblingParty,
+                        followerActivationSafeCode,
+                        operation.ExpectedStateGeneration));
+                }
                 completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
                 return ValueTask.FromResult(new DadAutoPartyExecutionResult(
                     operation.OperationId,
@@ -3005,6 +3030,26 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!TryApplyInboundFrenRiderProfile(operation, runtimeContext, out var profileSafeCode))
             return ValueTask.FromResult(Denied(profileSafeCode));
+        if (!TryActivateInboundFrenRiderAfterGroupReady(
+                runtimeContext,
+                participant,
+                instruction,
+                out var activationPending,
+                out var activationSafeCode))
+        {
+            return ValueTask.FromResult(Denied(activationSafeCode));
+        }
+        if (activationPending)
+        {
+            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
+                operation.OperationId,
+                operation.ProposalId,
+                operation.Kind,
+                ExecutionOutcome.Accepted,
+                DadRunPhase.AssemblingParty,
+                activationSafeCode,
+                operation.ExpectedStateGeneration));
+        }
         completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
         return ValueTask.FromResult(new DadAutoPartyExecutionResult(
             operation.OperationId,
@@ -3021,6 +3066,49 @@ public sealed class Plugin : IDalamudPlugin
                 observedContentIds,
                 "partylist-authoritative",
                 DateTime.UtcNow)));
+    }
+
+    private bool TryActivateInboundFrenRiderAfterGroupReady(
+        DadAutoPartyInboundExecutionContext context,
+        DadParticipantSnapshot participant,
+        DadAssemblyInstructionDto assemblyInstruction,
+        out bool pending,
+        out string safeCode)
+    {
+        pending = false;
+        safeCode = "dad-inbound-frenrider-group-ready-not-required";
+        if (!context.ExecutionPlan.UseFrenRider)
+            return true;
+
+        var activationInstruction = assemblyInstruction.Clone();
+        activationInstruction.InstructionKind = DadAssemblyInstructionKind.ActivateFrenRider;
+        activationInstruction.Summary =
+            "Exact DAD group formation is complete; apply the selected FrenRider group-ready mode.";
+        var result = string.Equals(
+                participant.WorkerSessionId.Value,
+                PresenceService.WorkerSessionId.Value,
+                StringComparison.OrdinalIgnoreCase)
+            ? PresenceService.HandleAssemblyInstruction(activationInstruction)
+            : TransportService.SendAssemblyInstruction(participant, activationInstruction);
+        if (result == null || result.Deferred)
+        {
+            pending = true;
+            safeCode = "dad-inbound-frenrider-group-ready-pending";
+            return true;
+        }
+
+        if (result.StepName is not "GroupReadyFrenRider" and not "GroupReadyFrenRiderNotRequired")
+        {
+            safeCode = "dad-inbound-frenrider-group-ready-unsupported";
+            return false;
+        }
+
+        safeCode = !result.Success
+            ? "dad-inbound-frenrider-group-ready-failed"
+            : result.StepName == "GroupReadyFrenRiderNotRequired"
+                ? "dad-inbound-frenrider-group-ready-not-required"
+                : "dad-inbound-frenrider-group-ready-complete";
+        return result.Success;
     }
 
     private bool TryValidateInboundFrenRiderProfile(
@@ -5385,8 +5473,7 @@ public sealed class Plugin : IDalamudPlugin
             });
         }
         Configuration.PluginEnabled = enabled;
-        KranglerPrivacyLeaseService.SetDesired(
-            enabled && Configuration.KranglerPrivacyLeaseEnabled);
+        KranglerPrivacyLeaseService.SetDesired(IsKranglerPrivacyLeaseDesired());
         if (enabled && !wasEnabled)
             DependencyService.MarkDirty("DAD was enabled; checking required plugins.");
         Configuration.Save();
@@ -5414,8 +5501,15 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration.KranglerPrivacyLeaseEnabled = enabled;
         Configuration.Save();
-        KranglerPrivacyLeaseService.SetDesired(Configuration.PluginEnabled && enabled);
+        KranglerPrivacyLeaseService.SetDesired(IsKranglerPrivacyLeaseDesired());
     }
+
+    private bool IsKranglerPrivacyLeaseDesired()
+        => Configuration.PluginEnabled &&
+           Configuration.KranglerPrivacyLeaseEnabled &&
+           (RunCoordinatorService.HasActiveRegisteredIslandWork ||
+            SchedulerService.HasActiveRegisteredIslandWork ||
+            autoPartyRelayPump.HasActiveInboundRegisteredIslandWork);
 
     public void ToggleDebugUi()
         => SetDebugUiEnabled(!Configuration.DebugUiEnabled);
@@ -5426,6 +5520,7 @@ public sealed class Plugin : IDalamudPlugin
         configWindow.ResetToOrigin();
         setupWizardWindow.ResetToOrigin();
         miniStatusWindow.ResetToOrigin();
+        quickPanelWindow.ResetToOrigin();
         clientReconnectWindow.ResetToOrigin();
         dependenciesWindow.ResetToOrigin();
         presetBatchWizardWindow.ResetToOrigin();
@@ -5433,6 +5528,7 @@ public sealed class Plugin : IDalamudPlugin
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
         miniStatusWindow.IsOpen = true;
+        quickPanelWindow.IsOpen = true;
         if (!Configuration.RunAsServerDad)
             clientReconnectWindow.IsOpen = true;
         PrintStatus("Reset dad window positions to 1,1.");
@@ -5444,12 +5540,14 @@ public sealed class Plugin : IDalamudPlugin
         configWindow.QueueRandomVisibleJump();
         setupWizardWindow.QueueRandomVisibleJump();
         miniStatusWindow.QueueRandomVisibleJump();
+        quickPanelWindow.QueueRandomVisibleJump();
         clientReconnectWindow.QueueRandomVisibleJump();
         dependenciesWindow.QueueRandomVisibleJump();
         mainWindow.IsOpen = true;
         configWindow.IsOpen = true;
         setupWizardWindow.IsOpen = true;
         miniStatusWindow.IsOpen = true;
+        quickPanelWindow.IsOpen = true;
         if (!Configuration.RunAsServerDad)
             clientReconnectWindow.IsOpen = true;
         PrintStatus("Queued random visible positions for the dad windows.");
@@ -5653,6 +5751,13 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.Equals("mini", StringComparison.OrdinalIgnoreCase))
         {
             ToggleMiniStatusUi();
+            return;
+        }
+
+        if (trimmed.Equals("quick", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("qp", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleQuickPanelUi();
             return;
         }
 
@@ -6380,7 +6485,7 @@ public sealed class Plugin : IDalamudPlugin
 
         RunFrameworkStep("Dependencies", () => DependencyService.Update(Configuration.PluginEnabled));
         RunFrameworkStep("KranglerPrivacyLease", () => KranglerPrivacyLeaseService.Update(
-            Configuration.PluginEnabled && Configuration.KranglerPrivacyLeaseEnabled));
+            IsKranglerPrivacyLeaseDesired()));
         RunFrameworkStep("DependencyWindow", dependenciesWindow.Sync);
         RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
         RunFrameworkStep("VermaxionReservation", VermaxionIpcService.Update);

@@ -190,6 +190,16 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
 
     public DadAutoPartyRelayPumpSnapshot Snapshot => Volatile.Read(ref snapshot);
 
+    internal bool HasActiveInboundRegisteredIslandWork
+    {
+        get
+        {
+            var now = utcNow();
+            lock (gate)
+                return inboundRuntimeTargets.Values.Any(target => target.ExpiresAt > now);
+        }
+    }
+
     internal bool TryGetInboundRuntimeTarget(
         Guid proposalId,
         OpaqueCharacterId characterId,

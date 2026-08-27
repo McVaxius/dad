@@ -8,12 +8,13 @@
   Form applies it only after authoritative local PartyList proof under the receiver's Off, Temporary, or Permanent policy;
   Queue then fails closed on missing, mismatched, unavailable, or failed required local application state.
 - Proposal-owned temporary FrenRider overlays are released only for their exact owner during Restore, proposal expiry or
-  security teardown, guarded disband, or unload. Permanent application preserves the receiver's local acceptance policy,
-  and the legacy local/LAN duty-entry IPC
-  path remains unchanged.
-- Added default-on, runtime-only Krangler privacy leasing. DAD owns one process token, reacquires after plugin changes,
-  releases on disable or disposal, never mutates Krangler configuration, and shows the effective lease beside Krangle
-  controls.
+  security teardown, guarded disband, or unload. Permanent application preserves the receiver's local acceptance policy.
+  After exact group proof, Use FrenRider sends one `/fr on` per run through the existing one-shot gate on local/LAN clients
+  and after registered-island profile proof; Force Commands and Do Nothing remain no-ops at that boundary.
+- Added default-on, runtime-only Krangler privacy leasing while a registered-island group is actively being formed or run
+  by a direct plan, scheduler job, or authenticated inbound proposal. Idle and LAN-only DAD release it. DAD owns one
+  process token, reacquires after plugin changes, releases on disable or disposal, never mutates Krangler configuration,
+  and shows the effective lease beside Krangle controls.
 - Any-job readiness now waits for the connected character's live combat job and level, while explicit-job rows retain
   their pre-login level-ledger path.
 - Questionable compatibility now supports both the legacy cosmetic `PluginInfo` adapter and 7.5.13's nested provider,
@@ -22,6 +23,12 @@
 - Added an AutoParty guide plus Mini Status projections for enablement, endpoint readiness, pairing/private-directory
   state, exact-formation phase, and first blocker. Mini Status reuses the guarded paired refresh, opens the full AutoParty
   window for registration/pairing/party creation, and exposes only the existing five-second preflighted disband action.
+- Home now advertises all seven guided workflows and includes the existing AutoParty guide. The experimental Questionable
+  AutoDuty / ADS compatibility bridge now uses a new default-off opt-in setting; the legacy default-on setting is not
+  carried forward, while a new explicit opt-in persists normally. Configuration schema and protocols remain unchanged.
+- Added `/dad quick` and `/dad qp`: a session-only Coordinator panel that sends one registered slash command to one or all
+  connected Client DADs through the existing authenticated, default-off remote-command route. It adds no protocol shape,
+  key hook, chat injection, retry, saved command, or history.
 - DAD remains `0.5.0.9` and configuration schema 12. The vendored and pinned protocol package is now
   `Dad.AutoParty.Protocol 0.2.0-preview.8`; wire schema remains version 5.
 

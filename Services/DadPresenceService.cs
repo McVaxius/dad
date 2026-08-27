@@ -16,6 +16,7 @@ public sealed class DadPresenceService
     private readonly DadRequestedJobPreparationGate requestedJobPreparationGate;
     private readonly IDadClassJobGearsetGateway classJobGearsetGateway;
     private readonly IPluginLog log;
+    private DadCombatRotationService? combatRotationService;
     private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
     private Func<DadDependencySnapshot> dependencySnapshotProvider = static () => DadDependencySnapshot.CreateChecking();
     private Func<DadAutoPartyLanPresence> autoPartyPresenceProvider = static () => new();
@@ -99,6 +100,9 @@ public sealed class DadPresenceService
 
     public void ConfigureOceTravelCapacityProofProvider(Func<DadAccountKey, DadOceTravelCapacityProof> provider)
         => oceTravelCapacityProofProvider = provider ?? oceTravelCapacityProofProvider;
+
+    internal void ConfigureCombatRotationService(DadCombatRotationService service)
+        => combatRotationService = service;
 
     internal void ObserveAuthenticatedAutoPartyWake(string runId, string slotId)
     {
@@ -489,6 +493,9 @@ public sealed class DadPresenceService
             or DadAssemblyInstructionKind.LeaveParty)
             return HandlePartyTeardownInstruction(instruction);
 
+        if (instruction.InstructionKind == DadAssemblyInstructionKind.ActivateFrenRider)
+            return HandleFrenRiderActivationInstruction(instruction);
+
         var authenticatedAutoPartyInstruction =
             IsAuthenticatedAutoPartyRun(instruction.RunId, instruction.SlotId);
         if (!CurrentParticipant.PostArReady && !authenticatedAutoPartyInstruction)
@@ -543,6 +550,62 @@ public sealed class DadPresenceService
             ParticipantState = CurrentParticipant.State,
             Success = true,
             Summary = summary,
+        };
+    }
+
+    private DadRunStepResultDto HandleFrenRiderActivationInstruction(DadAssemblyInstructionDto instruction)
+    {
+        if (configuration.CombatRotationMode != DadCombatRotationMode.UseFrenRider)
+        {
+            return new DadRunStepResultDto
+            {
+                RunId = instruction.RunId,
+                ModuleId = instruction.ModuleId,
+                StepName = "GroupReadyFrenRiderNotRequired",
+                ParticipantState = DadParticipantState.AssemblyConfirmed,
+                Success = true,
+                Summary = $"{configuration.CombatRotationMode} mode selected; DAD sent no FrenRider group-ready command.",
+            };
+        }
+
+        if (combatRotationService == null)
+        {
+            const string unavailable = "DAD combat-rotation service is unavailable for group-ready FrenRider activation.";
+            return new DadRunStepResultDto
+            {
+                RunId = instruction.RunId,
+                ModuleId = instruction.ModuleId,
+                StepName = "GroupReadyFrenRider",
+                ParticipantState = DadParticipantState.Failed,
+                Summary = unavailable,
+                FailureReason = unavailable,
+                BlockedReason = unavailable,
+            };
+        }
+
+        var status = combatRotationService.TryEnableFrenRiderAfterGroupReady(
+            instruction.RunId,
+            instruction.ModuleId,
+            DateTime.UtcNow,
+            out var summary);
+        var succeeded = status is DadFrenRiderEntryEnableStatus.Sent or
+            DadFrenRiderEntryEnableStatus.AlreadySent;
+        var deferred = status == DadFrenRiderEntryEnableStatus.PendingRetry;
+        return new DadRunStepResultDto
+        {
+            RunId = instruction.RunId,
+            ModuleId = instruction.ModuleId,
+            StepName = "GroupReadyFrenRider",
+            ParticipantState = succeeded
+                ? DadParticipantState.AssemblyConfirmed
+                : status == DadFrenRiderEntryEnableStatus.Failed
+                    ? DadParticipantState.Failed
+                    : DadParticipantState.AssemblyPending,
+            Success = succeeded,
+            Deferred = deferred,
+            Summary = summary,
+            FailureReason = status == DadFrenRiderEntryEnableStatus.Failed ? summary : string.Empty,
+            BlockedReason = succeeded ? string.Empty : summary,
         };
     }
 

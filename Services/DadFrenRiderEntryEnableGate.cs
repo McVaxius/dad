@@ -31,11 +31,30 @@ internal sealed class DadFrenRiderEntryEnableGate
         DateTime now,
         Func<DadFrenRiderCommandResult> sendCommand,
         out string summary)
+        => ApplyAtBoundary(
+            runKey,
+            operationLabel,
+            command,
+            "after duty entry",
+            now,
+            sendCommand,
+            out summary);
+
+    public DadFrenRiderEntryEnableStatus ApplyAtBoundary(
+        string runKey,
+        string operationLabel,
+        string command,
+        string activationBoundary,
+        DateTime now,
+        Func<DadFrenRiderCommandResult> sendCommand,
+        out string summary)
     {
         if (string.IsNullOrWhiteSpace(runKey))
             runKey = "(unknown-run)";
         if (string.IsNullOrWhiteSpace(operationLabel))
             operationLabel = "this duty operation";
+        if (string.IsNullOrWhiteSpace(activationBoundary))
+            activationBoundary = "at the requested boundary";
 
         if (!states.TryGetValue(runKey, out var state))
         {
@@ -45,7 +64,7 @@ internal sealed class DadFrenRiderEntryEnableGate
 
         if (state.Sent)
         {
-            summary = BuildSuccessSummary(command, operationLabel);
+            summary = BuildSuccessSummary(command, operationLabel, activationBoundary);
             return DadFrenRiderEntryEnableStatus.AlreadySent;
         }
 
@@ -69,7 +88,7 @@ internal sealed class DadFrenRiderEntryEnableGate
         if (result.Succeeded)
         {
             state.Sent = true;
-            summary = BuildSuccessSummary(command, operationLabel);
+            summary = BuildSuccessSummary(command, operationLabel, activationBoundary);
             state.LastSummary = summary;
             return DadFrenRiderEntryEnableStatus.Sent;
         }
@@ -80,13 +99,13 @@ internal sealed class DadFrenRiderEntryEnableGate
         if (now - state.FirstAttemptUtc >= RetryWindow)
         {
             state.Failed = true;
-            summary = $"Use FrenRider mode failed to send {command} after duty entry for {operationLabel}: {failure}.";
+            summary = $"Use FrenRider mode failed to send {command} {activationBoundary} for {operationLabel}: {failure}.";
             state.LastSummary = summary;
             return DadFrenRiderEntryEnableStatus.Failed;
         }
 
         state.NextAttemptUtc = now + RetryInterval;
-        summary = $"Use FrenRider mode could not send {command} after duty entry for {operationLabel}: {failure}. Retrying once per second.";
+        summary = $"Use FrenRider mode could not send {command} {activationBoundary} for {operationLabel}: {failure}. Retrying once per second.";
         state.LastSummary = summary;
         return DadFrenRiderEntryEnableStatus.PendingRetry;
     }
@@ -101,6 +120,6 @@ internal sealed class DadFrenRiderEntryEnableGate
         public string LastSummary { get; set; } = string.Empty;
     }
 
-    private static string BuildSuccessSummary(string command, string operationLabel)
-        => $"Use FrenRider mode sent {command} after duty entry for {operationLabel}.";
+    private static string BuildSuccessSummary(string command, string operationLabel, string activationBoundary)
+        => $"Use FrenRider mode sent {command} {activationBoundary} for {operationLabel}.";
 }

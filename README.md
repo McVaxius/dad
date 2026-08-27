@@ -320,6 +320,11 @@ uploaded or promoted to a release.
 - `/dad status` keeps its existing behavior and prints the live shell report to chat.
 - `/dad mini` toggles a compact, manually opened status window. It renders cached authority, run, scheduler,
   slot, queue, worker-heartbeat, failure, and Stop-all acknowledgement state without polling peers from Draw.
+- `/dad quick` or `/dad qp` opens a session-only Coordinator panel for sending one registered, single-line slash
+  command to one or all currently connected Client DADs. It reuses the authenticated character-command route; every
+  Client receiver remains off until its existing **Allow authenticated Coordinator registered commands** option is
+  enabled; that opt-in governs both Quick Commands and configured character-load commands.
+  There are no key hooks, chat injection, retries, saved commands, or command history.
 - The main activity banner, Status > Current Activity, and mini status project active scheduler work and active
   schedule/inter-entry work as `Running` when no DAD run is busy. This is display-only: runtime truth, authority,
   advancement, locking, cancellation, and transport behavior continue to use their existing state.
@@ -357,7 +362,9 @@ uploaded or promoted to a release.
   five seconds and then exposes a typed failure. Historical close-client/shutdown values deserialize safely but are permanent
   no-ops and are not selectable.
 - Questionable subscriber/gate reflection changes retain their exact pre-image before the first write and restore each still-
-  owned value independently on failure, disable, reload drift, and disposal. AutoRetainer postprocess handoff now distinguishes
+  owned value independently on failure, disable, reload drift, and disposal. This experimental AutoDuty / ADS bridge is off
+  until explicitly opted into in DAD configuration; legacy default-on values are not carried forward. AutoRetainer postprocess
+  handoff now distinguishes
   Armed, RequestSent, and Owned generations; timeout re-arms only the same operation, late named callbacks are released, and
   DAD never calls the global finish channel for a merely pending request. Pilot receipt IO returns immutable results and applies
   its configuration path/save only from the framework update.

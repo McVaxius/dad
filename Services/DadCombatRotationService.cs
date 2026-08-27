@@ -79,9 +79,40 @@ public sealed class DadCombatRotationService(
         out string summary)
     {
         var result = frenRiderEntryEnableGate.Apply(
-            $"{runId}|{moduleId}",
+            runId,
             FormatDutyOperation(moduleId),
             FrenRiderEnableCommand,
+            now,
+            () => SendCommand(FrenRiderEnableCommand),
+            out summary);
+
+        switch (result)
+        {
+            case DadFrenRiderEntryEnableStatus.Sent:
+                log.Information("[dad][CombatRotation] {Summary}", summary);
+                break;
+            case DadFrenRiderEntryEnableStatus.PendingRetry:
+                log.Debug("[dad][CombatRotation] {Summary}", summary);
+                break;
+            case DadFrenRiderEntryEnableStatus.Failed:
+                log.Warning("[dad][CombatRotation] {Summary}", summary);
+                break;
+        }
+
+        return result;
+    }
+
+    internal DadFrenRiderEntryEnableStatus TryEnableFrenRiderAfterGroupReady(
+        string runId,
+        DadModuleId moduleId,
+        DateTime now,
+        out string summary)
+    {
+        var result = frenRiderEntryEnableGate.ApplyAtBoundary(
+            runId,
+            FormatDutyOperation(moduleId),
+            FrenRiderEnableCommand,
+            "after exact group formation",
             now,
             () => SendCommand(FrenRiderEnableCommand),
             out summary);

@@ -621,6 +621,19 @@ public sealed class DadTransportService : IDisposable
             command,
             $"character-load:{participant.WorkerSessionId.Value}:{command.CommandId}");
 
+    public bool SendCharacterLoadCommand(
+        DadParticipantSnapshot participant,
+        DadCharacterLoadCommandDto command,
+        Action<DadCharacterLoadResultDto> completed,
+        Action<string> failed)
+        => QueueOperation<DadCharacterLoadCommandDto, DadCharacterLoadResultDto>(
+            $"character-load:{participant.WorkerSessionId.Value}:{command.CommandId}",
+            participant.WorkerSessionId,
+            MessageCharacterLoadCommand,
+            command,
+            completed,
+            failed);
+
     public DadRunResult? QueryAuthorityStatus(string endpoint)
     {
         var target = ResolveAuthorityWorkerSessionId();
@@ -2087,6 +2100,41 @@ public sealed class DadTransportService : IDisposable
             return BuildRejectedCharacterLoad(command, BuildRemoteMutationRejectedReason("remote character-load command"));
         }
 
+        var rawCommand = command.Command ?? string.Empty;
+        var submittedCommand = rawCommand.Trim();
+        if (rawCommand.Contains('\r') ||
+            rawCommand.Contains('\n') ||
+            submittedCommand.Length == 0 ||
+            submittedCommand.Length > 256 ||
+            submittedCommand[0] != '/')
+        {
+            return new DadCharacterLoadResultDto
+            {
+                CommandId = command.CommandId,
+                Summary = "Remote command must be one registered slash command of at most 256 characters.",
+                Snapshot = presenceService.BuildSnapshotCopy(),
+            };
+        }
+
+        command.Command = submittedCommand;
+        var snapshot = presenceService.BuildSnapshotCopy();
+        if ((!command.AccountKey.IsEmpty &&
+             !DadRosterIdentity.SameAccount(command.AccountKey, snapshot.ManagedAccountKey)) ||
+            (!command.CharacterKey.IsEmpty &&
+             !DadRosterIdentity.SameCharacter(
+                 command.CharacterKey,
+                 0,
+                 snapshot.ActiveCharacterKey,
+                 snapshot.Character?.ContentId ?? 0)))
+        {
+            return new DadCharacterLoadResultDto
+            {
+                CommandId = command.CommandId,
+                Summary = "Command target no longer matches the active account or character.",
+                Snapshot = snapshot,
+            };
+        }
+
         if (command.DryRun)
         {
             return new DadCharacterLoadResultDto
@@ -2094,8 +2142,8 @@ public sealed class DadTransportService : IDisposable
                 CommandId = command.CommandId,
                 Accepted = true,
                 DryRun = true,
-                Summary = $"Dry-run character-load command accepted: {command.Command}",
-                Snapshot = presenceService.BuildSnapshotCopy(),
+                Summary = "Dry-run registered slash command accepted.",
+                Snapshot = snapshot,
             };
         }
 
@@ -2105,20 +2153,19 @@ public sealed class DadTransportService : IDisposable
             {
                 CommandId = command.CommandId,
                 Summary = "Remote command execution is disabled.",
-                Snapshot = presenceService.BuildSnapshotCopy(),
+                Snapshot = snapshot,
             };
         }
 
-        var accepted = !string.IsNullOrWhiteSpace(command.Command) &&
-                       Plugin.CommandManager.ProcessCommand(command.Command);
+        var accepted = Plugin.CommandManager.ProcessCommand(submittedCommand);
         return new DadCharacterLoadResultDto
         {
             CommandId = command.CommandId,
             Accepted = accepted,
             Summary = accepted
-                ? $"Sent character-load command for {command.CharacterKey}: {command.Command}"
-                : $"Character-load command rejected: {command.Command}",
-            Snapshot = presenceService.BuildSnapshotCopy(),
+                ? "Registered slash command was accepted."
+                : "Registered slash command was unavailable or rejected.",
+            Snapshot = snapshot,
         };
     }
 
@@ -3390,18 +3437,19 @@ public sealed class DadTransportService : IDisposable
         request.Reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by operator." : request.Reason.Trim();
     }
 
-    private void QueueOperation<TRequest, TResponse>(
+    private bool QueueOperation<TRequest, TResponse>(
         string operationKey,
         DadWorkerSessionId targetWorkerSessionId,
         string messageType,
         TRequest request,
-        Action<TResponse>? completed)
+        Action<TResponse>? completed,
+        Action<string>? failed = null)
     {
         if (!CanQueueOperation(targetWorkerSessionId))
-            return;
+            return false;
 
         if (!operations.TryAdd(operationKey, Task.CompletedTask))
-            return;
+            return false;
 
         var operationCancellation = roleCancellation.Token;
         var task = RunOperationAsync(
@@ -3410,9 +3458,11 @@ public sealed class DadTransportService : IDisposable
             messageType,
             DadIpcJson.Serialize(request),
             completed,
+            failed,
             operationCancellation);
         operations[operationKey] = task;
         Track(task, $"{messageType}:{targetWorkerSessionId.Value}");
+        return true;
     }
 
     private async Task RunOperationAsync<TResponse>(
@@ -3421,8 +3471,14 @@ public sealed class DadTransportService : IDisposable
         string messageType,
         string payloadJson,
         Action<TResponse>? completed,
+        Action<string>? failed,
         CancellationToken cancellationToken)
     {
+        Task ReportFailureAsync(string summary)
+            => failed == null || disposed
+                ? Task.CompletedTask
+                : RunTerminalCallbackAsync(() => failed(summary), messageType);
+
         await Task.Yield();
         try
         {
@@ -3446,8 +3502,14 @@ public sealed class DadTransportService : IDisposable
             if (completed != null)
             {
                 var typed = DadIpcJson.Deserialize<TResponse>(response.PayloadJson);
-                if (typed != null &&
-                    !frameworkCallbacks.Enqueue(() => completed(typed)))
+                if (typed == null)
+                {
+                    await ReportFailureAsync("Client DAD returned an invalid command acknowledgement.")
+                        .ConfigureAwait(false);
+                }
+                else if (failed != null)
+                    await RunTerminalCallbackAsync(() => completed(typed), messageType).ConfigureAwait(false);
+                else if (!frameworkCallbacks.Enqueue(() => completed(typed)))
                 {
                     CurrentTransport.LastTransportTimeoutSummary = $"{messageType} completion callback dropped because the framework queue is full.";
                     // B6: surface the drop and mark the publish dirty so the populate path re-issues the
@@ -3459,23 +3521,49 @@ public sealed class DadTransportService : IDisposable
         }
         catch (OperationCanceledException)
         {
+            await ReportFailureAsync("Command delivery was cancelled before acknowledgement.").ConfigureAwait(false);
         }
         catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
         {
+            await ReportFailureAsync("Command delivery ended before acknowledgement.").ConfigureAwait(false);
         }
         catch (Exception) when (!CanQueueOperation(targetWorkerSessionId))
         {
             // Reconnect polling is intentionally quiet. Once the handshake is no longer routable,
             // status/catalog/wake callers will coalesce on their next normal framework update.
+            await ReportFailureAsync("Client DAD disconnected before acknowledging the command.").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             CurrentTransport.LastRequestStatus = $"{messageType} failed: {ex.Message}";
             log.Debug(ex, "[dad] Hub operation {MessageType} failed for {WorkerSessionId}.", messageType, targetWorkerSessionId);
+            await ReportFailureAsync("Client DAD did not acknowledge the command.").ConfigureAwait(false);
         }
         finally
         {
             operations.TryRemove(operationKey, out _);
+        }
+    }
+
+    private async Task RunTerminalCallbackAsync(Action callback, string messageType)
+    {
+        if (disposed)
+            return;
+
+        try
+        {
+            await Plugin.Framework.RunOnFrameworkThread(() =>
+            {
+                if (!disposed)
+                    callback();
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
+        {
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad] Hub terminal callback failed for {MessageType}.", messageType);
         }
     }
 

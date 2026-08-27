@@ -180,6 +180,9 @@ public sealed class DadSchedulerService
 
     internal bool IsCrewFormationActive => crewFormation?.Status.IsActive == true;
 
+    internal bool HasActiveRegisteredIslandWork
+        => IsSchedulerActive && currentState.Slots.Any(static slot => slot.IsRegisteredIsland);
+
     public void ConfigureLevelingMode(
         Func<DadPlannerGroup, int, DadLevelingChildBuild> childBuilder,
         Action cancelActiveChild)

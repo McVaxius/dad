@@ -538,7 +538,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawHomeGuidedTasks()
     {
-        DrawSectionHeader("Guided tasks", "Six complete workflows with live progress and the first blocker.");
+        DrawSectionHeader("Guided tasks", "Seven complete workflows with live progress and the first blocker.");
         var flows = new[]
         {
             DadGuideFlow.NameDad,
@@ -547,6 +547,7 @@ public sealed class MainWindow : Window, IDisposable
             DadGuideFlow.FirstPreset,
             DadGuideFlow.Crew,
             DadGuideFlow.Schedule,
+            DadGuideFlow.AutoParty,
         };
         var useTwoColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 42f;
         if (!ImGui.BeginTable("dad-home-guided-tasks", useTwoColumns ? 2 : 1, ImGuiTableFlags.SizingStretchSame))
