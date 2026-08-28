@@ -362,9 +362,7 @@ uploaded or promoted to a release.
   five seconds and then exposes a typed failure. Historical close-client/shutdown values deserialize safely but are permanent
   no-ops and are not selectable.
 - Questionable subscriber/gate reflection changes retain their exact pre-image before the first write and restore each still-
-  owned value independently on failure, disable, reload drift, and disposal. This experimental AutoDuty / ADS bridge is off
-  until explicitly opted into in DAD configuration; legacy default-on values are not carried forward. AutoRetainer postprocess
-  handoff now distinguishes
+  owned value independently on failure, disable, reload drift, and disposal. AutoRetainer postprocess handoff now distinguishes
   Armed, RequestSent, and Owned generations; timeout re-arms only the same operation, late named callbacks are released, and
   DAD never calls the global finish channel for a merely pending request. Pilot receipt IO returns immutable results and applies
   its configuration path/save only from the framework update.

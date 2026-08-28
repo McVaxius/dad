@@ -595,7 +595,7 @@ public sealed class Plugin : IDalamudPlugin
             Framework,
             DutyIpcService,
             Log,
-            () => Configuration.QuestionableBridgeOptInEnabled,
+            () => Configuration.QuestionableBridgeEnabled,
             message => NotificationManager.AddNotification(new Notification
             {
                 Type = NotificationType.Warning,

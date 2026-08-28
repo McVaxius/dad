@@ -96,11 +96,9 @@ public sealed class Configuration : IPluginConfiguration
     // Actions to run when a Dad run completes. Legacy kill modes are kept for config compatibility but disabled.
     public DadCompletionActions CompletionActions { get; set; } = new();
 
-    // Review M19: operator opt-in for the Questionable reflection bridge (invasive runtime field patching).
-    // Default off; disabling restores any patched values and stops the AutoDuty/ADS handoff.
-    // Keep this member name distinct from the legacy default-on QuestionableBridgeEnabled key so an old
-    // saved true value cannot silently opt an existing installation back into reflection patching.
-    public bool QuestionableBridgeOptInEnabled { get; set; } = false;
+    // Review M19: operator opt-out for the Questionable reflection bridge (invasive runtime field patching).
+    // Default on (preserves the AutoDuty/ADS handoff); disabling restores any patched values and stops it.
+    public bool QuestionableBridgeEnabled { get; set; } = true;
 
     public bool MigrateTransportSettings()
     {

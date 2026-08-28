@@ -205,7 +205,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             status.Patched = false;
             status.Pending = false;
             status.CosmeticPatched = false;
-            status.PatchState = "Disabled by operator (QuestionableBridgeOptInEnabled = false).";
+            status.PatchState = "Disabled by operator (QuestionableBridgeEnabled = false).";
             return;
         }
 

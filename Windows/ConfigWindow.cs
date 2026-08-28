@@ -206,14 +206,14 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawSectionHeader("Integrations");
 
-        var questionableBridge = configuration.QuestionableBridgeOptInEnabled;
-        if (ImGui.Checkbox("Opt in to experimental AutoDuty / ADS handoff through Questionable", ref questionableBridge))
+        var questionableBridge = configuration.QuestionableBridgeEnabled;
+        if (ImGui.Checkbox("Enable AutoDuty / ADS handoff through Questionable", ref questionableBridge))
         {
-            configuration.QuestionableBridgeOptInEnabled = questionableBridge;
+            configuration.QuestionableBridgeEnabled = questionableBridge;
             configuration.Save();
         }
 
-        ImGui.TextWrapped("Off by default, including upgrades from the legacy default-on setting. This compatibility bridge patches Questionable runtime fields and may break after Questionable updates. Disabling restores any patched values DAD still owns.");
+        ImGui.TextWrapped("Disabling restores any patched Questionable values and stops the bridge. Leave on unless it causes issues.");
 
         DrawSectionHeader("Global completion defaults");
         ImGui.TextWrapped("Used by presets that do not define their own completion actions.");

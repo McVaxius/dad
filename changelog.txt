@@ -33,9 +33,9 @@
 - Added an AutoParty guide plus Mini Status projections for enablement, endpoint readiness, pairing/private-directory
   state, exact-formation phase, and first blocker. Mini Status reuses the guarded paired refresh, opens the full AutoParty
   window for registration/pairing/party creation, and exposes only the existing five-second preflighted disband action.
-- Home now advertises all seven guided workflows and includes the existing AutoParty guide. The experimental Questionable
-  AutoDuty / ADS compatibility bridge now uses a new default-off opt-in setting; the legacy default-on setting is not
-  carried forward, while a new explicit opt-in persists normally. Configuration schema and protocols remain unchanged.
+- Home now advertises all seven guided workflows and includes the existing AutoParty guide. The Questionable AutoDuty / ADS
+  compatibility bridge keeps its existing default-on operator opt-out so the 7.5.13 reflection update remains active after
+  upgrades. Configuration schema and protocols remain unchanged.
 - Added `/dad quick` and `/dad qp`: a session-only Coordinator panel that sends one registered slash command to one or all
   connected Client DADs through the existing authenticated, default-off remote-command route. It adds no protocol shape,
   key hook, chat injection, retry, saved command, or history.
