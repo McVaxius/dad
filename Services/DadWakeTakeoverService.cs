@@ -632,13 +632,21 @@ public sealed class DadWakeTakeoverService : IDisposable
             return BuildResult(operation, snapshot);
         }
 
+        if (operation.TitleIdleNextLoginAttemptUtc.HasValue && utcNow() < operation.TitleIdleNextLoginAttemptUtc.Value)
+        {
+            operation.Summary = $"Lifestream explicitly rejected the prior title login; waiting for the five-second retry cadence and fresh CanAutoLogin proof before attempt {operation.TitleIdleLoginAttemptCount + 1}.";
+            operation.UpdatedAtUtc = utcNow();
+            return BuildResult(operation, snapshot);
+        }
+
         if (!operation.TitleIdleRelogCommandAttempted)
         {
-            // Mark before invoking so no reply, rejection, exception, or reentrancy can ever
-            // produce a second login command for this frozen target.
+            // Mark before invoking: an exception is uncertain and must never replay. Only an
+            // explicit false proves that Lifestream did not enqueue the login and permits retry.
             operation.TitleIdleRelogCommandAttempted = true;
             operation.RelogCommandAttempted = true;
             operation.AnyTakeoverMutation = true;
+            operation.TitleIdleLoginAttemptCount++;
             DadLifestreamLoginResult login;
             try
             {
@@ -650,13 +658,25 @@ public sealed class DadWakeTakeoverService : IDisposable
                     DadLifestreamLoginOutcome.Uncertain,
                     $"Lifestream title-login invocation threw {exception.GetType().Name}.");
             }
-            if (login.Outcome != DadLifestreamLoginOutcome.Accepted)
+            if (login.Outcome == DadLifestreamLoginOutcome.ExplicitFalse)
+            {
+                operation.TitleIdleRelogCommandAttempted = false;
+                operation.RelogCommandAttempted = false;
+                operation.TitleIdleNextLoginAttemptUtc = utcNow() + TimeSpan.FromSeconds(5);
+                operation.Summary = $"{login.Summary} DAD will retry only after the five-second cadence and a fresh exact title/route/AutoRetainer/VERMAXION/Lifestream/CanAutoLogin proof.";
+                operation.UpdatedAtUtc = utcNow();
+                return BuildResult(operation, snapshot);
+            }
+            if (login.Outcome == DadLifestreamLoginOutcome.Uncertain)
+            {
                 return Block(
                     operation,
-                    $"{login.Summary} The one-shot title login will not replay.",
+                    $"{login.Summary} The title login will not replay because the IPC outcome is uncertain.",
                     cleanup: true);
+            }
 
             operation.RelogIssuedUtc = utcNow();
+            operation.TitleIdleNextLoginAttemptUtc = null;
         }
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
@@ -1584,6 +1604,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.TitleIdlePostMutationInvalidated = false;
         operation.TitleMovieDismissalAttempted = false;
         operation.TitleIdleRelogCommandAttempted = false;
+        operation.TitleIdleLoginAttemptCount = 0;
+        operation.TitleIdleNextLoginAttemptUtc = null;
         operation.Summary = $"Takeover epoch {operation.Epoch} queued for a fresh reservation after retryable outcome: {reason} Next reserve attempt begins after the five-second cadence.";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
@@ -2073,6 +2095,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool TitleIdlePostMutationInvalidated { get; set; }
         public bool TitleMovieDismissalAttempted { get; set; }
         public bool TitleIdleRelogCommandAttempted { get; set; }
+        public int TitleIdleLoginAttemptCount { get; set; }
+        public DateTime? TitleIdleNextLoginAttemptUtc { get; set; }
         public bool OriginalMultiModeStateCaptured { get; set; }
         public bool OriginalMultiModeEnabled { get; set; }
         public bool AnyTakeoverMutation { get; set; }

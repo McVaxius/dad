@@ -188,6 +188,31 @@ public sealed class DadP1191PerformanceAndCrewUxTests
     }
 
     [Fact]
+    public void AutoPartyProjectionAndSetupWizardReuseTheirPerFrameWork()
+    {
+        var autoPartySource = ReadRepositorySource("Services", "DadAutoPartyService.cs");
+        var cacheHit = autoPartySource.IndexOf(
+            "if (windowProjectionCache.TryGet(key, now, out var cached))",
+            StringComparison.Ordinal);
+        var listingClone = autoPartySource.IndexOf(
+            ".Select(static item => item.Clone())",
+            cacheHit,
+            StringComparison.Ordinal);
+        Assert.True(cacheHit >= 0 && listingClone > cacheHit);
+
+        var wizardSource = ReadRepositorySource("Windows", "SetupWizardWindow.cs");
+        Assert.Contains("DrawStep(steps[stepIndex], steps);", wizardSource, StringComparison.Ordinal);
+        var drawStepStart = wizardSource.IndexOf(
+            "private void DrawStep(GuideStep step, IReadOnlyList<GuideStep> steps)",
+            StringComparison.Ordinal);
+        var drawStepEnd = wizardSource.IndexOf(
+            "private void DrawStepContent()",
+            drawStepStart,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildSteps()", wizardSource[drawStepStart..drawStepEnd], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CrewAccountPresentationDefaultsToAliasAndDetailsAddsStableId()
     {
         var option = new DadRosterAccountOption

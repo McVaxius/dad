@@ -824,6 +824,149 @@ public sealed class DadAutoPartyRelayPumpTests
     }
 
     [Fact]
+    public async Task TwoEndpointsPublishRouteReceiveAndProjectCompleteDirectories()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var fixture = new TwoEndpointConvergenceFixture(now);
+        var firstA = fixture.BuildPublication(
+            fixture.EndpointA,
+            "opaque-endpoint-a-v1",
+            "Endpoint A Character",
+            "Endpoint A World");
+        var firstB = fixture.BuildPublication(
+            fixture.EndpointB,
+            "opaque-endpoint-b-v1",
+            "Endpoint B Character",
+            "Endpoint B World");
+
+        Assert.Single(firstA.Listings);
+        Assert.Single(firstB.Listings);
+        var publishA = fixture.EndpointA.Pump.QueueListingUpdateAndWaitAsync(
+            firstA.StandingPolicy,
+            firstA.Listings,
+            firstA.PairedLabels,
+            CancellationToken.None).AsTask();
+        var publishB = fixture.EndpointB.Pump.QueueListingUpdateAndWaitAsync(
+            firstB.StandingPolicy,
+            firstB.Listings,
+            firstB.PairedLabels,
+            CancellationToken.None).AsTask();
+
+        await fixture.DrainAsync();
+
+        Assert.True(
+            publishA.IsCompleted,
+            $"Endpoint A publication remained pending: pump={fixture.EndpointA.Pump.Snapshot.SafeCode}, " +
+            $"sent=[{string.Join(',', fixture.EndpointA.Transport.Sent.Select(static item => item.PayloadType))}], " +
+            $"acknowledged={fixture.EndpointA.Transport.Acknowledged.Count}, " +
+            $"observed=[{string.Join(',', fixture.EndpointA.ObservedSafeCodes.Distinct(StringComparer.Ordinal))}], " +
+            $"delivered={fixture.Delivered.Count}.");
+        Assert.True(
+            publishB.IsCompleted,
+            $"Endpoint B publication remained pending: pump={fixture.EndpointB.Pump.Snapshot.SafeCode}, " +
+            $"sent=[{string.Join(',', fixture.EndpointB.Transport.Sent.Select(static item => item.PayloadType))}], " +
+            $"acknowledged={fixture.EndpointB.Transport.Acknowledged.Count}.");
+        Assert.True((await publishA).Allowed);
+        Assert.True((await publishB).Allowed);
+        var activeA = fixture.GetActiveSnapshot(fixture.EndpointA);
+        var activeB = fixture.GetActiveSnapshot(fixture.EndpointB);
+        Assert.Equal("opaque-endpoint-a-v1", Assert.Single(activeA.Listings).CharacterHandle.Value);
+        Assert.Equal("opaque-endpoint-b-v1", Assert.Single(activeB.Listings).CharacterHandle.Value);
+
+        Assert.True((await fixture.EndpointA.Pump.RequestDirectoryAsync(string.Empty, false)).Allowed);
+        Assert.True((await fixture.EndpointB.Pump.RequestDirectoryAsync(string.Empty, false)).Allowed);
+        await fixture.DrainAsync();
+
+        var projectedAtA = Assert.Single(fixture.EndpointA.Service.GetDirectorySnapshot().Listings);
+        var projectedAtB = Assert.Single(fixture.EndpointB.Service.GetDirectorySnapshot().Listings);
+        Assert.Equal("opaque-endpoint-b-v1", projectedAtA.OpaqueCharacterId);
+        Assert.Equal("Endpoint B Character@Endpoint B World", projectedAtA.DisplayLabel);
+        Assert.Equal("opaque-endpoint-a-v1", projectedAtB.OpaqueCharacterId);
+        Assert.Equal("Endpoint A Character@Endpoint A World", projectedAtB.DisplayLabel);
+        Assert.NotEqual(Assert.Single(firstB.Listings).DisplayLabel, projectedAtA.DisplayLabel);
+        Assert.NotEqual(Assert.Single(firstA.Listings).DisplayLabel, projectedAtB.DisplayLabel);
+        Assert.Contains(
+            fixture.EndpointB.IslandId,
+            fixture.EndpointA.Service.GetDirectorySnapshot().OnlineIslandIds);
+        Assert.Contains(
+            fixture.EndpointA.IslandId,
+            fixture.EndpointB.Service.GetDirectorySnapshot().OnlineIslandIds);
+
+        fixture.Advance(TimeSpan.FromSeconds(1));
+        fixture.EndpointB.Configuration.StateGeneration++;
+        var changedB = fixture.BuildPublication(
+            fixture.EndpointB,
+            "opaque-endpoint-b-v2",
+            "Endpoint B Replacement",
+            "Endpoint B World");
+        var changedPublish = fixture.EndpointB.Pump.QueueListingUpdateAndWaitAsync(
+            changedB.StandingPolicy,
+            changedB.Listings,
+            changedB.PairedLabels,
+            CancellationToken.None).AsTask();
+        await fixture.DrainAsync();
+
+        Assert.True(
+            changedPublish.IsCompleted,
+            $"Changed endpoint B publication remained pending: pump={fixture.EndpointB.Pump.Snapshot.SafeCode}.");
+        Assert.True((await changedPublish).Allowed);
+        var latestB = fixture.GetActiveSnapshot(fixture.EndpointB);
+        Assert.True(latestB.SnapshotRevision > activeB.SnapshotRevision);
+        Assert.Equal("opaque-endpoint-b-v2", Assert.Single(latestB.Listings).CharacterHandle.Value);
+        Assert.True((await fixture.EndpointA.Pump.RequestDirectoryAsync(string.Empty, false)).Allowed);
+        await fixture.DrainAsync();
+
+        var replacedAtA = Assert.Single(fixture.EndpointA.Service.GetDirectorySnapshot().Listings);
+        Assert.Equal("opaque-endpoint-b-v2", replacedAtA.OpaqueCharacterId);
+        Assert.Equal("Endpoint B Replacement@Endpoint B World", replacedAtA.DisplayLabel);
+        Assert.DoesNotContain(
+            fixture.EndpointA.Configuration.Listings,
+            listing => listing.OpaqueCharacterId == "opaque-endpoint-b-v1");
+        Assert.Equal(
+            "opaque-endpoint-a-v1",
+            Assert.Single(fixture.EndpointB.Service.GetDirectorySnapshot().Listings).OpaqueCharacterId);
+
+        Assert.Empty(fixture.EndpointA.Configuration.RemoteBindings);
+        var runtimeBindings = new DadAutoPartyRuntimeBindingStore();
+        Assert.Empty(runtimeBindings.Snapshot(fixture.EndpointA.Configuration.RemoteBindings));
+        Assert.True(DadAutoPartyFreeformRules.TryBuild(
+            [
+                new DadAutoPartyFreeformParticipant
+                {
+                    SelectionKey = "local-endpoint-a",
+                    DisplayLabel = "Local endpoint A",
+                    Kind = DadAutoPartyFreeformParticipantKind.Local,
+                    AccountKey = new DadAccountKey("account-endpoint-a"),
+                    CharacterKey = new DadCharacterKey("Local Character@Local World"),
+                    ContentId = 1,
+                    RequestedJobId = 19,
+                },
+                new DadAutoPartyFreeformParticipant
+                {
+                    SelectionKey = replacedAtA.OpaqueCharacterId,
+                    DisplayLabel = replacedAtA.DisplayLabel,
+                    Kind = DadAutoPartyFreeformParticipantKind.RegisteredIsland,
+                    OwnerId = replacedAtA.OwnerId,
+                    IslandId = replacedAtA.SharingIslandId,
+                    OpaqueCharacterId = replacedAtA.OpaqueCharacterId,
+                    RequestedJobId = 19,
+                },
+            ],
+            out var formation,
+            out var blocker), blocker);
+        Assert.Empty(runtimeBindings.Snapshot(fixture.EndpointA.Configuration.RemoteBindings));
+        Assert.True(runtimeBindings.TryStage(formation, out blocker), blocker);
+        var binding = Assert.Single(runtimeBindings.Snapshot(fixture.EndpointA.Configuration.RemoteBindings));
+        Assert.Equal("opaque-endpoint-b-v2", binding.OpaqueCharacterId);
+
+        Assert.NotEmpty(fixture.Delivered);
+        Assert.All(fixture.Delivered, delivered =>
+            Assert.Contains(
+                delivered.Recipient.Transport.Acknowledged,
+                acknowledgement => acknowledgement.EnvelopeId == delivered.Envelope.EnvelopeId));
+    }
+
+    [Fact]
     public async Task ActiveRegistrationAutomaticallyRefreshesPrivateDirectoryEveryFiveMinutesAndCoalesces()
     {
         var now = new DateTimeOffset(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
@@ -1422,12 +1565,171 @@ public sealed class DadAutoPartyRelayPumpTests
 
         var completed = pump.QueueListingUpdate(policy, listings);
         Assert.True(completed.Allowed, completed.SafeCode);
-        Assert.Equal("dad-listing-update-queued", completed.SafeCode);
+        Assert.Equal("dad-listing-update-coalesced", completed.SafeCode);
 
         now = now.AddMinutes(5).AddSeconds(1);
         var expired = pump.QueueListingUpdate(policy, listings);
         Assert.True(expired.Allowed, expired.SafeCode);
         Assert.Equal("dad-listing-update-queued", expired.SafeCode);
+    }
+
+    [Fact]
+    public async Task LatestDesiredListingPublishesAfterPendingSnapshot()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        var initialPolicy = CreateListingPolicy(now, revision: 1);
+
+        var initial = pump.QueueListingUpdate(initialPolicy, []);
+        await pump.ProcessOnceAsync();
+        var first = Assert.Single(SentListingUpdates(fixture));
+
+        now = now.AddSeconds(10);
+        var latestPolicy = CreateListingPolicy(now, revision: 2);
+        var latestListing = CreateListing(now, "opaque-latest", revision: 2);
+        var coalesced = pump.QueueListingUpdate(latestPolicy, [latestListing]);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("listing-latest-accepted", now),
+            Guid.NewGuid(),
+            first.Header.MessageId,
+            true,
+            "listing-update-applied")));
+
+        await pump.ProcessOnceAsync();
+
+        Assert.True(initial.Allowed, initial.SafeCode);
+        Assert.Equal("dad-listing-update-queued", initial.SafeCode);
+        Assert.True(coalesced.Allowed, coalesced.SafeCode);
+        Assert.Equal("dad-listing-update-coalesced", coalesced.SafeCode);
+        var second = Assert.Single(
+            SentListingUpdates(fixture),
+            update => update.SnapshotId != first.SnapshotId);
+        Assert.Equal("opaque-latest", Assert.Single(second.Listings).CharacterHandle.Value);
+        Assert.Equal(2, second.SharePolicy.Revision);
+        Assert.Equal(now, second.Header.IssuedAt);
+        Assert.Equal(now.AddMinutes(5), second.Header.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task LatestDesiredListingUsesNewestOfMultipleCoalescedUpdates()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        Assert.True(pump.QueueListingUpdate(CreateListingPolicy(now, revision: 1), []).Allowed);
+        await pump.ProcessOnceAsync();
+        var first = Assert.Single(SentListingUpdates(fixture));
+
+        var middlePolicy = CreateListingPolicy(now, revision: 2);
+        var middle = pump.QueueListingUpdate(
+            middlePolicy,
+            [CreateListing(now, "opaque-middle", revision: 2)]);
+        var latestPolicy = CreateListingPolicy(now, revision: 3);
+        var latestListing = CreateListing(now, "opaque-newest", revision: 3);
+        var latestLabels = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["opaque-newest"] = "Newest Character@Synthetic World",
+        };
+        var latest = pump.QueueListingUpdate(latestPolicy, [latestListing], latestLabels);
+        latestPolicy.Revision = 99;
+        latestListing.OpaqueCharacterId = "opaque-mutated-after-queue";
+        latestListing.AllowedJobIds.Clear();
+        latestLabels["opaque-newest"] = "Mutated Character@Synthetic World";
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("listing-newest-accepted", now),
+            Guid.NewGuid(),
+            first.Header.MessageId,
+            true,
+            "listing-update-applied")));
+
+        await pump.ProcessOnceAsync();
+
+        Assert.True(middle.Allowed, middle.SafeCode);
+        Assert.Equal("dad-listing-update-coalesced", middle.SafeCode);
+        Assert.True(latest.Allowed, latest.SafeCode);
+        Assert.Equal("dad-listing-update-coalesced", latest.SafeCode);
+        var second = Assert.Single(
+            SentListingUpdates(fixture),
+            update => update.SnapshotId != first.SnapshotId);
+        Assert.Equal(3, second.SharePolicy.Revision);
+        var published = Assert.Single(second.Listings);
+        Assert.Equal("opaque-newest", published.CharacterHandle.Value);
+        Assert.Equal(3, published.Revision);
+        Assert.DoesNotContain(
+            SentListingUpdates(fixture).SelectMany(static update => update.Listings),
+            listing => listing.CharacterHandle.Value == "opaque-middle");
+    }
+
+    [Fact]
+    public async Task LatestDesiredListingPublishesAfterRejectedSnapshot()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        Assert.True(pump.QueueListingUpdate(CreateListingPolicy(now, revision: 1), []).Allowed);
+        await pump.ProcessOnceAsync();
+        var first = Assert.Single(SentListingUpdates(fixture));
+        Assert.True(pump.QueueListingUpdate(
+            CreateListingPolicy(now, revision: 2),
+            [CreateListing(now, "opaque-after-rejection", revision: 2)]).Allowed);
+        fixture.Transport.Inbound.Enqueue(fixture.SealRelay(new RelayReceipt(
+            fixture.RelayHeader("listing-latest-rejected", now),
+            Guid.NewGuid(),
+            first.Header.MessageId,
+            false,
+            "listing-update-rejected")));
+
+        await pump.ProcessOnceAsync();
+
+        var second = Assert.Single(
+            SentListingUpdates(fixture),
+            update => update.SnapshotId != first.SnapshotId);
+        Assert.Equal("opaque-after-rejection", Assert.Single(second.Listings).CharacterHandle.Value);
+    }
+
+    [Fact]
+    public async Task LatestDesiredListingPublishesAfterExpiredSnapshot()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        Assert.True(pump.QueueListingUpdate(CreateListingPolicy(now, revision: 1), []).Allowed);
+        await pump.ProcessOnceAsync();
+        var first = Assert.Single(SentListingUpdates(fixture));
+        Assert.True(pump.QueueListingUpdate(
+            CreateListingPolicy(now, revision: 2),
+            [CreateListing(now, "opaque-after-expiry", revision: 2)]).Allowed);
+        now = first.Header.ExpiresAt.AddSeconds(1);
+
+        await pump.ProcessOnceAsync();
+
+        var second = Assert.Single(
+            SentListingUpdates(fixture),
+            update => update.SnapshotId != first.SnapshotId);
+        Assert.Equal("opaque-after-expiry", Assert.Single(second.Listings).CharacterHandle.Value);
+        Assert.Equal(now, second.Header.IssuedAt);
+    }
+
+    [Fact]
+    public async Task DisposalClearsDeferredDesiredListing()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var fixture = new PumpFixture(DadAutoPartyRegistrationState.Active);
+        await using var pump = fixture.CreatePump(utcNow: () => now);
+        Assert.True(pump.QueueListingUpdate(CreateListingPolicy(now, revision: 1), []).Allowed);
+        await pump.ProcessOnceAsync();
+        Assert.True(pump.QueueListingUpdate(
+            CreateListingPolicy(now, revision: 2),
+            [CreateListing(now, "opaque-disposed", revision: 2)]).Allowed);
+        var deferredField = typeof(DadAutoPartyRelayPump).GetField(
+            "deferredListingPublication",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.NotNull(deferredField);
+        Assert.NotNull(deferredField.GetValue(pump));
+        await pump.DisposeAsync();
+        Assert.Null(deferredField.GetValue(pump));
     }
 
     [Fact]
@@ -3854,6 +4156,700 @@ public sealed class DadAutoPartyRelayPumpTests
         }
 
         throw new Xunit.Sdk.XunitException($"No {typeof(T).Name} was sent.");
+    }
+
+    private static DadAutoPartySharePolicy CreateListingPolicy(DateTimeOffset now, long revision)
+        => new()
+        {
+            Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+            Enabled = true,
+            Revision = revision,
+            UpdatedAtUtc = now.UtcDateTime,
+        };
+
+    private static DadAutoPartyListing CreateListing(DateTimeOffset now, string handle, long revision)
+        => new()
+        {
+            ListingId = Guid.NewGuid().ToString("D"),
+            OwnerId = PumpFixture.LocalOwner,
+            SharingIslandId = PumpFixture.LocalIsland,
+            OpaqueCharacterId = handle,
+            DisplayLabel = $"Shared character {handle}",
+            AllowedJobIds = ["19"],
+            AllowedActivityIds = [DadAutoPartyFreeformRules.FormationActivityId],
+            Available = true,
+            Revision = revision,
+            ExpiresAtUtc = now.UtcDateTime.AddHours(2),
+        };
+
+    private static IReadOnlyList<PrivateListingUpdate> SentListingUpdates(PumpFixture fixture)
+        => fixture.Transport.Sent
+            .Where(item => item.PayloadType == ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>())
+            .Select(fixture.Open<PrivateListingUpdate>)
+            .ToList();
+
+    private sealed class TwoEndpointConvergenceFixture : IAsyncDisposable
+    {
+        private const string EndpointAOwner = "owner-endpoint-a";
+        private const string EndpointAIsland = "island-endpoint-a";
+        private const string EndpointBOwner = "owner-endpoint-b";
+        private const string EndpointBIsland = "island-endpoint-b";
+        private const long EndpointAKeyVersion = 1;
+        private const long RelayKeyVersion = 2;
+        private const long EndpointBKeyVersion = 3;
+        private readonly ConvergenceKeyMaterial keys = new();
+        private readonly ProductionContractAuthenticator authenticator;
+        private readonly Dictionary<string, StagedSnapshot> staged = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, ActiveSnapshot> active = new(StringComparer.Ordinal);
+        private int endpointASentOffset;
+        private int endpointBSentOffset;
+        private long relaySequence;
+        private DateTimeOffset now;
+
+        public TwoEndpointConvergenceFixture(DateTimeOffset observedAt)
+        {
+            now = observedAt;
+            var pairingId = Guid.Parse("896a958b-220a-4d19-92bb-a9f4bf3eaa3c");
+            const string transcriptHash =
+                "7a5f6f40467e48cca05fe261564987e2d3d49339955890ab3d92e26ed768b720";
+            EndpointA = new ConvergenceEndpoint(
+                EndpointAOwner,
+                EndpointAIsland,
+                "endpoint-a",
+                "guild-endpoint-a",
+                EndpointAKeyVersion,
+                keys.EndpointASigningPrivate,
+                keys.EndpointAAgreementPrivate,
+                EndpointBOwner,
+                EndpointBIsland,
+                "guild-endpoint-b",
+                EndpointBKeyVersion,
+                keys.EndpointBSigningPublic,
+                keys.EndpointBAgreementPublic,
+                keys.RelaySigningPublic,
+                keys.RelayAgreementPublic,
+                pairingId,
+                transcriptHash,
+                () => now);
+            EndpointB = new ConvergenceEndpoint(
+                EndpointBOwner,
+                EndpointBIsland,
+                "endpoint-b",
+                "guild-endpoint-b",
+                EndpointBKeyVersion,
+                keys.EndpointBSigningPrivate,
+                keys.EndpointBAgreementPrivate,
+                EndpointAOwner,
+                EndpointAIsland,
+                "guild-endpoint-a",
+                EndpointAKeyVersion,
+                keys.EndpointASigningPublic,
+                keys.EndpointAAgreementPublic,
+                keys.RelaySigningPublic,
+                keys.RelayAgreementPublic,
+                pairingId,
+                transcriptHash,
+                () => now);
+            authenticator = new ProductionContractAuthenticator(new ConvergenceResolver(keys));
+        }
+
+        public ConvergenceEndpoint EndpointA { get; }
+
+        public ConvergenceEndpoint EndpointB { get; }
+
+        public List<DeliveredEnvelope> Delivered { get; } = [];
+
+        public void Advance(TimeSpan elapsed) => now += elapsed;
+
+        public DadAutoPartyListingPublication BuildPublication(
+            ConvergenceEndpoint endpoint,
+            string opaqueCharacterId,
+            string characterName,
+            string worldName)
+        {
+            var participant = new DadParticipantSnapshot
+            {
+                ClientInstanceId = $"client-{endpoint.EndpointAlias}",
+                WorkerSessionId = new DadWorkerSessionId($"worker-{endpoint.EndpointAlias}"),
+                IsLocalClient = true,
+                ManagedAccountKey = new DadAccountKey($"account-{endpoint.EndpointAlias}"),
+            };
+            var route = new DadAutoPartyInboundRoute(
+                opaqueCharacterId,
+                participant.ManagedAccountKey,
+                new DadCharacterKey($"{characterName}@{worldName}"),
+                1,
+                characterName,
+                1,
+                worldName,
+                participant.WorkerSessionId,
+                participant.ClientInstanceId,
+                participant,
+                now);
+            var candidate = new DadAutoPartyCrewCandidate(
+                new DadAutoPartyCrewIdentity
+                {
+                    RosterIdentityKey = $"roster-{opaqueCharacterId}",
+                    OpaqueCharacterId = opaqueCharacterId,
+                },
+                new DadAcquiredCharacter(),
+                [19],
+                Available: true,
+                InboundRoute: route);
+            return DadAutoPartyListingPublicationRules.Build(
+                endpoint.Configuration,
+                [candidate],
+                [],
+                now.UtcDateTime);
+        }
+
+        public ActiveSnapshot GetActiveSnapshot(ConvergenceEndpoint endpoint) =>
+            active.TryGetValue(endpoint.IslandId, out var snapshot)
+                ? snapshot
+                : throw new InvalidOperationException("convergence-snapshot-not-active");
+
+        public async Task DrainAsync()
+        {
+            var quietCycles = 0;
+            for (var cycle = 0; cycle < 128; cycle++)
+            {
+                var before = ActivityCount();
+                await EndpointA.Pump.ProcessOnceAsync();
+                EndpointA.ObservedSafeCodes.Add(EndpointA.Pump.Snapshot.SafeCode);
+                await EndpointB.Pump.ProcessOnceAsync();
+                EndpointB.ObservedSafeCodes.Add(EndpointB.Pump.Snapshot.SafeCode);
+                DispatchNewOutbound(EndpointA, ref endpointASentOffset);
+                DispatchNewOutbound(EndpointB, ref endpointBSentOffset);
+                var after = ActivityCount();
+                if (before == after &&
+                    EndpointA.Transport.Inbound.Count == 0 &&
+                    EndpointB.Transport.Inbound.Count == 0 &&
+                    endpointASentOffset == EndpointA.Transport.Sent.Count &&
+                    endpointBSentOffset == EndpointB.Transport.Sent.Count)
+                {
+                    quietCycles++;
+                    if (quietCycles >= 4)
+                        return;
+                }
+                else
+                {
+                    quietCycles = 0;
+                }
+            }
+
+            throw new TimeoutException("two-endpoint-convergence-did-not-quiesce");
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await EndpointA.DisposeAsync();
+            await EndpointB.DisposeAsync();
+            keys.Dispose();
+        }
+
+        private int ActivityCount() =>
+            EndpointA.Transport.Sent.Count +
+            EndpointB.Transport.Sent.Count +
+            EndpointA.Transport.Acknowledged.Count +
+            EndpointB.Transport.Acknowledged.Count +
+            EndpointA.Transport.Inbound.Count +
+            EndpointB.Transport.Inbound.Count +
+            Delivered.Count +
+            active.Count;
+
+        private void DispatchNewOutbound(ConvergenceEndpoint source, ref int sentOffset)
+        {
+            while (sentOffset < source.Transport.Sent.Count)
+            {
+                var envelope = source.Transport.Sent[sentOffset++];
+                if (string.Equals(
+                        envelope.PayloadType,
+                        ProtocolContractRegistry.GetTypeId<PrivateListingUpdate>(),
+                        StringComparison.Ordinal))
+                {
+                    StageListing(source, Open<PrivateListingUpdate>(envelope));
+                    continue;
+                }
+
+                if (string.Equals(
+                        envelope.PayloadType,
+                        ProtocolContractRegistry.GetTypeId<DirectoryQuery>(),
+                        StringComparison.Ordinal))
+                {
+                    RouteDirectory(source, Open<DirectoryQuery>(envelope));
+                    continue;
+                }
+
+                if (string.Equals(
+                        envelope.PayloadType,
+                        ProtocolContractRegistry.GetTypeId<PairedListingLabelRequest>(),
+                        StringComparison.Ordinal) ||
+                    string.Equals(
+                        envelope.PayloadType,
+                        ProtocolContractRegistry.GetTypeId<PairedListingLabelResponse>(),
+                        StringComparison.Ordinal))
+                {
+                    Deliver(
+                        FindEndpoint(envelope.RecipientIslandId.Value),
+                        envelope);
+                    continue;
+                }
+
+                throw new InvalidOperationException($"unexpected-convergence-contract:{envelope.PayloadType}");
+            }
+        }
+
+        private void StageListing(ConvergenceEndpoint source, PrivateListingUpdate update)
+        {
+            if (!string.Equals(update.SharingIslandId.Value, source.IslandId, StringComparison.Ordinal))
+                throw new InvalidDataException("convergence-listing-island-mismatch");
+            var stageKey = $"{source.IslandId}\n{update.SnapshotId:D}";
+            if (!staged.TryGetValue(stageKey, out var pending))
+            {
+                pending = new StagedSnapshot(update.ChunkCount);
+                staged.Add(stageKey, pending);
+            }
+            if (pending.ChunkCount != update.ChunkCount ||
+                update.ChunkIndex is < 1 || update.ChunkIndex > update.ChunkCount)
+            {
+                throw new InvalidDataException("convergence-listing-chunk-invalid");
+            }
+            pending.Chunks[update.ChunkIndex] = update;
+            if (pending.Chunks.Count == pending.ChunkCount)
+            {
+                var chunks = pending.Chunks.OrderBy(static item => item.Key)
+                    .Select(static item => item.Value)
+                    .ToArray();
+                var snapshot = new ActiveSnapshot(
+                    update.SnapshotId,
+                    update.SnapshotRevision,
+                    update.DirectoryGeneration,
+                    chunks.SelectMany(static chunk => chunk.Listings).ToImmutableArray());
+                if (!active.TryGetValue(source.IslandId, out var current) ||
+                    snapshot.SnapshotRevision >= current.SnapshotRevision)
+                {
+                    active[source.IslandId] = snapshot;
+                }
+                staged.Remove(stageKey);
+            }
+
+            var receipt = new RelayReceipt(
+                CreateRelayHeader(
+                    source,
+                    $"listing-receipt-{update.Header.MessageId:N}",
+                    Min(update.Header.ExpiresAt, now.AddMinutes(5))),
+                Guid.NewGuid(),
+                update.Header.MessageId,
+                true,
+                "listing-update-applied");
+            Deliver(source, Seal(receipt));
+        }
+
+        private void RouteDirectory(ConvergenceEndpoint requester, DirectoryQuery query)
+        {
+            var sharing = ReferenceEquals(requester, EndpointA) ? EndpointB : EndpointA;
+            var entries = active.TryGetValue(sharing.IslandId, out var snapshot)
+                ? ImmutableArray.Create(new PrivateDirectoryEntry(
+                    new OwnerId(sharing.OwnerId),
+                    new IslandId(sharing.IslandId),
+                    sharing.EndpointAlias,
+                    sharing.HomeGuildScope,
+                    CharacterShareMode.AllCharactersForPeer,
+                    $"paired-policy-{snapshot.SnapshotRevision}",
+                    true,
+                    snapshot.Listings,
+                    snapshot.SnapshotId,
+                    snapshot.SnapshotRevision,
+                    0,
+                    false,
+                    snapshot.DirectoryGeneration,
+                    snapshot.Listings.Min(static listing => listing.ExpiresAt)))
+                : ImmutableArray<PrivateDirectoryEntry>.Empty;
+            var directoryGeneration = entries.IsEmpty ? 1 : entries[0].DirectoryGeneration;
+            var page = new DirectoryPage(
+                CreateRelayHeader(
+                    requester,
+                    $"directory-page-{query.QueryId:N}",
+                    Min(query.Header.ExpiresAt, now.AddMinutes(5))),
+                query.QueryId,
+                1,
+                false,
+                string.Empty,
+                entries,
+                directoryGeneration);
+            Deliver(requester, Seal(page));
+        }
+
+        private ConvergenceEndpoint FindEndpoint(string islandId)
+        {
+            if (string.Equals(islandId, EndpointA.IslandId, StringComparison.Ordinal))
+                return EndpointA;
+            if (string.Equals(islandId, EndpointB.IslandId, StringComparison.Ordinal))
+                return EndpointB;
+            throw new InvalidOperationException("convergence-recipient-unknown");
+        }
+
+        private T Open<T>(OpaqueEnvelope envelope)
+            where T : IAutoPartyContract
+        {
+            var opened = authenticator.Open<T>(
+                SealedContractCodec.Decode(envelope.Ciphertext.AsMemory()));
+            return opened is { Succeeded: true, Message: not null }
+                ? opened.Message.Contract
+                : throw new InvalidDataException("convergence-contract-open-failed");
+        }
+
+        private OpaqueEnvelope Seal<T>(T contract)
+            where T : IAutoPartyContract
+        {
+            var sealedContract = authenticator.Seal(authenticator.Sign(contract));
+            return OpaqueEnvelope.Create(
+                AutoPartyProtocol.CurrentVersion,
+                contract.Header.MessageId,
+                contract.Header.SenderIslandId,
+                contract.Header.RecipientIslandId,
+                contract.Header.IssuedAt,
+                contract.Header.ExpiresAt,
+                contract.Header.Generation,
+                ProtocolContractRegistry.GetTypeId<T>(),
+                SealedContractCodec.Encode(sealedContract));
+        }
+
+        private ContractHeader CreateRelayHeader(
+            ConvergenceEndpoint recipient,
+            string purpose,
+            DateTimeOffset expiresAt)
+        {
+            var messageId = Guid.NewGuid();
+            return new ContractHeader(
+                AutoPartyProtocol.CurrentVersion,
+                messageId,
+                $"{purpose}-{messageId:N}",
+                new IslandId(DadAutoPartyIdentityPackageService.RegistrationRecipient),
+                new IslandId(recipient.IslandId),
+                now,
+                expiresAt,
+                Interlocked.Increment(ref relaySequence),
+                Math.Max(1, recipient.Configuration.StateGeneration),
+                RelayKeyVersion,
+                recipient.KeyVersion,
+                ContractHeader.CreateNonce(
+                    messageId.ToByteArray().AsSpan(0, AutoPartyProtocol.ContractNonceBytes)),
+                []);
+        }
+
+        private void Deliver(ConvergenceEndpoint recipient, OpaqueEnvelope envelope)
+        {
+            recipient.Transport.Inbound.Enqueue(envelope);
+            Delivered.Add(new DeliveredEnvelope(recipient, envelope));
+        }
+
+        private static DateTimeOffset Min(DateTimeOffset first, DateTimeOffset second) =>
+            first <= second ? first : second;
+
+        public sealed record ActiveSnapshot(
+            Guid SnapshotId,
+            long SnapshotRevision,
+            long DirectoryGeneration,
+            ImmutableArray<PrivateCharacterListing> Listings);
+
+        public sealed record DeliveredEnvelope(
+            ConvergenceEndpoint Recipient,
+            OpaqueEnvelope Envelope);
+
+        private sealed class StagedSnapshot(int chunkCount)
+        {
+            public int ChunkCount { get; } = chunkCount;
+
+            public Dictionary<int, PrivateListingUpdate> Chunks { get; } = [];
+        }
+
+        public sealed class ConvergenceEndpoint : IAsyncDisposable
+        {
+            private readonly MemoryIdentityStore identityStore;
+            private readonly DadDiscordCourierConnector connector;
+
+            public ConvergenceEndpoint(
+                string ownerId,
+                string islandId,
+                string endpointAlias,
+                string homeGuildScope,
+                long keyVersion,
+                byte[] signingPrivate,
+                byte[] agreementPrivate,
+                string peerOwnerId,
+                string peerIslandId,
+                string peerHomeGuildScope,
+                long peerKeyVersion,
+                byte[] peerSigningPublic,
+                byte[] peerAgreementPublic,
+                byte[] relaySigningPublic,
+                byte[] relayAgreementPublic,
+                Guid pairingId,
+                string transcriptHash,
+                Func<DateTimeOffset> utcNow)
+            {
+                OwnerId = ownerId;
+                IslandId = islandId;
+                EndpointAlias = endpointAlias;
+                HomeGuildScope = homeGuildScope;
+                KeyVersion = keyVersion;
+                var signingPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(signingPrivate);
+                var agreementPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(agreementPrivate);
+                var localFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                    ownerId,
+                    islandId,
+                    keyVersion,
+                    signingPublic,
+                    agreementPublic);
+                var peerFingerprint = DadAutoPartyIdentityPackageService.BuildFingerprint(
+                    peerOwnerId,
+                    peerIslandId,
+                    peerKeyVersion,
+                    peerSigningPublic,
+                    peerAgreementPublic);
+                Configuration = new DadAutoPartyConfiguration
+                {
+                    Enabled = true,
+                    RegistrationState = DadAutoPartyRegistrationState.Active,
+                    RegistrationId = Guid.NewGuid().ToString("D"),
+                    RouteId = $"route-{endpointAlias}",
+                    CentralBotApplicationId = "123456789012345678",
+                    HomeGuildScope = homeGuildScope,
+                    WebhookCredentialReference = $"webhook-{endpointAlias}-aaaaaaaaaaaaaaaaaaaaaaaa",
+                    UplinkEpochId = Guid.NewGuid().ToString("D"),
+                    DownlinkEpochId = Guid.NewGuid().ToString("D"),
+                    MailboxEpochGeneration = 1,
+                    DirectoryGeneration = 1,
+                    RelayKeyGeneration = RelayKeyVersion,
+                    RelaySigningPublicKey = Convert.ToBase64String(relaySigningPublic),
+                    RelayAgreementPublicKey = Convert.ToBase64String(relayAgreementPublic),
+                    EndpointIdentityReference = $"identity-{endpointAlias}-aaaaaaaaaaaaaaaaaaaaaaaa",
+                    RegisteredOwnerId = ownerId,
+                    RegisteredIslandId = islandId,
+                    RegistrationFingerprint = localFingerprint,
+                    EndpointAlias = endpointAlias,
+                    SigningPublicKey = Convert.ToBase64String(signingPublic),
+                    EncryptionPublicKey = Convert.ToBase64String(agreementPublic),
+                    EndpointKeyGeneration = keyVersion,
+                    StateGeneration = 1,
+                };
+                Configuration.Pairings.Add(new DadAutoPartyPairing
+                {
+                    PairingId = pairingId.ToString("D"),
+                    OwnerId = peerOwnerId,
+                    IslandId = peerIslandId,
+                    HomeGuildScope = peerHomeGuildScope,
+                    PublicKeyFingerprint = peerFingerprint,
+                    LocalFingerprint = localFingerprint,
+                    TranscriptHash = transcriptHash,
+                    LocalSharePolicy = new DadAutoPartySharePolicy
+                    {
+                        Enabled = true,
+                        Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+                    },
+                    PeerSharePolicy = new DadAutoPartySharePolicy
+                    {
+                        Enabled = true,
+                        Mode = DadAutoPartyCharacterShareMode.AllCharactersForPeer,
+                    },
+                    ExpiresAtUtc = utcNow().AddDays(1).UtcDateTime,
+                    KeyGeneration = peerKeyVersion,
+                    SigningPublicKey = Convert.ToBase64String(peerSigningPublic),
+                    AgreementPublicKey = Convert.ToBase64String(peerAgreementPublic),
+                    ConfirmedAtUtc = utcNow().UtcDateTime,
+                });
+                var identity = new DadAutoPartyPrivateIdentityPackage(
+                    ownerId,
+                    islandId,
+                    keyVersion,
+                    Convert.ToBase64String(signingPrivate),
+                    Convert.ToBase64String(agreementPrivate));
+                identityStore = new MemoryIdentityStore(JsonSerializer.SerializeToUtf8Bytes(identity));
+                Transport = new FakeTransport();
+                connector = new DadDiscordCourierConnector(Configuration, static () => true);
+                connector.AttachVerifiedAdapter(Transport);
+                Service = new DadAutoPartyService(
+                    Configuration,
+                    identityStore,
+                    static () => true,
+                    static () => { });
+                var bridge = new DadAutoPartyParticipantBridge(
+                    Configuration,
+                    useFrenRiderProvider: static () => false);
+                Pump = new DadAutoPartyRelayPump(
+                    Configuration,
+                    identityStore,
+                    connector,
+                    Service,
+                    bridge,
+                    new MemoryPendingStore(),
+                    utcNow: utcNow,
+                    delay: static (_, _) => Task.CompletedTask);
+                typeof(DadAutoPartyRelayPump).GetField(
+                        "lastPrivateDirectoryRequestAt",
+                        System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic)!
+                    .SetValue(Pump, utcNow());
+                CryptographicOperations.ZeroMemory(signingPublic);
+                CryptographicOperations.ZeroMemory(agreementPublic);
+            }
+
+            public string OwnerId { get; }
+
+            public string IslandId { get; }
+
+            public string EndpointAlias { get; }
+
+            public string HomeGuildScope { get; }
+
+            public long KeyVersion { get; }
+
+            public DadAutoPartyConfiguration Configuration { get; }
+
+            public FakeTransport Transport { get; }
+
+            public DadAutoPartyService Service { get; }
+
+            public DadAutoPartyRelayPump Pump { get; }
+
+            public List<string> ObservedSafeCodes { get; } = [];
+
+            public async ValueTask DisposeAsync()
+            {
+                await Pump.DisposeAsync();
+                await connector.DisposeAsync();
+                Service.Dispose();
+                identityStore.Dispose();
+            }
+        }
+
+        private sealed class ConvergenceKeyMaterial : IDisposable
+        {
+            public byte[] RelaySigningPrivate { get; } = RandomNumberGenerator.GetBytes(32);
+            public byte[] RelayAgreementPrivate { get; } = RandomNumberGenerator.GetBytes(32);
+            public byte[] EndpointASigningPrivate { get; } = RandomNumberGenerator.GetBytes(32);
+            public byte[] EndpointAAgreementPrivate { get; } = RandomNumberGenerator.GetBytes(32);
+            public byte[] EndpointBSigningPrivate { get; } = RandomNumberGenerator.GetBytes(32);
+            public byte[] EndpointBAgreementPrivate { get; } = RandomNumberGenerator.GetBytes(32);
+            public byte[] RelaySigningPublic { get; }
+            public byte[] RelayAgreementPublic { get; }
+            public byte[] EndpointASigningPublic { get; }
+            public byte[] EndpointAAgreementPublic { get; }
+            public byte[] EndpointBSigningPublic { get; }
+            public byte[] EndpointBAgreementPublic { get; }
+
+            public ConvergenceKeyMaterial()
+            {
+                RelaySigningPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(RelaySigningPrivate);
+                RelayAgreementPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(RelayAgreementPrivate);
+                EndpointASigningPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(EndpointASigningPrivate);
+                EndpointAAgreementPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(EndpointAAgreementPrivate);
+                EndpointBSigningPublic = BouncyCastlePrimitives.DeriveEd25519PublicKey(EndpointBSigningPrivate);
+                EndpointBAgreementPublic = BouncyCastlePrimitives.DeriveX25519PublicKey(EndpointBAgreementPrivate);
+            }
+
+            public void Dispose()
+            {
+                foreach (var key in new[]
+                         {
+                             RelaySigningPrivate,
+                             RelayAgreementPrivate,
+                             EndpointASigningPrivate,
+                             EndpointAAgreementPrivate,
+                             EndpointBSigningPrivate,
+                             EndpointBAgreementPrivate,
+                             RelaySigningPublic,
+                             RelayAgreementPublic,
+                             EndpointASigningPublic,
+                             EndpointAAgreementPublic,
+                             EndpointBSigningPublic,
+                             EndpointBAgreementPublic,
+                         })
+                {
+                    CryptographicOperations.ZeroMemory(key);
+                }
+            }
+        }
+
+        private sealed class ConvergenceResolver(ConvergenceKeyMaterial keys) : IContractKeyResolver
+        {
+            public bool TryGetEd25519PrivateKey(
+                IslandId islandId,
+                long version,
+                out ReadOnlyMemory<byte> key) =>
+                Select(
+                    islandId,
+                    version,
+                    keys.RelaySigningPrivate,
+                    keys.EndpointASigningPrivate,
+                    keys.EndpointBSigningPrivate,
+                    out key);
+
+            public bool TryGetEd25519PublicKey(
+                IslandId islandId,
+                long version,
+                out ReadOnlyMemory<byte> key) =>
+                Select(
+                    islandId,
+                    version,
+                    keys.RelaySigningPublic,
+                    keys.EndpointASigningPublic,
+                    keys.EndpointBSigningPublic,
+                    out key);
+
+            public bool TryGetX25519PrivateKey(
+                IslandId islandId,
+                long version,
+                out ReadOnlyMemory<byte> key) =>
+                Select(
+                    islandId,
+                    version,
+                    keys.RelayAgreementPrivate,
+                    keys.EndpointAAgreementPrivate,
+                    keys.EndpointBAgreementPrivate,
+                    out key);
+
+            public bool TryGetX25519PublicKey(
+                IslandId islandId,
+                long version,
+                out ReadOnlyMemory<byte> key) =>
+                Select(
+                    islandId,
+                    version,
+                    keys.RelayAgreementPublic,
+                    keys.EndpointAAgreementPublic,
+                    keys.EndpointBAgreementPublic,
+                    out key);
+
+            private static bool Select(
+                IslandId islandId,
+                long version,
+                byte[] relay,
+                byte[] endpointA,
+                byte[] endpointB,
+                out ReadOnlyMemory<byte> key)
+            {
+                if (islandId.Value == DadAutoPartyIdentityPackageService.RegistrationRecipient &&
+                    version == RelayKeyVersion)
+                {
+                    key = relay;
+                    return true;
+                }
+                if (islandId.Value == EndpointAIsland && version == EndpointAKeyVersion)
+                {
+                    key = endpointA;
+                    return true;
+                }
+                if (islandId.Value == EndpointBIsland && version == EndpointBKeyVersion)
+                {
+                    key = endpointB;
+                    return true;
+                }
+                key = default;
+                return false;
+            }
+        }
     }
 
     private sealed class PumpFixture : IDisposable

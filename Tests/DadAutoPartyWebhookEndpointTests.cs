@@ -1037,6 +1037,226 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
+    public async Task AdapterOperationRetriesUseVirtualTimeEligibilityWithoutInlineDelay()
+    {
+        using var crypto = new CryptoFixture();
+        var now = DateTimeOffset.UtcNow;
+        var handler = new OperationProbeWebhookHandler();
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-http-eligibility",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            Task.Delay,
+            pollInterval: null,
+            diagnostic: null,
+            utcNow: () => now);
+
+        var first = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-timeout",
+            "test-timeout-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/ordinary-timeout"),
+            CancellationToken.None);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Transient, first.Status);
+        Assert.Equal(now.AddSeconds(1), first.NextEligibleAt);
+
+        var skipped = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-timeout",
+            "test-timeout-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/ordinary-timeout"),
+            CancellationToken.None);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.NotEligible, skipped.Status);
+        Assert.Equal(1, handler.TimeoutAttempts);
+
+        now = first.NextEligibleAt!.Value;
+        var second = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-timeout",
+            "test-timeout-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/ordinary-timeout"),
+            CancellationToken.None);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Transient, second.Status);
+        Assert.Equal(now.AddSeconds(2), second.NextEligibleAt);
+
+        now = second.NextEligibleAt!.Value;
+        var third = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-timeout",
+            "test-timeout-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/ordinary-timeout"),
+            CancellationToken.None);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Transient, third.Status);
+        Assert.Equal(now + DadAutoPartyWebhookTransportAdapter.DefaultActivePollInterval, third.NextEligibleAt);
+        Assert.Equal(3, handler.TimeoutAttempts);
+    }
+
+    [Fact]
+    public async Task RetryAfterDoesNotBlockUnrelatedMailboxWork()
+    {
+        using var crypto = new CryptoFixture();
+        var now = DateTimeOffset.UtcNow;
+        var handler = new OperationProbeWebhookHandler();
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-http-retry-after",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            Task.Delay,
+            pollInterval: null,
+            diagnostic: null,
+            utcNow: () => now);
+
+        var throttled = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-retry-after",
+            "test-shared-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/retry-after"),
+            CancellationToken.None);
+        var skipped = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-retry-after",
+            "test-shared-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/retry-after"),
+            CancellationToken.None);
+        var unrelated = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-unrelated",
+            "test-unrelated-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/success"),
+            CancellationToken.None);
+        var capped = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-retry-after-capped",
+            "test-retry-after-capped-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/retry-after-capped"),
+            CancellationToken.None);
+
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Transient, throttled.Status);
+        Assert.Equal(now.AddSeconds(7), throttled.NextEligibleAt);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.NotEligible, skipped.Status);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Success, unrelated.Status);
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Transient, capped.Status);
+        Assert.Equal(now.AddMinutes(1), capped.NextEligibleAt);
+        Assert.Equal(2, handler.RetryAfterAttempts);
+        Assert.Equal(1, handler.SuccessAttempts);
+    }
+
+    [Fact]
+    public async Task CallerCancellationDoesNotRetry()
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new OperationProbeWebhookHandler();
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-http-caller-cancel",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            Task.Delay,
+            TimeSpan.FromMilliseconds(10));
+
+        using var cancellation = new CancellationTokenSource();
+        var cancelled = adapter.ExecuteWebhookOperationOnceAsync(
+            "test-caller-cancel",
+            "test-caller-cancel-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/caller-cancel"),
+            cancellation.Token);
+        await handler.CallerCancellationStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+        Assert.Equal(1, handler.CallerCancellationAttempts);
+    }
+
+    [Fact]
+    public async Task ResponseBodyTimeoutIsOperationLocalAndBounded()
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new OperationProbeWebhookHandler();
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(50) };
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-http-body-timeout",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            Task.Delay,
+            TimeSpan.FromMilliseconds(10));
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = await adapter.ExecuteWebhookOperationOnceAsync(
+            "test-blocking-body",
+            "test-blocking-body-bucket",
+            static () => new HttpRequestMessage(HttpMethod.Get, "https://retry.test/blocking-body"),
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+
+        stopwatch.Stop();
+        Assert.Equal(DadAutoPartyWebhookTransportAdapter.WebhookOperationStatus.Transient, result.Status);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        Assert.Equal(1, handler.BlockingBodyAttempts);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OrdinaryTimeoutOrResponseBodyFailureDoesNotEndPumpOrBlockPresence(bool ordinaryTimeout)
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new OperationProbeWebhookHandler(
+            timeoutFirstControl: ordinaryTimeout,
+            failFirstControlBody: !ordinaryTimeout);
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            ordinaryTimeout ? "route-pump-timeout" : "route-pump-body-failure",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            Task.Delay,
+            TimeSpan.FromMilliseconds(10));
+
+        for (var attempt = 0; attempt < 200 && handler.PresenceCount == 0; attempt++)
+            await Task.Delay(10);
+
+        Assert.True(handler.ControlFailureAttempts >= 1);
+        Assert.True(handler.PresenceCount >= 1);
+        Assert.Contains("10002", handler.GetMessageReferences);
+        Assert.NotEqual(DadAutoPartyEndpointConnectionState.Degraded, adapter.Snapshot.State);
+        Assert.NotEqual("dad-webhook-pump-failed", adapter.Snapshot.SafeCode);
+    }
+
+    [Fact]
+    public async Task InitialControlReadsShareOneDeadlineWindowBeforePresence()
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new OperationProbeWebhookHandler(coordinateInitialControls: true);
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(
+            crypto.Credential(),
+            "route-initial-control-window",
+            1,
+            crypto.EndpointSigningPrivateKey,
+            client,
+            ownsHttpClient: false,
+            Task.Delay,
+            TimeSpan.FromMilliseconds(10));
+
+        await handler.BothInitialControlReadsStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        handler.ReleaseInitialControlReads();
+        for (var attempt = 0; attempt < 200 && handler.PresenceCount == 0; attempt++)
+            await Task.Delay(10);
+
+        Assert.True(handler.PresenceCount >= 1);
+        Assert.Contains("10001", handler.GetMessageReferences);
+        Assert.Contains("10002", handler.GetMessageReferences);
+        Assert.NotEqual(DadAutoPartyEndpointConnectionState.Degraded, adapter.Snapshot.State);
+        Assert.NotEqual("dad-webhook-pump-failed", adapter.Snapshot.SafeCode);
+    }
+
+    [Fact]
     public async Task EndpointLogsAdapterStartFailureOncePerUnchangedFailure()
     {
         var configuration = ActiveConfiguration();
@@ -1266,7 +1486,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
 
         var outbound = Envelope("island-local", "central-autoparty", [1, 2, 3, 4]);
         Assert.True((await adapter.SendAsync(outbound)).Accepted);
-        for (var attempt = 0; attempt < 200 &&
+        for (var attempt = 0; attempt < 600 &&
              !string.Equals(adapter.Snapshot.SafeCode, "dad-webhook-publish-failed", StringComparison.Ordinal); attempt++)
             await Task.Delay(5);
 
@@ -2710,6 +2930,187 @@ public sealed class DadAutoPartyWebhookEndpointTests
                 Encoding.UTF8,
                 "application/json"),
         };
+    }
+
+    private sealed class OperationProbeWebhookHandler(
+        bool timeoutFirstControl = false,
+        bool failFirstControlBody = false,
+        bool coordinateInitialControls = false) : HttpMessageHandler
+    {
+        private int timeoutAttempts;
+        private int retryAfterAttempts;
+        private int successAttempts;
+        private int callerCancellationAttempts;
+        private int blockingBodyAttempts;
+        private int controlFailureAttempts;
+        private int presenceCount;
+        private int activeInitialControlReads;
+        private readonly object gate = new();
+        private readonly List<string> getMessageReferences = [];
+        private readonly TaskCompletionSource<bool> releaseInitialControlReads =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int TimeoutAttempts => Volatile.Read(ref timeoutAttempts);
+        public int RetryAfterAttempts => Volatile.Read(ref retryAfterAttempts);
+        public int SuccessAttempts => Volatile.Read(ref successAttempts);
+        public int CallerCancellationAttempts => Volatile.Read(ref callerCancellationAttempts);
+        public int BlockingBodyAttempts => Volatile.Read(ref blockingBodyAttempts);
+        public int ControlFailureAttempts => Volatile.Read(ref controlFailureAttempts);
+        public int PresenceCount => Volatile.Read(ref presenceCount);
+        public IReadOnlyList<string> GetMessageReferences
+        {
+            get
+            {
+                lock (gate)
+                    return getMessageReferences.ToArray();
+            }
+        }
+        public TaskCompletionSource<bool> CallerCancellationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> BothInitialControlReadsStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ReleaseInitialControlReads() => releaseInitialControlReads.TrySetResult(true);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (path == "/ordinary-timeout")
+                return await Timeout();
+            if (path == "/retry-after")
+                return RetryAfter(TimeSpan.FromSeconds(7));
+            if (path == "/retry-after-capped")
+                return RetryAfter(TimeSpan.FromMinutes(2));
+            if (path == "/success")
+            {
+                Interlocked.Increment(ref successAttempts);
+                return Json(HttpStatusCode.OK, "success", CourierTextCodec.EmptySlotContent);
+            }
+            if (path == "/caller-cancel")
+                return await WaitForCallerCancellationAsync(cancellationToken);
+            if (path == "/blocking-body")
+            {
+                Interlocked.Increment(ref blockingBodyAttempts);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(new BlockingReadStream()),
+                };
+            }
+
+            var messageReference = request.RequestUri!.Segments[^1];
+            if (request.Method == HttpMethod.Get)
+            {
+                lock (gate)
+                    getMessageReferences.Add(messageReference);
+                if (coordinateInitialControls && messageReference is "10001" or "10002")
+                {
+                    var activeReads = Interlocked.Increment(ref activeInitialControlReads);
+                    if (activeReads == 2)
+                        BothInitialControlReadsStarted.TrySetResult(true);
+                    try
+                    {
+                        await releaseInitialControlReads.Task.WaitAsync(cancellationToken);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref activeInitialControlReads);
+                    }
+                }
+                if (messageReference == "10001" && timeoutFirstControl)
+                {
+                    Interlocked.Increment(ref controlFailureAttempts);
+                    throw new TaskCanceledException("synthetic-control-timeout");
+                }
+                if (messageReference == "10001" && failFirstControlBody)
+                {
+                    Interlocked.Increment(ref controlFailureAttempts);
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(new ThrowingReadStream()),
+                    };
+                }
+                return Json(HttpStatusCode.OK, messageReference, CourierTextCodec.EmptySlotContent);
+            }
+            if (request.Method == HttpMethod.Patch)
+            {
+                var payload = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var document = JsonDocument.Parse(payload);
+                var content = document.RootElement.GetProperty("content").GetString()!;
+                if (CourierTextCodec.GetKind(content) == CourierTextKind.Presence)
+                    Interlocked.Increment(ref presenceCount);
+                return Json(HttpStatusCode.OK, messageReference, content);
+            }
+            return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
+        }
+
+        private Task<HttpResponseMessage> Timeout()
+        {
+            Interlocked.Increment(ref timeoutAttempts);
+            return Task.FromException<HttpResponseMessage>(new TaskCanceledException("synthetic-request-timeout"));
+        }
+
+        private HttpResponseMessage RetryAfter(TimeSpan retryDelay)
+        {
+            Interlocked.Increment(ref retryAfterAttempts);
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(
+                retryDelay);
+            return response;
+        }
+
+        private async Task<HttpResponseMessage> WaitForCallerCancellationAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref callerCancellationAttempts);
+            CallerCancellationStarted.TrySetResult(true);
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+
+        private static HttpResponseMessage Json(HttpStatusCode status, string id, string content) => new(status)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { id, content }),
+                Encoding.UTF8,
+                "application/json"),
+        };
+    }
+
+    private sealed class ThrowingReadStream : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new IOException("synthetic-response-body-failure"));
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            Task.FromException<int>(new IOException("synthetic-response-body-failure"));
+    }
+
+    private sealed class BlockingReadStream : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            new(WaitForCancellationAsync(cancellationToken));
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            WaitForCancellationAsync(cancellationToken);
+
+        private static async Task<int> WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
     }
 
     private sealed class ThrowingWebhookHandler : HttpMessageHandler

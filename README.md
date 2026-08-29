@@ -186,23 +186,23 @@ uploaded or promoted to a release.
   An active bilateral pairing always uses its private character policy instead of this community scope. Listing ownership
   and guild membership alone never establish a route.
 - Saved remote slots keep opaque shared-identity tokens. At run admission DAD creates a new runtime-only proposal and sends
-  registered-island participants through reservation, preflight, lease, operation, and receipt barriers while local slots
-  stay on the LAN worker path. Both barriers must be ready before assembly or queueing. Slot 1 remains inviter and queue
-  authority, and existing PartyList proof remains authoritative.
-- Endpoint operations now use production runtime truth throughout: Prepare/Reserve use authenticated admission, Form waits
-  for exact PartyList membership, Queue dispatches the frozen module to the exact local worker, and Settle waits for that
-  worker's terminal result. The retained synthetic execution facade is constructed only by unit tests.
+  authenticated registered-island commands while local slots stay on the LAN worker path. The sender advances each remote
+  stage when its command is accepted; it does not request or wait for remote execution or completion receipts. Relay-control
+  receipts and transport-fragment acknowledgements remain unchanged. Slot 1 remains inviter and queue authority.
+- Receiving islands authenticate the frozen proposal and command locally, then run Form, Queue, and Settle against their
+  production runtime truth without emitting operation receipts. The retained synthetic execution facade is constructed
+  only by unit tests.
 - **Create party** builds one in-memory formation-only group from selected local characters and current paired/community
   listings and submits it through existing Crew Formation. **Disband party** uses the guarded teardown for that exact active
   AutoParty formation, then settles/restores remote participants. Plans and Schedules use the same proposal/session path and
   continue through the normal duty lifecycle; no third scheduler or saved crew is created.
-- Successful, failed, timed-out, and operator-cancelled registered-island runs all pass through authenticated endpoint Cancel
-  and Restore acknowledgement barriers before final completion. Teardown locators remain encrypted and memory-only. Restore
-  reports profile restoration only when a profile was actually applied; the current production path does not apply one.
+- Successful, failed, timed-out, and operator-cancelled registered-island runs send authenticated endpoint Cancel and Restore
+  commands and advance when each command is accepted, without execution or completion receipts. Teardown locators remain
+  encrypted and memory-only. Restore reports profile restoration only when a profile was actually applied.
 - Local deauthentication immediately vetoes new work, ends affected sessions, removes peer routes, and sends a signed
   monotonic revocation. Deregistration is a signed receipt-first exchange before local mailbox cleanup. **Owner Stop** remains
   the immediate local veto, and delayed relay traffic cannot restore trust.
-- P1219 is implemented and verified offline at public DAD version `0.5.0.9`. This work does not claim a Discord smoke test,
+- P1219 remains implemented; the current public DAD version is `0.5.0.12`. This work does not claim a Discord smoke test,
   service operation, publication, or live FFXIV-client verification.
 - `/dad fleet` opens the local Fleet/Crew Matrix. Its exact-schema TSV inventory is capped at 160 rows and protects
   spreadsheet formula prefixes; ordered Crew Sets are capped at 40 parties with eight members each. Reusable blueprints
@@ -450,7 +450,7 @@ uploaded or promoted to a release.
 
 ## Deployment notes
 
-- **Hub transport protocol is version 4.** Every paired dad — the Coordinator Dad
+- **Hub transport protocol is version 5.** Every paired dad — the Coordinator Dad
   and all Client Dads — should run the **same build**. Incompatible hub protocol versions are rejected with
   `protocol-mismatch`; exact assembly-build equality is not otherwise enforced.
 - Non-loopback (LAN) connections require a matching `TransportSharedSecret` on every peer (HMAC-SHA256). Envelopes

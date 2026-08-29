@@ -5,7 +5,7 @@
   "Punchline": "Plan and coordinate duty runs across your FFXIV characters.",
   "Description": "DAD is a duty planner and multibox coordinator for FFXIV. Create reusable character presets, wake or relog the right clients, prepare jobs, assemble and verify parties, queue supported duties and roulettes, and chain presets into manual or daily schedules. Live readiness checks, clear blockers, reconnect status, cancellation, and Stop All keep every run visible and recoverable.",
   "InternalName": "dad",
-  "AssemblyVersion": "0.5.0.12",
+  "AssemblyVersion": "0.5.0.13",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
   "Tags": [

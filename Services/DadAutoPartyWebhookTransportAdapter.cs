@@ -31,6 +31,8 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private const int MaximumTrackedDeliveries = 256;
     private const int MaximumHttpAttempts = 3;
     private const int MaximumWebhookResponseBytes = 16 * 1024;
+    private static readonly TimeSpan DefaultHttpOperationTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan MaximumRetryAfterDelay = TimeSpan.FromMinutes(1);
     internal static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan DefaultActivePollInterval = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -40,8 +42,15 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private readonly HttpClient httpClient;
     private readonly bool ownsHttpClient;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
+    private readonly Func<DateTimeOffset> utcNow;
+    private readonly TimeSpan httpOperationTimeout;
     private readonly TimeSpan pollInterval;
     private readonly TimeSpan activePollInterval;
+    private readonly object httpOperationGate = new();
+    private readonly Dictionary<string, HttpOperationRetryState> httpOperationRetries =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> httpRateLimitEligibility =
+        new(StringComparer.Ordinal);
     private Action<string> diagnostic = static _ => { };
     private readonly FixedCourierKeyResolver keyResolver;
     private readonly ProductionContractAuthenticator authenticator;
@@ -94,6 +103,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private DateTime nextPresencePublishUtc = DateTime.MinValue;
     private bool presencePublished;
     private bool presencePublishFailed;
+    private bool pollDownlinkFirst;
     private int pendingOutboundCount;
     private int bufferedInboundCount;
     private int terminalMailboxInvalidated;
@@ -109,6 +119,31 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         TimeSpan? pollInterval = null,
         Action<string>? diagnostic = null)
+        : this(
+            credential,
+            routeId,
+            endpointKeyVersion,
+            endpointSigningPrivateKey,
+            httpClient,
+            ownsHttpClient,
+            delay,
+            pollInterval,
+            diagnostic,
+            static () => DateTimeOffset.UtcNow)
+    {
+    }
+
+    internal DadAutoPartyWebhookTransportAdapter(
+        DadAutoPartyWebhookCredential credential,
+        string routeId,
+        long endpointKeyVersion,
+        ReadOnlySpan<byte> endpointSigningPrivateKey,
+        HttpClient? httpClient,
+        bool ownsHttpClient,
+        Func<TimeSpan, CancellationToken, Task>? delay,
+        TimeSpan? pollInterval,
+        Action<string>? diagnostic,
+        Func<DateTimeOffset> utcNow)
     {
         if (credential is not { HasProvisionedMailbox: true })
             throw new ArgumentException("A provisioned webhook mailbox is required.", nameof(credential));
@@ -133,6 +168,12 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         this.httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         this.ownsHttpClient = httpClient == null || ownsHttpClient;
         this.delay = delay ?? Task.Delay;
+        this.utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
+        var clientTimeout = this.httpClient.Timeout;
+        httpOperationTimeout = clientTimeout == Timeout.InfiniteTimeSpan ||
+                               clientTimeout > DefaultHttpOperationTimeout
+            ? DefaultHttpOperationTimeout
+            : clientTimeout;
         var customPollInterval = pollInterval is { } interval && interval > TimeSpan.Zero;
         this.pollInterval = customPollInterval ? pollInterval!.Value : DefaultPollInterval;
         activePollInterval = customPollInterval ? pollInterval!.Value : DefaultActivePollInterval;
@@ -287,26 +328,40 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             while (!cancellationToken.IsCancellationRequested)
             {
                 ApplyPersistedEpochPair();
-                var uplinkControl = await FetchControlSlotAsync(
-                    UplinkEpochSnapshot,
-                    cancellationToken).ConfigureAwait(false);
-                var downlinkControl = await FetchControlSlotAsync(
-                    DownlinkEpochSnapshot,
-                    cancellationToken).ConfigureAwait(false);
-                ProcessControlSlot(uplinkControl, UplinkEpochSnapshot, CourierDirection.Uplink);
-                ProcessControlSlot(downlinkControl, DownlinkEpochSnapshot, CourierDirection.Downlink);
+                var uplinkEpoch = UplinkEpochSnapshot;
+                var downlinkEpoch = DownlinkEpochSnapshot;
+                var controls = await Task.WhenAll(
+                    FetchControlSlotAsync(uplinkEpoch, cancellationToken),
+                    FetchControlSlotAsync(downlinkEpoch, cancellationToken)).ConfigureAwait(false);
+                var uplinkControl = controls[0];
+                var downlinkControl = controls[1];
+                ProcessControlSlot(uplinkControl, uplinkEpoch, CourierDirection.Uplink);
+                ProcessControlSlot(downlinkControl, downlinkEpoch, CourierDirection.Downlink);
 
                 if (!HasEpochTrafficHold())
                 {
+                    if (!presencePublished &&
+                        !presencePublishFailed &&
+                        DateTime.UtcNow >= nextPresencePublishUtc)
+                        await PublishPresenceAsync(cancellationToken).ConfigureAwait(false);
                     DrainApplicationAcknowledgements();
                     ExpireInboundDeliveries();
                     QueueCompletedInboundDeliveries();
-                    await PollUplinkAsync(uplinkControl, cancellationToken).ConfigureAwait(false);
-                    await PollDownlinkAsync(downlinkControl, cancellationToken).ConfigureAwait(false);
+                    if (pollDownlinkFirst)
+                    {
+                        await PollDownlinkAsync(downlinkControl, cancellationToken).ConfigureAwait(false);
+                        await PollUplinkAsync(uplinkControl, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await PollUplinkAsync(uplinkControl, cancellationToken).ConfigureAwait(false);
+                        await PollDownlinkAsync(downlinkControl, cancellationToken).ConfigureAwait(false);
+                    }
+                    pollDownlinkFirst = !pollDownlinkFirst;
                     QueueCompletedInboundDeliveries();
                 }
                 await PublishUplinkAsync(cancellationToken).ConfigureAwait(false);
-                await delay(CurrentPollInterval(), cancellationToken).ConfigureAwait(false);
+                await delay(CurrentPumpDelay(), cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -844,10 +899,13 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             var pageReference = acknowledgementEpoch.PageReferences
                 .OrderBy(static page => page.PageNumber)
                 .First(page => page.PageNumber == pendingAcknowledgement.PageNumber);
-            if (await EditKnownMessageAsync(
-                    pageReference.MessageReference,
-                    content,
-                    cancellationToken).ConfigureAwait(false))
+            var acknowledgementEditResult = await EditKnownMessageAsync(
+                pageReference.MessageReference,
+                content,
+                cancellationToken).ConfigureAwait(false);
+            if (acknowledgementEditResult is null)
+                return;
+            if (acknowledgementEditResult.Value)
             {
                 acknowledgementQueue.Dequeue();
                 RememberPublishedContent(
@@ -975,10 +1033,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         var reference = UplinkEpochSnapshot.PageReferences
             .First(page => page.PageNumber == activeOutbound.PageNumber)
             .MessageReference;
-        if (await EditKnownMessageAsync(
-                reference,
-                activeOutbound.PublishedContent,
-                cancellationToken).ConfigureAwait(false))
+        var editResult = await EditKnownMessageAsync(
+            reference,
+            activeOutbound.PublishedContent,
+            cancellationToken).ConfigureAwait(false);
+        if (editResult is true)
         {
             activeOutbound.LastPublishedAtUtc = DateTime.UtcNow;
             RememberPublishedContent(CourierDirection.Uplink, reference, activeOutbound.PublishedContent);
@@ -993,7 +1052,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 DateTime.UtcNow);
             UpdateTransferSnapshot(awaitingCentralAcknowledgement: true);
         }
-        else
+        else if (editResult is false)
         {
             if (IsPairingTransfer(activeOutbound.Delivery))
                 ReportPairingDiagnostic(
@@ -1012,10 +1071,13 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             .OrderBy(static page => page.PageNumber)
             .First();
         var content = EncodePresence(epoch);
-        if (await EditKnownMessageAsync(
-                pageReference.MessageReference,
-                content,
-                cancellationToken).ConfigureAwait(false))
+        var editResult = await EditKnownMessageAsync(
+            pageReference.MessageReference,
+            content,
+            cancellationToken).ConfigureAwait(false);
+        if (editResult is null)
+            return;
+        if (editResult.Value)
         {
             RememberPublishedContent(CourierDirection.Uplink, pageReference.MessageReference, content);
             if (presencePublishFailed)
@@ -1073,6 +1135,28 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private TimeSpan CurrentPollInterval() => HasActiveCourierWork()
         ? activePollInterval
         : pollInterval;
+
+    private TimeSpan CurrentPumpDelay()
+    {
+        var cadence = CurrentPollInterval();
+        var now = utcNow();
+        DateTimeOffset? nextEligibleAt = null;
+        lock (httpOperationGate)
+        {
+            foreach (var eligibleAt in httpOperationRetries.Values
+                         .Select(static state => state.NextEligibleAt)
+                         .Concat(httpRateLimitEligibility.Values)
+                         .Where(eligibleAt => eligibleAt > now))
+            {
+                if (nextEligibleAt == null || eligibleAt < nextEligibleAt)
+                    nextEligibleAt = eligibleAt;
+            }
+        }
+        if (nextEligibleAt == null)
+            return cadence;
+        var untilEligible = nextEligibleAt.Value - now;
+        return untilEligible < cadence ? untilEligible : cadence;
+    }
 
     private bool HasActiveCourierWork() =>
         activeOutbound != null ||
@@ -1382,30 +1466,36 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         string messageReference,
         CancellationToken cancellationToken)
     {
-        using var response = await SendWithRetryAsync(
+        var result = await ExecuteWebhookOperationOnceAsync(
+            $"fetch:{messageReference}",
+            messageReference,
             () => new HttpRequestMessage(
                 HttpMethod.Get,
                 BuildWebhookPath($"/messages/{messageReference}")),
             cancellationToken).ConfigureAwait(false);
-        if (response == null)
+        if (result.Status == WebhookOperationStatus.NotEligible)
+            return null;
+        if (result.Status != WebhookOperationStatus.Success)
         {
             UpdateSnapshot(DadAutoPartyEndpointConnectionState.Ready, "dad-webhook-fetch-failed", null);
             return null;
         }
-        var message = await ReadWebhookMessageAsync(response, cancellationToken).ConfigureAwait(false);
+        var message = result.Message;
         return message != null && string.Equals(message.Id, messageReference, StringComparison.Ordinal)
             ? message
             : null;
     }
 
-    private async Task<bool> EditKnownMessageAsync(
+    private async Task<bool?> EditKnownMessageAsync(
         string messageReference,
         string content,
         CancellationToken cancellationToken)
     {
         if (content.Length is < 1 or > MaximumDiscordContentCharacters)
             return false;
-        using var response = await SendWithRetryAsync(
+        var result = await ExecuteWebhookOperationOnceAsync(
+            $"edit:{messageReference}",
+            messageReference,
             () => new HttpRequestMessage(
                 HttpMethod.Patch,
                 BuildWebhookPath($"/messages/{messageReference}"))
@@ -1415,9 +1505,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                     new AllowedMentions([]))),
             },
             cancellationToken).ConfigureAwait(false);
-        if (response == null)
+        if (result.Status == WebhookOperationStatus.NotEligible)
+            return null;
+        if (result.Status != WebhookOperationStatus.Success)
             return false;
-        var message = await ReadWebhookMessageAsync(response, cancellationToken).ConfigureAwait(false);
+        var message = result.Message;
         return message != null && string.Equals(message.Id, messageReference, StringComparison.Ordinal);
     }
 
@@ -1456,50 +1548,195 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
     }
 
-    private async Task<HttpResponseMessage?> SendWithRetryAsync(
+    internal async Task<WebhookOperationResult> ExecuteWebhookOperationOnceAsync(
+        string operationKey,
+        string rateLimitBucket,
         Func<HttpRequestMessage> requestFactory,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 1; attempt <= MaximumHttpAttempts; attempt++)
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(rateLimitBucket);
+        ArgumentNullException.ThrowIfNull(requestFactory);
+        cancellationToken.ThrowIfCancellationRequested();
+        var now = utcNow();
+        if (!IsHttpOperationEligible(operationKey, rateLimitBucket, now, out var nextEligibleAt))
+            return new(
+                WebhookOperationStatus.NotEligible,
+                null,
+                nextEligibleAt,
+                "dad-webhook-operation-not-eligible");
+
+        using var request = requestFactory();
+        using var operationDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        operationDeadline.CancelAfter(httpOperationTimeout);
+        HttpResponseMessage? response = null;
+        try
         {
-            using var request = requestFactory();
-            HttpResponseMessage? response = null;
-            try
+            response = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                operationDeadline.Token).ConfigureAwait(false);
+            if (response.StatusCode is HttpStatusCode.Unauthorized or
+                HttpStatusCode.Forbidden or
+                HttpStatusCode.NotFound)
             {
-                response = await httpClient.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken).ConfigureAwait(false);
-                if (response.IsSuccessStatusCode)
-                    return response;
-                if (response.StatusCode is HttpStatusCode.Unauthorized or
-                    HttpStatusCode.Forbidden or
-                    HttpStatusCode.NotFound)
-                {
-                    response.Dispose();
-                    SignalTerminalMailboxInvalidation();
-                    return null;
-                }
-                if (response.StatusCode is not HttpStatusCode.TooManyRequests &&
-                    (int)response.StatusCode < 500)
-                {
-                    response.Dispose();
-                    return null;
-                }
+                ResetHttpOperationRetry(operationKey, rateLimitBucket, utcNow());
+                SignalTerminalMailboxInvalidation();
+                return new(
+                    WebhookOperationStatus.Terminal,
+                    null,
+                    null,
+                    "dad-webhook-mailbox-invalidated");
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            if (response.StatusCode == HttpStatusCode.TooManyRequests ||
+                (int)response.StatusCode >= 500)
             {
-                response?.Dispose();
-                throw;
+                return RecordHttpOperationTransient(
+                    operationKey,
+                    rateLimitBucket,
+                    response,
+                    utcNow(),
+                    "dad-webhook-operation-retryable-status");
             }
-            catch (HttpRequestException)
+            if (!response.IsSuccessStatusCode)
             {
+                ResetHttpOperationRetry(operationKey, rateLimitBucket, utcNow());
+                return new(
+                    WebhookOperationStatus.Rejected,
+                    null,
+                    null,
+                    "dad-webhook-operation-rejected");
             }
-            response?.Dispose();
-            if (attempt < MaximumHttpAttempts)
-                await delay(TimeSpan.FromSeconds(attempt), cancellationToken).ConfigureAwait(false);
+
+            var message = await ReadWebhookMessageAsync(
+                response,
+                operationDeadline.Token).ConfigureAwait(false);
+            ResetHttpOperationRetry(operationKey, rateLimitBucket, utcNow());
+            return message == null
+                ? new(
+                    WebhookOperationStatus.Rejected,
+                    null,
+                    null,
+                    "dad-webhook-response-invalid")
+                : new(
+                    WebhookOperationStatus.Success,
+                    message,
+                    null,
+                    "dad-webhook-operation-succeeded");
         }
-        return null;
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return RecordHttpOperationTransient(
+                operationKey,
+                rateLimitBucket,
+                response,
+                utcNow(),
+                "dad-webhook-operation-timeout");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException)
+        {
+            return RecordHttpOperationTransient(
+                operationKey,
+                rateLimitBucket,
+                response,
+                utcNow(),
+                "dad-webhook-operation-transport-failed");
+        }
+        finally
+        {
+            response?.Dispose();
+        }
+    }
+
+    private bool IsHttpOperationEligible(
+        string operationKey,
+        string rateLimitBucket,
+        DateTimeOffset now,
+        out DateTimeOffset? nextEligibleAt)
+    {
+        nextEligibleAt = null;
+        lock (httpOperationGate)
+        {
+            if (httpOperationRetries.TryGetValue(operationKey, out var retry) &&
+                retry.NextEligibleAt > now)
+                nextEligibleAt = retry.NextEligibleAt;
+            if (httpRateLimitEligibility.TryGetValue(rateLimitBucket, out var bucketEligibleAt))
+            {
+                if (bucketEligibleAt <= now)
+                    httpRateLimitEligibility.Remove(rateLimitBucket);
+                else if (nextEligibleAt == null || bucketEligibleAt > nextEligibleAt)
+                    nextEligibleAt = bucketEligibleAt;
+            }
+            return nextEligibleAt == null;
+        }
+    }
+
+    private WebhookOperationResult RecordHttpOperationTransient(
+        string operationKey,
+        string rateLimitBucket,
+        HttpResponseMessage? response,
+        DateTimeOffset now,
+        string safeCode)
+    {
+        var retryAfter = GetRetryAfterDelay(response, now);
+        DateTimeOffset nextEligibleAt;
+        lock (httpOperationGate)
+        {
+            var priorAttempts = httpOperationRetries.TryGetValue(operationKey, out var prior)
+                ? prior.FailedAttempts
+                : 0;
+            var failedAttempt = priorAttempts + 1;
+            var localDelay = failedAttempt switch
+            {
+                1 => TimeSpan.FromSeconds(1),
+                2 => TimeSpan.FromSeconds(2),
+                _ => activePollInterval,
+            };
+            nextEligibleAt = now + (retryAfter ?? localDelay);
+            if (retryAfter.HasValue)
+            {
+                if (!httpRateLimitEligibility.TryGetValue(rateLimitBucket, out var bucketEligibleAt) ||
+                    bucketEligibleAt < nextEligibleAt)
+                    httpRateLimitEligibility[rateLimitBucket] = nextEligibleAt;
+                else
+                    nextEligibleAt = bucketEligibleAt;
+            }
+            httpOperationRetries[operationKey] = new(
+                failedAttempt >= MaximumHttpAttempts ? 0 : failedAttempt,
+                nextEligibleAt);
+        }
+        return new(WebhookOperationStatus.Transient, null, nextEligibleAt, safeCode);
+    }
+
+    private void ResetHttpOperationRetry(
+        string operationKey,
+        string rateLimitBucket,
+        DateTimeOffset now)
+    {
+        lock (httpOperationGate)
+        {
+            httpOperationRetries.Remove(operationKey);
+            if (httpRateLimitEligibility.TryGetValue(rateLimitBucket, out var eligibleAt) &&
+                eligibleAt <= now)
+                httpRateLimitEligibility.Remove(rateLimitBucket);
+        }
+    }
+
+    private static TimeSpan? GetRetryAfterDelay(
+        HttpResponseMessage? response,
+        DateTimeOffset now)
+    {
+        var retryAfter = response?.Headers.RetryAfter;
+        var requested = retryAfter?.Delta;
+        if (!requested.HasValue && retryAfter?.Date is { } retryAt)
+            requested = retryAt - now;
+        if (requested is not { } bounded || bounded <= TimeSpan.Zero)
+            return null;
+        return bounded <= MaximumRetryAfterDelay ? bounded : MaximumRetryAfterDelay;
     }
 
     private void SignalTerminalMailboxInvalidation()
@@ -1588,7 +1825,26 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
 
     private sealed record AllowedMentions(IReadOnlyList<string> Parse);
     private sealed record WebhookWriteRequest(string Content, AllowedMentions AllowedMentions);
-    private sealed record WebhookMessage(string Id, string Content);
+    internal sealed record WebhookMessage(string Id, string Content);
+
+    internal enum WebhookOperationStatus
+    {
+        NotEligible = 0,
+        Success = 1,
+        Rejected = 2,
+        Transient = 3,
+        Terminal = 4,
+    }
+
+    internal readonly record struct WebhookOperationResult(
+        WebhookOperationStatus Status,
+        WebhookMessage? Message,
+        DateTimeOffset? NextEligibleAt,
+        string SafeCode);
+
+    private readonly record struct HttpOperationRetryState(
+        int FailedAttempts,
+        DateTimeOffset NextEligibleAt);
     private sealed record PendingCourierAcknowledgement(
         Guid EpochId,
         CourierDirection Direction,

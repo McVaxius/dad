@@ -1,5 +1,24 @@
 # dad — changelog
 
+## 2026-08-29 — bounded AutoParty progress and title-login retry (local-only, unpublished)
+- An explicit `false` from Lifestream title login now clears only the login-attempt gate and retries after five seconds
+  after freshly recapturing title, route, AutoRetainer, VERMAXION, Lifestream, and `CanAutoLogin` proof. Accepted or
+  uncertain outcomes remain one-shot and never replay.
+- A newer normalized listing desired while another snapshot awaits receipts is retained latest-wins and published with
+  fresh headers after acceptance, rejection, expiry, or send failure. Deferred state clears on reset, deregistration,
+  disposal, and other terminal teardown paths.
+- AutoParty webhook work now makes one bounded send-plus-body attempt per operation turn. Caller cancellation propagates;
+  ordinary timeout, request, and body I/O failures become local retry eligibility, and `Retry-After` cannot sleep inside
+  the pump or stall unrelated mailbox work. Initial presence receives the first traffic-eligible publication turn and
+  uplink/downlink polling rotates.
+- AutoParty directory projection cache hits now return before listing clone/filter work, and Setup Wizard passes its
+  already-built step list into the renderer instead of rebuilding it, without changing the rendered workflow.
+- A deterministic two-endpoint test now covers roster-derived nonempty publication, relay and application receipts,
+  bidirectional directory projection, authenticated private labels, latest-snapshot replacement, and runtime bindings
+  appearing only after explicit freeform formation staging. This is automated coverage, not a successful live-sync claim.
+- DAD remains `0.5.0.12` with configuration schema 12 and unchanged package/wire shapes. LAN hub protocol remains 5,
+  and Discord mailbox polling remains 10 seconds idle and 2 seconds active.
+
 ## 2026-08-27 — one-way FrenRider dispatch and coordinated privacy controls (local-only, unpublished)
 - Registered-island runs can now freeze and send one exact FrenRider profile before that participant's execution
   operations. Courier acceptance advances dispatch immediately: DAD does not request, correlate, or await profile or

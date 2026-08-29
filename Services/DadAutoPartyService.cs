@@ -377,13 +377,21 @@ public sealed class DadAutoPartyService : IDisposable
         HashSet<string> onlineIslands;
         Dictionary<PairedLabelKey, PairedLabelOverlay> labels;
         long presenceAndLabelRevision;
+        DadAutoPartyWindowProjectionKey key;
         lock (directoryPresenceGate)
         {
             if (PrunePairedLabelsLocked(now))
                 directoryProjectionRevision++;
+            presenceAndLabelRevision = directoryProjectionRevision;
+            key = new DadAutoPartyWindowProjectionKey(
+                Math.Max(1, configuration.StateGeneration),
+                presenceAndLabelRevision,
+                search,
+                includePromiscuous);
+            if (windowProjectionCache.TryGet(key, now, out var cached))
+                return cached;
             onlineIslands = new HashSet<string>(onlineDirectoryIslands, StringComparer.Ordinal);
             labels = new Dictionary<PairedLabelKey, PairedLabelOverlay>(pairedLabelOverlay);
-            presenceAndLabelRevision = directoryProjectionRevision;
         }
         var sourceListings = configuration.Listings
             .Where(item => item.Available && item.ExpiresAtUtc > now &&
@@ -398,11 +406,6 @@ public sealed class DadAutoPartyService : IDisposable
             .Concat(labels.Values.Select(static label => (DateTime?)label.LabelExpiresAtUtc))
             .Where(static expiry => expiry.HasValue)
             .Min();
-        var key = new DadAutoPartyWindowProjectionKey(
-            Math.Max(1, configuration.StateGeneration),
-            presenceAndLabelRevision,
-            search,
-            includePromiscuous);
         return windowProjectionCache.GetOrCreate(key, () =>
         {
             foreach (var listing in sourceListings)

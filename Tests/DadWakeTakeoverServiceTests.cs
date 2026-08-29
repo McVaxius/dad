@@ -64,6 +64,54 @@ public sealed class DadWakeTakeoverServiceTests
             target.Actions);
     }
 
+    [Fact]
+    public void ExplicitFalseTitleLoginWaitsFiveSecondsAndRecapturesBeforeRetry()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        target.UtcNow = clock.UtcNow;
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.ExplicitFalse);
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Accepted);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+
+        service.Handle(Request());
+        service.Update();
+
+        Assert.Single(target.TitleLoginCaptureCounts);
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+
+        var capturesBeforeRetry = target.CaptureForceFlags.Count;
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+        Assert.True(target.TitleLoginCaptureCounts[1] > capturesBeforeRetry);
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.GetActiveStatus()!.Phase);
+    }
+
+    [Theory]
+    [InlineData(DadLifestreamLoginOutcome.Accepted)]
+    [InlineData(DadLifestreamLoginOutcome.Uncertain)]
+    public void AcceptedOrUncertainTitleLoginNeverReplays(DadLifestreamLoginOutcome outcome)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        target.TitleLoginOutcomes.Enqueue(outcome);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+
+        service.Handle(Request());
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(10));
+        service.Update();
+        service.Update();
+
+        Assert.Single(target.TitleLoginCaptureCounts);
+    }
+
     [Theory]
     [InlineData(false, true, DadWakeTakeoverStage.WaitingForClient)]
     [InlineData(true, false, DadWakeTakeoverStage.WaitingForPostArReady)]
@@ -1793,6 +1841,7 @@ public sealed class DadWakeTakeoverServiceTests
         public Queue<bool> SuppressionReleaseResults { get; } = new();
         public Queue<bool> ReservationReleaseResults { get; } = new();
         public Queue<DadLifestreamLoginOutcome> TitleLoginOutcomes { get; } = new();
+        public List<int> TitleLoginCaptureCounts { get; } = [];
         public List<bool> CaptureForceFlags { get; } = [];
         public Action<bool>? OnCapture { get; set; }
         public Action? OnSuppressionReleased { get; set; }
@@ -1980,6 +2029,7 @@ public sealed class DadWakeTakeoverServiceTests
         public DadLifestreamLoginResult ConnectAndLogin(DadWakeTakeoverRequestDto request)
         {
             Actions.Add($"ConnectAndLogin:{request.CharacterKey.Value}");
+            TitleLoginCaptureCounts.Add(CaptureForceFlags.Count);
             if (ThrowOnTitleLogin)
                 throw new InvalidOperationException("Simulated title-login exception.");
             var outcome = TitleLoginOutcomes.Count == 0

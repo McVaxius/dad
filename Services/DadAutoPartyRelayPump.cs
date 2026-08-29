@@ -109,6 +109,9 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     private DateTimeOffset pendingListingSnapshotExpiresAt;
     private TaskCompletionSource<DadAutoPartyListingPublicationResult>? pendingListingReceiptCompletion;
     private int pendingListingSourceCount;
+    private DesiredListingPublication? deferredListingPublication;
+    private long activeListingDesiredGeneration;
+    private long nextListingDesiredGeneration;
     private readonly Dictionary<Guid, PendingAccessRequest> pendingAccessRequests = [];
     private readonly Dictionary<RouteKey, AttestedRoute> attestedRoutes = [];
     private readonly Dictionary<Guid, PendingAllianceOutbound> pendingAllianceOutbound = [];
@@ -1067,40 +1070,101 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         TaskCompletionSource<DadAutoPartyListingPublicationResult>? receiptCompletion)
     {
         ArgumentNullException.ThrowIfNull(sharePolicy);
+        if (!TryCreateDesiredListingPublication(
+                sharePolicy,
+                listings,
+                pairedLabels,
+                utcNow(),
+                out var desired))
+            return Decision(false, "dad-listing-update-invalid");
+        return QueueDesiredListingPublication(desired, receiptCompletion);
+    }
+
+    private bool TryCreateDesiredListingPublication(
+        DadAutoPartySharePolicy sharePolicy,
+        IEnumerable<DadAutoPartyListing> listings,
+        IReadOnlyDictionary<string, string>? pairedLabels,
+        DateTimeOffset now,
+        out DesiredListingPublication desired)
+    {
+        desired = null!;
         if (!configuration.IsRegistrationActive ||
             sharePolicy.Clone().Normalize() is not { IsValid: true } policy)
-            return Decision(false, "dad-listing-update-invalid");
-        var now = utcNow();
-        lock (gate)
-        {
-            if (HasPendingListingSnapshot(now))
-                return receiptCompletion == null
-                    ? Decision(true, "dad-listing-update-coalesced")
-                    : Decision(false, "dad-listing-update-busy");
-        }
-        var publishableListings = (listings ?? [])
-            .Where(listing => listing is { IsValid: true, Available: true } &&
-                              listing.ExpiresAtUtc > now.UtcDateTime &&
-                              listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
-            .Take(AutoPartyProtocol.MaximumCollectionItems + 1)
-            .ToList();
-        if (publishableListings.Count > AutoPartyProtocol.MaximumCollectionItems)
-            return Decision(false, "dad-listing-update-invalid");
-        var protocolListings = publishableListings
-            .Select(static listing => new PrivateCharacterListing(
-                new OpaqueCharacterId(listing.OpaqueCharacterId),
-                listing.DisplayLabel,
-                listing.AllowedJobIds.Select(static value => new JobId(value)).ToImmutableArray(),
-                listing.AllowedActivityIds.Select(static value => new ActivityId(value)).ToImmutableArray(),
-                listing.Available,
-                listing.Revision,
-                new DateTimeOffset(DateTime.SpecifyKind(listing.ExpiresAtUtc, DateTimeKind.Utc))))
-            .ToImmutableArray();
+            return false;
         try
         {
+            var publishableListings = (listings ?? [])
+                .Where(listing => listing is { IsValid: true, Available: true } &&
+                                  listing.ExpiresAtUtc > now.UtcDateTime &&
+                                  listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
+                .Take(AutoPartyProtocol.MaximumCollectionItems + 1)
+                .Select(static listing => listing.Clone().Normalize())
+                .ToImmutableArray();
+            if (publishableListings.Length > AutoPartyProtocol.MaximumCollectionItems)
+                return false;
+
+            var normalizedLabels = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
+            foreach (var listing in publishableListings)
+            {
+                if (pairedLabels == null ||
+                    !pairedLabels.TryGetValue(listing.OpaqueCharacterId, out var label) ||
+                    !IsBoundedLocatorValue(label, AutoPartyProtocol.MaximumDisplayLabelLength))
+                    continue;
+                normalizedLabels[listing.OpaqueCharacterId] = label;
+            }
+
+            desired = new(
+                Interlocked.Increment(ref nextListingDesiredGeneration),
+                policy,
+                publishableListings,
+                normalizedLabels.ToImmutable());
+            return true;
+        }
+        catch (Exception exception) when (exception is ProtocolException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private DadAutoPartyPolicyDecision QueueDesiredListingPublication(
+        DesiredListingPublication desired,
+        TaskCompletionSource<DadAutoPartyListingPublicationResult>? receiptCompletion)
+    {
+        if (!configuration.IsRegistrationActive ||
+            !TryPrepareListingPublication(desired, utcNow(), out var prepared))
+            return Decision(false, "dad-listing-update-invalid");
+        var result = CommitListingPublication(desired, prepared, receiptCompletion, out var queued);
+        if (queued)
+            UpdateSnapshot("dad-listing-update-queued");
+        return result;
+    }
+
+    private bool TryPrepareListingPublication(
+        DesiredListingPublication desired,
+        DateTimeOffset now,
+        out PreparedListingPublication prepared)
+    {
+        prepared = null!;
+        try
+        {
+            var publishableListings = desired.Listings
+                .Where(listing => listing is { IsValid: true, Available: true } &&
+                                  listing.ExpiresAtUtc > now.UtcDateTime &&
+                                  listing.ExpiresAtUtc <= now.UtcDateTime + TimeSpan.FromHours(24))
+                .ToImmutableArray();
+            var protocolListings = publishableListings
+                .Select(static listing => new PrivateCharacterListing(
+                    new OpaqueCharacterId(listing.OpaqueCharacterId),
+                    listing.DisplayLabel,
+                    listing.AllowedJobIds.Select(static value => new JobId(value)).ToImmutableArray(),
+                    listing.AllowedActivityIds.Select(static value => new ActivityId(value)).ToImmutableArray(),
+                    listing.Available,
+                    listing.Revision,
+                    new DateTimeOffset(DateTime.SpecifyKind(listing.ExpiresAtUtc, DateTimeKind.Utc))))
+                .ToImmutableArray();
             var snapshotId = Guid.NewGuid();
             var snapshotRevision = Interlocked.Increment(ref nextSequence);
-            var protocolPolicy = ToProtocolPolicy(policy);
+            var protocolPolicy = ToProtocolPolicy(desired.SharePolicy);
             var chunks = new List<ImmutableArray<PrivateCharacterListing>>();
             if (protocolListings.IsEmpty)
             {
@@ -1127,7 +1191,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     }
 
                     if (current.Count == 0)
-                        return Decision(false, "dad-listing-update-invalid");
+                        return false;
                     chunks.Add(current.ToImmutable());
                     current.Clear();
                     current.Add(listing);
@@ -1140,7 +1204,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                         current.ToImmutable(),
                         now);
                     if (!IsSizeValidListingEnvelope(probe))
-                        return Decision(false, "dad-listing-update-invalid");
+                        return false;
                 }
 
                 if (current.Count > 0)
@@ -1155,48 +1219,113 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     protocolPolicy,
                     chunk,
                     now))
-                .ToList();
+                .ToImmutableArray();
             if (updates.Any(update => !IsSizeValidListingEnvelope(update)))
-                return Decision(false, "dad-listing-update-invalid");
+                return false;
 
-            lock (gate)
+            var publishedLabels = ImmutableDictionary.CreateBuilder<string, PublishedPairedLabel>(
+                StringComparer.Ordinal);
+            foreach (var listing in publishableListings)
             {
-                if (HasPendingListingSnapshot(now))
-                    return receiptCompletion == null
-                        ? Decision(true, "dad-listing-update-coalesced")
-                        : Decision(false, "dad-listing-update-busy");
-                if (pendingOutbound.Count + updates.Count > MaximumPendingOutbound)
-                    return Decision(false, "dad-relay-outbound-full");
-                foreach (var update in updates)
-                {
-                    ValidateOutbound(update);
-                    pendingOutbound.Enqueue(new PendingOutboundContract(update, now));
-                }
-                pendingListingSnapshotMessages.UnionWith(
-                    updates.Select(static update => update.Header.MessageId));
-                pendingListingSnapshotExpiresAt = updates[0].Header.ExpiresAt;
-                pendingListingReceiptCompletion = receiptCompletion;
-                pendingListingSourceCount = publishableListings.Count;
-                publishedPairedLabels.Clear();
-                foreach (var listing in publishableListings)
-                {
-                    if (pairedLabels == null ||
-                        !pairedLabels.TryGetValue(listing.OpaqueCharacterId, out var label) ||
-                        !IsBoundedLocatorValue(label, AutoPartyProtocol.MaximumDisplayLabelLength))
-                        continue;
-                    publishedPairedLabels[listing.OpaqueCharacterId] = new(
-                        label,
-                        listing.Revision,
-                        new DateTimeOffset(DateTime.SpecifyKind(listing.ExpiresAtUtc, DateTimeKind.Utc)));
-                }
+                if (!desired.PairedLabels.TryGetValue(listing.OpaqueCharacterId, out var label))
+                    continue;
+                publishedLabels[listing.OpaqueCharacterId] = new(
+                    label,
+                    listing.Revision,
+                    new DateTimeOffset(DateTime.SpecifyKind(listing.ExpiresAtUtc, DateTimeKind.Utc)));
             }
+
+            prepared = new(
+                updates,
+                publishableListings.Length,
+                publishedLabels.ToImmutable(),
+                now);
+            return true;
         }
         catch (Exception exception) when (exception is ProtocolException or ArgumentException)
         {
-            return Decision(false, "dad-listing-update-invalid");
+            return false;
         }
-        UpdateSnapshot("dad-listing-update-queued");
-        return Decision(true, "dad-listing-update-queued");
+    }
+
+    private DadAutoPartyPolicyDecision CommitListingPublication(
+        DesiredListingPublication desired,
+        PreparedListingPublication prepared,
+        TaskCompletionSource<DadAutoPartyListingPublicationResult>? receiptCompletion,
+        out bool queued)
+    {
+        queued = false;
+        lock (gate)
+        {
+            if (HasPendingListingSnapshot(utcNow()))
+            {
+                if (receiptCompletion != null)
+                    return Decision(false, "dad-listing-update-busy");
+                RetainDeferredListingPublicationLocked(desired);
+                return Decision(true, "dad-listing-update-coalesced");
+            }
+            if (receiptCompletion != null && deferredListingPublication != null)
+                return Decision(false, "dad-listing-update-busy");
+            if (receiptCompletion == null &&
+                deferredListingPublication is { } deferred &&
+                deferred.Generation > desired.Generation)
+                return Decision(true, "dad-listing-update-coalesced");
+            if (pendingOutbound.Count + prepared.Updates.Length > MaximumPendingOutbound)
+            {
+                if (receiptCompletion != null)
+                    return Decision(false, "dad-relay-outbound-full");
+                RetainDeferredListingPublicationLocked(desired);
+                return Decision(true, "dad-listing-update-coalesced");
+            }
+
+            if (deferredListingPublication is { } retained &&
+                retained.Generation <= desired.Generation)
+                deferredListingPublication = null;
+            foreach (var update in prepared.Updates)
+            {
+                ValidateOutbound(update);
+                pendingOutbound.Enqueue(new PendingOutboundContract(update, prepared.QueuedAt));
+            }
+            pendingListingSnapshotMessages.UnionWith(
+                prepared.Updates.Select(static update => update.Header.MessageId));
+            pendingListingSnapshotExpiresAt = prepared.Updates[0].Header.ExpiresAt;
+            pendingListingReceiptCompletion = receiptCompletion;
+            pendingListingSourceCount = prepared.SourceCount;
+            activeListingDesiredGeneration = desired.Generation;
+            publishedPairedLabels.Clear();
+            foreach (var pair in prepared.PairedLabels)
+                publishedPairedLabels[pair.Key] = pair.Value;
+            queued = true;
+            return Decision(true, "dad-listing-update-queued");
+        }
+    }
+
+    private void RetainDeferredListingPublicationLocked(DesiredListingPublication desired)
+    {
+        if (desired.Generation <= activeListingDesiredGeneration)
+            return;
+        if (deferredListingPublication == null ||
+            desired.Generation > deferredListingPublication.Generation)
+            deferredListingPublication = desired;
+    }
+
+    private void PromoteDeferredListingPublication()
+    {
+        DesiredListingPublication? deferred;
+        lock (gate)
+        {
+            if (HasPendingListingSnapshot(utcNow()) || deferredListingPublication == null)
+                return;
+            deferred = deferredListingPublication;
+            deferredListingPublication = null;
+        }
+
+        var result = QueueDesiredListingPublication(deferred, null);
+        if (!result.Allowed)
+        {
+            diagnostic(result.SafeCode);
+            UpdateSnapshot(result.SafeCode);
+        }
     }
 
     private PrivateListingUpdate BuildListingUpdate(
@@ -1487,6 +1616,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         ExpireState();
+        PromoteDeferredListingPublication();
         if (!configuration.HasImportedBootstrap)
         {
             ResetSecurity();
@@ -1504,9 +1634,11 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         EnsureDeregistrationQueued();
         EnsureInboundResponsesQueued();
         await ReceiveBoundedAsync(cancellationToken).ConfigureAwait(false);
+        PromoteDeferredListingPublication();
         ProcessInboundProposalEvaluations();
         EnsureInboundResponsesQueued();
         await SendControlBoundedAsync(cancellationToken).ConfigureAwait(false);
+        PromoteDeferredListingPublication();
         await SendParticipantCommandsAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1614,6 +1746,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                     CompleteDirectoryQueryLocked(query, false, directorySafeCode, 0);
                 if (pendingListingSnapshotMessages.Count > 0 || pendingListingReceiptCompletion is not null)
                     CompleteListingSnapshotLocked(false, listingSafeCode);
+                deferredListingPublication = null;
             }
             var retainedOutbound = pendingOutbound
                 .Where(item => item.Contract is not AllianceRecruitmentOperation and
@@ -2654,6 +2787,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
                 CompleteDirectoryQueryLocked(query, false, "dad-directory-query-deregistered", 0);
             if (pendingListingSnapshotMessages.Count > 0 || pendingListingReceiptCompletion is not null)
                 CompleteListingSnapshotLocked(false, "dad-listing-publication-deregistered");
+            deferredListingPublication = null;
             pendingOutbound.Clear();
             awaitingRelayReceipts.Clear();
             participantContracts.Clear();
@@ -4832,7 +4966,10 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         if (pendingListingSnapshotMessages.Count > 0 || pendingListingReceiptCompletion is not null)
             CompleteListingSnapshotLocked(false, "dad-listing-publication-expired");
         else
+        {
             pendingListingSnapshotExpiresAt = default;
+            activeListingDesiredGeneration = 0;
+        }
         return false;
     }
 
@@ -4852,6 +4989,7 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
         }
         pendingListingSnapshotMessages.Clear();
         pendingListingSnapshotExpiresAt = default;
+        activeListingDesiredGeneration = 0;
         var completion = pendingListingReceiptCompletion;
         var publishedCount = accepted ? pendingListingSourceCount : 0;
         pendingListingReceiptCompletion = null;
@@ -5083,6 +5221,18 @@ internal sealed class DadAutoPartyRelayPump : IAsyncDisposable
     }
 
     private sealed record PendingOutboundContract(IAutoPartyContract Contract, DateTimeOffset QueuedAt);
+
+    private sealed record DesiredListingPublication(
+        long Generation,
+        DadAutoPartySharePolicy SharePolicy,
+        ImmutableArray<DadAutoPartyListing> Listings,
+        ImmutableDictionary<string, string> PairedLabels);
+
+    private sealed record PreparedListingPublication(
+        ImmutableArray<PrivateListingUpdate> Updates,
+        int SourceCount,
+        ImmutableDictionary<string, PublishedPairedLabel> PairedLabels,
+        DateTimeOffset QueuedAt);
 
     private sealed record PendingAllianceOutbound(
         AllianceRecruitmentOperation Operation,

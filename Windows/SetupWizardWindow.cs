@@ -186,7 +186,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.TableNextColumn();
         DrawStepRail(steps);
         ImGui.TableNextColumn();
-        DrawStep(steps[stepIndex]);
+        DrawStep(steps[stepIndex], steps);
         ImGui.EndTable();
     }
 
@@ -283,9 +283,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }
     }
 
-    private void DrawStep(GuideStep step)
+    private void DrawStep(GuideStep step, IReadOnlyList<GuideStep> steps)
     {
-        var steps = BuildSteps();
         DadUi.Heading($"{stepIndex + 1}. {step.Title}", step.Controls);
         if (DadUi.BeginCard("dad-guide-explanation", 138f))
         {
