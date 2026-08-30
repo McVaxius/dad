@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-08-29 — ADS shopping associations for Plans and Schedules (local-only, unpublished)
+- Plans and Schedules can now bind one stable ADS shopping-list preset to one exact LAN shopper. DAD serializes Plan
+  shopping before Schedule shopping, preserves refill and vendor ownership in ADS, records only ADS-proven
+  non-repeatable RowIds as done for that exact association, and never deletes the owning Plan, Schedule, preset, or row.
+- Repeatable rows remain eligible, imported or duplicated associations receive fresh local progress identity, Dad-island
+  workers never receive shopping payloads, and optional `/ays deliver` or registered custom commands run only after
+  current fulfillment evidence and wait for the required fresh safe release.
+- ADS cancellation now retains the exact operation and remains blocking until correlated terminal status before
+  DAD clears frozen association context, preserving late completed non-repeatable RowIds.
+
 ## 2026-08-29 — bounded AutoParty progress and title-login retry (local-only, unpublished)
 - An explicit `false` from Lifestream title login now clears only the login-attempt gate and retries after five seconds
   after freshly recapturing title, route, AutoRetainer, VERMAXION, Lifestream, and `CanAutoLogin` proof. Accepted or

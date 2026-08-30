@@ -7,7 +7,12 @@ internal static class DadWorkerPrequeueBarrierRules
         DadPlannedModuleExecution module,
         IReadOnlyCollection<DadParticipantSnapshot> participants)
         => participants.Count > 1 &&
-           DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(plan, module);
+           (DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(plan, module) ||
+            plan.Request.ShoppingAssociations?.Any() == true &&
+            (module.ModuleId == DadModuleId.Mogtome ||
+             plan.Request.ShoppingAssociations.Any(association => participants.Any(participant =>
+                 DadShoppingAssociationRules.MatchesLocalShopper(association, participant) &&
+                 !IsLeader(plan, participant)))));
 
     public static bool TryResolveDispatchTargets(
         DadRunPlan plan,
@@ -25,6 +30,24 @@ internal static class DadWorkerPrequeueBarrierRules
             targets = participants
                 .Where(participant =>
                     !acknowledgedStatuses.ContainsKey(participant.WorkerSessionId.Value))
+                .ToList();
+            return true;
+        }
+
+        if (module.ModuleId == DadModuleId.Mogtome && plan.Request.ShoppingAssociations?.Any() == true)
+        {
+            if (!TryResolveShoppingShopper(plan, participants, out var shopper, out blocker))
+                return false;
+            if (!acknowledgedStatuses.TryGetValue(shopper.WorkerSessionId.Value, out var shopperStatus))
+            {
+                targets = [shopper];
+                return true;
+            }
+            if (!IsMogtomeShoppingGateReady(plan, shopperStatus))
+                return true;
+
+            targets = participants
+                .Where(participant => !acknowledgedStatuses.ContainsKey(participant.WorkerSessionId.Value))
                 .ToList();
             return true;
         }
@@ -51,8 +74,7 @@ internal static class DadWorkerPrequeueBarrierRules
 
         if (!nonLeaders.All(participant =>
                 acknowledgedStatuses.TryGetValue(participant.WorkerSessionId.Value, out var status) &&
-                status.State == DadWorkerExecutionState.WaitingForQueue &&
-                !status.IsTerminal))
+                IsNonLeaderReady(plan, module, status)))
         {
             targets = [];
             return true;
@@ -66,14 +88,88 @@ internal static class DadWorkerPrequeueBarrierRules
 
     public static bool AreAllNonLeadersWaiting(
         DadRunPlan plan,
+        DadPlannedModuleExecution module,
         IReadOnlyList<DadParticipantSnapshot> participants,
         IReadOnlyDictionary<string, DadWorkerExecutionStatus> statuses)
     {
         var nonLeaders = participants.Where(participant => !IsLeader(plan, participant)).ToList();
         return nonLeaders.Count > 0 && nonLeaders.All(participant =>
             statuses.TryGetValue(participant.WorkerSessionId.Value, out var status) &&
-            status.State == DadWorkerExecutionState.WaitingForQueue &&
-            !status.IsTerminal);
+            IsNonLeaderReady(plan, module, status));
+    }
+
+    public static bool IsNonLeaderReady(
+        DadRunPlan plan,
+        DadPlannedModuleExecution module,
+        DadWorkerExecutionStatus status)
+    {
+        if (status.State == DadWorkerExecutionState.WaitingForQueue && !status.IsTerminal)
+            return true;
+
+        return module.ModuleId == DadModuleId.LootGoblin &&
+               status.Role == DadWorkerExecutionRole.Participant &&
+               status.State == DadWorkerExecutionState.Completed &&
+               status.IsTerminal &&
+               status.Success &&
+               status.ModuleId == DadModuleId.LootGoblin &&
+               string.Equals(status.RunId, plan.Request.RequestId, StringComparison.Ordinal) &&
+               status.StepResult.Success &&
+               status.StepResult.ParticipantState == DadParticipantState.Completed &&
+               string.Equals(status.StepResult.RunId, plan.Request.RequestId, StringComparison.Ordinal) &&
+               status.StepResult.ModuleId == DadModuleId.LootGoblin &&
+               string.Equals(status.StepResult.StepName, "LootGoblin passive party holder", StringComparison.Ordinal) &&
+               status.StepResult.ExecutorStatus.Status == DadRunStatus.Completed &&
+               !status.StepResult.ExecutorStatus.IsActive &&
+               string.Equals(status.StepResult.ExecutorStatus.StepName, "PassivePartyHolder", StringComparison.Ordinal);
+    }
+
+    public static bool TryResolveShoppingShopper(
+        DadRunPlan plan,
+        IReadOnlyCollection<DadParticipantSnapshot> participants,
+        out DadParticipantSnapshot shopper,
+        out string blocker)
+    {
+        var associations = plan.Request.ShoppingAssociations ?? [];
+        var matches = participants.Where(participant => associations.Any(association =>
+                DadShoppingAssociationRules.MatchesLocalShopper(association, participant)))
+            .ToList();
+        if (matches.Count == 1)
+        {
+            shopper = matches[0];
+            blocker = string.Empty;
+            return true;
+        }
+
+        shopper = new DadParticipantSnapshot();
+        blocker = $"Shopping prequeue gate requires one exact LAN shopper; found {matches.Count}.";
+        return false;
+    }
+
+    public static bool IsMogtomeShoppingGateReady(
+        DadRunPlan plan,
+        DadWorkerExecutionStatus status)
+    {
+        if (!string.Equals(status.RunId, plan.Request.RequestId, StringComparison.Ordinal) ||
+            status.ModuleId != DadModuleId.Mogtome ||
+            !string.Equals(status.StepResult.RunId, plan.Request.RequestId, StringComparison.Ordinal) ||
+            status.StepResult.ModuleId != DadModuleId.Mogtome ||
+            !status.StepResult.Success)
+        {
+            return false;
+        }
+
+        if (status.IsTerminal)
+        {
+            return status.State == DadWorkerExecutionState.Completed &&
+                   status.Success &&
+                   status.StepResult.ParticipantState == DadParticipantState.Completed &&
+                   status.StepResult.ExecutorStatus.Status == DadRunStatus.Completed &&
+                   !status.StepResult.ExecutorStatus.IsActive;
+        }
+
+        return status.State is DadWorkerExecutionState.WaitingForQueue or DadWorkerExecutionState.Running &&
+               status.StepResult.ExecutorStatus.Status == DadRunStatus.Running &&
+               status.StepResult.ExecutorStatus.IsActive;
     }
 
     public static List<DadParticipantSnapshot> ResolveCancellationScope(

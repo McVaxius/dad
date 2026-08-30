@@ -576,6 +576,11 @@ public sealed class DadSchedulerService
         var duplicate = source.Clone();
         duplicate.ScheduleId = Guid.NewGuid().ToString("N");
         duplicate.Revision = 1;
+        if (duplicate.ShoppingAssociation != null)
+        {
+            duplicate.ShoppingAssociation.AssociationId = Guid.NewGuid().ToString("N");
+            duplicate.ShoppingAssociation.ResetCompletionState();
+        }
         duplicate.DisplayName = string.IsNullOrWhiteSpace(displayName)
             ? $"{source.DisplayName} Copy"
             : displayName.Trim();
@@ -1279,6 +1284,38 @@ public sealed class DadSchedulerService
         // Freeze exact targets before early job assignment, wake, launch, or relog. Their evidence is
         // intentionally re-read after every exact worker and requested job is ready.
         frozenPlannerRequest = levelSeek.ShouldSkip ? null : CloneRunRequest(plannerRequestPreview.Request);
+        var scheduleShoppingBlocker = string.Empty;
+        if (frozenPlannerRequest != null && !string.IsNullOrWhiteSpace(activeJob.ScheduleId))
+        {
+            var schedule = FindSchedule(activeJob.ScheduleId);
+            var scheduleAssociation = DadShoppingAssociationRules.FreezeSchedule(schedule);
+            if (schedule == null)
+            {
+                scheduleShoppingBlocker = $"Schedule '{activeJob.ScheduleId}' disappeared before its shopping association could be frozen.";
+            }
+            else if (scheduleAssociation != null)
+            {
+                if (!DadShoppingAssociationRules.TryValidateForSchedule(
+                        schedule,
+                        configuration.PlannerGroups,
+                        out scheduleShoppingBlocker))
+                {
+                    scheduleShoppingBlocker = $"Schedule shopping association is invalid: {scheduleShoppingBlocker}";
+                }
+                else
+                {
+                    frozenPlannerRequest.ShoppingAssociations.Add(scheduleAssociation);
+                    frozenPlannerRequest.ShoppingAssociations = DadShoppingAssociationRules.NormalizeRunAssociations(
+                        frozenPlannerRequest.ShoppingAssociations);
+                    if (!DadShoppingAssociationRules.TryValidateSingleShopper(
+                            frozenPlannerRequest.ShoppingAssociations,
+                            out scheduleShoppingBlocker))
+                    {
+                        scheduleShoppingBlocker = $"Schedule shopping association is invalid: {scheduleShoppingBlocker}";
+                    }
+                }
+            }
+        }
         frozenLevelSeekGroup = frozenPlannerRequest != null && levelSeek.HasTargetedRows
             ? DadSchedulerGroupCloneRules.CloneWithSlots(effectiveGroup, effectiveGroup.Slots)
             : null;
@@ -1287,7 +1324,7 @@ public sealed class DadSchedulerService
             ? []
             : BuildFrozenEarlyAssignments(frozenPlannerRequest, preview.Slots, activeJob);
         DadImmutableCommandRegistration? requestRegistration = null;
-        if (frozenPlannerRequest != null)
+        if (frozenPlannerRequest != null && string.IsNullOrWhiteSpace(scheduleShoppingBlocker))
         {
             var payload = DadIpcJson.Serialize(frozenPlannerRequest);
             requestRegistration = frozenRequestRegistry.Register(
@@ -1330,6 +1367,17 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Skipped;
             currentState.SkipKind = DadSchedulerSkipKind.LevelSeek;
             currentState.Summary = $"Skipped preset '{group.DisplayName}': {levelSeek.Summary}";
+            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
+            RecordTerminalResult(currentState);
+            return CurrentState;
+        }
+
+        if (!string.IsNullOrWhiteSpace(scheduleShoppingBlocker))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.Blocked;
+            currentState.BlockedReason = scheduleShoppingBlocker;
+            currentState.Summary = scheduleShoppingBlocker;
             currentState.CompletedAtUtc = DateTime.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             RecordTerminalResult(currentState);
@@ -5638,6 +5686,14 @@ public sealed class DadSchedulerService
                 return $"Schedule entry {index + 1} has no saved preset.";
             if (!groupIds.Contains(entry.GroupId))
                 return $"Schedule entry {index + 1} references missing preset '{entry.GroupId}'.";
+        }
+
+        if (!DadShoppingAssociationRules.TryValidateForSchedule(
+                schedule,
+                configuration.PlannerGroups,
+                out var shoppingBlocker))
+        {
+            return shoppingBlocker;
         }
 
         return string.Empty;

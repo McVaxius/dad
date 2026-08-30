@@ -29,6 +29,7 @@ internal static class DadPresetTemplateService
         template.SharedStopTargetIdentityToken = string.Empty;
         template.StopPolicy.TargetCharacterKey = new DadCharacterKey(string.Empty);
         template.StopPolicy.TargetCharacterLabel = string.Empty;
+        template.ShoppingAssociation = null;
 
         return template;
     }

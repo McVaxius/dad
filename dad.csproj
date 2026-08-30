@@ -6,9 +6,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.5.0.13</Version>
-    <FileVersion>0.5.0.13</FileVersion>
-    <AssemblyVersion>0.5.0.13</AssemblyVersion>
+    <Version>0.6.0.0</Version>
+    <FileVersion>0.6.0.0</FileVersion>
+    <AssemblyVersion>0.6.0.0</AssemblyVersion>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>

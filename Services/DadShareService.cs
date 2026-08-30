@@ -48,6 +48,12 @@ public sealed class DadShareService
         error = string.Empty;
         if (plan == null)
             return Fail("Select a saved Plan before exporting.", out error);
+        var frozenShopping = DadShoppingAssociationRules.FreezePlan(plan);
+        if (frozenShopping != null &&
+            !DadShoppingAssociationRules.TryValidateForPlan(frozenShopping, plan, out error))
+        {
+            return false;
+        }
 
         var privacy = new PrivacySession(this, knownIdentities);
         var envelope = new DadShareEnvelopeDto
@@ -80,6 +86,8 @@ public sealed class DadShareService
             return Fail("Select a saved Schedule before exporting.", out error);
 
         var plans = (availablePlans ?? []).Where(static plan => plan != null).ToList();
+        if (!DadShoppingAssociationRules.TryValidateForSchedule(schedule, plans, out error))
+            return false;
         var duplicatePlanId = plans
             .GroupBy(static plan => plan.GroupId, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(static group => group.Count() > 1);
@@ -270,7 +278,7 @@ public sealed class DadShareService
                 Id = envelope.Plan.GroupId,
                 BundledPlanCount = 1,
                 ReplacementIds = replacements,
-                Commands = BuildCommandPreview([envelope.Plan]),
+                Commands = BuildCommandPreview([envelope.Plan], null),
             };
         }
 
@@ -292,42 +300,82 @@ public sealed class DadShareService
             Id = envelope.Schedule?.ScheduleId ?? string.Empty,
             BundledPlanCount = envelope.Plans.Count,
             ReplacementIds = replacements,
-            Commands = BuildCommandPreview(envelope.Plans),
+            Commands = BuildCommandPreview(envelope.Plans, envelope.Schedule),
         };
     }
 
     private static List<DadShareCommandPreviewItem> BuildCommandPreview(
-        IEnumerable<DadSharePlanDto> plans)
+        IEnumerable<DadSharePlanDto> plans,
+        DadShareScheduleDto? schedule)
     {
         var commands = new List<DadShareCommandPreviewItem>();
         foreach (var plan in plans)
         {
             var actions = plan.CompletionActions;
-            if (actions == null)
-                continue;
-            foreach (var command in actions.Commands ?? [])
+            if (actions != null)
             {
-                if (!string.IsNullOrWhiteSpace(command))
+                foreach (var command in actions.Commands ?? [])
+                {
+                    if (!string.IsNullOrWhiteSpace(command))
+                    {
+                        commands.Add(new DadShareCommandPreviewItem
+                        {
+                            PlanName = plan.DisplayName,
+                            CommandKind = "CustomCommand",
+                            Command = command,
+                        });
+                    }
+                }
+
+                var grandCompanyCommand = actions.Utilities?.GrandCompanyHandInCommand;
+                if (!string.IsNullOrWhiteSpace(grandCompanyCommand))
                 {
                     commands.Add(new DadShareCommandPreviewItem
                     {
                         PlanName = plan.DisplayName,
-                        CommandKind = "CustomCommand",
-                        Command = command,
+                        CommandKind = "GrandCompanyHandInCommand",
+                        Command = grandCompanyCommand,
                     });
                 }
             }
 
-            var grandCompanyCommand = actions.Utilities?.GrandCompanyHandInCommand;
-            if (!string.IsNullOrWhiteSpace(grandCompanyCommand))
+            if (!string.IsNullOrWhiteSpace(plan.ShoppingAssociation?.CustomCommand))
             {
                 commands.Add(new DadShareCommandPreviewItem
                 {
                     PlanName = plan.DisplayName,
-                    CommandKind = "GrandCompanyHandInCommand",
-                    Command = grandCompanyCommand,
+                    CommandKind = "ShoppingCustomCommand",
+                    Command = plan.ShoppingAssociation.CustomCommand,
                 });
             }
+            if (plan.ShoppingAssociation?.RunAutoRetainerDelivery == true)
+            {
+                commands.Add(new DadShareCommandPreviewItem
+                {
+                    PlanName = plan.DisplayName,
+                    CommandKind = "ShoppingAutoRetainerDelivery",
+                    Command = "/ays deliver",
+                });
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(schedule?.ShoppingAssociation?.CustomCommand))
+        {
+            commands.Add(new DadShareCommandPreviewItem
+            {
+                PlanName = schedule.DisplayName,
+                CommandKind = "ScheduleShoppingCustomCommand",
+                Command = schedule.ShoppingAssociation.CustomCommand,
+            });
+        }
+        if (schedule?.ShoppingAssociation?.RunAutoRetainerDelivery == true)
+        {
+            commands.Add(new DadShareCommandPreviewItem
+            {
+                PlanName = schedule.DisplayName,
+                CommandKind = "ScheduleShoppingAutoRetainerDelivery",
+                Command = "/ays deliver",
+            });
         }
         return commands;
     }
@@ -348,7 +396,7 @@ public sealed class DadShareService
         {
             return new DadShareApplyResult
             {
-                Summary = "Review and explicitly confirm every imported CustomCommand and GrandCompanyHandInCommand value before applying this share.",
+                Summary = "Review and explicitly confirm every imported finish and shopping command before applying this share.",
             };
         }
 
@@ -413,7 +461,7 @@ public sealed class DadShareService
             else
             {
                 var existing = existingIndex >= 0 ? schedules[existingIndex] : null;
-                var materialized = MaterializeSchedule(envelope.Schedule, existing, now);
+                var materialized = MaterializeSchedule(envelope.Schedule, existing, plans, now);
                 if (existingIndex >= 0)
                 {
                     schedules[existingIndex] = materialized;
@@ -639,6 +687,7 @@ public sealed class DadShareService
                     .ToList(),
             },
             CompletionActions = BuildCompletionActionsDto(source.CompletionActions ?? completionFallback),
+            ShoppingAssociation = BuildShoppingAssociationDto(source.ShoppingAssociation, privacy),
             Slots = slots,
             IsTemplate = source.IsTemplate,
             MapRunTemplate = privacy.Sanitize(source.MapRunTemplate),
@@ -666,6 +715,25 @@ public sealed class DadShareService
                     GrandCompanyHandInCommand = source.Utilities?.GrandCompanyHandInCommand ?? "/ays gc",
                 },
             };
+
+    private static DadShareShoppingAssociationDto? BuildShoppingAssociationDto(
+        DadShoppingAssociation? source,
+        PrivacySession privacy)
+    {
+        if (source == null)
+            return null;
+        var association = source.Clone().Normalize();
+        return new DadShareShoppingAssociationDto
+        {
+            AssociationId = association.AssociationId,
+            PresetId = association.PresetId,
+            PresetName = privacy.Sanitize(association.PresetName),
+            ShopperSlotId = association.ShopperSlotId,
+            RunAutoRetainerDelivery = association.RunAutoRetainerDelivery,
+            // Registered slash commands remain verbatim and require import confirmation.
+            CustomCommand = association.CustomCommand,
+        };
+    }
 
     private DadSharePlanSlotDto BuildSlotDto(DadPlannerGroupSlot source, PrivacySession privacy)
     {
@@ -702,6 +770,7 @@ public sealed class DadShareService
             AccountToken = accountToken,
             CharacterToken = characterToken,
             CharacterLabel = characterLabel,
+            SourceIsSharedIdentity = source.SharedIdentity != null,
             RequiredJobId = source.RequiredJobId,
             AdsLootMode = source.AdsLootMode,
             LevelSeekTarget = source.LevelSeekTarget,
@@ -717,6 +786,7 @@ public sealed class DadShareService
             ScheduleId = source.ScheduleId?.Trim() ?? string.Empty,
             DisplayName = privacy.Sanitize(source.DisplayName),
             Cadence = source.Cadence,
+            ShoppingAssociation = BuildShoppingAssociationDto(source.ShoppingAssociation, privacy),
             Entries = (source.Entries ?? []).Select(entry => new DadShareScheduleEntryDto
             {
                 EntryId = entry.EntryId?.Trim() ?? string.Empty,
@@ -787,6 +857,7 @@ public sealed class DadShareService
             }.Normalize(),
             SharedStopTargetIdentityToken = source.StopPolicy.TargetCharacterToken,
             CompletionActions = MaterializeCompletionActions(source.CompletionActions),
+            ShoppingAssociation = MaterializeShoppingAssociation(source.ShoppingAssociation),
             Slots = source.Slots.Select(slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
@@ -829,6 +900,15 @@ public sealed class DadShareService
 
         PreserveMachineLocalSlotFields(group.Slots, existing?.Slots);
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
+        if (group.ShoppingAssociation != null &&
+            !DadShoppingAssociationRules.TryBindToPlanSlot(group.ShoppingAssociation, group, out _))
+        {
+            // Shared crew identities are intentionally unresolved on import. Keep only the safe
+            // association configuration; no shopping payload can freeze until local remapping binds it.
+            group.ShoppingAssociation.ShopperAccountKey = new DadAccountKey(string.Empty);
+            group.ShoppingAssociation.ShopperCharacterKey = new DadCharacterKey(string.Empty);
+            group.ShoppingAssociation.ResetCompletionState();
+        }
         return group;
     }
 
@@ -875,17 +955,39 @@ public sealed class DadShareService
         }
     }
 
+    private static DadShoppingAssociation? MaterializeShoppingAssociation(
+        DadShareShoppingAssociationDto? source)
+        => source == null
+            ? null
+            : new DadShoppingAssociation
+            {
+                // An imported owner receives a fresh local association identity; exported progress is never portable.
+                AssociationId = Guid.NewGuid().ToString("N"),
+                PresetId = source.PresetId,
+                PresetName = source.PresetName,
+                ShopperSlotId = source.ShopperSlotId,
+                RunAutoRetainerDelivery = source.RunAutoRetainerDelivery,
+                CustomCommand = source.CustomCommand,
+                CompletedNonRepeatableRowIds = [],
+                NonRepeatableRowsFulfilled = false,
+                FulfilledAtUtc = null,
+                UpdatedAtUtc = DateTime.UtcNow,
+            }.Normalize();
+
     private static DadScheduleDefinition MaterializeSchedule(
         DadShareScheduleDto source,
         DadScheduleDefinition? existing,
+        IEnumerable<DadPlannerGroup> plans,
         DateTime now)
-        => new DadScheduleDefinition
+    {
+        var schedule = new DadScheduleDefinition
         {
             SchemaVersion = existing?.SchemaVersion ?? 1,
             Revision = existing == null ? 1 : existing.Revision + 1,
             ScheduleId = source.ScheduleId,
             DisplayName = source.DisplayName,
             Cadence = source.Cadence,
+            ShoppingAssociation = MaterializeShoppingAssociation(source.ShoppingAssociation),
             Entries = source.Entries.Select(entry => new DadScheduleEntry
             {
                 EntryId = entry.EntryId,
@@ -903,6 +1005,19 @@ public sealed class DadShareService
             LastRunStatus = existing?.LastRunStatus ?? DadScheduleRunStatus.Idle,
             LastSummary = existing?.LastSummary ?? string.Empty,
         }.Normalize();
+        if (schedule.ShoppingAssociation != null &&
+            !DadShoppingAssociationRules.TryBindToSchedulePlans(
+                schedule.ShoppingAssociation,
+                schedule,
+                plans,
+                out _))
+        {
+            schedule.ShoppingAssociation.ShopperAccountKey = new DadAccountKey(string.Empty);
+            schedule.ShoppingAssociation.ShopperCharacterKey = new DadCharacterKey(string.Empty);
+            schedule.ShoppingAssociation.ResetCompletionState();
+        }
+        return schedule;
+    }
 
     private static DadPlannerGroup ClonePlan(DadPlannerGroup source)
     {
@@ -1025,6 +1140,8 @@ public sealed class DadShareService
         {
             return Fail("Shared stop target does not resolve to a bundled crew row.", out error);
         }
+        if (!TryValidateShoppingAssociation(plan.ShoppingAssociation, plan.Slots, "Plan", out error))
+            return false;
         return TryValidateCompletionActions(plan.CompletionActions, out error);
     }
 
@@ -1102,7 +1219,108 @@ public sealed class DadShareService
         var extra = bundledIds.FirstOrDefault(id => !referencedPlans.Contains(id));
         if (!string.IsNullOrWhiteSpace(extra))
             return Fail($"Schedule bundle contains unreferenced Plan '{extra}'.", out error);
+        if (!TryValidateScheduleShoppingAssociation(schedule, plans, referencedPlans, out error))
+            return false;
         return true;
+    }
+
+    private static bool TryValidateShoppingAssociation(
+        DadShareShoppingAssociationDto? association,
+        IReadOnlyCollection<DadSharePlanSlotDto> slots,
+        string ownerLabel,
+        out string error)
+    {
+        error = string.Empty;
+        if (association == null)
+            return true;
+        if (!TryNormalizeCanonicalId(association.AssociationId, out _))
+            return Fail($"{ownerLabel} shopping AssociationId is not a canonical 32-hex GUID.", out error);
+        if (!TryNormalizeCanonicalAdsId(association.PresetId, out _))
+            return Fail($"{ownerLabel} shopping PresetId is not a canonical hyphenated GUID.", out error);
+        if (!ValidateText(association.PresetName, $"{ownerLabel} shopping preset name", 128, true, out error) ||
+            !ValidateText(association.CustomCommand, $"{ownerLabel} shopping command", MaxCommandLength, true, out error))
+        {
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(association.CustomCommand) &&
+            !DadCompletionCommandRules.TryNormalizeCustomCommand(association.CustomCommand, out _, out error))
+        {
+            return false;
+        }
+
+        var normalizedSlotId = DadPlannerSlotRules.NormalizeStrictSlotId(association.ShopperSlotId);
+        if (string.IsNullOrWhiteSpace(normalizedSlotId) ||
+            !string.Equals(association.ShopperSlotId, normalizedSlotId, StringComparison.Ordinal))
+        {
+            return Fail($"{ownerLabel} shopping shopper row is invalid.", out error);
+        }
+        var matches = slots.Where(slot =>
+                slot != null &&
+                !slot.IsSubstitute &&
+                string.Equals(slot.SlotId, normalizedSlotId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matches.Count != 1 ||
+            matches[0].SourceIsSharedIdentity ||
+            string.IsNullOrWhiteSpace(matches[0].AccountToken) ||
+            string.IsNullOrWhiteSpace(matches[0].CharacterToken))
+        {
+            return Fail($"{ownerLabel} shopping shopper must resolve to one exact primary crew row.", out error);
+        }
+        return true;
+    }
+
+    private static bool TryValidateScheduleShoppingAssociation(
+        DadShareScheduleDto schedule,
+        IReadOnlyList<DadSharePlanDto> plans,
+        IReadOnlySet<string> referencedPlanIds,
+        out string error)
+    {
+        error = string.Empty;
+        var association = schedule.ShoppingAssociation;
+        if (association == null)
+            return true;
+
+        var referencedPlans = plans
+            .Where(plan => referencedPlanIds.Contains(plan.GroupId))
+            .ToList();
+        if (referencedPlans.Count == 0)
+            return Fail("Schedule shopping requires at least one referenced Plan.", out error);
+        foreach (var plan in referencedPlans)
+        {
+            if (!TryValidateShoppingAssociation(association, plan.Slots, "Schedule", out error))
+                return false;
+        }
+
+        var shopperRows = referencedPlans.Select(plan => plan.Slots.Single(slot =>
+                !slot.IsSubstitute &&
+                string.Equals(slot.SlotId, association.ShopperSlotId, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        var first = shopperRows[0];
+        if (shopperRows.Skip(1).Any(row =>
+                !string.Equals(row.AccountToken, first.AccountToken, StringComparison.Ordinal) ||
+                !string.Equals(row.CharacterToken, first.CharacterToken, StringComparison.Ordinal)))
+        {
+            return Fail("Schedule shopping shopper must be the same exact crew identity in every referenced Plan.", out error);
+        }
+        if (referencedPlans.Any(plan => plan.ShoppingAssociation != null &&
+                !string.Equals(
+                    plan.ShoppingAssociation.ShopperSlotId,
+                    association.ShopperSlotId,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            return Fail("Plan and Schedule shopping associations must use the same exact shopper row.", out error);
+        }
+        return true;
+    }
+
+    private static bool TryNormalizeCanonicalAdsId(string? value, out string canonical)
+    {
+        canonical = string.Empty;
+        var trimmed = value?.Trim() ?? string.Empty;
+        if (!Guid.TryParseExact(trimmed, "D", out var parsed) || parsed == Guid.Empty)
+            return false;
+        canonical = parsed.ToString("D");
+        return string.Equals(trimmed, canonical, StringComparison.Ordinal);
     }
 
     private static bool ValidateText(

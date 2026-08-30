@@ -10,6 +10,7 @@ public sealed class DadWorkerExecutionService
     private readonly DadPresenceService presenceService;
     private readonly DadCombatRotationService combatRotationService;
     private readonly DadDutySupportAdsService adsService;
+    private readonly DadShoppingRuntimeService shoppingService;
     private readonly DadPreDutyRepairRuntimeService preDutyRepairService;
     private readonly ICondition condition;
     private readonly IPluginLog log;
@@ -30,12 +31,19 @@ public sealed class DadWorkerExecutionService
     private string lastParticipantQueueTransition = string.Empty;
     private DadCombatRotationMode participantCombatRotationMode = DadCombatRotationMode.UseFrenRider;
     private bool prequeuePrepared;
+    private bool repairPreparationStarted;
+    private bool passiveLootGoblinPending;
+    private bool cancellationPending;
+    private DadWorkerExecutionState pendingCancellationState;
+    private string pendingCancellationSummary = string.Empty;
+    private string pendingCancellationFailureReason = string.Empty;
 
     public DadWorkerExecutionService(
         DadQueueExecutionService queueExecutionService,
         DadPresenceService presenceService,
         DadCombatRotationService combatRotationService,
         DadDutySupportAdsService adsService,
+        DadShoppingRuntimeService shoppingService,
         DadPreDutyRepairRuntimeService preDutyRepairService,
         ICondition condition,
         IPluginLog log)
@@ -44,6 +52,7 @@ public sealed class DadWorkerExecutionService
         this.presenceService = presenceService;
         this.combatRotationService = combatRotationService;
         this.adsService = adsService;
+        this.shoppingService = shoppingService;
         this.preDutyRepairService = preDutyRepairService;
         this.condition = condition;
         this.log = log;
@@ -156,6 +165,20 @@ public sealed class DadWorkerExecutionService
             if (activeCommand != null &&
                 string.Equals(activeCommand.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
             {
+                if (cancellationPending)
+                {
+                    return new DadWorkerExecutionAck
+                    {
+                        CommandId = activeCommand.CommandId,
+                        RunId = activeCommand.RunId,
+                        WorkerSessionId = presenceService.WorkerSessionId,
+                        Accepted = false,
+                        Summary = status.Summary,
+                        Status = status.Clone(),
+                    };
+                }
+
+                shoppingService.CancelActive(cancel.Reason);
                 var cancelledCommandId = activeCommand.CommandId;
                 var cancelledRunId = activeCommand.RunId;
                 DadRunStepResultDto? executorCancellation = null;
@@ -163,20 +186,32 @@ public sealed class DadWorkerExecutionService
                     status.ModuleId == DadModuleId.Mogtome)
                     executorCancellation = queueExecutionService.CancelActiveExecutor(cancel.Reason);
                 else if (participantQueueContent != null)
-                    queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
-
-                if (status.ModuleId == DadModuleId.LootGoblin &&
-                    activeCommand.Role == DadWorkerExecutionRole.QueueLeader &&
-                    !IsAcknowledgedLootGoblinCancellation(executorCancellation, cancelledRunId))
                 {
-                    var failure = executorCancellation == null || string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
+                    queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
+                    participantQueueContent = null;
+                    lastParticipantQueueTransition = string.Empty;
+                }
+
+                var lootGoblinCancellationAcknowledged = status.ModuleId != DadModuleId.LootGoblin ||
+                    activeCommand.Role != DadWorkerExecutionRole.QueueLeader ||
+                    IsAcknowledgedLootGoblinCancellation(executorCancellation, cancelledRunId);
+                var finalState = lootGoblinCancellationAcknowledged
+                    ? DadWorkerExecutionState.Cancelled
+                    : DadWorkerExecutionState.Failed;
+                var finalSummary = cancel.Reason;
+                if (!lootGoblinCancellationAcknowledged)
+                {
+                    finalSummary = executorCancellation == null || string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
                         ? "LootGoblin did not acknowledge exact terminal cancellation."
                         : executorCancellation.FailureReason;
                     if (executorCancellation != null)
                         status.StepResult = executorCancellation.Clone();
-                    Finish(DadWorkerExecutionState.Failed, false, failure, failure);
+                }
+
+                if (shoppingService.IsCancellationPending)
+                {
+                    HoldForShoppingCancellation(finalState, finalSummary, finalSummary);
                     DrainPendingForRun(cancel.RunId);
-                    pendingCommands.ReleaseOwnershipIfIdle(activeCommand != null);
                     return new DadWorkerExecutionAck
                     {
                         CommandId = cancelledCommandId,
@@ -188,7 +223,7 @@ public sealed class DadWorkerExecutionService
                     };
                 }
 
-                Finish(DadWorkerExecutionState.Cancelled, false, cancel.Reason, cancel.Reason);
+                Finish(finalState, false, finalSummary, finalSummary);
                 DrainPendingForRun(cancel.RunId);
                 pendingCommands.ReleaseOwnershipIfIdle(activeCommand != null);
                 return new DadWorkerExecutionAck
@@ -196,7 +231,7 @@ public sealed class DadWorkerExecutionService
                     CommandId = cancelledCommandId,
                     RunId = cancelledRunId,
                     WorkerSessionId = presenceService.WorkerSessionId,
-                    Accepted = true,
+                    Accepted = lootGoblinCancellationAcknowledged,
                     Summary = status.Summary,
                     Status = status.Clone(),
                 };
@@ -242,6 +277,21 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            if (cancellationPending && activeCommand != null)
+            {
+                pendingCommands.DrainAll();
+                cancelledRuns.Record(activeCommand.RunId);
+                return new DadWorkerExecutionAck
+                {
+                    CommandId = activeCommand.CommandId,
+                    RunId = activeCommand.RunId,
+                    WorkerSessionId = presenceService.WorkerSessionId,
+                    Accepted = false,
+                    Summary = status.Summary,
+                    Status = status.Clone(),
+                };
+            }
+
             var hadWork = activeCommand != null || !pendingCommands.IsEmpty || !status.IsTerminal && status.State != DadWorkerExecutionState.Idle;
             pendingCommands.DrainAll();
 
@@ -249,11 +299,42 @@ public sealed class DadWorkerExecutionService
             var commandId = activeCommand?.CommandId ?? status.CommandId;
             var activeLootGoblinLeader = activeCommand?.Role == DadWorkerExecutionRole.QueueLeader &&
                                          status.ModuleId == DadModuleId.LootGoblin;
+            shoppingService.CancelActive(reason);
+            var shoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
             if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
                 queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
             var executorCancellation = queueExecutionService.CancelAll(reason);
             var lootGoblinCancellationAcknowledged = !activeLootGoblinLeader ||
                 IsAcknowledgedLootGoblinCancellation(executorCancellation, runId);
+            if (shoppingService.IsCancellationPending && activeCommand != null)
+            {
+                if (activeLootGoblinLeader && !lootGoblinCancellationAcknowledged)
+                    status.StepResult = executorCancellation.Clone();
+                participantQueueContent = null;
+                lastParticipantQueueTransition = string.Empty;
+                cancelledRuns.Record(runId);
+                var pendingSummary = lootGoblinCancellationAcknowledged
+                    ? reason
+                    : string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
+                        ? "LootGoblin did not acknowledge exact terminal cancellation."
+                        : executorCancellation.FailureReason;
+                HoldForShoppingCancellation(
+                    lootGoblinCancellationAcknowledged
+                        ? DadWorkerExecutionState.Cancelled
+                        : DadWorkerExecutionState.Failed,
+                    pendingSummary,
+                    pendingSummary);
+                return new DadWorkerExecutionAck
+                {
+                    CommandId = commandId,
+                    RunId = runId,
+                    WorkerSessionId = presenceService.WorkerSessionId,
+                    Accepted = false,
+                    Summary = status.Summary,
+                    Status = status.Clone(),
+                };
+            }
+
             activeCommand = null;
             if (!string.IsNullOrWhiteSpace(runId))
                 cancelledRuns.Record(runId);
@@ -285,7 +366,10 @@ public sealed class DadWorkerExecutionService
                         : executorCancellation.FailureReason
                     : hadWork ? reason : string.Empty,
                 StepResult = activeLootGoblinLeader ? executorCancellation.Clone() : new DadRunStepResultDto(),
+                ShoppingResults = shoppingResults,
             };
+            shoppingService.Reset();
+            ClearPendingCancellation();
             return new DadWorkerExecutionAck
             {
                 CommandId = commandId,
@@ -339,12 +423,27 @@ public sealed class DadWorkerExecutionService
             if (activeCommand == null || status.IsTerminal)
                 return;
 
+            if (cancellationPending)
+            {
+                UpdatePendingShoppingCancellation();
+                return;
+            }
+
             var timeout = DadWorkerTimeoutRules.ResolveTimeout(activeCommand.TimeoutSeconds);
             if (timeout.HasValue && DateTime.UtcNow - startedAtUtc >= timeout.Value)
             {
+                shoppingService.CancelActive("Worker execution timeout.");
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
                     status.ModuleId == DadModuleId.Mogtome)
                     queueExecutionService.CancelActiveExecutor("Worker execution timeout.");
+                if (shoppingService.IsCancellationPending)
+                {
+                    HoldForShoppingCancellation(
+                        DadWorkerExecutionState.TimedOut,
+                        "Worker execution timed out.",
+                        "Worker execution timeout.");
+                    return;
+                }
                 Finish(DadWorkerExecutionState.TimedOut, false, "Worker execution timed out.", "Worker execution timeout.");
                 return;
             }
@@ -363,8 +462,59 @@ public sealed class DadWorkerExecutionService
         }
     }
 
+    private void HoldForShoppingCancellation(
+        DadWorkerExecutionState finalState,
+        string finalSummary,
+        string finalFailureReason)
+    {
+        cancellationPending = true;
+        pendingCancellationState = finalState;
+        pendingCancellationSummary = finalSummary;
+        pendingCancellationFailureReason = finalFailureReason;
+        status.IsTerminal = false;
+        status.Success = false;
+        status.Summary = "Waiting for exact ADS shopping cancellation to reach correlated terminal status.";
+        status.FailureReason = string.Empty;
+        status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        if (activeCommand != null)
+            commandStatuses[activeCommand.CommandId] = status.Clone();
+    }
+
+    private void UpdatePendingShoppingCancellation()
+    {
+        var decision = shoppingService.Update(DateTime.UtcNow);
+        status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
+        status.UpdatedAtUtc = DateTime.UtcNow;
+        if (shoppingService.IsCancellationPending)
+        {
+            status.Summary = decision.Summary;
+            if (activeCommand != null)
+                commandStatuses[activeCommand.CommandId] = status.Clone();
+            return;
+        }
+
+        var completedCommand = activeCommand;
+        var finalState = pendingCancellationState;
+        var finalSummary = pendingCancellationSummary;
+        var finalFailureReason = pendingCancellationFailureReason;
+        Finish(finalState, false, finalSummary, finalFailureReason);
+        if (completedCommand != null)
+            DrainPendingForRun(completedCommand.RunId);
+        pendingCommands.ReleaseOwnershipIfIdle(activeCommand != null);
+    }
+
+    private void ClearPendingCancellation()
+    {
+        cancellationPending = false;
+        pendingCancellationState = DadWorkerExecutionState.Idle;
+        pendingCancellationSummary = string.Empty;
+        pendingCancellationFailureReason = string.Empty;
+    }
+
     private void Start(DadWorkerExecutionCommand command)
     {
+        ClearPendingCancellation();
         activeCommand = command;
         startedAtUtc = DateTime.UtcNow;
         enteredDuty = condition[ConditionFlag.BoundByDuty];
@@ -373,7 +523,10 @@ public sealed class DadWorkerExecutionService
         participantCombatRotationMode = combatRotationService.CombatRotationMode;
         participantFrenRiderHandoffGate.Reset();
         preDutyRepairService.Reset();
+        shoppingService.Reset();
         prequeuePrepared = false;
+        repairPreparationStarted = false;
+        passiveLootGoblinPending = false;
         var module = ResolveModule(command);
         if (module == null)
         {
@@ -405,19 +558,23 @@ public sealed class DadWorkerExecutionService
             status.Summary = $"Worker assignment is waiting for fresh safe runtime truth before execution: {validationBlocker}";
             status.UpdatedAtUtc = DateTime.UtcNow;
             commandStatuses[command.CommandId] = status.Clone();
+            shoppingService.Reset();
             activeCommand = null;
             pendingCommands.Enqueue(command, out _);
             return;
         }
 
-        if (module.ModuleId == DadModuleId.LootGoblin &&
-            command.Role == DadWorkerExecutionRole.Participant)
+        shoppingService.Begin(command.Plan.Request, command.ModuleIndex, localAssignment, DateTime.UtcNow);
+        passiveLootGoblinPending = module.ModuleId == DadModuleId.LootGoblin &&
+                                   command.Role == DadWorkerExecutionRole.Participant;
+        if (passiveLootGoblinPending && !shoppingService.IsRequired)
         {
             CompletePassiveLootGoblinParticipant(command, module, localAssignment);
             return;
         }
 
         preDutyRepairService.Begin(command.Plan.Request, module.ModuleId, DateTime.UtcNow);
+        repairPreparationStarted = true;
         UpdatePrequeuePreparation();
     }
 
@@ -456,6 +613,12 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
+        if (!repairPreparationStarted)
+        {
+            preDutyRepairService.Begin(activeCommand.Plan.Request, module.ModuleId, DateTime.UtcNow);
+            repairPreparationStarted = true;
+        }
+
         var repairDecision = preDutyRepairService.Update(DateTime.UtcNow);
         if (repairDecision.Action == DadPreDutyRepairAction.Reject)
         {
@@ -474,6 +637,34 @@ public sealed class DadWorkerExecutionService
             status.UpdatedAtUtc = DateTime.UtcNow;
             commandStatuses[activeCommand.CommandId] = status.Clone();
             return;
+        }
+
+        if (shoppingService.IsRequired)
+        {
+            var shoppingDecision = shoppingService.Update(DateTime.UtcNow);
+            status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
+            if (shoppingDecision.Action == DadShoppingRuntimeAction.Reject)
+            {
+                var assignment = localAssignment.WorkerSessionId.IsEmpty ? liveRuntime : localAssignment;
+                var attributed = DadWorkerPrequeueBarrierRules.AttributeFailure(assignment, shoppingDecision.Summary);
+                Finish(DadWorkerExecutionState.Failed, false, attributed, attributed);
+                return;
+            }
+
+            if (shoppingDecision.Action != DadShoppingRuntimeAction.Ready)
+            {
+                status.State = DadWorkerExecutionState.Shopping;
+                status.Summary = shoppingDecision.Summary;
+                status.UpdatedAtUtc = DateTime.UtcNow;
+                commandStatuses[activeCommand.CommandId] = status.Clone();
+                return;
+            }
+
+            if (passiveLootGoblinPending)
+            {
+                CompletePassiveLootGoblinParticipant(activeCommand, module, localAssignment);
+                return;
+            }
         }
 
         if (module.ModuleId == DadModuleId.LootGoblin)
@@ -925,7 +1116,12 @@ public sealed class DadWorkerExecutionService
         lastParticipantQueueTransition = string.Empty;
         participantFrenRiderHandoffGate.Reset();
         preDutyRepairService.Reset();
+        status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
+        shoppingService.Reset();
+        ClearPendingCancellation();
         prequeuePrepared = false;
+        repairPreparationStarted = false;
+        passiveLootGoblinPending = false;
         status.State = state;
         status.IsTerminal = true;
         status.Success = success;

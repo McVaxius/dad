@@ -45,6 +45,35 @@ internal static class DadWorkerCommandValidationRules
                 out blocker);
         }
 
+        command.Plan.Request.ShoppingAssociations ??= [];
+        var rawShoppingCount = command.Plan.Request.ShoppingAssociations.Count;
+        command.Plan.Request.ShoppingAssociations = DadShoppingAssociationRules.NormalizeRunAssociations(
+            command.Plan.Request.ShoppingAssociations);
+        if (command.Plan.Request.ShoppingAssociations.Count != rawShoppingCount ||
+            command.Plan.Request.ShoppingAssociations.Any(static association =>
+                !Enum.IsDefined(association.OwnerKind)))
+        {
+            return Fail("Worker command contains malformed or duplicate shopping association provenance.", out blocker);
+        }
+        if (command.SchemaVersion < DadWorkerCommandSchemaRules.ShoppingSchema &&
+            command.Plan.Request.ShoppingAssociations.Count > 0)
+        {
+            return Fail(
+                $"Worker command schema {command.SchemaVersion} cannot carry shopping associations; schema {DadWorkerCommandSchemaRules.ShoppingSchema} is required.",
+                out blocker);
+        }
+        if (command.Plan.Request.ShoppingAssociations.Count > 0 &&
+            !string.IsNullOrWhiteSpace(localRuntime.RegisteredIslandId))
+        {
+            return Fail("Registered Dad-island workers cannot receive shopping worker payloads.", out blocker);
+        }
+        if (!DadShoppingAssociationRules.TryValidateSingleShopper(
+                command.Plan.Request.ShoppingAssociations,
+                out blocker))
+        {
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(command.RunId) ||
             !string.Equals(command.RunId, command.Plan.Request.RequestId, StringComparison.OrdinalIgnoreCase))
         {
@@ -56,6 +85,19 @@ internal static class DadWorkerCommandValidationRules
 
         if (!DadRunSlotManifestRules.TryCreate(command.Plan, out var manifest, out blocker))
             return false;
+
+        if (command.Plan.Request.ShoppingAssociations.Count > 0)
+        {
+            if (command.Participants == null)
+                return Fail("Shopping worker command is missing its frozen LAN participant assignments.", out blocker);
+            if (!DadShoppingAssociationRules.TryValidateFrozenParticipants(
+                    command.Plan.Request.ShoppingAssociations,
+                    command.Participants,
+                    out blocker))
+            {
+                return false;
+            }
+        }
 
         if (!DadRunSlotManifestRules.RequiresFrozenRoster(command.Plan))
         {

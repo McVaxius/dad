@@ -146,7 +146,8 @@ internal static class DadAutoPartyInboundExecutionRules
             return false;
         command = new DadWorkerExecutionCommand
         {
-            SchemaVersion = DadWorkerCommandSchemaRules.ResolveEmissionSchema(workerPlan.Request.PreDutyRepairPolicy),
+            SchemaVersion = DadWorkerCommandSchemaRules.ResolveEmissionSchema(
+                workerPlan.Request.PreDutyRepairPolicy),
             CommandId = $"{operation.ProposalId:N}:{reference.ModuleIndex}:{target.SlotId}:autoparty-worker-execution",
             RunId = plan.RunId,
             ModuleIndex = reference.ModuleIndex,

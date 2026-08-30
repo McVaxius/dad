@@ -431,6 +431,7 @@ public sealed class DadPlannerGroup
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AutoPartyFormationOnly { get; set; }
     public DadCompletionActions? CompletionActions { get; set; }
+    public DadShoppingAssociation? ShoppingAssociation { get; set; }
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
     // Feature batch B (dadfeatures20260620b line 56): a template is a reusable group whose slots are NOT
     // bound to specific characters; it is instantiated against the live roster by role on demand.

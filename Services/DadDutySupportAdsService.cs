@@ -20,6 +20,11 @@ public sealed unsafe class DadDutySupportAdsService
     private readonly ICallGateSubscriber<string, string> patchConfiguration;
     private readonly ICallGateSubscriber<string, bool> startRepair;
     private readonly ICallGateSubscriber<string> getStatusJson;
+    private readonly ICallGateSubscriber<string> getShopListPresetsJson;
+    private readonly ICallGateSubscriber<string, string> previewShopListPreset;
+    private readonly ICallGateSubscriber<string, string> startShopListPreset;
+    private readonly ICallGateSubscriber<string, string> getShopListPresetStatusJson;
+    private readonly ICallGateSubscriber<string, bool> cancelShopListPreset;
 
     public DadDutySupportAdsService(IDalamudPluginInterface pluginInterface, IPluginLog log)
     {
@@ -27,6 +32,11 @@ public sealed unsafe class DadDutySupportAdsService
         patchConfiguration = pluginInterface.GetIpcSubscriber<string, string>("ADS.PatchConfigurationJson");
         startRepair = pluginInterface.GetIpcSubscriber<string, bool>("ADS.StartRepair");
         getStatusJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetStatusJson");
+        getShopListPresetsJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetShopListPresetsJson");
+        previewShopListPreset = pluginInterface.GetIpcSubscriber<string, string>("ADS.PreviewShopListPreset");
+        startShopListPreset = pluginInterface.GetIpcSubscriber<string, string>("ADS.StartShopListPreset");
+        getShopListPresetStatusJson = pluginInterface.GetIpcSubscriber<string, string>("ADS.GetShopListPresetStatusJson");
+        cancelShopListPreset = pluginInterface.GetIpcSubscriber<string, bool>("ADS.CancelShopListPreset");
     }
 
     public string MissingAdsBlocker => "ADS is not loaded; cannot run Duty Support automation after queue";
@@ -147,6 +157,224 @@ public sealed unsafe class DadDutySupportAdsService
             return new DadAdsRepairInvocationResult(
                 DadAdsRepairInvocationOutcome.Uncertain,
                 ex.Message);
+        }
+    }
+
+    public DadAdsShoppingCatalogResult GetShopListPresets()
+    {
+        try
+        {
+            var responseJson = getShopListPresetsJson.InvokeFunc();
+            var catalog = DadIpcJson.DeserializeRaw<DadAdsShopListPresetCatalog>(responseJson);
+            if (catalog == null || catalog.Version != 1 || catalog.Presets == null)
+                return new(false, null, "ADS returned an unreadable v1 shopping preset catalog.");
+            foreach (var preset in catalog.Presets)
+                preset.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(preset.PresetId);
+            if (catalog.Presets.Any(static preset => string.IsNullOrWhiteSpace(preset.PresetId)) ||
+                catalog.Presets.GroupBy(static preset => preset.PresetId, StringComparer.Ordinal).Any(static group => group.Count() > 1))
+            {
+                return new(false, null, "ADS shopping preset catalog contains a missing or duplicate stable PresetId.");
+            }
+
+            catalog.ActivePresetId = DadShoppingAssociationRules.NormalizeAdsGuid(catalog.ActivePresetId);
+            foreach (var preset in catalog.Presets)
+            {
+                preset.Name = preset.Name?.Trim() ?? string.Empty;
+                preset.Mode = preset.Mode?.Trim() ?? string.Empty;
+                preset.CurrencyKind = preset.CurrencyKind?.Trim() ?? string.Empty;
+            }
+            return new(true, catalog, $"ADS returned {catalog.Presets.Count} shopping preset(s).");
+        }
+        catch (Exception ex)
+        {
+            return new(false, null, $"ADS shopping preset catalog IPC failed: {ex.Message}");
+        }
+    }
+
+    public DadAdsShoppingPreviewResult PreviewShopListPreset(DadShoppingAssociation association)
+    {
+        var normalized = association.Clone().Normalize();
+        if (string.IsNullOrWhiteSpace(normalized.PresetId))
+            return new(false, null, "Select an ADS shopping preset before previewing it.");
+
+        try
+        {
+            var requestJson = DadIpcJson.Serialize(new
+            {
+                version = 1,
+                presetId = normalized.PresetId,
+                completedRowIds = normalized.CompletedNonRepeatableRowIds,
+            });
+            var responseJson = previewShopListPreset.InvokeFunc(requestJson);
+            var preview = DadIpcJson.DeserializeRaw<DadAdsShopListPreviewResponse>(responseJson);
+            if (preview == null || preview.Version != 1 ||
+                !string.Equals(
+                    DadShoppingAssociationRules.NormalizeAdsGuid(preview.PresetId),
+                    normalized.PresetId,
+                    StringComparison.Ordinal))
+            {
+                return new(false, null, "ADS returned an unreadable or contradictory shopping preview.");
+            }
+
+            preview.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(preview.PresetId);
+            preview.Disposition = preview.Disposition?.Trim() ?? string.Empty;
+            preview.Message = preview.Message?.Trim() ?? string.Empty;
+            preview.CompletedNonRepeatableRowIds = (preview.CompletedNonRepeatableRowIds ?? [])
+                .Select(DadShoppingAssociationRules.NormalizeAdsGuid)
+                .Where(static rowId => !string.IsNullOrWhiteSpace(rowId))
+                .Distinct(StringComparer.Ordinal)
+                .Take(DadShoppingAssociation.MaxCompletedRowIds)
+                .ToList();
+            preview.Rows ??= [];
+            return new(true, preview, string.IsNullOrWhiteSpace(preview.Message)
+                ? $"ADS preview disposition: {preview.Disposition}."
+                : preview.Message);
+        }
+        catch (Exception ex)
+        {
+            return new(false, null, $"ADS shopping preview IPC failed: {ex.Message}");
+        }
+    }
+
+    public DadAdsShoppingStartResult StartShopListPreset(DadAdsShopListPresetRequest request)
+    {
+        request.OperationId = request.OperationId?.Trim() ?? string.Empty;
+        request.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(request.PresetId);
+        request.CompletedRowIds = (request.CompletedRowIds ?? [])
+            .Select(DadShoppingAssociationRules.NormalizeAdsGuid)
+            .Where(static rowId => !string.IsNullOrWhiteSpace(rowId))
+            .Distinct(StringComparer.Ordinal)
+            .Take(DadShoppingAssociation.MaxCompletedRowIds)
+            .ToList();
+        if (request.Version != 1 || string.IsNullOrWhiteSpace(request.OperationId) || string.IsNullOrWhiteSpace(request.PresetId))
+            return new(DadAdsShoppingStartOutcome.Rejected, null, "ADS shopping start requires v1, an operation ID, and a stable PresetId.");
+
+        try
+        {
+            var responseJson = startShopListPreset.InvokeFunc(DadIpcJson.Serialize(request));
+            var response = DadIpcJson.DeserializeRaw<DadAdsShopListStartResponse>(responseJson);
+            if (response == null || response.Version != 1 ||
+                !string.Equals(response.OperationId?.Trim(), request.OperationId, StringComparison.Ordinal) ||
+                !string.Equals(
+                    DadShoppingAssociationRules.NormalizeAdsGuid(response.PresetId),
+                    request.PresetId,
+                    StringComparison.Ordinal))
+            {
+                // The provider may have accepted before returning malformed or contradictory data.
+                return new(
+                    DadAdsShoppingStartOutcome.Uncertain,
+                    null,
+                    "ADS shopping acceptance is uncertain; the exact operation will be polled and never replayed.");
+            }
+
+            response.OperationId = response.OperationId.Trim();
+            response.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(response.PresetId);
+            response.Disposition = response.Disposition?.Trim().ToLowerInvariant() ?? string.Empty;
+            response.Message = response.Message?.Trim() ?? string.Empty;
+            response.CompletedNonRepeatableRowIds = (response.CompletedNonRepeatableRowIds ?? [])
+                .Select(DadShoppingAssociationRules.NormalizeAdsGuid)
+                .Where(static rowId => !string.IsNullOrWhiteSpace(rowId))
+                .Distinct(StringComparer.Ordinal)
+                .Take(DadShoppingAssociation.MaxCompletedRowIds)
+                .ToList();
+            var outcome = response.Disposition switch
+            {
+                "accepted" when response.Accepted => DadAdsShoppingStartOutcome.Accepted,
+                "started" when response.Accepted => DadAdsShoppingStartOutcome.Accepted,
+                "not-triggered" when !response.Accepted => DadAdsShoppingStartOutcome.NotTriggered,
+                "fulfilled" when !response.Accepted => DadAdsShoppingStartOutcome.Fulfilled,
+                _ => DadAdsShoppingStartOutcome.Rejected,
+            };
+            return new(outcome, response, string.IsNullOrWhiteSpace(response.Message)
+                ? $"ADS shopping start disposition: {response.Disposition}."
+                : response.Message);
+        }
+        catch (Exception ex)
+        {
+            // This is a one-shot boundary. Poll the exact operation ID; never replay Start.
+            return new(
+                DadAdsShoppingStartOutcome.Uncertain,
+                null,
+                $"ADS shopping acceptance is uncertain; polling exact operation without replay. {ex.Message}");
+        }
+    }
+
+    public DadAdsShoppingStatusResult GetShopListPresetStatus(string operationId, string presetId)
+    {
+        operationId = operationId?.Trim() ?? string.Empty;
+        presetId = DadShoppingAssociationRules.NormalizeAdsGuid(presetId);
+        if (string.IsNullOrWhiteSpace(operationId) || string.IsNullOrWhiteSpace(presetId))
+            return new(false, null, "ADS shopping status requires exact operation and preset IDs.");
+
+        try
+        {
+            var responseJson = getShopListPresetStatusJson.InvokeFunc(operationId);
+            var response = DadIpcJson.DeserializeRaw<DadAdsShopListStatusResponse>(responseJson);
+            if (response == null || response.Version != 1 ||
+                !string.Equals(response.OperationId?.Trim(), operationId, StringComparison.Ordinal) ||
+                !string.Equals(
+                    DadShoppingAssociationRules.NormalizeAdsGuid(response.PresetId),
+                    presetId,
+                    StringComparison.Ordinal))
+            {
+                return new(false, null, "ADS returned contradictory shopping operation correlation.");
+            }
+
+            response.OperationId = response.OperationId.Trim();
+            response.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(response.PresetId);
+            response.Disposition = response.Disposition?.Trim().ToLowerInvariant() ?? string.Empty;
+            response.CompletedNonRepeatableRowIds = (response.CompletedNonRepeatableRowIds ?? [])
+                .Select(DadShoppingAssociationRules.NormalizeAdsGuid)
+                .Where(static rowId => !string.IsNullOrWhiteSpace(rowId))
+                .Distinct(StringComparer.Ordinal)
+                .Take(DadShoppingAssociation.MaxCompletedRowIds)
+                .ToList();
+            response.SkippedRowIds = (response.SkippedRowIds ?? [])
+                .Select(DadShoppingAssociationRules.NormalizeAdsGuid)
+                .Where(static rowId => !string.IsNullOrWhiteSpace(rowId))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            response.Rows ??= [];
+            foreach (var row in response.Rows)
+                row.RowId = DadShoppingAssociationRules.NormalizeAdsGuid(row.RowId);
+            if (response.Rows.Any(static row => string.IsNullOrWhiteSpace(row.RowId)))
+                return new(false, null, "ADS shopping status contains an invalid row ID GUID.");
+            response.CompletedNonRepeatableRowIds ??= [];
+            response.SkippedRowIds ??= [];
+            response.Rows ??= [];
+            return new(true, response, string.IsNullOrWhiteSpace(response.StatusMessage)
+                ? "ADS shopping status received."
+                : response.StatusMessage.Trim());
+        }
+        catch (Exception ex)
+        {
+            return new(false, null, $"ADS shopping status IPC failed: {ex.Message}");
+        }
+    }
+
+    public bool CancelShopListPreset(string operationId, out string failureReason)
+    {
+        operationId = operationId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(operationId))
+        {
+            failureReason = "ADS shopping cancellation requires an exact operation ID.";
+            return false;
+        }
+
+        try
+        {
+            if (cancelShopListPreset.InvokeFunc(operationId))
+            {
+                failureReason = string.Empty;
+                return true;
+            }
+            failureReason = $"ADS did not cancel matching shopping operation '{operationId}'.";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            failureReason = $"ADS shopping cancellation IPC failed: {ex.Message}";
+            return false;
         }
     }
 

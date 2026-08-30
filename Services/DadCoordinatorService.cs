@@ -43,6 +43,7 @@ public sealed class DadCoordinatorService
     private string lastSingleWorkerAssemblyBlocker = string.Empty;
     private readonly Dictionary<string, DadWorkerExecutionStatus> workerStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DadWorkerExecutionCommand> workerCommands = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> consumedShoppingResults = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> missingWorkerSinceUtc = new(StringComparer.OrdinalIgnoreCase);
     private List<DadParticipantSnapshot>? finalizationCancellationScopeOverride;
     private readonly Dictionary<string, string> slotResolutionTransitions = new(StringComparer.OrdinalIgnoreCase);
@@ -60,6 +61,13 @@ public sealed class DadCoordinatorService
     private string inviteRetryContinuationRunId = string.Empty;
     private bool persistentStartup;
     private bool crewFormationTeardownRequested;
+    private bool localWorkerFinalizationPending;
+    private string localWorkerFinalizationRunId = string.Empty;
+    private string localWorkerFinalizationCommandId = string.Empty;
+    private DadRunStatus localWorkerFinalizationStatus = DadRunStatus.Cancelled;
+    private string localWorkerFinalizationSummary = string.Empty;
+    private string localWorkerFinalizationReason = string.Empty;
+    private bool localWorkerFinalizationAutoPartyCleanupComplete;
     private bool autoPartyCancellationPending;
     private DadRunStatus autoPartyFinalizationStatus = DadRunStatus.Cancelled;
     private string autoPartyCancellationSummary = string.Empty;
@@ -80,6 +88,8 @@ public sealed class DadCoordinatorService
         public DadParticipantSnapshot Target { get; init; } = new();
         public DadCancelCommandDto RunCommand { get; init; } = new();
         public DadWorkerExecutionCancel WorkerCommand { get; init; } = new();
+        public int ShoppingModuleIndex { get; init; } = -1;
+        public List<DadShoppingRunAssociation> ShoppingAssociations { get; init; } = [];
         public bool RunAcknowledged { get; set; }
         public bool WorkerAcknowledged { get; set; }
         public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
@@ -155,6 +165,11 @@ public sealed class DadCoordinatorService
             return;
 
         LogCoordinatorPhaseTransition();
+        if (localWorkerFinalizationPending)
+        {
+            UpdatePendingLocalWorkerFinalization();
+            return;
+        }
         if (autoPartyCancellationPending)
         {
             UpdateAutoPartyCancellation();
@@ -286,7 +301,17 @@ public sealed class DadCoordinatorService
         if (!presenceService.BuildSnapshotCopy().Dependencies.IsReady)
             return DadRunResult.Rejected(request, DadDependencyRules.DependencyBlocker);
 
+        var rawShoppingAssociationCount = request.ShoppingAssociations?.Count ?? 0;
+        if (!TryValidateRawShoppingProvenance(request.ShoppingAssociations, out var shoppingAdmissionBlocker))
+            return DadRunResult.Rejected(request, shoppingAdmissionBlocker);
+
         ApplyConfigurationDefaults(request);
+        if (request.ShoppingAssociations.Count != rawShoppingAssociationCount)
+        {
+            return DadRunResult.Rejected(
+                request,
+                "Dad rejected malformed or duplicate shopping association provenance before admission.");
+        }
         var registeredIslandAdmission = DadAutoPartyRuntimeRequestRules.RequiresRegisteredIslandRoute(request);
         if (registeredIslandAdmission)
             request = DadAutoPartyRuntimeRequestRules.CloneForAdmission(request);
@@ -412,6 +437,7 @@ public sealed class DadCoordinatorService
         activePlan = plan;
         this.persistentStartup = persistentStartup;
         crewFormationTeardownRequested = false;
+        ClearPendingLocalWorkerFinalization();
         autoPartyCancellationPending = false;
         autoPartyFinalizationStatus = DadRunStatus.Cancelled;
         autoPartyCancellationSummary = string.Empty;
@@ -434,6 +460,7 @@ public sealed class DadCoordinatorService
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
         workerCommands.Clear();
+        consumedShoppingResults.Clear();
         missingWorkerSinceUtc.Clear();
         groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
@@ -544,7 +571,7 @@ public sealed class DadCoordinatorService
 
         if (!IsBusy || activePlan == null)
             return CurrentResult.Clone();
-        if (autoPartyCancellationPending)
+        if (autoPartyCancellationPending || localWorkerFinalizationPending)
             return CurrentResult.Clone();
 
         var command = new DadCancelCommandDto
@@ -569,6 +596,7 @@ public sealed class DadCoordinatorService
             RunId = activePlan.Request.RequestId,
             Reason = "Cancelled by operator.",
         });
+        ConsumeShoppingResults(executorCancelAck.Status.ShoppingResults);
         claimService.ReleaseClaims(activePlan.Request.RequestId);
         if (!string.IsNullOrWhiteSpace(executorCancelAck.Status.StepResult.StepName))
             stepResults.Add(executorCancelAck.Status.StepResult.Clone());
@@ -594,6 +622,15 @@ public sealed class DadCoordinatorService
             participant.ClaimState = DadClaimState.Released;
         }
 
+        if (TryDeferLocalWorkerFinalization(
+                executorCancelAck,
+                DadRunStatus.Cancelled,
+                "Dad run cancelled.",
+                "Cancelled by operator."))
+        {
+            return CurrentResult.Clone();
+        }
+
         return BeginAutoPartyCancellationOrFinalize("Dad run cancelled.", "Cancelled by operator.");
     }
 
@@ -601,7 +638,10 @@ public sealed class DadCoordinatorService
     {
         reason = string.IsNullOrWhiteSpace(reason) ? "Stopped by DAD Stop-all." : reason;
         var runId = activePlan?.Request.RequestId ?? CurrentResult.RequestId;
-        workerExecutionService.CancelAll(reason);
+        var cancelAllAck = workerExecutionService.CancelAll(reason);
+        ConsumeShoppingResults(cancelAllAck.Status.ShoppingResults);
+        if (localWorkerFinalizationPending)
+            return CurrentResult.Clone();
         queueExecutionService.CancelAll(reason);
         claimService.ReleaseAllClaims();
 
@@ -613,11 +653,12 @@ public sealed class DadCoordinatorService
         if (autoPartyCancellationPending)
             return CurrentResult.Clone();
 
-        workerExecutionService.Cancel(new DadWorkerExecutionCancel
+        var workerCancelAck = workerExecutionService.Cancel(new DadWorkerExecutionCancel
         {
             RunId = runId,
             Reason = reason,
         });
+        ConsumeShoppingResults(workerCancelAck.Status.ShoppingResults);
 
         var command = new DadCancelCommandDto
         {
@@ -655,11 +696,83 @@ public sealed class DadCoordinatorService
         }
 
         CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
+        if (TryDeferLocalWorkerFinalization(
+                workerCancelAck,
+                DadRunStatus.Cancelled,
+                "Dad run stopped by Stop-all.",
+                reason))
+        {
+            return CurrentResult.Clone();
+        }
         return BeginAutoPartyCancellationOrFinalize("Dad run stopped by Stop-all.", reason);
     }
 
     private DadRunResult BeginAutoPartyCancellationOrFinalize(string summary, string reason)
         => FinalizeRun(DadRunStatus.Cancelled, summary, reason);
+
+    private bool TryDeferLocalWorkerFinalization(
+        DadWorkerExecutionAck acknowledgement,
+        DadRunStatus status,
+        string summary,
+        string reason,
+        bool autoPartyCleanupComplete = false)
+    {
+        if (acknowledgement.Accepted || acknowledgement.Status.IsTerminal)
+            return false;
+
+        localWorkerFinalizationPending = true;
+        localWorkerFinalizationRunId = acknowledgement.RunId;
+        localWorkerFinalizationCommandId = acknowledgement.CommandId;
+        localWorkerFinalizationStatus = status;
+        localWorkerFinalizationSummary = summary;
+        localWorkerFinalizationReason = reason;
+        localWorkerFinalizationAutoPartyCleanupComplete = autoPartyCleanupComplete;
+        CurrentResult.ActiveTaskStatus = "Waiting for exact local ADS shopping cancellation to reach terminal status.";
+        CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+        Publish();
+        return true;
+    }
+
+    private void UpdatePendingLocalWorkerFinalization()
+    {
+        var workerStatus = workerExecutionService.GetStatus();
+        ConsumeShoppingResults(workerStatus.ShoppingResults);
+        var matchesExactCancellation =
+            string.Equals(workerStatus.RunId, localWorkerFinalizationRunId, StringComparison.Ordinal) &&
+            string.Equals(workerStatus.CommandId, localWorkerFinalizationCommandId, StringComparison.Ordinal);
+        if (!matchesExactCancellation || !workerStatus.IsTerminal)
+        {
+            if (matchesExactCancellation && !string.IsNullOrWhiteSpace(workerStatus.Summary))
+            {
+                CurrentResult.ActiveTaskStatus = workerStatus.Summary;
+                CurrentResult.BlockedReason = workerStatus.Summary;
+            }
+            return;
+        }
+
+        var finalStatus = localWorkerFinalizationStatus;
+        var finalSummary = localWorkerFinalizationSummary;
+        var finalReason = localWorkerFinalizationReason;
+        var autoPartyCleanupComplete = localWorkerFinalizationAutoPartyCleanupComplete;
+        ClearPendingLocalWorkerFinalization();
+        FinalizeRun(
+            finalStatus,
+            finalSummary,
+            finalReason,
+            autoPartyCleanupComplete,
+            localWorkerCleanupComplete: true);
+    }
+
+    private void ClearPendingLocalWorkerFinalization()
+    {
+        localWorkerFinalizationPending = false;
+        localWorkerFinalizationRunId = string.Empty;
+        localWorkerFinalizationCommandId = string.Empty;
+        localWorkerFinalizationStatus = DadRunStatus.Cancelled;
+        localWorkerFinalizationSummary = string.Empty;
+        localWorkerFinalizationReason = string.Empty;
+        localWorkerFinalizationAutoPartyCleanupComplete = false;
+    }
 
     private bool TryBeginAutoPartyFinalization(DadRunStatus status, string summary, string reason)
     {
@@ -1933,6 +2046,34 @@ public sealed class DadCoordinatorService
             return true;
         }
 
+        if (module.ModuleId == DadModuleId.Mogtome && activePlan.Request.ShoppingAssociations.Count > 0)
+        {
+            if (!DadWorkerPrequeueBarrierRules.TryResolveShoppingShopper(
+                    activePlan,
+                    lanParticipants,
+                    out var shopper,
+                    out blocker))
+            {
+                return false;
+            }
+            if (!workerStatuses.TryGetValue(shopper.WorkerSessionId.Value, out var shopperStatus))
+            {
+                dispatchTargets = [shopper];
+                return true;
+            }
+            if (!DadWorkerPrequeueBarrierRules.IsMogtomeShoppingGateReady(activePlan, shopperStatus))
+            {
+                pending.Add("Shopping prequeue gate is waiting for the exact shopper to finish repair and shopping before other MOGTOME workers start.");
+                return true;
+            }
+            if (!TryRequestAutoPartyQueueOperations(module, registeredParticipants, pending, out blocker))
+                return false;
+            dispatchTargets = lanParticipants
+                .Where(participant => !workerStatuses.ContainsKey(participant.WorkerSessionId.Value))
+                .ToList();
+            return true;
+        }
+
         var leaders = activeParticipants.Where(participant => IsQueueLeaderParticipant(activePlan, participant)).ToList();
         if (leaders.Count != 1)
         {
@@ -1952,7 +2093,7 @@ public sealed class DadCoordinatorService
 
         var lanNonLeadersReady = lanNonLeaders.All(participant =>
             workerStatuses.TryGetValue(participant.WorkerSessionId.Value, out var status) &&
-            status.State == DadWorkerExecutionState.WaitingForQueue && !status.IsTerminal);
+            DadWorkerPrequeueBarrierRules.IsNonLeaderReady(activePlan, module, status));
         var registeredNonLeadersReady = registeredNonLeaders.All(participant =>
             IsAutoPartyModuleQueued(participant, module));
         if (!lanNonLeadersReady || !registeredNonLeadersReady)
@@ -2052,6 +2193,18 @@ public sealed class DadCoordinatorService
             activeParticipants);
         var failures = new List<string>();
         var pending = new List<string>();
+        if (!DadShoppingAssociationRules.TryValidateFrozenParticipants(
+                activePlan.Request.ShoppingAssociations,
+                activeParticipants,
+                out var shoppingBlocker))
+        {
+            ScopeFinalizationToAcknowledgedWorkers(barrierRequired);
+            ApplyModuleRoutingResult(
+                module,
+                BuildWorkerFailureResult(module, shoppingBlocker),
+                replaceExisting: activeStepResultIndex >= 0);
+            return;
+        }
         if (!TryResolveModuleDispatchTargets(
                 module,
                 barrierRequired,
@@ -2078,7 +2231,8 @@ public sealed class DadCoordinatorService
                 command = new DadWorkerExecutionCommand
                 {
                     SchemaVersion = DadWorkerCommandSchemaRules.ResolveEmissionSchema(
-                        activePlan.Request.PreDutyRepairPolicy),
+                        activePlan.Request.PreDutyRepairPolicy,
+                        activePlan.Request.ShoppingAssociations),
                     CommandId = $"{activePlan.Request.RequestId}:{activeModuleIndex}:{participant.AssignedSlotId}:worker-execution",
                     RunId = activePlan.Request.RequestId,
                     ModuleIndex = activeModuleIndex,
@@ -2356,6 +2510,7 @@ public sealed class DadCoordinatorService
 
             missingWorkerSinceUtc.Remove(workerKey);
 
+            ConsumeShoppingResults(workerStatus.ShoppingResults);
             workerStatuses[workerKey] = workerStatus.Clone();
             participant.State = workerStatus.State switch
             {
@@ -2387,22 +2542,33 @@ public sealed class DadCoordinatorService
                 foreach (var participant in activeParticipants.Where(static participant =>
                              string.IsNullOrWhiteSpace(participant.RegisteredIslandId) && !participant.IsLocalClient))
                 {
-                    transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
+                    var cancelAck = transportService.SendWorkerExecutionCancel(participant, new DadWorkerExecutionCancel
                     {
                         RunId = activePlan.Request.RequestId,
                         Reason = "Peer worker failed; releasing run-owned work.",
                     });
+                    ConsumeShoppingResults(cancelAck?.Status.ShoppingResults);
                 }
-                workerExecutionService.Cancel(new DadWorkerExecutionCancel
+                var localCancelAck = workerExecutionService.Cancel(new DadWorkerExecutionCancel
                 {
                     RunId = activePlan.Request.RequestId,
                     Reason = "Peer worker failed; releasing run-owned work.",
                 });
+                ConsumeShoppingResults(localCancelAck.Status.ShoppingResults);
             }
             ApplyModuleRoutingResult(
                 module,
                 BuildWorkerFailureResult(module, string.Join(" | ", failures.Distinct(StringComparer.OrdinalIgnoreCase))),
                 replaceExisting: true);
+            return;
+        }
+
+        if (barrierRequired &&
+            module.ModuleId == DadModuleId.Mogtome &&
+            activePlan.Request.ShoppingAssociations.Count > 0 &&
+            workerCommands.Count < GetLanWorkerParticipants().Count)
+        {
+            DispatchWorkerExecution(module);
             return;
         }
 
@@ -2413,6 +2579,7 @@ public sealed class DadCoordinatorService
         {
             if (DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(
                     activePlan,
+                    module,
                     activeParticipants,
                     workerStatuses))
             {
@@ -2424,7 +2591,7 @@ public sealed class DadCoordinatorService
                 module,
                 BuildWorkerProgressResult(
                     module,
-                    $"ADS prequeue barrier is waiting: {workerStatuses.Count(static pair => pair.Value.State == DadWorkerExecutionState.WaitingForQueue)}/{Math.Max(1, activeParticipants.Count - 1)} non-leader worker(s) reached WaitingForQueue; Accepted alone is not ready."),
+                    $"ADS prequeue barrier is waiting: {workerStatuses.Count(pair => DadWorkerPrequeueBarrierRules.IsNonLeaderReady(activePlan, module, pair.Value))}/{Math.Max(1, activeParticipants.Count - 1)} non-leader worker(s) reached exact prequeue-ready state; Accepted alone is not ready."),
                 replaceExisting: true);
             return;
         }
@@ -2564,6 +2731,186 @@ public sealed class DadCoordinatorService
                 Summary = summary,
             },
         };
+
+    private void ConsumeShoppingResults(IEnumerable<DadShoppingRunResult>? incoming)
+    {
+        if (activePlan == null)
+            return;
+
+        ConsumeShoppingResults(
+            incoming,
+            activePlan.Request.RequestId,
+            activeModuleIndex,
+            activePlan.Request.ShoppingAssociations);
+    }
+
+    private void ConsumeShoppingResults(
+        IEnumerable<DadShoppingRunResult>? incoming,
+        string expectedRunId,
+        int expectedModuleIndex,
+        IReadOnlyCollection<DadShoppingRunAssociation>? frozenAssociations)
+    {
+        var expectedAssociations = DadShoppingAssociationRules.NormalizeRunAssociations(frozenAssociations);
+        if (string.IsNullOrWhiteSpace(expectedRunId) || expectedModuleIndex < 0 || expectedAssociations.Count == 0)
+            return;
+
+        var configurationChanged = false;
+        foreach (var source in incoming ?? [])
+        {
+            if (source?.Association == null || string.IsNullOrWhiteSpace(source.OperationId))
+                continue;
+            var result = source.Clone();
+            if (!string.Equals(result.RunId, expectedRunId, StringComparison.Ordinal) ||
+                result.ModuleIndex != expectedModuleIndex)
+                continue;
+
+            result.CompletedNonRepeatableRowIds = result.CompletedNonRepeatableRowIds
+                .Select(DadShoppingAssociationRules.NormalizeAdsGuid)
+                .Where(static rowId => !string.IsNullOrWhiteSpace(rowId))
+                .Distinct(StringComparer.Ordinal)
+                .Take(DadShoppingAssociation.MaxCompletedRowIds)
+                .ToList();
+
+            var frozenMatches = expectedAssociations.Where(candidate =>
+                candidate.OwnerKind == result.Association.OwnerKind &&
+                string.Equals(candidate.OwnerId, result.Association.OwnerId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(candidate.AssociationId, result.Association.AssociationId, StringComparison.Ordinal))
+                .ToList();
+            if (frozenMatches.Count != 1 ||
+                !DadShoppingAssociationRules.SameProvenance(frozenMatches[0], result.Association))
+            {
+                continue;
+            }
+
+            var resultKey = $"{result.OperationId}|{result.Association.OwnerKind}|{result.Association.OwnerId}|{result.Association.AssociationId}|{result.Disposition}|{result.FailureCode}";
+            if (!consumedShoppingResults.Add(resultKey))
+                continue;
+
+            MergeShoppingProgress(frozenMatches[0], result);
+
+            var persisted = ResolvePersistedShoppingAssociation(result.Association);
+            if (persisted != null && DadShoppingAssociationRules.SameProvenance(result.Association, persisted))
+                configurationChanged |= MergeShoppingProgress(persisted, result);
+
+            if (!result.Succeeded)
+                configurationChanged |= RecordShoppingFailure(result);
+        }
+
+        if (configurationChanged)
+            configuration.Save();
+    }
+
+    private DadShoppingAssociation? ResolvePersistedShoppingAssociation(DadShoppingRunAssociation association)
+    {
+        var matches = association.OwnerKind switch
+        {
+            DadShoppingAssociationOwnerKind.Plan => configuration.PlannerGroups
+                .Where(plan => string.Equals(
+                    plan.GroupId,
+                    association.OwnerId,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(static plan => plan.ShoppingAssociation)
+                .ToList(),
+            DadShoppingAssociationOwnerKind.Schedule => configuration.Schedules
+                .Where(schedule => string.Equals(
+                    schedule.ScheduleId,
+                    association.OwnerId,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(static schedule => schedule.ShoppingAssociation)
+                .ToList(),
+            _ => [],
+        };
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static void MergeShoppingProgress(
+        DadShoppingRunAssociation association,
+        DadShoppingRunResult result)
+    {
+        association.CompletedNonRepeatableRowIds = result.CompletedNonRepeatableRowIds
+            .Concat(association.CompletedNonRepeatableRowIds)
+            .Distinct(StringComparer.Ordinal)
+            .Take(DadShoppingAssociation.MaxCompletedRowIds)
+            .ToList();
+        if (HasAuthoritativeTerminalShoppingEvidence(result))
+            association.NonRepeatableRowsFulfilled = result.NonRepeatableRowsFulfilled;
+    }
+
+    private static bool MergeShoppingProgress(
+        DadShoppingAssociation association,
+        DadShoppingRunResult result)
+    {
+        var merged = result.CompletedNonRepeatableRowIds
+            .Concat(association.CompletedNonRepeatableRowIds)
+            .Distinct(StringComparer.Ordinal)
+            .Take(DadShoppingAssociation.MaxCompletedRowIds)
+            .ToList();
+        var changed = !association.CompletedNonRepeatableRowIds.SequenceEqual(merged, StringComparer.Ordinal);
+        if (changed)
+            association.CompletedNonRepeatableRowIds = merged;
+        if (HasAuthoritativeTerminalShoppingEvidence(result))
+        {
+            DateTime? fulfilledAtUtc = result.NonRepeatableRowsFulfilled
+                ? association.FulfilledAtUtc ?? DateTime.UtcNow
+                : null;
+            if (association.NonRepeatableRowsFulfilled != result.NonRepeatableRowsFulfilled ||
+                association.FulfilledAtUtc != fulfilledAtUtc)
+            {
+                association.NonRepeatableRowsFulfilled = result.NonRepeatableRowsFulfilled;
+                association.FulfilledAtUtc = fulfilledAtUtc;
+                changed = true;
+            }
+        }
+        if (changed)
+            association.UpdatedAtUtc = DateTime.UtcNow;
+        return changed;
+    }
+
+    private static bool HasAuthoritativeTerminalShoppingEvidence(DadShoppingRunResult result)
+        => string.Equals(result.Disposition, "succeeded", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(result.Disposition, "fulfilled", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(result.Disposition, "not-triggered", StringComparison.OrdinalIgnoreCase);
+
+    private bool RecordShoppingFailure(DadShoppingRunResult result)
+    {
+        configuration.ShoppingFailures ??= [];
+        if (configuration.ShoppingFailures.Any(existing =>
+                string.Equals(existing.OperationId, result.OperationId, StringComparison.Ordinal) &&
+                string.Equals(existing.AssociationId, result.Association.AssociationId, StringComparison.Ordinal) &&
+                string.Equals(existing.FailureCode, result.FailureCode, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var rowDetails = string.Join(" | ", result.Rows.Take(64).Select(row =>
+            $"{row.RowId}:{row.ItemName}:{row.Outcome}:{row.Message}"));
+        var details = string.Join(" | ", new[] { result.FailureMessage, rowDetails }
+            .Where(static value => !string.IsNullOrWhiteSpace(value)));
+        if (details.Length > 4096)
+            details = details[..4096];
+        configuration.ShoppingFailures.Insert(0, new DadShoppingFailureRecord
+        {
+            ObservedAtUtc = DateTime.UtcNow,
+            RunId = result.RunId,
+            ModuleIndex = result.ModuleIndex,
+            OperationId = result.OperationId,
+            OwnerKind = result.Association.OwnerKind,
+            OwnerId = result.Association.OwnerId,
+            OwnerName = result.Association.OwnerName,
+            AssociationId = result.Association.AssociationId,
+            PresetId = result.Association.PresetId,
+            PresetName = result.Association.PresetName,
+            ShopperSlotId = result.Association.ShopperSlotId,
+            ShopperCharacterKey = result.Association.ShopperCharacterKey,
+            FailureCode = string.IsNullOrWhiteSpace(result.FailureCode)
+                ? "dad-shopping-failed"
+                : result.FailureCode,
+            Summary = result.Summary,
+            Details = details,
+        });
+        DadShoppingAssociationRules.TrimFailures(configuration.ShoppingFailures);
+        return true;
+    }
 
     private DadRunStepResultDto BuildWorkerFailureResult(DadPlannedModuleExecution module, string reason)
     {
@@ -2706,6 +3053,7 @@ public sealed class DadCoordinatorService
         nextWorkerStatusPollUtc = DateTime.MinValue;
         workerStatuses.Clear();
         workerCommands.Clear();
+        consumedShoppingResults.Clear();
         missingWorkerSinceUtc.Clear();
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
@@ -4045,6 +4393,62 @@ public sealed class DadCoordinatorService
         request.ApplyOrchestrationDefaults();
     }
 
+    private static bool TryValidateRawShoppingProvenance(
+        IReadOnlyCollection<DadShoppingRunAssociation>? associations,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        var raw = associations?.ToList() ?? [];
+        foreach (var association in raw)
+        {
+            if (association == null ||
+                !Enum.IsDefined(association.OwnerKind) ||
+                string.IsNullOrWhiteSpace(association.OwnerId) ||
+                !string.Equals(association.OwnerId, association.OwnerId.Trim(), StringComparison.Ordinal) ||
+                !Guid.TryParseExact(association.AssociationId, "N", out var associationId) ||
+                associationId == Guid.Empty ||
+                !string.Equals(association.AssociationId, associationId.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(
+                    association.PresetId,
+                    DadShoppingAssociationRules.NormalizeAdsGuid(association.PresetId),
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    association.ShopperSlotId,
+                    DadPlannerSlotRules.NormalizeStrictSlotId(association.ShopperSlotId),
+                    StringComparison.Ordinal) ||
+                association.ShopperAccountKey.IsEmpty ||
+                association.ShopperCharacterKey.IsEmpty)
+            {
+                blocker = "Dad rejected malformed shopping association provenance before admission.";
+                return false;
+            }
+
+            var completedRows = association.CompletedNonRepeatableRowIds ?? [];
+            if (completedRows.Count > DadShoppingAssociation.MaxCompletedRowIds ||
+                completedRows.Distinct(StringComparer.Ordinal).Count() != completedRows.Count ||
+                completedRows.Any(rowId => !string.Equals(
+                    rowId,
+                    DadShoppingAssociationRules.NormalizeAdsGuid(rowId),
+                    StringComparison.Ordinal)))
+            {
+                blocker = "Dad rejected malformed shopping completion evidence before admission.";
+                return false;
+            }
+        }
+
+        var duplicate = raw
+            .GroupBy(association =>
+                $"{(int)association.OwnerKind}|{association.OwnerId}|{association.AssociationId}",
+                StringComparer.OrdinalIgnoreCase)
+            .Any(static group => group.Count() > 1);
+        if (duplicate)
+        {
+            blocker = "Dad rejected duplicate shopping association provenance before admission.";
+            return false;
+        }
+        return true;
+    }
+
     // Single source of truth (review L5): Plugin.cs previously held an identical private copy.
     internal static bool RequiresServerDadAuthority(DadRunRequest request)
     {
@@ -4104,12 +4508,18 @@ public sealed class DadCoordinatorService
         DadRunStatus status,
         string summary,
         string failureReason,
-        bool autoPartyCleanupComplete = false)
+        bool autoPartyCleanupComplete = false,
+        bool localWorkerCleanupComplete = false)
     {
+        if (localWorkerFinalizationPending)
+            return CurrentResult.Clone();
         if (!autoPartyCleanupComplete && autoPartyCancellationPending)
             return CurrentResult.Clone();
 
-        if (!autoPartyCleanupComplete && activePlan != null && status != DadRunStatus.Cancelled)
+        if (!autoPartyCleanupComplete &&
+            !localWorkerCleanupComplete &&
+            activePlan != null &&
+            status != DadRunStatus.Cancelled)
         {
             var exactCancellationScope = finalizationCancellationScopeOverride;
             var finalizationCommand = new DadCancelCommandDto
@@ -4127,11 +4537,20 @@ public sealed class DadCoordinatorService
             if (exactCancellationScope == null ||
                 exactCancellationScope.Any(static participant => participant.IsLocalClient))
             {
-                workerExecutionService.Cancel(new DadWorkerExecutionCancel
+                var finalizationAck = workerExecutionService.Cancel(new DadWorkerExecutionCancel
                 {
                     RunId = activePlan.Request.RequestId,
                     Reason = finalizationCommand.Reason,
                 });
+                ConsumeShoppingResults(finalizationAck.Status.ShoppingResults);
+                if (TryDeferLocalWorkerFinalization(
+                        finalizationAck,
+                        status,
+                        summary,
+                        failureReason))
+                {
+                    return CurrentResult.Clone();
+                }
             }
         }
 
@@ -4184,6 +4603,7 @@ public sealed class DadCoordinatorService
         activeStepResultIndex = -1;
         workerStatuses.Clear();
         workerCommands.Clear();
+        consumedShoppingResults.Clear();
         missingWorkerSinceUtc.Clear();
         groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
@@ -4201,6 +4621,7 @@ public sealed class DadCoordinatorService
         inviteRetryContinuationRunId = string.Empty;
         persistentStartup = false;
         crewFormationTeardownRequested = false;
+        ClearPendingLocalWorkerFinalization();
         autoPartyCancellationPending = false;
         autoPartyFinalizationStatus = DadRunStatus.Cancelled;
         autoPartyCancellationSummary = string.Empty;
@@ -4287,6 +4708,10 @@ public sealed class DadCoordinatorService
                     RunId = command.RunId,
                     Reason = string.IsNullOrWhiteSpace(workerReason) ? command.Reason : workerReason,
                 },
+                ShoppingModuleIndex = activeModuleIndex,
+                ShoppingAssociations = activePlan?.Request.ShoppingAssociations
+                    .Select(static association => association.Clone())
+                    .ToList() ?? [],
                 CancellationRequestedAtUtc = cancellationRequestedAtUtc,
                 CancellationDeadlineUtc = cancellationDeadlineUtc,
             };
@@ -4338,6 +4763,11 @@ public sealed class DadCoordinatorService
             if (!pending.WorkerAcknowledged)
             {
                 var ack = transportService.SendWorkerExecutionCancel(pending.Target, pending.WorkerCommand);
+                ConsumeShoppingResults(
+                    ack?.Status.ShoppingResults,
+                    pending.RunCommand.RunId,
+                    pending.ShoppingModuleIndex,
+                    pending.ShoppingAssociations);
                 pending.WorkerAcknowledged = DadSchedulerRoutingRules.IsWorkerCancellationAcknowledged(
                     pending.WorkerCommand.RunId,
                     pending.Target.WorkerSessionId,

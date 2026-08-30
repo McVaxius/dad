@@ -113,6 +113,7 @@ public sealed class DadScheduleDefinition
     public string ScheduleId { get; set; } = Guid.NewGuid().ToString("N");
     public string DisplayName { get; set; } = "Dad Schedule";
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
+    public DadShoppingAssociation? ShoppingAssociation { get; set; }
     public List<DadScheduleEntry> Entries { get; set; } = [];
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -128,6 +129,7 @@ public sealed class DadScheduleDefinition
         Revision = Math.Max(1, Revision);
         ScheduleId = string.IsNullOrWhiteSpace(ScheduleId) ? Guid.NewGuid().ToString("N") : ScheduleId.Trim();
         DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? "Dad Schedule" : DisplayName.Trim();
+        ShoppingAssociation?.Normalize();
         Entries ??= [];
         Entries = Entries
             .Where(static entry => entry != null)
@@ -145,6 +147,7 @@ public sealed class DadScheduleDefinition
             ScheduleId = ScheduleId,
             DisplayName = DisplayName,
             Cadence = Cadence,
+            ShoppingAssociation = ShoppingAssociation?.Clone(),
             Entries = Entries?.Select(static entry => entry.Clone()).ToList() ?? [],
             CreatedAtUtc = CreatedAtUtc,
             UpdatedAtUtc = UpdatedAtUtc,

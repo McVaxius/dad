@@ -69,6 +69,14 @@ public sealed class MainWindow : Window, IDisposable
     private DadShareEnvelopeDto? pendingScheduleShareImport;
     private DadShareImportPreview? pendingScheduleSharePreview;
     private bool pendingScheduleShareCommandsConfirmed;
+    private DadAdsShopListPresetCatalog? shoppingPresetCatalog;
+    private string shoppingCatalogStatus = "Refresh ADS presets to configure shopping.";
+    private string shoppingDraftOwner = string.Empty;
+    private string shoppingDraftPresetId = string.Empty;
+    private string shoppingDraftShopperSlotId = string.Empty;
+    private bool shoppingDraftAutoRetainerDelivery;
+    private string shoppingDraftCustomCommand = string.Empty;
+    private string shoppingEditorStatus = string.Empty;
     private string pendingDeleteAccountId = string.Empty;
     private string rosterSearch = string.Empty;
     private string rosterAccountFilter = string.Empty;
@@ -2054,6 +2062,14 @@ public sealed class MainWindow : Window, IDisposable
                 plugin.OpenSetupWizard(DadGuideFlow.Schedule);
             return;
         }
+
+        DrawShoppingAssociationEditor(
+            DadShoppingAssociationOwnerKind.Schedule,
+            schedule.ScheduleId,
+            schedule.DisplayName,
+            schedule.ShoppingAssociation,
+            DadShoppingAssociationRules.ResolveCommonScheduleShopperSlots(schedule, groups),
+            ownerMutationLocked: activeScheduleLocked);
 
         var knownGroupIds = groups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var missingPresetCount = schedule.Entries.Count(entry =>
@@ -7061,6 +7077,21 @@ public sealed class MainWindow : Window, IDisposable
         if (selectedGroup == null)
             return;
 
+        DrawShoppingAssociationEditor(
+            DadShoppingAssociationOwnerKind.Plan,
+            selectedGroup.GroupId,
+            selectedGroup.DisplayName,
+            selectedGroup.ShoppingAssociation,
+            DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots)
+                .Where(static slot =>
+                    !slot.IsSubstitute &&
+                    slot.SharedIdentity == null &&
+                    !slot.RequiredAccountKey.IsEmpty &&
+                    !slot.RequiredCharacterKey.IsEmpty)
+                .Select(static slot => DadSchedulerGroupCloneRules.CloneSlot(slot))
+                .ToList(),
+            ownerMutationLocked: plannerLocked || selectedGroup.IsTemplate);
+
         // Feature batch B: a template can be instantiated against the live roster (auto-assign by role).
         if (selectedGroup.IsTemplate)
         {
@@ -7398,6 +7429,278 @@ public sealed class MainWindow : Window, IDisposable
         var normalizedId = groupId?.Trim() ?? string.Empty;
         var shortId = normalizedId[..Math.Min(8, normalizedId.Length)];
         return $"{displayName} [{shortId}]";
+    }
+
+    private void DrawShoppingAssociationEditor(
+        DadShoppingAssociationOwnerKind ownerKind,
+        string ownerId,
+        string ownerName,
+        DadShoppingAssociation? association,
+        IReadOnlyList<DadPlannerGroupSlot> shopperSlots,
+        bool ownerMutationLocked)
+    {
+        ImGui.Spacing();
+        if (!DadUi.BeginCard($"dad-shopping-{ownerKind}-{ownerId}"))
+            return;
+
+        DadUi.Heading(
+            "ADS SHOPPING",
+            "Optional thin ADS preset association. ADS owns row vendors, prices, and refill math; DAD only freezes the exact shopper and records exact non-repeatable RowIds for this Plan or Schedule.");
+        ImGui.TextWrapped("Refill rows trigger when owned is below Y and buy whole bundles until at least X. ADS defaults owned quantity to inventory plus this character's retainers, configurable per row. Repeatable rows are never marked done.");
+
+        var ownerKey = $"{ownerKind}:{ownerId}";
+        if (!string.Equals(shoppingDraftOwner, ownerKey, StringComparison.Ordinal))
+        {
+            shoppingDraftOwner = ownerKey;
+            shoppingDraftPresetId = association?.PresetId ?? string.Empty;
+            shoppingDraftShopperSlotId = association?.ShopperSlotId ?? string.Empty;
+            shoppingDraftAutoRetainerDelivery = association?.RunAutoRetainerDelivery ?? false;
+            shoppingDraftCustomCommand = association?.CustomCommand ?? string.Empty;
+            shoppingEditorStatus = string.Empty;
+        }
+
+        if (ImGui.SmallButton($"Refresh ADS presets##{ownerKey}"))
+        {
+            var catalogResult = plugin.DutySupportAdsService.GetShopListPresets();
+            if (catalogResult.Readable && catalogResult.Catalog != null)
+            {
+                shoppingPresetCatalog = catalogResult.Catalog;
+                shoppingCatalogStatus = catalogResult.Summary;
+                if (string.IsNullOrWhiteSpace(shoppingDraftPresetId))
+                {
+                    shoppingDraftPresetId = shoppingPresetCatalog.Presets.Any(preset => string.Equals(
+                            preset.PresetId,
+                            shoppingPresetCatalog.ActivePresetId,
+                            StringComparison.Ordinal))
+                        ? shoppingPresetCatalog.ActivePresetId
+                        : shoppingPresetCatalog.Presets.FirstOrDefault()?.PresetId ?? string.Empty;
+                }
+            }
+            else
+            {
+                shoppingPresetCatalog = null;
+                shoppingCatalogStatus = catalogResult.Summary;
+            }
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled(shoppingCatalogStatus);
+
+        var presets = shoppingPresetCatalog?.Presets
+            .OrderBy(static preset => preset.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static preset => preset.PresetId, StringComparer.Ordinal)
+            .ToList() ?? [];
+        var selectedPreset = presets.FirstOrDefault(preset => string.Equals(
+            preset.PresetId,
+            shoppingDraftPresetId,
+            StringComparison.Ordinal));
+        var presetLabel = selectedPreset?.Name
+                          ?? (!string.IsNullOrWhiteSpace(association?.PresetName) && string.Equals(
+                                  association.PresetId,
+                                  shoppingDraftPresetId,
+                                  StringComparison.Ordinal)
+                              ? $"{association.PresetName} (not in refreshed catalog)"
+                              : "Select ADS preset");
+        ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
+        if (ImGui.BeginCombo($"ADS preset##{ownerKey}", presetLabel))
+        {
+            foreach (var preset in presets)
+            {
+                var selected = string.Equals(preset.PresetId, shoppingDraftPresetId, StringComparison.Ordinal);
+                if (ImGui.Selectable($"{preset.Name} ({preset.RowCount} rows)##{preset.PresetId}", selected))
+                    shoppingDraftPresetId = preset.PresetId;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+
+        if (string.IsNullOrWhiteSpace(shoppingDraftShopperSlotId) && shopperSlots.Count > 0 && association == null)
+            shoppingDraftShopperSlotId = shopperSlots[0].SlotId;
+        var selectedShopper = shopperSlots.FirstOrDefault(slot => string.Equals(
+            slot.SlotId,
+            shoppingDraftShopperSlotId,
+            StringComparison.OrdinalIgnoreCase));
+        ImGui.SetNextItemWidth(MathF.Min(460f, ImGui.GetContentRegionAvail().X));
+        if (ImGui.BeginCombo(
+                $"Exact shopper##{ownerKey}",
+                selectedShopper == null
+                    ? "Select exact primary LAN row"
+                    : FormatShoppingShopper(selectedShopper)))
+        {
+            foreach (var slot in shopperSlots)
+            {
+                var selected = string.Equals(slot.SlotId, shoppingDraftShopperSlotId, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable($"{FormatShoppingShopper(slot)}##{slot.SlotId}", selected))
+                    shoppingDraftShopperSlotId = slot.SlotId;
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        if (shopperSlots.Count == 0)
+            ImGui.TextDisabled(ownerKind == DadShoppingAssociationOwnerKind.Schedule
+                ? "No exact primary account/character row is common to every referenced Plan."
+                : "No exact primary LAN account/character row is available; substitutes and Dad-island placeholders cannot shop.");
+
+        ImGui.Checkbox($"Run /ays deliver after fulfilled shopping##{ownerKey}", ref shoppingDraftAutoRetainerDelivery);
+        ImGui.SetNextItemWidth(MathF.Min(520f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText(
+            $"Registered post-command##{ownerKey}",
+            ref shoppingDraftCustomCommand,
+            2_048);
+        ImGui.TextDisabled("Optional registered Dalamud slash command. It dispatches once after ADS succeeds, then DAD waits for a fresh world-safe release.");
+
+        var commandValid = string.IsNullOrWhiteSpace(shoppingDraftCustomCommand) ||
+                           DadCompletionCommandRules.TryNormalizeCustomCommand(
+                               shoppingDraftCustomCommand,
+                               out _,
+                               out _);
+        var mutationBlocker = plugin.GetShareMutationBlocker();
+        var mutationLocked = ownerMutationLocked || !string.IsNullOrWhiteSpace(mutationBlocker);
+        var draftReady = !string.IsNullOrWhiteSpace(shoppingDraftPresetId) &&
+                         selectedShopper != null &&
+                         commandValid &&
+                         (association != null || selectedPreset != null);
+
+        ImGui.BeginDisabled(string.IsNullOrWhiteSpace(shoppingDraftPresetId));
+        if (ImGui.SmallButton($"Preview only##{ownerKey}"))
+        {
+            var previewDraft = BuildShoppingDraft(association, selectedPreset);
+            var previewResult = plugin.DutySupportAdsService.PreviewShopListPreset(previewDraft);
+            shoppingEditorStatus = previewResult.Readable && previewResult.Preview != null
+                ? $"{previewResult.Summary} {previewResult.Preview.Rows.Count} row(s); " +
+                  $"{previewResult.Preview.Rows.Count(static row => row.PurchaseQuantity > 0)} would purchase."
+                : previewResult.Summary;
+        }
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Calls this client's ADS/current-character ownership preview only. It never queries a remote shopper, starts purchasing, or runs post-actions.");
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(mutationLocked || !draftReady);
+        if (ImGui.SmallButton($"{(association == null ? "Add association" : "Save association")}##{ownerKey}"))
+        {
+            var draft = BuildShoppingDraft(association, selectedPreset);
+            bool saved;
+            string saveError;
+            if (ownerKind == DadShoppingAssociationOwnerKind.Plan)
+                saved = plugin.TrySavePlanShoppingAssociation(ownerId, draft, out saveError);
+            else
+                saved = plugin.TrySaveScheduleShoppingAssociation(ownerId, draft, out saveError);
+            shoppingEditorStatus = saved
+                ? $"Saved ADS shopping association for {ownerName}."
+                : saveError;
+            if (saved)
+                shoppingDraftOwner = string.Empty;
+        }
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && mutationLocked)
+            ImGui.SetTooltip(string.IsNullOrWhiteSpace(mutationBlocker) ? "This owner is currently locked." : mutationBlocker);
+
+        if (association != null)
+        {
+            ImGui.SameLine();
+            ImGui.BeginDisabled(mutationLocked);
+            if (ImGui.SmallButton($"Remove association only##{ownerKey}"))
+            {
+                bool removed;
+                string removeError;
+                if (ownerKind == DadShoppingAssociationOwnerKind.Plan)
+                    removed = plugin.RemovePlanShoppingAssociation(ownerId, out removeError);
+                else
+                    removed = plugin.RemoveScheduleShoppingAssociation(ownerId, out removeError);
+                shoppingEditorStatus = removed
+                    ? $"Removed shopping association; {ownerKind} remains saved."
+                    : removeError;
+                if (removed)
+                    shoppingDraftOwner = string.Empty;
+            }
+            ImGui.EndDisabled();
+
+            DrawStatusRow(
+                "Non-repeatable progress",
+                $"{association.CompletedNonRepeatableRowIds.Count} exact RowId(s) marked done for this association only");
+            DrawStatusRow(
+                "Association state",
+                association.NonRepeatableRowsFulfilled
+                    ? $"Fulfilled at {FormatTime(association.FulfilledAtUtc)}; {ownerKind} remains saved."
+                    : "Still eligible; repeatable rows continue on later runs.");
+        }
+
+        if (!commandValid)
+            ImGui.TextDisabled("Registered post-command is not a valid single slash command.");
+        if (!string.IsNullOrWhiteSpace(shoppingEditorStatus))
+            ImGui.TextWrapped(FormatOperatorText(shoppingEditorStatus, string.Empty));
+
+        DrawShoppingFailureHistory(ownerKind, ownerId, mutationLocked, mutationBlocker);
+        DadUi.EndCard();
+
+        DadShoppingAssociation BuildShoppingDraft(
+            DadShoppingAssociation? current,
+            DadAdsShopListPresetSummary? catalogPreset)
+        {
+            var draft = current?.Clone() ?? new DadShoppingAssociation();
+            draft.PresetId = shoppingDraftPresetId;
+            draft.PresetName = catalogPreset?.Name ?? current?.PresetName ?? string.Empty;
+            draft.ShopperSlotId = shoppingDraftShopperSlotId;
+            if (selectedShopper != null)
+            {
+                draft.ShopperAccountKey = selectedShopper.RequiredAccountKey;
+                draft.ShopperCharacterKey = selectedShopper.RequiredCharacterKey;
+            }
+            draft.RunAutoRetainerDelivery = shoppingDraftAutoRetainerDelivery;
+            draft.CustomCommand = shoppingDraftCustomCommand;
+            DadShoppingAssociationRules.ResetCompletionIfProvenanceChanged(current, draft);
+            return draft;
+        }
+    }
+
+    private string FormatShoppingShopper(DadPlannerGroupSlot slot)
+        => $"{slot.SlotId} | {FormatOperatorAccountLabel("Account", slot.RequiredAccountKey.Value)} | " +
+           FormatOperatorCharacterKey(slot.RequiredCharacterKey.Value, "(unknown)");
+
+    private void DrawShoppingFailureHistory(
+        DadShoppingAssociationOwnerKind ownerKind,
+        string ownerId,
+        bool mutationLocked,
+        string mutationBlocker)
+    {
+        var failures = plugin.GetShoppingFailures(ownerKind, ownerId);
+        if (!ImGui.TreeNode($"Shopping failures ({failures.Count})##{ownerKind}-{ownerId}"))
+            return;
+        if (failures.Count == 0)
+        {
+            ImGui.TextDisabled("No persisted shopping failures for this owner.");
+            ImGui.TreePop();
+            return;
+        }
+
+        foreach (var failure in failures)
+        {
+            ImGui.PushID(failure.FailureId);
+            ImGui.TextDisabled($"{FormatTime(failure.ObservedAtUtc)} | {failure.FailureCode} | {(failure.Reviewed ? "reviewed" : "unreviewed")}");
+            ImGui.TextWrapped(FormatOperatorText(failure.Summary, "Shopping failed."));
+            if (!string.IsNullOrWhiteSpace(failure.Details) && ImGui.TreeNode("Details"))
+            {
+                ImGui.TextWrapped(FormatOperatorText(failure.Details, string.Empty));
+                ImGui.TreePop();
+            }
+            if (!failure.Reviewed)
+            {
+                ImGui.BeginDisabled(mutationLocked);
+                if (ImGui.SmallButton("Mark reviewed"))
+                {
+                    if (!plugin.MarkShoppingFailureReviewed(failure.FailureId, out var reviewError))
+                        shoppingEditorStatus = reviewError;
+                }
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && mutationLocked)
+                    ImGui.SetTooltip(string.IsNullOrWhiteSpace(mutationBlocker) ? "Shopping history is currently locked." : mutationBlocker);
+            }
+            ImGui.Separator();
+            ImGui.PopID();
+        }
+        ImGui.TreePop();
     }
 
     private void DrawPlannerGroupScheduleControls(DadPlannerGroup group)

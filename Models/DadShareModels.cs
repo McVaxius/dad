@@ -4,7 +4,7 @@ public static class DadShareConstants
 {
     public const string Format = "dad-share";
     public const int MinimumSupportedSchema = 1;
-    public const int Schema = 3;
+    public const int Schema = 4;
     public const string PlanKind = "plan";
     public const string ScheduleKind = "schedule";
     public const int MaxEncodedCharacters = 1_048_576;
@@ -86,6 +86,7 @@ public sealed class DadSharePlanDto
     public DadShareStopPolicyDto StopPolicy { get; set; } = new();
     public DadShareLevelingModeDto LevelingMode { get; set; } = new();
     public DadShareCompletionActionsDto? CompletionActions { get; set; }
+    public DadShareShoppingAssociationDto? ShoppingAssociation { get; set; }
     public List<DadSharePlanSlotDto> Slots { get; set; } = [];
     public bool IsTemplate { get; set; }
     public string MapRunTemplate { get; set; } = string.Empty;
@@ -116,6 +117,7 @@ public sealed class DadSharePlanSlotDto
     public string AccountToken { get; set; } = string.Empty;
     public string CharacterToken { get; set; } = string.Empty;
     public string CharacterLabel { get; set; } = string.Empty;
+    public bool SourceIsSharedIdentity { get; set; }
     public uint? RequiredJobId { get; set; }
     public DadAdsLootMode AdsLootMode { get; set; } = DadAdsLootMode.NoChange;
     public int? LevelSeekTarget { get; set; }
@@ -164,11 +166,22 @@ public sealed class DadSharePostRunUtilitiesDto
     public string GrandCompanyHandInCommand { get; set; } = "/ays gc";
 }
 
+public sealed class DadShareShoppingAssociationDto
+{
+    public string AssociationId { get; set; } = string.Empty;
+    public string PresetId { get; set; } = string.Empty;
+    public string PresetName { get; set; } = string.Empty;
+    public string ShopperSlotId { get; set; } = string.Empty;
+    public bool RunAutoRetainerDelivery { get; set; }
+    public string CustomCommand { get; set; } = string.Empty;
+}
+
 public sealed class DadShareScheduleDto
 {
     public string ScheduleId { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
+    public DadShareShoppingAssociationDto? ShoppingAssociation { get; set; }
     public List<DadShareScheduleEntryDto> Entries { get; set; } = [];
 }
 

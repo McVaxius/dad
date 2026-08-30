@@ -37,6 +37,7 @@ public sealed class DadRunRequest
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadPreDutyRepairPolicy PreDutyRepairPolicy { get; set; } = new();
     public DadCompletionActions? CompletionActions { get; set; }
+    public List<DadShoppingRunAssociation> ShoppingAssociations { get; set; } = [];
     public DadOrchestrationIntent Orchestration { get; set; } = new();
     public DadDungeonTask? Dungeon { get; set; }
     public DadMsqTask? Msq { get; set; }
@@ -174,6 +175,7 @@ public sealed class DadRunRequest
         StopPolicy.Normalize();
         PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
         PreDutyRepairPolicy.Normalize();
+        ShoppingAssociations = DadShoppingAssociationRules.NormalizeRunAssociations(ShoppingAssociations);
         Orchestration ??= new DadOrchestrationIntent();
         Orchestration.RosterIntent ??= new DadRosterIntent();
         Orchestration.WaitPolicy ??= new DadRunWaitPolicy();

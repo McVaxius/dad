@@ -74,6 +74,7 @@ public sealed class Configuration : IPluginConfiguration
     public List<DadScheduleDefinition> Schedules { get; set; } = [];
     public DadScheduleRunState ActiveScheduleRun { get; set; } = new();
     public List<DadScheduleRunResult> ScheduleHistory { get; set; } = [];
+    public List<DadShoppingFailureRecord> ShoppingFailures { get; set; } = [];
     public DadAutoPartyConfiguration AutoParty { get; set; } = new();
     public DadAutoPartyFleetConfiguration AutoPartyFleet { get; set; } = new();
 
@@ -264,6 +265,51 @@ public sealed class Configuration : IPluginConfiguration
             changed |= priorThreshold != PreDutyRepairPolicy.ThresholdPercent ||
                        priorMode != PreDutyRepairPolicy.Mode;
         }
+
+        if (PlannerGroups == null)
+        {
+            PlannerGroups = [];
+            changed = true;
+        }
+        foreach (var group in PlannerGroups)
+        {
+            if (group.ShoppingAssociation == null)
+                continue;
+            var before = DadIpcJson.Serialize(group.ShoppingAssociation);
+            group.ShoppingAssociation.Normalize();
+            DadShoppingAssociationRules.TryBindToPlanSlot(group.ShoppingAssociation, group, out _);
+            changed |= !string.Equals(
+                before,
+                DadIpcJson.Serialize(group.ShoppingAssociation),
+                StringComparison.Ordinal);
+        }
+        if (Schedules == null)
+        {
+            Schedules = [];
+            changed = true;
+        }
+        foreach (var schedule in Schedules)
+        {
+            var before = DadIpcJson.Serialize(schedule);
+            schedule.Normalize();
+            DadShoppingAssociationRules.TryBindToSchedulePlans(
+                schedule.ShoppingAssociation,
+                schedule,
+                PlannerGroups,
+                out _);
+            changed |= !string.Equals(before, DadIpcJson.Serialize(schedule), StringComparison.Ordinal);
+        }
+        if (ShoppingFailures == null)
+        {
+            ShoppingFailures = [];
+            changed = true;
+        }
+        var failuresBefore = DadIpcJson.Serialize(ShoppingFailures);
+        DadShoppingAssociationRules.TrimFailures(ShoppingFailures);
+        changed |= !string.Equals(
+            failuresBefore,
+            DadIpcJson.Serialize(ShoppingFailures),
+            StringComparison.Ordinal);
         return changed;
     }
 

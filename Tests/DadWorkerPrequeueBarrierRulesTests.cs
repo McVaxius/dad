@@ -21,7 +21,7 @@ public sealed class DadWorkerPrequeueBarrierRulesTests
         Assert.True(DadWorkerPrequeueBarrierRules.TryResolveDispatchTargets(
             plan, module, participants, statuses, out var acceptedOnly, out blocker), blocker);
         Assert.Empty(acceptedOnly);
-        Assert.False(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, participants, statuses));
+        Assert.False(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, module, participants, statuses));
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class DadWorkerPrequeueBarrierRulesTests
         Assert.Empty(notReady);
 
         statuses["worker-y"].State = DadWorkerExecutionState.WaitingForQueue;
-        Assert.True(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, participants, statuses));
+        Assert.True(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, module, participants, statuses));
         Assert.True(DadWorkerPrequeueBarrierRules.TryResolveDispatchTargets(
             plan, module, participants, statuses, out var leaderDispatch, out blocker), blocker);
         var leader = Assert.Single(leaderDispatch);
@@ -68,7 +68,7 @@ public sealed class DadWorkerPrequeueBarrierRulesTests
                 StringComparer.OrdinalIgnoreCase);
         statuses["worker-y"].State = preparationState;
 
-        Assert.False(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, participants, statuses));
+        Assert.False(DadWorkerPrequeueBarrierRules.AreAllNonLeadersWaiting(plan, module, participants, statuses));
         Assert.True(DadWorkerPrequeueBarrierRules.TryResolveDispatchTargets(
             plan, module, participants, statuses, out var targets, out var blocker), blocker);
         Assert.Empty(targets);

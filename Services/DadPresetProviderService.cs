@@ -795,6 +795,19 @@ public sealed class DadPresetProviderService
             CompletionActions = ResolvePlannerCompletionActions(options, effectiveSelectedGroup, completionFallback),
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, effectiveSelectedGroup, lane, requestedPartySize),
         };
+        var shoppingBlocker = string.Empty;
+        var frozenPlanShopping = DadShoppingAssociationRules.FreezePlan(selectedGroup);
+        if (frozenPlanShopping != null)
+        {
+            request.ShoppingAssociations.Add(frozenPlanShopping);
+            if (!DadShoppingAssociationRules.TryValidateForPlan(
+                    frozenPlanShopping,
+                    selectedGroup!,
+                    out shoppingBlocker))
+            {
+                shoppingBlocker = $"Plan shopping association is invalid: {shoppingBlocker}";
+            }
+        }
 
         PopulatePlannerRequestTask(
             request,
@@ -830,6 +843,15 @@ public sealed class DadPresetProviderService
             ReadinessBlockers = [..plannerPreview.ReadinessBlockers],
             ScheduleBlockers = [..plannerPreview.ScheduleBlockers],
         };
+
+        if (!string.IsNullOrWhiteSpace(shoppingBlocker))
+        {
+            result.CanSchedule = false;
+            AddValidationBlocker(result.StaticBlockers, shoppingBlocker);
+            BlockRequest(result, shoppingBlocker);
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
 
         if (!formationOnly && !string.IsNullOrWhiteSpace(dutySelectorBlocker))
         {

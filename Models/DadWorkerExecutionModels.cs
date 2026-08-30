@@ -19,18 +19,26 @@ public enum DadWorkerExecutionState
     TimedOut = 8,
     Preparing = 9,
     Repairing = 10,
+    Shopping = 11,
 }
 
 internal static class DadWorkerCommandSchemaRules
 {
     public const int LegacySchema = 1;
     public const int RepairPolicySchema = 2;
+    public const int ShoppingSchema = 3;
 
     public static bool IsSupported(int schemaVersion)
-        => schemaVersion is LegacySchema or RepairPolicySchema;
+        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema;
 
-    public static int ResolveEmissionSchema(DadPreDutyRepairPolicy? policy)
-        => policy?.Enabled == true ? RepairPolicySchema : LegacySchema;
+    public static int ResolveEmissionSchema(
+        DadPreDutyRepairPolicy? policy,
+        IReadOnlyCollection<DadShoppingRunAssociation>? shoppingAssociations = null)
+        => shoppingAssociations is { Count: > 0 }
+            ? ShoppingSchema
+            : policy?.Enabled == true
+                ? RepairPolicySchema
+                : LegacySchema;
 }
 
 public sealed class DadWorkerExecutionCommand
@@ -61,6 +69,7 @@ public sealed class DadWorkerExecutionStatus
     public string Summary { get; set; } = string.Empty;
     public string FailureReason { get; set; } = string.Empty;
     public DadRunStepResultDto StepResult { get; set; } = new();
+    public List<DadShoppingRunResult> ShoppingResults { get; set; } = [];
 
     public DadWorkerExecutionStatus Clone()
         => new()
@@ -79,6 +88,7 @@ public sealed class DadWorkerExecutionStatus
             Summary = Summary,
             FailureReason = FailureReason,
             StepResult = StepResult.Clone(),
+            ShoppingResults = ShoppingResults.Select(static result => result.Clone()).ToList(),
         };
 }
 
