@@ -1,5 +1,9 @@
 # dad — changelog
 
+## 2026-08-30 — GitHub build and release correction
+- GitHub Actions now restores and builds only `dad.csproj`; local unit tests remain available but no longer block
+  packaging, artifact upload, or release.
+
 ## 2026-08-29 — ADS shopping associations for Plans and Schedules (local-only, unpublished)
 - Plans and Schedules can now bind one stable ADS shopping-list preset to one exact LAN shopper. DAD serializes Plan
   shopping before Schedule shopping, preserves refill and vendor ownership in ADS, records only ADS-proven

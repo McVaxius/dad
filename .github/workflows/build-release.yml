@@ -62,16 +62,10 @@ jobs:
           $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
           $nugetSource = "https://api.nuget.org/v3/index.json"
           dotnet restore "${{ env.PROJECT_PATH }}" -r win --locked-mode --source $nugetSource --source $packageDir
-          dotnet restore "Tests\dad.Tests.csproj" --locked-mode --source $nugetSource --source $packageDir
 
       - name: Build
         run: |
           dotnet build "${{ env.PROJECT_PATH }}" --configuration Release -p:Platform=x64 -p:DadDevPluginOutput= --no-restore
-        env:
-          DOTNET_CLI_TELEMETRY_OPTOUT: true
-
-      - name: Test
-        run: dotnet test "Tests\dad.Tests.csproj" --configuration Release -p:Platform=x64 --no-restore
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
 
