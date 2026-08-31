@@ -298,6 +298,13 @@ public sealed class DadCoordinatorService
         if (IsBusy)
             return DadRunResult.Rejected(request, "dad already has an active run.");
 
+        if (HasPendingCancellationCleanup)
+        {
+            return DadRunResult.Rejected(
+                request,
+                "Dad cancellation cleanup is still awaiting exact acknowledgement.");
+        }
+
         if (!presenceService.BuildSnapshotCopy().Dependencies.IsReady)
             return DadRunResult.Rejected(request, DadDependencyRules.DependencyBlocker);
 
@@ -4586,6 +4593,12 @@ public sealed class DadCoordinatorService
         configuration.PersistedActiveRun = null;
         configuration.Save();
 
+        if (status == DadRunStatus.Cancelled && HasPendingCancellationCleanup)
+        {
+            CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
+            CurrentResult.ActiveTaskStatus = "Cancellation cleanup is awaiting exact acknowledgement.";
+        }
+
         // Feature batch A: run operator-chosen completion actions (sound / commands / legacy kill settings).
         if (status == DadRunStatus.Completed)
             DadCompletionActionRunner.Enqueue(configuration, log, activePlan?.Request);
@@ -4786,6 +4799,15 @@ public sealed class DadCoordinatorService
             LogCoordinatorCancellationTransition(pair.Key, pending, "acknowledged");
             MarkCoordinatorCancellationAcknowledged(pending);
             pendingCoordinatorCancellations.Remove(pair.Key);
+        }
+
+        if (pendingCoordinatorCancellations.Count == 0 &&
+            CurrentResult.Status == DadRunStatus.Cancelled &&
+            CurrentResult.CancellationState == DadRunCancellationState.Cancelling)
+        {
+            CurrentResult.CancellationState = DadRunCancellationState.Finalized;
+            CurrentResult.ActiveTaskStatus = CurrentResult.Summary;
+            Publish();
         }
     }
 

@@ -79,6 +79,7 @@ public sealed class DadVermaxionReservationStatus
         => !string.IsNullOrWhiteSpace(operationToken) &&
            !string.IsNullOrWhiteSpace(OperationToken) &&
            string.Equals(OperationToken, operationToken.Trim(), StringComparison.OrdinalIgnoreCase) &&
+           State != DadVermaxionReservationState.NotLoaded &&
            State != DadVermaxionReservationState.Rejected &&
            State != DadVermaxionReservationState.Released &&
            (!LeaseExpiresUtc.HasValue || LeaseExpiresUtc.Value > EnsureUtc(nowUtc));

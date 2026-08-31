@@ -1,5 +1,18 @@
 # dad — changelog
 
+## 2026-08-31 — Planner launch ownership and absent-VERMAXION fallback (local-only, unpublished)
+- Planner now presents separate **Run now — online participants** and Coordinator-only **Wake/relog and run** actions.
+  Direct runs reuse the existing Planner request without entering the scheduler or takeover path; wake/relog keeps the
+  existing scheduler and `LaunchIfOffline` safety behavior. Client scheduler submissions reject before queue mutation.
+- A definitively unloaded VERMAXION no longer creates or renews an authoritative `Unavailable/ReservationRenewal`
+  handoff. DAD instead continues through the existing AutoRetainer character-postprocess and suppression boundary, while
+  loaded-but-busy, malformed, unreadable, or indeterminate VERMAXION evidence remains fail-closed.
+- Planner now exposes one owner-aware **Cancel preset operation** action: active or pending scheduler work cancels by exact
+  Job ID, otherwise the active direct Planner run cancels through its run-coordinator owner. Pending cleanup is visible and
+  blocks another start until exact acknowledgement; legacy Client queue entries remain locally cancelable.
+- Tam-Tara Duty Support retains its saved `AfterRuns = 10` direct-run stop policy. Configuration, IPC/wire contracts,
+  public APIs, version, packaging, and release artifacts are unchanged.
+
 ## 2026-08-30 — Questionable combat ownership (local-only, unpublished)
 - DAD's existing Questionable bridge now replaces AutoDuty's config subscriber with `dad.Duty.GetConfig` and reports
   DAD-owned combat/ADS management for Use FrenRider and Force Commands, preventing competing regular-duty enable/disable

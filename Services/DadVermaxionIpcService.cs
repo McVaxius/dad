@@ -68,11 +68,7 @@ public sealed class DadVermaxionIpcService : IDisposable
                 return cached;
             if (!loaded.Value)
             {
-                cached = DadVermaxionStatusParser.Parse(false, null, now);
-                reservation = activeRequest == null
-                    ? DadVermaxionReservationParser.NotLoaded(now)
-                    : DadVermaxionReservationParser.Renewing(activeRequest, now);
-                nextRenewUtc = DateTime.MinValue;
+                ObserveUnloadedProvider(now);
                 return cached;
             }
 
@@ -99,6 +95,13 @@ public sealed class DadVermaxionIpcService : IDisposable
 
             request = Clone(request);
             request.LeaseSeconds = DadVermaxionHandoffContract.LeaseSeconds;
+            var loaded = IsLoaded(now);
+            if (loaded == false)
+            {
+                ObserveUnloadedProvider(now);
+                return reservation.Clone();
+            }
+
             if (activeRequest == null ||
                 !string.Equals(
                     activeRequest.OperationToken,
@@ -109,8 +112,7 @@ public sealed class DadVermaxionIpcService : IDisposable
             }
             activeRequest = request;
 
-            var loaded = IsLoaded(now);
-            if (loaded != true)
+            if (!loaded.HasValue)
             {
                 reservation = DadVermaxionReservationParser.Renewing(request, now);
                 nextRenewUtc = now + RefreshInterval;
@@ -280,6 +282,16 @@ public sealed class DadVermaxionIpcService : IDisposable
             cached = DadVermaxionStatusParser.Parse(true, null, now, $"Installed-plugin inspection failed: {ex.Message}");
             return null;
         }
+    }
+
+    private void ObserveUnloadedProvider(DateTime now)
+    {
+        cached = DadVermaxionStatusParser.Parse(false, null, now);
+        reservation = DadVermaxionReservationParser.NotLoaded(now);
+        activeRequest = null;
+        remotelySubmittedOperationToken = string.Empty;
+        pendingReleaseOperationToken = string.Empty;
+        nextRenewUtc = DateTime.MinValue;
     }
 
     private void CompleteLocalRelease(string operationToken, bool matchesActiveRequest)

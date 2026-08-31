@@ -380,7 +380,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             ImGui.SameLine();
             if (DadUi.Button("Cancel active run", DadUiTone.Danger))
-                plugin.CancelActiveRunFromShell();
+                CancelOwnedOperation();
         }
 
     }
@@ -406,7 +406,7 @@ public sealed class MainWindow : Window, IDisposable
             {
                 ImGui.SameLine();
                 if (DadUi.Button("Cancel active run##top-banner", DadUiTone.Danger))
-                    plugin.CancelActiveRunFromShell();
+                    CancelOwnedOperation();
             }
 
             ImGui.TextWrapped(keyStatus);
@@ -4150,7 +4150,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPresetPlannerTab(DadCharacterPool characterPool, DadVisibleRunState runState)
     {
-        DadUi.Heading("PLAN", "Choose a saved preset, configure the run, resolve blockers, then start through the scheduler-backed path.");
+        DadUi.Heading("PLAN", "Choose a saved preset, configure the run, then run online participants now or ask the Coordinator to wake/relog the saved crew.");
         var plannerOptions = plugin.PlannerOptions;
         var plannerSnapshot = plugin.GetPlannerUiSnapshot(runState);
         var requestPreview = plannerSnapshot.RequestPreview;
@@ -4523,7 +4523,7 @@ public sealed class MainWindow : Window, IDisposable
         var cancellationCleanupJob = selectedGroup == null
             ? null
             : plugin.SchedulerService.GetPendingTakeoverCleanupJob(selectedGroup.GroupId);
-        var existingSchedulerJob = selectedGroup == null
+        var selectedSchedulerJob = selectedGroup == null
             ? null
             : queue.ActiveJob is { } activeJob &&
               string.Equals(activeJob.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase)
@@ -4531,20 +4531,54 @@ public sealed class MainWindow : Window, IDisposable
                 : queue.PendingJobs.FirstOrDefault(job =>
                     string.Equals(job.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase))
                   ?? cancellationCleanupJob;
-        var cancellationCleanupPending = cancellationCleanupJob != null &&
-                                         existingSchedulerJob != null &&
-                                         string.Equals(
-                                             cancellationCleanupJob.JobId,
-                                             existingSchedulerJob.JobId,
-                                             StringComparison.OrdinalIgnoreCase);
-        var runEnabled = selectedGroup != null && schedulerPreview.CanStart && existingSchedulerJob == null;
+        var selectedCleanupPending = cancellationCleanupJob != null &&
+                                     selectedSchedulerJob != null &&
+                                     string.Equals(
+                                         cancellationCleanupJob.JobId,
+                                         selectedSchedulerJob.JobId,
+                                         StringComparison.OrdinalIgnoreCase);
+        var activeRun = GetActiveRun(runState);
+        var schedulerCleanupPending = plugin.SchedulerService.HasPendingCancellationCleanup;
+        var visibleCoordinatorCleanupPending = activeRun.CancellationState is
+            DadRunCancellationState.Requested or DadRunCancellationState.Cancelling;
+        var coordinatorCleanupPending = plugin.RunCoordinatorService.HasPendingCancellationCleanup ||
+                                        visibleCoordinatorCleanupPending;
+        var cancellationCleanupPending = schedulerCleanupPending || coordinatorCleanupPending;
+        var directRunEnabled = !plannerLocked &&
+                               !cancellationCleanupPending &&
+                               queue.ActiveJob == null &&
+                               selectedSchedulerJob == null &&
+                               requestPreview.CanStart;
+        var wakeRunEnabled = !plannerLocked &&
+                             !cancellationCleanupPending &&
+                             plugin.Configuration.RunAsServerDad &&
+                             selectedGroup != null &&
+                             selectedSchedulerJob == null &&
+                             schedulerPreview.CanStart;
+        var schedulerJobToCancel = queue.ActiveJob ??
+                                   (selectedGroup == null
+                                       ? null
+                                       : queue.PendingJobs.FirstOrDefault(job =>
+                                           string.Equals(job.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase))) ??
+                                   cancellationCleanupJob;
+        var directPlannerRunActive = schedulerJobToCancel == null &&
+                                     Plugin.IsBusy(activeRun) &&
+                                     (string.Equals(activeRun.RequestedBy, "planner", StringComparison.OrdinalIgnoreCase) ||
+                                      activeRun.RequestedBy.StartsWith("planner-group:", StringComparison.OrdinalIgnoreCase));
+        var cancelEnabled = !cancellationCleanupPending &&
+                            (schedulerJobToCancel != null || directPlannerRunActive);
         var runButtonWidth = -1f;
 
-        DrawStatusRow("Readiness", !string.IsNullOrWhiteSpace(dependencyBlocker)
-            ? "Waiting for required plugins"
-            : schedulerPreview.CanStart
-            ? schedulerPreview.ReadyToStart ? "Ready now" : "Ready to wake and prepare the saved crew"
-            : "Blocked");
+        DrawStatusRow("Run now readiness", requestPreview.CanStart
+            ? "Ready for the currently online participants."
+            : FormatText(requestPreview.BlockedReason, requestPreview.StatusSummary));
+        DrawStatusRow("Wake/relog readiness", !plugin.Configuration.RunAsServerDad
+            ? "Coordinator only — use Planner on the Dad Coordinator."
+            : !string.IsNullOrWhiteSpace(dependencyBlocker)
+                ? "Waiting for required plugins."
+                : schedulerPreview.CanStart
+                    ? schedulerPreview.ReadyToStart ? "Ready now." : "Ready to wake and prepare the saved crew."
+                    : FormatText(schedulerPreview.BlockedReason, "Blocked."));
         DrawStatusRow("First blocker", FormatText(firstBlocker, "None"));
 
         ImGui.BeginDisabled(selectedGroup == null);
@@ -4559,57 +4593,79 @@ public sealed class MainWindow : Window, IDisposable
             ? null
             : plugin.GetPlannerValidationFeedback(snapshotGeneration, selectedGroup.GroupId);
         var feedbackText = justValidated ?? feedback?.Summary;
-        ImGui.SameLine();
 
-        ImGui.BeginDisabled(!runEnabled);
-        if (ImGui.Button("Run preset — wake, relog, group, start", new Vector2(runButtonWidth, 0f)))
-            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
-        var runPresetHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.BeginDisabled(!directRunEnabled);
+        if (ImGui.Button("Run now — online participants", new Vector2(runButtonWidth, 0f)))
+            plugin.StartPlannerRunFromShell();
+        var directRunHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
-        if (runPresetHovered)
+        if (directRunHovered)
         {
-            var runTooltip = selectedGroup == null
-                ? "Select a saved preset before running it."
-                : existingSchedulerJob != null
-                    ? $"This preset already has an active or pending scheduler job. Phase {(cancellationCleanupPending ? "Cancellation cleanup" : ResolveSchedulerJobPhase(existingSchedulerJob, queue))}; Job ID {existingSchedulerJob.JobId}."
-                    : schedulerPreview.CanStart
-                        ? schedulerPreview.StatusSummary
-                        : schedulerPreview.BlockedReason;
-            ImGui.SetTooltip(FormatText(runTooltip, "Scheduler preview is blocked."));
+            var directTooltip = cancellationCleanupPending
+                ? "Cancellation cleanup is awaiting exact acknowledgement before another preset operation can start."
+                : selectedSchedulerJob != null
+                    ? $"This preset already has an active or pending scheduler job. Job ID {selectedSchedulerJob.JobId}."
+                    : requestPreview.CanStart
+                        ? "Starts the existing direct Planner request for online participants only. It does not enter the scheduler, wake, relog, or request VERMAXION takeover."
+                        : FormatText(requestPreview.BlockedReason, requestPreview.StatusSummary);
+            ImGui.SetTooltip(FormatText(directTooltip, "Direct Planner preview is blocked."));
+        }
+
+        ImGui.BeginDisabled(!wakeRunEnabled);
+        if (ImGui.Button("Wake/relog and run", new Vector2(runButtonWidth, 0f)))
+            EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset, DadMapCrewJobMode.ManualMapReady);
+        var wakeRunHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.EndDisabled();
+        if (wakeRunHovered)
+        {
+            var wakeTooltip = !plugin.Configuration.RunAsServerDad
+                ? "Wake/relog and run is available only on the Dad Coordinator. Use Planner on the Coordinator."
+                : selectedGroup == null
+                    ? "Select a saved preset before using Wake/relog and run."
+                    : cancellationCleanupPending
+                        ? "Cancellation cleanup is awaiting exact acknowledgement before another preset operation can start."
+                        : selectedSchedulerJob != null
+                            ? $"This preset already has an active or pending scheduler job. Phase {(selectedCleanupPending ? "Cancellation cleanup" : ResolveSchedulerJobPhase(selectedSchedulerJob, queue))}; Job ID {selectedSchedulerJob.JobId}."
+                            : schedulerPreview.CanStart
+                                ? schedulerPreview.StatusSummary
+                                : schedulerPreview.BlockedReason;
+            ImGui.SetTooltip(FormatText(wakeTooltip, "Scheduler preview is blocked."));
         }
         if (!string.IsNullOrWhiteSpace(feedbackText))
             ImGui.TextWrapped(feedbackText);
-        if (existingSchedulerJob != null)
+        if (selectedSchedulerJob != null)
         {
-            var phase = cancellationCleanupPending
+            var phase = selectedCleanupPending
                 ? "Cancellation cleanup"
-                : ResolveSchedulerJobPhase(existingSchedulerJob, queue);
-            if (!cancellationCleanupPending)
-            {
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Cancel scheduler job##planner-existing-job"))
-                {
-                    var responseJson = plugin.CancelScheduledJobFromJson(DadIpcJson.Serialize(new DadCancelScheduledJobRequest
-                    {
-                        JobId = existingSchedulerJob.JobId,
-                        Reason = $"Operator cancelled preset '{selectedGroup!.DisplayName}' from the planner.",
-                    }));
-                    var response = DadIpcJson.Deserialize<DadSchedulerQueueSnapshot>(responseJson);
-                    plugin.PrintStatus(response?.Summary ?? $"Cancelled scheduler Job ID {existingSchedulerJob.JobId}.");
-                }
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip($"Cancel phase {phase}, Job ID {existingSchedulerJob.JobId}. Temporary Dad-owned takeover state will be released without starting party or queue work.");
-            }
-            DrawStatusRow("Existing scheduler job", $"{phase} | Job ID {existingSchedulerJob.JobId}");
+                : ResolveSchedulerJobPhase(selectedSchedulerJob, queue);
+            DrawStatusRow("Existing scheduler job", $"{phase} | Job ID {selectedSchedulerJob.JobId}");
         }
 
-        if (plannerLocked)
+        if (cancellationCleanupPending)
         {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Cancel active run##planner-action-strip"))
-                plugin.CancelActiveRunFromShell();
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Cancels the active Dad run visible to this client.");
+            var cleanupSummary = schedulerCleanupPending
+                ? queue.Summary
+                : FormatText(
+                    activeRun.ActiveTaskStatus,
+                    "Direct Planner cancellation cleanup is awaiting exact acknowledgement.");
+            DrawStatusRow("Cancellation cleanup", cleanupSummary);
+        }
+
+        ImGui.BeginDisabled(!cancelEnabled);
+        if (DadUi.Button("Cancel preset operation", DadUiTone.Danger, new Vector2(runButtonWidth, 0f)))
+            CancelOwnedOperation(schedulerJobToCancel, "Planner");
+        var cancelHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        ImGui.EndDisabled();
+        if (cancelHovered)
+        {
+            var cancelTooltip = cancellationCleanupPending
+                ? "Cancellation was requested. Another start remains blocked until exact cleanup acknowledgement arrives."
+                : schedulerJobToCancel != null
+                    ? $"Cancels the scheduler owner by exact Job ID {schedulerJobToCancel.JobId}; takeover cleanup must acknowledge before another start."
+                    : directPlannerRunActive
+                        ? "Cancels the active direct Planner run through the run coordinator owner."
+                        : "No active or pending preset operation is available to cancel.";
+            ImGui.SetTooltip(cancelTooltip);
         }
 
         if (ImGui.SmallButton("Open Status"))
@@ -4617,12 +4673,6 @@ public sealed class MainWindow : Window, IDisposable
 
         if (plugin.Configuration.AdvancedModeEnabled && ImGui.TreeNode("Advanced / specialized actions"))
         {
-            ImGui.BeginDisabled(plannerLocked || !requestPreview.CanStart);
-            if (ImGui.SmallButton("Start planner run (online participants only)"))
-                plugin.StartPlannerRunFromShell();
-            ImGui.EndDisabled();
-
-            ImGui.SameLine();
             ImGui.BeginDisabled(selectedGroup == null);
             if (ImGui.SmallButton("Prepare map crew"))
                 EnqueueSelectedPreset(DadSchedulerJobType.MapCrew, selectedGroup?.MapMode ?? DadMapCrewJobMode.ManualMapReady);
@@ -4630,6 +4680,24 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TreePop();
         }
 
+    }
+
+    private void CancelOwnedOperation(DadScheduledCrewJob? fallbackSchedulerJob = null, string source = "DAD UI")
+    {
+        var schedulerJob = plugin.SchedulerService.GetQueueSnapshot().ActiveJob ?? fallbackSchedulerJob;
+        if (schedulerJob == null)
+        {
+            plugin.CancelActiveRunFromShell();
+            return;
+        }
+
+        var responseJson = plugin.CancelScheduledJobFromJson(DadIpcJson.Serialize(new DadCancelScheduledJobRequest
+        {
+            JobId = schedulerJob.JobId,
+            Reason = $"Operator cancelled scheduler Job ID {schedulerJob.JobId} from {source}.",
+        }));
+        var response = DadIpcJson.Deserialize<DadSchedulerQueueSnapshot>(responseJson);
+        plugin.PrintStatus(response?.Summary ?? $"Cancelled scheduler Job ID {schedulerJob.JobId}.");
     }
 
     private static string ResolveSchedulerJobPhase(

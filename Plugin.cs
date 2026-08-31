@@ -2564,6 +2564,14 @@ public sealed class Plugin : IDalamudPlugin
             startRequest = new DadPlannerGroupStartRequest { GroupId = fallbackId };
         }
 
+        var cleanupBlocker = SchedulerService.HasPendingCancellationCleanup
+            ? "Scheduler cancellation cleanup is still awaiting exact acknowledgement."
+            : RunCoordinatorService.HasPendingCancellationCleanup
+                ? "Coordinator cancellation cleanup is still awaiting exact acknowledgement."
+                : string.Empty;
+        if (!string.IsNullOrWhiteSpace(cleanupBlocker))
+            return DadIpcJson.Serialize(DadRunResult.Rejected(null, cleanupBlocker));
+
         if (TryResolvePlannerGroupForIpc(startRequest.GroupId, out var levelingGroup, out _) &&
             levelingGroup?.LevelingMode?.Enabled == true)
         {
@@ -4173,6 +4181,13 @@ public sealed class Plugin : IDalamudPlugin
             request = new DadScheduledPresetRequest { GroupId = fallbackId };
         }
 
+        if (!Configuration.RunAsServerDad)
+        {
+            var rejected = SchedulerService.GetQueueSnapshot();
+            rejected.Summary = "Only Dad Coordinator may admit scheduler work. Use Planner on the Coordinator for Wake/relog and run.";
+            return DadIpcJson.Serialize(rejected);
+        }
+
         var groupId = string.IsNullOrWhiteSpace(request.GroupId)
             ? PlannerOptions.SelectedPlannerGroupId
             : request.GroupId;
@@ -4627,6 +4642,18 @@ public sealed class Plugin : IDalamudPlugin
 
     public DadRunResult StartPlannerRunFromShell()
     {
+        var cleanupBlocker = SchedulerService.HasPendingCancellationCleanup
+            ? "Scheduler cancellation cleanup is still awaiting exact acknowledgement."
+            : RunCoordinatorService.HasPendingCancellationCleanup
+                ? "Coordinator cancellation cleanup is still awaiting exact acknowledgement."
+                : string.Empty;
+        if (!string.IsNullOrWhiteSpace(cleanupBlocker))
+        {
+            var result = DadRunResult.Rejected(null, cleanupBlocker);
+            PrintStatus(result.Summary);
+            return result;
+        }
+
         var requestPreview = BuildPlannerRunRequestPreview();
         if (!requestPreview.CanStart || requestPreview.Request == null)
         {

@@ -142,6 +142,33 @@ public sealed class DadAttemptStopPolicyTests
     }
 
     [Fact]
+    public void DirectTamTaraDutySupportRequestRetainsTenRunStopPolicy()
+    {
+        var request = new DadRunRequest
+        {
+            RequestedBy = "planner-group:Tam-Tara Duty Support",
+            DutySupport = new DadDutySupportTask
+            {
+                ContentFinderConditionId = 5,
+                DutyName = "The Tam-Tara Deepcroft",
+                Attempts = 1,
+            },
+            StopPolicy = new DadRunStopPolicy
+            {
+                Mode = DadPlannerStopMode.AfterRuns,
+                AfterRuns = 10,
+            },
+        };
+
+        request.StopPolicy = request.StopPolicy.Clone().Normalize();
+        request.ApplyOrchestrationDefaults();
+
+        Assert.Equal(DadPlannerStopMode.AfterRuns, request.StopPolicy.Mode);
+        Assert.Equal(10, request.StopPolicy.AfterRuns);
+        Assert.Contains("The Tam-Tara Deepcroft", request.DescribeRequestedWork(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildAttemptStopPolicyLeavesTargetStopModesUntouched()
     {
         var source = new DadRunStopPolicy

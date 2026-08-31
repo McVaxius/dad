@@ -21,6 +21,33 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
+    public void NotLoadedVermaxionUsesAutoRetainerCharacterPostprocessBoundary()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        target.Reservation.State = DadVermaxionReservationState.NotLoaded;
+        var service = new DadWakeTakeoverService(target);
+
+        var waiting = service.Handle(Request());
+
+        Assert.Equal(DadVermaxionReservationState.NotLoaded, waiting.VermaxionReservationState);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, waiting.Phase);
+        Assert.Equal(DadWakeTakeoverStage.AwaitingArHook, waiting.Stage);
+        Assert.Equal(["Arm"], target.Actions);
+        Assert.DoesNotContain("AcquireSuppression", target.Actions);
+
+        target.Snapshot.DadOwnsCharacterPostprocess = true;
+        service.OnCharacterPostprocessReady();
+        var prepared = service.Handle(Request());
+
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, prepared.Phase);
+        Assert.Contains("AcquireSuppression", target.Actions);
+        Assert.DoesNotContain("ReleaseReservation", target.Actions);
+        Assert.DoesNotContain("ReservationRenewal", prepared.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Fact]
     public void AutoRetainerBusyWaitsBeforeReservationAndResumesWithoutMutation()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);

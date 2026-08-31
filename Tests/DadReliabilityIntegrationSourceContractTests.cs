@@ -226,6 +226,142 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.True(aggregateEvaluation >= 0);
     }
 
+    [Fact]
+    public void PlannerActionsKeepDirectSchedulerAndCancellationOwnersSeparate()
+    {
+        var windowSource = ReadRepositorySource("Windows", "MainWindow.cs");
+        var actionStart = windowSource.IndexOf(
+            "private void DrawPlannerActionStrip(",
+            StringComparison.Ordinal);
+        var cancelOwnerStart = windowSource.IndexOf(
+            "private void CancelOwnedOperation(",
+            actionStart,
+            StringComparison.Ordinal);
+        var actionEnd = cancelOwnerStart;
+        var action = windowSource[actionStart..actionEnd];
+
+        var directLabel = action.IndexOf("Run now — online participants", StringComparison.Ordinal);
+        var directStart = action.IndexOf("plugin.StartPlannerRunFromShell();", directLabel, StringComparison.Ordinal);
+        var schedulerLabel = action.IndexOf("Wake/relog and run", directStart, StringComparison.Ordinal);
+        var schedulerStart = action.IndexOf(
+            "EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset",
+            schedulerLabel,
+            StringComparison.Ordinal);
+        var ownerAwareCancel = action.IndexOf(
+            "CancelOwnedOperation(schedulerJobToCancel, \"Planner\");",
+            StringComparison.Ordinal);
+
+        Assert.True(actionStart >= 0);
+        Assert.True(actionEnd > actionStart);
+        Assert.True(directLabel >= 0);
+        Assert.True(directStart > directLabel);
+        Assert.True(schedulerLabel > directStart);
+        Assert.True(schedulerStart > schedulerLabel);
+        Assert.Contains("plugin.Configuration.RunAsServerDad &&", action, StringComparison.Ordinal);
+        Assert.Contains("!cancellationCleanupPending", action, StringComparison.Ordinal);
+        Assert.Contains("visibleCoordinatorCleanupPending", action, StringComparison.Ordinal);
+        Assert.Contains("DadRunCancellationState.Cancelling", action, StringComparison.Ordinal);
+        Assert.Contains("Cancel preset operation", action, StringComparison.Ordinal);
+        Assert.True(ownerAwareCancel > schedulerStart);
+
+        var cancelOwnerEnd = windowSource.IndexOf(
+            "private static string ResolveSchedulerJobPhase(",
+            cancelOwnerStart,
+            StringComparison.Ordinal);
+        var cancelOwner = windowSource[cancelOwnerStart..cancelOwnerEnd];
+        var exactSchedulerOwner = cancelOwner.IndexOf(
+            "GetQueueSnapshot().ActiveJob ?? fallbackSchedulerJob",
+            StringComparison.Ordinal);
+        var exactJobId = cancelOwner.IndexOf(
+            "JobId = schedulerJob.JobId",
+            exactSchedulerOwner,
+            StringComparison.Ordinal);
+        var directCancel = cancelOwner.IndexOf(
+            "plugin.CancelActiveRunFromShell();",
+            StringComparison.Ordinal);
+
+        Assert.True(cancelOwnerStart > actionStart);
+        Assert.True(cancelOwnerEnd > cancelOwnerStart);
+        Assert.True(exactSchedulerOwner >= 0);
+        Assert.True(exactJobId > exactSchedulerOwner);
+        Assert.True(directCancel >= 0);
+
+        var shellHeaderStart = windowSource.IndexOf("private void DrawShellHeader(", StringComparison.Ordinal);
+        var activeBannerStart = windowSource.IndexOf(
+            "private void DrawActiveRunBanner(",
+            shellHeaderStart,
+            StringComparison.Ordinal);
+        var configurationWarningStart = windowSource.IndexOf(
+            "private void DrawConfigurationPersistenceWarning(",
+            activeBannerStart,
+            StringComparison.Ordinal);
+        var shellHeader = windowSource[shellHeaderStart..activeBannerStart];
+        var activeBanner = windowSource[activeBannerStart..configurationWarningStart];
+
+        Assert.Contains("CancelOwnedOperation();", shellHeader, StringComparison.Ordinal);
+        Assert.Contains("CancelOwnedOperation();", activeBanner, StringComparison.Ordinal);
+        Assert.DoesNotContain("CancelActiveRunFromShell", shellHeader, StringComparison.Ordinal);
+        Assert.DoesNotContain("CancelActiveRunFromShell", activeBanner, StringComparison.Ordinal);
+
+        var pluginSource = ReadRepositorySource("Plugin.cs");
+        var enqueueStart = pluginSource.IndexOf(
+            "public string EnqueueScheduledPresetFromJson(",
+            StringComparison.Ordinal);
+        var enqueueEnd = pluginSource.IndexOf(
+            "public string CancelScheduledJobFromJson(",
+            enqueueStart,
+            StringComparison.Ordinal);
+        var enqueue = pluginSource[enqueueStart..enqueueEnd];
+        var clientGuard = enqueue.IndexOf("if (!Configuration.RunAsServerDad)", StringComparison.Ordinal);
+        var queueMutation = enqueue.IndexOf(
+            "SchedulerService.EnqueueScheduledPresetWithDisposition(group, request)",
+            StringComparison.Ordinal);
+
+        Assert.True(clientGuard >= 0);
+        Assert.True(queueMutation > clientGuard);
+        Assert.Contains("Use Planner on the Coordinator", enqueue, StringComparison.Ordinal);
+
+        var directMethodStart = pluginSource.IndexOf(
+            "public DadRunResult StartPlannerRunFromShell()",
+            StringComparison.Ordinal);
+        var directMethodEnd = pluginSource.IndexOf(
+            "private DadPlannerRunRequestPreview? BuildSchedulerPlannerPreview(",
+            directMethodStart,
+            StringComparison.Ordinal);
+        var directMethod = pluginSource[directMethodStart..directMethodEnd];
+
+        Assert.Contains(
+            "StartDemoRunFromShell(\"Planner run\", requestPreview.Request)",
+            directMethod,
+            StringComparison.Ordinal);
+        Assert.Contains("HasPendingCancellationCleanup", directMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueScheduledPreset", directMethod, StringComparison.Ordinal);
+
+        var coordinatorSource = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        var coordinatorStart = coordinatorSource.IndexOf(
+            "private DadRunResult StartTasksCore(",
+            StringComparison.Ordinal);
+        var dependencyGate = coordinatorSource.IndexOf(
+            "presenceService.BuildSnapshotCopy().Dependencies.IsReady",
+            coordinatorStart,
+            StringComparison.Ordinal);
+        var cleanupGate = coordinatorSource.IndexOf(
+            "if (HasPendingCancellationCleanup)",
+            coordinatorStart,
+            StringComparison.Ordinal);
+
+        Assert.True(cleanupGate > coordinatorStart);
+        Assert.True(dependencyGate > cleanupGate);
+        Assert.Contains(
+            "status == DadRunStatus.Cancelled && HasPendingCancellationCleanup",
+            coordinatorSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CurrentResult.CancellationState = DadRunCancellationState.Finalized;",
+            coordinatorSource,
+            StringComparison.Ordinal);
+    }
+
     private static string ReadRepositorySource(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

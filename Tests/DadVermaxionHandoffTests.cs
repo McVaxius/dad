@@ -158,6 +158,22 @@ public sealed class DadVermaxionHandoffTests
         Assert.Equal(DadVermaxionMutationAuthorization.None, view.MutationAuthorization);
     }
 
+    [Fact]
+    public void NotLoadedReservationIsNeverAuthoritativeEvenWithAStaleToken()
+    {
+        var notLoaded = DadVermaxionReservationParser.NotLoaded(Now);
+        notLoaded.OperationToken = "op";
+        var legacy = DadVermaxionStatusParser.Parse(false, null, Now);
+
+        var view = DadVermaxionAuthorityRules.Resolve("op", notLoaded, legacy);
+
+        Assert.False(notLoaded.IsAuthoritativeFor("op"));
+        Assert.False(view.Authoritative);
+        Assert.False(view.Held);
+        Assert.Equal(DadVermaxionMutationAuthorization.None, view.MutationAuthorization);
+        Assert.Equal(DadVermaxionReadinessKind.NotLoaded, legacy.Kind);
+    }
+
     [Theory]
     [InlineData(DadVermaxionReservationState.Pending)]
     [InlineData(DadVermaxionReservationState.Granting)]
