@@ -92,6 +92,7 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly DadPresetProviderService presetProviderService;
     private readonly DadDutySupportExecutor dutySupportExecutor;
     private readonly DadLocalDutyExecutor localDutyExecutor;
+    private readonly DadCombatRotationService combatRotationService;
     private readonly IPluginLog log;
     private readonly List<Action> disposeActions = [];
     private readonly DadDutyIpcStatus status = new();
@@ -130,6 +131,7 @@ public sealed class DadDutyIpcService : IDisposable
     {
         this.pluginInterface = pluginInterface;
         this.presetProviderService = presetProviderService;
+        this.combatRotationService = combatRotationService;
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
         dutySupportExecutor = new DadDutySupportExecutor(npcDutyQueueService, dutySupportAdsService, combatRotationService);
         this.log = log;
@@ -222,6 +224,7 @@ public sealed class DadDutyIpcService : IDisposable
         try
         {
             RegisterFunc<uint, bool>(DadDutyIpcContract.ContentHasPath, ContentHasPath);
+            RegisterFunc<string, string>(DadDutyIpcContract.GetConfig, GetConfig);
             RegisterAction<string, string, object>(DadDutyIpcContract.SetConfig, SetConfig);
             RegisterAction<uint, int, bool, object>(DadDutyIpcContract.Run, Run);
             RegisterFunc<bool>(DadDutyIpcContract.IsStopped, IsStopped);
@@ -244,6 +247,9 @@ public sealed class DadDutyIpcService : IDisposable
             status.UpdatedAtUtc = DateTime.UtcNow;
         }
     }
+
+    private string GetConfig(string key)
+        => DadQuestionableAutoDutyConfigResolver.Resolve(key, combatRotationService.CombatRotationMode);
 
     private bool ContentHasPath(uint territoryType)
     {
@@ -1022,6 +1028,7 @@ internal enum DadDutyIpcSessionStage
 internal static class DadDutyIpcContract
 {
     public const string ContentHasPath = "dad.Duty.ContentHasPath";
+    public const string GetConfig = "dad.Duty.GetConfig";
     public const string SetConfig = "dad.Duty.SetConfig";
     public const string Run = "dad.Duty.Run";
     public const string IsStopped = "dad.Duty.IsStopped";

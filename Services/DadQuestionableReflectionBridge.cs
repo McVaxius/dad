@@ -468,6 +468,8 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         {
             ("_contentHasPath", typeof(ICallGateSubscriber<uint, bool>),
                 pluginInterface.GetIpcSubscriber<uint, bool>(DadDutyIpcContract.ContentHasPath)),
+            ("_getConfig", typeof(ICallGateSubscriber<string, string>),
+                pluginInterface.GetIpcSubscriber<string, string>(DadDutyIpcContract.GetConfig)),
             ("_setConfig", typeof(ICallGateSubscriber<string, string, object>),
                 pluginInterface.GetIpcSubscriber<string, string, object>(DadDutyIpcContract.SetConfig)),
             ("_run", typeof(ICallGateSubscriber<uint, int, bool, object>),
