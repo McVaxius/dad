@@ -109,6 +109,8 @@ public sealed class DadDutyIpcService : IDisposable
     private int completedLoops;
     private DateTime nextRegistrationAttemptUtc = DateTime.MinValue;
 
+    internal Func<DadQuestionableReflectionBridgeStatus>? QuestionableBridgeStatusProvider { private get; set; }
+
     private sealed class DadDutyContentPathProbe
     {
         public uint TerritoryType { get; init; }
@@ -439,8 +441,14 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void RunSuccessfulSessionCleanup()
     {
+        var questionableStatus = QuestionableBridgeStatusProvider?.Invoke();
+        var preserveFrenRider = questionableStatus?.QuestionableRunning == true ||
+                                questionableStatus?.Patched == true;
+        var cleanupCommands = preserveFrenRider
+            ? SuccessfulSessionCleanupCommands.Where(static command => command != "/fr off").ToArray()
+            : SuccessfulSessionCleanupCommands;
         var failedCommands = new List<string>();
-        foreach (var command in SuccessfulSessionCleanupCommands)
+        foreach (var command in cleanupCommands)
         {
             try
             {
@@ -467,8 +475,8 @@ public sealed class DadDutyIpcService : IDisposable
         if (failedCommands.Count == 0)
         {
             log.Information(
-                "[dad][DutyIpc] Successful final bridge session cleanup sent all commands: {Commands}.",
-                string.Join(", ", SuccessfulSessionCleanupCommands));
+                "[dad][DutyIpc] Successful final bridge session cleanup sent all issued commands: {Commands}.",
+                string.Join(", ", cleanupCommands));
         }
         else
         {

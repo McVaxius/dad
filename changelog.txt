@@ -17,6 +17,8 @@
 - DAD's existing Questionable bridge now replaces AutoDuty's config subscriber with `dad.Duty.GetConfig` and reports
   DAD-owned combat/ADS management for Use FrenRider and Force Commands, preventing competing regular-duty enable/disable
   tasks; Do Nothing and Questionable-owned solo-duty behavior remain unchanged.
+- Successful final `dad.Duty.Run` cleanup now preserves Fren Rider while Questionable is actively questing or DAD owns
+  Questionable's reflected AutoDuty command slots; the other four cleanup commands remain unconditional.
 
 ## 2026-08-30 — GitHub build and release correction
 - GitHub Actions now restores and builds only `dad.csproj`; local unit tests remain available but no longer block

@@ -605,6 +605,7 @@ public sealed class Plugin : IDalamudPlugin
                 Content = message,
                 InitialDuration = TimeSpan.FromSeconds(10),
             }));
+        DutyIpcService.QuestionableBridgeStatusProvider = QuestionableBridge.GetStatus;
 
         Log.Information("[dad] Plugin loaded.");
     }

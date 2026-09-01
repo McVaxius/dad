@@ -861,7 +861,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextWrapped("DAD always owns crew setup and queueing; this decides what happens once the duty begins.");
         ImGui.TextWrapped("Fren Rider and AI Duty Solver are required whenever DAD is enabled, regardless of the combat handoff selected below.");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. Only a successful final dad.Duty.Run IPC session sends the five-command cleanup set.");
+            ImGui.SetTooltip("Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. A successful final dad.Duty.Run IPC session preserves Fren Rider while Questionable is actively questing or DAD owns its AutoDuty command slots; otherwise cleanup also sends /fr off.");
         ImGui.Separator();
 
         DrawCombatRotationModeRadio(
@@ -923,7 +923,7 @@ public sealed class ConfigWindow : Window, IDisposable
             color,
             statusText);
         ImGui.TextWrapped("Status color uses Dalamud installed-plugin state only: green means installed and loaded, yellow means installed but not loaded, red means not installed/found.");
-        ImGui.TextWrapped("Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Only successful final dad.Duty.Run IPC completion sends /fr off, /rotation cancel, /vbmai off, /bmrai off, and /wrath auto off.");
+        ImGui.TextWrapped("Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Successful final dad.Duty.Run IPC completion always sends /rotation cancel, /vbmai off, /bmrai off, and /wrath auto off; it sends /fr off only while Questionable is idle and DAD does not own its AutoDuty command slots.");
     }
 
     private static void DrawForceCommandsModeStatus()
