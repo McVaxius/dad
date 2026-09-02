@@ -1,5 +1,8 @@
 # dad — changelog
 
+## 2026-09-01 — Questionable FATE unsync and local DAD routing (local-only, unpublished)
+- DAD now leaves FATE level sync while Questionable runs, freezes every explicitly selected roster, and prefers its matching local account over duplicate peer routes.
+
 ## 2026-08-31 — Planner launch ownership and absent-VERMAXION fallback (local-only, unpublished)
 - Planner now presents separate **Run now — online participants** and Coordinator-only **Wake/relog and run** actions.
   Direct runs reuse the existing Planner request without entering the scheduler or takeover path; wake/relog keeps the

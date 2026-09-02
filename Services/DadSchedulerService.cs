@@ -2614,10 +2614,11 @@ public sealed class DadSchedulerService
             pending.NextAttemptUtc = now + RefreshInterval;
             var slot = pending.Slot;
             var participant = slot.MatchedWorkerSessionId.IsEmpty
-                ? DadSchedulerRoutingRules.ResolveExactConnectedClient(
-                    slot.RequiredAccountKey,
-                    participants,
-                    transportService.IsWorkerOnline)
+                ? ResolveMatchingLocalAccount(slot.RequiredAccountKey, participants) ??
+                  DadSchedulerRoutingRules.ResolveExactConnectedClient(
+                      slot.RequiredAccountKey,
+                      participants,
+                      transportService.IsWorkerOnline)
                 : DadSchedulerRoutingRules.ResolveFrozenCancellationClient(
                     slot.MatchedWorkerSessionId,
                     participants,
@@ -2777,13 +2778,14 @@ public sealed class DadSchedulerService
         {
             var slot = currentState.Slots.FirstOrDefault(candidate =>
                 string.Equals(candidate.SlotId, assignment.Request.AssignedSlotId, StringComparison.OrdinalIgnoreCase));
-            var route = slot is { MatchedWorkerSessionId.IsEmpty: false }
-                ? DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
-                    assignment.Request.RequiredAccountKey,
-                    slot.MatchedWorkerSessionId,
-                    participants,
-                    transportService.IsWorkerOnline)
-                : null;
+            var route = ResolveMatchingLocalAccount(assignment.Request.RequiredAccountKey, participants) ??
+                        (slot is { MatchedWorkerSessionId.IsEmpty: false }
+                            ? DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+                                assignment.Request.RequiredAccountKey,
+                                slot.MatchedWorkerSessionId,
+                                participants,
+                                transportService.IsWorkerOnline)
+                            : null);
             if (slot == null ||
                 slot.MatchedWorkerSessionId.IsEmpty ||
                 !transportService.IsWorkerOnline(slot.MatchedWorkerSessionId))
@@ -3929,19 +3931,20 @@ public sealed class DadSchedulerService
             : participants.FirstOrDefault(participant =>
                 string.Equals(participant.WorkerSessionId.Value, frozenWorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
                 (participant.IsLocalClient || transportService.IsWorkerOnline(participant.WorkerSessionId)));
-        var matchingAccount = !frozenWorkerSessionId.IsEmpty
-            ? DadSchedulerRoutingRules.ResolveCurrentOrSoleReconnectedClient(
-                  slot.RequiredAccountKey,
-                  frozenWorkerSessionId,
-                  participants,
-                  transportService.IsWorkerOnline)
-            : slot.RequiredAccountKey.IsEmpty
-            ? participants.FirstOrDefault(participant =>
-                participant.IsAvailable && MatchesSlotCharacter(participant, slot))
-            : DadSchedulerRoutingRules.ResolveExactConnectedClient(
-                slot.RequiredAccountKey,
-                participants,
-                transportService.IsWorkerOnline);
+        var matchingAccount = ResolveMatchingLocalAccount(slot.RequiredAccountKey, participants) ??
+                              (!frozenWorkerSessionId.IsEmpty
+                                  ? DadSchedulerRoutingRules.ResolveCurrentOrSoleReconnectedClient(
+                                      slot.RequiredAccountKey,
+                                      frozenWorkerSessionId,
+                                      participants,
+                                      transportService.IsWorkerOnline)
+                                  : slot.RequiredAccountKey.IsEmpty
+                                      ? participants.FirstOrDefault(participant =>
+                                          participant.IsAvailable && MatchesSlotCharacter(participant, slot))
+                                      : DadSchedulerRoutingRules.ResolveExactConnectedClient(
+                                          slot.RequiredAccountKey,
+                                          participants,
+                                          transportService.IsWorkerOnline));
         var matchingCharacter = matchingAccount is { IsAvailable: true } &&
                                 MatchesSlotCharacter(matchingAccount, slot)
             ? matchingAccount
@@ -4248,6 +4251,20 @@ public sealed class DadSchedulerService
             .ToList();
     }
 
+    private static DadParticipantSnapshot? ResolveMatchingLocalAccount(
+        DadAccountKey requiredAccountKey,
+        IEnumerable<DadParticipantSnapshot> participants)
+    {
+        if (requiredAccountKey.IsEmpty)
+            return null;
+
+        return participants.FirstOrDefault(participant =>
+            participant.IsLocalClient &&
+            !participant.WorkerSessionId.IsEmpty &&
+            participant.State != DadParticipantState.Stale &&
+            DadRosterIdentity.SameAccount(participant.ManagedAccountKey, requiredAccountKey));
+    }
+
     private ulong ResolveSlotContentId(DadSchedulerSlotState slot)
     {
         var character = rosterCatalogService.FindCharacter(new DadRosterCharacterRef
@@ -4487,16 +4504,17 @@ public sealed class DadSchedulerService
         IReadOnlyList<DadParticipantSnapshot> participants,
         out DadParticipantSnapshot? participant)
     {
-        participant = slot.MatchedWorkerSessionId.IsEmpty
-            ? DadSchedulerRoutingRules.ResolveExactConnectedClient(
-                slot.RequiredAccountKey,
-                participants,
-                transportService.IsWorkerOnline)
-            : DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
-                slot.RequiredAccountKey,
-                slot.MatchedWorkerSessionId,
-                participants,
-                transportService.IsWorkerOnline);
+        participant = ResolveMatchingLocalAccount(slot.RequiredAccountKey, participants) ??
+                      (slot.MatchedWorkerSessionId.IsEmpty
+                          ? DadSchedulerRoutingRules.ResolveExactConnectedClient(
+                              slot.RequiredAccountKey,
+                              participants,
+                              transportService.IsWorkerOnline)
+                          : DadSchedulerRoutingRules.ResolveFrozenConnectedClient(
+                              slot.RequiredAccountKey,
+                              slot.MatchedWorkerSessionId,
+                              participants,
+                              transportService.IsWorkerOnline));
         if (participant == null)
         {
             MarkTakeoverRouteUnavailable(slot, "missing-or-unroutable");

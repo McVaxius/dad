@@ -10,9 +10,7 @@ internal static class DadRunSlotManifestRules
     public static bool RequiresFrozenRoster(DadRunPlan plan)
         => plan.RequiredParticipantCount > 1 ||
            plan.RequiresRemoteParticipants ||
-           (plan.Orchestration?.RequiredRosterCharacters?.Any(static reference =>
-               reference.RequiredJobId.HasValue ||
-               !string.IsNullOrWhiteSpace(reference.SharedIdentityToken)) ?? false);
+           (plan.Orchestration?.RequiredRosterCharacters?.Count ?? 0) > 0;
 
     internal static DadFrozenRunSlot? FindInstructionSlot(
         DadRunSlotManifest? manifest,
@@ -280,15 +278,17 @@ internal static class DadRunSlotManifestRules
                     Same(participant.ManagedAccountKey.Value, slot.AccountKey.Value))
                 .DistinctBy(static participant => Normalize(participant.WorkerSessionId.Value), StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            if (matches.Count != 1)
+            var selected = matches.FirstOrDefault(static participant => participant.IsLocalClient);
+            if (selected == null && matches.Count != 1)
             {
                 blocker = matches.Count == 0
                     ? $"{slot.SlotId} cannot bind account '{slot.AccountKey}' to an online Dad worker session."
                     : $"{slot.SlotId} account '{slot.AccountKey}' maps to {matches.Count} online Dad worker sessions.";
                 return false;
             }
+            selected ??= matches[0];
 
-            var session = matches[0].WorkerSessionId;
+            var session = selected.WorkerSessionId;
             if (!assignedSessions.Add(Normalize(session.Value)))
             {
                 blocker = $"Worker session '{session}' is assigned to more than one frozen slot.";
@@ -297,7 +297,7 @@ internal static class DadRunSlotManifestRules
 
             slot.WorkerSessionId = session;
             if (!slot.RequiredJobId.HasValue &&
-                !TryFreezeLiveAnyJob(slot, matches[0], out blocker))
+                !TryFreezeLiveAnyJob(slot, selected, out blocker))
             {
                 return false;
             }

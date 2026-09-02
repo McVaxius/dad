@@ -2,6 +2,7 @@ using System.Reflection;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game.Fate;
 
 namespace dad.Services;
 
@@ -213,7 +214,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         MaintainCosmeticPatch();
     }
 
-    private void MaintainRuntimeBridge()
+    private unsafe void MaintainRuntimeBridge()
     {
         try
         {
@@ -249,6 +250,16 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
             var running = QueryQuestionableIsRunning();
             status.QuestionableRunning = running;
+            if (running)
+            {
+                var fateManager = FateManager.Instance();
+                if (fateManager != null &&
+                    fateManager->CurrentFate != null &&
+                    fateManager->IsSyncedToFate(fateManager->CurrentFate))
+                {
+                    fateManager->LevelSync();
+                }
+            }
 
             if (ownership != null && IsFullyOwned(ownership))
             {
