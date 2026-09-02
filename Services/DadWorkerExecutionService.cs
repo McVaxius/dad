@@ -429,8 +429,11 @@ public sealed class DadWorkerExecutionService
                 return;
             }
 
-            var timeout = DadWorkerTimeoutRules.ResolveTimeout(activeCommand.TimeoutSeconds);
-            if (timeout.HasValue && DateTime.UtcNow - startedAtUtc >= timeout.Value)
+            if (DadWorkerTimeoutRules.HasTimedOut(
+                    activeCommand.TimeoutSeconds,
+                    status.ModuleId,
+                    status.EnteredDuty,
+                    DateTime.UtcNow - startedAtUtc))
             {
                 shoppingService.CancelActive("Worker execution timeout.");
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||

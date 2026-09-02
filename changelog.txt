@@ -1,5 +1,18 @@
 # dad — changelog
 
+## 2026-09-02 — In-duty worker timeout and repeat identity (local-only, unpublished)
+- Positive worker watchdogs now retain their existing 30–7,200 second bounds through preparation and queueing, then
+  retire after latched duty-entry proof for `Duty`, `Msq`, `DutySupport`, `Trust`, `PremadeDuty`, `DailyMsq`, `Mogtome`,
+  `Commendation`, and `CustomDuty`. Non-duty/task lanes keep the watchdog, non-positive persistent-startup timeouts remain
+  unbounded, and explicit cancellation plus executor terminal and exit behavior remain authoritative.
+- Stop-policy repeats now include their one-based attempt number in immutable worker command IDs. Redispatch retries within
+  one attempt reuse the frozen ID, while the next x10 iteration receives a new command instead of replaying the prior
+  terminal status. Configuration, schema, protocol, IPC APIs, public types, version, packaging, and release files are unchanged.
+- Focused timeout, stop-policy, immutable-command, and reliability contracts pass 51/51. The full suite passes 1,853/1,857;
+  its four failures are unchanged `HEAD` drift in the Questionable method-name source contract, share-schema expectation,
+  and installed Dalamud/ClientStructs identity pins. The Debug x64 build succeeds with 0 errors and six nullable warnings
+  in untouched code. Live x10 acceptance remains user-controlled and unrun.
+
 ## 2026-09-01 — Questionable FATE unsync and local DAD routing (local-only, unpublished)
 - DAD now leaves FATE level sync while Questionable runs, freezes every explicitly selected roster, and prefers its matching local account over duplicate peer routes.
 

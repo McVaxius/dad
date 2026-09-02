@@ -2240,7 +2240,11 @@ public sealed class DadCoordinatorService
                     SchemaVersion = DadWorkerCommandSchemaRules.ResolveEmissionSchema(
                         activePlan.Request.PreDutyRepairPolicy,
                         activePlan.Request.ShoppingAssociations),
-                    CommandId = $"{activePlan.Request.RequestId}:{activeModuleIndex}:{participant.AssignedSlotId}:worker-execution",
+                    CommandId = DadWorkerCommandIdentityRules.Build(
+                        activePlan.Request.RequestId,
+                        activeModuleIndex,
+                        participant.AssignedSlotId,
+                        stopProgress.StartedRuns),
                     RunId = activePlan.Request.RequestId,
                     ModuleIndex = activeModuleIndex,
                     Role = role,

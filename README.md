@@ -336,9 +336,12 @@ uploaded or promoted to a release.
   retains prior history, requires all clients and DAD/scheduler work to be idle, and never replays automatically.
   Cancelled runs remain terminal and cannot be resumed.
 - Scheduled worker commands with `TimeoutSeconds <= 0` have no outer command deadline and remain active until explicit
-  cancellation or an executor/queue-pulse result completes them. Positive worker command values remain finite, begin at
-  worker execution start, and clamp to 30–7,200 seconds; coordinator waits, IPC, scheduler advancement, and
-  level-target skipping are unchanged.
+  cancellation or an executor/queue-pulse result completes them. Positive values begin at worker execution start and
+  clamp to 30–7,200 seconds through preparation and queueing. After `Duty`, `Msq`, `DutySupport`, `Trust`, `PremadeDuty`,
+  `DailyMsq`, `Mogtome`, `Commendation`, or `CustomDuty` proves duty entry, that outer deadline retires for the command;
+  explicit cancellation and executor completion, abandonment, instance limits, and exit grace remain authoritative.
+  Non-duty/task lanes retain the finite deadline; coordinator waits, IPC, scheduler advancement, and level-target
+  skipping are unchanged.
 - Worker commands are validated before serialization and immutable registration. One run owns all active and pending
   commands at a time; same-run work stays FIFO, cancellation drains that run completely, and historical duplicate status
   is returned without replacing the current globally visible worker state.

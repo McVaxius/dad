@@ -227,6 +227,30 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     }
 
     [Fact]
+    public void CoordinatorCachesWorkerRetriesAndBuildsRepeatIdentityFromStartedAttempt()
+    {
+        var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        var dispatchStart = source.IndexOf(
+            "private void DispatchWorkerExecution",
+            StringComparison.Ordinal);
+
+        Assert.True(dispatchStart >= 0);
+        var dispatchEnd = source.IndexOf(
+            "private void UpdateWorkerExecution",
+            dispatchStart,
+            StringComparison.Ordinal);
+
+        Assert.True(dispatchEnd > dispatchStart);
+        var dispatch = source[dispatchStart..dispatchEnd];
+        Assert.Contains(
+            "if (!workerCommands.TryGetValue(participant.WorkerSessionId.Value, out var command))",
+            dispatch,
+            StringComparison.Ordinal);
+        Assert.Contains("CommandId = DadWorkerCommandIdentityRules.Build(", dispatch, StringComparison.Ordinal);
+        Assert.Contains("stopProgress.StartedRuns)", dispatch, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlannerActionsKeepDirectSchedulerAndCancellationOwnersSeparate()
     {
         var windowSource = ReadRepositorySource("Windows", "MainWindow.cs");

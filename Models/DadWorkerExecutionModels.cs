@@ -41,6 +41,16 @@ internal static class DadWorkerCommandSchemaRules
                 : LegacySchema;
 }
 
+internal static class DadWorkerCommandIdentityRules
+{
+    internal static string Build(
+        string runId,
+        int moduleIndex,
+        string assignedSlotId,
+        int stopPolicyAttemptNumber)
+        => $"{runId}:{moduleIndex}:{Math.Max(1, stopPolicyAttemptNumber)}:{assignedSlotId}:worker-execution";
+}
+
 public sealed class DadWorkerExecutionCommand
 {
     public int SchemaVersion { get; set; } = 1;

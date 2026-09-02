@@ -80,4 +80,29 @@ public sealed class DadSafetyProofRulesTests
         Assert.Equal("producer-a/route-a", collision.OriginalProducerRoute);
         Assert.Equal("producer-b/route-c", collision.IncomingProducerRoute);
     }
+
+    [Fact]
+    public void WorkerCommandRetriesReuseIdentityButRepeatAttemptsAreIndependentlyAccepted()
+    {
+        var attempt1 = DadWorkerCommandIdentityRules.Build("request-a", 0, "slot-1", 1);
+        var attempt1Retry = DadWorkerCommandIdentityRules.Build("request-a", 0, "slot-1", 1);
+        var attempt2 = DadWorkerCommandIdentityRules.Build("request-a", 0, "slot-1", 2);
+
+        Assert.Equal(attempt1, attempt1Retry);
+        Assert.NotEqual(attempt1, attempt2);
+
+        var registry = new DadImmutableCommandRegistry();
+        var attempt1Payload = $"payload:{attempt1}";
+        var attempt2Payload = $"payload:{attempt2}";
+
+        Assert.Equal(
+            DadImmutableCommandDisposition.Accepted,
+            registry.Register(attempt1, attempt1Payload, attempt1Payload, "coordinator").Disposition);
+        Assert.Equal(
+            DadImmutableCommandDisposition.Duplicate,
+            registry.Register(attempt1Retry, attempt1Payload, attempt1Payload, "coordinator-retry").Disposition);
+        Assert.Equal(
+            DadImmutableCommandDisposition.Accepted,
+            registry.Register(attempt2, attempt2Payload, attempt2Payload, "coordinator").Disposition);
+    }
 }
