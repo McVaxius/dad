@@ -6978,6 +6978,21 @@ public sealed class MainWindow : Window, IDisposable
         DadActivityPreset plannerPreview,
         bool plannerLocked)
     {
+        ImGui.BeginDisabled(plannerLocked);
+        if (ImGui.BeginCombo("Built-in leveling preset", "Create a Duty Support preset..."))
+        {
+            foreach (var entry in DadDutySupportLevelingPresets.Entries)
+            {
+                if (!ImGui.Selectable(entry.Name)) continue;
+                var created = plugin.CreateBuiltInLevelingPreset(entry, out var blocker);
+                if (created != null) plannerGroupNameBuffer = created.DisplayName;
+                else plugin.PrintStatus(blocker);
+            }
+            ImGui.EndCombo();
+        }
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Creates an editable one-run preset for this character, using the equipped job. Questionable leveling selects automatically and needs no saved preset. Porta Decumana is a manual cutscene-route choice.");
         var identityWidth = ImGui.GetContentRegionAvail().X;
         var identityFieldsShareRow = identityWidth >= ImGui.GetFontSize() * 36f;
         var templateActionSharesRow = identityWidth >= ImGui.GetFontSize() * 42f;
@@ -8222,7 +8237,7 @@ public sealed class MainWindow : Window, IDisposable
         DadDutyIpcStatus dutyIpc,
         DadQuestionableReflectionBridgeStatus bridge)
     {
-        var state = dutyIpc.Registered ? "IPC registered" : dutyIpc.RegistrationState;
+        var state = (dutyIpc.Registered ? "IPC registered" : dutyIpc.RegistrationState) + " | " + dutyIpc.SessionState;
         var bridgeState = bridge.Patched
             ? "runtime patched"
             : bridge.Pending

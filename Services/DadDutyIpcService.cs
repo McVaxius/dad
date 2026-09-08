@@ -14,6 +14,7 @@ public sealed class DadDutyIpcStatus
     public string LastRunId { get; set; } = string.Empty;
     public bool LastBareMode { get; set; }
     public string LastFailure { get; set; } = string.Empty;
+    public string SessionState { get; set; } = "Stopped";
     public uint LastContentHasPathTerritoryType { get; set; }
     public bool? LastContentHasPathResult { get; set; }
     public int LastContentHasPathCandidateCount { get; set; }
@@ -37,6 +38,7 @@ public sealed class DadDutyIpcStatus
             LastRunId = LastRunId,
             LastBareMode = LastBareMode,
             LastFailure = LastFailure,
+            SessionState = SessionState,
             LastContentHasPathTerritoryType = LastContentHasPathTerritoryType,
             LastContentHasPathResult = LastContentHasPathResult,
             LastContentHasPathCandidateCount = LastContentHasPathCandidateCount,
@@ -94,11 +96,19 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly DadLocalDutyExecutor localDutyExecutor;
     private readonly DadCombatRotationService combatRotationService;
     private readonly IPluginLog log;
+    private readonly DadDutySupportAdsService adsService;
+    private readonly IDadDutyFinderNativeAccess game;
+    private readonly Func<DadDutyLevelingPlayer> readLevelingPlayer;
+    private readonly Func<uint, bool?> readDutyUnlocked;
     private readonly List<Action> disposeActions = [];
     private readonly DadDutyIpcStatus status = new();
 
     private string dutyMode = "Support";
     private bool unsynced;
+    private string leveling = "None";
+    private string autoDutyMode = "Looping";
+    private bool leaveAttempted;
+    private bool disposed;
     private DadDutyIpcSessionStage sessionStage = DadDutyIpcSessionStage.Stopped;
     private IDadModuleExecutor? activeExecutor;
     private DadPlannerDutyOption? activeDuty;
@@ -130,6 +140,16 @@ public sealed class DadDutyIpcService : IDisposable
         DadDutySupportAdsService dutySupportAdsService,
         DadCombatRotationService combatRotationService,
         IPluginLog log)
+        : this(pluginInterface, presetProviderService, localDutyQueueService, npcDutyQueueService,
+            dutySupportAdsService, combatRotationService, log, new DadDutyFinderNativeAccess(),
+            DadDutySupportLevelingPresets.ReadPlayer, DadDutySupportLevelingPresets.ReadUnlocked) { }
+
+    internal DadDutyIpcService(
+        IDalamudPluginInterface pluginInterface, DadPresetProviderService presetProviderService,
+        DadLocalDutyQueueService localDutyQueueService, DadNpcDutyQueueService npcDutyQueueService,
+        DadDutySupportAdsService dutySupportAdsService, DadCombatRotationService combatRotationService,
+        IPluginLog log, IDadDutyFinderNativeAccess game,
+        Func<DadDutyLevelingPlayer> readLevelingPlayer, Func<uint, bool?> readDutyUnlocked)
     {
         this.pluginInterface = pluginInterface;
         this.presetProviderService = presetProviderService;
@@ -137,13 +157,19 @@ public sealed class DadDutyIpcService : IDisposable
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
         dutySupportExecutor = new DadDutySupportExecutor(npcDutyQueueService, dutySupportAdsService, combatRotationService);
         this.log = log;
+        adsService = dutySupportAdsService;
+        this.game = game;
+        this.readLevelingPlayer = readLevelingPlayer;
+        this.readDutyUnlocked = readDutyUnlocked;
 
         EnsureRegistered();
     }
 
     public void Dispose()
     {
-        StopBridgeSession("Dad duty IPC disposed.", clearFailure: true);
+        if (disposed) return;
+        Cancel("Dad duty IPC disposed.");
+        disposed = true;
         Unregister();
     }
 
@@ -155,7 +181,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     public void EnsureRegistered()
     {
-        if (status.Registered || DateTime.UtcNow < nextRegistrationAttemptUtc)
+        if (disposed || status.Registered || DateTime.UtcNow < nextRegistrationAttemptUtc)
             return;
 
         nextRegistrationAttemptUtc = DateTime.UtcNow + TimeSpan.FromSeconds(5);
@@ -164,6 +190,12 @@ public sealed class DadDutyIpcService : IDisposable
 
     public void Update()
     {
+        if (disposed) return;
+        if (sessionStage == DadDutyIpcSessionStage.Leaving)
+        {
+            UpdateLeaving();
+            return;
+        }
         if (sessionStage != DadDutyIpcSessionStage.Running)
             return;
 
@@ -229,6 +261,7 @@ public sealed class DadDutyIpcService : IDisposable
             RegisterFunc<string, string>(DadDutyIpcContract.GetConfig, GetConfig);
             RegisterAction<string, string, object>(DadDutyIpcContract.SetConfig, SetConfig);
             RegisterAction<uint, int, bool, object>(DadDutyIpcContract.Run, Run);
+            RegisterAction<bool, object>(DadDutyIpcContract.Start, Start);
             RegisterFunc<bool>(DadDutyIpcContract.IsStopped, IsStopped);
             RegisterAction<object>(DadDutyIpcContract.Stop, Stop);
 
@@ -251,7 +284,12 @@ public sealed class DadDutyIpcService : IDisposable
     }
 
     private string GetConfig(string key)
-        => DadQuestionableAutoDutyConfigResolver.Resolve(key, combatRotationService.CombatRotationMode);
+        => key.Trim().ToLowerInvariant() switch
+        {
+            "leveling" => leveling,
+            "autodutymodeenum" => autoDutyMode,
+            _ => DadQuestionableAutoDutyConfigResolver.Resolve(key, combatRotationService.CombatRotationMode),
+        };
 
     private bool ContentHasPath(uint territoryType)
     {
@@ -295,6 +333,14 @@ public sealed class DadDutyIpcService : IDisposable
         {
             dutyMode = string.IsNullOrWhiteSpace(normalizedValue) ? "Support" : normalizedValue;
         }
+        else if (normalizedKey.Equals("leveling", StringComparison.OrdinalIgnoreCase))
+        {
+            leveling = normalizedValue;
+        }
+        else if (normalizedKey.Equals("AutoDutyModeEnum", StringComparison.OrdinalIgnoreCase))
+        {
+            autoDutyMode = normalizedValue;
+        }
         else
         {
             log.Debug(
@@ -309,6 +355,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void Run(uint territoryType, int loops, bool bareMode)
     {
+        if (disposed || sessionStage == DadDutyIpcSessionStage.Leaving) return;
         StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true);
 
         status.LastTerritoryType = territoryType;
@@ -362,7 +409,96 @@ public sealed class DadDutyIpcService : IDisposable
         => sessionStage == DadDutyIpcSessionStage.Stopped;
 
     private void Stop()
-        => StopBridgeSession("Stopped by Dad duty IPC.", clearFailure: true);
+        => Cancel("Stopped by Dad duty IPC.");
+
+    private void Start(bool startFromZero)
+    {
+        if (disposed || sessionStage != DadDutyIpcSessionStage.Stopped) return;
+        try
+        {
+            if (!leveling.Equals("Support", StringComparison.OrdinalIgnoreCase) ||
+                !autoDutyMode.Equals("Looping", StringComparison.OrdinalIgnoreCase))
+            {
+                FailSession($"Dad duty Start requires leveling=Support and AutoDutyModeEnum=Looping (received {leveling}, {autoDutyMode}).");
+                return;
+            }
+            var duty = DadDutySupportLevelingPresets.Select(readLevelingPlayer(),
+                presetProviderService.GetPlannerDutyOptionsForTerritory, readDutyUnlocked, out var blocker);
+            if (duty == null) { FailSession(blocker); return; }
+            // Questionable owns the quest target and asks again after this one dungeon.
+            // Do not inherit unsync or job-selection settings from another bridge call.
+            dutyMode = "Support";
+            unsynced = false;
+            Run(duty.TerritoryType, 1, bareMode: false);
+        }
+        catch (Exception ex)
+        {
+            FailSession($"Duty Support leveling start failed: {ex.Message}");
+            log.Warning(ex, "[dad][DutyIpc] Leveling selection failed.");
+        }
+    }
+
+    public void Cancel(string reason)
+    {
+        leveling = "None";
+        if (sessionStage == DadDutyIpcSessionStage.Leaving) return;
+        if (activeDuty == null)
+        {
+            StopBridgeSession(reason, clearFailure: false);
+            return;
+        }
+
+        // Release runner/queue ownership before ADS begins its one-shot leave operation.
+        // Loading or an accepted queue may still deliver entry after the stop request.
+        sessionStage = DadDutyIpcSessionStage.Leaving;
+        leaveAttempted = false;
+        var executor = activeExecutor;
+        activeExecutor = null;
+        requestedLoops = completedLoops = 0;
+        try
+        {
+            if (executor is DadDutySupportExecutor support)
+                leaveAttempted = support.ReleaseForBridgeStop(reason);
+            else
+                executor?.Cancel(reason);
+        }
+        catch (Exception ex)
+        {
+            status.LastFailure = $"Duty runner release failed: {ex.Message}";
+            log.Warning(ex, "[dad][DutyIpc] Bridge release failed.");
+        }
+        UpdateLeaving();
+    }
+
+    private void UpdateLeaving()
+    {
+        try
+        {
+            if (!game.IsLoggedIn || !game.HasLocalPlayer || activeDuty == null) return;
+            var loading = game.Condition(Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas) ||
+                          game.Condition(Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas51);
+            if (game.TerritoryType == activeDuty.TerritoryType)
+            {
+                if (!leaveAttempted && !loading)
+                {
+                    leaveAttempted = true;
+                    if (!adsService.TryLeave(out var failure))
+                        status.LastFailure = $"{failure}. Leave the duty manually; DAD is waiting for confirmed exit.";
+                }
+                return;
+            }
+            if (loading || game.QueueStateActive ||
+                game.Condition(Dalamud.Game.ClientState.Conditions.ConditionFlag.BoundByDuty) ||
+                game.Condition(Dalamud.Game.ClientState.Conditions.ConditionFlag.BoundByDuty56)) return;
+            var failureToPreserve = status.LastFailure;
+            EndSessionWithoutCleanup();
+            status.LastFailure = failureToPreserve;
+        }
+        catch (Exception ex)
+        {
+            status.LastFailure = $"Cannot confirm duty exit: {ex.Message}";
+        }
+    }
 
     private void StartNextLoop()
     {
@@ -488,6 +624,13 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void FailSession(string reason)
     {
+        status.LastFailure = string.IsNullOrWhiteSpace(reason) ? "Dad duty IPC executor failed." : reason;
+        log.Warning("[dad][DutyIpc] Bridge session failed: {Reason}", status.LastFailure);
+        if (activeDuty != null)
+        {
+            Cancel(status.LastFailure);
+            return;
+        }
         var executor = activeExecutor;
         activeExecutor = null;
         activeDuty = null;
@@ -495,9 +638,6 @@ public sealed class DadDutyIpcService : IDisposable
         requestedLoops = 0;
         completedLoops = 0;
         sessionStage = DadDutyIpcSessionStage.Stopped;
-        status.LastFailure = string.IsNullOrWhiteSpace(reason)
-            ? "Dad duty IPC executor failed."
-            : reason;
         status.UpdatedAtUtc = DateTime.UtcNow;
 
         if (executor == null)
@@ -936,6 +1076,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void RefreshStatus()
     {
+        status.SessionState = sessionStage == DadDutyIpcSessionStage.Leaving ? "Leaving duty" : sessionStage.ToString();
         if (status.Registered)
             status.RegistrationState = "Dad duty IPC registered.";
         else if (string.IsNullOrWhiteSpace(status.RegistrationState))
@@ -971,6 +1112,13 @@ public sealed class DadDutyIpcService : IDisposable
         var provider = pluginInterface.GetIpcProvider<TArg1, TArg2, TReturn>(name);
         provider.RegisterAction((argument1, argument2) =>
             InvokeOnFrameworkThread(() => action(argument1, argument2)));
+        disposeActions.Add(provider.UnregisterAction);
+    }
+
+    private void RegisterAction<TArg1, TReturn>(string name, Action<TArg1> action)
+    {
+        var provider = pluginInterface.GetIpcProvider<TArg1, TReturn>(name);
+        provider.RegisterAction(argument => InvokeOnFrameworkThread(() => action(argument)));
         disposeActions.Add(provider.UnregisterAction);
     }
 
@@ -1031,6 +1179,7 @@ internal enum DadDutyIpcSessionStage
 {
     Stopped,
     Running,
+    Leaving,
 }
 
 internal static class DadDutyIpcContract
@@ -1039,6 +1188,7 @@ internal static class DadDutyIpcContract
     public const string GetConfig = "dad.Duty.GetConfig";
     public const string SetConfig = "dad.Duty.SetConfig";
     public const string Run = "dad.Duty.Run";
+    public const string Start = "dad.Duty.Start";
     public const string IsStopped = "dad.Duty.IsStopped";
     public const string Stop = "dad.Duty.Stop";
 }

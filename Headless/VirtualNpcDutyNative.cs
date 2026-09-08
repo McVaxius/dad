@@ -9,8 +9,8 @@ internal sealed class VirtualNpcDutyNative(VirtualDutyFinder game, Func<uint> jo
     private readonly Dictionary<DadNpcDutyQueueMode, uint> selected = [];
     private readonly HashSet<byte> party = [];
     public uint LocalJobId => game.HasLocalPlayer ? jobId() : 0;
-    public IReadOnlyList<DadNpcDutyCatalogRow> DutyCatalog() => [new(4, "Synthetic duty", 1036, 3, 44, 1)];
-    public IReadOnlyList<DadDawnCatalogRow> DawnCatalog() => [new(1, 4, true, 4)];
+    public IReadOnlyList<DadNpcDutyCatalogRow> DutyCatalog() => [new(4, "Synthetic duty", 1036, 3, 44, 1), new(6, "Synthetic second leveling duty", 1037, 3, 45, 16)];
+    public IReadOnlyList<DadDawnCatalogRow> DawnCatalog() => [new(1, 4, true, 4), new(2, 6, false, 4)];
     public bool AgentAvailable(DadNpcDutyQueueMode mode) => true;
     public bool AddonReady(DadNpcDutyQueueMode mode) => open.Contains(mode);
     public bool MainCommandEnabled(DadNpcDutyQueueMode mode) => true;
@@ -18,16 +18,18 @@ internal sealed class VirtualNpcDutyNative(VirtualDutyFinder game, Func<uint> jo
     public uint SelectedContentId(DadNpcDutyQueueMode mode) => selected.GetValueOrDefault(mode);
     public void Open(DadNpcDutyQueueMode mode, uint contentId)
     {
-        if (contentId != 4 && (mode != DadNpcDutyQueueMode.DutySupport || contentId != 44))
+        if (contentId != 4 && (mode != DadNpcDutyQueueMode.DutySupport || contentId is not (44 or 45 or 6)))
             throw unexpected($"npc-open:{mode}:{contentId}");
         open.Add(mode);
-        selected[mode] = contentId == 44 ? 0u : mode == DadNpcDutyQueueMode.Trust ? 1u : 4u;
+        selected[mode] = contentId is 44 or 45 ? 0u : mode == DadNpcDutyQueueMode.Trust ? 1u : contentId;
         observe($"native:npc-open:{mode}:{contentId}");
     }
     public void Register(DadNpcDutyQueueMode mode)
     {
         if (!open.Contains(mode) || SelectedContentId(mode) == 0 || (mode == DadNpcDutyQueueMode.Trust && party.Count != 3))
             throw unexpected($"npc-register-without-selection:{mode}");
+        observe($"native:npc-selected:{SelectedContentId(mode)}");
+        game.QueuedTerritory = SelectedContentId(mode) == 6 ? 1037u : 1036u;
         observe($"native:npc-register:{mode}"); game.Stage = "queued";
     }
     public void UpdateTrustAddon() => observe("native:trust-update");

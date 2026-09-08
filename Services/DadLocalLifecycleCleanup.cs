@@ -11,7 +11,8 @@ internal sealed class DadLocalLifecycleCleanup(
     DadClaimService ClaimService, DadWorkerExecutionService WorkerExecutionService,
     DadQueueExecutionService QueueExecutionService, DadPresenceService PresenceService,
     IPluginLog Log, Action<string> CancelStandaloneCrewDisband,
-    DadAutoPartyService? AutoPartyService, DadAlliancePartyFinderService? AlliancePartyFinderService)
+    DadAutoPartyService? AutoPartyService, DadAlliancePartyFinderService? AlliancePartyFinderService,
+    Action<string>? CancelDutyBridge = null)
 {
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
 
@@ -41,6 +42,7 @@ internal sealed class DadLocalLifecycleCleanup(
                 ClaimService.ReleaseAllClaims();
                 WorkerExecutionService.CancelAll(reason);
                 QueueExecutionService.CancelAll(reason);
+                CancelDutyBridge?.Invoke(reason);
                 PresenceService.ResetToIdle();
                 result = new DadStopAllWorkerResult
                 {

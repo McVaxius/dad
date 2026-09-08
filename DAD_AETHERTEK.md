@@ -147,6 +147,14 @@ The **DAD Dependencies** window stays open while local DAD is enabled and any re
 - **MOGTOME** owns its supported farming run after DAD performs the helper handoff.
 - **Questionable** compatibility is available through DAD's guarded bridge when enabled.
 
+Questionable's Duty Support leveling interruption needs no manual preset: DAD selects the highest eligible curated
+dungeon for the equipped class/job, using its actual level, equipped item level, duty unlocks and Duty Support data.
+Questionable keeps its quest goal and requests one dungeon at a time. When it stops leveling, DAD requests `/ads leave`
+once and shows **Leaving duty** until the duty exit and loading finish. ADS handles combat and other leave restrictions.
+If the leave command is rejected, the blocker remains visible; leave manually to let the exit guard finish.
+For manual runs, **Plans > Built-in leveling preset** creates an ordinary editable one-run Duty Support preset for the
+current character and equipped job. Porta Decumana is a manual cutscene-route choice; automatic selection uses the standard route.
+
 Other integrations can still vary by lane. The six dependencies above do not vary by lane or combat mode. New work waits until the Coordinator and every frozen selected client report fresh ready truth; unselected clients do not block a Plan.
 
 ## What DAD Does Not Do

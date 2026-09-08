@@ -14,6 +14,13 @@ integrations, and everyday commands.
 - Runs presets immediately or in ordered manual and daily-reset schedules.
 - Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
+Questionable leveling interruptions select a curated Duty Support dungeon automatically for the equipped class/job,
+using its actual level, equipped item level and duty unlocks. No saved preset is needed. Each request runs one dungeon;
+Questionable requests another while below its quest target. Its stop request sends `/ads leave` once and DAD keeps
+**Leaving duty** visible until exit and loading finish. A rejected leave stays visible as a blocker for manual exit.
+In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
+The standard route is automatic; Porta Decumana's cutscene route is available for manual selection only.
+
 ## Integrated lifecycle verification
 
 `Headless/Dad.Headless.csproj` compiles the same lifecycle services as the plugin and is driven by the standalone lab in

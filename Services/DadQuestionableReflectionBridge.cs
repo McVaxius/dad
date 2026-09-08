@@ -524,6 +524,8 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
                 pluginInterface.GetIpcSubscriber<string, string, object>(DadDutyIpcContract.SetConfig)),
             ("_run", typeof(ICallGateSubscriber<uint, int, bool, object>),
                 pluginInterface.GetIpcSubscriber<uint, int, bool, object>(DadDutyIpcContract.Run)),
+            ("_start", typeof(ICallGateSubscriber<bool, object>),
+                pluginInterface.GetIpcSubscriber<bool, object>(DadDutyIpcContract.Start)),
             ("_isStopped", typeof(ICallGateSubscriber<bool>),
                 pluginInterface.GetIpcSubscriber<bool>(DadDutyIpcContract.IsStopped)),
             ("_stop", typeof(ICallGateSubscriber<object>),

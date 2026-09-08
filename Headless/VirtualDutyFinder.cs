@@ -21,6 +21,8 @@ internal sealed class VirtualDutyFinder(Func<ulong> contentId, Func<bool> logged
             ? value : throw unexpected($"duty-fault:{value}");
     }
     public event Action<uint>? DutyCompleted;
+    public bool Loading { get; set; }
+    public uint QueuedTerritory { get; set; } = 1036;
     public string Stage
     {
         get => stage;
@@ -35,13 +37,13 @@ internal sealed class VirtualDutyFinder(Func<ulong> contentId, Func<bool> logged
     }
     public bool IsLoggedIn => loggedIn();
     public bool HasLocalPlayer => IsLoggedIn;
-    public uint TerritoryType => Stage is "duty" or "completed" ? 1036u : 1u;
+    public uint TerritoryType => Stage is "duty" or "completed" ? QueuedTerritory : 1u;
     public ulong ContentId => contentId();
     public bool Condition(ConditionFlag flag) => flag switch
     {
         ConditionFlag.BoundByDuty or ConditionFlag.BoundByDuty56 => Stage is "duty" or "completed",
         ConditionFlag.InDutyQueue or ConditionFlag.WaitingForDuty or ConditionFlag.WaitingForDutyFinder => Stage is "queued" or "confirm",
-        ConditionFlag.BetweenAreas or ConditionFlag.BetweenAreas51 => false,
+        ConditionFlag.BetweenAreas or ConditionFlag.BetweenAreas51 => Loading,
         _ when Enum.IsDefined(flag) => false,
         _ => throw unexpected($"duty-condition:{flag}"),
     };

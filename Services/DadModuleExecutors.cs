@@ -436,9 +436,18 @@ public sealed class DadDutySupportExecutor(
         return BuildStatusStep(status, pulse.ParticipantState);
     }
 
+    // The bridge takes over exit observation after releasing this executor. Never reset
+    // ADS's leave operation if the executor already requested it on normal completion.
+    internal bool ReleaseForBridgeStop(string reason)
+    {
+        var alreadyLeaving = leaveRequested;
+        Cancel(reason);
+        return alreadyLeaving;
+    }
+
     public DadRunStepResultDto Cancel(string reason)
     {
-        if (UsesAdsDutyFlow())
+        if (UsesAdsDutyFlow() && !leaveRequested)
             adsService.TryStop(out _);
         var pulse = queueService.Cancel(status.RunId, DadNpcDutyQueueMode.DutySupport, reason);
         ApplyPulse(pulse);

@@ -74,6 +74,12 @@ internal sealed class RuntimeNode : IDisposable
     private readonly DadProfileDirectoryService profiles;
     private readonly DadSchedulerService scheduler;
     private readonly DadPresetProviderService presets;
+    private readonly DadDutyIpcService dutyIpc;
+    private readonly Dictionary<string, Delegate> ipcProviders = [];
+    private int equippedItemLevel = 100;
+    private bool unlockReadable = true;
+    private readonly HashSet<uint> lockedDuties = [];
+    private bool rejectLeave;
     private readonly DadPlannerService planner;
     private readonly DadQueueExecutionService queue;
     private readonly DadWakeTakeoverService wake;
@@ -123,6 +129,8 @@ internal sealed class RuntimeNode : IDisposable
         };
         if (input.TryGetProperty("repairEnabled", out var repairEnabled))
             configuration.PreDutyRepairPolicy.Enabled = repairEnabled.GetBoolean();
+        if (input.TryGetProperty("combatMode", out var combatMode))
+            configuration.CombatRotationMode = (DadCombatRotationMode)combatMode.GetInt32();
         if (input.TryGetProperty("resume", out var resume) && resume.GetBoolean())
         {
             configuration = DadIpcJson.Deserialize<Configuration>(File.ReadAllText(Path.Combine(directory, "configuration.json")))
@@ -203,7 +211,8 @@ internal sealed class RuntimeNode : IDisposable
                 events.Enqueue($"native:escape:{values[1]}"); return null;
             }), automation.Title);
         var commands = ExternalProxy.Create<ICommandManager>((method, values) => method.Name == "ProcessCommand"
-            ? automation.Command((string)values[0]!) : throw Unexpected($"command:{method.Name}"));
+            ? automation.Command((string)values[0]!) && !(rejectLeave && (string)values[0]! == "/ads leave")
+            : throw Unexpected($"command:{method.Name}"));
         Plugin.CommandManager = commands;
         wake = new(new DadWakeTakeoverTarget(configuration, configManager, presence, autoRetainer, lifestream,
             vermaxion, title, commands, log), () => clock.Now.UtcDateTime,
@@ -260,7 +269,15 @@ internal sealed class RuntimeNode : IDisposable
                 ContentFinderConditionId = 5, TerritoryType = 1037, DutyDisplayName = "Synthetic command mission",
                 QueueSize = 1, JobLevelRequired = 1,
             },
+            new DadPlannerDutyOption
+            {
+                ContentFinderConditionId = 6, TerritoryType = 1037, DutyDisplayName = "Synthetic second leveling duty",
+                QueueSize = 4, JobLevelRequired = 16, ItemLevelRequired = 10, SupportsDutySupport = true,
+            },
         ]);
+        dutyIpc = new(Plugin.PluginInterface, presets, localDutyQueue, npcDutyQueue, ads, combat, log, dutyFinder,
+            () => new(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0, equippedItemLevel),
+            id => unlockReadable ? !lockedDuties.Contains(id) : null);
         // Substitute only the game-sheet catalog; saved-preset resolution and validation
         // remain production code. No planner or scheduler state is seeded here.
         (typeof(DadPresetProviderService).GetField("plannerRouletteCatalog", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -277,7 +294,7 @@ internal sealed class RuntimeNode : IDisposable
             scheduler.ConfigureAutoPartyAuthorizationGate(autoParty.Service.EvaluateSchedulerAuthorization);
         }
         cleanup = new(configuration, scheduler, coordinator, wake, claims, worker, queue, presence, log,
-            _ => { }, autoParty?.Service, allianceService);
+            _ => { }, autoParty?.Service, allianceService, dutyIpc.Cancel);
         transport.ConfigureStopAllHandler(cleanup.RunLocalLifecycleCleanup);
         scheduler.ConfigureAdmissionBlocker(() => DadRuntimeHandlers.SchedulerAdmissionBlocker(
             configuration, scheduler, coordinator, false, coordinator.GetLocalResult()));
@@ -326,6 +343,7 @@ internal sealed class RuntimeNode : IDisposable
             steps["SchedulerUpdate"] = () => DadRuntimeHandlers.UpdateScheduler(configuration, scheduler,
                 coordinator, false, coordinator.GetLocalResult, ResolveGroup, BuildSchedulerPreview, coordinator.StartScheduledTasks);
         }
+        steps["DutyIpc"] = dutyIpc.Update;
         lifecycle = new(steps, (_, action) => action());
     }
 
@@ -358,6 +376,13 @@ internal sealed class RuntimeNode : IDisposable
                     foreach (var handler in ipcSubscriptions["AutoRetainer.OnCharacterReadyForPostprocess"].ToArray()) handler.DynamicInvoke("Dad");
                 break;
             case "observe":
+                if (command.TryGetProperty("jobId", out var jobId)) character.CurrentJobId = jobId.GetUInt32();
+                if (command.TryGetProperty("itemLevel", out var itemLevel)) equippedItemLevel = itemLevel.GetInt32();
+                if (command.TryGetProperty("unlockReadable", out var readable)) unlockReadable = readable.GetBoolean();
+                if (command.TryGetProperty("lockedDuties", out var locked))
+                { lockedDuties.Clear(); foreach (var id in locked.EnumerateArray()) lockedDuties.Add(id.GetUInt32()); }
+                if (command.TryGetProperty("rejectLeave", out var rejectedLeave)) rejectLeave = rejectedLeave.GetBoolean();
+                if (command.TryGetProperty("loading", out var loading)) dutyFinder.Loading = loading.GetBoolean();
                 if (command.TryGetProperty("level", out var observedLevel))
                 {
                     character.CurrentLevel = observedLevel.GetInt32();
@@ -398,6 +423,17 @@ internal sealed class RuntimeNode : IDisposable
                 if (command.TryGetProperty("invitation", out var invitation))
                     party.Invitation = DadIpcJson.Deserialize<DadPendingPartyInvitation>(invitation.GetRawText());
                 break;
+            case "duty-config":
+                Plugin.PluginInterface.GetIpcSubscriber<string, string, object>(DadDutyIpcContract.SetConfig)
+                    .InvokeAction(command.GetProperty("key").GetString()!, command.GetProperty("value").GetString()!);
+                break;
+            case "duty-start":
+                Plugin.PluginInterface.GetIpcSubscriber<bool, object>(DadDutyIpcContract.Start).InvokeAction(true);
+                break;
+            case "duty-stop":
+                Plugin.PluginInterface.GetIpcSubscriber<object>(DadDutyIpcContract.Stop).InvokeAction();
+                break;
+            case "duty-unload": dutyIpc.Dispose(); break;
             case "start":
                 var request = DadIpcJson.Deserialize<DadRunRequest>(command.GetProperty("request").GetRawText())!;
                 // Runtime-only opaque identities are normally supplied by the planner UI;
@@ -444,7 +480,7 @@ internal sealed class RuntimeNode : IDisposable
                 break;
             case "snapshot": break;
             case "autoparty": controlResult = (autoParty ?? throw new InvalidOperationException("AutoParty is not configured.")).Execute(command); break;
-            case "cancel": coordinator.CancelActiveRun(); break;
+            case "cancel": coordinator.CancelActiveRun(); dutyIpc.Cancel("Synthetic Cancel Run"); break;
             case "stop-all": controlResult = transport.RequestStopAll(new DadStopAllRequest
             {
                 OperationId = command.GetProperty("operationId").GetString()!,
@@ -475,7 +511,10 @@ internal sealed class RuntimeNode : IDisposable
     {
         participant = presence.BuildSnapshotCopy(), worker = worker.GetStatus(), coordinator = coordinator.GetLocalResult(),
         scheduler = scheduler.CurrentState, schedule = configuration.ActiveScheduleRun, wake = wake.GetActiveStatus(), stopAll = transport.LatestStopAllStatus,
+        dutyIpc = dutyIpc.GetStatus(), dutyStopped = !ipcProviders.ContainsKey(DadDutyIpcContract.IsStopped) ||
+            Plugin.PluginInterface.GetIpcSubscriber<bool>(DadDutyIpcContract.IsStopped).InvokeFunc(), savedPresetCount = configuration.PlannerGroups.Count,
         partyMembers = party.Members,
+        currentJobId = character.CurrentJobId,
         peers = transport.CurrentTransport.KnownParticipants, polls, events = Drain(events), unexpected = unexpected.ToArray(),
         now = clock.Now, transport = transport.CurrentTransport.Availability,
         unexecutedSteps = lifecycle.UnboundSteps,
@@ -595,11 +634,24 @@ internal sealed class RuntimeNode : IDisposable
             return plugins;
         }
         if (method.Name.StartsWith("add_") || method.Name.StartsWith("remove_")) return null;
+        if (method.Name == "GetIpcProvider")
+        {
+            var endpoint = (string)args[0]!;
+            return ExternalProxy.Create(method.ReturnType, (call, values) =>
+            {
+                if (call.Name is "RegisterAction" or "RegisterFunc") ipcProviders.Add(endpoint, (Delegate)values[0]!);
+                else if (call.Name is "UnregisterAction" or "UnregisterFunc") ipcProviders.Remove(endpoint);
+                else throw Unexpected($"provider:{endpoint}:{call.Name}");
+                return null;
+            });
+        }
         if (method.Name == "GetIpcSubscriber")
         {
             var endpoint = (string)args[0]!;
             return ExternalProxy.Create(method.ReturnType, (call, values) =>
             {
+                if (call.Name is "InvokeFunc" or "InvokeAction" && ipcProviders.TryGetValue(endpoint, out var provider))
+                    return provider.DynamicInvoke(values);
                 if (call.Name is "Subscribe" or "Unsubscribe")
                 {
                     if (!ipcSubscriptions.TryGetValue(endpoint, out var handlers)) ipcSubscriptions[endpoint] = handlers = [];
@@ -680,6 +732,7 @@ internal sealed class RuntimeNode : IDisposable
         if (shutdownApplied) return;
         shutdownApplied = true;
         cleanup.RunLocalLifecycleCleanup(new DadStopAllRequest { OperationId = "lab-shutdown", Reason = "Synthetic shutdown" });
+        dutyIpc.Dispose();
         persistence.ForceFlush();
     }
 }

@@ -476,7 +476,8 @@ public sealed class Plugin : IDalamudPlugin
             ProfileDirectoryService, ConfigManager, WorkerExecutionService);
         localLifecycleCleanup = new(Configuration, SchedulerService, RunCoordinatorService,
             WakeTakeoverService, ClaimService, WorkerExecutionService, QueueExecutionService, PresenceService,
-            Log, CancelStandaloneCrewDisband, AutoPartyService, AlliancePartyFinderService);
+            Log, CancelStandaloneCrewDisband, AutoPartyService, AlliancePartyFinderService,
+            reason => DutyIpcService?.Cancel(reason));
         TransportService.ConfigureStopAllHandler(RunLocalLifecycleCleanup);
         DadRuntimeHandlers.ConfigureAlliance(TransportService, AlliancePartyFinderService);
 
@@ -2273,6 +2274,28 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save();
         InvalidatePlannerPreviewCache("planner group selected");
         return true;
+    }
+
+    public DadPlannerGroup? CreateBuiltInLevelingPreset(DadDutySupportLevelingPreset entry, out string blocker)
+    {
+        blocker = GetShareMutationBlocker();
+        if (!string.IsNullOrWhiteSpace(blocker)) return null;
+        var duty = DadDutySupportLevelingPresets.Resolve(entry,
+            PresetProviderService.GetPlannerDutyOptionsForTerritory, out blocker);
+        if (duty == null) return null;
+        var pool = CharacterIntelligenceService.RefreshLocalCharacterPool("built-in-leveling-preset", logRefresh: false);
+        var character = pool.Characters.FirstOrDefault(character =>
+            character.Source == DadCharacterSource.LocalRuntime && character.IsLiveConnected);
+        if (character == null)
+        {
+            blocker = "Log in on the character that should run this Duty Support preset.";
+            return null;
+        }
+        var group = DadDutySupportLevelingPresets.CreateManual(duty, character);
+        NormalizePlannerGroupForStorage(group);
+        Configuration.PlannerGroups.Add(group);
+        SelectPlannerGroup(group.GroupId);
+        return group;
     }
 
     public DadPlannerGroup? SaveCurrentPlannerGroup(
@@ -4118,7 +4141,10 @@ public sealed class Plugin : IDalamudPlugin
         });
 
     public void CancelActiveRunFromMini()
-        => RunCoordinatorService.CancelActiveRun();
+    {
+        RunCoordinatorService.CancelActiveRun();
+        DutyIpcService.Cancel("Cancelled from DAD mini window.");
+    }
 
     public bool CancelActiveScheduleFromMini()
         => SchedulerService.CancelScheduleRun("Cancelled from DAD mini window.");
@@ -4510,6 +4536,7 @@ public sealed class Plugin : IDalamudPlugin
     public DadRunResult CancelActiveRunFromShell()
     {
         var result = RunCoordinatorService.CancelActiveRun();
+        DutyIpcService.Cancel("Cancelled from DAD command or UI.");
         PrintStatus(result.Summary);
         return result;
     }
@@ -4694,7 +4721,7 @@ public sealed class Plugin : IDalamudPlugin
             : string.IsNullOrWhiteSpace(status.RegistrationState)
                 ? "not registered"
                 : status.RegistrationState;
-        return $"{state} | mode {status.LastMode}";
+        return $"{state} | {status.SessionState} | mode {status.LastMode}";
     }
 
     private static string FormatQuestionableBridgeStatus(DadQuestionableReflectionBridgeStatus status)

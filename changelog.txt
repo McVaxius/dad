@@ -1,5 +1,18 @@
 # dad — changelog
 
+## 2026-09-08 - Questionable Duty Support leveling presets (local-only, unpublished)
+- Rejected bridge starts and executor failures now log the existing status failure reason, making blocked automatic
+  attempts visible in Dalamud logs. The focused lab regression verifies one warning with the same failure text.
+- Added transient leveling settings and dad.Duty.Start(bool), including owned reflection patching and restoration of
+  Questionable's start subscriber. Each start selects one curated Duty Support dungeon for the equipped class/job from
+  actual level, equipped item level, unlocks and Duty Support catalog data; repeated active starts retain the same run.
+- Bundled the standard AutoDuty leveling route and a manual Porta Decumana alternative. Plans can create editable
+  one-run presets from these entries; automatic quest interruptions create no saved presets and never request job changes.
+- Stop, Stop All and shutdown release the bridge runner and request ADS leave once for the owned duty. Leaving duty
+  remains visible through delayed exit/loading, repeated stops preserve leave ownership, and failures remain actionable.
+- Added selection, manual-preset and reflected start ownership tests plus integrated bridge lifecycle scenarios.
+  Versions are unchanged. Live-client testing, installation and deployment remain separate.
+
 ## 2026-09-08 - Questionable name compatibility (local-only, unpublished)
 - The duty bridge supports Questionable and WigglyQuest, selecting one loaded installation and its IsRunning endpoint.
   Multiple loaded copies block new patches and restore DAD-owned duty subscribers, the duty gate, and the cosmetic row

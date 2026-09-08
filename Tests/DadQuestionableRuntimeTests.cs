@@ -7,6 +7,7 @@ using System.Reflection.Emit;
 using Bridge = DadRuntime::dad.Services.DadQuestionableReflectionBridge;
 using DalamudApi::Dalamud.Plugin;
 using DalamudApi::Dalamud.Plugin.Services;
+using DalamudApi::Dalamud.Plugin.Ipc;
 using Xunit;
 
 namespace dad.Tests;
@@ -15,6 +16,53 @@ public sealed class DadQuestionableRuntimeTests
 {
     private const BindingFlags PrivateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly Type WrapperType = CreateWrapperType();
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StartSubscriberIsPatchedWithExactTypeAndRestoredOnlyWhileOwned(bool externalStart)
+    {
+        var exposed = Exposed("Questionable");
+        var calls = new List<string>();
+        var pi = Proxy<IDalamudPluginInterface>((method, args) => method.Name switch
+        {
+            "get_InstalledPlugins" => new[] { exposed },
+            "GetIpcSubscriber" => Proxy(method.ReturnType, (call, values) =>
+            {
+                calls.Add($"{args![0]}:{call.Name}:{values![0]}");
+                return null;
+            }),
+            _ => null,
+        });
+        using var bridge = NewBridge(pi);
+        var instance = typeof(Bridge).GetMethod("ResolveQuestionableInstance", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [exposed])!;
+        var assembly = instance.GetType().Assembly;
+        var config = Activator.CreateInstance(assembly.GetType("Questionable.Configuration")!)!;
+        var auto = Activator.CreateInstance(assembly.GetType("Questionable.External.AutoDutyIpc")!)!;
+        auto.GetType().GetField("_configuration")!.SetValue(auto, config);
+        var originals = new Dictionary<FieldInfo, object>();
+        foreach (var field in auto.GetType().GetFields().Where(field => field.Name != "_configuration"))
+        {
+            var original = Proxy(field.FieldType, (_, _) => null);
+            originals.Add(field, original);
+            field.SetValue(auto, original);
+        }
+        instance.GetType().GetField("_serviceProvider")!.SetValue(instance,
+            Proxy<IServiceProvider>((_, args) => (Type)args![0]! == auto.GetType() ? auto : config));
+        var prepared = Invoke(bridge, "PreparePatch", exposed, instance)!;
+        Invoke(bridge, "ApplyPatch", prepared);
+        Assert.Equal(7, originals.Count);
+        var start = auto.GetType().GetField("_start")!;
+        Assert.Equal(typeof(ICallGateSubscriber<bool, object>), start.FieldType);
+        ((ICallGateSubscriber<bool, object>)start.GetValue(auto)!).InvokeAction(true);
+        Assert.Equal(new[] { "dad.Duty.Start:InvokeAction:True" }, calls);
+        var external = Proxy<ICallGateSubscriber<bool, object>>((_, _) => null);
+        if (externalStart) start.SetValue(auto, external);
+        bridge.Dispose();
+        foreach (var (field, original) in originals)
+            Assert.Same(externalStart && field.Name == "_start" ? external : original, field.GetValue(auto));
+        Assert.False(((QuestionableConfigFixture)config).Duties.RunInstancedContentWithAutoDuty);
+    }
 
     [Theory]
     [InlineData("Questionable", "WigglyQuest")]
@@ -179,7 +227,18 @@ public sealed class DadQuestionableRuntimeTests
     {
         var module = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("QuestionableRenameDoubles"), AssemblyBuilderAccess.Run)
             .DefineDynamicModule("Doubles");
-        var plugin = module.DefineType("Questionable.QuestionablePlugin", TypeAttributes.Public).CreateType()!;
+        var configuration = module.DefineType("Questionable.Configuration", TypeAttributes.Public, typeof(QuestionableConfigFixture)).CreateType()!;
+        var auto = module.DefineType("Questionable.External.AutoDutyIpc", TypeAttributes.Public);
+        auto.DefineField("_configuration", configuration, FieldAttributes.Public);
+        foreach (var (name, type) in new (string, Type)[]
+                 { ("_contentHasPath", typeof(ICallGateSubscriber<uint, bool>)), ("_getConfig", typeof(ICallGateSubscriber<string, string>)),
+                   ("_setConfig", typeof(ICallGateSubscriber<string, string, object>)), ("_run", typeof(ICallGateSubscriber<uint, int, bool, object>)),
+                   ("_start", typeof(ICallGateSubscriber<bool, object>)), ("_isStopped", typeof(ICallGateSubscriber<bool>)), ("_stop", typeof(ICallGateSubscriber<object>)) })
+            auto.DefineField(name, type, FieldAttributes.Public);
+        auto.CreateType();
+        var pluginBuilder = module.DefineType("Questionable.QuestionablePlugin", TypeAttributes.Public);
+        pluginBuilder.DefineField("_serviceProvider", typeof(IServiceProvider), FieldAttributes.Public);
+        var plugin = pluginBuilder.CreateType()!;
         var local = module.DefineType("Dalamud.Plugin.Internal.Types.LocalPlugin", TypeAttributes.Public);
         local.DefineField("instance", typeof(object), FieldAttributes.Public);
         var localType = local.CreateType()!;
@@ -240,6 +299,16 @@ public sealed class DadQuestionableRuntimeTests
         public object Subscriber = new();
         public object Recommendations = new();
         public bool Gate { get; set; } = true;
+    }
+
+    public class QuestionableConfigFixture
+    {
+        public QuestionableDutyFixture Duties { get; } = new();
+    }
+
+    public sealed class QuestionableDutyFixture
+    {
+        public bool RunInstancedContentWithAutoDuty { get; set; }
     }
 }
 
