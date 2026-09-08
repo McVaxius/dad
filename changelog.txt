@@ -1,6 +1,8 @@
 # dad — changelog
 
 ## 2026-09-08 - integrated lifecycle verification and dispatch fixes (local-only, unpublished)
+- Extended the headless game catalog and roulette observations with Leveling ID 1 for the lab's saved four-slot schedule
+  regression. Production scheduling, coordinator dispatch, acknowledgements and polling behavior remain unchanged.
 - I305: pending leader dispatch continues polling accepted workers, then reevaluates exact readiness using fresh statuses.
   Failure, cancellation, completion and attempt changes stop dispatch. Prequeue progress distinguishes nonleaders from the
   pending leader, while the local acknowledgement path remains intact. I302 retains existing internal-name compatibility.

@@ -77,7 +77,7 @@ internal sealed class VirtualDutyFinder(Func<ulong> contentId, Func<bool> logged
     }
     public void OpenRouletteDuty(byte id)
     {
-        if (id != 9) throw unexpected($"open-roulette:{id}");
+        if (id is not (1 or 9)) throw unexpected($"open-roulette:{id}");
         open = true; listType = DadDutyFinderLiveContentType.Roulette; listId = id;
         observe($"native:open-roulette:{id}");
     }
@@ -116,5 +116,6 @@ internal sealed class VirtualDutyFinder(Func<ulong> contentId, Func<bool> logged
     }
     public IReadOnlyList<DadRegularDutyCatalogRow> DutyCatalog() => [new(4, "Synthetic duty", true, 1036, true, false, 4)];
     public IReadOnlyList<DadPlannerRouletteOption> RouletteCatalog() =>
-        [new() { RouletteId = 9, Key = "MainScenario", DisplayName = "Synthetic roulette", IsAvailable = true }];
+        [new() { RouletteId = 1, Key = "ContentRoulette:1", DisplayName = "Leveling", IsAvailable = true },
+         new() { RouletteId = 9, Key = "MainScenario", DisplayName = "Synthetic roulette", IsAvailable = true }];
 }

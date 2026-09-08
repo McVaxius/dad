@@ -261,6 +261,11 @@ internal sealed class RuntimeNode : IDisposable
                 QueueSize = 1, JobLevelRequired = 1,
             },
         ]);
+        // Substitute only the game-sheet catalog; saved-preset resolution and validation
+        // remain production code. No planner or scheduler state is seeded here.
+        (typeof(DadPresetProviderService).GetField("plannerRouletteCatalog", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(nameof(DadPresetProviderService), "plannerRouletteCatalog"))
+            .SetValue(presets, dutyFinder.RouletteCatalog());
         planner = new DadPlannerService(presets, registry, configuration);
         coordinator = new(configuration, configManager, intelligence, roster, presence, transport, claims, new(),
             partyInvite, partyTeardown, queue, worker, planner, log,
