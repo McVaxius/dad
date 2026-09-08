@@ -1,7 +1,7 @@
 {
   "version": 1,
   "dependencies": {
-    "net10.0": {
+    "net10.0-windows7.0": {
       "Dad.AutoParty.Protocol": {
         "type": "Direct",
         "requested": "[0.2.0-preview.8, 0.2.0-preview.8]",
@@ -49,6 +49,11 @@
         "type": "Transitive",
         "resolved": "2.6.2",
         "contentHash": "7oWOcvnntmMKNzDLsdxAYqApt+AjpRpP2CShjMfIa3umZ42UQMvH0tl1qAliYPNYO6vTdcGMqnRrCPmsfzTI1w=="
+      },
+      "ECommons": {
+        "type": "Transitive",
+        "resolved": "3.2.1.15",
+        "contentHash": "2BowPSMoVC1v8E/jivCnbqbDLaNMN2uy2lih/hrEIANoh2B7PfydUb7zT/EOl86fEK6Hw88k1Vzvmoe/cHb3EA=="
       },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
@@ -117,6 +122,14 @@
         "contentHash": "yMb6vMESlSrE3Wfj7V6cjQ3S4TXdXpRqYeNEI3zsX31uTsGMJjEw6oD5F5u1cHnMptjhEECnmZSsPxB6ChZHDQ==",
         "dependencies": {
           "xunit.extensibility.core": "[2.9.3]"
+        }
+      },
+      "dad.headless": {
+        "type": "Project",
+        "dependencies": {
+          "Dad.AutoParty.Protocol": "[0.2.0-preview.8, 0.2.0-preview.8]",
+          "ECommons": "[3.2.1.15, 3.2.1.15]",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, 10.0.10]"
         }
       }
     }

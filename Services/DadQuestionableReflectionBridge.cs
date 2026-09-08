@@ -41,7 +41,6 @@ public sealed class DadQuestionableReflectionBridgeStatus
 
 public sealed class DadQuestionableReflectionBridge : IDisposable
 {
-    private const string QuestionableInternalName = "Questionable";
     private const string QuestionablePluginTypeName = "Questionable.QuestionablePlugin";
     private const string AutoDutyIpcTypeName = "Questionable.External.AutoDutyIpc";
     private const string ConfigurationTypeName = "Questionable.Configuration";
@@ -176,8 +175,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
     private void OnActivePluginsChanged(IActivePluginsChangedEventArgs args)
     {
-        if (args.AffectedInternalNames.Any(static name =>
-                string.Equals(name, QuestionableInternalName, StringComparison.OrdinalIgnoreCase)))
+        if (args.AffectedInternalNames.Any(IsQuestionableName))
         {
             probeRequested = true;
         }
@@ -248,7 +246,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             if (ownership != null && !ReferenceEquals(ownership.QuestionableInstance, questionableInstance))
                 ownership = null;
 
-            var running = QueryQuestionableIsRunning();
+            var running = QueryQuestionableIsRunning(exposed.InternalName);
             status.QuestionableRunning = running;
             if (running)
             {
@@ -294,7 +292,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
                 status.Pending = true;
                 status.DutyGateEnabled = TryReadOwnedGate();
                 status.PatchState = "Pending until Questionable is idle.";
-                status.LastBlocker = "Questionable.IsRunning returned true.";
+                status.LastBlocker = $"{exposed.InternalName}.IsRunning returned true.";
                 lastLoggedBlocker = string.Empty;
                 return;
             }
@@ -311,6 +309,11 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         }
         catch (Exception ex)
         {
+            if (HasMultipleLoadedQuestionables())
+            {
+                RestoreOwnedValues();
+                status.QuestionableRunning = false;
+            }
             status.Patched = false;
             status.Pending = false;
             status.DutyGateEnabled = TryReadOwnedGate();
@@ -381,6 +384,8 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         catch (Exception ex)
         {
             status.CosmeticPatched = false;
+            if (HasMultipleLoadedQuestionables())
+                RestoreOwnedCosmeticValue();
             status.CosmeticPatchState = "Blocked by reflection incompatibility.";
             status.CosmeticLastBlocker = FormatException(ex);
             if (!string.Equals(lastLoggedCosmeticBlocker, status.CosmeticLastBlocker, StringComparison.Ordinal))
@@ -395,9 +400,43 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     }
 
     private IExposedPlugin? FindLoadedQuestionable()
-        => pluginInterface.InstalledPlugins.FirstOrDefault(static plugin =>
-            plugin.IsLoaded &&
-            string.Equals(plugin.InternalName, QuestionableInternalName, StringComparison.OrdinalIgnoreCase));
+    {
+        var loaded = pluginInterface.InstalledPlugins
+            .Where(plugin => IsQuestionableName(plugin.InternalName) && plugin.IsLoaded).ToArray();
+        if (loaded.Length > 1)
+            throw Incompatible("Multiple Questionable installations are loaded; disable all but one of Questionable / WigglyQuest.");
+        return loaded.SingleOrDefault();
+    }
+
+    private bool HasMultipleLoadedQuestionables()
+        => pluginInterface.InstalledPlugins.Count(plugin =>
+            IsQuestionableName(plugin.InternalName) && plugin.IsLoaded) > 1;
+
+    private bool IsCapturedInstanceLoaded(object instance)
+    {
+        Exception? resolutionFailure = null;
+        foreach (var plugin in pluginInterface.InstalledPlugins.Where(plugin =>
+                     IsQuestionableName(plugin.InternalName) && plugin.IsLoaded))
+        {
+            try
+            {
+                if (ReferenceEquals(ResolveQuestionableInstance(plugin), instance))
+                    return true;
+            }
+            catch (Exception ex)
+            {
+                resolutionFailure = ex;
+            }
+        }
+        // Preserve ownership when reflection cannot establish whether the captured instance unloaded.
+        if (resolutionFailure != null)
+            throw resolutionFailure;
+        return false;
+    }
+
+    private static bool IsQuestionableName(string name)
+        => string.Equals(name, "Questionable", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(name, "WigglyQuest", StringComparison.OrdinalIgnoreCase);
 
     private static object ResolveQuestionableInstance(IExposedPlugin exposed)
     {
@@ -419,15 +458,15 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         return instance;
     }
 
-    private bool QueryQuestionableIsRunning()
+    private bool QueryQuestionableIsRunning(string internalName)
     {
         try
         {
-            return pluginInterface.GetIpcSubscriber<bool>("Questionable.IsRunning").InvokeFunc();
+            return pluginInterface.GetIpcSubscriber<bool>($"{internalName}.IsRunning").InvokeFunc();
         }
         catch (Exception ex)
         {
-            throw Incompatible($"Questionable.IsRunning failed: {FormatException(ex)}");
+            throw Incompatible($"{internalName}.IsRunning failed: {FormatException(ex)}");
         }
     }
 
@@ -1034,8 +1073,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         var failures = new List<string>();
         try
         {
-            var exposed = FindLoadedQuestionable();
-            if (exposed == null || !ReferenceEquals(ResolveQuestionableInstance(exposed), patch.QuestionableInstance))
+            if (!IsCapturedInstanceLoaded(patch.QuestionableInstance))
             {
                 ownership = null;
                 return;
@@ -1098,8 +1136,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
         try
         {
-            var exposed = FindLoadedQuestionable();
-            if (exposed == null || !ReferenceEquals(ResolveQuestionableInstance(exposed), patch.QuestionableInstance))
+            if (!IsCapturedInstanceLoaded(patch.QuestionableInstance))
             {
                 cosmeticOwnership = null;
                 return;

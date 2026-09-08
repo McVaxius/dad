@@ -1,5 +1,12 @@
 # dad — changelog
 
+## 2026-09-08 - Questionable name compatibility (local-only, unpublished)
+- The duty bridge supports Questionable and WigglyQuest, selecting one loaded installation and its IsRunning endpoint.
+  Multiple loaded copies block new patches and restore DAD-owned duty subscribers, the duty gate, and the cosmetic row
+  on the captured instance. Cleanup preserves later external edits and handles unload/reload without patching another copy.
+- Added runtime tests against the compiled headless bridge with synthetic plugin wrappers for alias selection, false and
+  failed IPC calls, plugin-change events, ambiguous installations, and exact-instance restoration. Versions are unchanged.
+
 ## 2026-09-08 - test compatibility maintenance (local-only, unpublished)
 - Retained the pinned CI Dalamud/ClientStructs pair and added the reviewed 15.0.3.2 pair while keeping exact identity,
   Party Finder layout and condition checks. Unreviewed or mismatched references still fail verification.
