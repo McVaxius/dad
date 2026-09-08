@@ -13,18 +13,27 @@ namespace dad.Tests;
 
 public sealed class DadAlliancePartyFinderApi15LayoutTests
 {
-    private const string ExpectedClientStructsCommit =
-        "cc474ca90dce0824334544ad7ec7d769f3cb6ee5";
+    // Keep the CI archive baseline and the reviewed 15.0.3.2 development references paired.
+    // https://github.com/goatcorp/Dalamud/tree/83042016d0e9996dc44c9f7fd96a8d33a5e586f2/lib/FFXIVClientStructs
+    // The newer AgentLookingForGroup adds a method; the tested layouts and condition values are unchanged.
+    private static readonly (Version DalamudVersion, string ClientStructsCommit)[] ReviewedApi15Builds =
+    [
+        (new Version(15, 0, 3, 0), "cc474ca90dce0824334544ad7ec7d769f3cb6ee5"),
+        (new Version(15, 0, 3, 2), "50e46a849ce2b2ada83e8fe4209c50b6a34d7695"),
+    ];
 
     [Fact]
-    public void InstalledDalamudIdentityIsCurrentApi15Baseline()
-        => Assert.Equal(
-            new Version(15, 0, 3, 0),
-            typeof(ConditionFlag).Assembly.GetName().Version);
+    public void InstalledDalamudIdentityIsReviewedApi15Baseline()
+        => Assert.Contains(
+            ReviewedApi15Builds,
+            build => build.DalamudVersion == typeof(ConditionFlag).Assembly.GetName().Version);
 
     [Fact]
     public void InstalledClientStructsIdentityIsPinned()
     {
+        var baseline = Assert.Single(
+            ReviewedApi15Builds,
+            build => build.DalamudVersion == typeof(ConditionFlag).Assembly.GetName().Version);
         var assembly =
             typeof(AgentLookingForGroup).Assembly;
         var productVersion = FileVersionInfo.GetVersionInfo(
@@ -32,7 +41,7 @@ public sealed class DadAlliancePartyFinderApi15LayoutTests
 
         Assert.NotNull(productVersion);
         Assert.Contains(
-            ExpectedClientStructsCommit,
+            baseline.ClientStructsCommit,
             productVersion,
             StringComparison.OrdinalIgnoreCase);
     }

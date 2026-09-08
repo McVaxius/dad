@@ -137,19 +137,32 @@ public sealed class DadShareServiceTests
     }
 
     [Fact]
-    public void SchemaThreeExportsAllianceAssignmentsWhileOlderSchemasDefaultToNone()
+    public void CurrentExportsAndSchemaThreeImportsPreserveAllianceAssignmentsWhileOlderSchemasDefaultToNone()
     {
         var service = CreateService();
         var source = BuildPlan(PlanA, "Plan");
         Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
         Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var current, out error), error);
-        Assert.Equal(3, current!.Schema);
+        Assert.Equal(4, current!.Schema);
         Assert.True(current.Plan!.Slots[0].SkipIfDailyRouletteRewardReceived);
         Assert.Equal(DadAllianceAssignment.A, current.Plan.Slots[0].AllianceAssignment);
         Assert.Equal(DadAllianceAssignment.B, current.Plan.Slots[1].AllianceAssignment);
         Assert.Equal(DadAllianceAssignment.G, current.Plan.Slots[2].AllianceAssignment);
 
         var legacy = JsonNode.Parse(DecodeJson(encoded))!.AsObject();
+        legacy["schema"] = 3;
+        legacy["plan"]!.AsObject().Remove("shoppingAssociation");
+        foreach (var slot in legacy["plan"]!["slots"]!.AsArray())
+            slot!.AsObject().Remove("sourceIsSharedIdentity");
+        var schemaThreeEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(legacy.ToJsonString()));
+        Assert.True(service.TryDecode(schemaThreeEncoded, DadShareConstants.PlanKind, out var schemaThree, out error), error);
+        var schemaThreeResult = service.Apply(schemaThree!, [], [], commandValuesConfirmed: true);
+        Assert.True(schemaThreeResult.Success, schemaThreeResult.Summary);
+        var schemaThreeImported = Assert.Single(schemaThreeResult.PlannerGroups);
+        Assert.Equal(
+            [DadAllianceAssignment.A, DadAllianceAssignment.B, DadAllianceAssignment.G],
+            schemaThreeImported.Slots.Select(static slot => slot.AllianceAssignment).ToArray());
+
         legacy["schema"] = 2;
         foreach (var slot in legacy["plan"]!["slots"]!.AsArray())
             slot!.AsObject().Remove("allianceAssignment");

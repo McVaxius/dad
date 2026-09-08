@@ -1,5 +1,11 @@
 # dad — changelog
 
+## 2026-09-08 - test compatibility maintenance (local-only, unpublished)
+- Retained the pinned CI Dalamud/ClientStructs pair and added the reviewed 15.0.3.2 pair while keeping exact identity,
+  Party Finder layout and condition checks. Unreviewed or mismatched references still fail verification.
+- Corrected the Questionable runtime-method source marker and updated share-export coverage for schema 4, with explicit
+  schema-3 alliance import and schema-2 defaulting coverage. Application behavior and versions are unchanged.
+
 ## 2026-09-08 - integrated lifecycle verification and dispatch fixes (local-only, unpublished)
 - Extended the headless game catalog and roulette observations with Leveling ID 1 for the lab's saved four-slot schedule
   regression. Production scheduling, coordinator dispatch, acknowledgements and polling behavior remain unchanged.

@@ -65,7 +65,7 @@ public sealed class DadQuestionableCompatibilityTests
     {
         var source = ReadRepositorySource("Services", "DadQuestionableReflectionBridge.cs");
         var cosmetic = Slice(source, "private void MaintainCosmeticPatch", "private IExposedPlugin? FindLoadedQuestionable");
-        var runtime = Slice(source, "private void MaintainRuntimeBridge", "private void MaintainCosmeticPatch");
+        var runtime = Slice(source, "void MaintainRuntimeBridge()", "private void MaintainCosmeticPatch");
 
         Assert.DoesNotContain("runtimeWarningGate", cosmetic, StringComparison.Ordinal);
         Assert.Contains("runtimeWarningGate.TryConsume()", runtime, StringComparison.Ordinal);

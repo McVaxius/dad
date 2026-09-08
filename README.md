@@ -17,10 +17,186 @@ integrations, and everyday commands.
 ## Integrated lifecycle verification
 
 `Headless/Dad.Headless.csproj` compiles the same lifecycle services as the plugin and is driven by the standalone lab in
-`Z:\autoparty\src\AutoParty.LifecycleLab`. See that repository's README for CLI and browser commands. DAD instances run
-in separate processes with synthetic identities and temporary runtime data. The lab substitutes game/native observations,
-IPC responses and the clock; production coordinator, worker, queue, handler and update-order decisions remain shared.
-Scenario results list the exercised components and unexecuted steps. Virtual results are not in-game acceptance.
+AutoParty's `src/AutoParty.LifecycleLab`. DAD instances run in separate processes with synthetic identities and temporary
+runtime data. The lab substitutes game/native observations, IPC responses and the clock; production coordinator, worker,
+queue, handler and update-order decisions remain shared. AutoParty's production registration, pairing, directory,
+mailbox, security and SQLite services use a simulated Discord HTTP provider on loopback. No running game client or
+Discord bot is needed. Virtual results do not establish live game or Discord acceptance.
+
+### Development prerequisites and checkout paths
+
+- Clone both [DAD](https://github.com/McVaxius/dad) and [AutoParty](https://github.com/McVaxius/Autoparty).
+  AutoParty is private; contributors need repository access and an authenticated GitHub checkout.
+- Use Windows x64, PowerShell and a compatible [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+  AutoParty's `global.json` requests SDK `10.0.201` with `latestFeature` roll-forward and no preview SDKs.
+- DAD's plugin, tests and headless executable require API 15 Dalamud development-reference assemblies, including
+  `Dalamud.dll`, `FFXIVClientStructs.dll` and their companion assemblies. The default reference directory is
+  `$env:APPDATA\XIVLauncher\addon\Hooks\dev`. If using another reference directory, set `$env:DALAMUD_HOME` to its
+  absolute path in this PowerShell session. These are build references; the lab does not launch XIVLauncher or FFXIV.
+- Restore needs access to NuGet and DAD's checked-in `.github/nuget` protocol package source. No global NuGet source
+  configuration is needed.
+
+Run **one** of the following path setups from the indicated repository root. These examples assume sibling checkouts;
+replace the quoted companion path with its actual path if your layout differs. Keep both variables in the same
+PowerShell session for the commands below; `Resolve-Path -LiteralPath` and quoted arguments support paths with spaces.
+
+From DAD:
+
+```powershell
+$dadRoot = (Get-Location).Path
+$autoPartyRoot = (Resolve-Path -LiteralPath '..\Autoparty').Path
+```
+
+From AutoParty:
+
+```powershell
+$autoPartyRoot = (Get-Location).Path
+$dadRoot = (Resolve-Path -LiteralPath '..\dad').Path
+```
+
+Verify the selected roots before building:
+
+```powershell
+if (-not (Test-Path -LiteralPath (Join-Path $dadRoot 'Headless\Dad.Headless.csproj') -PathType Leaf)) {
+    throw 'Select the DAD checkout root containing Headless/Dad.Headless.csproj.'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $autoPartyRoot 'src\AutoParty.LifecycleLab\AutoParty.LifecycleLab.csproj') -PathType Leaf)) {
+    throw 'Select the AutoParty checkout root containing src/AutoParty.LifecycleLab.'
+}
+```
+
+### Build current development sources and run project tests
+
+Restore and build both sides before using integrated results as evidence for source changes. Run these commands in
+order and stop on a nonzero `$LASTEXITCODE`. Entering each checkout also applies its SDK selection rules.
+
+```powershell
+$packageSource = Join-Path $dadRoot '.github\nuget'
+$nugetSource = 'https://api.nuget.org/v3/index.json'
+Push-Location $dadRoot
+try {
+    dotnet restore '.\Headless\Dad.Headless.csproj' --source $packageSource --source $nugetSource
+    if ($LASTEXITCODE -ne 0) { throw 'DAD headless restore failed.' }
+    dotnet build '.\Headless\Dad.Headless.csproj' -c Debug --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'DAD headless build failed.' }
+    dotnet restore '.\Tests\dad.Tests.csproj' --source $packageSource --source $nugetSource
+    if ($LASTEXITCODE -ne 0) { throw 'DAD test restore failed.' }
+    dotnet test '.\Tests\dad.Tests.csproj' -c Release -p:Platform=x64 --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'DAD tests failed; inspect the failures.' }
+} finally { Pop-Location }
+
+Push-Location $autoPartyRoot
+try {
+    dotnet restore '.\src\AutoParty.LifecycleLab\AutoParty.LifecycleLab.csproj' --locked-mode --source $nugetSource
+    if ($LASTEXITCODE -ne 0) { throw 'AutoParty lab restore failed.' }
+    dotnet build '.\src\AutoParty.LifecycleLab\AutoParty.LifecycleLab.csproj' -c Debug --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'AutoParty lab build failed.' }
+    dotnet restore '.\tests\AutoParty.Tests\AutoParty.Tests.csproj' --locked-mode --source $nugetSource
+    if ($LASTEXITCODE -ne 0) { throw 'AutoParty test restore failed.' }
+    dotnet test '.\tests\AutoParty.Tests\AutoParty.Tests.csproj' -c Release --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'AutoParty tests failed; inspect the failures.' }
+} finally { Pop-Location }
+
+$lab = Join-Path $autoPartyRoot 'src\AutoParty.LifecycleLab\bin\Debug\net10.0-windows10.0.17763.0\AutoParty.LifecycleLab.exe'
+$dad = Join-Path $dadRoot 'Headless\bin\Debug\net10.0-windows\Dad.Headless.exe'
+```
+
+For ordinary DAD work, select relevant DAD tests and lifecycle coverage for scheduling, coordination, workers, queues,
+cancellation and recovery. For AutoParty work, select relevant `AutoParty.Tests` checks and lifecycle coverage for
+registration, pairing, directory sharing, mailbox delivery, security, persistence and restart recovery. A focused
+`dotnet test --filter` run can help during development; it does not replace the complete DAD Release suite required
+below. Rebuild affected sources after changes. Shared lifecycle changes require `run all` in addition to relevant
+project tests.
+
+### CLI and browser lab
+
+Use `list --json` to select scenarios from the current catalog's `components` and `coverage`. These examples exercise
+one DAD queue flow and one AutoParty pairing/directory flow:
+
+```powershell
+& $lab list --json
+& $lab run i305-queue-ready --seed 1 --json --dad $dad
+& $lab run autoparty-pairing-directory --seed 1 --json --dad $dad
+& $lab run all --seed 1 --json --dad $dad
+& $lab ui --dad $dad
+```
+
+In the GUI, select `i305-queue-ready` and click **Run** for DAD, then select `autoparty-pairing-directory` and **Run**
+for AutoParty. **Run All** runs the catalog. **Pause** stops at a virtual tick boundary; **Step** advances one tick and
+stays paused; **Advance Time** advances one tick by the entered milliseconds; **Resume** continues. **Reset** cancels
+the current run and clears session state. These controls act on virtual lifecycle tests. Inspect **Node states and
+transitions**, **Assertions and outcomes**, and `unexecutedSteps` before claiming coverage. Synthetic participant inputs
+are under **Scenario inputs / replay**; custom `preset` input is supported by `dad-direct-solo`.
+
+**Export scenario + result** downloads replay inputs and evidence. To replay in the GUI, paste the exported JSON into
+**Scenario inputs / replay**, click **Apply inputs**, then **Run**. For CLI replay, set `$replayFile` to that file's
+absolute path and run:
+
+```powershell
+& $lab run --scenario-file $replayFile --json --dad $dad
+```
+
+Replay accepts a definition or a full export containing `definition`. Format 2 retains explicit time advances in
+`definition.clockAdvances`; every required advance must be reached. The separate `clock` field records observed polling,
+which can vary with asynchronous I/O. Legacy `tickMilliseconds` replay remains strict; export a fresh run for format 2.
+
+Use `& $lab ui --no-browser --dad $dad` to start only the loopback server. Its startup JSON supplies the URL; `/` serves
+the GUI and `/api/scenarios` serves the catalog. Stop a foreground server with Ctrl+C. Automation should stop only the
+process it started. Results include aggregate `passed`, per-result assertions, build/node identities, substitutions and
+unexecuted steps. Exit codes are **0** for passing verification, **1** for failed verification and **2** for invalid
+invocation or an application error. Inspect expected versus observed assertions and errors, not just the exit code.
+
+### Load the shared Codex skill
+
+DAD maintains [.agents/skills/dad-autoparty-testing/SKILL.md](.agents/skills/dad-autoparty-testing/SKILL.md).
+It supports ordinary development and regression verification from either checkout, including building and opening
+the GUI. It resolves and verifies both checkout roots; supply the companion checkout location if it cannot be found.
+
+1. **Work in DAD:** open the DAD checkout in Codex. Repository discovery loads the skill from `.agents/skills`, including
+   when working in a subdirectory. Automatic selection is enabled for relevant DAD and AutoParty work.
+2. **Work in AutoParty only:** after setting `$dadRoot` above, copy the maintained folder into your user skill directory:
+
+   ```powershell
+   $skillSource = Join-Path $dadRoot '.agents\skills\dad-autoparty-testing'
+   $userSkills = Join-Path $HOME '.agents\skills'
+   $skillDestination = Join-Path $userSkills 'dad-autoparty-testing'
+   if (Test-Path -LiteralPath $skillDestination) {
+       throw 'A skill already exists here. Review it before choosing to refresh or replace it.'
+   }
+   New-Item -ItemType Directory -Path $userSkills -Force | Out-Null
+   Copy-Item -LiteralPath $skillSource -Destination $skillDestination -Recurse
+   ```
+
+   This user-level copy is available in AutoParty sessions without changing AutoParty. After updating DAD, refresh an
+   unmodified copy with `Copy-Item -LiteralPath (Join-Path $skillSource 'SKILL.md') -Destination (Join-Path $skillDestination 'SKILL.md') -Force`.
+   Review and reconcile local edits first. If an existing same-name skill is unrelated or customized, choose which
+   installation to keep before replacing anything. Codex does not merge same-name skills; repository and user copies
+   can both appear in selectors. DAD remains the maintained source. Restart Codex if discovery does not refresh.
+
+Both installations support explicit invocation:
+
+```text
+$dad-autoparty-testing Verify my changes in this repository using the relevant project tests and integrated lifecycle scenarios.
+```
+
+See [OpenAI's skill discovery documentation](https://developers.openai.com/codex/skills/) for discovery locations.
+
+### Supplied portable package
+
+When supplied, extract `AutoParty.LifecycleLab-win-x64.zip` and run `AutoParty.LifecycleLab.exe` from the extracted
+folder to open the GUI. Keep its adjacent `dad` folder and all other bundled files. The self-contained Windows x64
+package needs no SDK, separate Dalamud reference installation, Discord setup or game client. It automatically finds
+`dad\Dad.Headless.exe`; no `--dad` argument is needed:
+
+```powershell
+.\AutoParty.LifecycleLab.exe list --json
+.\AutoParty.LifecycleLab.exe run i305-queue-ready --seed 1 --json
+.\AutoParty.LifecycleLab.exe run autoparty-pairing-directory --seed 1 --json
+.\AutoParty.LifecycleLab.exe ui --no-browser
+```
+
+A supplied package verifies its bundled revisions. Rebuild both development sources and pass `--dad` as above to
+verify current working-tree changes; an older package does not test those edits.
 
 ## Build
 
