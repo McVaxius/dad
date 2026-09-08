@@ -18,6 +18,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     private readonly IPartyList partyList;
     private readonly ICondition condition;
     private readonly IPluginLog log;
+    private readonly IDadPartyNativeAccess? native;
     private readonly DadNativePartyInviteAttemptTracker inviteAttempts = new();
     private readonly DadPartyInvitationAcceptanceTracker acceptance = new();
     private string activeParticipantRunId = string.Empty;
@@ -34,7 +35,8 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         IPlayerState playerState,
         IPartyList partyList,
         ICondition condition,
-        IPluginLog log)
+        IPluginLog log,
+        IDadPartyNativeAccess? native = null)
     {
         this.configuration = configuration;
         this.framework = framework;
@@ -42,6 +44,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         this.partyList = partyList;
         this.condition = condition;
         this.log = log;
+        this.native = native;
     }
 
     public void BeginParticipantRun(string runId)
@@ -80,7 +83,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             var prompt = ReadSelectYesnoPrompt();
             departureController = new DadParticipantPartyDepartureController(
                 inviter.ContentId,
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 prompt.Snapshot.Visible,
                 prompt.Snapshot.Identity,
                 prompt.Snapshot.Ready,
@@ -122,13 +125,13 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
 
         if (PartyListContains(inviter.ContentId))
         {
-            acceptance.ShouldAccept(default, partyListContainsExpectedContentId: true, DateTime.UtcNow);
+            acceptance.ShouldAccept(default, partyListContainsExpectedContentId: true, DadClock.UtcNow);
             blocker = string.Empty;
             return true;
         }
 
         blocker = acceptance.BuildRetryStatus(
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             TimeSpan.FromSeconds(Math.Max(10, configuration.AssemblyTimeoutSeconds)));
         return false;
     }
@@ -150,7 +153,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             CharacterName = target.CharacterName,
             WorldId = target.WorldId,
             WorkerSessionId = target.WorkerSessionId,
-            LocalCurrentWorldId = (uint)playerState.CurrentWorld.RowId,
+            LocalCurrentWorldId = native?.Observe().CurrentWorldId ?? (uint)playerState.CurrentWorld.RowId,
             // DAD has X's frozen/home World ID, not X's visited-current-world truth. Keep the
             // relation ambiguous so attempt two uses the alternate native branch.
             WorldRelationExact = false,
@@ -161,7 +164,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return inviteAttempts.TryDispatch(
             runtimeTarget,
             partyListContainsContentId,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             this,
             out blocker);
     }
@@ -183,14 +186,14 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             CharacterName = target.CharacterName,
             WorldId = target.WorldId,
             WorkerSessionId = target.WorkerSessionId,
-            LocalCurrentWorldId = (uint)playerState.CurrentWorld.RowId,
+            LocalCurrentWorldId = native?.Observe().CurrentWorldId ?? (uint)playerState.CurrentWorld.RowId,
             WorldRelationExact = false,
             SameApplicableInstanceExact = target.SameApplicableInstanceExact,
         };
         var attempts = inviteAttempts.TryDispatchAuthenticatedIsland(
             runtimeTarget,
             partyListContainsContentId,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             this,
             out blocker);
         if (attempts.Count == 0)
@@ -225,6 +228,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     private List<DadPartyMemberSnapshot> ReadAuthoritativePartyMembersCore()
     {
         RequireFrameworkThread();
+        if (native != null) return native.Observe().Members.Select(member => member.Clone()).ToList();
         var members = new List<DadPartyMemberSnapshot>();
         if (InfoProxyCrossRealm.IsCrossRealmParty())
         {
@@ -291,12 +295,12 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
 
         var partyContainsInviter = PartyListContains(expected.ContentId);
         var invitation = ReadPendingInvitation();
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = DadClock.UtcNow;
         if (!acceptance.ShouldAccept(invitation, partyContainsInviter, nowUtc))
             return;
 
-        var proxy = InfoProxyPartyInvite.Instance();
-        if (proxy == null)
+        var proxy = native == null ? InfoProxyPartyInvite.Instance() : null;
+        if (proxy == null && native == null)
             return;
 
         var promptBefore = ReadSelectYesnoPrompt();
@@ -304,7 +308,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         if (DadPartyInvitePromptOwnershipRules.ShouldRestoreHiddenPrompt(invitation, expected, promptBefore.Snapshot))
             restoreDispatched = FireNotificationInviteRestore();
 
-        var revalidated = ReadPendingInvitation(proxy);
+        var revalidated = native?.Observe().Invitation ?? ReadPendingInvitation(proxy);
         if (revalidated != invitation ||
             !DadPartyInvitePromptOwnershipRules.IsExactPendingInvitation(revalidated, expected))
         {
@@ -315,7 +319,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         bool nativeResponded;
         try
         {
-            nativeResponded = proxy->RespondToInvitation(proxy->InviterName.StringPtr, true);
+            nativeResponded = native != null ? native.RespondToInvitation(revalidated) : proxy->RespondToInvitation(proxy->InviterName.StringPtr, true);
         }
         catch (Exception ex)
         {
@@ -397,6 +401,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     public bool InviteSameWorld(ulong contentId, string exactCharacterName, ushort worldId)
     {
         RequireFrameworkThread();
+        if (native != null) return native.InviteSameWorld(contentId, exactCharacterName, worldId);
         try
         {
             var proxy = InfoProxyPartyInvite.Instance();
@@ -412,6 +417,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     public bool InviteCrossWorld(ulong contentId, ushort worldId)
     {
         RequireFrameworkThread();
+        if (native != null) return native.InviteCrossWorld(contentId, worldId);
         try
         {
             var proxy = InfoProxyPartyInvite.Instance();
@@ -427,6 +433,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     public bool InviteInInstance(ulong contentId)
     {
         RequireFrameworkThread();
+        if (native != null) return native.InviteInInstance(contentId);
         try
         {
             var proxy = InfoProxyPartyInvite.Instance();
@@ -449,11 +456,11 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         }
 
         var prompt = ReadSelectYesnoPrompt();
-        var partyMenu = GetAddon("PartyMemberList");
-        var crossRealm = InfoProxyCrossRealm.IsCrossRealmParty();
+        var partyMenu = native == null ? GetAddon("PartyMemberList") : null;
+        var crossRealm = native?.Observe().CrossRealm ?? InfoProxyCrossRealm.IsCrossRealmParty();
         var members = ReadAuthoritativePartyMemberIds(crossRealm);
         var decision = departureController.Pulse(new DadParticipantPartyDepartureObservation(
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             playerState.ContentId,
             pendingExpectedInviter.ContentId,
             members,
@@ -461,7 +468,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56],
             condition[ConditionFlag.InDutyQueue] || condition[ConditionFlag.WaitingForDuty] || condition[ConditionFlag.WaitingForDutyFinder],
             IsWorldStable(),
-            partyMenu != null && partyMenu->IsVisible,
+            native?.Observe().PartyMenuVisible ?? (partyMenu != null && partyMenu->IsVisible),
             prompt.Snapshot.Visible,
             prompt.Snapshot.Identity,
             prompt.Snapshot.Text,
@@ -522,7 +529,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     }
 
     private bool PartyListContains(ulong contentId)
-        => contentId != 0 && ReadAuthoritativePartyMemberIds(InfoProxyCrossRealm.IsCrossRealmParty()).Contains(contentId);
+        => contentId != 0 && ReadAuthoritativePartyMembers().Any(member => member.ContentId == contentId);
 
     private IReadOnlyList<ulong> ReadAuthoritativePartyMemberIds(bool crossRealm)
         => ReadAuthoritativePartyMembers()
@@ -555,11 +562,12 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
                 proxy->InviterName.ToString(),
                 proxy->InviterWorldId);
 
-    private static DadPendingPartyInvitation ReadPendingInvitation()
-        => ReadPendingInvitation(InfoProxyPartyInvite.Instance());
+    private DadPendingPartyInvitation ReadPendingInvitation()
+        => native?.Observe().Invitation ?? ReadPendingInvitation(InfoProxyPartyInvite.Instance());
 
-    private static PromptRuntimeSnapshot ReadSelectYesnoPrompt()
+    private PromptRuntimeSnapshot ReadSelectYesnoPrompt()
     {
+        if (native != null) return new(native.Observe().Prompt, null);
         var addon = GetAddon("SelectYesno");
         if (addon == null || !addon->IsVisible)
             return default;
@@ -577,8 +585,9 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             addon);
     }
 
-    private static bool IsOtherReadyPromptVisible()
+    private bool IsOtherReadyPromptVisible()
     {
+        if (native != null) return native.Observe().OtherReadyPromptVisible;
         var privatePrompt = GetAddon("LookingForGroupPrivate");
         return privatePrompt != null && privatePrompt->IsVisible && privatePrompt->IsReady;
     }
@@ -589,8 +598,9 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return manager == null ? null : manager->GetAddonByName(name);
     }
 
-    private static bool FireNotificationInviteRestore()
+    private bool FireNotificationInviteRestore()
     {
+        if (native != null) return native.RestoreInvitationPrompt();
         var addon = GetAddon("_Notification");
         if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
@@ -604,8 +614,9 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return true;
     }
 
-    private static bool FireYes(AtkUnitBase* addon)
+    private bool FireYes(AtkUnitBase* addon)
     {
+        if (native != null) return native.ApprovePrompt();
         if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
@@ -616,8 +627,9 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return true;
     }
 
-    private static bool FirePartyMenuLeave(AtkUnitBase* addon)
+    private bool FirePartyMenuLeave(AtkUnitBase* addon)
     {
+        if (native != null) return native.LeaveThroughPartyMenu();
         if (addon == null || !addon->IsVisible)
             return false;
 
@@ -630,8 +642,9 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return true;
     }
 
-    private static void SubmitLeaveChatCommand()
+    private void SubmitLeaveChatCommand()
     {
+        if (native != null) { native.SendChat(DadParticipantPartyDepartureController.LeaveCommand); return; }
         var uiModule = UIModule.Instance();
         if (uiModule == null)
             throw new InvalidOperationException("The native game UI module is unavailable for chat input.");

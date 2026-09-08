@@ -64,7 +64,7 @@ public sealed class DadRosterCatalogService
                 transportService.TransportRevision,
                 catalog);
         },
-            DateTime.UtcNow);
+            DadClock.UtcNow);
 
     public long CatalogVersion => catalogVersion;
 
@@ -154,13 +154,13 @@ public sealed class DadRosterCatalogService
 
     public void UpdateDeferredPersistence()
     {
-        if (deferredSaveGate.TryConsumeDue(DateTime.UtcNow))
+        if (deferredSaveGate.TryConsumeDue(DadClock.UtcNow))
             configuration.Save();
     }
 
     public void FlushPendingPersistence()
     {
-        if (deferredSaveGate.TryConsumeDue(DateTime.UtcNow, force: true))
+        if (deferredSaveGate.TryConsumeDue(DadClock.UtcNow, force: true))
             configuration.Save();
     }
 
@@ -368,7 +368,7 @@ public sealed class DadRosterCatalogService
     // path always rebuilds, so a forced refresh still picks up local changes immediately.
     private DadAccountRosterCatalog GetReusableLocalCatalog(DadCharacterPool pool, DadRosterRefreshPlan plan)
     {
-        if (cachedLocalCatalog != null && DateTime.UtcNow - cachedLocalCatalogUtc < LocalCatalogReuseWindow)
+        if (cachedLocalCatalog != null && DadClock.UtcNow - cachedLocalCatalogUtc < LocalCatalogReuseWindow)
             return cachedLocalCatalog.Clone();
 
         var built = BuildLocalCatalog(pool, plan, deferKnowledgeSave: true);
@@ -379,7 +379,7 @@ public sealed class DadRosterCatalogService
     private void WarmLocalCatalogCache(DadAccountRosterCatalog localCatalog)
     {
         cachedLocalCatalog = localCatalog.Clone();
-        cachedLocalCatalogUtc = DateTime.UtcNow;
+        cachedLocalCatalogUtc = DadClock.UtcNow;
     }
 
     private IReadOnlyList<DadPeerRosterCatalogResponse> CollectCachedPeerResponses()
@@ -504,7 +504,7 @@ public sealed class DadRosterCatalogService
         if (learnedKnowledge)
         {
             if (deferKnowledgeSave)
-                deferredSaveGate.MarkDirty(DateTime.UtcNow);
+                deferredSaveGate.MarkDirty(DadClock.UtcNow);
             else
                 SaveImmediately();
         }
@@ -524,7 +524,7 @@ public sealed class DadRosterCatalogService
 
     public DadOceTravelCapacityProof BuildLocalOceTravelCapacityProof(DadAccountKey requiredAccountKey)
     {
-        var observedAtUtc = DateTime.UtcNow;
+        var observedAtUtc = DadClock.UtcNow;
         var localAccountKey = GetLocalClientAccountKey();
         var proof = new DadOceTravelCapacityProof
         {
@@ -704,7 +704,7 @@ public sealed class DadRosterCatalogService
         request.AccountKeys ??= [];
         var changedKeys = ResolveVisibilityTargets(request, pool);
         var marksRosterUpdate = request.Visibility == DadRosterVisibility.NeedsUpdate;
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         foreach (var target in changedKeys)
         {
             var record = FindVisibilityRecord(target.CharacterKey, target.AccountKey, target.ContentId);
@@ -1024,7 +1024,7 @@ public sealed class DadRosterCatalogService
             CharacterKey = result.CharacterKey.Value,
             ContentId = result.ContentId,
             AccountKey = result.AccountKey,
-            RequestedAtUtc = DateTime.UtcNow,
+            RequestedAtUtc = DadClock.UtcNow,
             RefreshedAtUtc = result.RefreshedAtUtc,
             Success = result.Success,
             Summary = result.Summary,
@@ -1037,7 +1037,7 @@ public sealed class DadRosterCatalogService
             {
                 record.Visibility = NormalizeVisibility(record.Visibility);
                 record.NeedsRosterUpdate = false;
-                record.UpdatedAtUtc = DateTime.UtcNow;
+                record.UpdatedAtUtc = DadClock.UtcNow;
                 record.Reason = "Roster refresh completed.";
             }
         }
@@ -1096,7 +1096,7 @@ public sealed class DadRosterCatalogService
             DadRosterIdentity.SameAccount(character.AccountKey, result.AccountKey) &&
             DadRosterIdentity.SameCharacter(character.CharacterKey, character.ContentId, result.CharacterKey, result.ContentId));
         currentCatalog.Characters.Add(refreshed.Clone());
-        currentCatalog.GeneratedAtUtc = DateTime.UtcNow;
+        currentCatalog.GeneratedAtUtc = DadClock.UtcNow;
         currentCatalog.Summary = $"Exact Leveling Mode roster truth refreshed for {result.CharacterKey.Value}.";
         cachedLocalCatalog = null;
         if (UpsertKnownCharacter(refreshed, xadbAuthoritative: true))
@@ -1123,7 +1123,7 @@ public sealed class DadRosterCatalogService
         var peerCatalogs = catalogs.Skip(1).ToList();
         var merged = new DadAccountRosterCatalog
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             Version = localCatalog?.Version ?? 1,
             XadbContractVersion = localCatalog?.XadbContractVersion,
             XadbPayloadRowCount = localCatalog?.XadbPayloadRowCount ?? 0,
@@ -1211,7 +1211,7 @@ public sealed class DadRosterCatalogService
             var visibility = NormalizeVisibility(record?.Visibility ?? DadRosterVisibility.Active);
             var needsRosterUpdate = record is { NeedsRosterUpdate: true } || record?.Visibility == DadRosterVisibility.NeedsUpdate;
             DadRosterTransportCatalogRuntime.ApplyOperatorPlanningPolicy(character, visibility, needsRosterUpdate);
-            character.IsStale = character.LastSnapshotUtc.HasValue && DateTime.UtcNow - character.LastSnapshotUtc.Value > staleAfter;
+            character.IsStale = character.LastSnapshotUtc.HasValue && DadClock.UtcNow - character.LastSnapshotUtc.Value > staleAfter;
 
             var lastRefresh = configuration.RosterCatalog.RefreshHistory
                 .Where(record => RecordMatches(record, character.CharacterKey, character.AccountKey, character.ContentId))
@@ -1399,7 +1399,7 @@ public sealed class DadRosterCatalogService
             : configuration.RosterCatalog.KnownCharacters;
         return new DadAccountRosterCatalog
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             Characters = records
                 .Select(ToRosterCharacter)
                 .ToList(),
@@ -1593,7 +1593,7 @@ public sealed class DadRosterCatalogService
     {
         var catalog = new DadAccountRosterCatalog
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             SourceClientInstanceId = string.Empty,
             SourceWorkerSessionId = new DadWorkerSessionId(string.Empty),
             IsFullRosterAvailable = false,
@@ -1626,7 +1626,7 @@ public sealed class DadRosterCatalogService
     {
         var catalog = new DadAccountRosterCatalog
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             SourceClientInstanceId = presenceService.ClientInstanceId,
             SourceWorkerSessionId = presenceService.WorkerSessionId,
             IsFullRosterAvailable = false,
@@ -1955,7 +1955,7 @@ public sealed class DadRosterCatalogService
             return false;
 
         if (deferSave)
-            deferredSaveGate.MarkDirty(DateTime.UtcNow);
+            deferredSaveGate.MarkDirty(DadClock.UtcNow);
         else
             SaveImmediately();
         return true;
@@ -2071,7 +2071,7 @@ public sealed class DadRosterCatalogService
             XadbReady = character.XadbReady,
             MapEligible = character.MapEligible,
             MapEligibilitySummary = character.MapEligibilitySummary,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
         };
 
     private static DadRosterCharacter ToRosterCharacter(DadRosterKnownCharacterRecord record)
@@ -2170,7 +2170,7 @@ public sealed class DadRosterCatalogService
         if (!snapshotUtc.HasValue)
             return DadSnapshotFreshness.Unknown;
 
-        var age = DateTime.UtcNow - snapshotUtc.Value;
+        var age = DadClock.UtcNow - snapshotUtc.Value;
         if (age <= TimeSpan.FromMinutes(1))
             return DadSnapshotFreshness.Live;
         if (age <= TimeSpan.FromMinutes(15))

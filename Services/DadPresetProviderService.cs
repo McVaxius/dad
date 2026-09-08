@@ -321,6 +321,7 @@ public sealed class DadPresetProviderService
     private readonly DadModuleRegistry moduleRegistry;
     private readonly Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider;
     private readonly Func<IReadOnlyList<DadAutoPartyRemoteBinding>> currentRemoteBindingsProvider;
+    private readonly Func<IReadOnlyList<DadPlannerDutyOption>> dutyCatalogProvider;
     private IReadOnlyList<DadPlannerDutyOption>? plannerDutyCatalog;
     private IReadOnlyDictionary<uint, DadPlannerDutyOption>? plannerDutyCatalogById;
     private IReadOnlyList<DadPlannerRouletteOption>? plannerRouletteCatalog;
@@ -328,11 +329,63 @@ public sealed class DadPresetProviderService
     public DadPresetProviderService(
         DadModuleRegistry moduleRegistry,
         Func<IReadOnlyList<DadRosterAccountOption>> accountDirectoryProvider,
-        Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null)
+        Func<IReadOnlyList<DadAutoPartyRemoteBinding>>? currentRemoteBindingsProvider = null,
+        Func<IReadOnlyList<DadPlannerDutyOption>>? dutyCatalogProvider = null)
     {
         this.moduleRegistry = moduleRegistry;
         this.accountDirectoryProvider = accountDirectoryProvider;
         this.currentRemoteBindingsProvider = currentRemoteBindingsProvider ?? (static () => []);
+        this.dutyCatalogProvider = dutyCatalogProvider ?? BuildPlannerDutyCatalog;
+    }
+
+    public DadPresetPlannerOptions BuildOptionsForGroup(DadPlannerGroup group, DadPlannerGroupStartRequest? startRequest)
+    {
+        var activityMode = ResolvePlannerGroupLane(group.ActivityMode, startRequest?.Lane);
+        return new DadPresetPlannerOptions
+        {
+            PresetName = group.DisplayName,
+            SelectedPlannerGroupId = group.GroupId,
+            RunFamily = GetPlannerRunFamily(activityMode),
+            ActivityMode = activityMode,
+            ActivityName = GetPlannerLaneDefinition(activityMode).DisplayName,
+            OperatorMode = group.OperatorMode,
+            ConnectedOnly = group.ConnectedOnly,
+            SameDatacenterOnly = group.SameDatacenterOnly,
+            AllowStaleForPlanning = group.AllowStaleForPlanning,
+            TransportOwner = group.TransportOwner,
+            QueueAuthority = group.QueueAuthority,
+            InviteAuthority = DadInviteAuthority.PresetLeader,
+            DutyContentFinderConditionId = startRequest?.DutyContentFinderConditionId ?? group.DutyContentFinderConditionId,
+            DutyDisplayName = group.DutyDisplayName,
+            DutyUnsynced = group.DutyUnsynced,
+            DutyExpectedPartySize = group.DutyExpectedPartySize,
+            RouletteTarget = group.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
+            MogtomePreset = group.MogtomePreset,
+            MogtomeDutyPolicy = group.MogtomeDutyPolicy,
+            RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
+            StopPolicy = group.StopPolicy.Clone(),
+            CompletionActions = group.CompletionActions?.Clone(),
+            IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
+                .Select(static slot => slot.RequiredAccountKey)
+                .Where(static key => !key.IsEmpty)
+                .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+        };
+    }
+
+    private DadPlannerActivityMode ResolvePlannerGroupLane(DadPlannerActivityMode fallback, string? lane)
+    {
+        if (string.IsNullOrWhiteSpace(lane))
+            return fallback;
+
+        var trimmed = lane.Trim();
+        if (Enum.TryParse<DadPlannerActivityMode>(trimmed, ignoreCase: true, out var parsed))
+            return parsed;
+
+        return GetPlannerLaneDefinitions()
+            .FirstOrDefault(definition =>
+                string.Equals(definition.DisplayName, trimmed, StringComparison.OrdinalIgnoreCase))
+            ?.ActivityMode ?? fallback;
     }
 
     public IReadOnlyList<string> GetLanPartyPresets()
@@ -2148,7 +2201,7 @@ public sealed class DadPresetProviderService
         if (plannerDutyCatalog != null)
             return plannerDutyCatalog;
 
-        plannerDutyCatalog = BuildPlannerDutyCatalog();
+        plannerDutyCatalog = dutyCatalogProvider();
         return plannerDutyCatalog;
     }
 

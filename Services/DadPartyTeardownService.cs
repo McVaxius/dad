@@ -15,6 +15,7 @@ internal sealed unsafe class DadPartyTeardownService
     private readonly IPlayerState playerState;
     private readonly ICondition condition;
     private readonly IPluginLog log;
+    private readonly IDadPartyNativeAccess? native;
     private DadPartyTeardownController? controller;
     private string fallbackInviterName = string.Empty;
     private string lastDecisionDiagnostic = string.Empty;
@@ -25,13 +26,15 @@ internal sealed unsafe class DadPartyTeardownService
         IPartyList partyList,
         IPlayerState playerState,
         ICondition condition,
-        IPluginLog log)
+        IPluginLog log,
+        IDadPartyNativeAccess? native = null)
     {
         this.configuration = configuration;
         this.partyList = partyList;
         this.playerState = playerState;
         this.condition = condition;
         this.log = log;
+        this.native = native;
     }
 
     public void Begin(IReadOnlyCollection<ulong> expectedMembers, ulong expectedLeaderContentId, string expectedLeaderName)
@@ -58,7 +61,7 @@ internal sealed unsafe class DadPartyTeardownService
             expectedLeaderContentId,
             expectedLocalContentId,
             mode,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             prompt.Visible,
             prompt.Identity,
             prompt.Ready,
@@ -68,15 +71,17 @@ internal sealed unsafe class DadPartyTeardownService
 
     public DadPartyDisbandPreflight GetCurrentPartyDisbandPreflight()
     {
-        var isCrossRealmParty = InfoProxyCrossRealm.IsCrossRealmParty();
-        var memberIds = isCrossRealmParty
+        var observed = native?.Observe();
+        var isCrossRealmParty = observed?.CrossRealm ?? InfoProxyCrossRealm.IsCrossRealmParty();
+        var memberIds = observed?.Members.Select(member => member.ContentId).Where(id => id != 0).ToList() ?? (isCrossRealmParty
             ? ReadCrossRealmMemberIds()
-            : partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList();
+            : partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList());
         if (memberIds.Count == 0 && playerState.ContentId != 0)
             memberIds.Add(playerState.ContentId);
 
-        var leaderContentId = 0UL;
-        if (isCrossRealmParty)
+        var leaderContentId = observed?.LeaderContentId ?? 0UL;
+        if (observed != null) { }
+        else if (isCrossRealmParty)
         {
             if (InfoProxyCrossRealm.IsLocalPlayerPartyLeader())
                 leaderContentId = playerState.ContentId;
@@ -119,17 +124,19 @@ internal sealed unsafe class DadPartyTeardownService
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "Party teardown controller was not initialized.");
 
         var prompt = ReadPrompt();
-        var partyMenuAddon = RaptureAtkUnitManager.Instance()->GetAddonByName("PartyMemberList");
-        var partyMenuVisible = partyMenuAddon != null && partyMenuAddon->IsVisible;
-        var isCrossRealmParty = InfoProxyCrossRealm.IsCrossRealmParty();
-        var memberIds = isCrossRealmParty
+        var partyMenuAddon = native == null ? RaptureAtkUnitManager.Instance()->GetAddonByName("PartyMemberList") : null;
+        var partyMenuVisible = native?.Observe().PartyMenuVisible ?? (partyMenuAddon != null && partyMenuAddon->IsVisible);
+        var observed = native?.Observe();
+        var isCrossRealmParty = observed?.CrossRealm ?? InfoProxyCrossRealm.IsCrossRealmParty();
+        var memberIds = observed?.Members.Select(member => member.ContentId).Where(id => id != 0).ToList() ?? (isCrossRealmParty
             ? ReadCrossRealmMemberIds()
-            : partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList();
+            : partyList.Select(static member => member.ContentId).Where(static id => id != 0).ToList());
         if (memberIds.Count == 0 && playerState.ContentId != 0)
             memberIds.Add(playerState.ContentId);
 
-        var leaderContentId = 0UL;
-        if (isCrossRealmParty)
+        var leaderContentId = observed?.LeaderContentId ?? 0UL;
+        if (observed != null) { }
+        else if (isCrossRealmParty)
         {
             if (InfoProxyCrossRealm.IsLocalPlayerPartyLeader())
                 leaderContentId = playerState.ContentId;
@@ -141,7 +148,7 @@ internal sealed unsafe class DadPartyTeardownService
                 leaderContentId = partyList[(int)leaderIndex]?.ContentId ?? 0;
         }
 
-        var proxy = InfoProxyPartyInvite.Instance();
+        var proxy = native == null ? InfoProxyPartyInvite.Instance() : null;
         var inviterName = proxy == null ? string.Empty : proxy->InviterName.ToString();
         if (string.IsNullOrWhiteSpace(inviterName))
             inviterName = fallbackInviterName;
@@ -150,7 +157,7 @@ internal sealed unsafe class DadPartyTeardownService
         var isQueued = condition[ConditionFlag.InDutyQueue] || condition[ConditionFlag.WaitingForDuty] || condition[ConditionFlag.WaitingForDutyFinder];
         var isWorldStable = IsWorldStable();
         var decision = controller.Pulse(new DadPartyTeardownObservation(
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             playerState.ContentId,
             leaderContentId,
             memberIds,
@@ -284,8 +291,9 @@ internal sealed unsafe class DadPartyTeardownService
         return memberIds;
     }
 
-    private static void SubmitChatCommand(string command)
+    private void SubmitChatCommand(string command)
     {
+        if (native != null) { native.SendChat(command); return; }
         var uiModule = UIModule.Instance();
         if (uiModule == null)
             throw new InvalidOperationException("The native game UI module is unavailable for chat input.");
@@ -313,8 +321,13 @@ internal sealed unsafe class DadPartyTeardownService
         mutationMode = DadPartyTeardownMutationMode.DisbandAsLeader;
     }
 
-    private static PromptSnapshot ReadPrompt()
+    private PromptSnapshot ReadPrompt()
     {
+        if (native != null)
+        {
+            var prompt = native.Observe().Prompt;
+            return new(prompt.Visible, prompt.Ready, prompt.Identity, prompt.Text, null);
+        }
         var addonBase = RaptureAtkUnitManager.Instance()->GetAddonByName("SelectYesno");
         if (addonBase == null || !addonBase->IsVisible)
             return default;
@@ -331,8 +344,9 @@ internal sealed unsafe class DadPartyTeardownService
             addonBase);
     }
 
-    private static bool IsOtherReadyPromptVisible()
+    private bool IsOtherReadyPromptVisible()
     {
+        if (native != null) return native.Observe().OtherReadyPromptVisible;
         var manager = RaptureAtkUnitManager.Instance();
         var privatePrompt = manager == null
             ? null
@@ -340,8 +354,9 @@ internal sealed unsafe class DadPartyTeardownService
         return privatePrompt != null && privatePrompt->IsVisible && privatePrompt->IsReady;
     }
 
-    private static bool FireYes(AtkUnitBase* addon)
+    private bool FireYes(AtkUnitBase* addon)
     {
+        if (native != null) return native.ApprovePrompt();
         if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
@@ -352,8 +367,9 @@ internal sealed unsafe class DadPartyTeardownService
         return true;
     }
 
-    private static bool FirePartyMenuLeave(AtkUnitBase* addon)
+    private bool FirePartyMenuLeave(AtkUnitBase* addon)
     {
+        if (native != null) return native.LeaveThroughPartyMenu();
         if (addon == null || !addon->IsVisible)
             return false;
 

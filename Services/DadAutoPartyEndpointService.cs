@@ -119,7 +119,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                     false,
                     false,
                     "dad-relay-pump-not-attached",
-                    DateTimeOffset.UtcNow,
+                    DadClock.OffsetUtcNow,
                     null,
                     0,
                     0,
@@ -180,7 +180,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         ArgumentNullException.ThrowIfNull(pump);
         ArgumentNullException.ThrowIfNull(service);
-        if (!HasValidatedBootstrap(DateTime.UtcNow))
+        if (!HasValidatedBootstrap(DadClock.UtcNow))
             throw new InvalidOperationException("dad-relay-bootstrap-not-validated");
         if (relayPump != null && !ReferenceEquals(relayPump, pump))
             throw new InvalidOperationException("dad-relay-pump-already-attached");
@@ -212,14 +212,14 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     public DadAutoPartyListingPublicationResult PublishListingsImmediately()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        return PublishListings(DateTime.UtcNow, force: true);
+        return PublishListings(DadClock.UtcNow, force: true);
     }
 
     public async ValueTask<DadPairedDirectoryRefreshResult> RefreshPairedDirectoryAsync(
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        var attemptedAtUtc = DateTime.UtcNow;
+        var attemptedAtUtc = DadClock.UtcNow;
         var publishedCount = 0;
         var publicationOutcomeRecorded = false;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -243,7 +243,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                     "dad-paired-directory-refresh-not-ready",
                     0,
                     0,
-                    DateTime.UtcNow);
+                    DadClock.UtcNow);
             }
             if (prepareListingPublication != null && !prepareListingPublication())
             {
@@ -258,7 +258,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                     "dad-listing-publication-roster-unavailable",
                     0,
                     0,
-                    DateTime.UtcNow);
+                    DadClock.UtcNow);
             }
 
             var publication = listingPublicationProvider(attemptedAtUtc);
@@ -267,7 +267,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 publication.Listings,
                 publication.PairedLabels,
                 operation.Token).ConfigureAwait(false);
-            nextListingPublishUtc = DateTime.UtcNow +
+            nextListingPublishUtc = DadClock.UtcNow +
                 (published.Allowed ? ListingPublishInterval : ListingPublishRetryDelay);
             RecordListingPublicationOutcome(
                 attemptedAtUtc,
@@ -276,7 +276,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             publicationOutcomeRecorded = true;
             if (!published.Allowed)
             {
-                return new(false, published.SafeCode, 0, 0, DateTime.UtcNow);
+                return new(false, published.SafeCode, 0, 0, DadClock.UtcNow);
             }
             publishedCount = published.PublishedListingCount;
 
@@ -287,7 +287,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 directory.SafeCode,
                 publishedCount,
                 directory.Allowed ? directory.ReceivedListingCount : 0,
-                DateTime.UtcNow);
+                DadClock.UtcNow);
         }
         catch (OperationCanceledException)
         {
@@ -296,20 +296,20 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 : "dad-paired-directory-refresh-cancelled";
             if (!publicationOutcomeRecorded)
             {
-                nextListingPublishUtc = DateTime.UtcNow + ListingPublishRetryDelay;
+                nextListingPublishUtc = DadClock.UtcNow + ListingPublishRetryDelay;
                 RecordListingPublicationOutcome(
                     attemptedAtUtc,
                     new(false, safeCode, 0),
                     nextListingPublishUtc);
             }
-            return new(false, safeCode, publishedCount, 0, DateTime.UtcNow);
+            return new(false, safeCode, publishedCount, 0, DadClock.UtcNow);
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException or FormatException)
         {
             if (!publicationOutcomeRecorded)
             {
-                nextListingPublishUtc = DateTime.UtcNow + ListingPublishRetryDelay;
+                nextListingPublishUtc = DadClock.UtcNow + ListingPublishRetryDelay;
                 RecordListingPublicationOutcome(
                     attemptedAtUtc,
                     new(false, "dad-paired-directory-refresh-invalid", 0),
@@ -320,7 +320,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 "dad-paired-directory-refresh-invalid",
                 publishedCount,
                 0,
-                DateTime.UtcNow);
+                DadClock.UtcNow);
         }
     }
 
@@ -477,7 +477,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (bootstrap == null)
             return Decision(false, "dad-bootstrap-invalid");
         var expiredBootstrap = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
@@ -622,7 +622,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             string.IsNullOrWhiteSpace(configuration.RegisteredIslandId))
             return Decision(false, "dad-bootstrap-identity-not-ready");
         var expiredBootstrap = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
-            configuration.BootstrapExpiresAtUtc <= DateTime.UtcNow;
+            configuration.BootstrapExpiresAtUtc <= DadClock.UtcNow;
         if (configuration.RegistrationState is not (
                 DadAutoPartyRegistrationState.Unregistered or DadAutoPartyRegistrationState.Active) &&
             !expiredBootstrap)
@@ -752,7 +752,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         relayPump?.UpdateFramework();
 
         if (configuration.LegacyDiscordTokenCleanupPending && legacyCleanupTask == null &&
-            DateTime.UtcNow >= nextLegacyCleanupAttemptUtc)
+            DadClock.UtcNow >= nextLegacyCleanupAttemptUtc)
         {
             var reference = configuration.LegacyDiscordTokenReference;
             legacyCleanupTask = Task.Run(
@@ -760,7 +760,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 shutdown.Token);
         }
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var shouldRun = dadEnabled && HasValidatedBootstrap(now);
         if (!shouldRun)
         {
@@ -897,7 +897,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             Snapshot = new(
                 DadAutoPartyEndpointConnectionState.Degraded,
                 "dad-webhook-epoch-persist-failed",
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 prior.LastSuccessfulExchangeAtUtc,
                 prior.PendingOutboundCount,
                 prior.PendingAcknowledgementCount,
@@ -1152,7 +1152,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
     }
 
     private bool EpochPersistenceAttemptIsCurrent(EpochPersistenceAttempt attempt) =>
-        HasValidatedBootstrap(DateTime.UtcNow) &&
+        HasValidatedBootstrap(DadClock.UtcNow) &&
         string.Equals(
             configuration.WebhookCredentialReference,
             attempt.CredentialReference,
@@ -1195,7 +1195,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
                 completed.IsCompletedSuccessfully
                     ? completed.Result.SafeCode
                     : "dad-webhook-adapter-start-failed",
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 null,
                 0,
                 0,
@@ -1253,7 +1253,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
         return new(
             DadAutoPartyEndpointConnectionState.Connecting,
             "dad-webhook-refreshing",
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             prior.LastSuccessfulExchangeAtUtc,
             prior.PendingOutboundCount,
             prior.PendingAcknowledgementCount,
@@ -1311,7 +1311,7 @@ public sealed class DadAutoPartyEndpointService : IDisposable
             configuration.LegacyDiscordTokenCleanupWarning = completed.IsCompletedSuccessfully
                 ? completed.Result.SafeCode
                 : "dad-autoparty-legacy-token-cleanup-retry";
-            nextLegacyCleanupAttemptUtc = DateTime.UtcNow + LegacyCleanupRetryDelay;
+            nextLegacyCleanupAttemptUtc = DadClock.UtcNow + LegacyCleanupRetryDelay;
             saveConfiguration();
             return;
         }
@@ -1570,7 +1570,7 @@ internal static class DadAutoPartyRegistrationRecovery
 
         configuration.RegistrationId = routedRegistrationId.ToString("D");
         if (priorState == DadAutoPartyRegistrationState.BootstrapImported &&
-            priorBootstrapExpiry > DateTime.UtcNow)
+            priorBootstrapExpiry > DadClock.UtcNow)
         {
             configuration.RegistrationState = DadAutoPartyRegistrationState.BootstrapImported;
             configuration.RegistrationRecoveryState = DadAutoPartyRegistrationRecoveryState.Active;

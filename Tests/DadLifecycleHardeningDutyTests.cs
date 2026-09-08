@@ -260,9 +260,9 @@ public sealed class DadLifecycleHardeningDutyTests
 
         Assert.Equal(2, CountOccurrences(local, "queueOwnership.Release();\n            return Active(content, DadLocalDutyQueuePulseKind.EnteredDuty"));
         Assert.Equal(1, CountOccurrences(npc, "queueOwnership.Release();\n            return Active(content, DadNpcDutyQueuePulseKind.EnteredDuty"));
-        Assert.Contains("!addonBase->IsReady", local, StringComparison.Ordinal);
-        Assert.Contains("IsAddonReadyForMutation(addon->IsVisible, addon->IsReady)", local, StringComparison.Ordinal);
-        Assert.Contains("IsAddonReadyForMutation(addon->IsVisible, addon->IsReady)", npc, StringComparison.Ordinal);
+        Assert.Contains("!addonBase.Ready", local, StringComparison.Ordinal);
+        Assert.Contains("IsAddonReadyForMutation(addon.Visible, addon.Ready)", local, StringComparison.Ordinal);
+        Assert.Contains("IsAddonReadyForMutation(addon.Visible, addon.Ready)", npc, StringComparison.Ordinal);
         Assert.Contains("IsAddonReadyForMutation(addonBase->IsVisible, addonBase->IsReady)", scanner, StringComparison.Ordinal);
     }
 
@@ -273,11 +273,11 @@ public sealed class DadLifecycleHardeningDutyTests
 
         AssertEveryOccurrenceHasNearbyGuard(source, "unrestrictedPartyLease.Ensure(", 500);
         AssertEveryOccurrenceHasNearbyGuard(source, "unrestrictedPartyLease.Restore(", 500);
-        AssertEveryOccurrenceHasNearbyGuard(source, "agent->OpenRegularDuty(", 500);
-        AssertEveryOccurrenceHasNearbyGuard(source, "agent->OpenRouletteDuty(", 500);
-        AssertEveryOccurrenceHasNearbyGuard(source, "FireAddonIntCallback(addonBase, 12, 1)", 500);
-        AssertEveryOccurrenceHasNearbyGuard(source, "FireAddonIntCallback(addonBase, 3,", 500);
-        AssertEveryOccurrenceHasNearbyGuard(source, "FireAddonIntCallback(addonBase, 12, 0)", 500);
+        AssertEveryOccurrenceHasNearbyGuard(source, "native.OpenRegularDuty(", 500);
+        AssertEveryOccurrenceHasNearbyGuard(source, "native.OpenRouletteDuty(", 500);
+        AssertEveryOccurrenceHasNearbyGuard(source, "native.Callback(\"ContentsFinder\", 12, 1)", 500);
+        AssertEveryOccurrenceHasNearbyGuard(source, "native.Callback(\"ContentsFinder\", 3,", 500);
+        AssertEveryOccurrenceHasNearbyGuard(source, "native.Callback(\"ContentsFinder\", 12, 0)", 500);
     }
 
     [Fact]

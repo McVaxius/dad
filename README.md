@@ -14,6 +14,14 @@ integrations, and everyday commands.
 - Runs presets immediately or in ordered manual and daily-reset schedules.
 - Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
+## Integrated lifecycle verification
+
+`Headless/Dad.Headless.csproj` compiles the same lifecycle services as the plugin and is driven by the standalone lab in
+`Z:\autoparty\src\AutoParty.LifecycleLab`. See that repository's README for CLI and browser commands. DAD instances run
+in separate processes with synthetic identities and temporary runtime data. The lab substitutes game/native observations,
+IPC responses and the clock; production coordinator, worker, queue, handler and update-order decisions remain shared.
+Scenario results list the exercised components and unexecuted steps. Virtual results are not in-game acceptance.
+
 ## Build
 
 ```powershell

@@ -40,7 +40,7 @@ public sealed class DadAutoPartyIdentityPackageService
     {
         cancellationToken.ThrowIfCancellationRequested();
         var activationPending = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
-            configuration.BootstrapExpiresAtUtc > DateTime.UtcNow;
+            configuration.BootstrapExpiresAtUtc > DadClock.UtcNow;
         if (activationPending)
             return Failure("dad-registration-activation-pending");
 
@@ -85,7 +85,7 @@ public sealed class DadAutoPartyIdentityPackageService
 
         try
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = DadClock.OffsetUtcNow;
             var registrationId = recoveryChallenge
                 ? routedRegistrationId
                 : Guid.TryParse(configuration.RegistrationId, out var pendingRegistrationId)

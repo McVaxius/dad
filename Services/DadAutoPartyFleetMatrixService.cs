@@ -34,7 +34,7 @@ public sealed class DadAutoPartyFleetMatrixService
             if (issues.Count > 0)
                 return new(matrix.Revision, BuildFingerprint(matrix), [], [], issues);
 
-            var timestamp = EnsureUtc(nowUtc ?? DateTime.UtcNow);
+            var timestamp = EnsureUtc(nowUtc ?? DadClock.UtcNow);
             var rows = matrix.Rows.ToDictionary(static row => row.RowId, StringComparer.OrdinalIgnoreCase);
             var crews = matrix.CrewSets.ToDictionary(static crew => crew.CrewSetId, StringComparer.OrdinalIgnoreCase);
             var plans = new List<DadPlannerGroup>();
@@ -117,7 +117,7 @@ public sealed class DadAutoPartyFleetMatrixService
                     UndoToken = token,
                     AppliedRevision = configuration.AutoPartyFleet.Revision,
                     AppliedStateFingerprint = BuildAppliedStateFingerprint(nextGroups, nextSchedules),
-                    CapturedAtUtc = EnsureUtc(nowUtc ?? DateTime.UtcNow),
+                    CapturedAtUtc = EnsureUtc(nowUtc ?? DadClock.UtcNow),
                     PlannerGroups = previousGroups,
                     Schedules = previousSchedules,
                 };

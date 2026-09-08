@@ -35,7 +35,7 @@ internal static class DadAutoPartyInboundExecutionRules
             selectedModule.ModuleIndex != reference.ModuleIndex ||
             !string.Equals(selectedModule.ModuleId, reference.ModuleId, StringComparison.Ordinal) ||
             !string.Equals(plan.RunId, target.RunId, StringComparison.Ordinal) ||
-            context.ExpiresAt <= DateTimeOffset.UtcNow)
+            context.ExpiresAt <= DadClock.OffsetUtcNow)
         {
             return Fail("dad-inbound-queue-module-reference-invalid", out blocker);
         }
@@ -73,15 +73,31 @@ internal static class DadAutoPartyInboundExecutionRules
             }
 
             var isLocal = ReferenceEquals(participant, localProtocolRows[0]);
-            var accountKey = isLocal
-                ? target.AccountKey
-                : new DadAccountKey($"autoparty-account-{participant.SlotId.ToLowerInvariant()}");
-            var characterKey = isLocal
-                ? target.CharacterKey
-                : new DadCharacterKey($"autoparty-character-{participant.SlotId.ToLowerInvariant()}");
-            var contentId = isLocal
-                ? target.ContentId
-                : ulong.MaxValue - (ulong)DadPlannerSlotRules.GetSlotSortKey(participant.SlotId);
+            DadNativePartyInviteTarget resolvedTarget;
+            if (isLocal) resolvedTarget = target;
+            else if (participant.IsInviter && context.FrozenInviter is { } inviter)
+                resolvedTarget = new()
+                {
+                    RunId = inviter.RunId, ModuleId = target.ModuleId, SlotId = participant.SlotId,
+                    WorkerSessionId = inviter.WorkerSessionId, AccountKey = inviter.AccountKey,
+                    CharacterKey = inviter.CharacterKey, ContentId = inviter.ContentId,
+                    CharacterName = inviter.CharacterName, WorldId = inviter.WorldId,
+                };
+            else
+            {
+                var matches = context.PartyInviteTargets?.Where(candidate => string.Equals(
+                    candidate.SlotId, participant.SlotId, StringComparison.OrdinalIgnoreCase)).ToArray() ?? [];
+                if (matches.Length != 1)
+                    return Fail("dad-inbound-queue-frozen-identity-missing", out blocker);
+                resolvedTarget = matches[0];
+            }
+            if (!string.Equals(resolvedTarget.RunId, plan.RunId, StringComparison.Ordinal) ||
+                resolvedTarget.WorkerSessionId.IsEmpty || resolvedTarget.AccountKey.IsEmpty ||
+                resolvedTarget.CharacterKey.IsEmpty || resolvedTarget.ContentId == 0 || resolvedTarget.WorldId == 0)
+                return Fail("dad-inbound-queue-frozen-identity-invalid", out blocker);
+            var accountKey = resolvedTarget.AccountKey;
+            var characterKey = resolvedTarget.CharacterKey;
+            var contentId = resolvedTarget.ContentId;
             var adsLootMode = ParseAdsLootMode(participant.AdsLootMode);
             roster.Add(new DadRosterCharacterRef
             {
@@ -107,8 +123,8 @@ internal static class DadAutoPartyInboundExecutionRules
             {
                 row = new DadParticipantSnapshot
                 {
-                    WorkerSessionId = new DadWorkerSessionId(
-                        $"autoparty-external-{operation.ProposalId:N}-{participant.SlotId.ToLowerInvariant()}"),
+                    WorkerSessionId = resolvedTarget.WorkerSessionId,
+                    IsAuthority = participant.Role == EndpointExecutionRole.QueueLeader,
                     RunId = plan.RunId,
                     State = DadParticipantState.Ready,
                     ClaimState = DadClaimState.Granted,
@@ -128,6 +144,8 @@ internal static class DadAutoPartyInboundExecutionRules
                         CharacterKey = characterKey.Value,
                         ContentId = contentId,
                         CurrentJobId = requestedJobId,
+                        CharacterName = resolvedTarget.CharacterName,
+                        WorldId = resolvedTarget.WorldId,
                         Readiness = DadReadinessState.Ready,
                         Freshness = DadSnapshotFreshness.Live,
                     },
@@ -138,6 +156,9 @@ internal static class DadAutoPartyInboundExecutionRules
                 leaderCharacterKey = characterKey.Value;
         }
 
+        if (participantRows.Select(row => row.WorkerSessionId.Value).Distinct(StringComparer.OrdinalIgnoreCase).Count() != ordered.Count ||
+            participantRows.Select(row => row.Character.ContentId).Distinct().Count() != ordered.Count)
+            return Fail("dad-inbound-queue-frozen-identity-duplicated", out blocker);
         if (string.IsNullOrWhiteSpace(leaderCharacterKey) ||
             ordered.Count(static participant => participant.Role == EndpointExecutionRole.QueueLeader) != 1)
             return Fail("dad-inbound-queue-authority-invalid", out blocker);
@@ -148,7 +169,7 @@ internal static class DadAutoPartyInboundExecutionRules
         {
             SchemaVersion = DadWorkerCommandSchemaRules.ResolveEmissionSchema(
                 workerPlan.Request.PreDutyRepairPolicy),
-            CommandId = $"{operation.ProposalId:N}:{reference.ModuleIndex}:{target.SlotId}:autoparty-worker-execution",
+            CommandId = $"{operation.ProposalId:N}:{reference.ModuleIndex}:{operation.OperationId:N}:{target.SlotId}:autoparty-worker-execution",
             RunId = plan.RunId,
             ModuleIndex = reference.ModuleIndex,
             Role = localProtocolRows[0].Role == EndpointExecutionRole.QueueLeader
@@ -221,7 +242,7 @@ internal static class DadAutoPartyInboundExecutionRules
         {
             RequestId = endpointPlan.RunId,
             RequestedBy = "autoparty",
-            RequestedAtUtc = DateTime.UtcNow,
+            RequestedAtUtc = DadClock.UtcNow,
             Orchestration = orchestration,
             PreDutyRepairPolicy = repairPolicy,
         };

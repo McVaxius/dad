@@ -1,3 +1,5 @@
+using dad.Services;
+
 namespace dad.Models;
 
 public enum DadAllianceRecruitmentState
@@ -51,7 +53,7 @@ public sealed class DadAllianceRecruitmentInstructionDto
     public int Attempt { get; set; }
     public DadAllianceRecruitmentState State { get; set; } = DadAllianceRecruitmentState.Validating;
     public long StopGeneration { get; set; }
-    public DateTime IssuedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime IssuedAtUtc { get; set; } = DadClock.UtcNow;
 
     public string DedupeKey
         => $"{RecruitmentId.Trim()}|{(string.IsNullOrWhiteSpace(TargetOpaqueCharacterId) ? TargetCharacterKey.Value.Trim() : TargetOpaqueCharacterId.Trim())}";
@@ -93,7 +95,7 @@ public sealed class DadAllianceRecruitmentCancellationDto
     public string TargetOpaqueCharacterId { get; set; } = string.Empty;
     public DadCharacterKey TargetCharacterKey { get; set; } = new(string.Empty);
     public long StopGeneration { get; set; }
-    public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime RequestedAtUtc { get; set; } = DadClock.UtcNow;
     public string Reason { get; set; } = string.Empty;
 }
 
@@ -114,7 +116,7 @@ public sealed class DadAllianceRecruitmentResultDto
     public DadAllianceRecruitmentResultKind ResultKind { get; set; }
     public bool Retryable { get; set; }
     public long StopGeneration { get; set; }
-    public DateTime ObservedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime ObservedAtUtc { get; set; } = DadClock.UtcNow;
     public string Summary { get; set; } = string.Empty;
 
     public bool IsTerminal
@@ -159,7 +161,7 @@ public sealed class DadAlliancePfUiSnapshotDto
     public int Attempt { get; set; }
     public DadAllianceRecruitmentState State { get; set; }
     public long StopGeneration { get; set; }
-    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DadClock.UtcNow;
     public string SafeStatusCode { get; set; } = string.Empty;
 }
 
@@ -407,7 +409,7 @@ public sealed class DadAlliancePartyFinderStatus
     internal string CreateObservedSettings { get; set; } = string.Empty;
     public long StopGeneration { get; set; }
     public DateTime? StartedAtUtc { get; set; }
-    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DadClock.UtcNow;
     public string Summary { get; set; } = "No DAD alliance recruitment is active.";
     public DadAlliancePresetValidation Validation { get; set; } = new();
     public List<DadAllianceRecruitmentResultDto> Results { get; set; } = [];

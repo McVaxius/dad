@@ -100,6 +100,42 @@ internal sealed class DadAutoPartySemanticKeyResolver : IContractKeyResolver, ID
         }
     }
 
+    // Verification-only access to a revoked peer. These keys never reenter the
+    // approved sender/encryption routes and cannot authorize handler dispatch.
+    public ContractOpenResult<T> OpenRevokedPeer<T>(SealedContract envelope) where T : IAutoPartyContract
+    {
+        lock (gate)
+        {
+            if (disposed) return ContractOpenResult<T>.Rejected("revoked-peer-key-unavailable");
+            var matches = configuration.Pairings.Where(pairing => pairing.IsValid && pairing.RevokedAtUtc.HasValue &&
+                pairing.KeyGeneration == envelope.SenderKeyVersion && pairing.IslandId == envelope.SenderIslandId.Value &&
+                configuration.Deauthentications.Any(revoked => revoked.IsValid && revoked.PeerIslandId == pairing.IslandId &&
+                    revoked.PairingTranscriptHash == pairing.TranscriptHash)).Take(2).ToArray();
+            if (matches.Length != 1 || !TryDecodePair(matches[0], out var keys))
+                return ContractOpenResult<T>.Rejected("revoked-peer-key-unavailable");
+            using (keys)
+                return new ProductionContractAuthenticator(new RevokedPeerVerificationKeys(this,
+                    envelope.SenderIslandId, envelope.SenderKeyVersion, keys.Signing)).Open<T>(envelope);
+        }
+    }
+
+    private sealed class RevokedPeerVerificationKeys(DadAutoPartySemanticKeyResolver local, IslandId sender,
+        long senderVersion, byte[] signingPublicKey) : IContractKeyResolver
+    {
+        public bool TryGetEd25519PrivateKey(IslandId island, long version, out ReadOnlyMemory<byte> key)
+        { key = default; return false; }
+        public bool TryGetX25519PublicKey(IslandId island, long version, out ReadOnlyMemory<byte> key)
+        { key = default; return false; }
+        public bool TryGetEd25519PublicKey(IslandId island, long version, out ReadOnlyMemory<byte> key)
+        {
+            var matches = island == sender && version == senderVersion;
+            key = matches ? signingPublicKey : default;
+            return matches;
+        }
+        public bool TryGetX25519PrivateKey(IslandId island, long version, out ReadOnlyMemory<byte> key)
+            => local.TryGetX25519PrivateKey(island, version, out key);
+    }
+
     public bool TryAddTransientPublicKeys(
         OwnerId ownerId,
         IslandId islandId,

@@ -45,7 +45,7 @@ public sealed class DadProfileDirectoryService : IDisposable
 
     public void Update()
     {
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = DadClock.UtcNow;
         if (!configuration.PluginEnabled || configuration.LocalOnlyModeEnabled)
         {
             remoteCatalogs.Clear();
@@ -148,7 +148,7 @@ public sealed class DadProfileDirectoryService : IDisposable
 
         try
         {
-            var nowUtc = DateTime.UtcNow;
+            var nowUtc = DadClock.UtcNow;
             var responses = transportService.RequestProfileCatalogs(Guid.NewGuid().ToString("N"));
             foreach (var response in responses.Where(static response => response.Success))
             {
@@ -176,7 +176,7 @@ public sealed class DadProfileDirectoryService : IDisposable
         if (ack.Account == null)
             return;
 
-        if (remoteCatalogs.ApplyAccount(ownerWorkerId, ack.Account, DateTime.UtcNow))
+        if (remoteCatalogs.ApplyAccount(ownerWorkerId, ack.Account, DadClock.UtcNow))
             RebuildCurrentCatalogs(force: true);
     }
 

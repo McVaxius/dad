@@ -23,6 +23,9 @@ internal readonly record struct DadTitleMenuReadinessSnapshot(
            nowUtc - CapturedAtUtc <= TimeSpan.FromSeconds(2);
 }
 
+internal readonly record struct DadTitleNativeObservation(
+    DadTitleSurfaceSignals Signals, bool LoggedOut, bool NoActiveConditions, bool TitleNodesReady, bool MovieReady);
+
 /// <summary>
 /// Captures exclusive title/lobby UI evidence on the framework thread. Wake requests can arrive on
 /// a transport thread, so the takeover target consumes only this short-lived immutable snapshot.
@@ -40,13 +43,18 @@ public sealed unsafe class DadTitleMenuReadinessService : IDisposable
     private DadTitleMenuReadinessSnapshot snapshot;
     private MovieEscapeState movieEscapeState;
     private bool disposed;
+    private readonly Func<DadTitleNativeObservation>? observeNative;
 
     public DadTitleMenuReadinessService(
         IFramework framework,
         IClientState clientState,
         ICondition condition,
-        IKeyState keyState)
+        IKeyState keyState) : this(framework, clientState, condition, keyState, null) { }
+
+    internal DadTitleMenuReadinessService(IFramework framework, IClientState clientState,
+        ICondition condition, IKeyState keyState, Func<DadTitleNativeObservation>? observeNative)
     {
+        this.observeNative = observeNative;
         this.framework = framework;
         this.clientState = clientState;
         this.condition = condition;
@@ -69,7 +77,7 @@ public sealed unsafe class DadTitleMenuReadinessService : IDisposable
         {
             if (disposed)
                 return DadWakeTakeoverActionResult.Rejected("Title-surface service is disposed.");
-            if (!snapshot.IsFresh(DateTime.UtcNow) ||
+            if (!snapshot.IsFresh(DadClock.UtcNow) ||
                 snapshot.Surface != DadTitleSurface.TitleMovie ||
                 !snapshot.MovieStaffListReady)
             {
@@ -84,9 +92,11 @@ public sealed unsafe class DadTitleMenuReadinessService : IDisposable
         }
     }
 
+    internal void Update() => OnFrameworkUpdate(framework);
+
     private void OnFrameworkUpdate(IFramework _)
     {
-        var captured = Capture(DateTime.UtcNow);
+        var captured = Capture(DadClock.UtcNow);
         var pressEscape = false;
         var releaseEscape = false;
         lock (gate)
@@ -134,6 +144,13 @@ public sealed unsafe class DadTitleMenuReadinessService : IDisposable
     {
         try
         {
+            if (observeNative != null)
+            {
+                var observed = observeNative();
+                return new(capturedAtUtc, DadTitleSurfaceRules.Classify(observed.Signals),
+                    observed.LoggedOut, observed.NoActiveConditions, observed.TitleNodesReady, observed.MovieReady,
+                    observed.Signals.NavigationSurfaceVisible, observed.Signals.ConnectingToDataCenterVisible, observed.Signals.DialogSurfaceVisible);
+            }
             var manager = RaptureAtkUnitManager.Instance();
             if (manager == null)
                 return Unreadable(capturedAtUtc);

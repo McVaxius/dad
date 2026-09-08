@@ -19,6 +19,7 @@ public sealed class DadCharacterIntelligenceService
     private readonly DadXadbClient xadbClient;
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
+    private readonly Func<DadAcquiredCharacter?>? localCharacterObservation;
     private readonly DadSemanticRevisionTracker<global::dad.DadPlannerRosterSemantic>
         plannerSemanticRevisionTracker = new();
     // B5: fires once per distinct (active job, level) change of the local character, never on first capture.
@@ -31,12 +32,14 @@ public sealed class DadCharacterIntelligenceService
         ConfigManager configManager,
         DadXadbClient xadbClient,
         DadTransportService transportService,
-        IPluginLog log)
+        IPluginLog log,
+        Func<DadAcquiredCharacter?>? localCharacterObservation = null)
     {
         this.configManager = configManager;
         this.xadbClient = xadbClient;
         this.transportService = transportService;
         this.log = log;
+        this.localCharacterObservation = localCharacterObservation;
 
         CurrentPool = new DadCharacterPool
         {
@@ -59,7 +62,7 @@ public sealed class DadCharacterIntelligenceService
         lastRuntimeIdentitySignature = runtimeIdentitySignature;
         runtimeIdentityInitialized = true;
 
-        if (!identityChanged && DateTime.UtcNow < nextAutoRefreshUtc)
+        if (!identityChanged && DadClock.UtcNow < nextAutoRefreshUtc)
             return;
 
         RefreshLocalCharacterPool("framework", logRefresh: false);
@@ -72,7 +75,7 @@ public sealed class DadCharacterIntelligenceService
         var xadbStatus = xadbClient.Inspect();
         CurrentPool = BuildPool(xadbStatus, transportService.CurrentTransport);
         AdvancePlannerSemanticRevision();
-        nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
+        nextAutoRefreshUtc = DadClock.UtcNow + AutoRefreshInterval;
 
         if (logRefresh)
         {
@@ -87,10 +90,16 @@ public sealed class DadCharacterIntelligenceService
         return CurrentPool;
     }
 
-    private static string CaptureRuntimeIdentitySignature()
+    private string CaptureRuntimeIdentitySignature()
     {
         try
         {
+            if (localCharacterObservation != null)
+            {
+                var observed = localCharacterObservation();
+                return observed == null ? "OFFLINE" : string.Join('|', observed.ContentId,
+                    observed.CharacterName.Trim().ToUpperInvariant(), observed.WorldId);
+            }
             if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null)
                 return "OFFLINE";
 
@@ -112,7 +121,7 @@ public sealed class DadCharacterIntelligenceService
         var xadbStatus = xadbClient.Save();
         CurrentPool = BuildPool(xadbStatus, transportService.CurrentTransport);
         AdvancePlannerSemanticRevision();
-        nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
+        nextAutoRefreshUtc = DadClock.UtcNow + AutoRefreshInterval;
         log.Information(
             "[dad] Saved local snapshot to XADB: {RowCount} row(s), status {Status}.",
             CurrentPool.Characters.Count,
@@ -127,7 +136,7 @@ public sealed class DadCharacterIntelligenceService
         var xadbStatus = CurrentPool.XadbStatus.IsReady ? CurrentPool.XadbStatus : xadbClient.Inspect();
         CurrentPool = BuildPool(xadbStatus, peerTransport);
         AdvancePlannerSemanticRevision();
-        nextAutoRefreshUtc = DateTime.UtcNow + AutoRefreshInterval;
+        nextAutoRefreshUtc = DadClock.UtcNow + AutoRefreshInterval;
         return CurrentPool;
     }
 
@@ -176,7 +185,7 @@ public sealed class DadCharacterIntelligenceService
     {
         var pool = new DadCharacterPool
         {
-            LastUpdatedUtc = DateTime.UtcNow,
+            LastUpdatedUtc = DadClock.UtcNow,
             XadbStatus = xadbStatus,
             PeerTransport = peerTransport,
         };
@@ -235,11 +244,13 @@ public sealed class DadCharacterIntelligenceService
     {
         try
         {
+            if (localCharacterObservation != null)
+                return ObserveLevelChange(localCharacterObservation()?.Clone());
             if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null)
                 return null;
 
             var player = Plugin.ObjectTable.LocalPlayer;
-            var now = DateTime.UtcNow;
+            var now = DadClock.UtcNow;
             var name = player.Name.ToString();
             var worldName = player.HomeWorld.Value.Name.ToString();
             var worldId = (uint)player.HomeWorld.RowId;
@@ -285,22 +296,23 @@ public sealed class DadCharacterIntelligenceService
             if (string.IsNullOrWhiteSpace(character.DataCenterName))
                 AddBlocker(character, "Datacenter unresolved from world.");
 
-            // B5: on a real level / active-job-level change (not the initial login capture), nudge the
-            // transport to republish/refresh so peers see the new level without waiting a full reconcile.
-            // The detector coalesces multi-level gains to a single (job, level) transition per capture.
-            if (levelChangeDetector.Register(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0))
-            {
-                transportService.NotifyLocalRosterChanged(
-                    $"Local character {character.CurrentJobAbbrev} reached level {character.CurrentLevel ?? 0}.");
-            }
-
-            return character;
+            return ObserveLevelChange(character);
         }
         catch (Exception ex)
         {
             log.Warning(ex, "[dad] Failed to capture local Dad character snapshot.");
             return null;
         }
+    }
+
+    private DadAcquiredCharacter? ObserveLevelChange(DadAcquiredCharacter? character)
+    {
+        if (character == null) return null;
+        // Keep level-change detection and transport invalidation in the shared runtime.
+        if (levelChangeDetector.Register(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0))
+            transportService.NotifyLocalRosterChanged(
+                $"Local character {character.CurrentJobAbbrev} reached level {character.CurrentLevel ?? 0}.");
+        return character;
     }
 
     private void PopulateDataCenter(DadAcquiredCharacter character)
@@ -378,7 +390,7 @@ public sealed class DadCharacterIntelligenceService
         if (!snapshotUtc.HasValue)
             return DadSnapshotFreshness.Unknown;
 
-        var age = DateTime.UtcNow - snapshotUtc.Value;
+        var age = DadClock.UtcNow - snapshotUtc.Value;
         if (age <= TimeSpan.FromMinutes(1))
             return DadSnapshotFreshness.Live;
         if (age <= TimeSpan.FromMinutes(15))
@@ -392,7 +404,7 @@ public sealed class DadCharacterIntelligenceService
         if (response.Participant.State == DadParticipantState.Stale)
             return DadSnapshotFreshness.Stale;
 
-        var age = DateTime.UtcNow - response.RespondedAtUtc;
+        var age = DadClock.UtcNow - response.RespondedAtUtc;
         if (age <= TimeSpan.FromMinutes(1))
             return DadSnapshotFreshness.Live;
 

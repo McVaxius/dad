@@ -11,6 +11,25 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     private static readonly DateTimeOffset Now = new(2026, 8, 11, 22, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public void RegistrationImportedAfterConstructionIsUsedWithoutReloadingTheService()
+    {
+        (string OwnerId, string IslandId) identity = ("", "");
+        var fixture = new Fixture(() => identity);
+        var proposal = Proposal();
+        Assert.Equal(DadAutoPartyInboundAdmissionService.InvalidProposal,
+            fixture.Service.Admit(proposal, fixture.Publication).SafeBlocker);
+        Assert.Equal(0, fixture.TakeoverCalls);
+
+        identity = (Fixture.LocalOwner, Fixture.LocalIsland);
+        Assert.True(fixture.Service.Admit(proposal, fixture.Publication).Ready);
+        Assert.Equal(1, fixture.TakeoverCalls);
+
+        identity = ("", "");
+        Assert.False(fixture.Service.Admit(proposal, fixture.Publication).Ready);
+        Assert.DoesNotContain(fixture.TakeoverRequests.Skip(1), request => request.MessageKind != DadWakeTakeoverMessageKind.Cancel);
+    }
+
+    [Fact]
     public void ReadyMixedPlanAdmitsOnlyLocalOwnedParticipant()
     {
         var fixture = new Fixture();
@@ -330,7 +349,12 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
             target,
             "island-peer",
             Fixture.LocalOwner,
-            DateTimeOffset.UtcNow.AddMinutes(5));
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            new DadExpectedPartyInviter
+            {
+                RunId = plan.RunId, WorkerSessionId = new("exact-leader-worker"), AccountKey = new("exact-leader-account"),
+                CharacterKey = new("Synthetic Leader@Synthetic"), ContentId = 999, CharacterName = "Synthetic Leader", WorldId = 1,
+            });
         ExecutionOperation Operation(ExecutionOperationKind kind) => new(
             Header(DateTimeOffset.UtcNow.AddMinutes(5)),
             Guid.NewGuid(),
@@ -353,7 +377,14 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         Assert.Equal(2, queue.Participants.Count);
         Assert.Single(queue.Participants, static participant => participant.IsLocalClient);
         Assert.Equal(live.WorkerSessionId, queueParticipant.WorkerSessionId);
-        Assert.Equal(queue.CommandId, settle.CommandId);
+        Assert.NotEqual(queue.CommandId, settle.CommandId);
+        Assert.True(DadParticipantFrenRiderTargetRules.TryResolve(queue, out var followTarget, out var followBlocker), followBlocker);
+        Assert.Equal("Synthetic Leader@Synthetic", followTarget);
+        var leader = Assert.Single(queue.Participants, participant => participant.IsAuthority);
+        Assert.Equal(new DadWorkerSessionId("exact-leader-worker"), leader.WorkerSessionId);
+        Assert.False(DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(Operation(ExecutionOperationKind.Queue),
+            context with { FrozenInviter = null }, live, out _, out _, out var missingIdentity));
+        Assert.Equal("dad-inbound-queue-frozen-identity-missing", missingIdentity);
         Assert.Equal(queueParticipant.WorkerSessionId, settleParticipant.WorkerSessionId);
         Assert.DoesNotContain(queue.Participants, participant =>
             participant.IsLocalClient && !string.Equals(participant.AssignedSlotId, "Slot2", StringComparison.OrdinalIgnoreCase));
@@ -440,7 +471,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         public const string LocalOwner = "owner-local";
         public const string LocalIsland = "island-local";
 
-        public Fixture()
+        public Fixture(Func<(string OwnerId, string IslandId)>? identity = null)
         {
             var owner = ReadySnapshot();
             Route = new DadAutoPartyInboundRoute(
@@ -500,7 +531,7 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
                     return ClaimOverride?.Invoke(snapshot, request) ?? GrantedDecision(snapshot, request);
                 },
                 () => Now,
-                TimeSpan.FromSeconds(15));
+                TimeSpan.FromSeconds(15), registrationIdentity: identity);
         }
 
         public DadAutoPartyInboundAdmissionService Service { get; }

@@ -217,7 +217,7 @@ public sealed class DadAutoPartyService : IDisposable
             return Decision(true, "dad-deauthentication-already-applied");
         if (string.IsNullOrWhiteSpace(reason))
             reason = "dad-owner-deauthenticated";
-        pairing.RevokedAtUtc = DateTime.UtcNow;
+        pairing.RevokedAtUtc = DadClock.UtcNow;
         configuration.RevocationGeneration++;
         configuration.Deauthentications.RemoveAll(item =>
             string.Equals(item.PeerIslandId, islandId, StringComparison.Ordinal));
@@ -228,7 +228,7 @@ public sealed class DadAutoPartyService : IDisposable
             PairingTranscriptHash = pairing.TranscriptHash,
             RevocationGeneration = configuration.RevocationGeneration,
             SafeReason = reason,
-            RevokedAtUtc = DateTime.UtcNow,
+            RevokedAtUtc = DadClock.UtcNow,
         });
         configuration.PendingPairings.RemoveAll(item =>
             string.Equals(item.IslandId, islandId, StringComparison.Ordinal));
@@ -259,8 +259,8 @@ public sealed class DadAutoPartyService : IDisposable
         if (!configuration.Enabled || !configuration.IsRegistrationActive ||
             normalized is not { IsValid: true } ||
             !string.Equals(normalized.SharingIslandId, configuration.RegisteredIslandId, StringComparison.Ordinal) ||
-            normalized.ExpiresAtUtc <= DateTime.UtcNow ||
-            normalized.ExpiresAtUtc > DateTime.UtcNow + TimeSpan.FromHours(24))
+            normalized.ExpiresAtUtc <= DadClock.UtcNow ||
+            normalized.ExpiresAtUtc > DadClock.UtcNow + TimeSpan.FromHours(24))
             return Decision(false, "dad-listing-invalid");
         configuration.Listings.RemoveAll(candidate =>
             string.Equals(candidate.ListingId, normalized.ListingId, StringComparison.Ordinal));
@@ -291,7 +291,7 @@ public sealed class DadAutoPartyService : IDisposable
                          !registeredRequesterAttested || !sameGuild)))
             return Decision(false, "dad-listing-share-denied");
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var accepted = (listings ?? [])
             .Select(static item => item?.Clone().Normalize())
             .Where(item => item is { IsValid: true, Available: true } &&
@@ -370,7 +370,7 @@ public sealed class DadAutoPartyService : IDisposable
         bool includePromiscuous)
     {
         ThrowIfDisposed();
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var search = (searchText ?? string.Empty).Trim();
         if (search.Length > 96)
             search = search[..96];
@@ -557,7 +557,7 @@ public sealed class DadAutoPartyService : IDisposable
         ThrowIfDisposed();
         if (!dadPluginEnabled || !configuration.Enabled)
             return;
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (now < nextMaintenanceUtc)
             return;
         nextMaintenanceUtc = now + TimeSpan.FromMinutes(1);
@@ -587,8 +587,8 @@ public sealed class DadAutoPartyService : IDisposable
         ThrowIfDisposed();
         if (!configuration.Enabled || !configuration.IsRegistrationActive ||
             grant.GrantId == Guid.Empty || grant.ProposalId == Guid.Empty ||
-            grant.ValidFrom >= grant.ValidUntil || grant.ValidUntil <= DateTimeOffset.UtcNow ||
-            grant.ValidUntil > DateTimeOffset.UtcNow + TimeSpan.FromDays(30) ||
+            grant.ValidFrom >= grant.ValidUntil || grant.ValidUntil <= DadClock.OffsetUtcNow ||
+            grant.ValidUntil > DadClock.OffsetUtcNow + TimeSpan.FromDays(30) ||
             grant.Scope.Permissions == SessionPermission.None || grant.Scope.MaximumUses != 1 ||
             string.IsNullOrWhiteSpace(grant.Scope.CharacterId.Value) ||
             string.IsNullOrWhiteSpace(grant.Scope.RequestedJob.Value) ||
@@ -634,6 +634,14 @@ public sealed class DadAutoPartyService : IDisposable
         DateTimeOffset previousExpiresAt,
         DateTimeOffset newExpiresAt) =>
         Policy.RenewOwnedProposal(proposalId, previousExpiresAt, newExpiresAt);
+
+    internal DadAutoPartyPolicyDecision RenewOwnedProposal(
+        RunProposal proposal, DateTimeOffset previousExpiresAt, DateTimeOffset newExpiresAt)
+    {
+        var leaseExpiresAt = DadClock.OffsetUtcNow + TimeSpan.FromSeconds(proposal.ExecutionPlan?.LeaseDurationSeconds ?? 1800);
+        return Policy.RenewOwnedProposal(proposal.ProposalId, previousExpiresAt, newExpiresAt,
+            leaseExpiresAt < newExpiresAt ? leaseExpiresAt : newExpiresAt);
+    }
 
     public DadAutoPartyPolicyDecision Reserve(Reservation reservation, DadAutoPartySessionMode mode) =>
         Policy.Reserve(reservation, mode);
@@ -694,7 +702,7 @@ public sealed class DadAutoPartyService : IDisposable
             AutoPartyTransportHealthState.Ready => DadAutoPartyComponentState.Ready,
             _ => DadAutoPartyComponentState.Faulted,
         };
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var policyState = !configuration.Enabled
             ? DadAutoPartyComponentState.Disabled
             : configuration.IsRegistrationActive

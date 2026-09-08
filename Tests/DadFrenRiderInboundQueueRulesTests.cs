@@ -57,8 +57,8 @@ public sealed class DadFrenRiderInboundQueueRulesTests
     [Fact]
     public void FormApplicationRemainsAfterAuthoritativePartyProof()
     {
-        var source = ReadRepositorySource("Plugin.cs");
-        var form = Slice(source, "private ValueTask<DadAutoPartyExecutionResult> ExecuteInboundAutoPartyForm", "private bool TryValidateInboundFrenRiderProfile");
+        var source = ReadRepositorySource("Services", "DadAutoPartyInboundRuntime.cs");
+        var form = Slice(source, "public ValueTask<DadAutoPartyExecutionResult> ExecuteInboundAutoPartyForm", "private bool TryValidateInboundFrenRiderProfile");
 
         var followerProof = form.IndexOf("followerObservedContentIds.Length", StringComparison.Ordinal);
         var followerApply = form.IndexOf("TryApplyInboundFrenRiderProfile", followerProof, StringComparison.Ordinal);
@@ -75,10 +75,10 @@ public sealed class DadFrenRiderInboundQueueRulesTests
     [Fact]
     public void ProposalExpiryReleasesOnlyTheExactTemporaryProfileOwnership()
     {
-        var source = ReadRepositorySource("Plugin.cs");
+        var source = ReadRepositorySource("Services", "DadAutoPartyInboundRuntime.cs");
         var cleanup = Slice(
             source,
-            "private void ReleaseExpiredInboundFrenRiderProfile",
+            "public void ReleaseExpiredInboundFrenRiderProfile",
             "private static DadFrenRiderProfileOwnership BuildFrenRiderProfileOwnership");
 
         Assert.Contains("target.ProposalId", cleanup, StringComparison.Ordinal);

@@ -1764,6 +1764,35 @@ public sealed class DadAutoPartyWebhookEndpointTests
     }
 
     [Fact]
+    public async Task AuthenticatedDownlinkAfterEpochAckReleasesHoldWithoutObservingIntermediateEmptySlot()
+    {
+        using var crypto = new CryptoFixture();
+        var handler = new ScriptedWebhookHandler(crypto.CreateEpochAnnouncement(crypto.DownlinkEpoch),
+            uplinkContent: crypto.CreateEpochAnnouncement(crypto.UplinkEpoch));
+        using var client = new HttpClient(handler);
+        await using var adapter = new DadAutoPartyWebhookTransportAdapter(crypto.Credential(),
+            "route-epoch-payload", crypto.EndpointKeyVersion, crypto.EndpointSigningPrivateKey,
+            client, ownsHttpClient: false, Task.Delay, TimeSpan.FromMilliseconds(10));
+        Assert.True((await adapter.SendAsync(Envelope(crypto.IslandId.Value,
+            DadAutoPartyIdentityPackageService.RegistrationRecipient, [1, 2, 3]))).Accepted);
+        for (var attempt = 0; attempt < 300 &&
+             (handler.UplinkAcknowledgements.Count < 1 || handler.DownlinkAcknowledgements.Count < 1); attempt++)
+            await Task.Delay(10);
+        Assert.Single(handler.UplinkAcknowledgements);
+        Assert.Single(handler.DownlinkAcknowledgements);
+        Assert.Empty(handler.UplinkPages);
+        var (_, page) = crypto.CreateDownlink([4, 5, 6]);
+        handler.SetContent("10001", CourierTextCodec.EmptySlotContent);
+        handler.SetContent("10002", "AP5-invalid-authenticated-page");
+        var before = handler.GetAttempts;
+        for (var attempt = 0; attempt < 200 && handler.GetAttempts < before + 8; attempt++) await Task.Delay(10);
+        Assert.Empty(handler.UplinkPages);
+        handler.SetContent("10002", page);
+        for (var attempt = 0; attempt < 300 && handler.UplinkPages.Count == 0; attempt++) await Task.Delay(10);
+        Assert.NotEmpty(handler.UplinkPages);
+    }
+
+    [Fact]
     public async Task AdapterStagesThenActivatesAndAcknowledgesOnlyOnePersistedNewerEpochPair()
     {
         using var crypto = new CryptoFixture();

@@ -621,7 +621,7 @@ public sealed class DadAutoPartySharePolicy
     public List<string> CharacterHandles { get; set; } = [];
     public bool Enabled { get; set; }
     public long Revision { get; set; } = 1;
-    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DadClock.UtcNow;
 
     public bool IsValid =>
         Enum.IsDefined(Mode) && Revision >= 1 && UpdatedAtUtc != default &&
@@ -643,7 +643,7 @@ public sealed class DadAutoPartySharePolicy
             CharacterHandles.Clear();
         Revision = Math.Max(1, Revision);
         if (UpdatedAtUtc == default)
-            UpdatedAtUtc = DateTime.UtcNow;
+            UpdatedAtUtc = DadClock.UtcNow;
         if (Enabled &&
             (Mode is DadAutoPartyCharacterShareMode.SpecificCharacter or DadAutoPartyCharacterShareMode.CharacterList) &&
             CharacterHandles.Count == 0)
@@ -776,7 +776,7 @@ public sealed class DadAutoPartyListing
 
     [JsonIgnore]
     public bool HasCurrentTransientRoute =>
-        TransientRouteExpiresAtUtc is { } expiresAt && expiresAt > DateTime.UtcNow;
+        TransientRouteExpiresAtUtc is { } expiresAt && expiresAt > DadClock.UtcNow;
 
     public bool IsValid =>
         Guid.TryParse(ListingId, out _) &&
@@ -1033,7 +1033,7 @@ public sealed record DadAutoPartyEndpointSnapshot(
     long EpochGeneration)
 {
     public static DadAutoPartyEndpointSnapshot Disabled(string safeCode = "dad-autoparty-disabled") =>
-        new(DadAutoPartyEndpointConnectionState.Disabled, safeCode, DateTime.UtcNow, null, 0, 0, 0, 0);
+        new(DadAutoPartyEndpointConnectionState.Disabled, safeCode, DadClock.UtcNow, null, 0, 0, 0, 0);
 }
 
 public sealed record DadAutoPartyListingPublicationResult(

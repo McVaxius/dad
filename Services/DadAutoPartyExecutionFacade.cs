@@ -311,7 +311,7 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
             contentIds.Length,
             contentIds,
             ComputeObservedStateHash(proposalId, stateGeneration, contentIds),
-            DateTime.UtcNow);
+            DadClock.UtcNow);
     }
 
     private ValueTask<DadAutoPartyExecutionResult> Execute(
@@ -342,7 +342,7 @@ public sealed class DadAutoPartyFakeExecutionFacade : IAutoPartyExecutionFacade
     {
         if (locator == null)
             return false;
-        var now = DateTimeOffset.UtcNow;
+        var now = DadClock.OffsetUtcNow;
         return !string.IsNullOrWhiteSpace(locator.LocatorId) &&
                locator.LocatorId.Length <= AutoPartyProtocol.MaximumIdentifierLength &&
                locator.ValidUntil > now &&

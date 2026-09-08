@@ -58,7 +58,7 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
             Deferred = deferred,
             RetryAttempt = 0,
             MaxRetryAttempts = capability.CanRequeue ? 3 : 0,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = hardBlocked
                 ? $"Dad cannot route {module.DisplayName}: {FormatBlockers(blockers)}"
                 : deferred
@@ -72,7 +72,7 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
     public DadRunStepResultDto Start(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
     {
         var nextStatus = CanStart(plan, participants);
-        nextStatus.StartedAtUtc = DateTime.UtcNow;
+        nextStatus.StartedAtUtc = DadClock.UtcNow;
         nextStatus.UpdatedAtUtc = nextStatus.StartedAtUtc.Value;
         nextStatus.CompletedAtUtc = nextStatus.StartedAtUtc;
         nextStatus.IsActive = false;
@@ -103,7 +103,7 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
             BlockedReason = nextStatus.BlockedReason,
             ExecutorStatus = nextStatus.Clone(),
             ModuleBlockers = nextStatus.Blockers.Select(static blocker => blocker.Clone()).ToList(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
     }
 
@@ -115,7 +115,7 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
         status.Status = DadRunStatus.Cancelled;
         status.Phase = DadRunPhase.Finalizing;
         status.IsActive = false;
-        status.CompletedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = DadClock.UtcNow;
         status.UpdatedAtUtc = status.CompletedAtUtc.Value;
         status.Summary = string.IsNullOrWhiteSpace(reason) ? $"{DisplayName} executor cancelled." : reason;
 
@@ -216,7 +216,7 @@ public abstract class DadDeferredModuleExecutor : IDadModuleExecutor
             BlockedReason = status.BlockedReason,
             ExecutorStatus = status.Clone(),
             ModuleBlockers = status.Blockers.Select(static blocker => blocker.Clone()).ToList(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
 
     private static string FormatBlockers(IReadOnlyList<DadModuleBlockerDto> blockers)
@@ -231,7 +231,7 @@ public sealed class DadMsqExecutor(
     : DadDeferredModuleExecutor(moduleRegistry, "DadMsqExecutor", DadModuleId.Msq, "MSQ", queueBlockerFactory);
 
 public sealed class DadDutySupportExecutor(
-    DadNpcDutyQueueService queueService,
+    IDadNpcDutyQueueGateway queueService,
     DadDutySupportAdsService adsService,
     DadCombatRotationService combatRotationService) : IDadModuleExecutor
 {
@@ -282,7 +282,7 @@ public sealed class DadDutySupportExecutor(
             Deferred = false,
             RetryAttempt = 0,
             MaxRetryAttempts = 0,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = hardBlocked
                 ? $"Dad cannot start Duty Support: {blockedReason}"
                 : BuildCanStartSummary(plan.Request.DutySupport?.DutyName, mode),
@@ -300,7 +300,7 @@ public sealed class DadDutySupportExecutor(
         var blockedReason = FormatBlockers(blockers);
         var hardBlocked = blockers.Any(static blocker =>
             blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         ResetRuntimeState(now);
 
         status = new DadModuleExecutionStatusDto
@@ -356,7 +356,7 @@ public sealed class DadDutySupportExecutor(
             return BuildStatusStep(status);
         }
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
@@ -444,7 +444,7 @@ public sealed class DadDutySupportExecutor(
         ApplyPulse(pulse);
         status.Summary = pulse.Summary;
         status.FailureReason = pulse.FailureReason;
-        status.CompletedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = DadClock.UtcNow;
         ClearRuntimeState();
         return BuildStatusStep(status, DadParticipantState.Cancelled);
     }
@@ -459,7 +459,7 @@ public sealed class DadDutySupportExecutor(
         status.IsActive = pulse.IsActive;
         status.CanStart = pulse.Status != DadRunStatus.Failed;
         status.Deferred = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = pulse.IsActive ? null : status.UpdatedAtUtc;
         status.Summary = pulse.Summary;
         status.FailureReason = pulse.FailureReason;
@@ -475,7 +475,7 @@ public sealed class DadDutySupportExecutor(
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
         status.CanStart = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = status.UpdatedAtUtc;
         status.Summary = reason;
         status.FailureReason = reason;
@@ -521,7 +521,7 @@ public sealed class DadDutySupportExecutor(
     private DadRunStepResultDto UpdateDutyCompletionWaitForExit()
     {
         if (HasExitedRequestedDuty())
-            return BeginOrUpdatePostDutyStabilizing(DateTime.UtcNow);
+            return BeginOrUpdatePostDutyStabilizing(DadClock.UtcNow);
 
         SetActiveStatus(
             DadRunPhase.InDutyOrTask,
@@ -602,7 +602,7 @@ public sealed class DadDutySupportExecutor(
         status.IsActive = true;
         status.CanStart = true;
         status.Deferred = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = null;
         status.Summary = summary;
         status.FailureReason = string.Empty;
@@ -629,7 +629,7 @@ public sealed class DadDutySupportExecutor(
             var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
                 status.RunId,
                 DadModuleId.DutySupport,
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 out entryAutomationSummary);
             if (entryEnableStatus != DadFrenRiderEntryEnableStatus.PendingRetry)
                 entryAutomationAttempted = true;
@@ -880,7 +880,7 @@ public sealed class DadDutySupportExecutor(
             BlockedReason = status.BlockedReason,
             ExecutorStatus = status.Clone(),
             ModuleBlockers = status.Blockers.Select(static blocker => blocker.Clone()).ToList(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
 
     private static string FormatBlockers(IReadOnlyList<DadModuleBlockerDto> blockers)
@@ -890,7 +890,7 @@ public sealed class DadDutySupportExecutor(
 }
 
 public sealed class DadTrustExecutor(
-    DadNpcDutyQueueService queueService,
+    IDadNpcDutyQueueGateway queueService,
     DadCombatRotationService combatRotationService) : IDadModuleExecutor
 {
     private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
@@ -930,7 +930,7 @@ public sealed class DadTrustExecutor(
             Deferred = false,
             RetryAttempt = 0,
             MaxRetryAttempts = 0,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = hardBlocked
                 ? $"Dad cannot start Trust: {blockedReason}"
                 : BuildCanStartSummary(plan.Request.Trust?.DutyName, mode),
@@ -948,7 +948,7 @@ public sealed class DadTrustExecutor(
         var blockedReason = FormatBlockers(blockers);
         var hardBlocked = blockers.Any(static blocker =>
             blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         ResetRuntimeState(now);
 
         status = new DadModuleExecutionStatusDto
@@ -989,7 +989,7 @@ public sealed class DadTrustExecutor(
             return BuildStatusStep(status);
         }
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
@@ -1065,7 +1065,7 @@ public sealed class DadTrustExecutor(
             ? "Trust executor cancelled. Dad does not send external stop commands; clear any remaining game-side queue or duty state manually if needed."
             : reason;
         status.FailureReason = pulse.FailureReason;
-        status.CompletedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = DadClock.UtcNow;
         ClearRuntimeState();
         return BuildStatusStep(status, DadParticipantState.Cancelled);
     }
@@ -1080,7 +1080,7 @@ public sealed class DadTrustExecutor(
         status.IsActive = pulse.IsActive;
         status.CanStart = pulse.Status != DadRunStatus.Failed;
         status.Deferred = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = pulse.IsActive ? null : status.UpdatedAtUtc;
         status.Summary = pulse.Summary;
         status.FailureReason = pulse.FailureReason;
@@ -1094,7 +1094,7 @@ public sealed class DadTrustExecutor(
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
         status.CanStart = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = status.UpdatedAtUtc;
         status.Summary = reason;
         status.FailureReason = reason;
@@ -1108,7 +1108,7 @@ public sealed class DadTrustExecutor(
     private DadRunStepResultDto UpdateDutyCompletionWaitForExit()
     {
         if (HasExitedRequestedDuty())
-            return BeginOrUpdatePostDutyStabilizing(DateTime.UtcNow);
+            return BeginOrUpdatePostDutyStabilizing(DadClock.UtcNow);
 
         SetActiveStatus(
             DadRunPhase.InDutyOrTask,
@@ -1170,7 +1170,7 @@ public sealed class DadTrustExecutor(
         status.IsActive = true;
         status.CanStart = true;
         status.Deferred = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = null;
         status.Summary = summary;
         status.FailureReason = string.Empty;
@@ -1185,7 +1185,7 @@ public sealed class DadTrustExecutor(
             var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
                 status.RunId,
                 DadModuleId.Trust,
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 out entryAutomationSummary);
             if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
                 return true;
@@ -1374,7 +1374,7 @@ public sealed class DadTrustExecutor(
             BlockedReason = status.BlockedReason,
             ExecutorStatus = status.Clone(),
             ModuleBlockers = status.Blockers.Select(static blocker => blocker.Clone()).ToList(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
 
     private static string FormatBlockers(IReadOnlyList<DadModuleBlockerDto> blockers)
@@ -1422,7 +1422,7 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
             CanStart = ready,
             Deferred = false,
             MaxRetryAttempts = 3,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = summary,
             FailureReason = ready ? string.Empty : summary,
             BlockedReason = ready ? string.Empty : summary,
@@ -1432,11 +1432,21 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
     public DadRunStepResultDto Start(DadRunPlan plan, IReadOnlyList<DadParticipantSnapshot> participants)
     {
         status = CanStart(plan, participants);
-        status.StartedAtUtc = DateTime.UtcNow;
+        status.StartedAtUtc = DadClock.UtcNow;
         if (!status.CanStart)
             return BuildStep();
 
-        ApplyHelperStatus(ipc.Start(plan, workerRole));
+        var started = ipc.Start(plan, workerRole);
+        ApplyHelperStatus(started);
+        if (started.ResponseUncertain)
+        {
+            // A failed response does not prove the helper rejected the request.
+            // Cancel only the exact run we just submitted before releasing DAD ownership.
+            var stopped = ipc.Stop(plan.Request.RequestId, "DAD could not confirm helper start.");
+            if (!DadMogtomeStatusRules.IsAcknowledgedStop(stopped.Accepted, stopped.DadOwned,
+                    stopped.IsRunning, stopped.IsTerminal, stopped.FailureReason))
+                status.Summary += " Exact helper cleanup was not acknowledged.";
+        }
         return BuildStep();
     }
 
@@ -1464,7 +1474,7 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
         status.Status = DadRunStatus.Cancelled;
         status.Phase = DadRunPhase.Finalizing;
         status.IsActive = false;
-        status.CompletedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = DadClock.UtcNow;
         status.Summary = string.IsNullOrWhiteSpace(reason) ? "MOGTOME helper cancelled." : reason;
         status.FailureReason = string.Empty;
         status.BlockedReason = string.Empty;
@@ -1476,7 +1486,7 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
 
     private void ApplyHelperStatus(DadMogtomeRunStatus helper)
     {
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.Summary = helper.Summary;
         status.FailureReason = helper.FailureReason;
         status.BlockedReason = helper.Accepted || helper.Success ? string.Empty : helper.FailureReason;
@@ -1492,7 +1502,7 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
             ? helper.Success ? DadRunStatus.Completed : DadRunStatus.Failed
             : helper.Accepted ? DadRunStatus.Running : DadRunStatus.Failed;
         if (helper.IsTerminal)
-            status.CompletedAtUtc = DateTime.UtcNow;
+            status.CompletedAtUtc = DadClock.UtcNow;
     }
 
     private DadRunStepResultDto BuildStep()
@@ -1516,7 +1526,7 @@ public sealed class DadMogtomeExecutor : IDadModuleExecutor
             FailureReason = status.FailureReason,
             BlockedReason = status.BlockedReason,
             ExecutorStatus = status.Clone(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
 }
 
@@ -1567,7 +1577,7 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
             Deferred = false,
             RetryAttempt = 0,
             MaxRetryAttempts = 0,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = summary,
             FailureReason = ready ? string.Empty : summary,
             BlockedReason = ready ? string.Empty : summary,
@@ -1579,14 +1589,22 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
         IReadOnlyList<DadParticipantSnapshot> participants)
     {
         status = CanStart(plan, participants);
-        status.StartedAtUtc = DateTime.UtcNow;
+        status.StartedAtUtc = DadClock.UtcNow;
         if (!status.CanStart)
         {
             status.CompletedAtUtc = status.StartedAtUtc;
             return BuildStep();
         }
 
-        ApplyHelperStatus(ipc.Start(plan.Request.RequestId));
+        var started = ipc.Start(plan.Request.RequestId);
+        ApplyHelperStatus(started);
+        if (started.ResponseUncertain)
+        {
+            var stopped = ipc.Cancel(plan.Request.RequestId);
+            if (!stopped.Accepted || !stopped.Terminal || stopped.Success ||
+                !string.Equals(stopped.State, "Cancelled", StringComparison.Ordinal))
+                status.Summary += " Exact helper cleanup was not acknowledged.";
+        }
         return BuildStep();
     }
 
@@ -1605,7 +1623,7 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
             !helper.Success &&
             string.Equals(helper.State, "Cancelled", StringComparison.Ordinal))
         {
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             status.CompletedAtUtc = status.UpdatedAtUtc;
             status.Phase = DadRunPhase.Finalizing;
             status.Status = DadRunStatus.Cancelled;
@@ -1618,7 +1636,7 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
             return BuildStep();
         }
 
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = status.UpdatedAtUtc;
         status.Phase = DadRunPhase.Finalizing;
         status.Status = DadRunStatus.Failed;
@@ -1636,7 +1654,7 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
 
     private void ApplyHelperStatus(DadLootGoblinMapGatherStatus helper)
     {
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.Summary = string.IsNullOrWhiteSpace(helper.Message)
             ? $"LootGoblin map-gather state: {helper.State}."
             : helper.Message;
@@ -1650,7 +1668,7 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
         status.FailureReason = status.Status == DadRunStatus.Failed ? status.Summary : string.Empty;
         status.BlockedReason = status.FailureReason;
         if (helper.Terminal || !helper.Accepted)
-            status.CompletedAtUtc = DateTime.UtcNow;
+            status.CompletedAtUtc = DadClock.UtcNow;
     }
 
     private DadRunStepResultDto BuildStep()
@@ -1671,7 +1689,7 @@ public sealed class DadLootGoblinExecutor : IDadModuleExecutor
             FailureReason = status.FailureReason,
             BlockedReason = status.BlockedReason,
             ExecutorStatus = status.Clone(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
 }
 

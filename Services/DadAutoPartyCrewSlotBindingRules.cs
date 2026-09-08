@@ -23,7 +23,7 @@ internal static class DadAutoPartyCrewSlotBindingRules
         ArgumentNullException.ThrowIfNull(listing);
         blocker = string.Empty;
 
-        if (!pairing.IsActive || listing.ExpiresAtUtc <= DateTime.UtcNow || !listing.Available ||
+        if (!pairing.IsActive || listing.ExpiresAtUtc <= DadClock.UtcNow || !listing.Available ||
             !string.Equals(pairing.IslandId, listing.SharingIslandId, StringComparison.Ordinal) ||
             !string.Equals(pairing.OwnerId, listing.OwnerId, StringComparison.Ordinal))
         {

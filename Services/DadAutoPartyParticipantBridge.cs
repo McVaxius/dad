@@ -327,6 +327,8 @@ internal sealed class DadAutoPartyParticipantBridge
                 executionPlan,
                 now,
                 now + ProposalLifetime,
+                manifest.Slots.Where(static slot => slot.RouteKind == DadRunSlotRouteKind.LanWorker)
+                    .Select(static slot => slot.ContentId).ToArray(),
                 bindings.ToDictionary(
                     static pair => pair.Slot.SlotId,
                     pair => new SlotRuntime(pair.Slot.Clone(), now),
@@ -636,6 +638,25 @@ internal sealed class DadAutoPartyParticipantBridge
                 lease.ProposalId,
                 lease.Header.SenderIslandId.Value,
                 lease.OwnerId.Value);
+            var renewing = slots.Count > 0 && slots.All(slot =>
+                slot.Stage >= DadAutoPartyParticipantStage.Ready && !slot.IsTerminal &&
+                slot.LeaseId == lease.LeaseId && slot.LeaseId != Guid.Empty &&
+                slot.LeaseRenewalGeneration < proposal.RenewalGeneration &&
+                lease.Header.ExpiresAt == proposal.ExpiresAt &&
+                lease.ObservedStateGeneration == slot.LeaseStateGeneration &&
+                lease.LeaseExpiresAt > slot.LeaseExpiresAt);
+            if (renewing)
+            {
+                foreach (var slot in slots)
+                {
+                    slot.LeaseExpiresAt = lease.LeaseExpiresAt;
+                    slot.LeaseRenewalGeneration = proposal.RenewalGeneration;
+                    slot.ObservedAt = now;
+                }
+                CommitReplay(lease.Header);
+                safeCode = "dad-remote-lease-renewed";
+                return true;
+            }
             if (slots.Count == 0 || slots.Any(slot =>
                     slot.Stage != DadAutoPartyParticipantStage.LeasePending &&
                     !(slot.Stage == DadAutoPartyParticipantStage.Ready &&
@@ -653,6 +674,8 @@ internal sealed class DadAutoPartyParticipantBridge
             foreach (var slot in slots)
             {
                 slot.LeaseId = lease.LeaseId;
+                slot.LeaseStateGeneration = lease.ObservedStateGeneration;
+                slot.LeaseRenewalGeneration = proposal.RenewalGeneration;
                 slot.LeaseIssuedAt ??= now;
                 slot.LeaseExpiresAt = lease.LeaseExpiresAt;
                 slot.StateGeneration = lease.ObservedStateGeneration;
@@ -979,13 +1002,14 @@ internal sealed class DadAutoPartyParticipantBridge
                                      receipt.Outcome == ExecutionOutcome.Completed;
             var expectedPartyContentIds = proposal.Slots.Values
                 .Select(static candidate => candidate.InviteTarget?.ContentId ?? 0)
+                .Concat(proposal.LanContentIds)
                 .ToHashSet();
             if (requiresPartyProof
                     ? receipt.ObservedPartyContentIds.IsDefault ||
                       receipt.ObservedPartyContentIds.Length is < 1 or > 8 ||
                       receipt.ObservedPartyContentIds.Any(static contentId => contentId == 0) ||
                       receipt.ObservedPartyContentIds.Distinct().Count() != receipt.ObservedPartyContentIds.Length ||
-                      expectedPartyContentIds.Count != proposal.Slots.Count ||
+                      expectedPartyContentIds.Count != proposal.ExecutionPlan.Participants.Length ||
                       expectedPartyContentIds.Contains(0) ||
                       !expectedPartyContentIds.SetEquals(receipt.ObservedPartyContentIds)
                     : !receipt.ObservedPartyContentIds.IsDefaultOrEmpty)
@@ -1416,7 +1440,7 @@ internal sealed class DadAutoPartyParticipantBridge
                      .ToList())
             replayedMessages.Remove(messageId);
         foreach (var operationId in operations
-                     .Where(pair => pair.Value.ExpiresAt <= now)
+                     .Where(pair => !pair.Value.Completed && pair.Value.ExpiresAt <= now)
                      .Select(static pair => pair.Key)
                      .ToList())
         {
@@ -1503,25 +1527,8 @@ internal sealed class DadAutoPartyParticipantBridge
             !TryGetSlot(command.ProposalId, command.SlotId, out _, out var runtime))
             return;
 
-        operation.Completed = true;
-        if (kind == ExecutionOperationKind.Queue)
-        {
-            runtime.ActiveModuleReference = operation.ModuleReference;
-            runtime.Stage = DadAutoPartyParticipantStage.Queued;
-        }
-        else if (kind == ExecutionOperationKind.Settle)
-        {
-            runtime.ActiveModuleReference = null;
-            runtime.NextModuleIndex++;
-            runtime.Stage = runtime.NextModuleIndex < proposal.ExecutionPlan.Modules.Length
-                ? DadAutoPartyParticipantStage.Formed
-                : DadAutoPartyParticipantStage.Settled;
-        }
-        else if (!(runtime.Stage == DadAutoPartyParticipantStage.Restored &&
-                   kind == ExecutionOperationKind.Cancel))
-        {
-            runtime.Stage = CompletedStage(kind);
-        }
+        // A mailbox write proves delivery only. Keep the operation pending until its
+        // authenticated, correlated terminal receipt proves the receiver's lifecycle result.
         runtime.ObservedAt = now;
         runtime.SafeCode = $"dad-remote-{kind.ToString().ToLowerInvariant()}-dispatched";
     }
@@ -2086,13 +2093,13 @@ internal sealed class DadAutoPartyParticipantBridge
         {
             if (inviter == null ||
                 DadPartyInvitationAcceptanceTracker.Validate(inviter).Length > 0 ||
-                !string.Equals(inviter.RunId, proposal.RunId, StringComparison.Ordinal) ||
-                partyInviteTargets.Count != 0)
+                !string.Equals(inviter.RunId, proposal.RunId, StringComparison.Ordinal))
             {
                 safeCode = "dad-remote-inviter-locator-invalid";
                 return false;
             }
-            return true;
+            return partyInviteTargets.Count == 0 ||
+                ValidateRestoreLocators(proposal, slot, inviter, partyInviteTargets, out safeCode);
         }
 
         if (inviter != null)
@@ -2190,6 +2197,7 @@ internal sealed class DadAutoPartyParticipantBridge
             EndpointExecutionPlan executionPlan,
             DateTimeOffset createdAt,
             DateTimeOffset expiresAt,
+            IReadOnlyList<ulong> lanContentIds,
             Dictionary<string, SlotRuntime> slots)
         {
             ProposalId = proposalId;
@@ -2201,6 +2209,7 @@ internal sealed class DadAutoPartyParticipantBridge
             CreatedAt = createdAt;
             ExpiresAt = expiresAt;
             Slots = slots;
+            LanContentIds = lanContentIds;
         }
 
         public Guid ProposalId { get; }
@@ -2214,6 +2223,7 @@ internal sealed class DadAutoPartyParticipantBridge
         public long RenewalGeneration { get; set; }
         public DateTimeOffset PendingRenewalExpiresAt { get; set; }
         public long PendingRenewalGeneration { get; set; }
+        public IReadOnlyList<ulong> LanContentIds { get; }
         public Dictionary<string, SlotRuntime> Slots { get; }
     }
 
@@ -2229,6 +2239,8 @@ internal sealed class DadAutoPartyParticipantBridge
         public DadAutoPartyParticipantStage Stage { get; set; } = DadAutoPartyParticipantStage.ProposalPending;
         public Guid ReservationId { get; set; }
         public Guid LeaseId { get; set; }
+        public long LeaseStateGeneration { get; set; }
+        public long LeaseRenewalGeneration { get; set; }
         public long StateGeneration { get; set; } = 1;
         public long ReadinessGeneration { get; set; }
         public int NextModuleIndex { get; set; }

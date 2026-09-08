@@ -8,6 +8,7 @@ public sealed class DadPreDutyRepairRuntimeService
     private static readonly TimeSpan DurabilityPollInterval = TimeSpan.FromSeconds(1);
     private readonly DadDutySupportAdsService adsService;
     private readonly IPluginLog log;
+    private readonly Func<DadEquippedDurabilityObservation> readDurability;
     private DadPreDutyRepairGate gate = new();
     private DadPreDutyRepairPolicy policy = new();
     private DadRunRequest? request;
@@ -17,10 +18,12 @@ public sealed class DadPreDutyRepairRuntimeService
         DadPreDutyRepairAction.Ready,
         "Pre-duty repair is not active.");
 
-    public DadPreDutyRepairRuntimeService(DadDutySupportAdsService adsService, IPluginLog log)
+    public DadPreDutyRepairRuntimeService(DadDutySupportAdsService adsService, IPluginLog log,
+        Func<DadEquippedDurabilityObservation>? readDurability = null)
     {
         this.adsService = adsService;
         this.log = log;
+        this.readDurability = readDurability ?? DadDutySupportAdsService.ReadEquippedDurability;
     }
 
     public bool IsRequired => DadPreDutyRepairRules.IsRequired(policy, moduleId, request);
@@ -49,7 +52,7 @@ public sealed class DadPreDutyRepairRuntimeService
             return lastDecision;
 
         nextPollUtc = nowUtc + DurabilityPollInterval;
-        var durability = DadDutySupportAdsService.ReadEquippedDurability();
+        var durability = readDurability();
         var ads = durability.Readable && durability.MinimumConditionPercent < policy.ThresholdPercent
             ? adsService.InspectRepair()
             : DadAdsRepairObservation.Absent("ADS repair truth was not needed for this durability observation.");

@@ -148,7 +148,7 @@ public sealed class DadWorkerExecutionService
                 Role = command.Role,
                 State = DadWorkerExecutionState.Accepted,
                 ModuleId = ResolveModule(command)?.ModuleId ?? DadModuleId.None,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = $"Accepted {command.Role} assignment.",
             };
             commandStatuses[command.CommandId] = status.Clone();
@@ -248,7 +248,7 @@ public sealed class DadWorkerExecutionService
                     WorkerSessionId = presenceService.WorkerSessionId,
                     State = DadWorkerExecutionState.Cancelled,
                     IsTerminal = true,
-                    UpdatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DadClock.UtcNow,
                     Summary = "Pending worker assignment cancelled before start.",
                 };
                 pendingCommands.ReleaseOwnershipIfIdle(activeCommand != null);
@@ -352,7 +352,7 @@ public sealed class DadWorkerExecutionService
                         : DadWorkerExecutionState.Failed
                     : DadWorkerExecutionState.Idle,
                 IsTerminal = hadWork,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = hadWork
                     ? lootGoblinCancellationAcknowledged
                         ? reason
@@ -397,7 +397,7 @@ public sealed class DadWorkerExecutionService
                 Role = pending.Role,
                 State = DadWorkerExecutionState.Cancelled,
                 IsTerminal = true,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = "Pending worker assignment cancelled before start.",
             };
         }
@@ -433,7 +433,7 @@ public sealed class DadWorkerExecutionService
                     activeCommand.TimeoutSeconds,
                     status.ModuleId,
                     status.EnteredDuty,
-                    DateTime.UtcNow - startedAtUtc))
+                    DadClock.UtcNow - startedAtUtc))
             {
                 shoppingService.CancelActive("Worker execution timeout.");
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
@@ -479,16 +479,16 @@ public sealed class DadWorkerExecutionService
         status.Summary = "Waiting for exact ADS shopping cancellation to reach correlated terminal status.";
         status.FailureReason = string.Empty;
         status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         if (activeCommand != null)
             commandStatuses[activeCommand.CommandId] = status.Clone();
     }
 
     private void UpdatePendingShoppingCancellation()
     {
-        var decision = shoppingService.Update(DateTime.UtcNow);
+        var decision = shoppingService.Update(DadClock.UtcNow);
         status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         if (shoppingService.IsCancellationPending)
         {
             status.Summary = decision.Summary;
@@ -519,7 +519,7 @@ public sealed class DadWorkerExecutionService
     {
         ClearPendingCancellation();
         activeCommand = command;
-        startedAtUtc = DateTime.UtcNow;
+        startedAtUtc = DadClock.UtcNow;
         enteredDuty = condition[ConditionFlag.BoundByDuty];
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
@@ -546,7 +546,7 @@ public sealed class DadWorkerExecutionService
             State = DadWorkerExecutionState.Starting,
             ModuleId = module.ModuleId,
             EnteredDuty = enteredDuty,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = $"Starting {command.Role} work for {module.DisplayName}.",
         };
 
@@ -559,7 +559,7 @@ public sealed class DadWorkerExecutionService
         {
             status.State = DadWorkerExecutionState.Accepted;
             status.Summary = $"Worker assignment is waiting for fresh safe runtime truth before execution: {validationBlocker}";
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             commandStatuses[command.CommandId] = status.Clone();
             shoppingService.Reset();
             activeCommand = null;
@@ -567,7 +567,7 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
-        shoppingService.Begin(command.Plan.Request, command.ModuleIndex, localAssignment, DateTime.UtcNow);
+        shoppingService.Begin(command.Plan.Request, command.ModuleIndex, localAssignment, DadClock.UtcNow);
         passiveLootGoblinPending = module.ModuleId == DadModuleId.LootGoblin &&
                                    command.Role == DadWorkerExecutionRole.Participant;
         if (passiveLootGoblinPending && !shoppingService.IsRequired)
@@ -576,7 +576,7 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
-        preDutyRepairService.Begin(command.Plan.Request, module.ModuleId, DateTime.UtcNow);
+        preDutyRepairService.Begin(command.Plan.Request, module.ModuleId, DadClock.UtcNow);
         repairPreparationStarted = true;
         UpdatePrequeuePreparation();
     }
@@ -602,7 +602,7 @@ public sealed class DadWorkerExecutionService
         {
             status.State = DadWorkerExecutionState.Preparing;
             status.Summary = $"Worker preparation is waiting for fresh exact prequeue safety proof: {validationBlocker}";
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             commandStatuses[activeCommand.CommandId] = status.Clone();
             return;
         }
@@ -611,18 +611,18 @@ public sealed class DadWorkerExecutionService
         {
             status.State = DadWorkerExecutionState.Preparing;
             status.Summary = "Worker preparation is waiting for normal world-stable prequeue safety proof before durability or ADS inspection.";
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             commandStatuses[activeCommand.CommandId] = status.Clone();
             return;
         }
 
         if (!repairPreparationStarted)
         {
-            preDutyRepairService.Begin(activeCommand.Plan.Request, module.ModuleId, DateTime.UtcNow);
+            preDutyRepairService.Begin(activeCommand.Plan.Request, module.ModuleId, DadClock.UtcNow);
             repairPreparationStarted = true;
         }
 
-        var repairDecision = preDutyRepairService.Update(DateTime.UtcNow);
+        var repairDecision = preDutyRepairService.Update(DadClock.UtcNow);
         if (repairDecision.Action == DadPreDutyRepairAction.Reject)
         {
             var assignment = localAssignment.WorkerSessionId.IsEmpty ? liveRuntime : localAssignment;
@@ -637,14 +637,14 @@ public sealed class DadWorkerExecutionService
                 ? DadWorkerExecutionState.Repairing
                 : DadWorkerExecutionState.Preparing;
             status.Summary = repairDecision.Summary;
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             commandStatuses[activeCommand.CommandId] = status.Clone();
             return;
         }
 
         if (shoppingService.IsRequired)
         {
-            var shoppingDecision = shoppingService.Update(DateTime.UtcNow);
+            var shoppingDecision = shoppingService.Update(DadClock.UtcNow);
             status.ShoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
             if (shoppingDecision.Action == DadShoppingRuntimeAction.Reject)
             {
@@ -658,7 +658,7 @@ public sealed class DadWorkerExecutionService
             {
                 status.State = DadWorkerExecutionState.Shopping;
                 status.Summary = shoppingDecision.Summary;
-                status.UpdatedAtUtc = DateTime.UtcNow;
+                status.UpdatedAtUtc = DadClock.UtcNow;
                 commandStatuses[activeCommand.CommandId] = status.Clone();
                 return;
             }
@@ -773,7 +773,7 @@ public sealed class DadWorkerExecutionService
     private void ApplyLeaderResult(DadRunStepResultDto result)
     {
         status.StepResult = result.Clone();
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.Summary = result.Summary;
         status.FailureReason = result.FailureReason;
         status.EnteredDuty |= result.ExecutorStatus.Phase == DadRunPhase.InDutyOrTask;
@@ -844,7 +844,7 @@ public sealed class DadWorkerExecutionService
                 activeCommand,
                 participantCombatRotationMode == DadCombatRotationMode.UseFrenRider,
                 exactRequestedDutyEntered,
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 combatRotationService.TryConfigureAndEnableParticipant,
                 out var handoffSummary);
             if (handoffStatus == DadParticipantFrenRiderHandoffStatus.Failed)
@@ -859,7 +859,7 @@ public sealed class DadWorkerExecutionService
                 DadParticipantFrenRiderHandoffStatus.PendingRetry
                 ? handoffSummary
                 : pulse.Summary;
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             return;
         }
 
@@ -870,7 +870,7 @@ public sealed class DadWorkerExecutionService
             status.EnteredDuty = true;
             status.State = DadWorkerExecutionState.Running;
             status.Summary = $"Participant running {status.ModuleId}.";
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             return;
         }
 
@@ -881,7 +881,7 @@ public sealed class DadWorkerExecutionService
         }
 
         status.State = DadWorkerExecutionState.WaitingForQueue;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
     }
 
     private bool TryValidateActiveMutationBoundary()
@@ -934,7 +934,7 @@ public sealed class DadWorkerExecutionService
         var contradiction = mutationContradictionTracker.Observe(
             evidence,
             localRuntime.WorldReadyStable,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             TimeSpan.FromSeconds(2),
             localRuntime.LastHeartbeatUtc);
         if (contradiction.Disposition != DadSafetyProofDisposition.Reject)
@@ -942,7 +942,7 @@ public sealed class DadWorkerExecutionService
             status.Summary = contradiction.Disposition == DadSafetyProofDisposition.Wait
                 ? contradiction.Summary
                 : $"Worker mutation is waiting for fresh safe frozen identity proof: {blocker}";
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             return false;
         }
 
@@ -975,8 +975,8 @@ public sealed class DadWorkerExecutionService
                 Phase = DadRunPhase.Finalizing,
                 Status = DadRunStatus.Completed,
                 CanStart = true,
-                CompletedAtUtc = DateTime.UtcNow,
-                UpdatedAtUtc = DateTime.UtcNow,
+                CompletedAtUtc = DadClock.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = $"Participant completed {status.ModuleId} and exited duty.",
             },
         };
@@ -990,7 +990,7 @@ public sealed class DadWorkerExecutionService
         DadParticipantSnapshot localAssignment)
     {
         var summary = $"{localAssignment.AssignedSlotId} passed exact worker validation and is holding the LootGoblin party passively; frozen Slot1 owns map gather, open, and run IPC.";
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         status.StepResult = new DadRunStepResultDto
         {
             RunId = command.RunId,
@@ -1130,7 +1130,7 @@ public sealed class DadWorkerExecutionService
         status.Success = success;
         status.Summary = summary;
         status.FailureReason = failureReason;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         if (completedCommand != null)
             commandStatuses[completedCommand.CommandId] = status.Clone();
         activeCommand = null;

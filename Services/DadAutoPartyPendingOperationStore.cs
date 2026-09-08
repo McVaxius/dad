@@ -15,7 +15,7 @@ internal sealed record DadAutoPartyPendingDeregistration(
         RevocationGeneration >= 1 &&
         StateGeneration >= 1 &&
         RequestedAt.Offset == TimeSpan.Zero &&
-        RequestedAt <= DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2) &&
+        RequestedAt <= DadClock.OffsetUtcNow + TimeSpan.FromMinutes(2) &&
         !string.IsNullOrWhiteSpace(SafeReason) &&
         SafeReason.Length <= 128 &&
         SafeReason.All(character =>

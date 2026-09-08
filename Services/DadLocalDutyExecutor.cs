@@ -3,7 +3,7 @@ using dad.Models;
 namespace dad.Services;
 
 public sealed class DadLocalDutyExecutor(
-    DadLocalDutyQueueService queueService,
+    IDadLocalDutyQueueGateway queueService,
     DadCombatRotationService combatRotationService) : IDadModuleExecutor
 {
     private static readonly TimeSpan PostDutyStabilizeDuration = TimeSpan.FromSeconds(10);
@@ -43,7 +43,7 @@ public sealed class DadLocalDutyExecutor(
             Deferred = false,
             RetryAttempt = 0,
             MaxRetryAttempts = 0,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Summary = hardBlocked
                 ? $"Dad cannot start Local Duty: {blockedReason}"
                 : BuildCanStartSummary(content, mode),
@@ -61,7 +61,7 @@ public sealed class DadLocalDutyExecutor(
         var blockedReason = FormatBlockers(blockers);
         var hardBlocked = blockers.Any(static blocker =>
             blocker.Severity is DadModuleBlockerSeverity.Blocked or DadModuleBlockerSeverity.Failed);
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         ResetRuntimeState(now);
 
         status = new DadModuleExecutionStatusDto
@@ -102,7 +102,7 @@ public sealed class DadLocalDutyExecutor(
             return BuildStatusStep(status);
         }
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (postDutyStabilizeUntilUtc != DateTime.MinValue)
             return UpdatePostDutyStabilizing(now);
 
@@ -177,7 +177,7 @@ public sealed class DadLocalDutyExecutor(
             ? "Local Duty executor cancelled. Dad does not leave duties or send external stop commands; clear any remaining game-side queue or duty state manually if needed."
             : reason;
         status.FailureReason = pulse.FailureReason;
-        status.CompletedAtUtc = DateTime.UtcNow;
+        status.CompletedAtUtc = DadClock.UtcNow;
         ClearRuntimeState();
         return BuildStatusStep(status, DadParticipantState.Cancelled);
     }
@@ -192,7 +192,7 @@ public sealed class DadLocalDutyExecutor(
         status.IsActive = pulse.IsActive;
         status.CanStart = pulse.Status != DadRunStatus.Failed;
         status.Deferred = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = pulse.IsActive ? null : status.UpdatedAtUtc;
         status.Summary = pulse.Summary;
         status.FailureReason = pulse.FailureReason;
@@ -206,7 +206,7 @@ public sealed class DadLocalDutyExecutor(
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
         status.CanStart = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = status.UpdatedAtUtc;
         status.Summary = reason;
         status.FailureReason = reason;
@@ -220,7 +220,7 @@ public sealed class DadLocalDutyExecutor(
     private DadRunStepResultDto UpdateDutyCompletionWaitForExit()
     {
         if (HasExitedRequestedDuty())
-            return BeginOrUpdatePostDutyStabilizing(DateTime.UtcNow);
+            return BeginOrUpdatePostDutyStabilizing(DadClock.UtcNow);
 
         SetActiveStatus(
             DadRunPhase.InDutyOrTask,
@@ -282,7 +282,7 @@ public sealed class DadLocalDutyExecutor(
         status.IsActive = true;
         status.CanStart = true;
         status.Deferred = false;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         status.CompletedAtUtc = null;
         status.Summary = summary;
         status.FailureReason = string.Empty;
@@ -298,7 +298,7 @@ public sealed class DadLocalDutyExecutor(
         var entryEnableStatus = combatRotationService.TryEnableFrenRiderAfterDutyEntry(
             status.RunId,
             DadModuleId.Duty,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             out entryAutomationSummary);
         if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
             return true;
@@ -493,7 +493,7 @@ public sealed class DadLocalDutyExecutor(
             BlockedReason = status.BlockedReason,
             ExecutorStatus = status.Clone(),
             ModuleBlockers = status.Blockers.Select(static blocker => blocker.Clone()).ToList(),
-            ReportedAtUtc = DateTime.UtcNow,
+            ReportedAtUtc = DadClock.UtcNow,
         };
 
     private static string FormatBlockers(IReadOnlyList<DadModuleBlockerDto> blockers)

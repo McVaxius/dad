@@ -99,7 +99,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
     private OutboundDeliveryState? activeOutbound;
     private DadAutoPartyEndpointSnapshot snapshot;
     private DadAutoPartyAdapterTransferSnapshot transferSnapshot = DadAutoPartyAdapterTransferSnapshot.Idle;
-    private long nextUplinkPageGeneration = Math.Max(1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    private long nextUplinkPageGeneration = Math.Max(1, DadClock.OffsetUtcNow.ToUnixTimeMilliseconds());
     private DateTime nextPresencePublishUtc = DateTime.MinValue;
     private bool presencePublished;
     private bool presencePublishFailed;
@@ -129,7 +129,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             delay,
             pollInterval,
             diagnostic,
-            static () => DateTimeOffset.UtcNow)
+            static () => DadClock.OffsetUtcNow)
     {
     }
 
@@ -167,7 +167,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         authenticator = new ProductionContractAuthenticator(keyResolver);
         this.httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         this.ownsHttpClient = httpClient == null || ownsHttpClient;
-        this.delay = delay ?? Task.Delay;
+        this.delay = delay ?? DadClock.Delay;
         this.utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
         var clientTimeout = this.httpClient.Timeout;
         httpOperationTimeout = clientTimeout == Timeout.InfiniteTimeSpan ||
@@ -181,7 +181,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         snapshot = new(
             DadAutoPartyEndpointConnectionState.Connecting,
             "dad-webhook-starting",
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             null,
             0,
             0,
@@ -288,7 +288,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             return ValueTask.FromResult(Denied(delivery.EnvelopeId, "dad-webhook-mailbox-invalidated"));
         if (disposed)
             return ValueTask.FromResult(Denied(delivery.EnvelopeId, "dad-webhook-disposed"));
-        if (!IsBounded(delivery) || delivery.ExpiresAt <= DateTimeOffset.UtcNow)
+        if (!IsBounded(delivery) || delivery.ExpiresAt <= DadClock.OffsetUtcNow)
         {
             UpdateSnapshot(Snapshot.State, "dad-webhook-envelope-invalid", Snapshot.LastSuccessfulExchangeAtUtc);
             return ValueTask.FromResult(Denied(delivery.EnvelopeId, "dad-webhook-envelope-invalid"));
@@ -342,7 +342,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 {
                     if (!presencePublished &&
                         !presencePublishFailed &&
-                        DateTime.UtcNow >= nextPresencePublishUtc)
+                        DadClock.UtcNow >= nextPresencePublishUtc)
                         await PublishPresenceAsync(cancellationToken).ConfigureAwait(false);
                     DrainApplicationAcknowledgements();
                     ExpireInboundDeliveries();
@@ -410,6 +410,16 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 message.Id),
             _ => false,
         };
+        // Central may replace the cleared epoch-ack slot with authenticated
+        // payload before this reader observes the intermediate empty slot.
+        if (!accepted && direction == CourierDirection.Downlink &&
+            GetRetainedEpochAcknowledgement(direction) != null &&
+            CourierTextCodec.GetKind(message.Content) == CourierTextKind.Page &&
+            ProcessDownlinkPage(message.Content, epoch, 1))
+        {
+            ForgetRetainedEpochAcknowledgement(direction);
+            accepted = true;
+        }
         if (accepted)
             observed[message.Id] = message.Content;
     }
@@ -515,7 +525,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 page.PageNumber != expectedPageNumber ||
                 page.PageCount != expectedEpoch.PageCount ||
                 page.PageGeneration < 1 ||
-                page.Header.ExpiresAt <= DateTimeOffset.UtcNow)
+                page.Header.ExpiresAt <= DadClock.OffsetUtcNow)
                 return false;
 
             if (observedDownlinkPageGenerations.TryGetValue(page.PageNumber, out var priorGeneration) &&
@@ -527,7 +537,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             var replayedApplicationAcknowledgements = new HashSet<Guid>();
             foreach (var fragment in page.Fragments)
             {
-                if (fragment.ExpiresAt <= DateTimeOffset.UtcNow)
+                if (fragment.ExpiresAt <= DadClock.OffsetUtcNow)
                     return false;
                 if (completedInboundIds.Contains(fragment.DeliveryId))
                 {
@@ -574,7 +584,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-downlink-fragment",
-                DateTime.UtcNow);
+                DadClock.UtcNow);
             return true;
         }
         catch (Exception exception) when (
@@ -600,7 +610,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 acknowledgement.Direction != CourierDirection.Uplink ||
                 acknowledgement.PageNumber != expectedPageNumber ||
                 acknowledgement.PageGeneration < 1 ||
-                acknowledgement.Header.ExpiresAt <= DateTimeOffset.UtcNow)
+                acknowledgement.Header.ExpiresAt <= DadClock.OffsetUtcNow)
                 return false;
 
             if (activeOutbound != null &&
@@ -668,7 +678,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-uplink-fragment-acknowledged",
-                DateTime.UtcNow);
+                DadClock.UtcNow);
             return true;
         }
         catch (Exception exception) when (
@@ -689,7 +699,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         UpdateSnapshot(
             DadAutoPartyEndpointConnectionState.Ready,
             "dad-webhook-epoch-acknowledgement-cleared",
-            DateTime.UtcNow);
+            DadClock.UtcNow);
         return true;
     }
 
@@ -710,7 +720,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 acknowledgement.Direction != expectedDirection ||
                 acknowledgement.PageNumber != 1 ||
                 acknowledgement.PageGeneration != expectedEpoch.EpochGeneration ||
-                acknowledgement.Header.ExpiresAt <= DateTimeOffset.UtcNow ||
+                acknowledgement.Header.ExpiresAt <= DadClock.OffsetUtcNow ||
                 !acknowledgement.AcceptedFragments.IsDefaultOrEmpty ||
                 acknowledgement.AcceptedMessageIds.Length != 1 ||
                 !string.Equals(
@@ -750,7 +760,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             if (!IsRelayHeader(epoch.Header) ||
                 epoch.IslandId != DownlinkEpochSnapshot.IslandId ||
                 epoch.Direction != expectedDirection ||
-                epoch.Header.ExpiresAt <= DateTimeOffset.UtcNow ||
+                epoch.Header.ExpiresAt <= DadClock.OffsetUtcNow ||
                 epoch.PageCount != 2 ||
                 epoch.PageReferences.Length != 2 ||
                 epoch.PageReferences.Any(page =>
@@ -858,7 +868,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         UpdateSnapshot(
             DadAutoPartyEndpointConnectionState.Ready,
             "dad-webhook-epoch-rotated",
-            DateTime.UtcNow);
+            DadClock.UtcNow);
     }
 
     private void QueueEpochAcknowledgement(
@@ -925,7 +935,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
                 UpdateSnapshot(
                     DadAutoPartyEndpointConnectionState.Ready,
                     "dad-webhook-downlink-acknowledged",
-                    DateTime.UtcNow);
+                    DadClock.UtcNow);
             }
             else
             {
@@ -939,7 +949,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
 
         if (activeOutbound == null && outbound.Reader.TryRead(out var delivery))
         {
-            if (delivery.ExpiresAt <= DateTimeOffset.UtcNow)
+            if (delivery.ExpiresAt <= DadClock.OffsetUtcNow)
             {
                 Interlocked.Decrement(ref pendingOutboundCount);
                 return;
@@ -972,11 +982,11 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         }
         if (activeOutbound == null)
         {
-            if (DateTime.UtcNow >= nextPresencePublishUtc)
+            if (DadClock.UtcNow >= nextPresencePublishUtc)
                 await PublishPresenceAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
-        if (activeOutbound.Delivery.ExpiresAt <= DateTimeOffset.UtcNow)
+        if (activeOutbound.Delivery.ExpiresAt <= DadClock.OffsetUtcNow)
         {
             CompleteActiveOutbound();
             UpdateSnapshot(
@@ -986,7 +996,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             return;
         }
         if (activeOutbound.AwaitingAcknowledgement &&
-            DateTime.UtcNow - activeOutbound.LastPublishedAtUtc < activePollInterval)
+            DadClock.UtcNow - activeOutbound.LastPublishedAtUtc < activePollInterval)
             return;
 
         if (!activeOutbound.AwaitingAcknowledgement)
@@ -1039,7 +1049,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             cancellationToken).ConfigureAwait(false);
         if (editResult is true)
         {
-            activeOutbound.LastPublishedAtUtc = DateTime.UtcNow;
+            activeOutbound.LastPublishedAtUtc = DadClock.UtcNow;
             RememberPublishedContent(CourierDirection.Uplink, reference, activeOutbound.PublishedContent);
             if (IsPairingTransfer(activeOutbound.Delivery))
                 ReportPairingDiagnostic(
@@ -1049,7 +1059,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-uplink-fragment-published",
-                DateTime.UtcNow);
+                DadClock.UtcNow);
             UpdateTransferSnapshot(awaitingCentralAcknowledgement: true);
         }
         else if (editResult is false)
@@ -1094,7 +1104,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-presence-published",
-                DateTime.UtcNow);
+                DadClock.UtcNow);
         }
         else
         {
@@ -1178,7 +1188,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             $"courier-ack-{pending.EpochId:N}-{pending.PageNumber}-{generation}",
             generation,
             GetEpoch(pending.Direction).EpochGeneration,
-            DateTimeOffset.UtcNow.AddMinutes(2));
+            DadClock.OffsetUtcNow.AddMinutes(2));
         var acknowledgement = new CourierAcknowledgement(
             header,
             pending.EpochId,
@@ -1198,7 +1208,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             $"courier-presence-{epoch.EpochId:N}-{generation}",
             generation,
             generation,
-            DateTimeOffset.UtcNow.AddMinutes(2));
+            DadClock.OffsetUtcNow.AddMinutes(2));
         var presence = new CourierPresence(
             header,
             epoch.EpochId,
@@ -1274,7 +1284,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             ? observedUplinkContents
             : observedDownlinkContents;
         observed[messageReference] = content;
-        nextPresencePublishUtc = DateTime.UtcNow + pollInterval;
+        nextPresencePublishUtc = DadClock.UtcNow + pollInterval;
     }
 
     private ContractHeader CreateLocalHeader(
@@ -1283,7 +1293,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         long generation,
         DateTimeOffset expiresAt)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = DadClock.OffsetUtcNow;
         if (expiresAt <= now)
             expiresAt = now.AddMinutes(1);
         var nonce = RandomNumberGenerator.GetBytes(AutoPartyProtocol.ContractNonceBytes);
@@ -1373,13 +1383,13 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
             UpdateSnapshot(
                 DadAutoPartyEndpointConnectionState.Ready,
                 "dad-webhook-downlink-received",
-                DateTime.UtcNow);
+                DadClock.UtcNow);
         }
     }
 
     private void ExpireInboundDeliveries()
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = DadClock.OffsetUtcNow;
         foreach (var id in inboundDeliveries
                      .Where(pair => pair.Value.FirstFragment?.ExpiresAt <= now)
                      .Select(static pair => pair.Key)
@@ -1767,7 +1777,7 @@ public sealed class DadAutoPartyWebhookTransportAdapter : IAutoPartyTransportAda
         Volatile.Write(ref snapshot, new DadAutoPartyEndpointSnapshot(
             state,
             DadAutoPartyConfiguration.NormalizeSafeCode(safeCode),
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             lastSuccessfulExchangeAtUtc ?? prior.LastSuccessfulExchangeAtUtc,
             Math.Max(0, Volatile.Read(ref pendingOutboundCount)),
             applicationAcknowledgements.Reader.Count + pendingCourierAcknowledgements.Count +

@@ -23,8 +23,8 @@ public sealed class DadVermaxionIpcService : IDisposable
     private readonly ICallGateSubscriber<string, string> releaseHandoff;
     private readonly ICallGateSubscriber<string, object> grantedHandoff;
     private readonly object gate = new();
-    private DadVermaxionReadinessStatus cached = DadVermaxionStatusParser.Parse(false, null, DateTime.UtcNow);
-    private DadVermaxionReservationStatus reservation = DadVermaxionReservationParser.NotLoaded(DateTime.UtcNow);
+    private DadVermaxionReadinessStatus cached = DadVermaxionStatusParser.Parse(false, null, DadClock.UtcNow);
+    private DadVermaxionReservationStatus reservation = DadVermaxionReservationParser.NotLoaded(DadClock.UtcNow);
     private DadVermaxionReservationRequest? activeRequest;
     private string remotelySubmittedOperationToken = string.Empty;
     private string pendingReleaseOperationToken = string.Empty;
@@ -58,7 +58,7 @@ public sealed class DadVermaxionIpcService : IDisposable
     {
         lock (gate)
         {
-            var now = DateTime.UtcNow;
+            var now = DadClock.UtcNow;
             if (!forceRefresh && now < nextRefreshUtc)
                 return cached;
 
@@ -89,7 +89,7 @@ public sealed class DadVermaxionIpcService : IDisposable
     {
         lock (gate)
         {
-            var now = DateTime.UtcNow;
+            var now = DadClock.UtcNow;
             if (disposed)
                 return DadVermaxionReservationParser.Parse(null, now, "DAD VERMAXION IPC service is disposed.");
 
@@ -185,7 +185,7 @@ public sealed class DadVermaxionIpcService : IDisposable
                 return true;
             }
 
-            var loaded = IsLoaded(DateTime.UtcNow);
+            var loaded = IsLoaded(DadClock.UtcNow);
             if (loaded == false)
             {
                 // An unloaded provider cannot retain its in-memory reservation. This is terminal
@@ -198,7 +198,7 @@ public sealed class DadVermaxionIpcService : IDisposable
             {
                 reservation = DadVermaxionReservationParser.Parse(
                     releaseHandoff.InvokeFunc(operationToken),
-                    DateTime.UtcNow);
+                    DadClock.UtcNow);
                 if (DadVermaxionReleaseProofRules.ProvesNoOwnedReservation(reservation, operationToken))
                 {
                     if (matchesActiveRequest)
@@ -240,7 +240,7 @@ public sealed class DadVermaxionIpcService : IDisposable
                     pendingReleaseOperationToken,
                     activeRequest.OperationToken,
                     StringComparison.OrdinalIgnoreCase) &&
-                DateTime.UtcNow >= nextRenewUtc)
+                DadClock.UtcNow >= nextRenewUtc)
                 renewal = Clone(activeRequest);
         }
 
@@ -253,14 +253,14 @@ public sealed class DadVermaxionIpcService : IDisposable
         DadVermaxionReservationStatus parsed;
         lock (gate)
         {
-            parsed = DadVermaxionReservationParser.Parse(json, DateTime.UtcNow);
+            parsed = DadVermaxionReservationParser.Parse(json, DadClock.UtcNow);
             if (!parsed.IsGranted || activeRequest == null ||
                 !string.Equals(activeRequest.OperationToken, parsed.OperationToken, StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
             reservation = DadVermaxionReservationParser.BindToRequest(parsed, activeRequest);
-            nextRenewUtc = DateTime.UtcNow + RefreshInterval;
+            nextRenewUtc = DadClock.UtcNow + RefreshInterval;
         }
 
         ReservationGranted?.Invoke(parsed.Clone());
@@ -312,7 +312,7 @@ public sealed class DadVermaxionIpcService : IDisposable
             Version = DadVermaxionHandoffContract.Version,
             OperationToken = operationToken,
             State = DadVermaxionReservationState.Released,
-            ObservedAtUtc = DateTime.UtcNow,
+            ObservedAtUtc = DadClock.UtcNow,
             Summary = "No remotely owned VERMAXION reservation remains for this DAD operation.",
         };
     }

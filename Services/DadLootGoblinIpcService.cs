@@ -112,6 +112,7 @@ public sealed class DadLootGoblinMapGatherStartRequest
 
 public sealed class DadLootGoblinMapGatherStatus
 {
+    internal bool ResponseUncertain { get; init; }
     public string RequestId { get; set; } = string.Empty;
     public bool Accepted { get; set; }
     public bool Terminal { get; set; }
@@ -122,6 +123,7 @@ public sealed class DadLootGoblinMapGatherStatus
     public static DadLootGoblinMapGatherStatus Failed(string runId, string reason)
         => new()
         {
+            ResponseUncertain = true,
             RequestId = runId,
             Terminal = true,
             State = "Failed",

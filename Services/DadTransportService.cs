@@ -380,9 +380,9 @@ public sealed class DadTransportService : IDisposable
         DrainFrameworkCallbacks();
         SweepDisconnectedParticipants();
         SweepCompletedOperations();
-        PruneOfflineProfileCatalogs(DateTime.UtcNow);
+        PruneOfflineProfileCatalogs(DadClock.UtcNow);
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (!pluginEnabled)
         {
             RefreshTransportSnapshot();
@@ -451,7 +451,7 @@ public sealed class DadTransportService : IDisposable
         }
 
         RefreshTransportSnapshot();
-        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestUtc = DadClock.UtcNow;
         if (!IsHubRosterFallbackStatus(CurrentTransport.LastRequestStatus))
         {
             CurrentTransport.LastRequestStatus = CurrentTransport.LastResponses.Count == 0
@@ -494,7 +494,7 @@ public sealed class DadTransportService : IDisposable
                     request,
                     DadRouletteRewardProbeOutcome.Unknown,
                     BuildRemoteMutationRejectedReason("roulette reward probe"),
-                    DateTime.UtcNow);
+                    DadClock.UtcNow);
         }
 
         return TryRequest<DadRouletteRewardProbeRequestDto, DadRouletteRewardProbeResultDto>(
@@ -727,7 +727,7 @@ public sealed class DadTransportService : IDisposable
                 OperationId = request.OperationId,
                 RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
                 SubmittedAtUtc = request.RequestedAtUtc,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = "Stop-all forwarded to Dad Coordinator; awaiting authority acknowledgement.",
             };
             RecordStopAllStatus(pending);
@@ -741,13 +741,13 @@ public sealed class DadTransportService : IDisposable
             OperationId = request.OperationId,
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             RemotePropagationAvailable = false,
             Partial = true,
             Summary = "Local DAD work stopped; Dad Coordinator propagation was unavailable.",
             LocalResult = local,
         };
-        DadStopAllStatusRules.FinalizeFromWorkers(fallback, DateTime.UtcNow);
+        DadStopAllStatusRules.FinalizeFromWorkers(fallback, DadClock.UtcNow);
         RecordStopAllStatus(fallback);
         if (DadStopAllStatusRules.IsLocalCleanupPending(local))
             QueueStopAllLocal(request);
@@ -780,7 +780,7 @@ public sealed class DadTransportService : IDisposable
             aggregate = BuildClientRosterAggregate(request);
         }
 
-        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestUtc = DadClock.UtcNow;
         CurrentTransport.LastRequestStatus = aggregate.Summary;
         return aggregate;
     }
@@ -894,7 +894,7 @@ public sealed class DadTransportService : IDisposable
                 includeRequester: true)
             : BuildClientProfileAggregate(requestId);
 
-        CurrentTransport.LastRequestUtc = DateTime.UtcNow;
+        CurrentTransport.LastRequestUtc = DadClock.UtcNow;
         CurrentTransport.LastRequestStatus = aggregate.Summary;
         return aggregate;
     }
@@ -1182,9 +1182,9 @@ public sealed class DadTransportService : IDisposable
             connection.WorkerSessionId = hello.WorkerSessionId;
             connection.RemoteWorkerSessionId = hello.WorkerSessionId;
             connection.ClientInstanceId = hello.ClientInstanceId;
-            connection.Participant = DadHubParticipants.PrepareRemote(hello.Participant, DateTime.UtcNow);
+            connection.Participant = DadHubParticipants.PrepareRemote(hello.Participant, DadClock.UtcNow);
             connection.ObserveRuntimeReadiness(connection.Participant, out _);
-            connection.LastHeartbeatUtc = DateTime.UtcNow;
+            connection.LastHeartbeatUtc = DadClock.UtcNow;
 
             var ack = new DadHubHello
             {
@@ -1330,11 +1330,11 @@ public sealed class DadTransportService : IDisposable
                         "Dad Coordinator hello participant worker session does not match frame source.");
                 }
 
-                serverParticipant = DadHubParticipants.PrepareRemote(serverHello.Participant, DateTime.UtcNow);
+                serverParticipant = DadHubParticipants.PrepareRemote(serverHello.Participant, DadClock.UtcNow);
                 connection.RemoteWorkerSessionId = serverHello.WorkerSessionId;
                 connection.Participant = serverParticipant.Clone();
                 connection.ObserveRuntimeReadiness(connection.Participant, out _);
-                connection.LastHeartbeatUtc = DateTime.UtcNow;
+                connection.LastHeartbeatUtc = DadClock.UtcNow;
                 connection.MarkHandshakeReady();
                 clientConnection = connection;
                 attempt = 0;
@@ -1344,7 +1344,7 @@ public sealed class DadTransportService : IDisposable
                 CurrentTransport.ConnectionStatus = $"Connected to Dad Coordinator at {FormatEndpoint(host, port)}.";
                 CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
                 CurrentTransport.AuthorityRoutable = true;
-                CurrentTransport.LastConnectedUtc = DateTime.UtcNow;
+                CurrentTransport.LastConnectedUtc = DadClock.UtcNow;
                 CurrentTransport.LastInboundFrameUtc = connection.LastFrameReceivedUtc;
                 CurrentTransport.NextReconnectUtc = null;
                 lastReconnectLogDelaySeconds = -1;
@@ -1405,7 +1405,7 @@ public sealed class DadTransportService : IDisposable
                 activeConnection?.Dispose();
                 CurrentTransport.AuthorityRoutable = false;
                 CurrentTransport.AuthorityWorkerSessionId = new DadWorkerSessionId(string.Empty);
-                CurrentTransport.LastDisconnectedUtc = DateTime.UtcNow;
+                CurrentTransport.LastDisconnectedUtc = DadClock.UtcNow;
                 RefreshTransportSnapshot();
             }
 
@@ -1415,12 +1415,12 @@ public sealed class DadTransportService : IDisposable
             var backoff = DadReconnectPolicy.GetBackoff(attempt, MaxReconnectBackoff);
             var backoffSeconds = backoff.TotalSeconds;
             CurrentTransport.ReconnectAttempt = attempt;
-            CurrentTransport.NextReconnectUtc = DateTime.UtcNow.AddSeconds(backoffSeconds);
+            CurrentTransport.NextReconnectUtc = DadClock.UtcNow.AddSeconds(backoffSeconds);
             CurrentTransport.ConnectionStatus = $"Disconnected; reconnecting in {backoffSeconds:F0}s.";
             LogReconnectTransition(attempt, (int)backoffSeconds, CurrentTransport.LastDisconnectReason);
             try
             {
-                await Task.Delay(backoff, cancellationToken).ConfigureAwait(false);
+                await DadClock.Delay(backoff, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -1431,7 +1431,7 @@ public sealed class DadTransportService : IDisposable
 
     private void LogReconnectTransition(int attempt, int delaySeconds, string reason)
     {
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (delaySeconds == lastReconnectLogDelaySeconds && now - lastReconnectLogUtc < TimeSpan.FromMinutes(1))
             return;
 
@@ -1454,7 +1454,7 @@ public sealed class DadTransportService : IDisposable
                 return;
 
             DadHubProtocol.ValidateFrame(frame, configuration.TransportSharedSecret);
-            connection.MarkFrameReceived(DateTime.UtcNow);
+            connection.MarkFrameReceived(DadClock.UtcNow);
             if (!isServerSide)
                 CurrentTransport.LastInboundFrameUtc = connection.LastFrameReceivedUtc;
             var expectedSource = isServerSide
@@ -1556,7 +1556,7 @@ public sealed class DadTransportService : IDisposable
         QueueTransportEvent(
             () =>
             {
-                var now = DateTime.UtcNow;
+                var now = DadClock.UtcNow;
                 connection.LastHeartbeatUtc = now;
                 connection.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
                 var readinessChanged = connection.ObserveRuntimeReadiness(connection.Participant, out var readinessRevision);
@@ -1717,7 +1717,7 @@ public sealed class DadTransportService : IDisposable
                 configuration.TransportSharedSecret);
         }
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         origin.LastHeartbeatUtc = now;
         origin.Participant = DadHubParticipants.PrepareRemote(heartbeat.Participant, now);
         disconnectedParticipants.TryRemove(origin.WorkerSessionId.Value, out _);
@@ -1842,12 +1842,12 @@ public sealed class DadTransportService : IDisposable
             OperationId = request.OperationId,
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Partial = local.Partial,
             Summary = local.Summary,
             LocalResult = local,
         };
-        DadStopAllStatusRules.FinalizeFromWorkers(response, DateTime.UtcNow);
+        DadStopAllStatusRules.FinalizeFromWorkers(response, DadClock.UtcNow);
         RecordStopAllStatus(response, preserveCoordinatorMatrix: true);
         return response;
     }
@@ -1857,12 +1857,12 @@ public sealed class DadTransportService : IDisposable
         if (!DadIpcJson.TryDeserialize(payloadJson, out DadRouletteRewardProbeRequestDto? request, out var rejectionReason) || request == null)
         {
             request = new DadRouletteRewardProbeRequestDto();
-            return DadRouletteRewardProbeResultDto.FromRequest(request, DadRouletteRewardProbeOutcome.Unknown, $"Malformed reward probe: {rejectionReason}", DateTime.UtcNow);
+            return DadRouletteRewardProbeResultDto.FromRequest(request, DadRouletteRewardProbeOutcome.Unknown, $"Malformed reward probe: {rejectionReason}", DadClock.UtcNow);
         }
         if (!IsAuthenticatedCoordinator(context) ||
             (!request.RouteWorkerSessionId.IsEmpty && !SameWorker(request.RouteWorkerSessionId, presenceService.WorkerSessionId)))
         {
-            return DadRouletteRewardProbeResultDto.FromRequest(request, DadRouletteRewardProbeOutcome.Unknown, "Reward probe authority or target does not match the authenticated route.", DateTime.UtcNow);
+            return DadRouletteRewardProbeResultDto.FromRequest(request, DadRouletteRewardProbeOutcome.Unknown, "Reward probe authority or target does not match the authenticated route.", DadClock.UtcNow);
         }
         if (!remoteMutationsAllowed)
         {
@@ -1870,7 +1870,7 @@ public sealed class DadTransportService : IDisposable
                 request,
                 DadRouletteRewardProbeOutcome.Unknown,
                 BuildRemoteMutationRejectedReason("roulette reward probe"),
-                DateTime.UtcNow);
+                DadClock.UtcNow);
         }
 
         return rouletteRewardProbeService.Handle(request);
@@ -1890,7 +1890,7 @@ public sealed class DadTransportService : IDisposable
         return new DadPeerSnapshotResponse
         {
             RequestId = request.RequestId,
-            RespondedAtUtc = DateTime.UtcNow,
+            RespondedAtUtc = DadClock.UtcNow,
             ClientInstanceId = presenceService.ClientInstanceId,
             ProcessId = Environment.ProcessId,
             Character = snapshot.Character.Clone(),
@@ -2270,7 +2270,7 @@ public sealed class DadTransportService : IDisposable
         return new DadPeerRosterCatalogResponse
         {
             RequestId = request.PlanId,
-            RespondedAtUtc = DateTime.UtcNow,
+            RespondedAtUtc = DadClock.UtcNow,
             ClientInstanceId = presenceService.ClientInstanceId,
             WorkerSessionId = presenceService.WorkerSessionId,
             Catalog = catalog,
@@ -2331,7 +2331,7 @@ public sealed class DadTransportService : IDisposable
             return false;
 
         var cached = cachedLocalRosterCatalog;
-        if (cached == null || DateTime.UtcNow - cached.BuiltAtUtc > LocalRosterCatalogServeTtl)
+        if (cached == null || DadClock.UtcNow - cached.BuiltAtUtc > LocalRosterCatalogServeTtl)
             return false;
 
         var plan = DadIpcJson.Deserialize<DadRosterRefreshPlan>(request.PayloadJson) ?? new DadRosterRefreshPlan();
@@ -2825,14 +2825,14 @@ public sealed class DadTransportService : IDisposable
         => new()
         {
             RequestId = requestId,
-            RespondedAtUtc = DateTime.UtcNow,
+            RespondedAtUtc = DadClock.UtcNow,
         };
 
     private static DadAggregateProfileCatalogResponse CreateProfileAggregate(string requestId)
         => new()
         {
             RequestId = requestId,
-            RespondedAtUtc = DateTime.UtcNow,
+            RespondedAtUtc = DadClock.UtcNow,
         };
 
     private void MergeRosterAggregate(
@@ -3001,7 +3001,7 @@ public sealed class DadTransportService : IDisposable
             OperationId = request.OperationId,
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             LocalResult = local,
             Partial = local.Partial,
             Workers = targets.Select(worker => new DadStopAllWorkerResult
@@ -3009,11 +3009,11 @@ public sealed class DadTransportService : IDisposable
                 OperationId = request.OperationId,
                 WorkerSessionId = worker,
                 State = DadStopAllWorkerState.Expected,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = "Awaiting Stop-all acknowledgement.",
             }).ToList(),
         };
-        DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+        DadStopAllStatusRules.FinalizeFromWorkers(status, DadClock.UtcNow);
         RecordStopAllStatus(status);
 
         if (DadStopAllStatusRules.IsLocalCleanupPending(local))
@@ -3066,10 +3066,10 @@ public sealed class DadTransportService : IDisposable
         try
         {
             var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
-            var deadlineUtc = DateTime.UtcNow + timeout;
-            while (DateTime.UtcNow < deadlineUtc)
+            var deadlineUtc = DadClock.UtcNow + timeout;
+            while (DadClock.UtcNow < deadlineUtc)
             {
-                await Task.Delay(StopAllCleanupPollInterval, cancellationToken).ConfigureAwait(false);
+                await DadClock.Delay(StopAllCleanupPollInterval, cancellationToken).ConfigureAwait(false);
                 var local = await Plugin.Framework
                     .RunOnFrameworkThread(() => InvokeLocalStopAll(request))
                     .ConfigureAwait(false);
@@ -3099,7 +3099,7 @@ public sealed class DadTransportService : IDisposable
                         OperationId = request.OperationId,
                         WorkerSessionId = presenceService.WorkerSessionId,
                         State = DadStopAllWorkerState.Rejected,
-                        UpdatedAtUtc = DateTime.UtcNow,
+                        UpdatedAtUtc = DadClock.UtcNow,
                         Partial = true,
                         Summary = $"Local Stop-all cleanup acknowledgement failed: {ex.Message}",
                     })).ConfigureAwait(false);
@@ -3167,10 +3167,10 @@ public sealed class DadTransportService : IDisposable
                 request,
                 presenceService.WorkerSessionId);
             var timeout = TimeSpan.FromSeconds(Math.Max(2, configuration.CancelAckTimeoutSeconds));
-            var deadlineUtc = DateTime.UtcNow + timeout;
-            while (DateTime.UtcNow < deadlineUtc)
+            var deadlineUtc = DadClock.UtcNow + timeout;
+            while (DadClock.UtcNow < deadlineUtc)
             {
-                var remaining = deadlineUtc - DateTime.UtcNow;
+                var remaining = deadlineUtc - DadClock.UtcNow;
                 if (remaining <= TimeSpan.Zero)
                     break;
 
@@ -3201,7 +3201,7 @@ public sealed class DadTransportService : IDisposable
                     return;
                 }
 
-                await Task.Delay(StopAllCleanupPollInterval, cancellationToken).ConfigureAwait(false);
+                await DadClock.Delay(StopAllCleanupPollInterval, cancellationToken).ConfigureAwait(false);
             }
 
             UpdateStopAllWorker(request.OperationId, BuildStopAllTimeoutResult(
@@ -3216,7 +3216,7 @@ public sealed class DadTransportService : IDisposable
                 OperationId = request.OperationId,
                 WorkerSessionId = target,
                 State = DadStopAllWorkerState.TimedOut,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = ex.Message,
             });
         }
@@ -3227,7 +3227,7 @@ public sealed class DadTransportService : IDisposable
                 OperationId = request.OperationId,
                 WorkerSessionId = target,
                 State = DadStopAllWorkerState.Disconnected,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = $"Client Dad disconnected before acknowledging Stop-all: {ex.Message}",
             });
         }
@@ -3241,7 +3241,7 @@ public sealed class DadTransportService : IDisposable
                 OperationId = request.OperationId,
                 WorkerSessionId = target,
                 State = DadStopAllWorkerState.Rejected,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = ex.Message,
             });
         }
@@ -3260,7 +3260,7 @@ public sealed class DadTransportService : IDisposable
             OperationId = operationId,
             WorkerSessionId = workerSessionId,
             State = DadStopAllWorkerState.TimedOut,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             Partial = true,
             Summary = summary,
         };
@@ -3279,11 +3279,11 @@ public sealed class DadTransportService : IDisposable
 
             DadStopAllStatusRules.NormalizeLocalResult(local);
             status.LocalResult = local.Clone();
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             log.Information("[dad] Stop-all {OperationId} local cleanup: {State}.",
                 operationId,
                 local.State);
-            DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+            DadStopAllStatusRules.FinalizeFromWorkers(status, DadClock.UtcNow);
             stopAllOperations[operationId] = status;
             latestStopAllStatus = status.Clone();
             updated = status.Clone();
@@ -3313,12 +3313,12 @@ public sealed class DadTransportService : IDisposable
                 return;
 
             status.Workers[index] = worker.Clone();
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             log.Information("[dad] Stop-all {OperationId} worker {WorkerSessionId}: {State}.",
                 operationId,
                 worker.WorkerSessionId,
                 worker.State);
-            DadStopAllStatusRules.FinalizeFromWorkers(status, DateTime.UtcNow);
+            DadStopAllStatusRules.FinalizeFromWorkers(status, DadClock.UtcNow);
             stopAllOperations[operationId] = status;
             latestStopAllStatus = status.Clone();
             updated = status.Clone();
@@ -3370,7 +3370,7 @@ public sealed class DadTransportService : IDisposable
         };
         result.OperationId = request.OperationId;
         result.WorkerSessionId = presenceService.WorkerSessionId;
-        result.UpdatedAtUtc = DateTime.UtcNow;
+        result.UpdatedAtUtc = DadClock.UtcNow;
         DadStopAllStatusRules.NormalizeLocalResult(result);
         log.Information("[dad] Stop-all {OperationId} local completion: {State}; {Summary}",
             request.OperationId,
@@ -3390,13 +3390,13 @@ public sealed class DadTransportService : IDisposable
             OperationId = request.OperationId,
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
             SubmittedAtUtc = request.RequestedAtUtc,
-            UpdatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             RemotePropagationAvailable = false,
             Partial = true,
             Summary = $"Local DAD work stopped; Dad Coordinator propagation failed: {failure}",
             LocalResult = local,
         };
-        DadStopAllStatusRules.FinalizeFromWorkers(fallback, DateTime.UtcNow);
+        DadStopAllStatusRules.FinalizeFromWorkers(fallback, DadClock.UtcNow);
         RecordStopAllStatus(fallback);
         if (DadStopAllStatusRules.IsLocalCleanupPending(local))
             QueueStopAllLocal(request);
@@ -3413,7 +3413,7 @@ public sealed class DadTransportService : IDisposable
                 !existing.IsFinal)
             {
                 existing.LocalResult = status.LocalResult.Clone();
-                existing.UpdatedAtUtc = DateTime.UtcNow;
+                existing.UpdatedAtUtc = DadClock.UtcNow;
                 stopAllOperations[status.OperationId] = existing;
                 latestStopAllStatus = existing.Clone();
                 return;
@@ -3433,7 +3433,7 @@ public sealed class DadTransportService : IDisposable
         request.RequestedByWorkerSessionId = request.RequestedByWorkerSessionId.IsEmpty
             ? presenceService.WorkerSessionId
             : request.RequestedByWorkerSessionId;
-        request.RequestedAtUtc = request.RequestedAtUtc == default ? DateTime.UtcNow : request.RequestedAtUtc;
+        request.RequestedAtUtc = request.RequestedAtUtc == default ? DadClock.UtcNow : request.RequestedAtUtc;
         request.Reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by operator." : request.Reason.Trim();
     }
 
@@ -3496,7 +3496,7 @@ public sealed class DadTransportService : IDisposable
                 completedOperations[operationKey] = new CompletedOperation
                 {
                     PayloadJson = response.PayloadJson,
-                    CompletedAtUtc = DateTime.UtcNow,
+                    CompletedAtUtc = DadClock.UtcNow,
                 };
             }
             if (completed != null)
@@ -3745,7 +3745,7 @@ public sealed class DadTransportService : IDisposable
             disconnectedParticipants[connection.WorkerSessionId.Value] = new DisconnectedParticipant
             {
                 Participant = connection.Participant.Clone(),
-                DisconnectedAtUtc = DateTime.UtcNow,
+                DisconnectedAtUtc = DadClock.UtcNow,
                 LastHeartbeatUtc = connection.LastHeartbeatUtc,
             };
             CurrentTransport.LastRequestStatus = $"Client Dad {connection.WorkerSessionId} disconnected.";
@@ -3770,7 +3770,7 @@ public sealed class DadTransportService : IDisposable
                     string.Empty,
                     DadIpcJson.Serialize(new DadHubHeartbeat
                     {
-                        SentAtUtc = DateTime.UtcNow,
+                        SentAtUtc = DadClock.UtcNow,
                         Participant = participant,
                     }),
                     configuration.TransportSharedSecret),
@@ -3795,7 +3795,7 @@ public sealed class DadTransportService : IDisposable
         if (!configuration.RunAsServerDad || localOnlyModeEnabled)
             return;
 
-        rosterPublishCoalescer.MarkDirty(reason, fast, DateTime.UtcNow);
+        rosterPublishCoalescer.MarkDirty(reason, fast, DadClock.UtcNow);
         UpdateTransportQueueDiagnostics();
     }
 
@@ -3857,7 +3857,7 @@ public sealed class DadTransportService : IDisposable
 
     private DadHubRosterPublish BuildHubRosterPublish()
     {
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var staleAfter = GetHeartbeatStaleThreshold();
         var authorityEndpoint = !string.IsNullOrWhiteSpace(CurrentTransport.ListenerEndpoint)
             ? CurrentTransport.ListenerEndpoint
@@ -4056,7 +4056,7 @@ public sealed class DadTransportService : IDisposable
             MessageHubRosterPublishRequest,
             new DadHubHeartbeat
             {
-                SentAtUtc = DateTime.UtcNow,
+                SentAtUtc = DadClock.UtcNow,
                 Participant = participant,
             },
             ApplyHubRosterPublish);
@@ -4266,11 +4266,11 @@ public sealed class DadTransportService : IDisposable
     {
         var workerId = connection.WorkerSessionId.Value;
         var throttled = nextRosterRefreshUtc.TryGetValue(workerId, out var nextRefresh) &&
-                        DateTime.UtcNow < nextRefresh;
+                        DadClock.UtcNow < nextRefresh;
         if (!force && throttled)
             return;
 
-        nextRosterRefreshUtc[workerId] = DateTime.UtcNow + GetPeerCatalogRefreshInterval();
+        nextRosterRefreshUtc[workerId] = DadClock.UtcNow + GetPeerCatalogRefreshInterval();
         var key = $"catalog-roster:{workerId}";
         var operationInFlight = operations.ContainsKey(key);
         if (DadRosterRefreshDedupe.DecideRosterRefresh(force, throttled, operationInFlight) != DadRosterRefreshDispatch.Queue)
@@ -4308,12 +4308,12 @@ public sealed class DadTransportService : IDisposable
         var workerId = connection.WorkerSessionId.Value;
         if (!force &&
             nextProfileRefreshUtc.TryGetValue(workerId, out var nextRefresh) &&
-            DateTime.UtcNow < nextRefresh)
+            DadClock.UtcNow < nextRefresh)
         {
             return;
         }
 
-        nextProfileRefreshUtc[workerId] = DateTime.UtcNow + GetPeerCatalogRefreshInterval();
+        nextProfileRefreshUtc[workerId] = DadClock.UtcNow + GetPeerCatalogRefreshInterval();
         var key = $"catalog-profile:{workerId}";
         if (operations.ContainsKey(key))
             return;
@@ -4329,7 +4329,7 @@ public sealed class DadTransportService : IDisposable
                 response.Catalog.OwnerEndpoint = string.Empty;
                 response.Catalog.OwnerOnline = true;
                 response.Catalog.ReadOnly = false;
-                response.Catalog.GeneratedAtUtc = DateTime.UtcNow;
+                response.Catalog.GeneratedAtUtc = DadClock.UtcNow;
                 profileCatalogs[workerId] = response;
                 profileCatalogOfflineSinceUtc.TryRemove(workerId, out _);
                 Interlocked.Increment(ref CurrentTransport.ProfileCatalogCacheRevision);
@@ -4339,7 +4339,7 @@ public sealed class DadTransportService : IDisposable
     private void RefreshTransportSnapshot()
     {
         RefreshLocalMutationState();
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var staleAfter = GetHeartbeatStaleThreshold();
         var participants = new List<DadParticipantSnapshot>();
         var rosterFallbackWarning = string.Empty;
@@ -4478,7 +4478,7 @@ public sealed class DadTransportService : IDisposable
         var retention = TimeSpan.FromSeconds(Math.Max(15, GetHeartbeatStaleThreshold().TotalSeconds * 3));
         foreach (var pair in disconnectedParticipants)
         {
-            if (DateTime.UtcNow - pair.Value.DisconnectedAtUtc >= retention)
+            if (DadClock.UtcNow - pair.Value.DisconnectedAtUtc >= retention)
                 disconnectedParticipants.TryRemove(pair.Key, out _);
         }
     }
@@ -4507,7 +4507,7 @@ public sealed class DadTransportService : IDisposable
 
     private void SweepCompletedOperations()
     {
-        var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(30);
+        var cutoff = DadClock.UtcNow - TimeSpan.FromSeconds(30);
         foreach (var pair in completedOperations)
         {
             if (pair.Value.CompletedAtUtc < cutoff)
@@ -4572,8 +4572,8 @@ public sealed class DadTransportService : IDisposable
         {
             OperationId = string.IsNullOrWhiteSpace(request.OperationId) ? Guid.NewGuid().ToString("N") : request.OperationId,
             RequestedByWorkerSessionId = request.RequestedByWorkerSessionId,
-            SubmittedAtUtc = request.RequestedAtUtc == default ? DateTime.UtcNow : request.RequestedAtUtc,
-            UpdatedAtUtc = DateTime.UtcNow,
+            SubmittedAtUtc = request.RequestedAtUtc == default ? DadClock.UtcNow : request.RequestedAtUtc,
+            UpdatedAtUtc = DadClock.UtcNow,
             Partial = true,
             LocalResult = new DadStopAllWorkerResult
             {
@@ -4582,12 +4582,12 @@ public sealed class DadTransportService : IDisposable
                 State = DadStopAllWorkerState.Rejected,
                 LocalCleanupCompleted = false,
                 Partial = true,
-                UpdatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
                 Summary = reason,
             },
             Summary = reason,
         };
-        DadStopAllStatusRules.FinalizeFromWorkers(rejected, DateTime.UtcNow);
+        DadStopAllStatusRules.FinalizeFromWorkers(rejected, DadClock.UtcNow);
         rejected.Summary = reason;
         return rejected;
     }
@@ -4624,7 +4624,7 @@ public sealed class DadTransportService : IDisposable
     private DadAggregateRosterCatalogResponse BuildRejectedRosterAggregate(string reason)
         => new()
         {
-            RespondedAtUtc = DateTime.UtcNow,
+            RespondedAtUtc = DadClock.UtcNow,
             Complete = true,
             Summary = reason,
             Warnings = [reason],
@@ -4645,7 +4645,7 @@ public sealed class DadTransportService : IDisposable
     private static DadAggregateProfileCatalogResponse BuildRejectedProfileAggregate(string reason)
         => new()
         {
-            RespondedAtUtc = DateTime.UtcNow,
+            RespondedAtUtc = DadClock.UtcNow,
             Complete = true,
             Summary = reason,
             Warnings = [reason],
@@ -4761,7 +4761,7 @@ public sealed class DadTransportService : IDisposable
 
     private void RecordMalformedNotification(string notification, string reason)
     {
-        if (!malformedNotificationDiagnostics.TryReport(DateTime.UtcNow, out var suppressed))
+        if (!malformedNotificationDiagnostics.TryReport(DadClock.UtcNow, out var suppressed))
             return;
 
         log.Warning(
@@ -4970,8 +4970,8 @@ public sealed class DadTransportService : IDisposable
         public DadWorkerSessionId RemoteWorkerSessionId { get; set; } = new(string.Empty);
         public string ClientInstanceId { get; set; } = string.Empty;
         public DadParticipantSnapshot Participant { get; set; } = new();
-        public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
-        public DateTime LastFrameReceivedUtc { get; private set; } = DateTime.UtcNow;
+        public DateTime LastHeartbeatUtc { get; set; } = DadClock.UtcNow;
+        public DateTime LastFrameReceivedUtc { get; private set; } = DadClock.UtcNow;
         public bool Replaced { get; set; }
         public bool IsOpen => !Cancellation.IsCancellationRequested && client.Connected;
         public bool IsRoutable => DadHubTransportRouting.IsRoutable(IsOpen, handshake);

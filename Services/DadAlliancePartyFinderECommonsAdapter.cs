@@ -14,9 +14,7 @@ namespace dad.Services;
 /// service layer is never initialized.
 /// </summary>
 internal sealed unsafe class DadAlliancePartyFinderECommonsAdapter :
-    IDadAlliancePartyFinderCreateUi,
-    IDadAlliancePartyFinderCleanupUi,
-    IDisposable
+    IDadAlliancePartyFinderEditor
 {
     private const ushort PasswordDisabled = 10000;
     private const ulong AllJobsOpenSlotFlag = 0xFFFFFFFE;

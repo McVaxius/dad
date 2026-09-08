@@ -66,8 +66,8 @@ public sealed class DadSchedulerService
         public DadScheduledCrewJob Job { get; init; } = new();
         public DadSchedulerSlotState Slot { get; init; } = new();
         public string Reason { get; init; } = string.Empty;
-        public DateTime RequestedAtUtc { get; init; } = DateTime.UtcNow;
-        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime RequestedAtUtc { get; init; } = DadClock.UtcNow;
+        public DateTime CancellationRequestedAtUtc { get; init; } = DadClock.UtcNow;
         public DateTime CancellationDeadlineUtc { get; init; }
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
         public bool BlocksFutureWork { get; init; } = true;
@@ -132,7 +132,7 @@ public sealed class DadSchedulerService
         public DadScheduledCrewJob Job { get; init; } = new();
         public string SlotId { get; init; } = string.Empty;
         public string Reason { get; init; } = string.Empty;
-        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationRequestedAtUtc { get; init; } = DadClock.UtcNow;
         public DateTime CancellationDeadlineUtc { get; init; }
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
         public bool BlocksFutureWork { get; init; } = true;
@@ -143,7 +143,7 @@ public sealed class DadSchedulerService
     {
         public DadRouletteRewardProbeRequestDto Request { get; init; } = new();
         public DadScheduledCrewJob Job { get; init; } = new();
-        public DateTime CancellationRequestedAtUtc { get; init; } = DateTime.UtcNow;
+        public DateTime CancellationRequestedAtUtc { get; init; } = DadClock.UtcNow;
         public DateTime CancellationDeadlineUtc { get; init; }
         public DateTime NextAttemptUtc { get; set; } = DateTime.MinValue;
         public bool DeadlineLogged { get; set; }
@@ -255,7 +255,7 @@ public sealed class DadSchedulerService
         ArgumentNullException.ThrowIfNull(alliancePreview);
         ArgumentNullException.ThrowIfNull(classification);
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var status = new DadCrewFormationStatus
         {
             RunId = Guid.NewGuid().ToString("N"),
@@ -332,7 +332,7 @@ public sealed class DadSchedulerService
             job);
         status.SchedulerRunId = schedulerState.SchedulerRunId;
         status.RequestId = schedulerState.PlannerRequestId;
-        status.UpdatedAtUtc = DateTime.UtcNow;
+        status.UpdatedAtUtc = DadClock.UtcNow;
         if (!schedulerState.IsActive)
         {
             FinishCrewFormation(
@@ -464,7 +464,7 @@ public sealed class DadSchedulerService
                     new DadOrderedSemantic<string>((profile.ExpectedCharacterKeys ?? [])
                         .Select(static key => key.Value))))));
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var validUntilUtc = (configuration.SchedulerQueue ?? [])
             .Select(static job => job.NextEligibleTimeUtc)
             .Concat(currentState.Slots.Select(static slot => slot.NextTakeoverStatusCheckUtc))
@@ -498,7 +498,7 @@ public sealed class DadSchedulerService
                              ?? (currentState.IsActive ? activeJob?.Clone() : null);
         return new DadSchedulerQueueSnapshot
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             ActiveJob = activeJobClone,
             ActiveState = visibleState,
             ActiveQueueOwner = activeJobClone?.RequestedBy ?? currentState.RequestedBy,
@@ -531,7 +531,7 @@ public sealed class DadSchedulerService
         var activeRun = configuration.ActiveScheduleRun ?? new DadScheduleRunState();
         return new DadScheduleSnapshot
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             ActiveRun = activeRun.Clone(),
             Schedules = configuration.Schedules.Select(static schedule => schedule.Clone()).ToList(),
             RecentResults = configuration.ScheduleHistory
@@ -551,7 +551,7 @@ public sealed class DadSchedulerService
     public DadScheduleDefinition CreateSchedule(string displayName)
     {
         NormalizeSchedules();
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var schedule = new DadScheduleDefinition
         {
             ScheduleId = Guid.NewGuid().ToString("N"),
@@ -572,7 +572,7 @@ public sealed class DadSchedulerService
         if (source == null)
             return null;
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var duplicate = source.Clone();
         duplicate.ScheduleId = Guid.NewGuid().ToString("N");
         duplicate.Revision = 1;
@@ -632,7 +632,7 @@ public sealed class DadSchedulerService
 
         normalized.Revision = existing.Revision + 1;
         normalized.CreatedAtUtc = existing.CreatedAtUtc;
-        normalized.UpdatedAtUtc = DateTime.UtcNow;
+        normalized.UpdatedAtUtc = DadClock.UtcNow;
         normalized.LastDailyResetUtc = existing.LastDailyResetUtc;
         normalized.LastRunStartedAtUtc = existing.LastRunStartedAtUtc;
         normalized.LastRunCompletedAtUtc = existing.LastRunCompletedAtUtc;
@@ -674,7 +674,7 @@ public sealed class DadSchedulerService
             };
         }
 
-        var result = DadScheduleRules.AttachSavedPlan(schedule, group, DateTime.UtcNow);
+        var result = DadScheduleRules.AttachSavedPlan(schedule, group, DadClock.UtcNow);
         if (result.Added)
         {
             configuration.Save();
@@ -698,7 +698,7 @@ public sealed class DadSchedulerService
                 ScheduleId = scheduleId?.Trim() ?? string.Empty,
                 ScheduleName = "Schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
-            }, "Crew Formation is active; schedules cannot start until it releases scheduler ownership.", DateTime.UtcNow);
+            }, "Crew Formation is active; schedules cannot start until it releases scheduler ownership.", DadClock.UtcNow);
         }
         if (!dryRun && !configuration.RunAsServerDad)
         {
@@ -708,7 +708,7 @@ public sealed class DadSchedulerService
                 ScheduleId = scheduleId?.Trim() ?? string.Empty,
                 ScheduleName = "Schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
-                }, "Only Dad Coordinator may run schedules.", DateTime.UtcNow);
+                }, "Only Dad Coordinator may run schedules.", DadClock.UtcNow);
         }
 
         var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
@@ -721,7 +721,7 @@ public sealed class DadSchedulerService
                 ScheduleName = "Schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
                 DryRun = dryRun,
-            }, admissionBlocker, DateTime.UtcNow);
+            }, admissionBlocker, DadClock.UtcNow);
         }
 
         if (configuration.ActiveScheduleRun.IsActive)
@@ -735,7 +735,7 @@ public sealed class DadSchedulerService
                 ScheduleId = scheduleId?.Trim() ?? string.Empty,
                 ScheduleName = "Schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
-            }, $"Schedule '{configuration.ActiveScheduleRun.ScheduleName}' is already active as run {configuration.ActiveScheduleRun.RunId}.", DateTime.UtcNow);
+            }, $"Schedule '{configuration.ActiveScheduleRun.ScheduleName}' is already active as run {configuration.ActiveScheduleRun.RunId}.", DadClock.UtcNow);
         }
 
         var schedule = FindSchedule(scheduleId);
@@ -747,10 +747,10 @@ public sealed class DadSchedulerService
                 ScheduleId = scheduleId?.Trim() ?? string.Empty,
                 ScheduleName = "Missing schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
-            }, $"Schedule '{scheduleId}' could not be resolved.", DateTime.UtcNow);
+            }, $"Schedule '{scheduleId}' could not be resolved.", DadClock.UtcNow);
         }
 
-        var state = BeginScheduleRun(schedule, dryRun, manualRun: true, requestedBy, DateTime.UtcNow);
+        var state = BeginScheduleRun(schedule, dryRun, manualRun: true, requestedBy, DadClock.UtcNow);
         configuration.Save();
         MarkPlannerUiRevisionDirty();
         return state.Clone();
@@ -778,7 +778,7 @@ public sealed class DadSchedulerService
         configuration.ActiveScheduleRun = DadScheduleRules.CancelRun(
             configuration.ActiveScheduleRun,
             string.IsNullOrWhiteSpace(reason) ? "Schedule cancelled." : reason,
-            DateTime.UtcNow);
+            DadClock.UtcNow);
         FinalizeScheduleRun(configuration.ActiveScheduleRun);
         configuration.Save();
         MarkPlannerUiRevisionDirty();
@@ -848,7 +848,7 @@ public sealed class DadSchedulerService
                 failed,
                 schedule,
                 request.RequestedBy,
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 out var retryState,
                 out var blocker))
         {
@@ -897,7 +897,7 @@ public sealed class DadSchedulerService
             PresetName = group.DisplayName,
             Enabled = request.Enabled,
             DryRun = request.DryRun,
-            CreatedAtUtc = DateTime.UtcNow,
+            CreatedAtUtc = DadClock.UtcNow,
             NextEligibleTimeUtc = request.NextEligibleTimeUtc,
             Cadence = TimeSpan.FromHours(Math.Max(0, request.CadenceHours)),
             RequestedBy = string.IsNullOrWhiteSpace(request.RequestedBy) ? "scheduler" : request.RequestedBy.Trim(),
@@ -942,7 +942,7 @@ public sealed class DadSchedulerService
             JobType = DadSchedulerJobType.RosterUpdate,
             PresetName = "Roster update",
             DryRun = plan.DryRun,
-            CreatedAtUtc = DateTime.UtcNow,
+            CreatedAtUtc = DadClock.UtcNow,
             RequestedBy = "roster-update",
             TargetCharacters = targets.Select(static target => target.Clone()).ToList(),
             TargetAccountKeys = targets.Select(static target => target.AccountKey).Where(static key => !key.IsEmpty).DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase).ToList(),
@@ -1178,7 +1178,7 @@ public sealed class DadSchedulerService
         var launchProfiles = BuildNormalizedLaunchProfileSnapshot();
         var preview = new DadSchedulerPreview
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             GroupId = group?.GroupId ?? string.Empty,
             PresetName = group?.DisplayName ?? "Auto roster",
             Phase = currentState.IsActive ? currentState.Phase : DadSchedulerPresetPhase.Resolving,
@@ -1341,8 +1341,8 @@ public sealed class DadSchedulerService
             RequestedBy = activeJob.RequestedBy,
             GroupId = group.GroupId,
             PresetName = group.DisplayName,
-            StartedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
+            StartedAtUtc = DadClock.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             DryRun = dryRun,
             PlannerRequestId = plannerRequestPreview.Request?.RequestId ?? string.Empty,
             Slots = preview.Slots.Select(static slot => slot.Clone()).ToList(),
@@ -1367,7 +1367,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Skipped;
             currentState.SkipKind = DadSchedulerSkipKind.LevelSeek;
             currentState.Summary = $"Skipped preset '{group.DisplayName}': {levelSeek.Summary}";
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             RecordTerminalResult(currentState);
             return CurrentState;
@@ -1378,7 +1378,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.BlockedReason = scheduleShoppingBlocker;
             currentState.Summary = scheduleShoppingBlocker;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             RecordTerminalResult(currentState);
             return CurrentState;
@@ -1397,7 +1397,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.BlockedReason = $"Immutable command ID collision for scheduler request {collision.CommandId}.";
             currentState.Summary = currentState.BlockedReason;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return CurrentState;
         }
@@ -1418,7 +1418,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = $"Scheduler blocked for preset '{group.DisplayName}': {preview.BlockedReason}";
             currentState.BlockedReason = preview.BlockedReason;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return CurrentState;
         }
@@ -1432,7 +1432,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = frozenAssignmentBlocker;
             currentState.BlockedReason = frozenAssignmentBlocker;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             RecordTerminalResult(currentState);
             return CurrentState;
@@ -1442,7 +1442,7 @@ public sealed class DadSchedulerService
         {
             currentState.Phase = DadSchedulerPresetPhase.Completed;
             currentState.Summary = $"Scheduler dry run ready for preset '{group.DisplayName}': {preview.StatusSummary}";
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return CurrentState;
         }
@@ -1491,8 +1491,8 @@ public sealed class DadSchedulerService
             GroupId = group.GroupId,
             PresetName = group.DisplayName,
             Phase = DadSchedulerPresetPhase.LevelingBetweenChildren,
-            StartedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
+            StartedAtUtc = DadClock.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             DryRun = dryRun,
             Summary = $"Leveling Mode '{group.DisplayName}' is compiling child 1.",
             ScheduleId = outerJob.ScheduleId,
@@ -1561,7 +1561,7 @@ public sealed class DadSchedulerService
         childJob.JobType = DadSchedulerJobType.LevelingChild;
         childJob.ParentOperationJobId = operation.OuterJob.JobId;
         childJob.LevelingIteration = operation.Iteration;
-        childJob.CreatedAtUtc = DateTime.UtcNow;
+        childJob.CreatedAtUtc = DadClock.UtcNow;
         childJob.ScheduleId = string.Empty;
         childJob.ScheduleRunId = string.Empty;
         childJob.ScheduleEntryId = string.Empty;
@@ -1573,7 +1573,7 @@ public sealed class DadSchedulerService
         operation.RefreshRows = [];
         operation.RefreshDeadlineUtc = default;
         operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration}: {compilation.Summary}";
-        operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+        operation.OuterState.UpdatedAtUtc = DadClock.UtcNow;
         StartOrdinaryPreset(compilation.ChildGroup!, build.PlannerPreview, operation.OuterJob.DryRun, childJob);
         currentState.ParentOperationJobId = operation.OuterJob.JobId;
         currentState.LevelingIteration = operation.Iteration;
@@ -1592,7 +1592,7 @@ public sealed class DadSchedulerService
         outer.BlockedReason = phase is DadSchedulerPresetPhase.Blocked or DadSchedulerPresetPhase.TimedOut or DadSchedulerPresetPhase.Cancelled
             ? summary
             : string.Empty;
-        outer.CompletedAtUtc = DateTime.UtcNow;
+        outer.CompletedAtUtc = DadClock.UtcNow;
         outer.UpdatedAtUtc = outer.CompletedAtUtc.Value;
         outer.PlannerStarted = operation.Iteration > 1 || currentState.PlannerStarted;
         outer.PlannerRequestId = string.Empty;
@@ -1667,7 +1667,7 @@ public sealed class DadSchedulerService
         {
             currentState.Summary =
                 $"Post-readiness LevelSeek will continue to planner dispatch. {evaluation.DescribeEvidence()}";
-            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = DadClock.UtcNow;
             return false;
         }
 
@@ -1678,7 +1678,7 @@ public sealed class DadSchedulerService
         currentState.SkipKind = DadSchedulerSkipKind.LevelSeek;
         currentState.Summary = summary;
         currentState.BlockedReason = string.Empty;
-        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
@@ -1721,13 +1721,13 @@ public sealed class DadSchedulerService
         {
             Target = rouletteTarget!.Clone(),
             CheckedSlotCount = currentState.Slots.Count,
-            SlotDeadlineUtc = DateTime.UtcNow + ResolveDailyRewardPreflightTimeout(),
+            SlotDeadlineUtc = DadClock.UtcNow + ResolveDailyRewardPreflightTimeout(),
         };
         dailyRewardPreflightAttempted = true;
         InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
         currentState.Phase = DadSchedulerPresetPhase.DailyRewardPreflight;
         currentState.Summary = $"DailyReset reward preflight will inspect {currentState.Slots.Count} checked effective row(s) before ordinary execution.";
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
         LogSchedulerPhaseTransition();
         return true;
     }
@@ -1819,10 +1819,10 @@ public sealed class DadSchedulerService
         if (currentState.DryRun)
             return;
 
-        if (DateTime.UtcNow < nextRefreshUtc && currentState.Phase != DadSchedulerPresetPhase.ReadyToStart)
+        if (DadClock.UtcNow < nextRefreshUtc && currentState.Phase != DadSchedulerPresetPhase.ReadyToStart)
             return;
 
-        nextRefreshUtc = DateTime.UtcNow + RefreshInterval;
+        nextRefreshUtc = DadClock.UtcNow + RefreshInterval;
 
         if (currentState.JobType == DadSchedulerJobType.RosterUpdate)
         {
@@ -1851,7 +1851,7 @@ public sealed class DadSchedulerService
         var groupPreviewSlots = currentState.Slots;
         var previewSlots = RebuildActiveSlots(groupPreviewSlots);
         currentState.Slots = previewSlots;
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
 
         if (HasActiveRebindCleanup)
         {
@@ -1897,7 +1897,7 @@ public sealed class DadSchedulerService
         DadPlannerValidationRules.StampReadyTransitions(
             currentState.Slots,
             groupPreviewSlots,
-            DateTime.UtcNow);
+            DadClock.UtcNow);
 
         foreach (var slot in currentState.Slots)
         {
@@ -1912,7 +1912,7 @@ public sealed class DadSchedulerService
                 currentState.Phase = DadSchedulerPresetPhase.TimedOut;
                 currentState.BlockedReason = timeoutReason;
                 currentState.Summary = currentState.BlockedReason;
-                currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.CompletedAtUtc = DadClock.UtcNow;
                 currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
                 RecordTerminalResult(currentState);
                 return;
@@ -1933,7 +1933,7 @@ public sealed class DadSchedulerService
         {
             currentState.Phase = DadSchedulerPresetPhase.Resolving;
             currentState.Summary = "All characters are ready; waiting for every exact requested-job assignment acknowledgement.";
-            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = DadClock.UtcNow;
             return;
         }
 
@@ -1955,7 +1955,7 @@ public sealed class DadSchedulerService
         {
             currentState.Phase = DadSchedulerPresetPhase.WaitingForAutoPartyAuthorization;
             currentState.Summary = $"All local readiness gates passed; waiting inside DAD for AutoParty authorization ({autoPartyAuthorization.SafeCode}).";
-            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = DadClock.UtcNow;
             return;
         }
         if (autoPartyAuthorization.State == DadAutoPartyAuthorizationState.Denied)
@@ -1988,7 +1988,7 @@ public sealed class DadSchedulerService
         {
             currentState.Phase = DadSchedulerPresetPhase.ReadyToStart;
             currentState.Summary = strictDecision.Reason;
-            currentState.UpdatedAtUtc = DateTime.UtcNow;
+            currentState.UpdatedAtUtc = DadClock.UtcNow;
             return;
         }
         if (strictDecision.Disposition == DadStrictPlannerRevalidationDisposition.TerminalRejection)
@@ -2007,7 +2007,7 @@ public sealed class DadSchedulerService
 
         currentState.Phase = DadSchedulerPresetPhase.StartingPlanner;
         currentState.Summary = $"Scheduler ready; starting preset '{currentState.PresetName}'.";
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
         LogSchedulerPhaseTransition();
         if (!strictRevalidationTracker.TryClaimStart())
             return;
@@ -2038,7 +2038,7 @@ public sealed class DadSchedulerService
             ? $"Scheduler started preset '{currentState.PresetName}': {result.Summary}"
             : $"Scheduler could not start preset '{currentState.PresetName}': {startRejection}";
         currentState.BlockedReason = currentState.PlannerStarted ? string.Empty : startRejection;
-        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         RecordTerminalResult(currentState);
     }
@@ -2070,7 +2070,7 @@ public sealed class DadSchedulerService
             request.Orchestration.AutoPartyFormationOnly = true;
             session.Status.Phase = DadCrewFormationPhase.StartingRegularParty;
             session.Status.Summary = $"Starting regular party formation for '{session.Status.SourcePresetName}'.";
-            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            session.Status.UpdatedAtUtc = DadClock.UtcNow;
 
             if (!DadSchedulerRoutingRules.TryInvokeCallback(
                     () => startCrewRegularParty!(request),
@@ -2090,7 +2090,7 @@ public sealed class DadSchedulerService
             currentState.Phase = currentState.PlannerStarted
                 ? DadSchedulerPresetPhase.StartedPlanner
                 : DadSchedulerPresetPhase.Blocked;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             if (!currentState.PlannerStarted)
             {
@@ -2112,7 +2112,7 @@ public sealed class DadSchedulerService
         {
             session.Status.Phase = DadCrewFormationPhase.CreatingAllianceListing;
             session.Status.Summary = $"Creating the private alliance recruitment for '{session.Status.SourcePresetName}'.";
-            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            session.Status.UpdatedAtUtc = DadClock.UtcNow;
             if (!DadSchedulerRoutingRules.TryInvokeCallback(
                     () => createCrewAllianceParty!(
                         session.Status.RunId,
@@ -2145,7 +2145,7 @@ public sealed class DadSchedulerService
                 currentState.Phase = DadSchedulerPresetPhase.Blocked;
                 currentState.BlockedReason = rejection;
                 currentState.Summary = rejection;
-                currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.CompletedAtUtc = DadClock.UtcNow;
                 currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
                 FinishCrewFormation(DadCrewFormationPhase.Blocked, rejection);
                 return true;
@@ -2156,7 +2156,7 @@ public sealed class DadSchedulerService
             currentState.PlannerStarted = true;
             currentState.Phase = DadSchedulerPresetPhase.StartedPlanner;
             currentState.Summary = $"Crew Formation owns alliance recruitment {created.RecruitmentId}.";
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             return true;
         }
@@ -2178,7 +2178,7 @@ public sealed class DadSchedulerService
             if (!string.Equals(visibleRun.RequestId, session.Status.RequestId, StringComparison.Ordinal))
             {
                 session.Status.Summary = $"Waiting for exact coordinator request {session.Status.RequestId}.";
-                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                session.Status.UpdatedAtUtc = DadClock.UtcNow;
                 return;
             }
 
@@ -2188,7 +2188,7 @@ public sealed class DadSchedulerService
             {
                 session.Status.Phase = DadCrewFormationPhase.RegularGroupReady;
                 session.Status.Summary = "Regular party is formed and held at GroupReady. It will not queue.";
-                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                session.Status.UpdatedAtUtc = DadClock.UtcNow;
                 return;
             }
 
@@ -2197,7 +2197,7 @@ public sealed class DadSchedulerService
                 or DadRunStatus.Running)
             {
                 session.Status.Summary = visibleRun.Summary;
-                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                session.Status.UpdatedAtUtc = DadClock.UtcNow;
                 return;
             }
 
@@ -2246,7 +2246,7 @@ public sealed class DadSchedulerService
         if (session.Status.Phase == DadCrewFormationPhase.AllianceCleanup)
         {
             session.Status.Summary = alliance.Summary;
-            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            session.Status.UpdatedAtUtc = DadClock.UtcNow;
             if (!alliance.OwnsRecruitment &&
                 alliance.State is DadAllianceRecruitmentState.Stopped
                     or DadAllianceRecruitmentState.Complete)
@@ -2267,7 +2267,7 @@ public sealed class DadSchedulerService
             session.Status.Phase = DadCrewFormationPhase.GrabbingAlliance;
             var grabbing = grabCrewAllianceParty!();
             session.Status.Summary = grabbing.Summary;
-            session.Status.UpdatedAtUtc = DateTime.UtcNow;
+            session.Status.UpdatedAtUtc = DadClock.UtcNow;
             return;
         }
 
@@ -2290,7 +2290,7 @@ public sealed class DadSchedulerService
                 stopCrewAllianceParty!("Crew Formation failed; cleaning up only its owned alliance recruitment.");
                 var stopping = getCrewAllianceStatus!();
                 session.Status.Summary = stopping.Summary;
-                session.Status.UpdatedAtUtc = DateTime.UtcNow;
+                session.Status.UpdatedAtUtc = DadClock.UtcNow;
                 return;
             }
 
@@ -2307,7 +2307,7 @@ public sealed class DadSchedulerService
         }
 
         session.Status.Summary = alliance.Summary;
-        session.Status.UpdatedAtUtc = DateTime.UtcNow;
+        session.Status.UpdatedAtUtc = DadClock.UtcNow;
     }
 
     internal string MarkCrewFormationDisbanding(string requestId)
@@ -2323,7 +2323,7 @@ public sealed class DadSchedulerService
 
         session.Status.Phase = DadCrewFormationPhase.Disbanding;
         session.Status.Summary = "Guarded disband is in progress.";
-        session.Status.UpdatedAtUtc = DateTime.UtcNow;
+        session.Status.UpdatedAtUtc = DadClock.UtcNow;
         return string.Empty;
     }
 
@@ -2353,7 +2353,7 @@ public sealed class DadSchedulerService
         session.Status.Phase = phase;
         session.Status.Summary = summary;
         session.Status.BlockedReason = phase == DadCrewFormationPhase.Blocked ? summary : string.Empty;
-        session.Status.UpdatedAtUtc = DateTime.UtcNow;
+        session.Status.UpdatedAtUtc = DadClock.UtcNow;
         session.Status.CompletedAtUtc = session.Status.UpdatedAtUtc;
 
         currentState.Phase = phase switch
@@ -2404,7 +2404,7 @@ public sealed class DadSchedulerService
         switch (disposition)
         {
             case DadLevelingChildDisposition.Waiting:
-                operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+                operation.OuterState.UpdatedAtUtc = DadClock.UtcNow;
                 operation.OuterState.Summary = currentState.Phase == DadSchedulerPresetPhase.StartedPlanner
                     ? $"Leveling Mode child {operation.Iteration} is waiting for exact run {currentState.PlannerRequestId} to finish."
                     : $"Leveling Mode child {operation.Iteration}: {currentState.Summary}";
@@ -2437,12 +2437,12 @@ public sealed class DadSchedulerService
                 if (HasPendingCleanup)
                 {
                     operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration} completed; waiting for ordinary child cleanup before roster refresh.";
-                    operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+                    operation.OuterState.UpdatedAtUtc = DadClock.UtcNow;
                     return false;
                 }
                 if (operation.RefreshDeadlineUtc == default)
-                    operation.RefreshDeadlineUtc = DateTime.UtcNow + TimeSpan.FromMinutes(2);
-                if (DateTime.UtcNow >= operation.RefreshDeadlineUtc)
+                    operation.RefreshDeadlineUtc = DadClock.UtcNow + TimeSpan.FromMinutes(2);
+                if (DadClock.UtcNow >= operation.RefreshDeadlineUtc)
                 {
                     FinishLevelingOperation(
                         DadSchedulerPresetPhase.TimedOut,
@@ -2491,7 +2491,7 @@ public sealed class DadSchedulerService
             if (!exact[0].WorldReadyStable)
             {
                 operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration} completed; waiting for {selection.SlotId} to regain stable world readiness before exact roster refresh.";
-                operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+                operation.OuterState.UpdatedAtUtc = DadClock.UtcNow;
                 return;
             }
 
@@ -2502,7 +2502,7 @@ public sealed class DadSchedulerService
                 Command = new DadRosterRefreshCommandDto
                 {
                     CommandId = Guid.NewGuid().ToString("N"),
-                    RequestedAtUtc = DateTime.UtcNow,
+                    RequestedAtUtc = DadClock.UtcNow,
                     AccountKey = selection.AccountKey,
                     CharacterKey = selection.CharacterKey,
                     ContentId = selection.ContentId,
@@ -2515,10 +2515,10 @@ public sealed class DadSchedulerService
         operation.RefreshRows = rows;
         operation.RefreshingRoster = true;
         operation.RefreshDeadlineUtc = operation.RefreshDeadlineUtc == default
-            ? DateTime.UtcNow + TimeSpan.FromMinutes(2)
+            ? DadClock.UtcNow + TimeSpan.FromMinutes(2)
             : operation.RefreshDeadlineUtc;
         operation.OuterState.Summary = $"Leveling Mode child {operation.Iteration} completed; refreshing exact job ledgers for {rows.Count} slot(s).";
-        operation.OuterState.UpdatedAtUtc = DateTime.UtcNow;
+        operation.OuterState.UpdatedAtUtc = DadClock.UtcNow;
     }
 
     private void UpdateLevelingRosterRefresh()
@@ -2526,7 +2526,7 @@ public sealed class DadSchedulerService
         var operation = levelingOperation;
         if (operation == null || !operation.RefreshingRoster)
             return;
-        if (DateTime.UtcNow >= operation.RefreshDeadlineUtc)
+        if (DadClock.UtcNow >= operation.RefreshDeadlineUtc)
         {
             FinishLevelingOperation(
                 DadSchedulerPresetPhase.TimedOut,
@@ -2592,7 +2592,7 @@ public sealed class DadSchedulerService
             return;
         MarkPlannerUiRevisionDirty();
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
         foreach (var pair in pendingTakeoverCancellations.ToList())
         {
@@ -2668,7 +2668,7 @@ public sealed class DadSchedulerService
             return;
         MarkPlannerUiRevisionDirty();
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
         foreach (var pair in pendingEarlyAssignmentCancellations.ToList())
         {
@@ -2730,7 +2730,7 @@ public sealed class DadSchedulerService
             return;
         MarkPlannerUiRevisionDirty();
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         foreach (var pair in pendingRewardProbeCancellations.ToList())
         {
             var pending = pair.Value;
@@ -2860,7 +2860,7 @@ public sealed class DadSchedulerService
 
         NormalizeQueue();
         configuration.PlannerGroups ??= [];
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (now < suppressAutomaticEnqueueUntilUtc)
             return;
         var changed = false;
@@ -2960,8 +2960,8 @@ public sealed class DadSchedulerService
         currentState.Phase = DadSchedulerPresetPhase.Cancelled;
         currentState.Summary = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason;
         currentState.BlockedReason = currentState.Summary;
-        currentState.CompletedAtUtc = DateTime.UtcNow;
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
         RecordTerminalResult(currentState);
         dailyRewardPreflight = null;
         frozenOrdinarySlots = [];
@@ -2980,7 +2980,7 @@ public sealed class DadSchedulerService
             configuration.ActiveScheduleRun = DadScheduleRules.CancelRun(
                 configuration.ActiveScheduleRun,
                 reason,
-                DateTime.UtcNow);
+                DadClock.UtcNow);
             FinalizeScheduleRun(configuration.ActiveScheduleRun);
             result.ActiveScheduleCancelled = true;
         }
@@ -3001,7 +3001,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Cancelled;
             currentState.Summary = reason;
             currentState.BlockedReason = reason;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
             RecordTerminalResult(currentState);
             result.ActiveJobCancelled = true;
@@ -3021,7 +3021,7 @@ public sealed class DadSchedulerService
         postWakeLevelTargetsEvaluated = false;
         takeoverDiagnosticStates.Clear();
         nextRefreshUtc = DateTime.MinValue;
-        suppressAutomaticEnqueueUntilUtc = DateTime.UtcNow +
+        suppressAutomaticEnqueueUntilUtc = DadClock.UtcNow +
             (automaticEnqueueSuppression <= TimeSpan.Zero ? TimeSpan.FromSeconds(2) : automaticEnqueueSuppression);
         configuration.Save();
         result.Summary = $"Cancelled schedule={result.ActiveScheduleCancelled}, active job={result.ActiveJobCancelled}, pending jobs={result.PendingJobsCancelled}.";
@@ -3064,7 +3064,7 @@ public sealed class DadSchedulerService
         if (!string.IsNullOrWhiteSpace(admissionBlocker))
             return false;
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var nextJob = configuration.SchedulerQueue
             .Where(static job => job.Enabled)
             .Where(job => !job.NextEligibleTimeUtc.HasValue || job.NextEligibleTimeUtc.Value <= now)
@@ -3153,8 +3153,8 @@ public sealed class DadSchedulerService
             RequestedBy = job.RequestedBy,
             GroupId = group.GroupId,
             PresetName = group.DisplayName,
-            StartedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
+            StartedAtUtc = DadClock.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             DryRun = job.DryRun,
             Summary = BuildMapCrewSummary(job, group, "starting"),
         };
@@ -3166,7 +3166,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = unsupported;
             currentState.BlockedReason = unsupported;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3176,7 +3176,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = $"Map crew '{group.DisplayName}' has no saved preset slots.";
             currentState.BlockedReason = currentState.Summary;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3195,7 +3195,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = string.Join(" | ", blockers);
             currentState.BlockedReason = currentState.Summary;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3204,7 +3204,7 @@ public sealed class DadSchedulerService
         {
             currentState.Phase = DadSchedulerPresetPhase.Completed;
             currentState.Summary = BuildMapCrewSummary(job, group, $"dry run ready with {currentState.Slots.Count} slot(s)");
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3236,8 +3236,8 @@ public sealed class DadSchedulerService
             JobType = DadSchedulerJobType.RosterUpdate,
             RequestedBy = job.RequestedBy,
             PresetName = "Roster update",
-            StartedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
+            StartedAtUtc = DadClock.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
             DryRun = job.DryRun,
         };
         dependencyGateCommitted = false;
@@ -3247,7 +3247,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = "Roster update has no target characters.";
             currentState.BlockedReason = currentState.Summary;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3278,7 +3278,7 @@ public sealed class DadSchedulerService
             currentState.Phase = DadSchedulerPresetPhase.Blocked;
             currentState.Summary = string.Join(" | ", blockers);
             currentState.BlockedReason = currentState.Summary;
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3287,7 +3287,7 @@ public sealed class DadSchedulerService
         {
             currentState.Phase = DadSchedulerPresetPhase.Completed;
             currentState.Summary = $"Roster update dry run ready for {targets.Count} character(s).";
-            currentState.CompletedAtUtc = DateTime.UtcNow;
+            currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
             return;
         }
@@ -3323,7 +3323,7 @@ public sealed class DadSchedulerService
             }).ToList(),
         };
         currentState.Slots = BuildSlotStates(group, pool, currentState.Slots, allowRosterMaintenanceTarget: true);
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
 
         if (!DadDependencyMutationBoundaryRules.CanCross(
                 dependencyGateCommitted,
@@ -3354,7 +3354,7 @@ public sealed class DadSchedulerService
                 currentState.Phase = DadSchedulerPresetPhase.TimedOut;
                 currentState.BlockedReason = timeoutReason;
                 currentState.Summary = timeoutReason;
-                currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.CompletedAtUtc = DadClock.UtcNow;
                 currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
                 RecordTerminalResult(currentState);
                 return;
@@ -3398,7 +3398,7 @@ public sealed class DadSchedulerService
             {
                 currentState.Phase = DadSchedulerPresetPhase.Resolving;
                 currentState.Summary = $"Roster update awaiting acknowledgement from {slot.RequiredCharacterKey}.";
-                currentState.UpdatedAtUtc = DateTime.UtcNow;
+                currentState.UpdatedAtUtc = DadClock.UtcNow;
                 return;
             }
 
@@ -3414,8 +3414,8 @@ public sealed class DadSchedulerService
 
         currentState.Phase = DadSchedulerPresetPhase.Completed;
         currentState.Summary = $"Roster update completed for {results.Count} character(s).";
-        currentState.CompletedAtUtc = DateTime.UtcNow;
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
         RecordTerminalResult(currentState);
         characterIntelligenceService.RefreshLocalCharacterPool("roster-update", logRefresh: false);
     }
@@ -3431,7 +3431,7 @@ public sealed class DadSchedulerService
 
         var pool = characterIntelligenceService.RequestPeerSnapshots();
         currentState.Slots = BuildSlotStates(group, pool, currentState.Slots);
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
 
         if (!DadDependencyMutationBoundaryRules.CanCross(
                 dependencyGateCommitted,
@@ -3462,7 +3462,7 @@ public sealed class DadSchedulerService
                 currentState.Phase = DadSchedulerPresetPhase.TimedOut;
                 currentState.BlockedReason = timeoutReason;
                 currentState.Summary = timeoutReason;
-                currentState.CompletedAtUtc = DateTime.UtcNow;
+                currentState.CompletedAtUtc = DadClock.UtcNow;
                 currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
                 RecordTerminalResult(currentState);
                 return;
@@ -3484,7 +3484,7 @@ public sealed class DadSchedulerService
 
         currentState.Phase = DadSchedulerPresetPhase.Completed;
         currentState.Summary = BuildMapCrewSummary(activeJob, group, $"manual map crew ready with {currentState.Slots.Count} slot(s)");
-        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         RecordTerminalResult(currentState);
     }
@@ -3499,9 +3499,9 @@ public sealed class DadSchedulerService
             GroupId = job.GroupId,
             PresetName = job.PresetName,
             Phase = DadSchedulerPresetPhase.Blocked,
-            StartedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
-            CompletedAtUtc = DateTime.UtcNow,
+            StartedAtUtc = DadClock.UtcNow,
+            UpdatedAtUtc = DadClock.UtcNow,
+            CompletedAtUtc = DadClock.UtcNow,
             DryRun = job.DryRun,
             Summary = reason,
             BlockedReason = reason,
@@ -3604,7 +3604,7 @@ public sealed class DadSchedulerService
             return;
         }
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (now >= active.SlotDeadlineUtc)
         {
             ContinueAfterDailyRewardPreflight("Daily reward preflight timed out; running the preset normally.");
@@ -3754,7 +3754,7 @@ public sealed class DadSchedulerService
         currentState.Phase = DadSchedulerPresetPhase.Resolving;
         currentState.Summary = reason;
         currentState.BlockedReason = string.Empty;
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
         nextRefreshUtc = DateTime.MinValue;
         LogSchedulerPhaseTransition();
     }
@@ -3767,7 +3767,7 @@ public sealed class DadSchedulerService
         currentState.SkipKind = DadSchedulerSkipKind.DailyRouletteReward;
         currentState.Summary = $"Skipped preset '{currentState.PresetName}': every checked effective row has received Daily Roulette #{active.Target.RouletteId} reward ({string.Join(", ", active.Evidence)}).";
         currentState.BlockedReason = string.Empty;
-        currentState.CompletedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
         currentState.UpdatedAtUtc = currentState.CompletedAtUtc.Value;
         dailyRewardPreflight = null;
         frozenOrdinarySlots = [];
@@ -3785,7 +3785,7 @@ public sealed class DadSchedulerService
 
         var cancel = request.Clone();
         cancel.Operation = DadRouletteRewardProbeOperation.Cancel;
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var cleanupJob = activeJob?.Clone() ?? new DadScheduledCrewJob
         {
             JobId = currentState.JobId,
@@ -3975,7 +3975,7 @@ public sealed class DadSchedulerService
         var contradiction = GetSlotContradictionTracker(state.SlotId).Observe(
             contradictionEvidence,
             contradictionStable,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             RefreshInterval,
             (frozenObserved ?? selected)?.LastHeartbeatUtc);
         if (!string.IsNullOrWhiteSpace(contradictionEvidence))
@@ -4012,7 +4012,7 @@ public sealed class DadSchedulerService
             state.ActiveCharacterKey = selected.ActiveCharacterKey;
             var dependencyGate = DadDependencyGateRules.EvaluateParticipant(
                 selected,
-                DateTime.UtcNow,
+                DadClock.UtcNow,
                 TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds)),
                 $"Slot {state.SlotId}");
             state.DependenciesReady = dependencyGate.Ready;
@@ -4199,7 +4199,7 @@ public sealed class DadSchedulerService
             RequestedBy = currentState.RequestedBy,
         };
         const string reason = "Stable-account route reconnected on a new worker session; retaining exact old-route cleanup while the sole replacement safely rebinds.";
-        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationRequestedAtUtc = DadClock.UtcNow;
         var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
             default,
             cancellationRequestedAtUtc,
@@ -4411,12 +4411,12 @@ public sealed class DadSchedulerService
 
             slot.TakeoverRequestedUtc ??= currentState.StartedAtUtc;
             slot.OperationToken = currentState.SchedulerRunId;
-            var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow);
+            var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DadClock.UtcNow);
             if (!decision.CanDispatch)
                 continue;
             if (decision.CommitKind == DadWakeCommitKind.None &&
                 slot.NextTakeoverStatusCheckUtc.HasValue &&
-                DateTime.UtcNow < slot.NextTakeoverStatusCheckUtc.Value)
+                DadClock.UtcNow < slot.NextTakeoverStatusCheckUtc.Value)
             {
                 continue;
             }
@@ -4440,7 +4440,7 @@ public sealed class DadSchedulerService
                 return false;
             }
 
-            var followThrough = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow);
+            var followThrough = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DadClock.UtcNow);
             if (!followThrough.CanDispatch || followThrough.CommitKind == DadWakeCommitKind.None)
                 continue;
 
@@ -4554,7 +4554,7 @@ public sealed class DadSchedulerService
             ? wakeTakeoverService.Handle(request)
             : transportService.SendWakeTakeoverRequest(participant, request);
         if (kind is DadWakeTakeoverMessageKind.Prepare or DadWakeTakeoverMessageKind.Status)
-            slot.NextTakeoverStatusCheckUtc = DateTime.UtcNow + TakeoverStatusInterval;
+            slot.NextTakeoverStatusCheckUtc = DadClock.UtcNow + TakeoverStatusInterval;
         if (result == null)
         {
             slot.Ready = false;
@@ -4835,7 +4835,7 @@ public sealed class DadSchedulerService
         if (!dependencyGateCommitted && !slot.DependenciesReady)
             return false;
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         DadWakeStageTimeoutPolicy.Observe(slot, now);
 
         // Character ownership handoff is a logical wait, not a duration budget. Disconnects,
@@ -4911,7 +4911,7 @@ public sealed class DadSchedulerService
             .ToList();
         var unbounded = waiting.Any(static slot => slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline);
         var waitPolicy = unbounded
-            ? $" {FormatElapsed(DateTime.UtcNow - state.StartedAtUtc)} elapsed; no timeout; cancel to stop."
+            ? $" {FormatElapsed(DadClock.UtcNow - state.StartedAtUtc)} elapsed; no timeout; cancel to stop."
             : string.Empty;
         var reasons = detail.Count == 0 ? string.Empty : $" {string.Join(" | ", detail)}";
         return $"Scheduler waiting: {state.Slots.Count(static slot => slot.Ready)}/{state.Slots.Count} slot(s) ready.{waitPolicy}{reasons}";
@@ -4963,8 +4963,8 @@ public sealed class DadSchedulerService
         currentState.Phase = DadSchedulerPresetPhase.Blocked;
         currentState.Summary = string.IsNullOrWhiteSpace(reason) ? "Scheduler blocked." : reason;
         currentState.BlockedReason = currentState.Summary;
-        currentState.CompletedAtUtc = DateTime.UtcNow;
-        currentState.UpdatedAtUtc = DateTime.UtcNow;
+        currentState.CompletedAtUtc = DadClock.UtcNow;
+        currentState.UpdatedAtUtc = DadClock.UtcNow;
         if (IsCrewFormationActive)
         {
             FinishCrewFormation(DadCrewFormationPhase.Blocked, currentState.Summary);
@@ -4994,7 +4994,7 @@ public sealed class DadSchedulerService
 
         QueueEarlyAssignmentCancellations(cleanupJob, reason);
 
-        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationRequestedAtUtc = DadClock.UtcNow;
         var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
             default,
             cancellationRequestedAtUtc,
@@ -5021,7 +5021,7 @@ public sealed class DadSchedulerService
 
     private void QueueEarlyAssignmentCancellations(DadScheduledCrewJob cleanupJob, string reason)
     {
-        var cancellationRequestedAtUtc = DateTime.UtcNow;
+        var cancellationRequestedAtUtc = DadClock.UtcNow;
         var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
             default,
             cancellationRequestedAtUtc,
@@ -5299,7 +5299,7 @@ public sealed class DadSchedulerService
         if (!configuration.ActiveScheduleRun.IsActive)
             return;
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var state = configuration.ActiveScheduleRun.Clone();
         var schedule = FindSchedule(state.ScheduleId);
         if (schedule == null)
@@ -5641,7 +5641,7 @@ public sealed class DadSchedulerService
         configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(
             configuration.ActiveScheduleRun,
             reason,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             failureKind);
         FinalizeScheduleRun(configuration.ActiveScheduleRun);
     }
@@ -5651,10 +5651,10 @@ public sealed class DadSchedulerService
         var schedule = FindSchedule(state.ScheduleId);
         if (schedule != null)
         {
-            schedule.LastRunCompletedAtUtc = state.CompletedAtUtc ?? DateTime.UtcNow;
+            schedule.LastRunCompletedAtUtc = state.CompletedAtUtc ?? DadClock.UtcNow;
             schedule.LastRunStatus = state.Status;
             schedule.LastSummary = state.Summary;
-            schedule.UpdatedAtUtc = DateTime.UtcNow;
+            schedule.UpdatedAtUtc = DadClock.UtcNow;
         }
 
         RecordScheduleRunResult(state.ToResult(state.Status == DadScheduleRunStatus.Completed));
@@ -5749,7 +5749,7 @@ public sealed class DadSchedulerService
             PresetName = job.PresetName,
             RequestedBy = job.RequestedBy,
             StartedAtUtc = job.CreatedAtUtc,
-            CompletedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DadClock.UtcNow,
             FinalPhase = phase,
             Success = IsSuccessfulTerminalPhase(phase),
             Summary = string.IsNullOrWhiteSpace(summary) ? phase.ToString() : summary,
@@ -5780,7 +5780,7 @@ public sealed class DadSchedulerService
             PresetName = state.PresetName,
             RequestedBy = state.RequestedBy,
             StartedAtUtc = state.StartedAtUtc,
-            CompletedAtUtc = state.CompletedAtUtc ?? DateTime.UtcNow,
+            CompletedAtUtc = state.CompletedAtUtc ?? DadClock.UtcNow,
             FinalPhase = state.Phase,
             Success = IsSuccessfulTerminalPhase(state.Phase),
             Summary = state.Summary,
@@ -5836,7 +5836,7 @@ public sealed class DadSchedulerService
         configuration.ActiveScheduleRun = DadScheduleRules.BlockRun(
             active,
             "Schedule run abandoned by coordinator/plugin reload; it can resume only from the persisted cursor through an explicit operator action and never replays automatically.",
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             DadScheduleFailureKind.CoordinatorReloadAbandonment);
         FinalizeScheduleRun(configuration.ActiveScheduleRun);
     }

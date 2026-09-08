@@ -52,7 +52,7 @@ public sealed class DadXadbClient
             return status;
 
         if (TryInvokeAction(refreshSubscriber, "refresh", status))
-            status.LastRefreshUtc = DateTime.UtcNow;
+            status.LastRefreshUtc = DadClock.UtcNow;
 
         PopulateSummary(status);
         return status;
@@ -65,10 +65,10 @@ public sealed class DadXadbClient
             return status;
 
         if (TryInvokeAction(refreshSubscriber, "refresh", status))
-            status.LastRefreshUtc = DateTime.UtcNow;
+            status.LastRefreshUtc = DadClock.UtcNow;
 
         if (TryInvokeAction(saveSubscriber, "save", status))
-            status.LastSaveUtc = DateTime.UtcNow;
+            status.LastSaveUtc = DadClock.UtcNow;
 
         PopulateSummary(status);
         return status;
@@ -79,7 +79,7 @@ public sealed class DadXadbClient
         var status = BuildAvailability();
         var catalog = new DadAccountRosterCatalog
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             IsFullRosterAvailable = false,
             Summary = status.LastStatus,
         };
@@ -163,7 +163,7 @@ public sealed class DadXadbClient
         {
             result.Accepted = true;
             result.Success = true;
-            result.RefreshedAtUtc = DateTime.UtcNow;
+            result.RefreshedAtUtc = DadClock.UtcNow;
             result.Summary = $"Dry-run roster refresh for {command.CharacterKey}.";
             return result;
         }
@@ -172,7 +172,7 @@ public sealed class DadXadbClient
         result.XadbStatus = status;
         result.Accepted = true;
         result.Success = DadXadbRefreshResultRules.MutationSucceeded(status, command.SaveAfterRefresh);
-        result.RefreshedAtUtc = result.Success ? DateTime.UtcNow : null;
+        result.RefreshedAtUtc = result.Success ? DadClock.UtcNow : null;
         result.Summary = status.LastStatus;
         return result;
     }
@@ -288,7 +288,7 @@ public sealed class DadXadbClient
     {
         catalog.Version = ReadNullableInt32(root, "version", "rosterVersion", "accountCharacterListVersion") ?? 1;
         catalog.XadbContractVersion = ReadNullableInt32(root, "ipcContractVersion", "contractVersion", "ipcVersion");
-        catalog.GeneratedAtUtc = ReadNullableDateTime(root, "generatedAtUtc", "updatedUtc", "snapshotUtc") ?? DateTime.UtcNow;
+        catalog.GeneratedAtUtc = ReadNullableDateTime(root, "generatedAtUtc", "updatedUtc", "snapshotUtc") ?? DadClock.UtcNow;
         catalog.IsFullRosterAvailable = ReadNullableBool(root, "isFullRosterAvailable", "fullRosterAvailable") ?? false;
         var advertisedMergedRows = ReadNullableInt32(root, "mergedRows", "xadbMergedRows", "payloadRows");
         catalog.SourceDiagnostics.XadbSnapshotRows = ReadNullableInt32(root, "xaSnapshotRows", "snapshotRows", "xadbSnapshotRows") ?? 0;
@@ -409,7 +409,7 @@ public sealed class DadXadbClient
         };
 
         DadRosterCharacterMerge.NormalizeXadbSnapshot(rosterCharacter);
-        rosterCharacter.IsStale = lastSnapshotUtc.HasValue && DateTime.UtcNow - lastSnapshotUtc.Value > TimeSpan.FromHours(72);
+        rosterCharacter.IsStale = lastSnapshotUtc.HasValue && DadClock.UtcNow - lastSnapshotUtc.Value > TimeSpan.FromHours(72);
         catalog.Characters.Add(rosterCharacter);
     }
 

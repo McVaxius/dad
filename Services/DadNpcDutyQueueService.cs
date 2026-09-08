@@ -1,10 +1,6 @@
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
 using dad.Models;
-using FFXIVClientStructs.FFXIV.Client.UI;
-using FFXIVClientStructs.FFXIV.Client.UI.Agent;
-using FFXIVClientStructs.FFXIV.Component.GUI;
-using Lumina.Excel.Sheets;
 
 namespace dad.Services;
 
@@ -82,7 +78,7 @@ public sealed class DadNpcDutyQueuePulse
     public List<DadModuleBlockerDto> Blockers { get; set; } = [];
 }
 
-public sealed unsafe class DadNpcDutyQueueService : IDisposable
+public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGateway
 {
     private static readonly TimeSpan OpenThrottle = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SelectThrottle = TimeSpan.FromSeconds(1);
@@ -90,6 +86,8 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     private static readonly TimeSpan ConfirmThrottle = TimeSpan.FromSeconds(1);
 
     private readonly IPluginLog log;
+    private readonly IDadDutyFinderNativeAccess game;
+    private readonly IDadNpcDutyNativeAccess native;
     private DateTime nextOpenAttemptUtc = DateTime.MinValue;
     private DateTime nextSelectAttemptUtc = DateTime.MinValue;
     private DateTime nextRegisterAttemptUtc = DateTime.MinValue;
@@ -107,7 +105,12 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     private bool trustNpcLevelsRefreshed;
 
     public DadNpcDutyQueueService(IPluginLog log)
+        : this(log, new DadDutyFinderNativeAccess(), new DadNpcDutyNativeAccess()) { }
+
+    internal DadNpcDutyQueueService(IPluginLog log, IDadDutyFinderNativeAccess game, IDadNpcDutyNativeAccess native)
     {
+        this.game = game;
+        this.native = native;
         this.log = log;
         TrySubscribeDutyState();
     }
@@ -119,7 +122,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
 
         try
         {
-            Plugin.DutyState.DutyCompleted -= OnDutyCompleted;
+            game.DutyCompleted -= OnDutyCompleted;
         }
         catch
         {
@@ -234,17 +237,17 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     }
 
     public bool IsInRequestedDuty(DadNpcDutyResolvedContent content)
-        => Plugin.Condition[ConditionFlag.BoundByDuty] &&
-           Plugin.ClientState.TerritoryType == content.TerritoryType;
+        => game.Condition(ConditionFlag.BoundByDuty) &&
+           game.TerritoryType == content.TerritoryType;
 
     public bool HasDutyCompleted(DadNpcDutyResolvedContent content, DateTime runStartedAtUtc)
         => lastDutyCompletedUtc >= runStartedAtUtc &&
            lastDutyCompletedTerritoryId == content.TerritoryType;
 
     public bool IsQueued()
-        => Plugin.Condition[ConditionFlag.InDutyQueue] ||
-           Plugin.Condition[ConditionFlag.WaitingForDuty] ||
-           Plugin.Condition[ConditionFlag.WaitingForDutyFinder];
+        => game.Condition(ConditionFlag.InDutyQueue) ||
+           game.Condition(ConditionFlag.WaitingForDuty) ||
+           game.Condition(ConditionFlag.WaitingForDutyFinder);
 
     private DadNpcDutyResolvedContent? ResolveCore(
         DadNpcDutyQueueMode mode,
@@ -267,46 +270,46 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             return null;
         }
 
-        var contentFinderSheet = Plugin.DataManager.GetExcelSheet<ContentFinderCondition>();
-        if (!contentFinderSheet.TryGetRow(contentFinderConditionId, out var condition))
+        var contentFinderSheet = native.DutyCatalog();
+        var condition = contentFinderSheet.FirstOrDefault(row => row.RowId == contentFinderConditionId);
+        if (condition == null)
         {
             blocker = $"ContentFinderCondition #{contentFinderConditionId} was not found.";
             return null;
         }
 
-        if (condition.TerritoryType.ValueNullable == null)
+        if (condition.TerritoryId == 0)
         {
             blocker = $"ContentFinderCondition #{contentFinderConditionId} has no territory.";
             return null;
         }
 
-        if (condition.TerritoryType.Value.ExVersion.ValueNullable == null)
+        if (condition.ExVersion == null)
         {
             blocker = $"ContentFinderCondition #{contentFinderConditionId} has no expansion data.";
             return null;
         }
 
-        var dawnContentSheet = Plugin.DataManager.GetExcelSheet<DawnContent>();
-        var dawnContent = dawnContentSheet.FirstOrDefault(row => row.Content.ValueNullable?.RowId == condition.RowId);
-        var hasDawnContent = dawnContent.RowId != 0;
+        var dawnContentSheet = native.DawnCatalog();
+        var dawnContent = dawnContentSheet.FirstOrDefault(row => row.ContentFinderId == condition.RowId);
+        var hasDawnContent = dawnContent != null && dawnContent.RowId != 0;
         var hasDutySupportData = false;
         var hasTrustData = false;
         var trustIndex = -1;
 
         if (hasDawnContent)
         {
-            var participableSheet = Plugin.DataManager.GetSubrowExcelSheet<DawnContentParticipable>();
-            hasDutySupportData = participableSheet.GetSubrowCount(dawnContent.RowId) > 1;
+            hasDutySupportData = dawnContent!.ParticipableCount > 1;
 
-            if (dawnContent.Unknown13)
+            if (dawnContent!.Trust)
             {
                 var trustDawnRows = dawnContentSheet
-                    .Where(static row => row.RowId != 0 && row.Content.RowId != 0 && row.Unknown13)
+                    .Where(static row => row.RowId != 0 && row.ContentFinderId != 0 && row.Trust)
                     .ToList();
-                var trustOrdinal = trustDawnRows.FindIndex(row => row.Content.ValueNullable?.RowId == condition.RowId);
+                var trustOrdinal = trustDawnRows.FindIndex(row => row.ContentFinderId == condition.RowId);
                 hasTrustData = TryGetTrustIndex(
                     trustOrdinal,
-                    condition.TerritoryType.Value.ExVersion.Value.RowId,
+                    condition.ExVersion.Value,
                     out trustIndex);
             }
         }
@@ -328,12 +331,12 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         {
             Mode = mode,
             ContentFinderConditionId = condition.RowId,
-            ContentId = condition.Content.RowId,
-            TerritoryType = condition.TerritoryType.Value.RowId,
-            ExVersion = condition.TerritoryType.Value.ExVersion.Value.RowId,
-            DawnContentRowId = dawnContent.RowId,
+            ContentId = condition.ContentId,
+            TerritoryType = condition.TerritoryId,
+            ExVersion = condition.ExVersion.Value,
+            DawnContentRowId = dawnContent!.RowId,
             TrustIndex = trustIndex,
-            ClassJobLevelRequired = condition.ClassJobLevelRequired,
+            ClassJobLevelRequired = condition.LevelRequired,
             DutyName = dutyName.Trim(),
             SheetDutyName = string.IsNullOrWhiteSpace(sheetDutyName) ? dutyName.Trim() : sheetDutyName,
             HasDutySupportData = hasDutySupportData,
@@ -344,13 +347,13 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
 
     private DadNpcDutyQueuePulse? BuildCommonQueuePulse(DadNpcDutyResolvedContent content)
     {
-        var isLoggedIn = Plugin.ClientState.IsLoggedIn;
-        var hasLocalPlayer = Plugin.ObjectTable.LocalPlayer != null;
-        var territoryType = Plugin.ClientState.TerritoryType;
+        var isLoggedIn = game.IsLoggedIn;
+        var hasLocalPlayer = game.HasLocalPlayer;
+        var territoryType = game.TerritoryType;
         var isQueued = IsQueued();
-        var isBoundByDuty = Plugin.Condition[ConditionFlag.BoundByDuty];
-        var isBetweenAreas = Plugin.Condition[ConditionFlag.BetweenAreas];
-        var isBetweenAreas51 = Plugin.Condition[ConditionFlag.BetweenAreas51];
+        var isBoundByDuty = game.Condition(ConditionFlag.BoundByDuty);
+        var isBetweenAreas = game.Condition(ConditionFlag.BetweenAreas);
+        var isBetweenAreas51 = game.Condition(ConditionFlag.BetweenAreas51);
         var isRequestedTerritory = territoryType == content.TerritoryType;
 
         if (isBoundByDuty && isRequestedTerritory)
@@ -399,46 +402,44 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     {
         try
         {
-            var agent = AgentDawnStory.Instance();
-            if (agent == null)
+            if (!native.AgentAvailable(DadNpcDutyQueueMode.DutySupport))
                 return Failed(content, "AgentDawnStory is unavailable.");
 
-            if (!agent->IsAddonReady())
+            if (!native.AddonReady(content.Mode))
             {
-                var hud = AgentHUD.Instance();
-                if (hud == null || !hud->IsMainCommandEnabled(91))
+                if (!native.MainCommandEnabled(content.Mode))
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, "Waiting for Duty Support main command to become available.", "Duty Support main command is unavailable.");
 
-                if (DateTime.UtcNow < nextOpenAttemptUtc)
+                if (DadClock.UtcNow < nextOpenAttemptUtc)
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Support window for {content.DutyName}.");
 
                 log.Debug("[dad] Opening Duty Support for {DutyName} content {ContentId}.", content.DutyName, content.ContentId);
-                RaptureAtkModule.Instance()->OpenDawnStory(content.ContentId);
-                nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
+                native.Open(DadNpcDutyQueueMode.DutySupport, content.ContentId);
+                nextOpenAttemptUtc = DadClock.UtcNow + OpenThrottle;
                 return Active(content, DadNpcDutyQueuePulseKind.OpenedDutySupport, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Duty Support for {content.DutyName}.");
             }
 
-            if (agent->Data->ContentData.ExpansionCount <= content.ExVersion)
+            if (native.ExpansionCount(content.Mode) <= content.ExVersion)
                 return Failed(content, $"{content.DutyName} requires expansion row {content.ExVersion}, but Duty Support does not report that expansion unlocked.");
 
-            var selectedContentId = agent->Data->ContentData.ContentEntries[agent->Data->ContentData.SelectedContentEntry].ContentFinderConditionId;
+            var selectedContentId = native.SelectedContentId(content.Mode);
             if (selectedContentId != content.ContentFinderConditionId)
             {
-                if (DateTime.UtcNow < nextSelectAttemptUtc)
+                if (DadClock.UtcNow < nextSelectAttemptUtc)
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Duty Support selection to settle for {content.DutyName}.");
 
                 log.Debug("[dad] Selecting Duty Support {DutyName} content finder {ContentFinderConditionId}.", content.DutyName, content.ContentFinderConditionId);
-                RaptureAtkModule.Instance()->OpenDawnStory(content.ContentFinderConditionId);
-                nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
+                native.Open(DadNpcDutyQueueMode.DutySupport, content.ContentFinderConditionId);
+                nextSelectAttemptUtc = DadClock.UtcNow + SelectThrottle;
                 return Active(content, DadNpcDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting Duty Support duty {content.DutyName}.");
             }
 
-            if (DateTime.UtcNow < nextRegisterAttemptUtc)
+            if (DadClock.UtcNow < nextRegisterAttemptUtc)
                 return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Waiting before retrying Duty Support register for {content.DutyName}.");
 
             log.Information("[dad] Registering Duty Support duty {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
-            agent->RegisterForDuty();
-            nextRegisterAttemptUtc = DateTime.UtcNow + RegisterThrottle;
+            native.Register(content.Mode);
+            nextRegisterAttemptUtc = DadClock.UtcNow + RegisterThrottle;
             return Active(content, DadNpcDutyQueuePulseKind.RegisteredForDuty, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Registered Duty Support duty {content.DutyName}; waiting for queue state or duty entry.");
         }
         catch (Exception ex)
@@ -452,71 +453,69 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     {
         try
         {
-            var agent = AgentDawn.Instance();
-            if (agent == null)
+            if (!native.AgentAvailable(DadNpcDutyQueueMode.Trust))
                 return Failed(content, "AgentDawn is unavailable.");
 
-            if (!agent->IsAddonReady())
+            if (!native.AddonReady(content.Mode))
             {
-                var hud = AgentHUD.Instance();
-                if (hud == null || !hud->IsMainCommandEnabled(82))
+                if (!native.MainCommandEnabled(content.Mode))
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, "Waiting for Trust main command to become available.", "Trust main command is unavailable.");
 
-                if (DateTime.UtcNow < nextOpenAttemptUtc)
+                if (DadClock.UtcNow < nextOpenAttemptUtc)
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Trust window for {content.DutyName}.");
 
                 log.Debug("[dad] Opening Trust for {DutyName} content finder {ContentFinderConditionId}.", content.DutyName, content.ContentFinderConditionId);
-                RaptureAtkModule.Instance()->OpenDawn(content.ContentFinderConditionId);
-                nextOpenAttemptUtc = DateTime.UtcNow + OpenThrottle;
+                native.Open(DadNpcDutyQueueMode.Trust, content.ContentFinderConditionId);
+                nextOpenAttemptUtc = DadClock.UtcNow + OpenThrottle;
                 return Active(content, DadNpcDutyQueuePulseKind.OpenedTrust, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Trust for {content.DutyName}.");
             }
 
             var requiredExpansionIndex = content.ExVersion > 2 ? content.ExVersion - 2 : 0;
-            if (agent->Data->ContentData.ExpansionCount < requiredExpansionIndex)
+            if (native.ExpansionCount(content.Mode) < requiredExpansionIndex)
                 return Failed(content, $"{content.DutyName} requires Trust expansion row {content.ExVersion}, but Trust does not report that expansion unlocked.");
 
-            if (agent->SelectedContentId != content.DawnContentRowId)
+            if (native.SelectedContentId(content.Mode) != content.DawnContentRowId)
             {
-                if (DateTime.UtcNow < nextSelectAttemptUtc)
+                if (DadClock.UtcNow < nextSelectAttemptUtc)
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Trust selection to settle for {content.DutyName}.");
 
                 log.Debug("[dad] Selecting Trust {DutyName} content finder {ContentFinderConditionId} dawn row {DawnContentRowId}.", content.DutyName, content.ContentFinderConditionId, content.DawnContentRowId);
-                RaptureAtkModule.Instance()->OpenDawn(content.ContentFinderConditionId);
-                nextSelectAttemptUtc = DateTime.UtcNow + SelectThrottle;
+                native.Open(DadNpcDutyQueueMode.Trust, content.ContentFinderConditionId);
+                nextSelectAttemptUtc = DadClock.UtcNow + SelectThrottle;
                 return Active(content, DadNpcDutyQueuePulseKind.SelectedDuty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Selecting Trust duty {content.DutyName}.");
             }
 
             if (content.RefreshTrustNpcLevelsBeforeQueue && !trustNpcLevelsRefreshed)
             {
-                agent->UpdateAddon();
+                native.UpdateTrustAddon();
                 trustNpcLevelsRefreshed = true;
                 return Active(content, DadNpcDutyQueuePulseKind.PreparedTrustParty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Refreshed Trust NPC level data for {content.DutyName}.");
             }
 
             if (!trustPartyCleared)
             {
-                agent->Data->PartyData.ClearParty();
-                agent->UpdateAddon();
+                native.ClearTrustParty();
+                native.UpdateTrustAddon();
                 trustPartyCleared = true;
                 return Active(content, DadNpcDutyQueuePulseKind.PreparedTrustParty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Cleared current Trust party selection for {content.DutyName}.");
             }
 
             if (!trustPartySelected)
             {
-                if (!TrySelectTrustParty(agent, content, out var trustPartySummary, out var trustPartyFailure))
+                if (!TrySelectTrustParty(content, out var trustPartySummary, out var trustPartyFailure))
                     return Failed(content, trustPartyFailure);
 
-                agent->UpdateAddon();
+                native.UpdateTrustAddon();
                 trustPartySelected = true;
                 return Active(content, DadNpcDutyQueuePulseKind.PreparedTrustParty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, trustPartySummary);
             }
 
-            if (DateTime.UtcNow < nextRegisterAttemptUtc)
+            if (DadClock.UtcNow < nextRegisterAttemptUtc)
                 return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Waiting before retrying Trust register for {content.DutyName}.");
 
             log.Information("[dad] Registering Trust duty {DutyName} ({ContentFinderConditionId}).", content.DutyName, content.ContentFinderConditionId);
-            agent->RegisterForDuty();
-            nextRegisterAttemptUtc = DateTime.UtcNow + RegisterThrottle;
+            native.Register(content.Mode);
+            nextRegisterAttemptUtc = DadClock.UtcNow + RegisterThrottle;
             return Active(content, DadNpcDutyQueuePulseKind.RegisteredForDuty, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Registered Trust duty {content.DutyName}; waiting for queue state or duty entry.");
         }
         catch (Exception ex)
@@ -527,7 +526,6 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     }
 
     private bool TrySelectTrustParty(
-        AgentDawn* agent,
         DadNpcDutyResolvedContent content,
         out string summary,
         out string failure)
@@ -543,14 +541,13 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
             return false;
         }
 
-        var availableMembers = GetAvailableTrustMembers(agent, content);
+        var availableMembers = GetAvailableTrustMembers(content);
         if (!TryBuildTrustParty(playerRole, availableMembers, out var selectedMembers, out failure))
             return false;
 
-        var currentMembers = agent->Data->MemberData.GetMembers(agent->Data->MemberData.CurrentMembersIndex);
         // Review H4: guard the native member pointer (null during zone/agent transitions) before
         // dereferencing the fixed candidate offsets — the realistic crash vector here.
-        if (currentMembers == null)
+        if (!native.TrustMembersAvailable)
         {
             failure = $"Trust member data is unavailable for {content.DutyName}.";
             return false;
@@ -558,28 +555,25 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
 
         foreach (var member in selectedMembers.OrderBy(static member => member.Role).ThenBy(static member => member.Index))
         {
-            var entry = currentMembers[member.Index];
-            agent->Data->PartyData.AddMember(member.Index, &entry);
+            native.AddTrustMember(member.Index);
         }
 
         summary = $"Selected Trust party for {content.DutyName}: {string.Join(", ", selectedMembers.Select(static member => member.Name))}.";
         return true;
     }
 
-    private static List<DadTrustMemberCandidate> GetAvailableTrustMembers(
-        AgentDawn* agent,
+    private List<DadTrustMemberCandidate> GetAvailableTrustMembers(
         DadNpcDutyResolvedContent content)
     {
-        var currentMembers = agent->Data->MemberData.GetMembers(agent->Data->MemberData.CurrentMembersIndex);
         var candidates = BuildTrustCandidates(content);
         var available = new List<DadTrustMemberCandidate>();
         // Review H4: guard the native member pointer before dereferencing candidate offsets.
-        if (currentMembers == null)
+        if (!native.TrustMembersAvailable)
             return available;
 
         foreach (var candidate in candidates)
         {
-            var entry = currentMembers[candidate.Index];
+            var entry = native.TrustMember(candidate.Index);
             if (entry.MemberId == 0 || entry.Level < content.ClassJobLevelRequired)
                 continue;
 
@@ -696,7 +690,7 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
     {
         try
         {
-            Plugin.DutyState.DutyCompleted += OnDutyCompleted;
+            game.DutyCompleted += OnDutyCompleted;
             dutyStateSubscribed = true;
             log.Debug("[dad] NPC duty queue service subscribed to DutyCompleted.");
         }
@@ -706,41 +700,33 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         }
     }
 
-    private void OnDutyCompleted(Dalamud.Game.DutyState.IDutyStateEventArgs args)
-        => OnDutyCompleted(args.TerritoryType.RowId);
-
     private void OnDutyCompleted(uint territoryId)
     {
         lastDutyCompletedTerritoryId = territoryId;
-        lastDutyCompletedUtc = DateTime.UtcNow;
+        lastDutyCompletedUtc = DadClock.UtcNow;
         log.Information("[dad] DutyCompleted observed for territory {TerritoryId}.", territoryId);
     }
 
     private bool TryAcceptContentsFinderConfirm(DadNpcDutyResolvedContent content)
     {
-        if (DateTime.UtcNow < nextConfirmAttemptUtc)
+        if (DadClock.UtcNow < nextConfirmAttemptUtc)
             return false;
 
         try
         {
-            var addon = RaptureAtkUnitManager.Instance()->GetAddonByName("ContentsFinderConfirm");
-            if (addon == null ||
-                !DadDutyLifecycleRules.IsAddonReadyForMutation(addon->IsVisible, addon->IsReady))
+            var addon = game.Addon("ContentsFinderConfirm");
+            if (!DadDutyLifecycleRules.IsAddonReadyForMutation(addon.Visible, addon.Ready))
                 return false;
 
-            var atkValues = stackalloc AtkValue[1];
-            atkValues[0].Type = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType.Int;
-            atkValues[0].Int = 8;
-
             log.Information("[dad] Accepting {LaneName} commence popup for {DutyName}.", content.LaneName, content.DutyName);
-            addon->FireCallback(1, atkValues, true);
-            nextConfirmAttemptUtc = DateTime.UtcNow + ConfirmThrottle;
+            game.Callback("ContentsFinderConfirm", 8);
+            nextConfirmAttemptUtc = DadClock.UtcNow + ConfirmThrottle;
             return true;
         }
         catch (Exception ex)
         {
             log.Error(ex, "[dad] Failed to accept ContentsFinderConfirm for {DutyName}.", content.DutyName);
-            nextConfirmAttemptUtc = DateTime.UtcNow + ConfirmThrottle;
+            nextConfirmAttemptUtc = DadClock.UtcNow + ConfirmThrottle;
             return false;
         }
     }
@@ -815,13 +801,9 @@ public sealed unsafe class DadNpcDutyQueueService : IDisposable
         return trustIndex >= 0;
     }
 
-    private static DadTrustPlayerRole GetLocalPlayerRole()
+    private DadTrustPlayerRole GetLocalPlayerRole()
     {
-        var player = Plugin.ObjectTable.LocalPlayer;
-        if (player == null || !player.ClassJob.IsValid)
-            return DadTrustPlayerRole.Unknown;
-
-        return player.ClassJob.RowId switch
+        return native.LocalJobId switch
         {
             1 or 3 or 19 or 21 or 32 or 37 => DadTrustPlayerRole.Tank,
             6 or 24 or 28 or 33 or 40 => DadTrustPlayerRole.Healer,

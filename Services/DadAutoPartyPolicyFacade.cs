@@ -60,7 +60,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         {
             lock (gate)
             {
-                ExpireSessions(DateTime.UtcNow);
+                ExpireSessions(DadClock.UtcNow);
                 return activeIslandSessions.Count;
             }
         }
@@ -95,7 +95,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     {
         lock (gate)
         {
-            if (!TryValidateReplayCandidate(header, DateTimeOffset.UtcNow, out var denial))
+            if (!TryValidateReplayCandidate(header, DadClock.OffsetUtcNow, out var denial))
                 return denial;
             CommitReplay(header);
             return Allowed("dad-contract-fresh");
@@ -110,7 +110,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         {
             if (proposal == null)
                 return Denied("dad-proposal-invalid");
-            if (!TryValidateReplayCandidate(proposal.Header, DateTimeOffset.UtcNow, out var denial))
+            if (!TryValidateReplayCandidate(proposal.Header, DadClock.OffsetUtcNow, out var denial))
                 return denial;
 
             var authorization = IntersectGrantCore(proposal, requiredPermissions);
@@ -131,7 +131,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         {
             if (proposal == null || ownedParticipants == null)
                 return Denied("dad-owned-proposal-invalid");
-            if (!TryValidateReplayCandidate(proposal.Header, DateTimeOffset.UtcNow, out var denial))
+            if (!TryValidateReplayCandidate(proposal.Header, DadClock.OffsetUtcNow, out var denial))
             {
                 if (proposals.TryGetValue(proposal.ProposalId, out var existing) &&
                     existing.OwnedProposal &&
@@ -150,7 +150,8 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     public DadAutoPartyPolicyDecision RenewOwnedProposal(
         Guid proposalId,
         DateTimeOffset previousExpiresAt,
-        DateTimeOffset newExpiresAt)
+        DateTimeOffset newExpiresAt,
+        DateTimeOffset? leaseExpiresAt = null)
     {
         lock (gate)
         {
@@ -158,15 +159,18 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                 return Denied("dad-owned-proposal-renewal-not-found");
             if (state.ProposalExpiresAtUtc != previousExpiresAt.UtcDateTime ||
                 newExpiresAt != previousExpiresAt + TimeSpan.FromMinutes(30) ||
-                newExpiresAt <= DateTimeOffset.UtcNow)
+                newExpiresAt <= DadClock.OffsetUtcNow)
                 return Denied("dad-owned-proposal-renewal-mismatch");
 
+            var renewedLeaseExpiry = leaseExpiresAt ?? newExpiresAt;
+            if (renewedLeaseExpiry <= DadClock.OffsetUtcNow || renewedLeaseExpiry > newExpiresAt)
+                return Denied("dad-owned-proposal-renewal-lease-invalid");
             proposals[proposalId] = state with
             {
                 ProposalExpiresAtUtc = newExpiresAt.UtcDateTime,
                 LeaseExpiresAtUtc = state.LeaseExpiresAtUtc == DateTime.MinValue
                     ? DateTime.MinValue
-                    : newExpiresAt.UtcDateTime,
+                    : renewedLeaseExpiry.UtcDateTime,
             };
             return Allowed("dad-owned-proposal-renewed");
         }
@@ -195,7 +199,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         if (!IsPaired(proposal.RequesterOwnerId.Value, proposal.Header.SenderIslandId.Value))
             return Denied("dad-proposal-sender-not-paired");
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var matchedGrants = new List<DadAutoPartyGrant>();
         foreach (var participant in proposal.Participants)
         {
@@ -309,7 +313,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
             if (state.OwnedProposal && !state.AuthorizedParticipants.Any(participant =>
                     string.Equals(participant.CharacterId, reservation.CharacterId.Value, StringComparison.Ordinal)))
                 return Denied("dad-reservation-character-mismatch");
-            ExpireSessions(DateTime.UtcNow);
+            ExpireSessions(DadClock.UtcNow);
             if (activeIslandSessions.TryGetValue(state.IslandId, out var activeProposal) &&
                 activeProposal != reservation.ProposalId)
                 return Denied("dad-island-session-already-active");
@@ -358,7 +362,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                 return Denied("dad-lease-prerequisites-missing");
             if (lease.ExpectedStateGeneration != state.StateGeneration)
                 return Denied("dad-lease-generation-mismatch");
-            var now = DateTimeOffset.UtcNow;
+            var now = DadClock.OffsetUtcNow;
             if (lease.LeaseExpiresAt <= now || lease.LeaseExpiresAt > now + TimeSpan.FromMinutes(30))
                 return Denied("dad-lease-expiry-invalid");
             if ((lease.Permissions & state.Permissions) != lease.Permissions)
@@ -383,7 +387,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
     {
         lock (gate)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = DadClock.OffsetUtcNow;
             if (!IsLocallyEnabled() || !configuration.IsRegistrationActive ||
                 proposal == null || proposal.ExecutionPlan == null || proposal.ProposalId == Guid.Empty ||
                 proposal.Header.ExpiresAt <= now || ownedParticipants.Count is < 1 or > 8 ||
@@ -526,7 +530,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                 return Denied("dad-local-safety-veto");
             if (!TryGetProposal(operation.ProposalId, operation.OwnerId.Value, out var state, out var denial))
                 return denial;
-            if (state.LeaseExpiresAtUtc <= DateTime.UtcNow)
+            if (state.LeaseExpiresAtUtc <= DadClock.UtcNow)
             {
                 activeIslandSessions.Remove(state.IslandId);
                 return Denied("dad-session-lease-expired");
@@ -546,7 +550,7 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
                     string.Equals(participant.RequestedJobId, operation.RequestedJob.Value, StringComparison.Ordinal))
                 : configuration.Grants.Any(grant =>
                     grant.IsValid &&
-                    grant.ExpiresAtUtc > DateTime.UtcNow &&
+                    grant.ExpiresAtUtc > DadClock.UtcNow &&
                     string.Equals(grant.ProposalId, operation.ProposalId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
                     !revokedTargets.Contains(grant.GrantId) &&
                     string.Equals(grant.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal) &&
@@ -566,14 +570,14 @@ public sealed class DadAutoPartyPolicyFacade : IAutoPartyPolicyFacade
         {
             if (!IsLocallyEnabled())
                 return new(DadAutoPartyAuthorizationState.Waiting, "dad-autoparty-disabled", proposalId);
-            ExpireSessions(DateTime.UtcNow);
+            ExpireSessions(DadClock.UtcNow);
             if (!proposals.TryGetValue(proposalId, out var state))
                 return new(DadAutoPartyAuthorizationState.Waiting, "dad-proposal-authorization-pending", proposalId);
             if (state.Revoked || revokedTargets.Contains(proposalId.ToString("D")))
                 return new(DadAutoPartyAuthorizationState.Denied, "dad-proposal-revoked", proposalId);
             if (vetoedOwners.Contains(state.OwnerId))
                 return new(DadAutoPartyAuthorizationState.Denied, "dad-owner-veto", proposalId);
-            if (state.LeaseExpiresAtUtc <= DateTime.UtcNow)
+            if (state.LeaseExpiresAtUtc <= DadClock.UtcNow)
                 return new(DadAutoPartyAuthorizationState.Waiting, "dad-session-lease-pending", proposalId);
             return new(DadAutoPartyAuthorizationState.Authorized, "dad-proposal-authorized", proposalId);
         }

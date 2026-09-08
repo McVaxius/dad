@@ -50,7 +50,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
     }
 
     [Fact]
-    public void FrenRiderProfileIsFrozenBeforeOperationsAndDispatchAdvancesWithoutApplicationReceipt()
+    public void FrenRiderProfileIsFrozenBeforeOperationsAndDispatchRequiresApplicationReceipt()
     {
         var now = DateTimeOffset.UtcNow;
         var configuration = ActiveConfiguration();
@@ -144,11 +144,9 @@ public sealed class DadAutoPartyParticipantBridgeTests
             out blocker), blocker);
         var form = LeaseAndAcknowledgeSingle(bridge, now);
         Assert.Equal(ExecutionOperationKind.Form, form.OperationKind);
-        Assert.True(bridge.IsOperationComplete(
-            proposalId,
-            "Slot1",
-            ExecutionOperationKind.Form,
-            now));
+        Assert.False(bridge.IsOperationComplete(proposalId, "Slot1", ExecutionOperationKind.Form, now));
+        Assert.True(bridge.ObserveOperationReceipt(Receipt(form, ExecutionOutcome.Completed, 2, now), now, out blocker), blocker);
+        Assert.True(bridge.IsOperationComplete(proposalId, "Slot1", ExecutionOperationKind.Form, now));
 
         Assert.True(bridge.RequestOperation(
             proposalId,
@@ -160,11 +158,11 @@ public sealed class DadAutoPartyParticipantBridgeTests
             out blocker), blocker);
         var queue = LeaseAndAcknowledgeSingle(bridge, now);
         Assert.Equal(ExecutionOperationKind.Queue, queue.OperationKind);
-        Assert.True(bridge.IsOperationComplete(
-            proposalId,
-            "Slot1",
-            ExecutionOperationKind.Queue,
-            now));
+        Assert.False(bridge.IsOperationComplete(proposalId, "Slot1", ExecutionOperationKind.Queue, now));
+        Assert.True(bridge.ObserveOperationReceipt(Receipt(queue, ExecutionOutcome.Accepted, 2, now), now, out blocker), blocker);
+        Assert.False(bridge.IsOperationComplete(proposalId, "Slot1", ExecutionOperationKind.Queue, now));
+        Assert.True(bridge.ObserveOperationReceipt(Receipt(queue, ExecutionOutcome.Completed, 3, now), now, out blocker), blocker);
+        Assert.True(bridge.IsOperationComplete(proposalId, "Slot1", ExecutionOperationKind.Queue, now));
         Assert.Equal(1, profileCalls);
     }
 
@@ -447,7 +445,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
                 batch.Commands.Select(static command => command.CommandId).ToList(),
                 now));
         Assert.Equal(
-            DadAutoPartyParticipantStage.Formed,
+            DadAutoPartyParticipantStage.FormPending,
             bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
 
         directoryAvailable = false;
@@ -600,7 +598,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
             2,
             now), now, out _));
         Assert.Equal(
-            DadAutoPartyParticipantStage.Formed,
+            DadAutoPartyParticipantStage.FormPending,
             bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
         Assert.True(bridge.ObserveOperationReceipt(Receipt(
             form,
@@ -864,7 +862,9 @@ public sealed class DadAutoPartyParticipantBridgeTests
             partyInviteTargets: [],
             now,
             out var formCode), formCode);
-        LeaseAndAcknowledgeSingle(bridge, now);
+        var repeatedForm = LeaseAndAcknowledgeSingle(bridge, now);
+        Assert.Equal(DadAutoPartyParticipantStage.FormPending, bridge.GetSnapshot(proposalId, "Slot1", now)!.Stage);
+        Assert.True(bridge.ObserveOperationReceipt(Receipt(repeatedForm, ExecutionOutcome.Completed, 4, now), now, out _));
         var repeated = bridge.GetSnapshot(proposalId, "Slot1", now)!;
         Assert.Equal(DadAutoPartyParticipantStage.Formed, repeated.Stage);
         Assert.Equal(0, repeated.NextModuleIndex);
@@ -964,6 +964,36 @@ public sealed class DadAutoPartyParticipantBridgeTests
         Assert.Equal((ushort)21, target.WorldId);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RenewedLeaseRetainsExecutionStageAndRejectsChangedIdentity(bool wrongLease)
+    {
+        var started = DateTimeOffset.UtcNow;
+        var (bridge, proposalId, _) = FormedBridge(started, out var lease, DadModuleId.PremadeDuty);
+        CompleteModuleOperation(bridge, proposalId, ExecutionOperationKind.Queue, 0, 3, started);
+        var before = bridge.GetSnapshot(proposalId, "Slot1", started)!;
+        var now = started.AddMinutes(25);
+        Assert.True(bridge.IsOperationComplete(proposalId, "Slot1", ExecutionOperationKind.Queue, now));
+        var renewal = LeaseAndAcknowledgeSingle(bridge, now);
+        Assert.Equal(DadAutoPartyParticipantCommandKind.ProposalRenewal, renewal.CommandKind);
+        var renewed = lease with
+        {
+            Header = Header(RemoteIsland, LocalIsland, now) with { ExpiresAt = renewal.ExpiresAt },
+            LeaseId = wrongLease ? Guid.NewGuid() : lease.LeaseId,
+            LeaseExpiresAt = now.AddMinutes(30),
+        };
+        Assert.Equal(!wrongLease, bridge.ObserveLease(renewed, now, out _));
+        var after = bridge.GetSnapshot(proposalId, "Slot1", now)!;
+        Assert.Equal(before.Stage, after.Stage);
+        Assert.Equal(before.StateGeneration, after.StateGeneration);
+        Assert.Equal(before.ActiveModuleReference, after.ActiveModuleReference);
+        Assert.Equal(wrongLease ? lease.LeaseExpiresAt : renewed.LeaseExpiresAt, after.LeaseExpiresAt);
+        Assert.False(bridge.ObserveLease(renewed, now, out _));
+        bridge.StopAll("dad-owner-stop", now);
+        Assert.False(bridge.ObserveLease(renewed with { Header = Header(RemoteIsland, LocalIsland, now) }, now, out _));
+    }
+
     private static void AcknowledgeAll(DadAutoPartyParticipantBridge bridge, DateTimeOffset now)
     {
         var batch = bridge.LeasePendingCommands(32, TimeSpan.FromSeconds(10), now);
@@ -994,6 +1024,10 @@ public sealed class DadAutoPartyParticipantBridgeTests
 
     private static (DadAutoPartyParticipantBridge Bridge, Guid ProposalId, DadAutoPartyParticipantCommand Form)
         FormedBridge(DateTimeOffset now, params DadModuleId[] moduleIds)
+        => FormedBridge(now, out _, moduleIds);
+
+    private static (DadAutoPartyParticipantBridge Bridge, Guid ProposalId, DadAutoPartyParticipantCommand Form)
+        FormedBridge(DateTimeOffset now, out SessionLease lease, params DadModuleId[] moduleIds)
     {
         var configuration = ActiveConfiguration();
         configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
@@ -1033,15 +1067,16 @@ public sealed class DadAutoPartyParticipantBridgeTests
             ExpectedStateGeneration: 1,
             SafeBlockers: ImmutableArray<string>.Empty,
             ObservedStateGeneration: 1), now, out _));
-        Assert.True(bridge.ObserveLease(new SessionLease(
+        lease = new SessionLease(
             Header(RemoteIsland, LocalIsland, now),
             Guid.NewGuid(),
             proposalId,
             new OwnerId(RemoteOwner),
-            now.AddMinutes(10),
+            now.AddMinutes(30),
             SessionPermission.All,
             ExpectedStateGeneration: 1,
-            ObservedStateGeneration: 1), now, out _));
+            ObservedStateGeneration: 1);
+        Assert.True(bridge.ObserveLease(lease, now, out _));
         Assert.True(bridge.ObserveInviteTarget(
             Header(RemoteIsland, LocalIsland, now),
             proposalId,

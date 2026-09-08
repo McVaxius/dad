@@ -129,10 +129,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadBackgroundTaskObserver backgroundTasks;
     private readonly DadConfigurationPersistenceCoordinator configurationPersistence;
     private readonly CancellationTokenSource backgroundCancellation = new();
-    private readonly HashSet<(Guid ProposalId, string CharacterId)> completedInboundAutoPartyForms = [];
-    private readonly Dictionary<DadFrenRiderProfileOwnership, DadFrenRiderProfileApplicationResult>
-        inboundFrenRiderProfileOutcomes = [];
-    private readonly object inboundFrenRiderProfileGate = new();
+    private readonly DadAutoPartyInboundRuntime autoPartyInboundRuntime;
     private readonly object authorityCacheGate = new();
     private IDtrBarEntry? dtrEntry;
     private DadRunResult? cachedAuthorityRun;
@@ -178,8 +175,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DadRosterKnowledgeLearningCursor rosterKnowledgeLearningCursor = new();
     private readonly Dictionary<string, DebouncedUiWrite> debouncedUiWrites = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> pendingAccountAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
-    private readonly DadRuntimeReadinessTracker localRuntimeReadinessTracker = new();
+    private readonly DadLocalLifecycleCleanup localLifecycleCleanup;
+    private readonly DadRuntimeReadinessObserver runtimeReadinessObserver;
     private readonly DadAutoPartyRuntimeBindingStore autoPartyRuntimeBindingStore = new();
     private readonly DadAutoPartyInboundAdmissionService autoPartyInboundAdmissionService;
     private readonly DadAutoPartyRelayPump autoPartyRelayPump;
@@ -312,39 +309,8 @@ public sealed class Plugin : IDalamudPlugin
             isConfigurationPersisted: IsConfigurationPersisted);
         AutoPartyService.ConfigureListingPublicationChanged(
             AutoPartyEndpointService.ScheduleListingPublication);
-        autoPartyInboundAdmissionService = new DadAutoPartyInboundAdmissionService(
-            Configuration.AutoParty.RegisteredOwnerId,
-            Configuration.AutoParty.RegisteredIslandId,
-            PresenceService.WorkerSessionId,
-            (route, request) => string.Equals(
-                    route.WorkerSessionId.Value,
-                    PresenceService.WorkerSessionId.Value,
-                    StringComparison.OrdinalIgnoreCase)
-                ? WakeTakeoverService.Handle(request)
-                : TransportService.SendWakeTakeoverRequest(route.OwnerSnapshot, request),
-            (participant, request) => string.Equals(
-                    participant.WorkerSessionId.Value,
-                    PresenceService.WorkerSessionId.Value,
-                    StringComparison.OrdinalIgnoreCase)
-                ? PresenceService.HandleWakeRequest(request)
-                : TransportService.SendWakeRequest(participant, request),
-            ClaimService.IssueLease,
-            (participant, request) =>
-            {
-                if (!string.Equals(
-                        participant.WorkerSessionId.Value,
-                        PresenceService.WorkerSessionId.Value,
-                        StringComparison.OrdinalIgnoreCase))
-                    return TransportService.RequestClaim(participant, request);
-                var decision = ClaimService.TryClaimLocal(request, participant);
-                PresenceService.ApplyClaimState(
-                    request.RunId,
-                    decision.ClaimState,
-                    decision.LeaseState,
-                    decision.Lease,
-                    decision.Reason);
-                return decision;
-            });
+        autoPartyInboundAdmissionService = DadRuntimeHandlers.CreateAutoPartyAdmission(
+            Configuration, PresenceService, TransportService, WakeTakeoverService, ClaimService);
         autoPartyRelayPump = new DadAutoPartyRelayPump(
             Configuration.AutoParty,
             autoPartyIdentityStore,
@@ -359,8 +325,8 @@ public sealed class Plugin : IDalamudPlugin
             inboundAdmissionWithPublication: autoPartyInboundAdmissionService.Admit,
             restoreInboundProposal: autoPartyInboundAdmissionService.RestoreProposal,
             renewInboundProposal: (proposal, previousExpiresAt, newExpiresAt) =>
-                AutoPartyService.RenewOwnedProposal(proposal.ProposalId, previousExpiresAt, newExpiresAt).Allowed,
-            expiredRuntimeTargetHandler: ReleaseExpiredInboundFrenRiderProfile,
+                AutoPartyService.RenewOwnedProposal(proposal, previousExpiresAt, newExpiresAt).Allowed,
+            expiredRuntimeTargetHandler: target => autoPartyInboundRuntime!.ReleaseExpiredInboundFrenRiderProfile(target),
             diagnostic: safeCode => Log.Warning("[dad] AutoParty relay transition {SafeCode}.", safeCode),
             saveConfiguration: Configuration.Save);
         AutoPartyParticipantBridge.ConfigureDirectoryAuthorityGate(
@@ -395,7 +361,8 @@ public sealed class Plugin : IDalamudPlugin
         DutySupportAdsService = new DadDutySupportAdsService(PluginInterface, Log);
         var shoppingService = new DadShoppingRuntimeService(DutySupportAdsService, PresenceService, Log);
         var preDutyRepairService = new DadPreDutyRepairRuntimeService(DutySupportAdsService, Log);
-        LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot);
+        LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot,
+            PresenceService.BuildLiveQueueConfirmationSnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
         PresenceService.ConfigureCombatRotationService(CombatRotationService);
@@ -457,8 +424,11 @@ public sealed class Plugin : IDalamudPlugin
             GetCurrentAutoPartyRemoteBindings,
             AutoPartyParticipantBridge);
         KranglerPrivacyLeaseService.SetDesired(IsKranglerPrivacyLeaseDesired());
-        autoPartyRelayPump.ConfigureFormExecutionHandler(ExecuteInboundAutoPartyForm);
-        autoPartyRelayPump.ConfigureRegisteredIslandExecutionHandler(ExecuteInboundAutoPartyOperation);
+        autoPartyInboundRuntime = new(Configuration, autoPartyRelayPump, autoPartyInboundAdmissionService,
+            PresenceService, TransportService, WorkerExecutionService, PartyInviteGateway,
+            FrenRiderProfileTransferService, CombatRotationService, Log);
+        DadRuntimeHandlers.ConfigureAutoPartyExecution(autoPartyRelayPump, AutoPartyService,
+            autoPartyInboundRuntime, WorkerExecutionService);
         AlliancePartyFinderService = new DadAlliancePartyFinderService(
             PresenceService,
             TransportService,
@@ -485,10 +455,6 @@ public sealed class Plugin : IDalamudPlugin
             Log,
             GetCurrentAutoPartyRemoteBindings,
             GetCurrentAutoPartyCrewCandidates);
-        AutoPartyService.ConfigureExecutionFacade(new DadAutoPartyRuntimeExecutionFacade(
-            AutoPartyService.Policy,
-            ExecuteInboundAutoPartyOperation,
-            safeReason => WorkerExecutionService.CancelAll(safeReason)));
         AutoPartyService.ConfigureOwnerStop(_ => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureLevelingMode(
             BuildLevelingChild,
@@ -496,6 +462,8 @@ public sealed class Plugin : IDalamudPlugin
         SchedulerService.ConfigureAutoPartyAuthorizationGate(
             AutoPartyService.EvaluateSchedulerAuthorization);
         SchedulerService.ConfigureAdmissionBlocker(GetSchedulerAdmissionBlocker);
+        runtimeReadinessObserver = new(PresenceService, CharacterIntelligenceService, TransportService,
+            SchedulerService, AutoRetainerIpcService, WakeTakeoverService, InvalidatePlannerPreviewCache);
         SchedulerService.ConfigureCrewFormation(
             StartCrewRegularParty,
             (runId, group, preview) =>
@@ -503,30 +471,14 @@ public sealed class Plugin : IDalamudPlugin
             AlliancePartyFinderService.GetStatus,
             AlliancePartyFinderService.GrabDads,
             AlliancePartyFinderService.Stop);
-        TransportService.ConfigureAuthorityHandlers(
-            () => RunCoordinatorService.GetLocalResult(),
-            request =>
-            {
-                return RunCoordinatorService.StartTasks(request);
-            },
-            _ => RunCoordinatorService.CancelActiveRun());
-        TransportService.ConfigureRosterHandlers(
-            () => RosterCatalogService.BuildLocalTransportCatalog(
-                CharacterIntelligenceService.CurrentPool,
-                PresenceService.BuildSnapshotCopy()),
-            command => RosterCatalogService.RefreshLocalRosterCharacter(command, PresenceService.BuildSnapshotCopy()));
-        TransportService.ConfigureProfileHandlers(
-            ProfileDirectoryService.BuildLocalCatalog,
-            ConfigManager.ApplyProfileUpdate);
-        TransportService.ConfigureWorkerExecutionHandlers(
-            WorkerExecutionService.Accept,
-            WorkerExecutionService.GetStatus,
-            WorkerExecutionService.Cancel);
+        DadRuntimeHandlers.ConfigureCore(TransportService, RunCoordinatorService,
+            RosterCatalogService, CharacterIntelligenceService, PresenceService,
+            ProfileDirectoryService, ConfigManager, WorkerExecutionService);
+        localLifecycleCleanup = new(Configuration, SchedulerService, RunCoordinatorService,
+            WakeTakeoverService, ClaimService, WorkerExecutionService, QueueExecutionService, PresenceService,
+            Log, CancelStandaloneCrewDisband, AutoPartyService, AlliancePartyFinderService);
         TransportService.ConfigureStopAllHandler(RunLocalLifecycleCleanup);
-        TransportService.ConfigureAlliancePartyFinderHandlers(
-            AlliancePartyFinderService.AcceptHubInstruction,
-            AlliancePartyFinderService.AcceptCancellation,
-            AlliancePartyFinderService.BuildUiSnapshot);
+        DadRuntimeHandlers.ConfigureAlliance(TransportService, AlliancePartyFinderService);
 
         if (!string.IsNullOrWhiteSpace(Configuration.ClientAccountId))
             ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId);
@@ -567,6 +519,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+        lifecycleUpdateLoop = new DadLifecycleUpdateLoop(CreateLifecycleSteps(), RunFrameworkStep, requireAllSteps: true);
         Framework.Update += OnFrameworkUpdate;
         backgroundTasks.Track(
             RunAuthorityStatusPollLoopAsync(backgroundCancellation.Token),
@@ -619,7 +572,7 @@ public sealed class Plugin : IDalamudPlugin
             RequestedAtUtc = DateTime.UtcNow,
             Reason = "DAD unloading.",
         });
-        ReleaseAllInboundFrenRiderProfiles();
+        autoPartyInboundRuntime.ReleaseAllInboundFrenRiderProfiles();
         KranglerPrivacyLeaseService.Dispose();
         backgroundCancellation.Cancel();
         backgroundTasks.Dispose();
@@ -1872,31 +1825,8 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private DadAutoPartyCrewReconciliation ReconcileAutoPartyCrew(DateTime? utcNow = null)
-    {
-        var observedAt = utcNow ?? DateTime.UtcNow;
-        var result = DadAutoPartyCrewSharingRules.Reconcile(
-            Configuration.AutoParty,
-            Configuration.AutoPartyFleet,
-            BuildPlannerPool().Characters,
-            observedAt);
-        if (result.Changed)
-        {
-            Configuration.AutoParty.StateGeneration++;
-            Configuration.Save();
-        }
-        var catalog = RosterCatalogService.BuildPlannerPreviewCatalog(
-            CharacterIntelligenceService.CurrentPool);
-        var reachablePeers = TransportService.CurrentTransport.KnownParticipants
-            .Where(participant => TransportService.IsWorkerOnline(participant.WorkerSessionId))
-            .ToList();
-        var routed = DadAutoPartyCrewSharingRules.AttachInboundRoutes(
-            result.Candidates,
-            catalog.Characters,
-            PresenceService.BuildLiveSafetySnapshot(),
-            reachablePeers,
-            new DateTimeOffset(DateTime.SpecifyKind(observedAt, DateTimeKind.Utc)));
-        return new DadAutoPartyCrewReconciliation(result.Changed, routed);
-    }
+        => DadRuntimeHandlers.ReconcileAutoPartyCrew(Configuration, RosterCatalogService,
+            CharacterIntelligenceService, PresenceService, TransportService, utcNow ?? DateTime.UtcNow);
 
     internal DadPlannerUiSnapshot GetPlannerUiSnapshot(DadVisibleRunState runState)
     {
@@ -2913,711 +2843,6 @@ public sealed class Plugin : IDalamudPlugin
     private IReadOnlyList<DadAutoPartyRemoteBinding> GetCurrentAutoPartyRemoteBindings()
         => autoPartyRuntimeBindingStore.Snapshot(Configuration.AutoParty.RemoteBindings);
 
-    private ValueTask<DadAutoPartyExecutionResult> ExecuteInboundAutoPartyOperation(
-        ExecutionOperation operation,
-        IntegrationProfile? profile,
-        DadAutoPartyObservedPartyReceipt? observedParty,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        DadAutoPartyExecutionResult Result(
-            ExecutionOutcome outcome,
-            DadRunPhase phase,
-            string safeCode,
-            bool profileRestored = false)
-            => new(
-                operation.OperationId,
-                operation.ProposalId,
-                operation.Kind,
-                outcome,
-                phase,
-                safeCode,
-                operation.ExpectedStateGeneration,
-                ProfileRestored: profileRestored);
-        DadAutoPartyExecutionResult Denied(string safeCode)
-            => Result(ExecutionOutcome.Denied, DadRunPhase.Idle, safeCode);
-        DadAutoPartyExecutionResult Accepted(DadRunPhase phase, string safeCode)
-            => Result(ExecutionOutcome.Accepted, phase, safeCode);
-        DadAutoPartyExecutionResult Completed(DadRunPhase phase, string safeCode, bool profileRestored = false)
-            => Result(ExecutionOutcome.Completed, phase, safeCode, profileRestored);
-
-        if (!autoPartyRelayPump.TryGetInboundExecutionContext(
-                operation.ProposalId,
-                operation.CharacterId,
-                out var context,
-                out var routeSafeCode) ||
-            !string.Equals(context.SenderIslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
-            !string.Equals(context.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal))
-            return ValueTask.FromResult(Denied(routeSafeCode));
-
-        if (operation.Kind == ExecutionOperationKind.Restore)
-        {
-            completedInboundAutoPartyForms.Remove((operation.ProposalId, operation.CharacterId.Value));
-            WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
-            {
-                RunId = context.ExecutionPlan.RunId,
-                Reason = "Authenticated AutoParty restoration.",
-            });
-            if (context.FrozenInviter != null || context.PartyInviteTargets is { Count: > 0 })
-            {
-                if (!TryBuildInboundAutoPartyTeardownInstruction(context, out var instruction, out var blocker))
-                    return ValueTask.FromResult(Denied(blocker));
-                var teardown = PresenceService.HandleAssemblyInstruction(instruction);
-                if (!teardown.Success && !teardown.Deferred)
-                    return ValueTask.FromResult(Denied("dad-inbound-restore-teardown-failed"));
-                if (teardown.Deferred)
-                    return ValueTask.FromResult(Accepted(DadRunPhase.TearingDownParty, "dad-inbound-restore-pending"));
-            }
-
-            if (!autoPartyInboundAdmissionService.RestoreProposal(
-                    operation.ProposalId,
-                    "Authenticated AutoParty restoration."))
-            {
-                return ValueTask.FromResult(Accepted(
-                    DadRunPhase.Finalizing,
-                    "dad-inbound-takeover-restoration-pending"));
-            }
-
-            _ = PresenceService.HandleCancelRun(new DadCancelCommandDto
-            {
-                RunId = context.ExecutionPlan.RunId,
-                AuthorityWorkerSessionId = PresenceService.WorkerSessionId,
-                CancellationState = DadRunCancellationState.Finalized,
-                Reason = "Authenticated AutoParty restoration complete.",
-            });
-            if (!ReleaseInboundFrenRiderProfile(operation, context, out var releaseSafeCode))
-                return ValueTask.FromResult(Denied(releaseSafeCode));
-            autoPartyRelayPump.RemoveInboundExecutionContext(operation.ProposalId, operation.CharacterId);
-            return ValueTask.FromResult(Completed(
-                DadRunPhase.Finalizing,
-                "dad-inbound-restore-complete",
-                profileRestored: false));
-        }
-
-        if (operation.Kind == ExecutionOperationKind.Cancel)
-        {
-            completedInboundAutoPartyForms.Remove((operation.ProposalId, operation.CharacterId.Value));
-            var ack = WorkerExecutionService.Cancel(new DadWorkerExecutionCancel
-            {
-                RunId = context.ExecutionPlan.RunId,
-                Reason = "Authenticated AutoParty cancellation.",
-            });
-            return ValueTask.FromResult(ack.Accepted
-                ? Completed(DadRunPhase.Finalizing, "dad-inbound-cancel-complete")
-                : Denied("dad-inbound-cancel-rejected"));
-        }
-
-        var local = PresenceService.BuildLiveSafetySnapshot();
-        if (!IsInboundRuntimeTargetReady(local, context))
-            return ValueTask.FromResult(Accepted(
-                DadRunPhase.WaitingForReadiness,
-                "dad-inbound-worker-readiness-pending"));
-
-        if (operation.Kind == ExecutionOperationKind.Prepare)
-        {
-            if (!TryValidateInboundFrenRiderProfile(operation, context, profile, out var profileSafeCode))
-                return ValueTask.FromResult(Denied(profileSafeCode));
-            return ValueTask.FromResult(Completed(DadRunPhase.Planning, "dad-inbound-prepare-authorized"));
-        }
-        if (operation.Kind == ExecutionOperationKind.Reserve)
-            return ValueTask.FromResult(Completed(DadRunPhase.ClaimingSlots, "dad-inbound-reserve-authorized"));
-
-        if (operation.Kind is ExecutionOperationKind.Queue or ExecutionOperationKind.Settle)
-        {
-            if (operation.Kind == ExecutionOperationKind.Queue &&
-                !completedInboundAutoPartyForms.Contains((operation.ProposalId, operation.CharacterId.Value)))
-            {
-                return ValueTask.FromResult(Accepted(
-                    DadRunPhase.AssemblingParty,
-                    "dad-inbound-form-execution-pending"));
-            }
-            if (operation.Kind == ExecutionOperationKind.Queue &&
-                !IsInboundFrenRiderQueueAllowed(operation, context, out var profileBlocker))
-                return ValueTask.FromResult(Denied(profileBlocker));
-            if (!DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(
-                    operation,
-                    context,
-                    local,
-                    out var command,
-                    out var commandParticipant,
-                    out var blocker))
-                return ValueTask.FromResult(Denied(blocker));
-
-            if (operation.Kind == ExecutionOperationKind.Queue)
-            {
-                var ack = WorkerExecutionService.Accept(command);
-                if (!ack.Accepted ||
-                    !DadWorkerStatusPollingRules.MatchesExactAcknowledgement(commandParticipant, command, ack))
-                    return ValueTask.FromResult(Denied("dad-inbound-queue-acknowledgement-invalid"));
-            }
-
-            var workerStatus = WorkerExecutionService.GetStatus();
-            if (!DadDroppedPeerContinuationRules.MatchesExactCommand(commandParticipant, command, workerStatus))
-                return ValueTask.FromResult(Denied("dad-inbound-worker-status-mismatch"));
-            if (workerStatus.IsTerminal && !workerStatus.Success)
-                return ValueTask.FromResult(Denied("dad-inbound-worker-terminal-failure"));
-            if (operation.Kind == ExecutionOperationKind.Queue)
-            {
-                return ValueTask.FromResult(workerStatus.State is
-                        DadWorkerExecutionState.WaitingForQueue or DadWorkerExecutionState.Running ||
-                    workerStatus is { IsTerminal: true, Success: true }
-                        ? Completed(DadRunPhase.QueueStarting, "dad-inbound-queue-ready")
-                        : Accepted(DadRunPhase.QueuePreparing, "dad-inbound-queue-preparing"));
-            }
-            return ValueTask.FromResult(workerStatus is { IsTerminal: true, Success: true }
-                ? Completed(DadRunPhase.Finalizing, "dad-inbound-worker-settled")
-                : Accepted(workerStatus.State == DadWorkerExecutionState.Running
-                    ? DadRunPhase.InDutyOrTask
-                    : DadRunPhase.WaitingForQueuePop, "dad-inbound-worker-settlement-pending"));
-        }
-
-        return ValueTask.FromResult(Denied("dad-inbound-operation-unsupported"));
-    }
-
-    private static bool TryBuildInboundAutoPartyTeardownInstruction(
-        DadAutoPartyInboundExecutionContext context,
-        out DadAssemblyInstructionDto instruction,
-        out string blocker)
-    {
-        instruction = new DadAssemblyInstructionDto();
-        blocker = "dad-inbound-restore-locator-invalid";
-        var inviter = context.FrozenInviter;
-        var targets = context.PartyInviteTargets?.Select(static target => target.Clone()).ToList() ?? [];
-        var inviterRows = context.ExecutionPlan.Participants.Where(static participant => participant.IsInviter).ToList();
-        var localRows = context.ExecutionPlan.Participants.Where(participant =>
-            string.Equals(participant.SlotId, context.Target.SlotId, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (inviter == null || inviterRows.Count != 1 || localRows.Count != 1 ||
-            targets.Count != context.ExecutionPlan.Participants.Length - 1 ||
-            targets.Count is < 1 or > 7 ||
-            !string.Equals(inviter.RunId, context.ExecutionPlan.RunId, StringComparison.Ordinal) ||
-            targets.Any(target => !string.Equals(target.RunId, context.ExecutionPlan.RunId, StringComparison.Ordinal)) ||
-            targets.Select(static target => target.SlotId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count)
-            return false;
-
-        var localIsInviter = localRows[0].IsInviter;
-        if (localIsInviter
-                ? !MatchesInboundRuntimeTarget(inviter, context.Target)
-                : targets.Count(target => MatchesInboundRuntimeTarget(target, context.Target)) != 1)
-        {
-            blocker = "dad-inbound-restore-worker-route-mismatch";
-            return false;
-        }
-        var expectedFollowerSlots = context.ExecutionPlan.Participants
-            .Where(static participant => !participant.IsInviter)
-            .Select(static participant => participant.SlotId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (!expectedFollowerSlots.SetEquals(targets.Select(static target => target.SlotId)))
-            return false;
-
-        instruction = new DadAssemblyInstructionDto
-        {
-            RunId = context.ExecutionPlan.RunId,
-            AuthorityWorkerSessionId = context.Target.WorkerSessionId,
-            ModuleId = context.Target.ModuleId,
-            SlotId = context.Target.SlotId,
-            RequiredCharacterKey = context.Target.CharacterKey,
-            InstructionKind = localIsInviter
-                ? DadAssemblyInstructionKind.DisbandParty
-                : DadAssemblyInstructionKind.LeaveParty,
-            FrozenInviter = inviter.Clone(),
-            InviteTargets = targets,
-            Summary = localIsInviter
-                ? "Authenticated AutoParty Slot1 is performing guarded teardown."
-                : "Authenticated AutoParty follower is performing guarded teardown.",
-        };
-        blocker = string.Empty;
-        return true;
-    }
-
-    private ValueTask<DadAutoPartyExecutionResult> ExecuteInboundAutoPartyForm(
-        DadAutoPartyFormExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var operation = context.Operation;
-        DadAutoPartyExecutionResult Denied(string safeCode) => new(
-            operation.OperationId,
-            operation.ProposalId,
-            operation.Kind,
-            ExecutionOutcome.Denied,
-            DadRunPhase.Idle,
-            safeCode,
-            operation.ExpectedStateGeneration);
-        DadAutoPartyExecutionResult Accepted(string safeCode) => new(
-            operation.OperationId,
-            operation.ProposalId,
-            operation.Kind,
-            ExecutionOutcome.Accepted,
-            DadRunPhase.WaitingForReadiness,
-            safeCode,
-            operation.ExpectedStateGeneration);
-        if (!autoPartyRelayPump.TryGetInboundExecutionContext(
-                operation.ProposalId,
-                operation.CharacterId,
-                out var runtimeContext,
-                out var routeSafeCode) ||
-            !string.Equals(runtimeContext.SenderIslandId, operation.Header.SenderIslandId.Value, StringComparison.Ordinal) ||
-            !string.Equals(runtimeContext.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal))
-            return ValueTask.FromResult(Denied(routeSafeCode));
-        var localTarget = runtimeContext.Target;
-        if (
-            !string.Equals(localTarget.RunId, context.ExpectedInviter?.RunId ??
-                context.PartyInviteTargets.FirstOrDefault()?.RunId ?? localTarget.RunId, StringComparison.Ordinal))
-            return ValueTask.FromResult(Denied(routeSafeCode));
-
-        var candidates = new List<DadParticipantSnapshot>();
-        var local = PresenceService.BuildLiveSafetySnapshot();
-        if (IsInboundRuntimeTargetReady(local, runtimeContext))
-            candidates.Add(local);
-        candidates.AddRange(TransportService.CurrentTransport.KnownParticipants.Where(participant =>
-            IsInboundRuntimeTargetReady(participant, runtimeContext)));
-        var participant = candidates
-            .DistinctBy(static candidate => candidate.WorkerSessionId.Value, StringComparer.OrdinalIgnoreCase)
-            .SingleOrDefault();
-        if (participant == null)
-            return ValueTask.FromResult(Accepted("dad-inbound-form-worker-readiness-pending"));
-
-        var slotOne = context.ExpectedInviter == null;
-        if (!slotOne && context.PartyInviteTargets.Count != 0)
-            return ValueTask.FromResult(Denied("dad-inbound-form-locator-mode-invalid"));
-        var inviter = context.ExpectedInviter?.Clone() ?? new DadExpectedPartyInviter
-        {
-            RunId = localTarget.RunId,
-            WorkerSessionId = localTarget.WorkerSessionId,
-            AccountKey = localTarget.AccountKey,
-            CharacterKey = localTarget.CharacterKey,
-            ContentId = localTarget.ContentId,
-            CharacterName = localTarget.CharacterName,
-            WorldId = localTarget.WorldId,
-        };
-        var inviteTargets = slotOne
-            ? context.PartyInviteTargets.Select(static target => target.Clone()).ToList()
-            : new List<DadNativePartyInviteTarget> { localTarget.Clone() };
-        var instruction = new DadAssemblyInstructionDto
-        {
-            RunId = localTarget.RunId,
-            AuthorityWorkerSessionId = PresenceService.WorkerSessionId,
-            ModuleId = localTarget.ModuleId,
-            SlotId = localTarget.SlotId,
-            RequiredCharacterKey = localTarget.CharacterKey,
-            InstructionKind = slotOne
-                ? DadAssemblyInstructionKind.FormParty
-                : DadAssemblyInstructionKind.JoinParty,
-            FrozenInviter = inviter,
-            InviteTargets = inviteTargets,
-            Summary = slotOne
-                ? "Authenticated AutoParty Slot1 is forming the frozen party."
-                : "Authenticated AutoParty follower is joining frozen Slot1.",
-        };
-        var result = string.Equals(
-                participant.WorkerSessionId.Value,
-                PresenceService.WorkerSessionId.Value,
-                StringComparison.OrdinalIgnoreCase)
-            ? PresenceService.HandleAssemblyInstruction(instruction)
-            : TransportService.SendAssemblyInstruction(participant, instruction);
-        if (result == null || !result.Success && !result.Deferred)
-            return ValueTask.FromResult(Denied(result?.FailureReason ?? "dad-inbound-form-acknowledgement-missing"));
-        if (!slotOne)
-        {
-            var followerObservedContentIds = PartyInviteGateway.ReadAuthoritativePartyMembers()
-                .Select(static member => member.ContentId)
-                .Where(static contentId => contentId != 0)
-                .Distinct()
-                .ToImmutableArray();
-            if (followerObservedContentIds.Length == runtimeContext.ExecutionPlan.Participants.Length &&
-                followerObservedContentIds.Contains(inviter.ContentId) &&
-                followerObservedContentIds.Contains(localTarget.ContentId))
-            {
-                if (!TryApplyInboundFrenRiderProfile(operation, runtimeContext, out var followerProfileSafeCode))
-                    return ValueTask.FromResult(Denied(followerProfileSafeCode));
-                if (!TryActivateInboundFrenRiderAfterGroupReady(
-                        runtimeContext,
-                        participant,
-                        instruction,
-                        out var followerActivationPending,
-                        out var followerActivationSafeCode))
-                {
-                    return ValueTask.FromResult(Denied(followerActivationSafeCode));
-                }
-                if (followerActivationPending)
-                {
-                    return ValueTask.FromResult(new DadAutoPartyExecutionResult(
-                        operation.OperationId,
-                        operation.ProposalId,
-                        operation.Kind,
-                        ExecutionOutcome.Accepted,
-                        DadRunPhase.AssemblingParty,
-                        followerActivationSafeCode,
-                        operation.ExpectedStateGeneration));
-                }
-                completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
-                return ValueTask.FromResult(new DadAutoPartyExecutionResult(
-                    operation.OperationId,
-                    operation.ProposalId,
-                    operation.Kind,
-                    ExecutionOutcome.Completed,
-                    operation.FormationOnly ? DadRunPhase.GroupReady : DadRunPhase.AssemblingParty,
-                    runtimeContext.ExecutionPlan.UseFrenRider
-                        ? followerProfileSafeCode
-                        : "dad-inbound-follower-party-proof-complete",
-                    operation.ExpectedStateGeneration,
-                    new DadAutoPartyObservedPartyReceipt(
-                        followerObservedContentIds.Length,
-                        followerObservedContentIds,
-                        "partylist-authoritative",
-                        DateTime.UtcNow)));
-            }
-            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
-                operation.OperationId,
-                operation.ProposalId,
-                operation.Kind,
-                ExecutionOutcome.Accepted,
-                DadRunPhase.AssemblingParty,
-                "dad-inbound-follower-form-accepted",
-                operation.ExpectedStateGeneration));
-        }
-
-        var expectedContentIds = inviteTargets.Select(static target => target.ContentId)
-            .Append(localTarget.ContentId)
-            .ToHashSet();
-        var observedContentIds = result.AuthoritativePartyMembers
-            .Select(static member => member.ContentId)
-            .Where(static contentId => contentId != 0)
-            .ToImmutableArray();
-        if (observedContentIds.Length != expectedContentIds.Count ||
-            observedContentIds.Distinct().Count() != observedContentIds.Length ||
-            !expectedContentIds.SetEquals(observedContentIds))
-        {
-            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
-                operation.OperationId,
-                operation.ProposalId,
-                operation.Kind,
-                ExecutionOutcome.Accepted,
-                DadRunPhase.AssemblingParty,
-                "dad-inbound-slot1-party-proof-pending",
-                operation.ExpectedStateGeneration));
-        }
-
-        if (!TryApplyInboundFrenRiderProfile(operation, runtimeContext, out var profileSafeCode))
-            return ValueTask.FromResult(Denied(profileSafeCode));
-        if (!TryActivateInboundFrenRiderAfterGroupReady(
-                runtimeContext,
-                participant,
-                instruction,
-                out var activationPending,
-                out var activationSafeCode))
-        {
-            return ValueTask.FromResult(Denied(activationSafeCode));
-        }
-        if (activationPending)
-        {
-            return ValueTask.FromResult(new DadAutoPartyExecutionResult(
-                operation.OperationId,
-                operation.ProposalId,
-                operation.Kind,
-                ExecutionOutcome.Accepted,
-                DadRunPhase.AssemblingParty,
-                activationSafeCode,
-                operation.ExpectedStateGeneration));
-        }
-        completedInboundAutoPartyForms.Add((operation.ProposalId, operation.CharacterId.Value));
-        return ValueTask.FromResult(new DadAutoPartyExecutionResult(
-            operation.OperationId,
-            operation.ProposalId,
-            operation.Kind,
-            ExecutionOutcome.Completed,
-            operation.FormationOnly ? DadRunPhase.GroupReady : DadRunPhase.AssemblingParty,
-            runtimeContext.ExecutionPlan.UseFrenRider
-                ? profileSafeCode
-                : operation.FormationOnly ? "dad-inbound-group-ready" : "dad-inbound-form-complete",
-            operation.ExpectedStateGeneration,
-            new DadAutoPartyObservedPartyReceipt(
-                observedContentIds.Length,
-                observedContentIds,
-                "partylist-authoritative",
-                DateTime.UtcNow)));
-    }
-
-    private bool TryActivateInboundFrenRiderAfterGroupReady(
-        DadAutoPartyInboundExecutionContext context,
-        DadParticipantSnapshot participant,
-        DadAssemblyInstructionDto assemblyInstruction,
-        out bool pending,
-        out string safeCode)
-    {
-        pending = false;
-        safeCode = "dad-inbound-frenrider-group-ready-not-required";
-        if (!context.ExecutionPlan.UseFrenRider)
-            return true;
-
-        var activationInstruction = assemblyInstruction.Clone();
-        activationInstruction.InstructionKind = DadAssemblyInstructionKind.ActivateFrenRider;
-        activationInstruction.ExpectedPartySize = context.ExecutionPlan.Participants.Length;
-        activationInstruction.Summary =
-            "Exact DAD group formation is complete; apply the selected FrenRider group-ready mode.";
-        var result = string.Equals(
-                participant.WorkerSessionId.Value,
-                PresenceService.WorkerSessionId.Value,
-                StringComparison.OrdinalIgnoreCase)
-            ? PresenceService.HandleAssemblyInstruction(activationInstruction)
-            : TransportService.SendAssemblyInstruction(participant, activationInstruction);
-        if (result == null || result.Deferred)
-        {
-            pending = true;
-            safeCode = "dad-inbound-frenrider-group-ready-pending";
-            return true;
-        }
-
-        if (result.StepName is not "GroupReadyFrenRider" and not "GroupReadyFrenRiderNotRequired")
-        {
-            safeCode = "dad-inbound-frenrider-group-ready-unsupported";
-            return false;
-        }
-
-        safeCode = !result.Success
-            ? "dad-inbound-frenrider-group-ready-failed"
-            : result.StepName == "GroupReadyFrenRiderNotRequired"
-                ? "dad-inbound-frenrider-group-ready-not-required"
-                : "dad-inbound-frenrider-group-ready-complete";
-        return result.Success;
-    }
-
-    private bool TryValidateInboundFrenRiderProfile(
-        ExecutionOperation operation,
-        DadAutoPartyInboundExecutionContext context,
-        IntegrationProfile? profile,
-        out string safeCode)
-    {
-        safeCode = "dad-inbound-frenrider-profile-not-required";
-        if (!context.ExecutionPlan.UseFrenRider)
-            return true;
-        if (profile == null ||
-            profile.ProposalId != operation.ProposalId ||
-            profile.OwnerId != operation.OwnerId ||
-            profile.CharacterId != operation.CharacterId ||
-            !string.Equals(profile.Header.SenderIslandId.Value, context.SenderIslandId, StringComparison.Ordinal) ||
-            !string.Equals(profile.Header.RecipientIslandId.Value, Configuration.AutoParty.RegisteredIslandId,
-                StringComparison.Ordinal) ||
-            !string.Equals(context.OwnerId, operation.OwnerId.Value, StringComparison.Ordinal) ||
-            profile.EnabledIntegrationIds.Length != 1 ||
-            !string.Equals(profile.EnabledIntegrationIds[0], "FrenRider", StringComparison.Ordinal) ||
-            profile.EnableLevelSync || profile.EnableUnrestrictedParty || profile.EnableMinimumItemLevel ||
-            profile.EnableSilenceEcho ||
-            context.ExecutionPlan.Participants.Count(participant =>
-                string.Equals(participant.OwnerId.Value, operation.OwnerId.Value, StringComparison.Ordinal) &&
-                string.Equals(participant.OwnerIslandId.Value, Configuration.AutoParty.RegisteredIslandId,
-                    StringComparison.Ordinal) &&
-                string.Equals(participant.CharacterId.Value, operation.CharacterId.Value, StringComparison.Ordinal) &&
-                string.Equals(participant.SlotId, context.Target.SlotId, StringComparison.OrdinalIgnoreCase)) != 1)
-        {
-            safeCode = "dad-inbound-frenrider-profile-route-mismatch";
-            return false;
-        }
-
-        try
-        {
-            _ = FrenRiderProfileCodec.Decode(profile.FrenRiderProfile);
-            safeCode = "dad-inbound-frenrider-profile-ready";
-            return true;
-        }
-        catch (ProtocolException)
-        {
-            safeCode = "dad-inbound-frenrider-profile-invalid";
-            return false;
-        }
-    }
-
-    private bool TryApplyInboundFrenRiderProfile(
-        ExecutionOperation operation,
-        DadAutoPartyInboundExecutionContext context,
-        out string safeCode)
-    {
-        safeCode = "dad-inbound-frenrider-profile-not-required";
-        if (!context.ExecutionPlan.UseFrenRider)
-            return true;
-        var ownership = BuildFrenRiderProfileOwnership(operation, context);
-        lock (inboundFrenRiderProfileGate)
-        {
-            if (inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out var existing))
-            {
-                safeCode = existing.SafeCode;
-                return existing.Success;
-            }
-        }
-        if (!autoPartyRelayPump.TryGetInboundIntegrationProfile(
-                ownership.ProposalId,
-                ownership.SenderIslandId,
-                ownership.OwnerId,
-                operation.CharacterId,
-                out var profile) ||
-            !TryValidateInboundFrenRiderProfile(operation, context, profile, out safeCode))
-        {
-            lock (inboundFrenRiderProfileGate)
-                inboundFrenRiderProfileOutcomes[ownership] =
-                    DadFrenRiderProfileApplicationResult.Failed(safeCode);
-            return false;
-        }
-
-        string profileJson;
-        try
-        {
-            profileJson = FrenRiderProfileCodec.Decode(profile.FrenRiderProfile);
-        }
-        catch (ProtocolException)
-        {
-            safeCode = "dad-inbound-frenrider-profile-invalid";
-            lock (inboundFrenRiderProfileGate)
-                inboundFrenRiderProfileOutcomes[ownership] =
-                    DadFrenRiderProfileApplicationResult.Failed(safeCode);
-            return false;
-        }
-        var applied = FrenRiderProfileTransferService.Apply(ownership, profileJson);
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes[ownership] = applied;
-        safeCode = applied.SafeCode;
-        return applied.Success;
-    }
-
-    private bool IsInboundFrenRiderQueueAllowed(
-        ExecutionOperation operation,
-        DadAutoPartyInboundExecutionContext context,
-        out string blocker)
-    {
-        blocker = string.Empty;
-        if (!context.ExecutionPlan.UseFrenRider)
-            return true;
-        var ownership = BuildFrenRiderProfileOwnership(operation, context);
-        DadFrenRiderProfileApplicationResult? outcome;
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
-        return DadFrenRiderInboundQueueRules.IsAllowed(
-            useFrenRider: true,
-            outcome: outcome,
-            frenRiderLoaded: CombatRotationService.IsFrenRiderLoaded(),
-            out blocker);
-    }
-
-    private bool ReleaseInboundFrenRiderProfile(
-        ExecutionOperation operation,
-        DadAutoPartyInboundExecutionContext context,
-        out string safeCode)
-    {
-        var ownership = BuildFrenRiderProfileOwnership(operation, context);
-        DadFrenRiderProfileApplicationResult? outcome;
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
-        if (outcome?.Outcome != DadFrenRiderProfileApplicationOutcome.TemporaryApplied)
-        {
-            lock (inboundFrenRiderProfileGate)
-                inboundFrenRiderProfileOutcomes.Remove(ownership);
-            safeCode = "dad-frenrider-profile-release-not-required";
-            return true;
-        }
-        if (!FrenRiderProfileTransferService.ReleaseTemporary(ownership, out safeCode))
-            return false;
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes.Remove(ownership);
-        return true;
-    }
-
-    private void ReleaseAllInboundFrenRiderProfiles()
-    {
-        DadFrenRiderProfileOwnership[] temporary;
-        lock (inboundFrenRiderProfileGate)
-            temporary = inboundFrenRiderProfileOutcomes
-                .Where(static pair => pair.Value.Outcome ==
-                                      DadFrenRiderProfileApplicationOutcome.TemporaryApplied)
-                .Select(static pair => pair.Key)
-                .ToArray();
-        foreach (var ownership in temporary)
-            _ = FrenRiderProfileTransferService.ReleaseTemporary(ownership, out _);
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes.Clear();
-    }
-
-    private void ReleaseExpiredInboundFrenRiderProfile(DadAutoPartyExpiredRuntimeTarget target)
-    {
-        var ownership = new DadFrenRiderProfileOwnership(
-            target.ProposalId,
-            target.SenderIslandId,
-            target.OwnerId,
-            target.OpaqueCharacterId);
-        completedInboundAutoPartyForms.Remove((target.ProposalId, target.OpaqueCharacterId));
-        DadFrenRiderProfileApplicationResult? outcome;
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
-        if (outcome?.Outcome == DadFrenRiderProfileApplicationOutcome.TemporaryApplied &&
-            !FrenRiderProfileTransferService.ReleaseTemporary(ownership, out var safeCode))
-        {
-            Log.Warning(
-                "[dad][FrenRiderProfile] Exact temporary profile cleanup failed after proposal expiry ({SafeCode}).",
-                safeCode);
-            return;
-        }
-        lock (inboundFrenRiderProfileGate)
-            inboundFrenRiderProfileOutcomes.Remove(ownership);
-    }
-
-    private static DadFrenRiderProfileOwnership BuildFrenRiderProfileOwnership(
-        ExecutionOperation operation,
-        DadAutoPartyInboundExecutionContext context)
-        => new(
-            operation.ProposalId,
-            context.SenderIslandId,
-            operation.OwnerId.Value,
-            operation.CharacterId.Value);
-
-    private static bool MatchesInboundRuntimeTarget(
-        DadParticipantSnapshot participant,
-        DadNativePartyInviteTarget target)
-        => string.Equals(
-               participant.WorkerSessionId.Value,
-               target.WorkerSessionId.Value,
-               StringComparison.OrdinalIgnoreCase) &&
-           DadRosterIdentity.SameAccount(participant.ManagedAccountKey, target.AccountKey) &&
-           DadRosterIdentity.SameCharacter(
-               participant.ActiveCharacterKey,
-               participant.Character.ContentId,
-               target.CharacterKey,
-               target.ContentId) &&
-           string.Equals(participant.AssignedSlotId, target.SlotId, StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsInboundRuntimeTargetReady(
-        DadParticipantSnapshot participant,
-        DadAutoPartyInboundExecutionContext context)
-    {
-        if (!MatchesInboundRuntimeTarget(participant, context.Target) || !participant.WorldReadyStable)
-            return false;
-        var matches = context.ExecutionPlan.Participants.Where(candidate =>
-                string.Equals(candidate.SlotId, context.Target.SlotId, StringComparison.OrdinalIgnoreCase))
-            .Take(2)
-            .ToArray();
-        return matches.Length == 1 &&
-               uint.TryParse(
-                   matches[0].RequestedJob.Value,
-                   System.Globalization.NumberStyles.None,
-                   System.Globalization.CultureInfo.InvariantCulture,
-                   out var requestedJobId) &&
-               requestedJobId != 0 && participant.Character.CurrentJobId == requestedJobId;
-    }
-
-    private static bool MatchesInboundRuntimeTarget(
-        DadExpectedPartyInviter inviter,
-        DadNativePartyInviteTarget target)
-        => string.Equals(inviter.RunId, target.RunId, StringComparison.Ordinal) &&
-           string.Equals(inviter.WorkerSessionId.Value, target.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
-           DadRosterIdentity.SameAccount(inviter.AccountKey, target.AccountKey) &&
-           DadRosterIdentity.SameCharacter(inviter.CharacterKey, inviter.ContentId, target.CharacterKey, target.ContentId);
-
-    private static bool MatchesInboundRuntimeTarget(
-        DadNativePartyInviteTarget candidate,
-        DadNativePartyInviteTarget target)
-        => string.Equals(candidate.RunId, target.RunId, StringComparison.Ordinal) &&
-           string.Equals(candidate.SlotId, target.SlotId, StringComparison.OrdinalIgnoreCase) &&
-           string.Equals(candidate.WorkerSessionId.Value, target.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
-           DadRosterIdentity.SameAccount(candidate.AccountKey, target.AccountKey) &&
-           DadRosterIdentity.SameCharacter(candidate.CharacterKey, candidate.ContentId, target.CharacterKey, target.ContentId);
-
     private void ReconcileAutoPartyRuntimeBindings()
     {
         var stagedGroupId = autoPartyRuntimeBindingStore.StagedGroupId;
@@ -3935,24 +3160,15 @@ public sealed class Plugin : IDalamudPlugin
             : null;
 
     private string GetSchedulerAdmissionBlocker()
-        => DadSchedulerRoutingRules.GetAdmissionBlocker(
-            Configuration.RunAsServerDad,
-            SchedulerService.CurrentState.IsActive,
-            SchedulerService.IsCrewFormationActive,
-            standaloneCrewDisbandActive,
-            IsBusy(GetVisibleRunState().VisibleRun),
-            SchedulerService.HasPendingCancellationCleanup,
-            RunCoordinatorService.HasPendingCancellationCleanup);
+        => DadRuntimeHandlers.SchedulerAdmissionBlocker(Configuration, SchedulerService,
+            RunCoordinatorService, standaloneCrewDisbandActive, GetVisibleRunState().VisibleRun);
 
     private bool CanAdmitSchedulerWork()
         => string.IsNullOrWhiteSpace(GetSchedulerAdmissionBlocker());
 
     private bool CanUpdateSchedulerLifecycle()
-        => Configuration.RunAsServerDad &&
-           !standaloneCrewDisbandActive &&
-           (SchedulerService.IsCrewFormationActive ||
-            SchedulerService.CurrentState.IsActive ||
-            CanAdmitSchedulerWork());
+        => DadRuntimeHandlers.CanUpdateScheduler(Configuration, SchedulerService,
+            RunCoordinatorService, standaloneCrewDisbandActive, GetVisibleRunState().VisibleRun);
 
     public string StartSchedulerPresetFromJson(string json)
     {
@@ -4466,54 +3682,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private DadPresetPlannerOptions BuildPlannerOptionsForGroup(DadPlannerGroup group, DadPlannerGroupStartRequest? startRequest)
-    {
-        var activityMode = ResolvePlannerGroupLane(group.ActivityMode, startRequest?.Lane);
-        return new DadPresetPlannerOptions
-        {
-            PresetName = group.DisplayName,
-            SelectedPlannerGroupId = group.GroupId,
-            RunFamily = PresetProviderService.GetPlannerRunFamily(activityMode),
-            ActivityMode = activityMode,
-            ActivityName = PresetProviderService.GetPlannerLaneDefinition(activityMode).DisplayName,
-            OperatorMode = group.OperatorMode,
-            ConnectedOnly = group.ConnectedOnly,
-            SameDatacenterOnly = group.SameDatacenterOnly,
-            AllowStaleForPlanning = group.AllowStaleForPlanning,
-            TransportOwner = group.TransportOwner,
-            QueueAuthority = group.QueueAuthority,
-            InviteAuthority = DadInviteAuthority.PresetLeader,
-            DutyContentFinderConditionId = startRequest?.DutyContentFinderConditionId ?? group.DutyContentFinderConditionId,
-            DutyDisplayName = group.DutyDisplayName,
-            DutyUnsynced = group.DutyUnsynced,
-            DutyExpectedPartySize = group.DutyExpectedPartySize,
-            RouletteTarget = group.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
-            MogtomePreset = group.MogtomePreset,
-            MogtomeDutyPolicy = group.MogtomeDutyPolicy,
-            RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
-            StopPolicy = group.StopPolicy.Clone(),
-            CompletionActions = group.CompletionActions?.Clone(),
-            IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
-                .Select(static slot => slot.RequiredAccountKey)
-                .Where(static key => !key.IsEmpty)
-                .DistinctBy(static key => key.Value, StringComparer.OrdinalIgnoreCase)
-                .ToList(),
-        };
-    }
-
-    private DadPlannerActivityMode ResolvePlannerGroupLane(DadPlannerActivityMode fallback, string? lane)
-    {
-        if (string.IsNullOrWhiteSpace(lane))
-            return fallback;
-
-        var trimmed = lane.Trim();
-        if (Enum.TryParse<DadPlannerActivityMode>(trimmed, ignoreCase: true, out var parsed))
-            return parsed;
-
-        return PresetProviderService.GetPlannerLaneDefinitions()
-            .FirstOrDefault(definition =>
-                string.Equals(definition.DisplayName, trimmed, StringComparison.OrdinalIgnoreCase))
-            ?.ActivityMode ?? fallback;
-    }
+        => PresetProviderService.BuildOptionsForGroup(group, startRequest);
 
     private static DadPlannerGroup ClonePlannerGroup(DadPlannerGroup source)
         => new()
@@ -4690,48 +3859,14 @@ public sealed class Plugin : IDalamudPlugin
         DadPlannerGroup source,
         DadCharacterPool pool,
         int iteration)
-    {
-        var compilation = CompileLevelingMode(source, pool, iteration);
-        var build = new DadLevelingChildBuild { Compilation = compilation };
-        if (!compilation.CanStartChild || compilation.ChildGroup == null)
-            return build;
-
-        var child = compilation.ChildGroup;
-        var options = BuildPlannerOptionsForGroup(child, null);
-        var plannerPreview = PresetProviderService.BuildPlannerPreview(pool, options, child);
-        build.PlannerPreview = ApplyPlannerRuntimeTruth(
-            PresetProviderService.BuildPlannerRunRequestPreview(
-                pool,
-                options,
-                requestId: compilation.ChildRequestId,
-                requestedAtUtc: DateTime.UtcNow,
-                plannerPreviewOverride: plannerPreview,
-                selectedGroup: child,
-                completionFallback: Configuration.CompletionActions),
-            pool,
-            child);
-        return build;
-    }
+        => DadLevelingRuntime.BuildChild(source, pool, iteration, GetLevelingJobCatalog(),
+            PresetProviderService, Configuration.CompletionActions, ApplyPlannerRuntimeTruth);
 
     private DadLevelingCompilation CompileLevelingMode(
         DadPlannerGroup source,
         DadCharacterPool pool,
         int iteration)
-    {
-        var dutyCatalog = (source.LevelingMode?.DutyThresholds ?? [])
-            .Where(static threshold => threshold != null && threshold.ContentFinderConditionId > 0)
-            .Select(threshold => PresetProviderService.GetPlannerDutyOption(threshold.ContentFinderConditionId))
-            .Where(static duty => duty != null)
-            .Select(static duty => duty!)
-            .DistinctBy(static duty => duty.ContentFinderConditionId)
-            .ToList();
-        return DadLevelingModeCompiler.Compile(
-            source,
-            pool,
-            GetLevelingJobCatalog(),
-            dutyCatalog,
-            iteration);
-    }
+        => DadLevelingRuntime.Compile(source, pool, iteration, GetLevelingJobCatalog(), PresetProviderService);
 
     private IReadOnlyList<DadLevelingJobDescriptor> GetLevelingJobCatalog()
     {
@@ -4765,30 +3900,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private static DadPlannerRunRequestPreview BuildLevelingPlannerPreview(DadLevelingChildBuild build)
-    {
-        if (build.PlannerPreview != null)
-            return build.PlannerPreview;
-
-        var compilation = build.Compilation ?? new DadLevelingCompilation();
-        if (compilation.Status != DadLevelingCompilationStatus.Complete)
-            return BuildBlockedPlannerGroupPreview(compilation.Summary);
-
-        var contract = new DadPlannerRequestContractPreview
-        {
-            Startability = "Complete",
-            CanStart = true,
-            CanSchedule = true,
-        };
-        return new DadPlannerRunRequestPreview
-        {
-            CanStart = true,
-            CanSchedule = true,
-            StatusSummary = compilation.Summary,
-            ReadinessSummary = compilation.Summary,
-            ContractPreview = contract,
-            ContractPreviewJson = DadIpcJson.Serialize(contract),
-        };
-    }
+        => DadLevelingRuntime.Preview(build);
 
     private DadRunResult StartScheduledPlannerRequest(
         DadRunRequest request,
@@ -4825,80 +3937,9 @@ public sealed class Plugin : IDalamudPlugin
         DadPlannerRunRequestPreview requestPreview,
         DadCharacterPool pool,
         DadPlannerGroup? selectedGroup = null)
-    {
-        if (requestPreview.Request == null)
-        {
-            RefreshPlannerContractPreview(requestPreview);
-            return requestPreview;
-        }
-
-        var previewOnly = string.Equals(requestPreview.Request.RequestedBy, "planner-preview", StringComparison.OrdinalIgnoreCase);
-        if (!previewOnly)
-        {
-            var requireLiveReadiness = requestPreview.CanStart || !requestPreview.CanSchedule;
-            var allowWakeableCoordinatorLeader = HasWakeableEffectiveCoordinatorSlot(selectedGroup, requestPreview);
-            var liveLocalRuntimeTruth = PresenceService.BuildLiveSafetySnapshot();
-            LogCoordinatorProvenance("planner-validation", requestPreview.Request, liveLocalRuntimeTruth);
-            var plan = PlannerService.BuildPlan(
-                requestPreview.Request,
-                pool,
-                out var rejectionReason,
-                requireLiveReadiness,
-                allowWakeableCoordinatorLeader,
-                liveLocalRuntimeTruth);
-            if (plan == null)
-            {
-                var relaxedPlanBuilt = requireLiveReadiness &&
-                                       PlannerService.BuildPlan(
-                                           requestPreview.Request,
-                                           pool,
-                                           out _,
-                                           requireLiveReadiness: false,
-                                           allowWakeableCoordinatorLeader: allowWakeableCoordinatorLeader,
-                                           liveLocalRuntimeTruth: liveLocalRuntimeTruth) != null;
-                if (DadPlannerValidationRules.IsStrictRuntimeOnlyFailure(
-                        requireLiveReadiness,
-                        strictPlanBuilt: false,
-                        relaxedPlanBuilt))
-                {
-                    MergePlannerReadinessBlocker(requestPreview, rejectionReason);
-                }
-                else
-                {
-                    MergePlannerPreviewBlocker(requestPreview, rejectionReason);
-                }
-            }
-            else if (!requestPreview.Request.Orchestration.AutoPartyFormationOnly &&
-                     DadFullPartyExecutionRules.IsQueueAuthorityLocal(plan, liveLocalRuntimeTruth))
-            {
-                var runtimeStatus = QueueExecutionService.PreviewModuleStart(plan);
-                MergePlannerRuntimeStatus(requestPreview, runtimeStatus);
-            }
-        }
-
-        RefreshPlannerContractPreview(requestPreview);
-        return requestPreview;
-    }
-
-    private static bool HasWakeableEffectiveCoordinatorSlot(
-        DadPlannerGroup? selectedGroup,
-        DadPlannerRunRequestPreview requestPreview)
-    {
-        if (selectedGroup == null)
-            return false;
-
-        var projected = DadEffectivePlannerGroupProjection.Project(
-            selectedGroup,
-            requestPreview.PlannerPreview.ActivityMode,
-            requestPreview.ExpectedPartySize);
-        var bound = DadEffectivePlannerGroupProjection.BindResolvedSchedulerSlots(
-            projected,
-            requestPreview.PlannerPreview.SelectedCharacters);
-        var slotOne = DadPlannerSlotRules.GetPrimaryRows(bound.Slots)
-            .FirstOrDefault(static slot =>
-                string.Equals(slot.SlotId, DadPlannerSlotRules.LeaderSlotId, StringComparison.OrdinalIgnoreCase));
-        return slotOne?.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline;
-    }
+        => DadPlannerRuntimeValidation.Apply(requestPreview, pool, selectedGroup,
+            PlannerService, QueueExecutionService, PresenceService.BuildLiveSafetySnapshot,
+            (request, truth) => LogCoordinatorProvenance("planner-validation", request, truth));
 
     private void LogCoordinatorProvenance(
         string boundary,
@@ -4938,166 +3979,6 @@ public sealed class Plugin : IDalamudPlugin
             liveTruth.WorldReadyStable,
             resolved,
             resolved ? "(none)" : blocker);
-    }
-
-    private static void MergePlannerRuntimeStatus(DadPlannerRunRequestPreview requestPreview, DadModuleExecutionStatusDto runtimeStatus)
-    {
-        MergePlannerModuleBlockers(requestPreview.ModuleBlockers, runtimeStatus.Blockers);
-
-        if (!runtimeStatus.CanStart)
-        {
-            var decision = DadPlannerValidationRules.EvaluateModuleRuntimeStatus(
-                requestPreview.CanSchedule,
-                runtimeStatus);
-            var reason = decision.Reason;
-            if (decision.IsTransientRuntimeReadiness)
-            {
-                MergePlannerReadinessBlocker(requestPreview, reason);
-                return;
-            }
-
-            requestPreview.CanStart = false;
-            requestPreview.CanSchedule = decision.CanSchedule;
-            if (!string.IsNullOrWhiteSpace(reason) &&
-                requestPreview.ModuleBlockers.All(existing =>
-                    !string.Equals(existing.Summary, reason, StringComparison.OrdinalIgnoreCase)))
-            {
-                requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
-                {
-                    ModuleId = requestPreview.ModuleId,
-                    Capability = "PlannerRuntime",
-                    Severity = DadModuleBlockerSeverity.Blocked,
-                    Summary = reason,
-                });
-            }
-
-            requestPreview.BlockedReason = DadPlannerValidationRules.BuildBlockedReason(requestPreview);
-            requestPreview.StatusSummary = $"Planner request blocked by module runtime: {requestPreview.BlockedReason}";
-
-            return;
-        }
-
-        if (requestPreview.CanStart && !string.IsNullOrWhiteSpace(runtimeStatus.Summary))
-            requestPreview.StatusSummary = $"Planner request ready to start. {runtimeStatus.Summary}";
-    }
-
-    private static void MergePlannerPreviewBlocker(DadPlannerRunRequestPreview requestPreview, string blocker)
-    {
-        if (string.IsNullOrWhiteSpace(blocker))
-            return;
-
-        requestPreview.CanSchedule = false;
-        requestPreview.CanStart = false;
-        AddPlannerValidationBlocker(requestPreview.StaticBlockers, blocker);
-
-        if (requestPreview.ModuleBlockers.All(existing => !string.Equals(existing.Summary, blocker, StringComparison.OrdinalIgnoreCase)))
-        {
-            requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
-            {
-                ModuleId = requestPreview.ModuleId,
-                Capability = "Planner",
-                Severity = DadModuleBlockerSeverity.Blocked,
-                Summary = blocker,
-            });
-        }
-
-        requestPreview.BlockedReason = DadPlannerValidationRules.BuildBlockedReason(requestPreview);
-        requestPreview.StatusSummary = $"Planner request blocked: {requestPreview.BlockedReason}";
-    }
-
-    private static void MergePlannerReadinessBlocker(DadPlannerRunRequestPreview requestPreview, string blocker)
-    {
-        if (string.IsNullOrWhiteSpace(blocker))
-            return;
-
-        requestPreview.CanStart = false;
-        AddPlannerValidationBlocker(requestPreview.ReadinessBlockers, blocker);
-        requestPreview.ReadinessSummary = $"Waiting for refreshed strict-runtime readiness: {blocker}";
-        if (requestPreview.ModuleBlockers.All(existing => !string.Equals(existing.Summary, blocker, StringComparison.OrdinalIgnoreCase)))
-        {
-            requestPreview.ModuleBlockers.Add(new DadModuleBlockerDto
-            {
-                ModuleId = requestPreview.ModuleId,
-                Capability = "PlannerRuntimeReadiness",
-                Severity = DadModuleBlockerSeverity.Blocked,
-                Summary = blocker,
-            });
-        }
-
-        requestPreview.BlockedReason = DadPlannerValidationRules.BuildBlockedReason(requestPreview);
-        requestPreview.StatusSummary = requestPreview.CanSchedule
-            ? $"Planner request remains schedulable while runtime truth refreshes: {requestPreview.BlockedReason}"
-            : $"Planner request remains terminally blocked while retaining readiness detail: {requestPreview.BlockedReason}";
-    }
-
-    private static void MergePlannerModuleBlockers(List<DadModuleBlockerDto> target, IReadOnlyList<DadModuleBlockerDto> source)
-    {
-        foreach (var blocker in source)
-        {
-            if (target.Any(existing =>
-                    existing.ModuleId == blocker.ModuleId &&
-                    string.Equals(existing.Capability, blocker.Capability, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.Summary, blocker.Summary, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
-            target.Add(blocker.Clone());
-        }
-    }
-
-    private static void AddPlannerValidationBlocker(List<string> blockers, string blocker)
-    {
-        if (string.IsNullOrWhiteSpace(blocker) ||
-            blockers.Any(existing => string.Equals(existing, blocker, StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
-
-        blockers.Add(blocker.Trim());
-    }
-
-    private static void RefreshPlannerContractPreview(DadPlannerRunRequestPreview requestPreview)
-    {
-        requestPreview.BlockedReason = requestPreview.CanStart
-            ? string.Empty
-            : DadPlannerValidationRules.BuildBlockedReason(requestPreview);
-        requestPreview.StopPolicy = requestPreview.Request?.StopPolicy.Clone()
-                                    ?? requestPreview.PlannerPreview.StopPolicy.Clone();
-        requestPreview.ContractPreview.StopPolicy = requestPreview.StopPolicy.Clone();
-        requestPreview.ContractPreview.CanStart = requestPreview.CanStart;
-        requestPreview.ContractPreview.CanSchedule = requestPreview.CanSchedule;
-        requestPreview.ContractPreview.ReadinessSummary = requestPreview.ReadinessSummary;
-        requestPreview.ContractPreview.StaticBlockers = [..requestPreview.StaticBlockers];
-        requestPreview.ContractPreview.ReadinessBlockers = [..requestPreview.ReadinessBlockers];
-        requestPreview.ContractPreview.ScheduleBlockers = [..requestPreview.ScheduleBlockers];
-        requestPreview.ContractPreview.Startability = BuildPlannerStartabilityLabel(requestPreview);
-        requestPreview.ContractPreview.Blockers = BuildPlannerContractBlockers(requestPreview);
-        requestPreview.ContractPreviewJson = DadIpcJson.Serialize(requestPreview.ContractPreview);
-    }
-
-    private static string BuildPlannerStartabilityLabel(DadPlannerRunRequestPreview requestPreview)
-        => requestPreview.CanStart
-            ? "Startable"
-            : requestPreview.CanSchedule
-                ? "Schedulable"
-            : string.Equals(requestPreview.Request?.RequestedBy, "planner-preview", StringComparison.OrdinalIgnoreCase)
-                ? "PreviewOnly"
-                : "Blocked";
-
-    private static List<string> BuildPlannerContractBlockers(DadPlannerRunRequestPreview requestPreview)
-    {
-        var blockers = new List<string>();
-        if (!string.IsNullOrWhiteSpace(requestPreview.BlockedReason))
-            blockers.Add(requestPreview.BlockedReason);
-
-        blockers.AddRange(requestPreview.PlannerPreview.Blockers);
-        blockers.AddRange(requestPreview.ModuleBlockers
-            .Select(static blocker => blocker.Summary)
-            .Where(static summary => !string.IsNullOrWhiteSpace(summary)));
-        return blockers
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
     }
 
     private static string BuildPlannerPreviewSignature(DadPresetPlannerOptions options, DadActivityPreset plannerPreview)
@@ -5282,92 +4163,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private DadStopAllWorkerResult RunLocalLifecycleCleanup(DadStopAllRequest request)
-    {
-        var hasRecordedResult = localStopAllResults.TryGetValue(request.OperationId, out var recorded);
-        var decision = DadLifecycleCleanupRules.Decide(
-            hasRecordedResult,
-            hasRecordedResult && DadStopAllStatusRules.IsLocalCleanupPending(recorded!));
-        if (decision.ReturnRecordedResult)
-            return recorded!.Clone();
-
-        try
-        {
-            var reason = string.IsNullOrWhiteSpace(request.Reason) ? "Stopped by DAD Stop-all." : request.Reason;
-            DadStopAllWorkerResult result;
-            DadWakeTakeoverStopAllResult wake;
-            if (decision.RunFullCleanup)
-            {
-                var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
-                CancelStandaloneCrewDisband(reason);
-                var scheduler = SchedulerService.StopAll(reason, suppression);
-                AutoPartyService.StopAll(reason);
-                AlliancePartyFinderService.Stop(reason);
-                RunCoordinatorService.CancelAllLocal(reason);
-                wake = WakeTakeoverService.StopAll(reason);
-                ClaimService.ReleaseAllClaims();
-                WorkerExecutionService.CancelAll(reason);
-                QueueExecutionService.CancelAll(reason);
-                PresenceService.ResetToIdle();
-                result = new DadStopAllWorkerResult
-                {
-                    OperationId = request.OperationId,
-                    WorkerSessionId = PresenceService.WorkerSessionId,
-                    CancelledSchedulerJobs = scheduler.PendingJobsCancelled + (scheduler.ActiveJobCancelled ? 1 : 0),
-                    Summary = scheduler.Summary,
-                };
-            }
-            else
-            {
-                // Repeated delivery of the same operation is the cleanup acknowledgement poll. All
-                // broad stop mutations already ran; only retry DAD-owned takeover lease release.
-                result = recorded!.Clone();
-                wake = WakeTakeoverService.StopAll(reason);
-            }
-
-            result.UpdatedAtUtc = DateTime.UtcNow;
-            result.LocalCleanupCompleted = !wake.CleanupPending;
-            result.State = wake.CleanupPending
-                ? DadStopAllWorkerState.Expected
-                : DadStopAllWorkerState.Acknowledged;
-            result.CancelledWakeTakeovers = Math.Max(result.CancelledWakeTakeovers, wake.CancelledCount);
-            result.PreservedCommittedTakeovers = Math.Max(
-                result.PreservedCommittedTakeovers,
-                wake.PreservedCommittedCount);
-            result.Partial = result.PreservedCommittedTakeovers > 0;
-            var summary = hasRecordedResult
-                ? result.Summary
-                : $"{result.Summary} {wake.Summary}";
-            result.Summary = WithStopAllCleanupState(summary, wake.CleanupPending);
-            DadStopAllStatusRules.NormalizeLocalResult(result);
-            localStopAllResults[request.OperationId] = result.Clone();
-            while (localStopAllResults.Count > 32)
-                localStopAllResults.Remove(localStopAllResults.Keys.First());
-            return result;
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "[dad] Stop-all {OperationId} local cleanup failed.", request.OperationId);
-            var result = hasRecordedResult ? recorded!.Clone() : new DadStopAllWorkerResult();
-            result.OperationId = request.OperationId;
-            result.WorkerSessionId = PresenceService.WorkerSessionId;
-            result.State = DadStopAllWorkerState.Rejected;
-            result.UpdatedAtUtc = DateTime.UtcNow;
-            result.LocalCleanupCompleted = false;
-            result.Partial = true;
-            result.Summary = $"Local Stop-all cleanup failed: {ex.Message}";
-            localStopAllResults[request.OperationId] = result.Clone();
-            return result;
-        }
-    }
-
-    private static string WithStopAllCleanupState(string summary, bool cleanupPending)
-    {
-        const string pendingSuffix = " DAD-owned takeover cleanup is pending; acknowledgement will follow after all temporary leases release.";
-        summary = (summary ?? string.Empty).Trim();
-        if (summary.EndsWith(pendingSuffix.TrimStart(), StringComparison.Ordinal))
-            summary = summary[..^pendingSuffix.TrimStart().Length].TrimEnd();
-        return cleanupPending ? $"{summary}{pendingSuffix}".Trim() : summary;
-    }
+        => localLifecycleCleanup.RunLocalLifecycleCleanup(request);
 
     public static bool IsBusy(DadRunResult result)
         => result.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running;
@@ -6689,48 +5485,10 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void ObserveLocalRuntimeReadiness()
-    {
-        var signature = CaptureLocalRuntimeReadinessSignature();
-        if (localRuntimeReadinessTracker.WouldChange(signature))
-        {
-            // A takeover callback can acquire/release suppression after the normal presence pass.
-            // Refresh once on a semantic edge so the immediate heartbeat carries final post-AR truth.
-            PresenceService.Update(
-                CharacterIntelligenceService.CurrentPool,
-                TransportService.CurrentTransport.ListenerEndpoint);
-            signature = CaptureLocalRuntimeReadinessSignature();
-        }
-
-        if (!localRuntimeReadinessTracker.Observe(signature, out var revision))
-            return;
-
-        InvalidatePlannerPreviewCache($"local runtime readiness revision {revision}");
-        SchedulerService.WakeForRuntimeReadiness(PresenceService.WorkerSessionId);
-        TransportService.NotifyLocalRuntimeReadinessChanged(revision);
-    }
-
-    private DadRuntimeReadinessSignature CaptureLocalRuntimeReadinessSignature()
-    {
-        var participant = PresenceService.BuildSnapshotCopy();
-        var autoRetainer = AutoRetainerIpcService.Inspect();
-        return DadRuntimeReadinessSignature.Create(
-            participant,
-            autoRetainer.SuppressionReadable,
-            autoRetainer.IsSuppressed,
-            autoRetainer.SuppressionOwnedByDad,
-            autoRetainer.CharacterPostprocessOwnedByDad,
-            WakeTakeoverService.GetActiveStatus());
-    }
+    private void ObserveLocalRuntimeReadiness() => runtimeReadinessObserver.ObserveLocal();
 
     private void OnRemoteRuntimeReadinessChanged(DadWorkerSessionId workerSessionId, long revision)
-    {
-        // Transport applies the heartbeat and refreshes its participant projection before invoking
-        // this callback on the framework thread, so the scheduler can consume the edge this tick.
-        InvalidatePlannerPreviewCache($"remote runtime readiness revision {revision} ({workerSessionId.Value})");
-        SchedulerService.WakeForRuntimeReadiness(workerSessionId);
-        CharacterIntelligenceService.RefreshLocalCharacterPool("remote-runtime-readiness", logRefresh: false);
-    }
+        => runtimeReadinessObserver.ObserveRemote(workerSessionId, revision);
 
     private void LearnRetainedTransportRosterKnowledge()
     {
@@ -6743,20 +5501,19 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void AttachAutoPartyRelayAfterValidatedBootstrap()
-    {
-        if (AutoPartyEndpointService.RelayStatus.Attached ||
-            !Configuration.AutoParty.HasImportedBootstrap ||
-            (Configuration.AutoParty.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
-             Configuration.AutoParty.BootstrapExpiresAtUtc <= DateTime.UtcNow))
-            return;
-        AutoPartyEndpointService.AttachRelayPump(autoPartyRelayPump, AutoPartyService);
-    }
+        => DadRuntimeHandlers.AttachAutoPartyRelayAfterValidatedBootstrap(
+            Configuration.AutoParty, AutoPartyEndpointService, autoPartyRelayPump, AutoPartyService);
+
+    private readonly DadLifecycleUpdateLoop lifecycleUpdateLoop;
 
     private void OnFrameworkUpdate(IFramework framework)
+        => lifecycleUpdateLoop.Update();
+
+    private Dictionary<string, Action> CreateLifecycleSteps() => new()
     {
-        RunFrameworkStep("FlushDebouncedUiWrites", () => FlushDebouncedUiWrites(force: false));
-        RunFrameworkStep("UpdateDtrBar", UpdateDtrBar);
-        RunFrameworkStep("RuntimeIdentity", () =>
+        ["FlushDebouncedUiWrites"] = () => FlushDebouncedUiWrites(force: false),
+        ["UpdateDtrBar"] = UpdateDtrBar,
+        ["RuntimeIdentity"] = () =>
         {
             if (ClientState.IsLoggedIn && ObjectTable.LocalPlayer != null)
             {
@@ -6773,73 +5530,62 @@ public sealed class Plugin : IDalamudPlugin
                     Configuration.Save();
                 }
             }
-        });
-
-        RunFrameworkStep("Dependencies", () => DependencyService.Update(Configuration.PluginEnabled));
-        RunFrameworkStep("KranglerPrivacyLease", () => KranglerPrivacyLeaseService.Update(
-            IsKranglerPrivacyLeaseDesired()));
-        RunFrameworkStep("DependencyWindow", dependenciesWindow.Sync);
-        RunFrameworkStep("CharacterIntelligence", () => CharacterIntelligenceService.Update());
-        RunFrameworkStep("VermaxionReservation", VermaxionIpcService.Update);
-        RunFrameworkStep("Presence", () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint));
-        RunFrameworkStep("PartyInviteAcceptance", PartyInviteGateway.UpdateAcceptance);
-        RunFrameworkStep("WakeTakeover", () =>
+        },
+        ["Dependencies"] = () => DependencyService.Update(Configuration.PluginEnabled),
+        ["KranglerPrivacyLease"] = () => KranglerPrivacyLeaseService.Update(
+            IsKranglerPrivacyLeaseDesired()),
+        ["DependencyWindow"] = dependenciesWindow.Sync,
+        ["CharacterIntelligence"] = () => CharacterIntelligenceService.Update(),
+        ["VermaxionReservation"] = VermaxionIpcService.Update,
+        ["Presence"] = () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint),
+        ["PartyInviteAcceptance"] = PartyInviteGateway.UpdateAcceptance,
+        ["WakeTakeover"] = () =>
         {
             if (!Configuration.RunAsServerDad && !TransportService.CurrentTransport.AuthorityRoutable)
                 WakeTakeoverService.OnCoordinatorDisconnected();
             WakeTakeoverService.Update();
-        });
-        RunFrameworkStep("RuntimeReadinessEdges", ObserveLocalRuntimeReadiness);
-        RunFrameworkStep("TransportHeartbeat", () => TransportService.UpdateHeartbeat(
+        },
+        ["RuntimeReadinessEdges"] = ObserveLocalRuntimeReadiness,
+        ["TransportHeartbeat"] = () => TransportService.UpdateHeartbeat(
             PresenceService.BuildSnapshotCopy(),
             Configuration.PluginEnabled,
-            Configuration.LocalOnlyModeEnabled));
-        RunFrameworkStep("PlannerDependencyRevision", AdvancePlannerDependencyRevision);
-        RunFrameworkStep("AutoPartyRelayAttach", AttachAutoPartyRelayAfterValidatedBootstrap);
-        RunFrameworkStep("AutoPartyEndpoint", () => AutoPartyEndpointService.Update(Configuration.PluginEnabled));
-        RunFrameworkStep("AlliancePartyFinder", AlliancePartyFinderService.Update);
-        RunFrameworkStep("AutoParty", () => AutoPartyService.Update(Configuration.PluginEnabled));
-        RunFrameworkStep("PendingTakeoverCancellation", SchedulerService.UpdatePendingTakeoverCancellations);
-        RunFrameworkStep("PendingEarlyAssignmentCancellation", SchedulerService.UpdatePendingEarlyAssignmentCancellations);
-        RunFrameworkStep("PendingRewardProbeCancellation", SchedulerService.UpdatePendingRewardProbeCancellations);
-        RunFrameworkStep("RetainedRosterKnowledge", LearnRetainedTransportRosterKnowledge);
-        RunFrameworkStep("DeferredRosterPersistence", RosterCatalogService.UpdateDeferredPersistence);
-        RunFrameworkStep("ClientReconnectWindow", () =>
+            Configuration.LocalOnlyModeEnabled),
+        ["PlannerDependencyRevision"] = AdvancePlannerDependencyRevision,
+        ["AutoPartyRelayAttach"] = AttachAutoPartyRelayAfterValidatedBootstrap,
+        ["AutoPartyEndpoint"] = () => AutoPartyEndpointService.Update(Configuration.PluginEnabled),
+        ["AlliancePartyFinder"] = AlliancePartyFinderService.Update,
+        ["AutoParty"] = () => AutoPartyService.Update(Configuration.PluginEnabled),
+        ["PendingTakeoverCancellation"] = SchedulerService.UpdatePendingTakeoverCancellations,
+        ["PendingEarlyAssignmentCancellation"] = SchedulerService.UpdatePendingEarlyAssignmentCancellations,
+        ["PendingRewardProbeCancellation"] = SchedulerService.UpdatePendingRewardProbeCancellations,
+        ["RetainedRosterKnowledge"] = LearnRetainedTransportRosterKnowledge,
+        ["DeferredRosterPersistence"] = RosterCatalogService.UpdateDeferredPersistence,
+        ["ClientReconnectWindow"] = () =>
         {
             var showReconnect = Configuration.PluginEnabled &&
                                 !Configuration.RunAsServerDad &&
                                 !Configuration.LocalOnlyModeEnabled &&
                                 !TransportService.CurrentTransport.AuthorityRoutable;
             clientReconnectWindow.IsOpen = showReconnect;
-        });
-        RunFrameworkStep("ProfileDirectory", () => ProfileDirectoryService.Update());
-        RunFrameworkStep("WorkerExecution", () => WorkerExecutionService.Update());
-        RunFrameworkStep("SchedulerEnqueue", () =>
+        },
+        ["ProfileDirectory"] = () => ProfileDirectoryService.Update(),
+        ["WorkerExecution"] = () => WorkerExecutionService.Update(),
+        ["SchedulerEnqueue"] = () =>
         {
             if (!standaloneCrewDisbandActive)
                 SchedulerService.TickScheduleEnqueue();
-        });
-        RunFrameworkStep("SchedulerUpdate", () =>
-        {
-            if (CanUpdateSchedulerLifecycle())
-            {
-                SchedulerService.UpdateWithScheduleRepeatBoundary(
-                    ResolvePlannerGroup,
-                    BuildSchedulerPlannerPreview,
-                    StartScheduledPlannerRequest,
-                    () => GetVisibleRunState().VisibleRun);
-            }
-        });
-        RunFrameworkStep("Coordinator", () => RunCoordinatorService.Update());
-        RunFrameworkStep("AutoPartyRuntimeBindings", ReconcileAutoPartyRuntimeBindings);
-        RunFrameworkStep("CrewToolsDisband", UpdateStandaloneCrewDisband);
-        RunFrameworkStep("CompletionActions", () => DadCompletionActionRunner.Update(Configuration, Log));
-        RunFrameworkStep("DutyIpc", () => DutyIpcService.Update());
-        RunFrameworkStep("DutyIpcRegister", () => DutyIpcService.EnsureRegistered());
-        // The persistence coordinator is intentionally last: every same-frame mutation above is captured
-        // before one quiet/max-delay/retry decision is made, and storage exceptions stay inside this step.
-        RunFrameworkStep("ConfigurationPersistence", () => configurationPersistence.Update());
-    }
+        },
+        ["SchedulerUpdate"] = () => DadRuntimeHandlers.UpdateScheduler(Configuration, SchedulerService,
+            RunCoordinatorService, standaloneCrewDisbandActive, () => GetVisibleRunState().VisibleRun,
+            ResolvePlannerGroup, BuildSchedulerPlannerPreview, StartScheduledPlannerRequest),
+        ["Coordinator"] = () => RunCoordinatorService.Update(),
+        ["AutoPartyRuntimeBindings"] = ReconcileAutoPartyRuntimeBindings,
+        ["CrewToolsDisband"] = UpdateStandaloneCrewDisband,
+        ["CompletionActions"] = () => DadCompletionActionRunner.Update(Configuration, Log),
+        ["DutyIpc"] = () => DutyIpcService.Update(),
+        ["DutyIpcRegister"] = () => DutyIpcService.EnsureRegistered(),
+        ["ConfigurationPersistence"] = () => configurationPersistence.Update(),
+    };
 
     private void OnLogin()
     {
@@ -6850,149 +5596,3 @@ public sealed class Plugin : IDalamudPlugin
         PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
     }
 }
-
-internal sealed record DadPlannerUiSnapshot
-{
-    public long Generation { get; init; }
-    public DateTime RebuiltAtUtc { get; init; } = DateTime.UtcNow;
-    public string RebuildReason { get; init; } = string.Empty;
-    public DadCharacterPool CuratedPool { get; init; } = new();
-    public DadActivityPreset PlannerPreview { get; init; } = new();
-    public DadPlannerRunRequestPreview RequestPreview { get; init; } = new();
-    public DadSchedulerPreview SchedulerPreview { get; init; } = new();
-    public IReadOnlyList<DadRosterAccountOption> AccountOptions { get; init; } = [];
-    public IReadOnlyList<DadLaunchProfile> LaunchProfiles { get; init; } = [];
-    public IReadOnlyList<DadPlannerGroup> PlannerGroups { get; init; } = [];
-    public DadPlannerGroup? SelectedGroup { get; init; }
-    public IReadOnlyList<DadPlannerLanePreviewSnapshot> LanePreviews { get; init; } = [];
-    public DadPlannerDutyOption? SelectedDuty { get; init; }
-    public IReadOnlyList<DadPlannerRouletteOption> RouletteOptions { get; init; } = [];
-    public DadPlannerRouletteOption? SelectedRoulette { get; init; }
-    public DadRoulettePresetConflictIndex RouletteConflictIndex { get; init; } =
-        DadRoulettePresetConflictRules.BuildIndex([]);
-    public IReadOnlyDictionary<string, IReadOnlyList<DadAcquiredCharacter>> CharactersByAccountKey { get; init; } =
-        new Dictionary<string, IReadOnlyList<DadAcquiredCharacter>>(StringComparer.OrdinalIgnoreCase);
-
-    public DadPlannerLanePreviewSnapshot? GetLanePreview(DadPlannerActivityMode activityMode)
-        => LanePreviews.FirstOrDefault(preview => preview.Lane.ActivityMode == activityMode);
-
-    public IReadOnlyList<DadAcquiredCharacter> GetCharactersForAccount(DadAccountKey accountKey)
-        => !accountKey.IsEmpty && CharactersByAccountKey.TryGetValue(accountKey.Value, out var characters)
-            ? characters
-            : [];
-}
-
-internal sealed record DadPlannerLanePreviewSnapshot(
-    DadPlannerLaneDefinition Lane,
-    bool IsSelected,
-    DadPlannerRunRequestPreview RequestPreview);
-
-internal sealed class DadPlannerUiCacheStats
-{
-    public long Generation { get; init; }
-    public long HitCount { get; init; }
-    public long MissCount { get; init; }
-    public long SchedulerHitCount { get; init; }
-    public long SchedulerMissCount { get; init; }
-    public double LastRebuildMilliseconds { get; init; }
-    public double MaxRebuildMilliseconds { get; init; }
-    public DateTime LastRebuiltAtUtc { get; init; }
-    public string LastRebuildReason { get; init; } = string.Empty;
-}
-
-internal readonly record struct DadPlannerUiCacheKey(
-    long Generation,
-    bool DebugUiEnabled,
-    bool PluginEnabled,
-    bool LocalOnlyModeEnabled,
-    int CombatRotationMode,
-    long RosterRevision,
-    long CatalogRevision,
-    long LaunchProfilesRevision,
-    long TransportRevision);
-
-internal readonly record struct DadPlannerSchedulerCacheKey(
-    DadPlannerUiCacheKey HeavyweightKey,
-    long SchedulerRevision,
-    long RunRevision,
-    long DependencyRevision);
-
-internal sealed record DadPlannerRosterSemantic(
-    bool XadbReady,
-    int? XadbSnapshotVersion,
-    DadOrderedSemantic<DadPlannerCharacterSemantic> Characters);
-
-internal sealed record DadPlannerCharacterSemantic(
-    string CharacterKey,
-    ulong ContentId,
-    string CharacterName,
-    uint WorldId,
-    string WorldName,
-    uint? DataCenterId,
-    string DataCenterName,
-    string AccountId,
-    string AccountAlias,
-    DadCharacterSource Source,
-    DadSnapshotFreshness Freshness,
-    uint? CurrentJobId,
-    string CurrentJobAbbrev,
-    int? CurrentLevel,
-    DadOrderedSemantic<KeyValuePair<uint, int>> JobLevels,
-    uint? TerritoryId,
-    string TerritoryName,
-    int? PartyRosterCount,
-    int? VisiblePartyCount,
-    DadReadinessState Readiness,
-    DadOrderedSemantic<string> Blockers,
-    string SnapshotQuality,
-    int? SnapshotVersion,
-    bool XadbReady,
-    DadRosterVisibility RosterVisibility,
-    bool NeedsRosterUpdate,
-    bool? MapEligible);
-
-internal sealed record DadPlannerDependencySemantic(
-    DadOrderedSemantic<DadPlannerDependencyEntrySemantic> Participants);
-
-internal sealed record DadPlannerDependencyEntrySemantic(
-    string WorkerSessionId,
-    int SchemaVersion,
-    long Revision,
-    DadDependencyState AggregateState,
-    bool IsReady);
-
-internal sealed record DadPlannerRunSemantic(
-    DadPlannerRunValueSemantic Local,
-    DadPlannerRunValueSemantic Authority,
-    DadPlannerRunValueSemantic Visible,
-    bool IsRemoteAuthorityView,
-    DadAuthorityViewKind AuthorityViewKind,
-    bool HasRemoteAuthority);
-
-internal sealed record DadPlannerRunValueSemantic(
-    string RequestId,
-    DadRunStatus Status,
-    DadRunPhase Phase,
-    DadModuleId ModuleId,
-    DadRunCancellationState CancellationState,
-    int CompletedTaskCount,
-    int ActiveTaskIndex,
-    int TotalTaskCount,
-    string ActiveTaskName,
-    string ActiveTaskStatus,
-    string BlockedReason,
-    string FailureReason,
-    DadModuleId ExecutorModuleId,
-    DadRunStatus ExecutorStatus,
-    DadRunPhase ExecutorPhase,
-    string ExecutorBlockedReason,
-    int ParticipantCount,
-    int StepResultCount);
-
-internal sealed record DadPlannerValidationFeedback(
-    long Generation,
-    string GroupId,
-    string Summary,
-    string PlannerStatus,
-    string SchedulerStatus,
-    DateTime CheckedAtUtc);

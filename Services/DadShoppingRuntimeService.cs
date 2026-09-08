@@ -144,7 +144,7 @@ public sealed class DadShoppingRuntimeService
     public void CancelActive(string reason)
     {
         var summary = string.IsNullOrWhiteSpace(reason) ? "ADS shopping was cancelled." : reason.Trim();
-        BeginCancellation(DateTime.UtcNow, "dad-shopping-cancelled", summary);
+        BeginCancellation(DadClock.UtcNow, "dad-shopping-cancelled", summary);
     }
 
     private void BeginCancellation(DateTime now, string failureCode, string summary)
@@ -436,7 +436,7 @@ public sealed class DadShoppingRuntimeService
                 $"Post-fulfillment command failed: {ex.Message}");
         }
 
-        postCommandDispatchedAtUtc = DateTime.UtcNow;
+        postCommandDispatchedAtUtc = DadClock.UtcNow;
         postCommandActivityObservedAtUtc = DateTime.MinValue;
         observedPostCommandUnsafe = false;
         postCommandRequiresBusyProof = string.Equals(command, AutoRetainerDeliveryCommand, StringComparison.OrdinalIgnoreCase);

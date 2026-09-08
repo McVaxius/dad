@@ -123,6 +123,7 @@ public sealed class DadMogtomeRunRequest
 
 public sealed class DadMogtomeRunStatus
 {
+    internal bool ResponseUncertain { get; init; }
     public int SchemaVersion { get; set; } = 1;
     public string DadRunId { get; set; } = string.Empty;
     public bool Ready { get; set; }
@@ -141,6 +142,7 @@ public sealed class DadMogtomeRunStatus
     public static DadMogtomeRunStatus Failed(string reason, string runId = "")
         => new()
         {
+            ResponseUncertain = true,
             DadRunId = runId,
             IsTerminal = true,
             Summary = reason,

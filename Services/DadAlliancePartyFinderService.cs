@@ -110,7 +110,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         try
         {
             ThrowIfDisposed();
-            var capturedAtUtc = DateTime.UtcNow;
+            var capturedAtUtc = DadClock.UtcNow;
             var content = await nativeGateway
                 .CaptureLookingForGroupDiagnosticsAsync(capturedAtUtc)
                 .ConfigureAwait(false);
@@ -183,7 +183,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                      !string.Equals(target.SlotId, host.SlotId, StringComparison.OrdinalIgnoreCase)))
             coordinatorTargets[target.CharacterKey.Value] = target;
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var passcode = DadAlliancePartyFinderRules.GeneratePasscode();
         var next = new DadAlliancePartyFinderStatus
         {
@@ -369,7 +369,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             {
                 status.CreatePreflightReady = false;
                 status.CreatePreflightBlocker = rejected.CreatePreflightBlocker;
-                status.UpdatedAtUtc = DateTime.UtcNow;
+                status.UpdatedAtUtc = DadClock.UtcNow;
                 result = status.Clone();
             }
             else
@@ -378,7 +378,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 rejected.CreateRejected = true;
                 rejected.Summary = rejected.CreatePreflightBlocker;
                 rejected.StopGeneration = status.StopGeneration;
-                rejected.UpdatedAtUtc = DateTime.UtcNow;
+                rejected.UpdatedAtUtc = DadClock.UtcNow;
                 status = rejected.Clone();
                 result = status.Clone();
             }
@@ -403,7 +403,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             grabRequested = true;
             coordinatorNextResendUtc = DateTime.MinValue;
             status.Summary = "Dispatching unresolved alliance targets concurrently.";
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             return status.Clone();
         }
     }
@@ -483,7 +483,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             receiverHostCleanupRequested = true;
             receiverCleanupDeadlineUtc = DadAllianceRemoteHostRules.GetFixedCleanupDeadline(
                 receiverCleanupDeadlineUtc,
-                DateTime.UtcNow);
+                DadClock.UtcNow);
             receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Waiting;
             receiverResult.State = DadAllianceRecruitmentState.Verifying;
             receiverResult.Retryable = true;
@@ -558,10 +558,10 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                              and not DadAllianceRecruitmentState.Stopped;
             status.StopGeneration = nextGeneration;
             status.State = DadAllianceRecruitmentState.Stopped;
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             status.Summary = string.IsNullOrWhiteSpace(reason) ? "Alliance recruitment stopped." : reason.Trim();
             if (status.OwnsRecruitment || coordinatorHostTarget != null)
-                BeginCoordinatorCleanup(DateTime.UtcNow);
+                BeginCoordinatorCleanup(DadClock.UtcNow);
         }
         if (stopCreate)
             nativeGateway.StopCreate();
@@ -609,7 +609,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         lock (statusGate)
             current = status.Clone();
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         if (cleanupRequested &&
             DadAllianceRemoteHostRules.CleanupExpired(cleanupDeadlineUtc, now))
         {
@@ -673,7 +673,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 status.CreateActiveRecruitment = cleanup.ActiveRecruitment;
                 status.CreateEditorVisible = cleanup.EditorVisible;
                 status.CreateSubmitDispatched = cleanup.SubmitDispatched;
-                status.UpdatedAtUtc = DateTime.UtcNow;
+                status.UpdatedAtUtc = DadClock.UtcNow;
             }
             if (cleanup.ShouldAudit)
             {
@@ -703,7 +703,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                         ? DadAllianceRecruitmentState.Stopped
                         : DadAllianceRecruitmentState.Complete;
                     status.Summary = cleanup.Summary;
-                    status.UpdatedAtUtc = DateTime.UtcNow;
+                    status.UpdatedAtUtc = DadClock.UtcNow;
                 }
                 QueueCentralCleanup();
                 Audit("recruitment-ended", null, 0, string.Empty, cleanup.Summary);
@@ -714,7 +714,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 {
                     status.State = DadAllianceRecruitmentState.Blocked;
                     status.Summary = cleanup.Summary;
-                    status.UpdatedAtUtc = DateTime.UtcNow;
+                    status.UpdatedAtUtc = DadClock.UtcNow;
                 }
                 Audit("cleanup-blocked", null, 0, cleanup.Summary, cleanup.Summary);
             }
@@ -724,7 +724,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         if (!grabRequested || current.State != DadAllianceRecruitmentState.ListingOpen)
             return;
 
-        now = DateTime.UtcNow;
+        now = DadClock.UtcNow;
         if (now < coordinatorNextResendUtc)
             return;
 
@@ -775,7 +775,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         if (host == null)
             return;
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         var lifecycle = DadAllianceRemoteHostRules.Evaluate(
             true,
             coordinatorHostDispatched || coordinatorHostAccepted,
@@ -929,7 +929,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             Attempt = (coordinatorHostResult?.Attempt ?? 0) + 1,
             State = DadAllianceRecruitmentState.CreatingListing,
             StopGeneration = current.StopGeneration,
-            IssuedAtUtc = DateTime.UtcNow,
+            IssuedAtUtc = DadClock.UtcNow,
         };
         coordinatorHostInstruction = instruction.Clone();
         coordinatorHostDispatched = true;
@@ -1144,7 +1144,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
     private void UpdateReceiver()
     {
         var instruction = receiverInstruction;
-        if (instruction == null || DateTime.UtcNow < receiverNextAttemptUtc)
+        if (instruction == null || DadClock.UtcNow < receiverNextAttemptUtc)
             return;
         if (instruction.CreateListingAsHost)
         {
@@ -1154,7 +1154,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         if (receiverResult.IsTerminal)
             return;
 
-        var started = DateTime.UtcNow;
+        var started = DadClock.UtcNow;
         var step = nativeGateway.AdvanceJoin(instruction);
         receiverResult.RecruitmentId = instruction.RecruitmentId;
         receiverResult.WorkerSessionId = presenceService.WorkerSessionId;
@@ -1167,7 +1167,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         receiverResult.Attempt = Math.Max(instruction.Attempt, receiverCompletedAttempts);
         receiverResult.State = step.State;
         receiverResult.StopGeneration = instruction.StopGeneration;
-        receiverResult.ObservedAtUtc = DateTime.UtcNow;
+        receiverResult.ObservedAtUtc = DadClock.UtcNow;
         receiverResult.Summary = step.Summary;
 
         switch (step.Kind)
@@ -1186,25 +1186,25 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Retry;
                 receiverResult.Retryable = true;
                 receiverResult.State = DadAllianceRecruitmentState.RetryWaiting;
-                receiverNextAttemptUtc = DateTime.UtcNow +
+                receiverNextAttemptUtc = DadClock.UtcNow +
                                          DadAlliancePartyFinderRules.GetRetryDelay(receiverCompletedAttempts - 1);
                 break;
             case DadAllianceNativeStepKind.Waiting:
                 receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Waiting;
                 receiverResult.Retryable = true;
-                receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+                receiverNextAttemptUtc = DadClock.UtcNow + TimeSpan.FromMilliseconds(250);
                 break;
             default:
                 receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Pending;
                 receiverResult.Retryable = true;
-                receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+                receiverNextAttemptUtc = DadClock.UtcNow + TimeSpan.FromMilliseconds(250);
                 break;
         }
 
         Audit(
             "receiver-attempt",
             receiverResult,
-            (int)(DateTime.UtcNow - started).TotalMilliseconds,
+            (int)(DadClock.UtcNow - started).TotalMilliseconds,
             step.Kind == DadAllianceNativeStepKind.Blocked ? step.Summary : string.Empty,
             step.Summary);
         if (step.ShouldAudit)
@@ -1215,7 +1215,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             Audit(
                 eventName,
                 receiverResult,
-                (int)(DateTime.UtcNow - started).TotalMilliseconds,
+                (int)(DadClock.UtcNow - started).TotalMilliseconds,
                 step.Kind == DadAllianceNativeStepKind.Retry
                     ? step.LastError
                     : string.Empty,
@@ -1225,7 +1225,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
 
     private void UpdateHostReceiver(DadAllianceRecruitmentInstructionDto instruction)
     {
-        var started = DateTime.UtcNow;
+        var started = DadClock.UtcNow;
         if (receiverCleanupTerminalPartial)
         {
             var activeRecruitment = nativeGateway.ObserveActiveRecruitment();
@@ -1266,12 +1266,12 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         {
             if (DadAllianceRemoteHostRules.CleanupExpired(
                     receiverCleanupDeadlineUtc,
-                    DateTime.UtcNow))
+                    DadClock.UtcNow))
             {
                 receiverHostCleanupRequested = false;
                 receiverCleanupTerminalPartial = true;
                 receiverTerminalAuditAttempts = 0;
-                receiverResult.ObservedAtUtc = DateTime.UtcNow;
+                receiverResult.ObservedAtUtc = DadClock.UtcNow;
                 receiverResult.State = DadAllianceRecruitmentState.Blocked;
                 receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Blocked;
                 receiverResult.Retryable = false;
@@ -1287,7 +1287,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             }
 
             var cleanup = nativeGateway.AdvanceEndRecruitment(receiverHostOwnsRecruitment);
-            receiverResult.ObservedAtUtc = DateTime.UtcNow;
+            receiverResult.ObservedAtUtc = DadClock.UtcNow;
             receiverResult.StopGeneration = instruction.StopGeneration;
             receiverResult.Summary = cleanup.Summary;
             receiverResult.State = cleanup.State;
@@ -1308,20 +1308,20 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 receiverResult.State = DadAllianceRecruitmentState.Blocked;
                 receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Waiting;
                 receiverResult.Retryable = true;
-                receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+                receiverNextAttemptUtc = DadClock.UtcNow + TimeSpan.FromMilliseconds(250);
             }
             else
             {
                 receiverResult.State = DadAllianceRecruitmentState.Verifying;
                 receiverResult.ResultKind = DadAllianceRecruitmentResultKind.Waiting;
                 receiverResult.Retryable = true;
-                receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+                receiverNextAttemptUtc = DadClock.UtcNow + TimeSpan.FromMilliseconds(250);
             }
 
             Audit(
                 "remote-host-cleanup",
                 receiverResult,
-                (int)(DateTime.UtcNow - started).TotalMilliseconds,
+                (int)(DadClock.UtcNow - started).TotalMilliseconds,
                 cleanup.Kind == DadAllianceNativeStepKind.Blocked ? cleanup.Summary : string.Empty,
                 cleanup.Summary);
             return;
@@ -1350,7 +1350,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         receiverResult.Attempt = instruction.Attempt;
         receiverResult.State = step.State;
         receiverResult.StopGeneration = instruction.StopGeneration;
-        receiverResult.ObservedAtUtc = DateTime.UtcNow;
+        receiverResult.ObservedAtUtc = DadClock.UtcNow;
         receiverResult.Summary = step.Summary;
 
         if (step.Kind == DadAllianceNativeStepKind.Succeeded)
@@ -1374,13 +1374,13 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 ? DadAllianceRecruitmentResultKind.Retry
                 : DadAllianceRecruitmentResultKind.Waiting;
             receiverResult.Retryable = true;
-            receiverNextAttemptUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+            receiverNextAttemptUtc = DadClock.UtcNow + TimeSpan.FromMilliseconds(250);
         }
 
         Audit(
             "remote-host-create",
             receiverResult,
-            (int)(DateTime.UtcNow - started).TotalMilliseconds,
+            (int)(DadClock.UtcNow - started).TotalMilliseconds,
             step.Kind == DadAllianceNativeStepKind.Blocked ? step.Summary : string.Empty,
             step.Summary);
     }
@@ -1411,7 +1411,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.CreateSubmitDispatched = false;
             status.CreateConfigurationTarget = string.Empty;
             status.CreateObservedSettings = string.Empty;
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
         }
         lastCreateAuditFingerprint = string.Empty;
         Audit(
@@ -1438,7 +1438,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.CreateSubmitDispatched = step.SubmitDispatched;
             status.CreateConfigurationTarget = step.ConfigurationTarget;
             status.CreateObservedSettings = step.ObservedSettings;
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             if (step.Kind == DadAllianceNativeStepKind.Succeeded)
             {
                 status.ListingId = step.ListingId;
@@ -1509,7 +1509,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             Attempt = priorAttempt + 1,
             State = DadAllianceRecruitmentState.Searching,
             StopGeneration = current.StopGeneration,
-            IssuedAtUtc = DateTime.UtcNow,
+            IssuedAtUtc = DadClock.UtcNow,
         };
         coordinatorInstructions[target.CharacterKey.Value] = instruction;
         var task = DispatchInstructionAsync(
@@ -2169,7 +2169,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
                 Blockers = [summary],
                 Summary = summary,
             };
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
             return status.Clone();
         }
     }
@@ -2250,7 +2250,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.CreateLastError = summary;
             status.Summary = summary;
             status.Results = BuildCoordinatorResultList();
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
         }
         Audit(
             "cleanup-deadline-partial",
@@ -2410,7 +2410,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
             status.State = finalState;
             status.Summary = summary;
             status.Results = BuildCoordinatorResultList();
-            status.UpdatedAtUtc = DateTime.UtcNow;
+            status.UpdatedAtUtc = DadClock.UtcNow;
         }
         QueueCentralCleanup();
         Audit(
@@ -2472,7 +2472,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         var current = GetStatus();
         audit.TryWrite(new DadAlliancePfAuditRecord
         {
-            TimestampUtc = DateTime.UtcNow,
+            TimestampUtc = DadClock.UtcNow,
             Event = "late-completion-dropped",
             RecruitmentId = instruction.RecruitmentId,
             PfOwnerHandle = current.ListingId,
@@ -2502,7 +2502,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
         var current = GetStatus();
         audit.TryWrite(new DadAlliancePfAuditRecord
         {
-            TimestampUtc = DateTime.UtcNow,
+            TimestampUtc = DadClock.UtcNow,
             Event = eventName,
             RecruitmentId = current.RecruitmentId,
             PfOwnerHandle = step.ListingId,
@@ -2559,7 +2559,7 @@ public sealed class DadAlliancePartyFinderService : IDisposable
               receiverInstruction;
         audit.TryWrite(new DadAlliancePfAuditRecord
         {
-            TimestampUtc = DateTime.UtcNow,
+            TimestampUtc = DadClock.UtcNow,
             Event = eventName,
             RecruitmentId = result?.RecruitmentId ?? current.RecruitmentId,
             PfOwnerHandle = current.ListingId,

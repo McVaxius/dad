@@ -125,8 +125,8 @@ internal static class DadAutoPartyFreeformRules
                 Slots = slots,
                 IsTemplate = false,
                 ScheduleEnabled = false,
-                CreatedAtUtc = DateTime.UtcNow,
-                UpdatedAtUtc = DateTime.UtcNow,
+                CreatedAtUtc = DadClock.UtcNow,
+                UpdatedAtUtc = DadClock.UtcNow,
             },
             bindings);
         return true;

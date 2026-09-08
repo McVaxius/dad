@@ -67,7 +67,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     private readonly DadPresenceService presenceService;
     private readonly IPluginLog log;
     private readonly IDataManager dataManager;
-    private readonly DadAlliancePartyFinderECommonsAdapter createUi;
+    private readonly IDadAlliancePartyFinderEditor createUi;
+    private readonly IDadAlliancePartyFinderNativeAccess? nativeAccess;
     private readonly DadAlliancePartyFinderNativeCallbackDispatcher
         joinCallbackDispatcher;
     private readonly DadStableAllianceHydrationTracker allianceHydration = new();
@@ -91,7 +92,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         IDataManager dataManager,
         IToastGui toastGui,
         IGameInteropProvider gameInteropProvider,
-        IPluginLog log)
+        IPluginLog log,
+        IDadAlliancePartyFinderNativeAccess? nativeAccess = null)
     {
         this.configuration = configuration;
         this.framework = framework;
@@ -100,9 +102,15 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         this.presenceService = presenceService;
         this.dataManager = dataManager;
         this.log = log;
-        joinCallbackDispatcher =
+        this.nativeAccess = nativeAccess;
+        joinCallbackDispatcher = nativeAccess != null
+            ? new DadAlliancePartyFinderNativeCallbackDispatcher(nativeAccess.CallbackSink, trace: LogJoinCallbackTrace)
+            :
             new DadAlliancePartyFinderNativeCallbackDispatcher(
                 LogJoinCallbackTrace);
+        if (nativeAccess != null) createUi = nativeAccess;
+        else
+        {
         var nativeActions = new DadAlliancePartyFinderTypedNativeActions();
         var recruitmentObserver =
             new DadAllianceLocalRecruitmentObserver(condition);
@@ -115,6 +123,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             recruitmentObserver,
             dataManager,
             toastGui);
+        }
         createFlow = new DadAlliancePartyFinderCreateFlow(createUi);
         cleanupFlow = new DadAlliancePartyFinderCleanupFlow(
             createUi,
@@ -679,10 +688,10 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         }
 
         var observed = AdvanceAllianceObservation(instruction.TargetContentId);
-        var agent = AgentLookingForGroup.Instance();
+        var environment = ReadEnvironment(instruction.TargetContentId);
         var isLocalCreator =
-            agent != null &&
-            condition[ConditionFlag.UsingPartyFinder] &&
+            environment.AgentAvailable &&
+            environment.Recruiting &&
             string.Equals(
                 local.Character.CharacterName?.Trim(),
                 instruction.LeaderName.Trim(),
@@ -691,24 +700,19 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
                 local.Character.WorldName?.Trim(),
                 instruction.LeaderWorld.Trim(),
                 StringComparison.OrdinalIgnoreCase);
-        var recruitmentCondition =
-            GetAddon<AtkUnitBase>("LookingForGroupCondition");
         if (!isLocalCreator &&
-            (condition[ConditionFlag.UsingPartyFinder] ||
-             recruitmentCondition != null &&
-             recruitmentCondition->IsVisible))
+            (environment.Recruiting || environment.EditorVisible))
         {
             return Blocked(
                 "The worker unexpectedly entered Party Finder recruitment mode; this join request is blocked without retries or cleanup.");
         }
         if (isLocalCreator)
         {
-            var recruitment = agent->StoredRecruitmentInfo;
             if (instruction.AssignedAlliance != DadAllianceAssignment.A ||
-                recruitment.Password != instruction.Passcode ||
-                recruitment.NumberOfGroups != 3 ||
+                environment.Passcode != instruction.Passcode ||
+                environment.NumberOfGroups != 3 ||
                 !string.Equals(
-                    ResolveDutyName(recruitment.SelectedDutyId),
+                    environment.DutyName,
                     FormationDutyName,
                     StringComparison.OrdinalIgnoreCase))
             {
@@ -750,9 +754,10 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             return Waiting(DadAllianceRecruitmentState.WaitingUnsafe, safety, observed);
 
         if ((observed != DadAllianceAssignment.None &&
-             observed != instruction.AssignedAlliance) ||
+            observed != instruction.AssignedAlliance) ||
             (observed == DadAllianceAssignment.None &&
-             IsInExistingParty()))
+             IsInExistingParty() &&
+             ReadEnvironment(instruction.TargetContentId).Alliance != instruction.AssignedAlliance))
         {
             var leave = AdvanceGuardedLeave();
             if (leave.Kind != DadAllianceNativeStepKind.Succeeded)
@@ -815,6 +820,8 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     DadAlliancePfJoinSnapshot IDadAlliancePartyFinderJoinUi.Read(
         DadAlliancePfJoinTarget target)
     {
+        if (nativeAccess != null)
+            return nativeAccess.ReadJoin(target) with { ObservedAlliance = allianceHydration.GetStable(target.TargetContentId) };
         var agent = AgentLookingForGroup.Instance();
         var main = GetAddon<AddonLookingForGroup>("LookingForGroup");
         var detailAddon =
@@ -995,6 +1002,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     {
         if (request.Action == DadAlliancePfJoinAction.Show)
         {
+            if (nativeAccess != null) return nativeAccess.Show();
             var agent = AgentLookingForGroup.Instance();
             if (agent == null)
             {
@@ -1042,9 +1050,9 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
         var dispatch = joinCallbackDispatcher.TryDispatch(
             request.Action,
             callbacks,
-            addonName => ResolveReadyJoinCallbackAddon(
-                addonName,
-                request.Action));
+            addonName => nativeAccess != null
+                ? nativeAccess.ResolveAddon(addonName, request.Action)
+                : ResolveReadyJoinCallbackAddon(addonName, request.Action));
         if (!dispatch.Sent)
         {
             return new DadAlliancePfJoinActionResult(
@@ -1240,16 +1248,13 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
 
     private DadAllianceAssignment AdvanceAllianceObservation(ulong contentId)
     {
-        if (contentId == 0 || !InfoProxyCrossRealm.IsAllianceRaid())
+        var observed = ReadEnvironment(contentId).Alliance;
+        if (contentId == 0 || observed == DadAllianceAssignment.None)
         {
             allianceHydration.Reset();
             return DadAllianceAssignment.None;
         }
 
-        var member = InfoProxyCrossRealm.GetMemberByContentId(contentId);
-        var observed = member == null
-            ? DadAllianceAssignment.None
-            : DadAlliancePartyFinderRules.FromCrossRealmGroupIndex(member->GroupIndex);
         return allianceHydration.Observe(
             contentId,
             observed,
@@ -1295,11 +1300,14 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
 
     private DadAllianceNativeStep AdvanceGuardedLeave()
     {
-        var prompt = ReadYesNoPrompt();
+        var externalPrompt = nativeAccess?.ReadLeavePrompt();
+        var prompt = externalPrompt is { } supplied
+            ? new PromptSnapshot(supplied.Visible, supplied.Ready, supplied.Identity, supplied.Text, null)
+            : ReadYesNoPrompt();
         if (!leaveRequested)
         {
             leavePromptBaseline = prompt.Identity;
-            if (!TrySubmitGuardedLeaveCommand(out var leaveError))
+            if (!(nativeAccess != null ? nativeAccess.RequestLeave(out var leaveError) : TrySubmitGuardedLeaveCommand(out leaveError)))
                 return Retry(DadAllianceRecruitmentState.CorrectingWrongAlliance, leaveError);
             leaveRequested = true;
             return Progress("Requested guarded departure before exact subgroup rejoin.", DadAllianceRecruitmentState.CorrectingWrongAlliance);
@@ -1325,7 +1333,7 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
             return Blocked("A fresh party/alliance leave confirmation could not be proven; DAD will not click it.");
         }
 
-        if (!FireYes(prompt.Addon))
+        if (!(nativeAccess?.ConfirmLeave() ?? FireYes(prompt.Addon)))
             return Waiting(DadAllianceRecruitmentState.CorrectingWrongAlliance, "The guarded leave confirmation changed before approval.");
         return Progress("Confirmed guarded departure.", DadAllianceRecruitmentState.CorrectingWrongAlliance);
     }
@@ -1367,9 +1375,23 @@ internal sealed unsafe class DadAlliancePartyFinderNativeGateway :
     }
 
     private bool IsInExistingParty()
-        => partyList.Length > 1 ||
+        => nativeAccess?.ReadEnvironment(0).ExistingParty ?? (partyList.Length > 1 ||
            InfoProxyCrossRealm.IsCrossRealmParty() ||
-           InfoProxyCrossRealm.IsLocalPlayerInParty();
+           InfoProxyCrossRealm.IsLocalPlayerInParty());
+
+    private DadAlliancePfEnvironment ReadEnvironment(ulong contentId)
+    {
+        if (nativeAccess != null) return nativeAccess.ReadEnvironment(contentId);
+        var agent = AgentLookingForGroup.Instance();
+        var editor = GetAddon<AtkUnitBase>("LookingForGroupCondition");
+        var recruitment = agent == null ? default : agent->StoredRecruitmentInfo;
+        var member = contentId != 0 && InfoProxyCrossRealm.IsAllianceRaid()
+            ? InfoProxyCrossRealm.GetMemberByContentId(contentId) : null;
+        return new(agent != null, condition[ConditionFlag.UsingPartyFinder], editor != null && editor->IsVisible,
+            recruitment.Password, recruitment.NumberOfGroups, ResolveDutyName(recruitment.SelectedDutyId),
+            IsInExistingParty(), member == null ? DadAllianceAssignment.None
+                : DadAlliancePartyFinderRules.FromCrossRealmGroupIndex(member->GroupIndex));
+    }
 
     private string ValidateSafeMutation(bool requireSolo, bool allowParty = false)
     {

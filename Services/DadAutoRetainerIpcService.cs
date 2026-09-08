@@ -61,7 +61,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         {
             if (disposed || string.IsNullOrWhiteSpace(operationToken))
                 return false;
-            return postprocessLease.Arm(operationToken, DateTime.UtcNow).Accepted;
+            return postprocessLease.Arm(operationToken, DadClock.UtcNow).Accepted;
         }
     }
 
@@ -74,7 +74,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
             var multiMode = getMultiModeEnabled.InvokeFunc();
             lock (gate)
             {
-                var expired = postprocessLease.ExpirePending(DateTime.UtcNow);
+                var expired = postprocessLease.ExpirePending(DadClock.UtcNow);
                 if (suppressionOwned && !suppressed)
                     suppressionOwned = false;
                 if (expired)
@@ -206,7 +206,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         DadAutoRetainerPostprocessLeaseDecision decision;
         lock (gate)
         {
-            decision = postprocessLease.RequestFinish(retryAtNextBoundary, DateTime.UtcNow);
+            decision = postprocessLease.RequestFinish(retryAtNextBoundary, DadClock.UtcNow);
         }
         if (decision.Pending)
             return false;
@@ -219,7 +219,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
     private bool FinishOwnedGeneration(long generation, bool retryAtNextBoundary)
     {
 
-        var now = DateTime.UtcNow;
+        var now = DadClock.UtcNow;
         lock (gate)
         {
             if (lastFinishAttemptUtc != DateTime.MinValue && now - lastFinishAttemptUtc < TimeSpan.FromSeconds(2))
@@ -269,7 +269,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         {
             if (disposed)
                 return;
-            decision = postprocessLease.BeginRequest(DateTime.UtcNow);
+            decision = postprocessLease.BeginRequest(DadClock.UtcNow);
             if (!decision.ShouldRequest)
                 return;
         }
@@ -296,7 +296,7 @@ public sealed class DadAutoRetainerIpcService : IDisposable
         {
             if (disposed)
                 return;
-            decision = postprocessLease.MarkReady(DateTime.UtcNow);
+            decision = postprocessLease.MarkReady(DadClock.UtcNow);
         }
         if (decision.ShouldFinish)
         {

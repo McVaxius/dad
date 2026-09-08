@@ -7,9 +7,12 @@ internal static class DadWorldLocationRuntime
 {
     private static readonly object CacheGate = new();
     private static readonly Dictionary<uint, DadWorldLocationObservation> WorldCache = [];
+    internal static Func<DateTime, DadWorldLocationObservation?>? CurrentObservation { get; set; }
+    internal static Func<uint, DateTime, DadWorldLocationObservation?>? WorldObservation { get; set; }
 
     public static DadWorldLocationObservation? CaptureCurrent(DateTime observedAtUtc)
     {
+        if (CurrentObservation != null) return CurrentObservation(observedAtUtc)?.Clone();
         try
         {
             var player = Plugin.ObjectTable.LocalPlayer;
@@ -32,6 +35,13 @@ internal static class DadWorldLocationRuntime
         out DadWorldLocationObservation location)
     {
         location = new DadWorldLocationObservation { ObservedAtUtc = NormalizeUtc(observedAtUtc) };
+        if (WorldObservation != null)
+        {
+            var observed = WorldObservation(worldId, observedAtUtc);
+            if (observed == null) return false;
+            location = observed.Clone();
+            return location.IsComplete;
+        }
         lock (CacheGate)
         {
             if (WorldCache.TryGetValue(worldId, out var cached))

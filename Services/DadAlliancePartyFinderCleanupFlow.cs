@@ -84,7 +84,7 @@ internal sealed class DadAlliancePartyFinderCleanupFlow
         bool allowFreshUnprovenPromptApproval = false)
     {
         this.ui = ui ?? throw new ArgumentNullException(nameof(ui));
-        this.utcNow = utcNow ?? (() => DateTime.UtcNow);
+        this.utcNow = utcNow ?? (() => DadClock.UtcNow);
         this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
     }
 

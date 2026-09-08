@@ -59,7 +59,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
 
         await foreach (var delivery in innerAdapter.ReceiveAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (!IsBounded(delivery) || delivery.ExpiresAt <= DateTimeOffset.UtcNow)
+            if (!IsBounded(delivery) || delivery.ExpiresAt <= DadClock.OffsetUtcNow)
                 continue;
             yield return delivery;
         }
@@ -129,7 +129,7 @@ public sealed class DadDiscordCourierConnector : IAutoPartyTransportAdapter, IAs
     private static AutoPartyTransportHealth Health(
         AutoPartyTransportHealthState state,
         string safeCode)
-        => new(state, safeCode, DateTimeOffset.UtcNow);
+        => new(state, safeCode, DadClock.OffsetUtcNow);
 
     private static AutoPartyTransportSendResult Denied(Guid envelopeId, string safeCode)
         => new(false, safeCode, envelopeId);

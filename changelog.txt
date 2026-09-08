@@ -1,5 +1,33 @@
 # dad — changelog
 
+## 2026-09-08 - integrated lifecycle verification and dispatch fixes (local-only, unpublished)
+- I305: pending leader dispatch continues polling accepted workers, then reevaluates exact readiness using fresh statuses.
+  Failure, cancellation, completion and attempt changes stop dispatch. Prequeue progress distinguishes nonleaders from the
+  pending leader, while the local acknowledgement path remains intact. I302 retains existing internal-name compatibility.
+- Shared lifecycle sequencing, handler registration, inbound execution and local Stop All cleanup with a linked-source
+  headless executable. Native boundaries retain actual Duty Finder, roulette, Duty Support and Trust queue decisions.
+- Roulette polling retains the same run's duty-entry evidence after releasing queue ownership. Commence checks tolerate
+  the owned queue's condition flags while preserving unrelated game and external-automation safety checks.
+- Registered-party execution waits for correlated receiver receipts, publishes actual reservation/preflight/lease responses,
+  and projects exact authenticated identities into worker commands. Mixed parties include LAN members in native party proof.
+  Repeated registered work freezes commands per queue operation and admits a new formation only after prior settlement.
+- Rosterless exact local admission and uncertain helper-start cancellation follow their production lifecycle paths. The lab
+  records expected versus observed outcomes and substitutions; no live clients, credentials or production deployment are used.
+- Completed authenticated formation retains the exact inviter and follower identities for subsequent worker commands and
+  temporary FrenRider profile ownership. Requested session lifetimes remain bounded by their proposal; retained invite
+  locators refresh only for the same live identity, and finalization waits for teardown preparation.
+- Unpair acknowledgements match existing revocation evidence. Correlated directory pages discard locally revoked peers
+  without blocking later mailbox traffic. New pairing consent still requires the existing authenticated protocol.
+- Alliance creation, both existing join dialog routes, subgroup hydration and recruitment cleanup run through the real
+  gateway/service with narrow native observations. Correct subgroup hydration no longer requests an unsolicited departure.
+  The lab also exercises repair, exact shopping IPC correlation, cancellation, and shutdown/restart persistence.
+- Shared leveling compilation and scheduler revalidation with the lab, including exact XA job-ledger refresh and goal completion.
+- Revoked peer traffic uses verification-only historical keys and is discarded without handler execution, allowing fresh pairing receipts to progress.
+- Expired inbound authority releases the exact worker claim and stale proposal after restoring takeover ownership. Renewal
+  retains the admitted target and worker command, preserves execution stage, and uses the requested lease duration.
+- Completed mailbox-operation evidence remains available for long duties. After an epoch change, authenticated downlink
+  payload can prove the central acknowledgement was consumed even when the reader misses the intermediate empty slot.
+
 ## 2026-09-02 — In-duty worker timeout and repeat identity (local-only, unpublished)
 - Positive worker watchdogs now retain their existing 30–7,200 second bounds through preparation and queueing, then
   retire after latched duty-entry proof for `Duty`, `Msq`, `DutySupport`, `Trust`, `PremadeDuty`, `DailyMsq`, `Mogtome`,

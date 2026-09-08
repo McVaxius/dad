@@ -16,6 +16,7 @@ public sealed class DadPresenceService
     private readonly DadRequestedJobPreparationGate requestedJobPreparationGate;
     private readonly IDadClassJobGearsetGateway classJobGearsetGateway;
     private readonly IPluginLog log;
+    private readonly Func<DadLiveRuntimeObservation> observeLiveRuntime;
     private DadCombatRotationService? combatRotationService;
     private Func<DadWorkerSessionId, DadParticipantSnapshot?> participantResolver = static _ => null;
     private Func<DadDependencySnapshot> dependencySnapshotProvider = static () => DadDependencySnapshot.CreateChecking();
@@ -58,7 +59,8 @@ public sealed class DadPresenceService
         DadPartyTeardownService partyTeardownService,
         DadRequestedJobPreparationGate requestedJobPreparationGate,
         IDadClassJobGearsetGateway classJobGearsetGateway,
-        IPluginLog log)
+        IPluginLog log,
+        Func<DadLiveRuntimeObservation>? observeLiveRuntime = null)
     {
         this.configuration = configuration;
         this.configManager = configManager;
@@ -70,6 +72,7 @@ public sealed class DadPresenceService
         this.requestedJobPreparationGate = requestedJobPreparationGate;
         this.classJobGearsetGateway = classJobGearsetGateway;
         this.log = log;
+        this.observeLiveRuntime = observeLiveRuntime ?? CaptureLiveRuntime;
         ClientInstanceId = $"dad-{Environment.ProcessId:X}-{Guid.NewGuid():N}"[..16];
         WorkerSessionId = ClientInstanceId;
         CurrentParticipant = new DadParticipantSnapshot
@@ -119,24 +122,25 @@ public sealed class DadPresenceService
 
     public void Update(DadCharacterPool pool, string endpoint = "")
     {
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = DadClock.UtcNow;
         // Stored/XADB rows describe the roster, not the character currently loaded in this client.
         // Falling back to one of them would keep a relogging client falsely available under the old identity.
+        var observation = observeLiveRuntime();
         var localCharacter = RefreshLocalRuntimeJobTruth(
-            pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime));
+            pool.Characters.FirstOrDefault(static character => character.Source == DadCharacterSource.LocalRuntime), observation);
         if (localCharacter != null &&
             DadWorldLocationRuntime.TryResolveWorld(localCharacter.WorldId, nowUtc, out var homeLocation))
         {
             localCharacter.DataCenterId = homeLocation.DataCenterId;
             localCharacter.DataCenterName = homeLocation.DataCenterName;
         }
-        var currentLocation = DadWorldLocationRuntime.CaptureCurrent(nowUtc);
+        var currentLocation = observation.CurrentLocation?.Clone();
         var availableCharacterKeys = BuildAvailableCharacterKeys(localCharacter);
         var managedAccountKey = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId);
         var managedAccountAlias = configManager.GetCurrentAccountAlias();
         var vermaxionStatus = vermaxion.Inspect();
         var autoRetainerStatus = autoRetainer.Inspect();
-        var worldReadyStable = EvaluateBasePostArReady(localCharacter);
+        var worldReadyStable = EvaluateBasePostArReady(localCharacter, observation);
         var postArReady = DadExternalAutomationRules.ApplyPostArReadiness(
                               worldReadyStable,
                               vermaxionStatus) &&
@@ -616,7 +620,7 @@ public sealed class DadPresenceService
         var status = combatRotationService.TryEnableFrenRiderAfterGroupReady(
             instruction.RunId,
             instruction.ModuleId,
-            DateTime.UtcNow,
+            DadClock.UtcNow,
             out var summary);
         var succeeded = status is DadFrenRiderEntryEnableStatus.Sent or
             DadFrenRiderEntryEnableStatus.AlreadySent;
@@ -1008,7 +1012,7 @@ public sealed class DadPresenceService
         CurrentParticipant.StatusText = string.IsNullOrWhiteSpace(command.Reason) ? "Cancelled by Dad Coordinator." : command.Reason;
         CurrentParticipant.ClaimState = DadClaimState.Released;
         CurrentParticipant.LeaseState = DadParticipantLeaseState.Released;
-        CurrentParticipant.LeaseExpiresUtc = DateTime.UtcNow;
+        CurrentParticipant.LeaseExpiresUtc = DadClock.UtcNow;
         var snapshot = BuildSnapshotCopy();
         ResetRunContext();
 
@@ -1073,6 +1077,12 @@ public sealed class DadPresenceService
     /// this instead of the previous framework-tick participant snapshot.
     /// </summary>
     public DadParticipantSnapshot BuildLiveSafetySnapshot()
+        => BuildLiveSafetySnapshot(allowQueueConfirmation: false);
+
+    public DadParticipantSnapshot BuildLiveQueueConfirmationSnapshot()
+        => BuildLiveSafetySnapshot(allowQueueConfirmation: true);
+
+    private DadParticipantSnapshot BuildLiveSafetySnapshot(bool allowQueueConfirmation)
     {
         var snapshot = CurrentParticipant.Clone();
         snapshot.Dependencies = dependencySnapshotProvider();
@@ -1085,12 +1095,66 @@ public sealed class DadPresenceService
         snapshot.ManagedAccountAlias = configManager.GetCurrentAccountAlias();
         try
         {
+            var observation = observeLiveRuntime();
+            var liveCharacter = observation.Character?.Clone();
+            if (!observation.IsLoggedIn || liveCharacter == null)
+                return MarkLiveSnapshotUnavailable(snapshot, "The local character is offline or between sessions.");
+            var now = DadClock.UtcNow;
+            var isLoggedIn = observation.IsLoggedIn;
+            var characterKey = liveCharacter.CharacterKey;
+            var contentId = liveCharacter.ContentId;
+            var readiness = liveCharacter.Readiness;
+            var unsafeConditionActive = allowQueueConfirmation
+                ? observation.UnsafeConditionOutsideQueue ?? observation.UnsafeConditionActive
+                : observation.UnsafeConditionActive;
+            var worldReadyStable = DadParticipantWorldSafetyRules.IsWorldReadyStable(
+                isLoggedIn,
+                hasLocalPlayer: true,
+                characterKey,
+                contentId,
+                readiness,
+                unsafeConditionActive);
+
+            snapshot.IsAvailable = readiness == DadReadinessState.Ready;
+            snapshot.ActiveCharacterKey = new DadCharacterKey(characterKey);
+            snapshot.Character = liveCharacter;
+            snapshot.CurrentLocation = observation.CurrentLocation?.Clone();
+            snapshot.WorldReadyStable = worldReadyStable;
+            snapshot.PostArReady &= worldReadyStable;
+            if (allowQueueConfirmation)
+            {
+                // A committed queue is itself unsafe for a new takeover, but must
+                // not block its own commence. All other game and automation gates
+                // still apply, with fresh IPC observations at this mutation boundary.
+                var ar = autoRetainer.Inspect();
+                var external = vermaxion.Inspect();
+                snapshot.AutoRetainerAvailable = ar.Available;
+                snapshot.AutoRetainerBusy = ar.IsBusy;
+                snapshot.AutoRetainerMultiModeEnabled = ar.MultiModeEnabled;
+                snapshot.ExternalAutomationHeld = external.IsHeld;
+                snapshot.PostArReady = DadExternalAutomationRules.ApplyPostArReadiness(worldReadyStable, external) &&
+                    (!ar.IsSuppressed || ar.SuppressionOwnedByDad || ar.CharacterPostprocessOwnedByDad);
+            }
+            snapshot.LastHeartbeatUtc = now;
+            if (!worldReadyStable)
+                snapshot.StatusText = "Live world safety is not stable for takeover mutation.";
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad] Failed to build live takeover safety snapshot.");
+            return MarkLiveSnapshotUnavailable(snapshot, "Live takeover safety could not be read.");
+        }
+    }
+
+    private DadLiveRuntimeObservation CaptureLiveRuntime()
+    {
             var isLoggedIn = Plugin.ClientState.IsLoggedIn;
             var player = Plugin.ObjectTable.LocalPlayer;
             if (!isLoggedIn || player == null)
-                return MarkLiveSnapshotUnavailable(snapshot, "The local character is offline or between sessions.");
+                return new(isLoggedIn, null, true, null);
 
-            var now = DateTime.UtcNow;
+            var now = DadClock.UtcNow;
             var characterName = player.Name.ToString().Trim();
             var worldName = player.HomeWorld.Value.Name.ToString().Trim();
             var characterKey = BuildCharacterKey(characterName, worldName);
@@ -1106,7 +1170,7 @@ public sealed class DadPresenceService
                 CharacterName = characterName,
                 WorldId = (uint)player.HomeWorld.RowId,
                 WorldName = worldName,
-                AccountId = managedAccountKey.Value,
+                AccountId = DadSchedulerRoutingRules.ResolveStableClientAccount(configuration.ClientAccountId).Value,
                 AccountAlias = configManager.GetCurrentAccountAlias(),
                 Source = DadCharacterSource.LocalRuntime,
                 Freshness = DadSnapshotFreshness.Live,
@@ -1129,31 +1193,9 @@ public sealed class DadPresenceService
             if (readiness != DadReadinessState.Ready)
                 liveCharacter.Blockers.Add("Exact live character identity is incomplete.");
 
-            var unsafeConditionActive = TryGetUnsafeWorldCondition(out _);
-            var worldReadyStable = DadParticipantWorldSafetyRules.IsWorldReadyStable(
-                isLoggedIn,
-                hasLocalPlayer: true,
-                characterKey,
-                contentId,
-                readiness,
-                unsafeConditionActive);
-
-            snapshot.IsAvailable = readiness == DadReadinessState.Ready;
-            snapshot.ActiveCharacterKey = new DadCharacterKey(characterKey);
-            snapshot.Character = liveCharacter;
-            snapshot.CurrentLocation = DadWorldLocationRuntime.CaptureCurrent(now);
-            snapshot.WorldReadyStable = worldReadyStable;
-            snapshot.PostArReady &= worldReadyStable;
-            snapshot.LastHeartbeatUtc = now;
-            if (!worldReadyStable)
-                snapshot.StatusText = "Live world safety is not stable for takeover mutation.";
-            return snapshot;
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "[dad] Failed to build live takeover safety snapshot.");
-            return MarkLiveSnapshotUnavailable(snapshot, "Live takeover safety could not be read.");
-        }
+            var unsafeConditionActive = TryGetUnsafeWorldCondition(out var unsafeConditionLabel);
+            return new(isLoggedIn, liveCharacter, unsafeConditionActive, DadWorldLocationRuntime.CaptureCurrent(now), unsafeConditionLabel,
+                TryGetUnsafeWorldCondition(out _, allowQueueConfirmation: true));
     }
 
     public DadParticipantStatusSnapshot BuildStatusSnapshot(
@@ -1171,7 +1213,7 @@ public sealed class DadPresenceService
 
         return new DadParticipantStatusSnapshot
         {
-            GeneratedAtUtc = DateTime.UtcNow,
+            GeneratedAtUtc = DadClock.UtcNow,
             LocalClientInstanceId = ClientInstanceId,
             LocalWorkerSessionId = WorkerSessionId,
             LocalWorkerRole = GetConfiguredWorkerRole(),
@@ -1254,51 +1296,31 @@ public sealed class DadPresenceService
             .ToList();
     }
 
-    private static DadAcquiredCharacter? RefreshLocalRuntimeJobTruth(DadAcquiredCharacter? localCharacter)
+    private static DadAcquiredCharacter? RefreshLocalRuntimeJobTruth(
+        DadAcquiredCharacter? localCharacter, DadLiveRuntimeObservation observation)
     {
-        if (localCharacter == null)
-            return null;
-
+        if (localCharacter == null) return null;
         var refreshed = localCharacter.Clone();
-        try
+        if (observation.Character is { CurrentJobId: not null } observed)
         {
-            var player = Plugin.ObjectTable.LocalPlayer;
-            if (player?.ClassJob.IsValid != true)
-                return refreshed;
-
-            var currentJobId = (uint)player.ClassJob.RowId;
-            refreshed.CurrentJobId = currentJobId;
-            refreshed.CurrentJobAbbrev = player.ClassJob.Value.Abbreviation.ToString();
-            refreshed.CurrentLevel = player.Level;
-            if (currentJobId != 0)
-                refreshed.JobLevels[currentJobId] = player.Level;
+            refreshed.CurrentJobId = observed.CurrentJobId;
+            refreshed.CurrentJobAbbrev = observed.CurrentJobAbbrev;
+            refreshed.CurrentLevel = observed.CurrentLevel;
+            if (observed.CurrentJobId.Value != 0 && observed.CurrentLevel.HasValue)
+                refreshed.JobLevels[observed.CurrentJobId.Value] = observed.CurrentLevel.Value;
         }
-        catch
-        {
-            // Keep the last character-pool snapshot if live object truth is between lifecycles.
-        }
-
         return refreshed;
     }
 
     private DadWorkerRole GetConfiguredWorkerRole()
         => configuration.RunAsServerDad ? DadWorkerRole.ServerDad : DadWorkerRole.ClientDad;
 
-    private static bool EvaluateBasePostArReady(DadAcquiredCharacter? character)
-    {
-        var isLoggedIn = Plugin.ClientState.IsLoggedIn;
-        var hasLocalPlayer = Plugin.ObjectTable.LocalPlayer != null;
-        if (!isLoggedIn || !hasLocalPlayer || character == null)
-            return false;
-
-        return DadParticipantWorldSafetyRules.IsWorldReadyStable(
-            isLoggedIn,
-            hasLocalPlayer,
-            character.CharacterKey,
-            character.ContentId,
-            character.Readiness,
-            TryGetUnsafeWorldCondition(out _));
-    }
+    private static bool EvaluateBasePostArReady(
+        DadAcquiredCharacter? character, DadLiveRuntimeObservation observation)
+        => character != null && DadParticipantWorldSafetyRules.IsWorldReadyStable(
+            observation.IsLoggedIn, observation.Character != null,
+            character.CharacterKey, character.ContentId, character.Readiness,
+            observation.UnsafeConditionActive);
 
     private static DadParticipantSnapshot MarkLiveSnapshotUnavailable(
         DadParticipantSnapshot snapshot,
@@ -1316,7 +1338,7 @@ public sealed class DadPresenceService
         snapshot.CurrentLocation = null;
         snapshot.WorldReadyStable = false;
         snapshot.PostArReady = false;
-        snapshot.LastHeartbeatUtc = DateTime.UtcNow;
+        snapshot.LastHeartbeatUtc = DadClock.UtcNow;
         snapshot.StatusText = status;
         return snapshot;
     }
@@ -1330,7 +1352,7 @@ public sealed class DadPresenceService
             : $"{cleanName}@{cleanWorld}";
     }
 
-    private static bool TryGetUnsafeWorldCondition(out string label)
+    private static bool TryGetUnsafeWorldCondition(out string label, bool allowQueueConfirmation = false)
     {
         (ConditionFlag Flag, string Label)[] unsafeConditions =
         [
@@ -1359,6 +1381,9 @@ public sealed class DadPresenceService
         ];
         foreach (var condition in unsafeConditions)
         {
+            if (allowQueueConfirmation && condition.Flag is
+                ConditionFlag.InDutyQueue or ConditionFlag.WaitingForDuty or ConditionFlag.WaitingForDutyFinder)
+                continue;
             if (!Plugin.Condition[condition.Flag])
                 continue;
             label = condition.Label;
@@ -1591,7 +1616,7 @@ public sealed class DadPresenceService
 
     private static bool TravelTargetMatchesWorldCatalog(DadCoordinatorTravelTarget target)
     {
-        if (!DadWorldLocationRuntime.TryResolveWorld(target.WorldId, DateTime.UtcNow, out var resolved))
+        if (!DadWorldLocationRuntime.TryResolveWorld(target.WorldId, DadClock.UtcNow, out var resolved))
             return false;
 
         return string.Equals(resolved.WorldName, target.WorldName, StringComparison.OrdinalIgnoreCase) &&
@@ -1668,7 +1693,7 @@ public sealed class DadPresenceService
         var (safeToEquip, unsafeReason) = postArReady
             ? EvaluateRequestedJobEquipSafety(localCharacter)
             : (false, "The exact character is waiting for post-AR readiness.");
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = DadClock.UtcNow;
         var observation = new DadRequestedJobPreparationObservation(
             observedIdentity,
             CurrentParticipant.Character.CurrentJobId.GetValueOrDefault(),
@@ -1737,13 +1762,14 @@ public sealed class DadPresenceService
             CurrentParticipant.StatusText = proof.Summary;
     }
 
-    private static (bool Safe, string Reason) EvaluateRequestedJobEquipSafety(DadAcquiredCharacter? localCharacter)
+    private (bool Safe, string Reason) EvaluateRequestedJobEquipSafety(DadAcquiredCharacter? localCharacter)
     {
-        if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null || localCharacter == null)
+        var observation = observeLiveRuntime();
+        if (!observation.IsLoggedIn || observation.Character == null || localCharacter == null)
             return (false, "The local character is not fully logged in.");
 
-        if (TryGetUnsafeWorldCondition(out var label))
-            return (false, $"The client is {label}.");
+        if (observation.UnsafeConditionActive)
+            return (false, $"The client is {observation.UnsafeConditionLabel}.");
 
         return (true, string.Empty);
     }

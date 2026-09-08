@@ -15,7 +15,7 @@ public sealed class DadClaimService
     {
         lock (gate)
         {
-            var now = DateTime.UtcNow;
+            var now = DadClock.UtcNow;
             if (activeLeasesBySlot.TryGetValue(request.SlotId, out var existing) &&
                 string.Equals(existing.RunId, request.RunId, StringComparison.Ordinal))
             {
@@ -49,7 +49,7 @@ public sealed class DadClaimService
     {
         lock (gate)
         {
-            if (!TryValidateLease(request, participant, DateTime.UtcNow, out var validationReason))
+            if (!TryValidateLease(request, participant, DadClock.UtcNow, out var validationReason))
             {
                 var rejectedLease = request.Lease?.Clone() ?? new DadParticipantLeaseRecord();
                 rejectedLease.State = DadParticipantLeaseState.Denied;
@@ -100,7 +100,7 @@ public sealed class DadClaimService
             }
 
             lease.State = DadParticipantLeaseState.Granted;
-            lease.RenewedUtc = DateTime.UtcNow;
+            lease.RenewedUtc = DadClock.UtcNow;
             localAcceptedLeasesByCharacter[characterKey] = lease.Clone();
             return BuildDecision(request, participant, granted: true, DadClaimState.Granted, DadParticipantLeaseState.Granted, $"Granted lease for {characterKey}.", lease);
         }

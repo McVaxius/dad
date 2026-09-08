@@ -73,9 +73,9 @@ public sealed class DadWakeTakeoverTarget :
                               title.ClientLoggedOut &&
                               title.NoActiveConditionFlags &&
                               title.TitleMenuReady &&
-                              title.IsFresh(DateTime.UtcNow));
+                              title.IsFresh(DadClock.UtcNow));
         var external = vermaxion.Inspect(forceExternalRefresh);
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = DadClock.UtcNow;
         var reservation = vermaxion.Reservation;
         var compatibilityEvidence = DadVermaxionCompatibilityEvidence.Evaluate(
             external,

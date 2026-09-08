@@ -71,8 +71,7 @@ internal sealed class DadAutoPartyInboundAdmissionService
     internal const string TakeoverPending = "dad-inbound-admission-takeover-pending";
     internal const string RestorationPending = "dad-inbound-admission-restoration-pending";
 
-    private readonly string registeredOwnerId;
-    private readonly string registeredIslandId;
+    private readonly Func<(string OwnerId, string IslandId)> registrationIdentity;
     private readonly DadWorkerSessionId authorityWorkerSessionId;
     private readonly Func<DadAutoPartyInboundRoute, DadWakeTakeoverRequestDto, DadWakeTakeoverResultDto?> submitTakeover;
     private readonly Func<DadParticipantSnapshot, DadWakeRequestDto, DadParticipantReadyDto?> submitWake;
@@ -106,16 +105,16 @@ internal sealed class DadAutoPartyInboundAdmissionService
         Func<DadClaimRequestDto, DadParticipantSnapshot, TimeSpan, DadParticipantLeaseRecord?> issueLease,
         Func<DadParticipantSnapshot, DadClaimRequestDto, DadClaimDecisionDto?> submitClaim,
         Func<DateTimeOffset>? utcNow = null,
-        TimeSpan? dependencyStaleAfter = null)
+        TimeSpan? dependencyStaleAfter = null,
+        Func<(string OwnerId, string IslandId)>? registrationIdentity = null)
     {
-        this.registeredOwnerId = Normalize(registeredOwnerId);
-        this.registeredIslandId = Normalize(registeredIslandId);
+        this.registrationIdentity = registrationIdentity ?? (() => (registeredOwnerId, registeredIslandId));
         this.authorityWorkerSessionId = authorityWorkerSessionId;
         this.submitTakeover = submitTakeover ?? throw new ArgumentNullException(nameof(submitTakeover));
         this.submitWake = submitWake ?? throw new ArgumentNullException(nameof(submitWake));
         this.issueLease = issueLease ?? throw new ArgumentNullException(nameof(issueLease));
         this.submitClaim = submitClaim ?? throw new ArgumentNullException(nameof(submitClaim));
-        this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        this.utcNow = utcNow ?? (() => DadClock.OffsetUtcNow);
         this.dependencyStaleAfter = dependencyStaleAfter is { } staleAfter && staleAfter > TimeSpan.Zero
             ? staleAfter
             : TimeSpan.FromSeconds(15);
@@ -128,6 +127,11 @@ internal sealed class DadAutoPartyInboundAdmissionService
         ArgumentNullException.ThrowIfNull(proposal);
         ArgumentNullException.ThrowIfNull(publication);
 
+        // Registration may be imported after this long-lived service is constructed.
+        // Freeze current owner/island identity together for this admission attempt.
+        var identity = registrationIdentity();
+        var registeredOwnerId = Normalize(identity.OwnerId);
+        var registeredIslandId = Normalize(identity.IslandId);
         var plan = proposal.ExecutionPlan;
         var runId = plan?.RunId ?? string.Empty;
         var now = utcNow();

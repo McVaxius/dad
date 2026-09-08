@@ -62,7 +62,7 @@ public sealed class DadDependencyService : IDisposable
         if (!enabled || disposed)
             return;
 
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = DadClock.UtcNow;
         lock (gate)
         {
             if (!force && !dirty && snapshot.AggregateState != DadDependencyState.Checking)
@@ -132,7 +132,7 @@ public sealed class DadDependencyService : IDisposable
         {
             dirty = true;
             snapshot = DadDependencySnapshot.CreateChecking(revision, snapshot, summary);
-            nextInspectionUtc = DateTime.UtcNow + CheckingRetryInterval;
+            nextInspectionUtc = DadClock.UtcNow + CheckingRetryInterval;
         }
     }
 }

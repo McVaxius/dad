@@ -4,7 +4,7 @@ namespace dad.Services;
 
 public sealed class DadQueueExecutionService
 {
-    private readonly DadLocalDutyQueueService localDutyQueueService;
+    private readonly IDadLocalDutyQueueGateway localDutyQueueService;
     private readonly DadLocalDutyExecutor localDutyExecutor;
     private readonly DadPremadeDutyExecutor premadeDutyExecutor;
     private readonly DadMsqExecutor msqExecutor;
@@ -27,8 +27,8 @@ public sealed class DadQueueExecutionService
         DadMogtomeIpcService mogtomeIpcService,
         DadLootGoblinIpcService lootGoblinIpcService,
         DadDutyQueueService dutyQueueService,
-        DadLocalDutyQueueService localDutyQueueService,
-        DadNpcDutyQueueService npcDutyQueueService,
+        IDadLocalDutyQueueGateway localDutyQueueService,
+        IDadNpcDutyQueueGateway npcDutyQueueService,
         DadDutySupportAdsService dutySupportAdsService,
         DadCombatRotationService combatRotationService)
     {

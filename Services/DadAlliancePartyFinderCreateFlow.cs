@@ -166,7 +166,7 @@ internal sealed class DadAlliancePartyFinderCreateFlow
         Func<DateTime>? utcNow = null)
     {
         this.ui = ui ?? throw new ArgumentNullException(nameof(ui));
-        this.utcNow = utcNow ?? (() => DateTime.UtcNow);
+        this.utcNow = utcNow ?? (() => DadClock.UtcNow);
     }
 
     public DadAlliancePfCreateStage Stage => stage;

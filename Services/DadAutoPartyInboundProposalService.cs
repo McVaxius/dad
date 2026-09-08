@@ -130,7 +130,7 @@ internal sealed class DadAutoPartyInboundProposalService
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.store = store ?? new DadAutoPartyMemoryInboundProposalStore();
-        this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        this.utcNow = utcNow ?? (() => DadClock.OffsetUtcNow);
         this.restoreBeforeRemoval = restoreBeforeRemoval ?? ((_, _) => true);
         this.renewPolicy = renewPolicy ?? ((_, _, _) => true);
         var now = this.utcNow();
@@ -322,7 +322,7 @@ internal sealed class DadAutoPartyInboundProposalService
             {
                 lease = lease with
                 {
-                    LeaseExpiresAt = Min(renewal.NewExpiresAt, now + TimeSpan.FromMinutes(30)),
+                    LeaseExpiresAt = Min(renewal.NewExpiresAt, now + TimeSpan.FromSeconds(proposal.ExecutionPlan?.LeaseDurationSeconds ?? 1800)),
                 };
             }
 
