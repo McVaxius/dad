@@ -60,11 +60,6 @@ internal static class DadCharacterXadbMergeRules
 
         if (character.JobLevels.Count == 0)
             AddBlocker(character, "Missing XADB job levels.");
-        if (!string.IsNullOrWhiteSpace(xadbStatus.SnapshotQuality) &&
-            xadbStatus.SnapshotQuality.Contains("partial", StringComparison.OrdinalIgnoreCase))
-        {
-            AddBlocker(character, $"XADB snapshot quality {xadbStatus.SnapshotQuality}.");
-        }
     }
 
     public static bool MatchesExactCharacter(DadAcquiredCharacter character, DadXadbStatus xadbStatus)

@@ -7,6 +7,54 @@ namespace dad.Tests;
 public sealed class DadCharacterXadbMergeRulesTests
 {
     [Fact]
+    public void ExactPartialSnapshotPreservesMetadataAndKeepsCharacterAndPeerReady()
+    {
+        var snapshotUtc = new DateTime(2026, 9, 8, 12, 0, 0, DateTimeKind.Utc);
+        var current = new DadAcquiredCharacter
+        {
+            CharacterKey = "Current Character@World",
+            ContentId = 200,
+            Freshness = DadSnapshotFreshness.Live,
+            Readiness = DadReadinessState.Ready,
+        };
+        var exact = new DadXadbStatus
+        {
+            IsReady = true,
+            Availability = "Ready",
+            ContentId = 200,
+            CharacterName = "Current Character",
+            WorldName = "World",
+            SnapshotUtc = snapshotUtc,
+            SnapshotVersion = 9,
+            SnapshotQuality = "Partial",
+            JobLevels = new Dictionary<uint, int> { [35] = 100 },
+        };
+
+        DadCharacterXadbMergeRules.Merge(current, exact);
+
+        Assert.True(current.XadbReady);
+        Assert.Equal(snapshotUtc, current.XadbSnapshotUtc);
+        Assert.Equal(9, current.SnapshotVersion);
+        Assert.Equal("Partial", current.SnapshotQuality);
+        Assert.Equal(100, current.JobLevels[35]);
+        Assert.Equal(DadReadinessState.Ready, current.Readiness);
+        Assert.Empty(current.Blockers);
+
+        var peerCharacter = current.Clone();
+        peerCharacter.Source = DadCharacterSource.PeerRuntime;
+        var projection = DadPeerRuntimeProjectionRules.Evaluate(new DadParticipantSnapshot
+        {
+            State = DadParticipantState.Ready,
+            IsAvailable = true,
+            IsEligibleForRun = true,
+            AuthorityMode = DadAuthorityMode.ServerDad,
+        }, peerCharacter);
+
+        Assert.Equal(DadReadinessState.Ready, projection.Readiness);
+        Assert.Empty(projection.Blockers);
+    }
+
+    [Fact]
     public void PriorCharacterXadbSnapshotCannotStampCurrentCharacterMetadataOrJobs()
     {
         var snapshotUtc = new DateTime(2026, 7, 13, 12, 0, 0, DateTimeKind.Utc);

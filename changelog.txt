@@ -1,5 +1,9 @@
 # dad — changelog
 
+## 2026-09-08 - I317 XADB Partial readiness (local-only, unpublished)
+- Removed the general readiness blocker for otherwise-ready exact XADB snapshots marked Partial. Quality metadata,
+  identity and job-data checks remain intact, and Leveling Mode still requires a complete job ledger.
+
 ## 2026-09-08 - Questionable Duty Support leveling presets (local-only, unpublished)
 - Rejected bridge starts and executor failures now log the existing status failure reason, making blocked automatic
   attempts visible in Dalamud logs. The focused lab regression verifies one warning with the same failure text.
