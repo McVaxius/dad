@@ -7,6 +7,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using dad.Models;
 using dad.Services;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace dad.Headless;
 
@@ -77,6 +78,7 @@ internal sealed class RuntimeNode : IDisposable
     private readonly DadDutyIpcService dutyIpc;
     private readonly Dictionary<string, Delegate> ipcProviders = [];
     private int equippedItemLevel = 100;
+    private bool equippedInventoryLoaded = true;
     private string gearFault = string.Empty;
     private int? recommendedItemLevel;
     private bool unlockReadable = true;
@@ -278,7 +280,13 @@ internal sealed class RuntimeNode : IDisposable
             },
         ]);
         dutyIpc = new(Plugin.PluginInterface, presets, localDutyQueue, npcDutyQueue, ads, combat, log, dutyFinder,
-            () => { events.Enqueue("native:gear:read-item-level"); return new(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0, equippedItemLevel); },
+            () =>
+            {
+                events.Enqueue("native:gear:read-item-level");
+                return equippedInventoryLoaded
+                    ? new(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0, equippedItemLevel)
+                    : new(0, 0, 0, "Equipped inventory is not loaded.");
+            },
             id => unlockReadable ? !lockedDuties.Contains(id) : null, CreateGearPreparation(log));
         // Substitute only the game-sheet catalog; saved-preset resolution and validation
         // remain production code. No planner or scheduler state is seeded here.
@@ -356,18 +364,27 @@ internal sealed class RuntimeNode : IDisposable
                 events.Enqueue($"native:gear:calculate:{character.CurrentJobId}");
                 if (gearFault == "unavailable") throw new InvalidOperationException("Synthetic native state unavailable.");
             },
-            () => gearFault == "timeout",
+            IsGearUpdating,
             () =>
             {
                 events.Enqueue("native:gear:equip");
                 if (gearFault == "equip-error") throw new InvalidOperationException("Synthetic equip error.");
                 if (recommendedItemLevel.HasValue) equippedItemLevel = recommendedItemLevel.Value;
+                if (gearFault == "inventory-delay") equippedInventoryLoaded = false;
             },
             () =>
             {
                 if (gearFault == "missing-gearset") throw new InvalidOperationException("Synthetic current gearset missing.");
                 events.Enqueue("native:gear:update-gearset");
             });
+
+    private unsafe bool IsGearUpdating()
+    {
+        var items = stackalloc InventoryItem[13];
+        items[0].ItemId = 1;
+        var equipment = new InventoryContainer { Items = items, Size = 13, IsLoaded = equippedInventoryLoaded };
+        return DadLevelingGearPreparation.IsPending(gearFault == "timeout", &equipment);
+    }
 
     public object Execute(JsonElement command)
     {
@@ -400,6 +417,7 @@ internal sealed class RuntimeNode : IDisposable
             case "observe":
                 if (command.TryGetProperty("jobId", out var jobId)) character.CurrentJobId = jobId.GetUInt32();
                 if (command.TryGetProperty("itemLevel", out var itemLevel)) equippedItemLevel = itemLevel.GetInt32();
+                if (command.TryGetProperty("equippedInventoryLoaded", out var inventoryLoaded)) equippedInventoryLoaded = inventoryLoaded.GetBoolean();
                 if (command.TryGetProperty("gearFault", out var observedGearFault)) gearFault = observedGearFault.GetString()!;
                 if (command.TryGetProperty("recommendedItemLevel", out var recommended)) recommendedItemLevel = recommended.GetInt32();
                 if (command.TryGetProperty("unlockReadable", out var readable)) unlockReadable = readable.GetBoolean();

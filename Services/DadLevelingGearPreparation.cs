@@ -1,5 +1,6 @@
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 
 namespace dad.Services;
@@ -71,6 +72,10 @@ public sealed class DadLevelingGearPreparation
         return true;
     }
 
+    internal static unsafe bool IsPending(bool recommendationsUpdating, InventoryContainer* equipment)
+        => recommendationsUpdating || equipment == null || !equipment->IsLoaded || equipment->Size < 13 ||
+           equipment->Items == null || equipment->Items[0].ItemId == 0;
+
     private sealed unsafe class NativeGear
     {
         private uint jobId;
@@ -91,7 +96,13 @@ public sealed class DadLevelingGearPreparation
                 throw new InvalidOperationException("Native recommended gear calculation was rejected.");
         }
 
-        public bool IsUpdating() => GetModule()->IsUpdating;
+        public bool IsUpdating()
+        {
+            var module = GetModule();
+            var inventory = InventoryManager.Instance();
+            return IsPending(module->IsUpdating,
+                inventory == null ? null : inventory->GetInventoryContainer(InventoryType.EquippedItems));
+        }
         public void Equip() => GetModule()->EquipRecommendedGear();
 
         public void UpdateGearset()
