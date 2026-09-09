@@ -100,6 +100,7 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly IDadDutyFinderNativeAccess game;
     private readonly Func<DadDutyLevelingPlayer> readLevelingPlayer;
     private readonly Func<uint, bool?> readDutyUnlocked;
+    private readonly DadLevelingGearPreparation gearPreparation;
     private readonly List<Action> disposeActions = [];
     private readonly DadDutyIpcStatus status = new();
 
@@ -149,7 +150,8 @@ public sealed class DadDutyIpcService : IDisposable
         DadLocalDutyQueueService localDutyQueueService, DadNpcDutyQueueService npcDutyQueueService,
         DadDutySupportAdsService dutySupportAdsService, DadCombatRotationService combatRotationService,
         IPluginLog log, IDadDutyFinderNativeAccess game,
-        Func<DadDutyLevelingPlayer> readLevelingPlayer, Func<uint, bool?> readDutyUnlocked)
+        Func<DadDutyLevelingPlayer> readLevelingPlayer, Func<uint, bool?> readDutyUnlocked,
+        DadLevelingGearPreparation? gearPreparation = null)
     {
         this.pluginInterface = pluginInterface;
         this.presetProviderService = presetProviderService;
@@ -161,6 +163,7 @@ public sealed class DadDutyIpcService : IDisposable
         this.game = game;
         this.readLevelingPlayer = readLevelingPlayer;
         this.readDutyUnlocked = readDutyUnlocked;
+        this.gearPreparation = gearPreparation ?? new DadLevelingGearPreparation(log);
 
         EnsureRegistered();
     }
@@ -191,6 +194,12 @@ public sealed class DadDutyIpcService : IDisposable
     public void Update()
     {
         if (disposed) return;
+        if (sessionStage == DadDutyIpcSessionStage.Preparing)
+        {
+            if (gearPreparation.Update(DadClock.UtcNow))
+                SelectLevelingDuty();
+            return;
+        }
         if (sessionStage == DadDutyIpcSessionStage.Leaving)
         {
             UpdateLeaving();
@@ -422,6 +431,21 @@ public sealed class DadDutyIpcService : IDisposable
                 FailSession($"Dad duty Start requires leveling=Support and AutoDutyModeEnum=Looping (received {leveling}, {autoDutyMode}).");
                 return;
             }
+            status.LastFailure = string.Empty;
+            sessionStage = DadDutyIpcSessionStage.Preparing;
+            gearPreparation.Reset(enabled: true);
+            Update();
+        }
+        catch (Exception ex)
+        {
+            FailSession($"Duty Support leveling start failed: {ex.Message}");
+        }
+    }
+
+    private void SelectLevelingDuty()
+    {
+        try
+        {
             var duty = DadDutySupportLevelingPresets.Select(readLevelingPlayer(),
                 presetProviderService.GetPlannerDutyOptionsForTerritory, readDutyUnlocked, out var blocker);
             if (duty == null) { FailSession(blocker); return; }
@@ -440,6 +464,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     public void Cancel(string reason)
     {
+        gearPreparation.Reset();
         leveling = "None";
         if (sessionStage == DadDutyIpcSessionStage.Leaving) return;
         if (activeDuty == null)
@@ -655,6 +680,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void StopBridgeSession(string reason, bool clearFailure)
     {
+        gearPreparation.Reset();
         var executor = activeExecutor;
         activeExecutor = null;
         activeDuty = null;
@@ -1180,6 +1206,7 @@ internal enum DadDutyIpcSessionStage
     Stopped,
     Running,
     Leaving,
+    Preparing,
 }
 
 internal static class DadDutyIpcContract

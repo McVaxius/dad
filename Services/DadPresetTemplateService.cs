@@ -124,7 +124,7 @@ internal static class DadPresetTemplateService
             "MNK" or "DRG" or "NIN" or "SAM" or "RPR" or "VPR" => DadPartyRole.Melee,
             "BRD" or "MCH" or "DNC" => DadPartyRole.PhysicalRanged,
             "BLM" or "SMN" or "RDM" or "PCT" => DadPartyRole.Caster,
-            "BLU" => DadPartyRole.Limited,
+            "BLU" or "BST" => DadPartyRole.Limited,
             _ => DadPartyRole.Any,
         };
     }

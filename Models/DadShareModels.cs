@@ -96,6 +96,7 @@ public sealed class DadSharePlanDto
 public sealed class DadShareLevelingModeDto
 {
     public bool Enabled { get; set; }
+    public bool RefreshRecommendedGear { get; set; } = true;
     public int GoalLevel { get; set; } = DadRunStopPolicy.DefaultTargetLevel;
     public DadLevelingJobOrder JobOrder { get; set; } = DadLevelingJobOrder.LowestFirst;
     public List<DadShareLevelingDutyThresholdDto> DutyThresholds { get; set; } = [];

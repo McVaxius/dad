@@ -77,6 +77,8 @@ internal sealed class RuntimeNode : IDisposable
     private readonly DadDutyIpcService dutyIpc;
     private readonly Dictionary<string, Delegate> ipcProviders = [];
     private int equippedItemLevel = 100;
+    private string gearFault = string.Empty;
+    private int? recommendedItemLevel;
     private bool unlockReadable = true;
     private readonly HashSet<uint> lockedDuties = [];
     private bool rejectLeave;
@@ -236,7 +238,7 @@ internal sealed class RuntimeNode : IDisposable
         queue = new DadQueueExecutionService(new(), new(Plugin.PluginInterface), new(Plugin.PluginInterface),
             new(new()), localDutyQueue, npcDutyQueue, ads, combat);
         worker = new(queue, presence, combat, ads, new(ads, presence, log), new(ads, log, () => durabilityPercent is { } percent
-            ? DadEquippedDurabilityObservation.ReadableAt(percent) : DadEquippedDurabilityObservation.Unreadable("Synthetic unreadable equipment")), Plugin.Condition, log);
+            ? DadEquippedDurabilityObservation.ReadableAt(percent) : DadEquippedDurabilityObservation.Unreadable("Synthetic unreadable equipment")), Plugin.Condition, log, CreateGearPreparation(log));
         if (input.TryGetProperty("discordProvider", out var provider))
         {
             IReadOnlyList<DadAutoPartyCrewCandidate> Crew() => DadRuntimeHandlers.ReconcileAutoPartyCrew(
@@ -276,8 +278,8 @@ internal sealed class RuntimeNode : IDisposable
             },
         ]);
         dutyIpc = new(Plugin.PluginInterface, presets, localDutyQueue, npcDutyQueue, ads, combat, log, dutyFinder,
-            () => new(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0, equippedItemLevel),
-            id => unlockReadable ? !lockedDuties.Contains(id) : null);
+            () => { events.Enqueue("native:gear:read-item-level"); return new(character.CurrentJobId ?? 0, character.CurrentLevel ?? 0, equippedItemLevel); },
+            id => unlockReadable ? !lockedDuties.Contains(id) : null, CreateGearPreparation(log));
         // Substitute only the game-sheet catalog; saved-preset resolution and validation
         // remain production code. No planner or scheduler state is seeded here.
         (typeof(DadPresetProviderService).GetField("plannerRouletteCatalog", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -347,6 +349,26 @@ internal sealed class RuntimeNode : IDisposable
         lifecycle = new(steps, (_, action) => action());
     }
 
+    private DadLevelingGearPreparation CreateGearPreparation(IPluginLog log)
+        => new(log,
+            () =>
+            {
+                events.Enqueue($"native:gear:calculate:{character.CurrentJobId}");
+                if (gearFault == "unavailable") throw new InvalidOperationException("Synthetic native state unavailable.");
+            },
+            () => gearFault == "timeout",
+            () =>
+            {
+                events.Enqueue("native:gear:equip");
+                if (gearFault == "equip-error") throw new InvalidOperationException("Synthetic equip error.");
+                if (recommendedItemLevel.HasValue) equippedItemLevel = recommendedItemLevel.Value;
+            },
+            () =>
+            {
+                if (gearFault == "missing-gearset") throw new InvalidOperationException("Synthetic current gearset missing.");
+                events.Enqueue("native:gear:update-gearset");
+            });
+
     public object Execute(JsonElement command)
     {
         controlResult = null;
@@ -378,6 +400,8 @@ internal sealed class RuntimeNode : IDisposable
             case "observe":
                 if (command.TryGetProperty("jobId", out var jobId)) character.CurrentJobId = jobId.GetUInt32();
                 if (command.TryGetProperty("itemLevel", out var itemLevel)) equippedItemLevel = itemLevel.GetInt32();
+                if (command.TryGetProperty("gearFault", out var observedGearFault)) gearFault = observedGearFault.GetString()!;
+                if (command.TryGetProperty("recommendedItemLevel", out var recommended)) recommendedItemLevel = recommended.GetInt32();
                 if (command.TryGetProperty("unlockReadable", out var readable)) unlockReadable = readable.GetBoolean();
                 if (command.TryGetProperty("lockedDuties", out var locked))
                 { lockedDuties.Clear(); foreach (var id in locked.EnumerateArray()) lockedDuties.Add(id.GetUInt32()); }

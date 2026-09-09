@@ -1,5 +1,13 @@
 # dad — changelog
 
+## 2026-09-09 - I322/I318 leveling gear and Beastmaster (local-only, unpublished)
+- Leveling Mode now saves and shares a default-on recommended-gear/current-gearset checkbox. Each worker prepares once
+  before repair and queueing; Questionable prepares before reading item level and choosing its dungeon. Failures and the
+  five-second timeout log once and continue without retrying; cancellation clears pending preparation.
+- Added BST (43) to combat-job selection and the Limited crew role. Explicit Limited slots can level in Premade Duty;
+  Any/DPS automatic selection, Duty Support, Trust, and Questionable NPC leveling continue to exclude limited jobs.
+- Extended focused selection, setting persistence/sharing, and virtual leveling/Questionable lifecycle regression coverage.
+
 ## 2026-09-08 - I317 XADB Partial readiness (local-only, unpublished)
 - Removed the general readiness blocker for otherwise-ready exact XADB snapshots marked Partial. Quality metadata,
   identity and job-data checks remain intact, and Leveling Mode still requires a complete job ledger.

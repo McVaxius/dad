@@ -19,11 +19,14 @@ public sealed class DadShareServiceTests
     private const string EntryC = "dddddddddddddddddddddddddddddddd";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    [Fact]
-    public void PlanRoundTripPreservesShareableFieldsAndExcludesMachineLocalState()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PlanRoundTripPreservesShareableFieldsAndExcludesMachineLocalState(bool refreshGear)
     {
         var service = CreateService();
         var source = BuildPlan(PlanA, "Alice Example Plan for Primary Account");
+        source.LevelingMode.RefreshRecommendedGear = refreshGear;
         var originalCreated = source.CreatedAtUtc;
         var commands = source.CompletionActions!.Commands.ToArray();
 
@@ -37,6 +40,7 @@ public sealed class DadShareServiceTests
         Assert.Equal(source.RouletteTarget.RouletteId, transfer.RouletteTarget.RouletteId);
         Assert.Equal(source.StopPolicy.Mode, transfer.StopPolicy.Mode);
         Assert.True(transfer.LevelingMode.Enabled);
+        Assert.Equal(refreshGear, transfer.LevelingMode.RefreshRecommendedGear);
         Assert.Equal(source.LevelingMode.GoalLevel, transfer.LevelingMode.GoalLevel);
         Assert.Equal(source.LevelingMode.JobOrder, transfer.LevelingMode.JobOrder);
         Assert.Equal(
@@ -89,6 +93,7 @@ public sealed class DadShareServiceTests
         Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
         Assert.False(imported.Slots[1].SkipIfDailyRouletteRewardReceived);
         Assert.True(imported.LevelingMode.Enabled);
+        Assert.Equal(refreshGear, imported.LevelingMode.RefreshRecommendedGear);
         Assert.Equal(DadLevelingJobOrder.HighestBelowGoal, imported.LevelingMode.JobOrder);
         Assert.Equal((uint)777, Assert.Single(imported.LevelingMode.DutyThresholds).ContentFinderConditionId);
     }

@@ -12,6 +12,7 @@ public sealed class DadWorkerExecutionService
     private readonly DadDutySupportAdsService adsService;
     private readonly DadShoppingRuntimeService shoppingService;
     private readonly DadPreDutyRepairRuntimeService preDutyRepairService;
+    private readonly DadLevelingGearPreparation gearPreparation;
     private readonly ICondition condition;
     private readonly IPluginLog log;
     private readonly DadWorkerRunCommandQueue pendingCommands = new();
@@ -46,7 +47,8 @@ public sealed class DadWorkerExecutionService
         DadShoppingRuntimeService shoppingService,
         DadPreDutyRepairRuntimeService preDutyRepairService,
         ICondition condition,
-        IPluginLog log)
+        IPluginLog log,
+        DadLevelingGearPreparation? gearPreparation = null)
     {
         this.queueExecutionService = queueExecutionService;
         this.presenceService = presenceService;
@@ -54,6 +56,7 @@ public sealed class DadWorkerExecutionService
         this.adsService = adsService;
         this.shoppingService = shoppingService;
         this.preDutyRepairService = preDutyRepairService;
+        this.gearPreparation = gearPreparation ?? new DadLevelingGearPreparation(log);
         this.condition = condition;
         this.log = log;
         status.WorkerSessionId = presenceService.WorkerSessionId;
@@ -165,6 +168,7 @@ public sealed class DadWorkerExecutionService
             if (activeCommand != null &&
                 string.Equals(activeCommand.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
             {
+                gearPreparation.Reset();
                 if (cancellationPending)
                 {
                     return new DadWorkerExecutionAck
@@ -293,6 +297,7 @@ public sealed class DadWorkerExecutionService
             }
 
             var hadWork = activeCommand != null || !pendingCommands.IsEmpty || !status.IsTerminal && status.State != DadWorkerExecutionState.Idle;
+            gearPreparation.Reset();
             pendingCommands.DrainAll();
 
             var runId = activeCommand?.RunId ?? status.RunId;
@@ -526,6 +531,7 @@ public sealed class DadWorkerExecutionService
         participantCombatRotationMode = combatRotationService.CombatRotationMode;
         participantFrenRiderHandoffGate.Reset();
         preDutyRepairService.Reset();
+        gearPreparation.Reset(command.Plan.Request.RefreshRecommendedGear);
         shoppingService.Reset();
         prequeuePrepared = false;
         repairPreparationStarted = false;
@@ -576,8 +582,6 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
-        preDutyRepairService.Begin(command.Plan.Request, module.ModuleId, DadClock.UtcNow);
-        repairPreparationStarted = true;
         UpdatePrequeuePreparation();
     }
 
@@ -585,6 +589,9 @@ public sealed class DadWorkerExecutionService
     {
         if (activeCommand == null || prequeuePrepared || status.IsTerminal)
             return;
+
+        // An attempt still expires if fresh runtime safety temporarily blocks native actions.
+        gearPreparation.Update(DadClock.UtcNow, allowActions: false);
 
         var module = ResolveModule(activeCommand);
         if (module == null)
@@ -618,6 +625,14 @@ public sealed class DadWorkerExecutionService
 
         if (!repairPreparationStarted)
         {
+            if (!gearPreparation.Update(DadClock.UtcNow))
+            {
+                status.State = DadWorkerExecutionState.Preparing;
+                status.Summary = "Equipping recommended gear and updating the current gearset.";
+                status.UpdatedAtUtc = DadClock.UtcNow;
+                commandStatuses[activeCommand.CommandId] = status.Clone();
+                return;
+            }
             preDutyRepairService.Begin(activeCommand.Plan.Request, module.ModuleId, DadClock.UtcNow);
             repairPreparationStarted = true;
         }
@@ -1112,6 +1127,7 @@ public sealed class DadWorkerExecutionService
 
     private void Finish(DadWorkerExecutionState state, bool success, string summary, string failureReason)
     {
+        gearPreparation.Reset();
         if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
             queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
         var completedCommand = activeCommand;

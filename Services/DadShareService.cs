@@ -673,6 +673,7 @@ public sealed class DadShareService
             },
             LevelingMode = new DadShareLevelingModeDto
             {
+                RefreshRecommendedGear = source.LevelingMode?.RefreshRecommendedGear ?? true,
                 Enabled = source.LevelingMode?.Enabled ?? false,
                 GoalLevel = source.LevelingMode?.GoalLevel ?? DadRunStopPolicy.DefaultTargetLevel,
                 JobOrder = source.LevelingMode?.JobOrder ?? DadLevelingJobOrder.LowestFirst,
@@ -842,6 +843,7 @@ public sealed class DadShareService
             }.Normalize(),
             LevelingMode = new DadLevelingModeOptions
             {
+                RefreshRecommendedGear = source.LevelingMode?.RefreshRecommendedGear ?? true,
                 Enabled = source.LevelingMode?.Enabled ?? false,
                 GoalLevel = source.LevelingMode?.GoalLevel ?? DadRunStopPolicy.DefaultTargetLevel,
                 JobOrder = source.LevelingMode?.JobOrder ?? DadLevelingJobOrder.LowestFirst,

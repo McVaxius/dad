@@ -49,6 +49,7 @@ public sealed class DadDutySupportLevelingPresetsTests
     [InlineData(19, 14, 10, "level 15")]
     [InlineData(8, 20, 10, "combat")]
     [InlineData(36, 20, 10, "Blue Mage")]
+    [InlineData(43, 20, 10, "Beastmaster")]
     public void RejectsMissingEvidenceAndIneligibleJobs(uint job, int level, int itemLevel, string expected)
     {
         Assert.Null(DadDutySupportLevelingPresets.Select(new(job, level, itemLevel), Lookup, _ => true, out var blocker));

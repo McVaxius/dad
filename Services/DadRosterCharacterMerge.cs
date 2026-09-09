@@ -86,7 +86,9 @@ internal static class DadRosterCharacterMerge
     }
 
     public static bool IsCombatJob(uint classJobId)
-        => classJobId is >= 1 and <= 7 or >= 19 and <= 42;
+        => classJobId is >= 1 and <= 7 or >= 19 and <= 43;
+
+    public static bool IsLimitedJob(uint classJobId) => classJobId is 36 or 43;
 
     public static void ApplyAuthoritativeXadbSnapshot(
         DadRosterCharacter target,

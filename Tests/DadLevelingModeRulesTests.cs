@@ -7,6 +7,82 @@ namespace dad.Tests;
 public sealed class DadLevelingModeRulesTests
 {
     [Theory]
+    [InlineData(36u)]
+    [InlineData(43u)]
+    public void ExplicitLimitedCrewCanLevelWithoutFullCombatJobFlag(uint jobId)
+    {
+        var group = Group(DadPlannerActivityMode.PremadeDuty, Slot("Slot1", DadPartyRole.Limited, "A", "One@Alpha"));
+        var result = Compile(group, Pool(Character("A", "One@Alpha", jobId, (jobId, 20), (19, 10))));
+        Assert.Equal(DadLevelingCompilationStatus.Ready, result.Status);
+        Assert.Equal(jobId, Assert.Single(result.Slots).JobId);
+        Assert.Equal(jobId, Assert.Single(result.ChildGroup!.Slots).RequiredJobId);
+    }
+
+    [Theory]
+    [InlineData(DadPlannerActivityMode.DutySupport)]
+    [InlineData(DadPlannerActivityMode.Trust)]
+    [InlineData(DadPlannerActivityMode.DutySupportLeveling)]
+    [InlineData(DadPlannerActivityMode.TrustLeveling)]
+    public void ExplicitLimitedCrewCannotLevelWithNpcs(DadPlannerActivityMode lane)
+    {
+        var result = Compile(Group(lane, Slot("Slot1", DadPartyRole.Limited, "A", "One@Alpha")),
+            Pool(Character("A", "One@Alpha", 43, (43, 20), (36, 30))));
+        Assert.Equal(DadLevelingCompilationStatus.Blocked, result.Status);
+        Assert.Contains("limited jobs cannot", result.Summary);
+    }
+
+    [Theory]
+    [InlineData(DadPartyRole.Any)]
+    [InlineData(DadPartyRole.Dps)]
+    public void AutomaticRolesStillExcludeLimitedJobs(DadPartyRole role)
+    {
+        var result = Compile(Group(DadPlannerActivityMode.PremadeDuty, Slot("Slot1", role, "A", "One@Alpha")),
+            Pool(Character("A", "One@Alpha", 43, (43, 1), (36, 2), (20, 30))));
+        Assert.Equal(DadLevelingCompilationStatus.Ready, result.Status);
+        Assert.Equal(20u, Assert.Single(result.Slots).JobId);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void GearSettingSurvivesSavingAndFrozenChildCloning(bool enabled)
+    {
+        Assert.True(DadIpcJson.Deserialize<DadPlannerGroup>("{}")!.LevelingMode.RefreshRecommendedGear);
+        Assert.False(DadIpcJson.Deserialize<DadRunRequest>("{}")!.RefreshRecommendedGear);
+        var group = Group(DadPlannerActivityMode.DutySupport, Slot("Slot1", DadPartyRole.Tank, "A", "One@Alpha"));
+        group.LevelingMode.RefreshRecommendedGear = enabled;
+        var restored = DadIpcJson.Deserialize<DadPlannerGroup>(DadIpcJson.Serialize(group))!;
+        Assert.Equal(enabled, restored.LevelingMode.RefreshRecommendedGear);
+        var result = Compile(restored, Pool(Character("A", "One@Alpha", 19, (19, 20))));
+        Assert.Equal(enabled, result.ChildGroup!.LevelingMode.RefreshRecommendedGear);
+        Assert.NotSame(restored.LevelingMode, result.ChildGroup.LevelingMode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void GearSettingSurvivesEffectiveWorkerRequestCopies(bool enabled)
+    {
+        var plan = new DadRunPlan
+        {
+            Request = new DadRunRequest
+            {
+                RefreshRecommendedGear = enabled,
+                CustomDuty = new() { ExpectedPartySize = 4 },
+                Commendation = new(),
+            },
+        };
+        var custom = DadEffectivePlanFactory.BuildCustomDutyPlan(plan, new()).Plan;
+        var commendation = DadEffectivePlanFactory.BuildCommendationPlan(plan, new()).Plan;
+        foreach (var copy in new[] { custom, commendation })
+        {
+            var command = new DadWorkerExecutionCommand { Plan = copy };
+            var restored = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(command))!;
+            Assert.Equal(enabled, restored.Plan.Request.RefreshRecommendedGear);
+        }
+    }
+
+    [Theory]
     [InlineData(DadRunStatus.Idle)]
     [InlineData(DadRunStatus.Queued)]
     [InlineData(DadRunStatus.WaitingForParticipants)]
@@ -518,7 +594,8 @@ public sealed class DadLevelingModeRulesTests
             Job(20, "MNK", DadPartyRole.Melee),
             Job(23, "BRD", DadPartyRole.PhysicalRanged),
             Job(25, "BLM", DadPartyRole.Caster),
-            Job(36, "BLU", DadPartyRole.Caster, limited: true),
+            Job(36, "BLU", DadPartyRole.Limited, full: false, limited: true),
+            Job(43, "BST", DadPartyRole.Limited, full: false, limited: true),
         ];
 
     private static DadLevelingJobDescriptor Job(

@@ -297,6 +297,7 @@ public sealed class DadQueueExecutionService
             RequestedBy = plan.Request.RequestedBy,
             StopPolicy = plan.Request.StopPolicy,
             PreDutyRepairPolicy = (plan.Request.PreDutyRepairPolicy ?? new DadPreDutyRepairPolicy()).Clone(),
+            RefreshRecommendedGear = plan.Request.RefreshRecommendedGear,
             CompletionActions = plan.Request.CompletionActions?.Clone(),
             Orchestration = plan.Request.Orchestration,
         };

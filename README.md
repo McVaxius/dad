@@ -15,7 +15,9 @@ integrations, and everyday commands.
 - Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
 Questionable leveling interruptions select a curated Duty Support dungeon automatically for the equipped class/job,
-using its actual level, equipped item level and duty unlocks. No saved preset is needed. Each request runs one dungeon;
+using its actual level, equipped item level and duty unlocks. Before reading item level, DAD equips recommended gear
+and updates the valid current gearset once. Preparation errors or a five-second timeout log once and continue the duty
+without retrying. Limited jobs (BLU/BST) cannot use NPC leveling. No saved preset is needed. Each request runs one dungeon;
 Questionable requests another while below its quest target. Its stop request sends `/ads leave` once and DAD keeps
 **Leaving duty** visible until exit and loading finish. A rejected leave stays visible as a blocker for manual exit.
 In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
@@ -587,7 +589,8 @@ uploaded or promoted to a release.
   failing the entry, closing a client, or advancing the Schedule.
 - Saved Duty Support, Trust, and Premade Duty presets can enable **Leveling Mode** with one plan goal, deterministic
   `Lowest first` or `Highest below goal` job rotation, and an ordered minimum-level-to-duty table. DAD requires exact
-  fixed account/character identities and complete XADB job ledgers, excludes base classes and limited jobs, selects
+  fixed account/character identities and complete XADB job ledgers, excludes base classes, and admits BLU/BST only for
+  an explicit **Limited** crew slot in Premade Duty. Duty Support, Trust, and automatic Any/DPS selection exclude limited jobs. DAD selects
   the threshold at or below the lowest selected party job, and never falls back when configuration or roster truth is
   uncertain. Each iteration is a new immutable, synced ordinary child run through the existing lane executor; success
   refreshes exact job truth before compiling the next child, while failure, timeout, or cancellation ends the outer
@@ -596,6 +599,9 @@ uploaded or promoted to a release.
   The checkbox validates the currently visible Run Family/Submode draft and saves that lane into the selected preset in
   the same action, so a valid Leveling/NPC or Duty Finder/Premade selection does not require a separate preset update.
   Run Family and Submode remain locked until Leveling Mode is disabled.
+  **Equip recommended gear and update current gearset** defaults on, including existing presets, and is preserved by
+  saving, cloning, and sharing. Each worker prepares once after job selection and before repair/queueing; gear preparation
+  errors or a five-second timeout log once and continue the duty without retrying. Cancellation stops pending preparation.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.

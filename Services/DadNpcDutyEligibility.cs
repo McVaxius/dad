@@ -32,6 +32,9 @@ internal static class DadNpcDutyEligibility
             return $"Runner '{characterKey}' is on non-combat job {FormatJob(character, currentJobId)}; {dutyLabel} requires a combat job.";
         }
 
+        if (DadRosterCharacterMerge.IsLimitedJob(currentJobId.Value))
+            return $"Runner '{characterKey}' is on limited job {FormatJob(character, currentJobId)}; Duty Support and Trust do not support limited jobs.";
+
         if (jobLevelRequired <= 0)
             return null;
 

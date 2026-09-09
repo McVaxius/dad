@@ -3905,7 +3905,7 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     JobId = row.RowId,
                     Abbreviation = row.Abbreviation.ToString().Trim(),
-                    Role = jobType switch
+                    Role = row.IsLimitedJob || DadRosterCharacterMerge.IsLimitedJob(row.RowId) ? DadPartyRole.Limited : jobType switch
                     {
                         1 => DadPartyRole.Tank,
                         2 or 6 => DadPartyRole.Healer,
@@ -3915,7 +3915,7 @@ public sealed class Plugin : IDalamudPlugin
                         _ => DadPartyRole.Any,
                     },
                     IsFullCombatJob = row.CanQueueForDuty && row.JobIndex > 0 && jobType is >= 1 and <= 6,
-                    IsLimitedJob = row.IsLimitedJob,
+                    IsLimitedJob = row.IsLimitedJob || DadRosterCharacterMerge.IsLimitedJob(row.RowId),
                 };
             })
             .ToList();

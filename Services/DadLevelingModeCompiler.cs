@@ -46,6 +46,12 @@ public static class DadLevelingModeCompiler
 
         foreach (var row in primaryRows)
         {
+            if (npcLane && row.RequiredRole == DadPartyRole.Limited)
+            {
+                result.Blockers.Add($"{row.SlotId}: limited jobs cannot use Duty Support or Trust leveling.");
+                continue;
+            }
+
             if (row.RequiredAccountKey.IsEmpty || row.RequiredCharacterKey.IsEmpty || row.SharedIdentity != null)
             {
                 result.Blockers.Add($"{row.SlotId} requires an exact configured local account and character for Leveling Mode.");
@@ -79,7 +85,8 @@ public static class DadLevelingModeCompiler
                 .ToList();
             if (eligible.Count == 0)
             {
-                result.Blockers.Add($"{row.SlotId} {row.RequiredCharacterKey.Value} has no unlocked full combat jobs compatible with role {row.RequiredRole}.");
+                var jobKind = row.RequiredRole == DadPartyRole.Limited ? "limited jobs" : "full combat jobs";
+                result.Blockers.Add($"{row.SlotId} {row.RequiredCharacterKey.Value} has no unlocked {jobKind} compatible with role {row.RequiredRole}.");
                 continue;
             }
 
@@ -177,7 +184,11 @@ public static class DadLevelingModeCompiler
 
     public static bool IsEligibleForRole(DadLevelingJobDescriptor descriptor, DadPartyRole role)
     {
-        if (!descriptor.IsFullCombatJob || descriptor.IsLimitedJob || descriptor.JobId == 0)
+        if (descriptor.JobId == 0)
+            return false;
+        if (descriptor.IsLimitedJob || DadRosterCharacterMerge.IsLimitedJob(descriptor.JobId))
+            return role == DadPartyRole.Limited;
+        if (!descriptor.IsFullCombatJob)
             return false;
 
         return role switch

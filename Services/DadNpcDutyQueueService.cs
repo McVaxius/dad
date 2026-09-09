@@ -173,7 +173,7 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
             case DadTrustPlayerRole.Dps:
                 return true;
             case DadTrustPlayerRole.Limited:
-                blocker = "Blue Mage cannot run Trust through Dad's native Trust lane.";
+                blocker = "Limited jobs (Blue Mage and Beastmaster) cannot run Trust through Dad's native Trust lane.";
                 return false;
             default:
                 blocker = "Trust requires a logged-in local combat job so Dad can select compatible NPC roles.";
@@ -536,7 +536,7 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
         if (playerRole is DadTrustPlayerRole.Unknown or DadTrustPlayerRole.Limited)
         {
             failure = playerRole == DadTrustPlayerRole.Limited
-                ? "Blue Mage cannot run Trust through Dad's native Trust lane."
+                ? "Limited jobs (Blue Mage and Beastmaster) cannot run Trust through Dad's native Trust lane."
                 : "Trust requires a logged-in local combat job so Dad can select compatible NPC roles.";
             return false;
         }
@@ -807,7 +807,7 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
         {
             1 or 3 or 19 or 21 or 32 or 37 => DadTrustPlayerRole.Tank,
             6 or 24 or 28 or 33 or 40 => DadTrustPlayerRole.Healer,
-            36 => DadTrustPlayerRole.Limited,
+            36 or 43 => DadTrustPlayerRole.Limited,
             2 or 4 or 5 or 7 or 26 or 29 or 20 or 22 or 23 or 25 or 27 or 30 or 31 or 34 or 35 or 38 or 39 or 41 or 42 => DadTrustPlayerRole.Dps,
             _ => DadTrustPlayerRole.Unknown,
         };

@@ -50,9 +50,15 @@ internal static class DadLevelingRuntime
         var child = compilation.ChildGroup;
         var options = presets.BuildOptionsForGroup(child, null);
         var preview = presets.BuildPlannerPreview(pool, options, child);
-        build.PlannerPreview = validate(presets.BuildPlannerRunRequestPreview(pool, options,
+        var requestPreview = presets.BuildPlannerRunRequestPreview(pool, options,
             requestId: compilation.ChildRequestId, requestedAtUtc: DadClock.UtcNow,
-            plannerPreviewOverride: preview, selectedGroup: child, completionFallback: completion), pool, child);
+            plannerPreviewOverride: preview, selectedGroup: child, completionFallback: completion);
+        if (requestPreview.Request is { } request)
+        {
+            request.RefreshRecommendedGear = child.LevelingMode.RefreshRecommendedGear;
+            requestPreview.RequestJson = DadIpcJson.Serialize(request);
+        }
+        build.PlannerPreview = validate(requestPreview, pool, child);
         return build;
     }
 }

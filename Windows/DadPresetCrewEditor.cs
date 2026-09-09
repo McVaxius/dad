@@ -1057,7 +1057,7 @@ internal sealed class DadPresetCrewEditor
             2 or 4 or 20 or 22 or 29 or 30 or 34 or 39 or 41 => DadPartyRole.Melee,
             5 or 23 or 31 or 38 => DadPartyRole.PhysicalRanged,
             7 or 25 or 26 or 27 or 35 or 42 => DadPartyRole.Caster,
-            36 => DadPartyRole.Limited,
+            36 or 43 => DadPartyRole.Limited,
             _ => DadPartyRole.Any,
         };
 

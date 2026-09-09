@@ -478,7 +478,7 @@ public sealed class DadRunSlotManifestRulesTests
     [Theory]
     [InlineData(0u)]
     [InlineData(8u)]
-    [InlineData(43u)]
+    [InlineData(44u)]
     public void InvalidRequestedJobCannotEnterFrozenManifest(uint invalidJobId)
     {
         var plan = BuildPremadeDutyPlan();
@@ -486,6 +486,15 @@ public sealed class DadRunSlotManifestRulesTests
 
         Assert.False(DadRunSlotManifestRules.TryCreate(plan, out _, out var blocker));
         Assert.Contains("combat job", blocker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BeastmasterRequestedJobEntersFrozenManifest()
+    {
+        var plan = BuildPremadeDutyPlan();
+        plan.Orchestration.RequiredRosterCharacters[1].RequiredJobId = 43;
+        Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var blocker), blocker);
+        Assert.Contains(manifest.Slots, slot => slot.RequiredJobId == 43);
     }
 
     [Theory]

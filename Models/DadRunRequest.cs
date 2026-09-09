@@ -36,6 +36,7 @@ public sealed class DadRunRequest
     public string RequestedBy { get; set; } = string.Empty;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadPreDutyRepairPolicy PreDutyRepairPolicy { get; set; } = new();
+    public bool RefreshRecommendedGear { get; set; }
     public DadCompletionActions? CompletionActions { get; set; }
     public List<DadShoppingRunAssociation> ShoppingAssociations { get; set; } = [];
     public DadOrchestrationIntent Orchestration { get; set; } = new();
@@ -619,6 +620,7 @@ public static class DadRunRequestOptions
         "RDM",
         "PCT",
         "BLU",
+        "BST",
     ];
 
     public static readonly HashSet<string> ValidFrequencies = new(StringComparer.OrdinalIgnoreCase)

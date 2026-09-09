@@ -55,8 +55,8 @@ public static class DadDutySupportLevelingPresets
             blocker = "Current job, actual level, or equipped item level is unavailable.";
         else if (!DadRosterCharacterMerge.IsCombatJob(player.JobId))
             blocker = "Duty Support leveling requires a combat class or job; limited jobs are unsupported.";
-        else if (player.JobId == 36)
-            blocker = "Blue Mage cannot use Duty Support leveling.";
+        else if (DadRosterCharacterMerge.IsLimitedJob(player.JobId))
+            blocker = "Limited jobs (Blue Mage and Beastmaster) cannot use Duty Support leveling.";
         else if (player.Level < 15)
             blocker = $"Duty Support leveling starts at level 15; the current class/job is level {player.Level}.";
         if (blocker.Length != 0) return null;

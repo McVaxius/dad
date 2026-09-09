@@ -7302,7 +7302,7 @@ public sealed class MainWindow : Window, IDisposable
             plugin.TouchPlannerGroup(group);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("A slot is complete only when every unlocked eligible full combat job for its selected role reaches this level.");
+            ImGui.SetTooltip("A slot is complete when every unlocked eligible job for its role reaches this level. Limited jobs require an explicit Limited slot in Premade Duty; Duty Support and Trust exclude them.");
 
         ImGui.SameLine();
         ImGui.SetNextItemWidth(190f);
@@ -7327,6 +7327,15 @@ public sealed class MainWindow : Window, IDisposable
             }
             ImGui.EndCombo();
         }
+
+        var refreshGear = options.RefreshRecommendedGear;
+        if (ImGui.Checkbox("Equip recommended gear and update current gearset", ref refreshGear))
+        {
+            options.RefreshRecommendedGear = refreshGear;
+            plugin.TouchPlannerGroup(group);
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Each worker prepares gear once before repair and queueing. Errors or a five-second timeout continue the duty without retrying.");
 
         var dutyOptions = supported
             ? plugin.PresetProviderService.SearchPlannerDutyOptions(childLane, string.Empty, 4096)

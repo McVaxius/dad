@@ -10,6 +10,14 @@ public sealed class DadNpcDutyEligibilityTests
     private const uint WhiteMageJobId = 24; // combat
     private const uint FisherJobId = 18;    // non-combat
 
+    [Theory]
+    [InlineData(36u)]
+    [InlineData(43u)]
+    public void LimitedJobsCannotUseNpcDuties(uint jobId)
+    {
+        Assert.Contains("limited job", DadNpcDutyEligibility.GetBlocker(Character(jobId, 90), "Synthetic duty", 4, 0));
+    }
+
     private static DadAcquiredCharacter Character(uint? jobId, int? level, (uint job, int lvl)[]? jobLevels = null)
     {
         var character = new DadAcquiredCharacter

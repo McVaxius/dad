@@ -44,7 +44,7 @@ public sealed class DadPlannerRequestedJobValidationRulesTests
     [InlineData(0u)]
     [InlineData(8u)]
     [InlineData(18u)]
-    [InlineData(43u)]
+    [InlineData(44u)]
     public void NonCombatJobCannotBeRequested(uint requiredJobId)
     {
         var failure = DadPlannerRequestedJobValidationRules.Validate(
@@ -52,6 +52,14 @@ public sealed class DadPlannerRequestedJobValidationRulesTests
             [Character(currentJobId: requiredJobId, xadbReady: true, (requiredJobId, 100))]);
 
         Assert.Equal(DadPlannerRequestedJobValidationFailure.InvalidCombatJob, failure);
+    }
+
+    [Fact]
+    public void BeastmasterCanBeSelectedFromTheLearnedCombatJobLedger()
+    {
+        Assert.True(DadRosterCharacterMerge.IsCombatJob(43));
+        Assert.Equal(DadPlannerRequestedJobValidationFailure.None,
+            DadPlannerRequestedJobValidationRules.Validate(Slot(43), [Character(24, true, (43, 30))]));
     }
 
     [Fact]
