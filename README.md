@@ -315,6 +315,70 @@ uploaded or promoted to a release.
 
 ## Central AutoParty bridge
 
+### Test AutoParty with another DAD
+
+This is a regular-user test with two participating DAD owners. You need compatible DAD/AutoParty versions, access to
+the configured Discord server and its AutoParty bot, bot DMs enabled, and one character per owner that can party with
+the other (compatible world/data centre, available outside duties, and free to join a party). Enable DAD and allow it
+to automate each participating character; each character must be available in that owner's Crew roster. You do not
+need to create a Discord bot or enter a bot token. Synthetic endpoint aliases below are **DAD Alder** and **DAD Birch**.
+
+Open `/dad` and use the prominent AutoParty button beneath its header, or open `/dad autoparty` directly:
+
+- **Red — AutoParty: Finish Discord setup** opens **Setup**, including while activation is pending.
+- **Yellow — AutoParty: Pair with another DAD** opens **Pairing & sharing** after registration is active.
+- **Green — AutoParty: Setup complete** opens **Party** when at least one pairing is active. Green means setup is
+  complete; check the separate enabled/connection status and peer availability before use. An offline peer or disabled
+  AutoParty does not erase completed setup. Opening the window does not enable AutoParty or start party formation.
+
+1. **Register each DAD in Discord.** In **Setup**, enable AutoParty, enter an endpoint alias, and select
+   **Generate registration challenge**. **Copy challenge**, then use the bot's `/autoparty register` command in the
+   configured Discord server with the complete challenge. Copy the bot's complete bootstrap DM reply (or its raw
+   `APB1` token) into **Encrypted bootstrap DM** and select **Import bootstrap**. Repeat on the other DAD, using its own
+   challenge and reply. Expected: both report **Registration Active** and mailbox **Ready**. Import alone is pending
+   activation; wait for the signed exchange to complete before pairing.
+2. **Exchange fingerprints both ways.** In **Pairing & sharing**, DAD Alder copies **Your pairing fingerprint** to
+   DAD Birch; Birch pastes it into **Peer pairing fingerprint**. Birch also copies its own fingerprint back to Alder.
+   Each owner verifies that the peer fingerprint is current, chooses **This character** (while on the test character)
+   or **One selected character** under **What this DAD shares**, and selects **Submit pairing**. Expected: after both
+   submissions, each sees the other under **Paired DADs** as **active, online**. The first submission waits for the
+   reciprocal one. Leave the separate collapsed **Community Available** section alone for this private test.
+3. **Refresh and choose the two characters.** On both DADs, open **Party** and select
+   **Refresh paired DAD character lists**. Wait for its result; refresh has a normal 60-second cooldown. Expected:
+   shared characters from the other owner appear. On the DAD initiating the party, select its local character and the
+   other owner's shared character; choose a permitted job if offered. In the selected order, use **Up**/**Down** so
+   the intended inviter is labelled **Party leader**. Select only these two participants for this test.
+4. **Create and inspect the party.** On the initiating DAD, select **Create party** once. Expected: the formation reaches
+   **RegularGroupReady**, and both owners see the two intended characters in the actual in-game party, with the chosen
+   leader. Check membership on both clients. **Create party performs formation only**: it does not queue or run a duty.
+5. **Disband and inspect cleanup.** On the same DAD, use **Disband party** in **Party** once the exact formation is ready.
+   Expected: guarded teardown finishes, the formation reaches **Completed**, both characters are out of that party,
+   and temporary participant control/profile changes are released or restored. Verify this on both clients; an accepted
+   request or a quiet queue alone is not evidence of cleanup. Disband refuses a party DAD does not own.
+
+**Owner Stop** is always above the tab content. It immediately vetoes local AutoParty work and stops owned work; use it
+when you need to stop automation. It is separate from the normal **Disband party** test and is not proof that in-game
+party cleanup has completed. Check both clients after stopping.
+
+If a step does not complete:
+
+- **Closed DMs:** enable DMs from the configured server after `registration-dm-unavailable-enable-dms-and-retry`, then
+  retry `/autoparty register`. The server's `registration-bootstrap-sent-check-dms` response is not the bootstrap token.
+- **Pending activation:** keep AutoParty enabled and wait for mailbox connectivity. Pairing stays locked until Active
+  and Ready. If the bootstrap expires or recovery is offered, use **Recover registration** and import the replacement DM.
+- **Expired fingerprints:** they last ten minutes. Exchange the current fingerprints both ways and submit again; use
+  **Regenerate fingerprint** or **Cancel attempt** for the current attempt as needed. Old copies will not pair.
+- **Offline peer:** both owners should enable AutoParty and wait for their mailbox to become Ready, then refresh again
+  after the cooldown. Active pairing survives offline periods, but offline peers expose no usable shared characters.
+- **Missing characters:** confirm each owner's Crew roster and private sharing choice include the test character, that
+  it is connected with a combat job, and that both owners refreshed. Clear the directory search. Check the refresh's
+  published/received counts and local sharing status in `/dad`; Community Available does not widen private sharing.
+
+The latest action result stays above the tabs; expandable **Diagnostics** retains technical codes for troubleshooting.
+Visual layout and this live Discord/game test require separate acceptance; headless lifecycle results do not establish them.
+
+### Bridge behaviour and protocol details
+
 - AutoParty remains explicit local opt-in. One centrally operated service owns the Discord application, commands, Gateway,
   and webhook provisioning. DAD users create no bot, enter no token, and supply no Application ID. Local, LAN, public IPC,
   Plan, Schedule, Crew Formation, queue, and teardown behavior continues normally while AutoParty is disabled or unavailable.

@@ -3,6 +3,15 @@ using dad.Models;
 
 namespace dad.Services;
 
+internal enum DadAutoPartySection
+{
+    Setup,
+    Pairing,
+    Party,
+}
+
+internal sealed record DadAutoPartySetupProgress(DadAutoPartySection Section, string ButtonText);
+
 internal enum DadAutoPartyProgressState
 {
     Pending,
@@ -45,6 +54,62 @@ internal sealed record DadAutoPartyPairingProgress(
 
 internal static class DadAutoPartyProgressProjection
 {
+    internal static DadAutoPartySetupProgress Setup(DadAutoPartyConfiguration configuration) =>
+        !configuration.IsRegistrationActive
+            ? new(DadAutoPartySection.Setup, "AutoParty: Finish Discord setup")
+            : !configuration.Pairings.Any(static pairing => pairing.IsActive)
+                ? new(DadAutoPartySection.Pairing, "AutoParty: Pair with another DAD")
+                : new(DadAutoPartySection.Party, "AutoParty: Setup complete");
+
+    internal static string ActionOutcome(string safeCode) => safeCode switch
+    {
+        "" => "Choose a tab to set up AutoParty or manage a party.",
+        "dad-autoparty-operation-running" => "Action in progress. Wait for its result.",
+        "dad-autoparty-operation-already-running" => "Another action is still running. Wait for it to finish before trying again.",
+        "dad-autoparty-operation-cancelled" => "Action cancelled. Check the current setup and connection before trying again.",
+        "dad-autoparty-operation-failed" => "Action failed. Check connection and diagnostics before trying again.",
+        "dad-autoparty-enabled" => "AutoParty enabled. Follow Setup until registration is Active and the mailbox is Ready.",
+        "dad-autoparty-disabled" => "AutoParty disabled. Enable it in Setup when you want to connect again.",
+        "dad-registration-challenge-created" => "Registration challenge generated. Copy it into Discord's /autoparty register command, then import the bot's reply.",
+        "dad-registration-alias-invalid" => "The endpoint alias is invalid. Enter a short name for this DAD and generate the challenge again.",
+        "dad-registration-activation-pending" => "Registration activation is still pending. Keep AutoParty enabled and wait for Registration Active and mailbox Ready.",
+        "dad-bootstrap-imported" => "Bot reply imported. Keep AutoParty enabled and check Setup for registration activation and mailbox readiness.",
+        "dad-bootstrap-invalid" or "dad-bootstrap-open-rejected" => "Bot reply rejected. Paste the complete APB1 token or exact bootstrap DM for this DAD; check its expiry.",
+        "dad-bootstrap-replayed" => "This bot reply was already used. Check registration status; use Recover registration if a replacement is needed.",
+        "dad-registration-identity-lost" => "The protected identity is missing. Follow the owner deregistration and recovery instructions in Setup.",
+        "dad-pairing-invite-generated" or "dad-pairing-invite-current" => "Pairing fingerprint ready. Copy it to the other owner and paste their current fingerprint here.",
+        "dad-pairing-intent-submitted" or "dad-pairing-intent-queued" or "dad-pairing-intent-idempotent" => "Pairing submitted. Check Paired DADs for completion; if absent, the other owner must submit your fingerprint and their sharing choice.",
+        "dad-pairing-expired" or "dad-pairing-invite-not-current" => "Pairing fingerprint expired or no longer current. Exchange current fingerprints both ways and submit again.",
+        "dad-pairing-cancellation-queued" or "dad-pairing-cancellation-pending" => "Pairing cancellation requested. Wait for acknowledgement before exchanging a fresh fingerprint.",
+        "dad-pairing-peer-already-active" => "This DAD is already paired. Check Paired DADs, then refresh shared characters in Party.",
+        "dad-pairing-peer-invite-invalid" => "Peer fingerprint rejected. Paste the other DAD's complete current APP1 fingerprint.",
+        "dad-pairing-share-policy-invalid" => "No valid local sharing choice. Refresh Crew characters and choose one character to share.",
+        "dad-pairing-attempt-conflict" => "This attempt already has a different submission. Cancel it and exchange fresh fingerprints before changing the choice.",
+        "dad-pairing-registration-not-active" => "Registration is not active. Complete Discord registration in Setup first.",
+        "dad-pairing-mailbox-refreshing" or "dad-pairing-mailbox-not-ready" => "Pairing is waiting for a connection. Wait for the mailbox to become Ready before submitting.",
+        "dad-pairing-alias-updated" or "dad-pairing-alias-unchanged" => "Paired DAD alias saved. This name is used locally in pairing and character lists.",
+        "dad-standing-share-policy-updated" => "Community Available sharing saved. Review the selected scope below; private pairing choices are unchanged.",
+        "dad-deauthentication-applied" or "dad-deauthentication-already-applied" => "DAD unpaired and its shared access removed. Exchange fresh fingerprints both ways to pair again.",
+        "dad-directory-query-queued" or "dad-directory-query-coalesced" => "Directory search requested. Wait for shared characters to arrive; both owners must be online and sharing.",
+        "dad-directory-authority-current" => "Current directory access is ready. Select an available shared character in Party.",
+        "dad-directory-registration-not-active" => "Directory search requires active registration. Complete Discord setup first.",
+        "dad-paired-directory-refresh-not-ready" => "Character refresh is not ready. Enable AutoParty and finish registration in Setup, then wait for mailbox Ready.",
+        "dad-paired-directory-refresh-timeout" or "dad-directory-query-expired" => "Character refresh timed out. Check both owners' mailbox connections and try again after the refresh cooldown.",
+        "dad-paired-directory-refresh-cancelled" => "Character refresh was cancelled. Check connection and setup before refreshing again.",
+        "dad-listing-publication-roster-unavailable" => "Local sharing is blocked because the XA Database full roster is unavailable. Check XA Database and refresh the Crew roster before trying again.",
+        "dad-deregister-request-queued" => "Deregistration requested. Wait for the relay receipt and local mailbox cleanup before registering again.",
+        "dad-deregister-not-registered" => "This DAD has no active registration to remove. Use Setup to register.",
+        "dad-autoparty-purged" => "Old identity forgotten. Enter an alias and generate a new registration challenge.",
+        "dad-owner-stop-active" => "Owner Stop applied: local AutoParty work is vetoed and owned work is stopping. Check party cleanup in game; this is separate from Disband party.",
+        "dad-autoparty-freeform-selection-full" => "The party already has eight members. Remove a selection before adding another.",
+        "dad-autoparty-freeform-listing-stale" => "A selected character is unavailable or expired. Refresh paired DAD character lists and select a current character.",
+        "dad-autoparty-freeform-local-job-missing" or "dad-autoparty-freeform-job-denied" => "A selected job is unavailable. Refresh characters and choose one of the listed permitted jobs.",
+        "dad-autoparty-freeform-activity-denied" or "dad-autoparty-freeform-route-not-authorized" => "A selection does not authorize party formation. Check the pairing and the other owner's sharing choice.",
+        _ => safeCode.StartsWith("dad-", StringComparison.Ordinal)
+            ? $"Action result: {safeCode}. Check the current tab's prerequisites and connection; retain this code for troubleshooting."
+            : safeCode,
+    };
+
     internal static DadAutoPartyRegistrationProgress Registration(
         DadAutoPartyConfiguration configuration,
         DadAutoPartyEndpointSnapshot endpoint,

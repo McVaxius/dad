@@ -469,7 +469,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("transport-channel traffic is private machine traffic", source, StringComparison.Ordinal);
         Assert.Contains("Registration & mailbox", source, StringComparison.Ordinal);
         Assert.Contains("Mailbox activity", source, StringComparison.Ordinal);
-        Assert.Contains("Pairing and sharing", source, StringComparison.Ordinal);
+        Assert.Contains("Pairing & sharing", source, StringComparison.Ordinal);
         Assert.Contains("Accepted fragments:", source, StringComparison.Ordinal);
         Assert.Contains("awaiting semantic receipt", source, StringComparison.Ordinal);
         Assert.Contains("Raw safe code:", source, StringComparison.Ordinal);
@@ -548,19 +548,40 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("active, offline", source, StringComparison.Ordinal);
         Assert.Contains("row.Online", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ImGui.TextWrapped($\"Status: {status}\")", source, StringComparison.Ordinal);
-        var workflowOrder = new[]
-        {
-            source.IndexOf("Enable AutoParty", StringComparison.Ordinal),
-            source.IndexOf("DrawRegistrationProgressCard(registrationProgress)", StringComparison.Ordinal),
-            source.IndexOf("\"Pairing and sharing\"", StringComparison.Ordinal),
-            source.IndexOf("\"Community Available\"", StringComparison.Ordinal),
-            source.IndexOf("foreach (var row in windowProjection.PairingRows)", StringComparison.Ordinal),
-            source.IndexOf("\"Private directory\"", StringComparison.Ordinal),
-            source.IndexOf("\"Freeform party\"", StringComparison.Ordinal),
-            source.IndexOf("\"Deregister this island\"", StringComparison.Ordinal),
-        };
-        Assert.All(workflowOrder, static index => Assert.True(index >= 0));
-        Assert.Equal(workflowOrder.Order(), workflowOrder);
+        var drawStart = source.IndexOf("public override void Draw()", StringComparison.Ordinal);
+        var drawEnd = source.IndexOf("private void DrawTab", drawStart, StringComparison.Ordinal);
+        var draw = source[drawStart..drawEnd];
+        Assert.Contains("ObserveTask();", draw, StringComparison.Ordinal);
+        Assert.Contains("ObserveDirectoryRefresh();", draw, StringComparison.Ordinal);
+        Assert.Contains("MaintainPairingAttempt(configuration, endpoint);", draw, StringComparison.Ordinal);
+        Assert.Contains("DrawTab(\"Setup\", DadAutoPartySection.Setup", draw, StringComparison.Ordinal);
+        Assert.Contains("DrawTab(\"Pairing & sharing\", DadAutoPartySection.Pairing", draw, StringComparison.Ordinal);
+        Assert.Contains("DrawTab(\"Party\", DadAutoPartySection.Party", draw, StringComparison.Ordinal);
+        Assert.True(draw.IndexOf("Owner Stop", StringComparison.Ordinal) < draw.IndexOf("BeginTabBar", StringComparison.Ordinal));
+        Assert.True(draw.IndexOf("ActionOutcome(status)", StringComparison.Ordinal) < draw.IndexOf("BeginTabBar", StringComparison.Ordinal));
+        Assert.Contains("ImGui.BeginChild($\"dad-autoparty-content-{section}\"", source, StringComparison.Ordinal);
+        Assert.Contains("pendingSection ??= DadAutoPartyProgressProjection.Setup", source, StringComparison.Ordinal);
+        Assert.Contains("ImGuiTabItemFlags.SetSelected", source, StringComparison.Ordinal);
+        Assert.Contains("userAction: false", source, StringComparison.Ordinal);
+        Assert.Contains("operationReportsStatus && operationActionRevision == actionRevision", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ready for the next action", source, StringComparison.Ordinal);
+        Assert.Contains("ImGui.CollapsingHeader(\"Community Available\")", source, StringComparison.Ordinal);
+        Assert.Contains("ImGui.CollapsingHeader(\"Diagnostics", source, StringComparison.Ordinal);
+        Assert.Contains("plugin.TryStartPairedDirectoryRefresh()", source, StringComparison.Ordinal);
+        Assert.Contains("jobs.Select(ResolveJobAbbreviation)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("job => job.ToString()", source, StringComparison.Ordinal);
+        Assert.Contains("Party leader", source, StringComparison.Ordinal);
+        Assert.Contains("plugin.CanDisbandAutoPartyFormation(out var disbandBlocker)", source, StringComparison.Ordinal);
+        Assert.Contains("plugin.RequestAutoPartyFormationDisband()", source, StringComparison.Ordinal);
+        var main = ReadRepositorySource("Windows", "MainWindow.cs");
+        Assert.Contains("DadAutoPartyProgressProjection.Setup(configuration.AutoParty)", main, StringComparison.Ordinal);
+        Assert.Contains("plugin.OpenAutoPartyUi(setup.Section)", main, StringComparison.Ordinal);
+        var setupButton = main[main.IndexOf("private void DrawAutoPartySetupButton", StringComparison.Ordinal)..
+            main.IndexOf("private void DrawActiveRunBanner", StringComparison.Ordinal)];
+        Assert.Contains("ImGuiCol.ButtonHovered", setupButton, StringComparison.Ordinal);
+        Assert.Contains("ImGuiCol.NavHighlight", setupButton, StringComparison.Ordinal);
+        Assert.DoesNotContain("SetEnabled", setupButton, StringComparison.Ordinal);
+        Assert.DoesNotContain("Start", setupButton, StringComparison.Ordinal);
         Assert.DoesNotContain("TransportChannelIds", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewChannel", source, StringComparison.Ordinal);
     }

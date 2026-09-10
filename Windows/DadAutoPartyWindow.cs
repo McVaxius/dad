@@ -29,7 +29,13 @@ public sealed class DadAutoPartyWindow : Window
     private readonly HashSet<string> communityShareHandles = new(StringComparer.Ordinal);
     private readonly List<string> freeformSelectionOrder = [];
     private readonly Dictionary<string, uint> remoteRequestedJobs = new(StringComparer.Ordinal);
-    private string status = "AutoParty is disabled.";
+    private string status = string.Empty;
+    private DadAutoPartySection? pendingSection;
+    private bool operationReportsStatus;
+    private long actionRevision;
+    private long operationActionRevision;
+    private bool observingDirectoryRefresh;
+    private long refreshActionRevision;
     private Task<UiOperationResult>? operationTask;
     private bool forgetLostIdentityConfirmed;
     private string pendingUnpairIslandId = string.Empty;
@@ -56,6 +62,7 @@ public sealed class DadAutoPartyWindow : Window
 
     public override void OnOpen()
     {
+        pendingSection ??= DadAutoPartyProgressProjection.Setup(plugin.Configuration.AutoParty).Section;
         endpointAlias = plugin.Configuration.AutoParty.EndpointAlias;
         bootstrapCopy = string.Empty;
         peerPairingFingerprint = string.Empty;
@@ -79,42 +86,73 @@ public sealed class DadAutoPartyWindow : Window
         RefreshLocalCandidates();
     }
 
+    internal void OpenSection(DadAutoPartySection section)
+    {
+        pendingSection = section;
+        IsOpen = true;
+    }
+
     public override void Draw()
     {
         ObserveTask();
+        ObserveDirectoryRefresh();
         var configuration = plugin.Configuration.AutoParty;
         var endpoint = plugin.AutoPartyEndpointService.Snapshot;
+        MaintainPairingAttempt(configuration, endpoint);
 
-        DadUi.Heading(
-            "Central AutoParty bridge",
-            "One centrally operated Discord bot; this DAD uses only its private encrypted webhook mailbox.");
-        if (ImGui.CollapsingHeader("Registration protocol details##dad-autoparty-registration-details"))
+        DadUi.Heading("AutoParty", "Register, pair with another DAD, then form a party.");
+        ImGui.TextWrapped($"AutoParty: {(configuration.Enabled ? "Enabled" : "Disabled")} | " +
+            $"DAD: {(plugin.Configuration.PluginEnabled ? "Enabled" : "Paused")} | " +
+            $"Registration: {(configuration.IsRegistrationActive ? "Active" : "Setup pending")} | Mailbox: {endpoint.State}");
+        if (DadUi.Button("Owner Stop", DadUiTone.Danger))
         {
-            ImGui.TextWrapped(
-                "Enable bot DMs before registering. Submit this DAD's APR1 challenge in the guild, then paste the raw APB1 " +
-                "token or exact wrapper from the bot's single DM here. The guild shows only safe registration feedback; " +
-                "transport-channel traffic is private machine traffic. Pairing uses one reciprocal APP1 fingerprint from each DAD.");
+            plugin.AutoPartyService.StopAll("dad-owner-stop-button");
+            SetStatus("dad-owner-stop-active");
         }
-        if (!string.IsNullOrWhiteSpace(configuration.LegacyDiscordTokenCleanupWarning))
-            ImGui.TextColored(
-                new Vector4(1f, .7f, .2f, 1f),
-                $"Security cleanup warning: {configuration.LegacyDiscordTokenCleanupWarning}. DAD will retry.");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Immediately veto local AutoParty work and stop owned work. Use Disband party for normal cleanup of the held party.");
+        ImGui.TextWrapped(DadAutoPartyProgressProjection.ActionOutcome(status));
+        if (operationTask is { IsCompleted: false } && !operationReportsStatus)
+            ImGui.TextDisabled("Preparing a pairing fingerprint in the background.");
         ImGui.Separator();
 
+        if (ImGui.BeginTabBar("dad-autoparty-tabs"))
+        {
+            DrawTab("Setup", DadAutoPartySection.Setup, () => DrawSetup(configuration, endpoint));
+            DrawTab("Pairing & sharing", DadAutoPartySection.Pairing, () => DrawPairing(configuration, endpoint));
+            DrawTab("Party", DadAutoPartySection.Party, () => DrawParty(configuration, endpoint));
+            ImGui.EndTabBar();
+        }
+    }
+
+    private void DrawTab(string label, DadAutoPartySection section, Action draw)
+    {
+        var flags = pendingSection == section ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+        if (!ImGui.BeginTabItem(label, flags))
+            return;
+        if (pendingSection == section)
+            pendingSection = null;
+        if (ImGui.BeginChild($"dad-autoparty-content-{section}", Vector2.Zero, false))
+        {
+            draw();
+            DrawDiagnostics();
+        }
+        ImGui.EndChild();
+        ImGui.EndTabItem();
+    }
+
+    private void DrawSetup(DadAutoPartyConfiguration configuration, DadAutoPartyEndpointSnapshot endpoint)
+    {
+        DadUi.Heading("Discord setup", "Complete these steps on each participating DAD.");
+        ImGui.TextWrapped("1. Enable AutoParty. Enable bot DMs in the configured Discord server before registering.");
         var enabled = configuration.Enabled;
         if (ImGui.Checkbox("Enable AutoParty", ref enabled))
+        {
             plugin.AutoPartyService.SetEnabled(enabled);
-        var relayStatus = plugin.AutoPartyEndpointService.RelayStatus;
-        var registrationProgress = DadAutoPartyProgressProjection.Registration(
-            configuration,
-            endpoint,
-            DateTime.UtcNow);
-        var mailboxActivity = DadAutoPartyProgressProjection.MailboxActivity(
-            endpoint,
-            relayStatus,
-            plugin.AutoPartyEndpointService.TransferSnapshot);
+            SetStatus(enabled ? "dad-autoparty-enabled" : "dad-autoparty-disabled");
+        }
+        var registrationProgress = DadAutoPartyProgressProjection.Registration(configuration, endpoint, DateTime.UtcNow);
         DrawRegistrationProgressCard(registrationProgress);
-        DrawMailboxActivityCard(mailboxActivity, endpoint.LastSuccessfulExchangeAtUtc);
         var activationPending = configuration.RegistrationState == DadAutoPartyRegistrationState.BootstrapImported &&
             configuration.BootstrapExpiresAtUtc > DateTime.UtcNow;
 
@@ -146,7 +184,8 @@ public sealed class DadAutoPartyWindow : Window
             activationPending ||
             operationTask is { IsCompleted: false };
         ImGui.BeginDisabled(registrationLocked);
-        ImGui.SetNextItemWidth(300f);
+        ImGui.TextWrapped("2. Enter a name for this DAD, then generate the registration challenge.");
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X * .55f);
         ImGui.InputText("DAD endpoint alias", ref endpointAlias, 48);
         var challengeButtonLabel = configuration.RegistrationRecoveryState ==
             DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
@@ -166,20 +205,24 @@ public sealed class DadAutoPartyWindow : Window
                     result.Succeeded ? result.OutputPath : string.Empty);
             });
         }
+        ImGui.TextWrapped("3. Copy the complete challenge and use Discord's /autoparty register command in the configured server.");
+        ImGui.TextUnformatted("Encrypted registration challenge");
         ImGui.InputTextMultiline(
-            "Encrypted registration challenge",
+            "##Encrypted registration challenge",
             ref challengeCopy,
             4096,
-            new Vector2(-1f, 90f),
+            new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f),
             ImGuiInputTextFlags.ReadOnly);
         if (!string.IsNullOrWhiteSpace(challengeCopy) && ImGui.Button("Copy challenge"))
             ImGui.SetClipboardText(challengeCopy);
 
+        ImGui.TextWrapped("4. Paste the bot's complete bootstrap DM reply (or its APB1 token) below, then import it.");
+        ImGui.TextUnformatted("Encrypted bootstrap DM");
         ImGui.InputTextMultiline(
-            "Encrypted bootstrap DM",
+            "##Encrypted bootstrap DM",
             ref bootstrapCopy,
             4096,
-            new Vector2(-1f, 90f));
+            new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f));
         if (ImGui.Button("Import bootstrap"))
         {
             var copy = bootstrapCopy;
@@ -194,15 +237,17 @@ public sealed class DadAutoPartyWindow : Window
         }
         ImGui.EndDisabled();
 
+        ImGui.TextWrapped("5. Keep AutoParty enabled and wait for Registration Active and mailbox Ready. Then open Pairing & sharing.");
+        if (!string.IsNullOrWhiteSpace(configuration.LegacyDiscordTokenCleanupWarning))
+            ImGui.TextWrapped($"Security cleanup warning: {configuration.LegacyDiscordTokenCleanupWarning}. DAD will retry.");
         ImGui.Separator();
-        DadUi.Heading(
-            "Pairing and sharing",
-            "Exchange one APP1 fingerprint in each direction, choose the local sharing scope, and submit.");
-        if (ImGui.CollapsingHeader("Pairing protocol details##dad-autoparty-pairing-details"))
-        {
-            ImGui.TextWrapped(
-                "The first submission is silent; the reciprocal submission establishes both routes after both owners verify the fingerprints locally.");
-        }
+        if (ImGui.Button("Deregister this island..."))
+            ImGui.OpenPopup("Confirm deregistration##dad-autoparty-deregister");
+        DrawDeregistrationConfirmation();
+    }
+
+    private void MaintainPairingAttempt(DadAutoPartyConfiguration configuration, DadAutoPartyEndpointSnapshot endpoint)
+    {
         var registrationReady = configuration.IsRegistrationActive &&
             endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
         var nowUtc = DateTime.UtcNow;
@@ -239,15 +284,25 @@ public sealed class DadAutoPartyWindow : Window
                     .EnsurePairingInviteAsync()
                     .ConfigureAwait(false);
                 return new UiOperationResult(result.SafeCode);
-            });
+            }, userAction: false);
         }
+    }
 
+    private void DrawPairing(DadAutoPartyConfiguration configuration, DadAutoPartyEndpointSnapshot endpoint)
+    {
+        DadUi.Heading("Pairing & sharing", "Exchange current fingerprints both ways. Each owner chooses one local character and submits.");
+        var registrationReady = configuration.IsRegistrationActive &&
+            endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
+        var nowUtc = DateTime.UtcNow;
+        var attemptExpired = !string.IsNullOrWhiteSpace(configuration.PairingAttemptId) &&
+            configuration.PairingAttemptExpiresAtUtc <= nowUtc;
         var localFingerprint = configuration.PairingInviteToken;
+        ImGui.TextUnformatted("Your pairing fingerprint");
         ImGui.InputTextMultiline(
-            "Your pairing fingerprint",
+            "##Your pairing fingerprint",
             ref localFingerprint,
             AutoPartyProtocol.MaximumPairingInviteCharacters + 1,
-            new Vector2(-1f, 96f),
+            new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f),
             ImGuiInputTextFlags.ReadOnly);
         ImGui.BeginDisabled(string.IsNullOrWhiteSpace(configuration.PairingInviteToken));
         if (ImGui.Button("Copy fingerprint"))
@@ -284,11 +339,12 @@ public sealed class DadAutoPartyWindow : Window
         if (attemptPresent)
             ImGui.TextDisabled($"This fingerprint expires {configuration.PairingAttemptExpiresAtUtc:u}.");
 
+        ImGui.TextUnformatted("Peer pairing fingerprint");
         if (ImGui.InputTextMultiline(
-                "Peer pairing fingerprint",
+                "##Peer pairing fingerprint",
                 ref peerPairingFingerprint,
                 AutoPartyProtocol.MaximumPairingInviteCharacters + 1,
-                new Vector2(-1f, 96f)))
+                new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f)))
         {
             peerPairingValidationCode = string.Empty;
         }
@@ -355,31 +411,12 @@ public sealed class DadAutoPartyWindow : Window
         if (configuration.PairingAttemptSubmitted)
             ImGui.TextDisabled("Submission sent. Waiting for the peer owner to submit the reciprocal fingerprint.");
 
-        ImGui.BeginDisabled(!registrationReady);
-        DadUi.Heading(
-            "Community Available",
-            "Choose which Crew characters this home-guild Community availability may expose. Fresh setup starts with This character but remains disabled until Save.");
-        DrawShareScopeSelector("Community scope", ref communityShareScope);
-        if (communityShareScope == DadAutoPartyCrewShareScope.SpecificCharacters)
-            DrawShareCharacterSelector("community", communityShareHandles, singleSelection: false);
-        if (ImGui.Button("Save Community Available characters"))
-        {
-            var availableHandles = shareCandidates
-                .Select(static candidate => candidate.Identity.OpaqueCharacterId)
-                .ToHashSet(StringComparer.Ordinal);
-            communityShareHandles.IntersectWith(availableHandles);
-            var policy = DadAutoPartyCrewSharingRules.BuildCommunityPolicy(
-                communityShareScope,
-                shareCandidates,
-                communityShareHandles,
-                DateTime.UtcNow);
-            policy.Revision = Math.Max(1, configuration.StandingSharePolicy.Revision + 1);
-            status = plugin.AutoPartyEndpointService
-                .SetStandingSharePolicy(communityShareScope, policy).SafeCode;
-        }
-        ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
+        ImGui.Separator();
+        DadUi.Heading("Paired DADs", "Active pairings remain set up when a peer is offline. Both owners must be online to use shared characters.");
         var windowProjection = plugin.AutoPartyService.GetWindowProjection(directorySearch, includePromiscuous);
-        var directory = windowProjection.Directory;
+        if (windowProjection.PairingRows.Count == 0)
+            ImGui.TextWrapped("No paired DADs yet. Both owners must submit the reciprocal fingerprint and sharing choice.");
+        ImGui.BeginDisabled(!registrationReady);
         foreach (var row in windowProjection.PairingRows)
         {
             var pairing = row.Pairing;
@@ -396,7 +433,7 @@ public sealed class DadAutoPartyWindow : Window
                     : string.Empty;
                 ImGui.SetNextItemWidth(180f);
                 if (ImGui.InputText($"Paired DAD alias##{pairing.PairingId}", ref alias, 48))
-                    status = plugin.AutoPartyEndpointService.SetPairingAlias(pairing.IslandId, alias).SafeCode;
+                    SetStatus(plugin.AutoPartyEndpointService.SetPairingAlias(pairing.IslandId, alias).SafeCode);
             }
             ImGui.SameLine();
             if (pairing.IsActive && ImGui.SmallButton($"Unpair…##{pairing.PairingId}"))
@@ -408,9 +445,46 @@ public sealed class DadAutoPartyWindow : Window
                 DrawTechnicalIslandId("Peer technical island ID", pairing.IslandId, pairing.PairingId);
         }
         DrawUnpairConfirmation(configuration);
+        ImGui.EndDisabled();
 
-        ImGui.Separator();
-        DadUi.Heading("Private directory", "Only opaque handles and bounded display labels are retained.");
+        if (ImGui.CollapsingHeader("Community Available"))
+        {
+            ImGui.BeginDisabled(!registrationReady);
+            DadUi.Heading(
+                "Community Available",
+                "Choose which Crew characters this home-guild Community availability may expose. Fresh setup starts with This character but remains disabled until Save.");
+            DrawShareScopeSelector("Community scope", ref communityShareScope);
+            if (communityShareScope == DadAutoPartyCrewShareScope.SpecificCharacters)
+                DrawShareCharacterSelector("community", communityShareHandles, singleSelection: false);
+            if (ImGui.Button("Save Community Available characters"))
+            {
+                var availableHandles = shareCandidates
+                    .Select(static candidate => candidate.Identity.OpaqueCharacterId)
+                    .ToHashSet(StringComparer.Ordinal);
+                communityShareHandles.IntersectWith(availableHandles);
+                var policy = DadAutoPartyCrewSharingRules.BuildCommunityPolicy(
+                    communityShareScope,
+                    shareCandidates,
+                    communityShareHandles,
+                    DateTime.UtcNow);
+                policy.Revision = Math.Max(1, configuration.StandingSharePolicy.Revision + 1);
+                SetStatus(plugin.AutoPartyEndpointService
+                    .SetStandingSharePolicy(communityShareScope, policy).SafeCode);
+            }
+            ImGui.TextDisabled("Community availability never widens an active private pairing policy.");
+            ImGui.EndDisabled();
+        }
+    }
+
+    private void DrawParty(DadAutoPartyConfiguration configuration, DadAutoPartyEndpointSnapshot endpoint)
+    {
+        var registrationReady = configuration.IsRegistrationActive &&
+            endpoint.State == DadAutoPartyEndpointConnectionState.Ready;
+        var windowProjection = plugin.AutoPartyService.GetWindowProjection(directorySearch, includePromiscuous);
+        var directory = windowProjection.Directory;
+        DrawPairedCharacterRefresh();
+        ImGui.BeginDisabled(!registrationReady);
+        DadUi.Heading("Shared characters", "Search characters shared by paired DADs. Both owners should refresh after pairing.");
         ImGui.InputText("Search", ref directorySearch, 96);
         ImGui.SameLine();
         if (ImGui.Button("Search directory"))
@@ -431,8 +505,8 @@ public sealed class DadAutoPartyWindow : Window
 
         ImGui.Separator();
         DadUi.Heading(
-            "Freeform party",
-            "Select two to eight current LAN characters or authorized private listings. Selection order fixes Slot 1.");
+            "Party selection",
+            "Select two to eight characters. The first member is Party leader. Create party performs formation only; it does not queue or run a duty.");
         if (ImGui.Button("Refresh local characters"))
             RefreshLocalCandidates();
         DrawLocalCandidates();
@@ -443,27 +517,79 @@ public sealed class DadAutoPartyWindow : Window
             ImGui.TextWrapped($"Active AutoParty formation: {formation.Phase} | {formation.Summary}");
         ImGui.BeginDisabled(freeformSelectionOrder.Count is < 2 or > DadAutoPartyFreeformRules.MaximumParticipants);
         if (ImGui.Button("Create party"))
-            status = CreateFreeformParty(directory);
+            SetStatus(CreateFreeformParty(directory));
         ImGui.EndDisabled();
         ImGui.SameLine();
+        var canDisband = plugin.CanDisbandAutoPartyFormation(out var disbandBlocker);
+        ImGui.BeginDisabled(!canDisband);
         if (ImGui.Button("Disband party"))
-            status = plugin.RequestAutoPartyFormationDisband();
+            SetStatus(plugin.RequestAutoPartyFormationDisband());
+        ImGui.EndDisabled();
+        if (!canDisband)
+            ImGui.TextWrapped(disbandBlocker);
+    }
 
-        ImGui.Separator();
-        if (ImGui.Button("Deregister this island…"))
-            ImGui.OpenPopup("Confirm deregistration##dad-autoparty-deregister");
-        ImGui.SameLine();
-        if (ImGui.Button("Owner Stop"))
+    private void DrawPairedCharacterRefresh()
+    {
+        var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
+        ImGui.BeginDisabled(plugin.PairedDirectoryRefreshInProgress || refreshCooldown > TimeSpan.Zero);
+        if (DadUi.Button("Refresh paired DAD character lists", DadUiTone.Accent, new Vector2(-1f, ImGui.GetFrameHeight())))
         {
-            plugin.AutoPartyService.StopAll("dad-owner-stop-button");
-            status = "dad-owner-stop-active";
+            if (plugin.TryStartPairedDirectoryRefresh())
+            {
+                SetStatus("Refreshing shared characters. Wait for publication and directory results.");
+                observingDirectoryRefresh = true;
+                refreshActionRevision = actionRevision;
+            }
         }
-        ImGui.TextWrapped(operationTask is { IsCompleted: false }
-            ? "AutoParty action in progress."
-            : "AutoParty is ready for the next action; progress cards above show the active workflow.");
-        if (ImGui.CollapsingHeader("Technical status##dad-autoparty-final-status"))
-            ImGui.TextWrapped($"Raw safe code: {status}");
-        DrawDeregistrationConfirmation();
+        ImGui.EndDisabled();
+        if (plugin.PairedDirectoryRefreshInProgress)
+            ImGui.TextWrapped("Refreshing shared characters...");
+        else if (refreshCooldown > TimeSpan.Zero)
+            ImGui.TextWrapped($"Refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
+        var result = plugin.LastPairedDirectoryRefresh;
+        if (result.CompletedAtUtc != DateTime.MinValue)
+            ImGui.TextWrapped(DescribeDirectoryRefresh(result));
+    }
+
+    private void ObserveDirectoryRefresh()
+    {
+        if (!observingDirectoryRefresh || plugin.PairedDirectoryRefreshInProgress)
+            return;
+        observingDirectoryRefresh = false;
+        RefreshLocalCandidates();
+        if (refreshActionRevision == actionRevision)
+        {
+            var result = plugin.LastPairedDirectoryRefresh;
+            SetStatus(DescribeDirectoryRefresh(result));
+        }
+    }
+
+    private static string DescribeDirectoryRefresh(DadPairedDirectoryRefreshResult result)
+    {
+        var outcome = result.Allowed
+            ? result.ReceivedListingCount == 0
+                ? "Refresh completed with no peer characters. Check the other owner's connection and private sharing choice."
+                : "Refresh completed. Select current shared characters in Party."
+            : DadAutoPartyProgressProjection.ActionOutcome(result.SafeCode);
+        return $"{outcome} Published {result.PublishedListingCount}; received {result.ReceivedListingCount}.";
+    }
+
+    private void DrawDiagnostics()
+    {
+        if (!ImGui.CollapsingHeader("Diagnostics##dad-autoparty-diagnostics"))
+            return;
+        var endpoint = plugin.AutoPartyEndpointService.Snapshot;
+        ImGui.TextWrapped($"Technical status | Raw safe code: {status}");
+        ImGui.TextWrapped($"Connection code: {endpoint.SafeCode}");
+        ImGui.TextWrapped($"Character refresh code: {plugin.LastPairedDirectoryRefresh.SafeCode}");
+        DrawMailboxActivityCard(DadAutoPartyProgressProjection.MailboxActivity(
+            endpoint, plugin.AutoPartyEndpointService.RelayStatus, plugin.AutoPartyEndpointService.TransferSnapshot),
+            endpoint.LastSuccessfulExchangeAtUtc);
+        if (ImGui.CollapsingHeader("Registration protocol details"))
+            ImGui.TextWrapped("Enable bot DMs before registering. Submit this DAD's APR1 challenge in the guild, then paste the raw APB1 token or exact wrapper from the bot's single DM here. The guild shows only safe registration feedback; transport-channel traffic is private machine traffic.");
+        if (ImGui.CollapsingHeader("Pairing protocol details"))
+            ImGui.TextWrapped("The first submission is silent; the reciprocal submission establishes both routes after both owners verify the APP1 fingerprints locally.");
     }
 
     private void DrawUnpairConfirmation(DadAutoPartyConfiguration configuration)
@@ -483,9 +609,9 @@ public sealed class DadAutoPartyWindow : Window
         ImGui.BeginDisabled(pairing == null);
         if (ImGui.Button("Unpair"))
         {
-            status = plugin.AutoPartyEndpointService.Deauthenticate(
+            SetStatus(plugin.AutoPartyEndpointService.Deauthenticate(
                 pendingUnpairIslandId,
-                "dad-owner-unpaired").SafeCode;
+                "dad-owner-unpaired").SafeCode);
             pendingUnpairIslandId = string.Empty;
             ImGui.CloseCurrentPopup();
         }
@@ -513,7 +639,7 @@ public sealed class DadAutoPartyWindow : Window
             "The protected endpoint identity is preserved so this island can be registered again.");
         if (ImGui.Button("Deregister this island"))
         {
-            status = plugin.AutoPartyEndpointService.BeginDeregistration().SafeCode;
+            SetStatus(plugin.AutoPartyEndpointService.BeginDeregistration().SafeCode);
             ImGui.CloseCurrentPopup();
         }
         ImGui.SameLine();
@@ -524,8 +650,7 @@ public sealed class DadAutoPartyWindow : Window
 
     private static void DrawRegistrationProgressCard(DadAutoPartyRegistrationProgress progress)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, .03f));
-        if (ImGui.BeginChild("dad-registration-progress-card", new Vector2(0f, 205f), true))
+        if (DadUi.BeginCard("dad-registration-progress-card"))
         {
             ImGui.TextUnformatted("Registration & mailbox");
             DrawChecklistRow(
@@ -549,17 +674,15 @@ public sealed class DadAutoPartyWindow : Window
             DrawChecklistRow("Registration Active", CompleteOrPending(progress.RegistrationActive));
             DrawChecklistRow("Current mailbox Ready", CompleteOrPending(progress.MailboxReady));
             ImGui.TextWrapped($"Next: {progress.NextAction}");
+            DadUi.EndCard();
         }
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
     }
 
     private static void DrawMailboxActivityCard(
         DadAutoPartyMailboxActivityProgress activity,
         DateTime? lastSuccessfulExchangeAtUtc)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, .03f));
-        if (ImGui.BeginChild("dad-mailbox-activity-card", new Vector2(0f, 145f), true))
+        if (DadUi.BeginCard("dad-mailbox-activity-card"))
         {
             ImGui.TextUnformatted("Mailbox activity");
             ImGui.TextUnformatted($"Payload: {activity.FriendlyPayloadName}");
@@ -579,15 +702,13 @@ public sealed class DadAutoPartyWindow : Window
                 ImGui.TextDisabled($"Last mailbox exchange: {lastSuccessfulExchangeAtUtc.Value:u}");
             if (ImGui.CollapsingHeader("Technical details##dad-mailbox-activity-details"))
                 ImGui.TextDisabled($"Raw safe code: {activity.RawSafeCode}");
+            DadUi.EndCard();
         }
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
     }
 
     private static void DrawPairingProgressCard(DadAutoPartyPairingProgress progress)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(1f, 1f, 1f, .03f));
-        if (ImGui.BeginChild("dad-pairing-progress-card", new Vector2(0f, 185f), true))
+        if (DadUi.BeginCard("dad-pairing-progress-card"))
         {
             ImGui.TextUnformatted("Reciprocal pairing");
             DrawChecklistRow("Registration Active prerequisite", CompleteOrPending(progress.RegistrationActive));
@@ -600,9 +721,8 @@ public sealed class DadAutoPartyWindow : Window
             ImGui.TextWrapped($"Next: {progress.NextAction}");
             if (ImGui.CollapsingHeader("Technical details##dad-pairing-progress-details"))
                 ImGui.TextDisabled($"Raw safe code: {progress.SafeCode}");
+            DadUi.EndCard();
         }
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
     }
 
     private static DadAutoPartyProgressState CompleteOrPending(bool complete) =>
@@ -696,15 +816,13 @@ public sealed class DadAutoPartyWindow : Window
                 ImGui.BeginDisabled(!formationAllowed || jobs.Count == 0 || !routeAvailable);
                 if (ImGui.Checkbox($"{listing.DisplayLabel}##select", ref selected))
                     SetFreeformSelection(selectionKey, selected);
-                ImGui.SameLine();
-                ImGui.TextDisabled(
-                    $"jobs {string.Join(", ", jobs)} | activities {string.Join(", ", listing.AllowedActivityIds)}");
+                ImGui.TextWrapped($"Permitted jobs: {string.Join(", ", jobs.Select(ResolveJobAbbreviation))}");
                 if (jobs.Count > 0)
                 {
                     if (!remoteRequestedJobs.TryGetValue(selectionKey, out var requestedJob) || !jobs.Contains(requestedJob))
                         requestedJob = jobs[0];
                     var jobIndex = Math.Max(0, jobs.IndexOf(requestedJob));
-                    var jobLabels = jobs.Select(static job => job.ToString()).ToArray();
+                    var jobLabels = jobs.Select(ResolveJobAbbreviation).ToArray();
                     ImGui.SetNextItemWidth(160f);
                     if (ImGui.Combo("Requested job", ref jobIndex, jobLabels, jobLabels.Length))
                         requestedJob = jobs[jobIndex];
@@ -745,14 +863,13 @@ public sealed class DadAutoPartyWindow : Window
 
     private void DrawFreeformSelectionOrder(DadAutoPartyDirectorySnapshot directory)
     {
-        ImGui.TextUnformatted(
-            $"Selected party order ({freeformSelectionOrder.Count}/{DadAutoPartyFreeformRules.MaximumParticipants}); first row is Slot 1.");
+        ImGui.TextWrapped(
+            $"Selected party order ({freeformSelectionOrder.Count}/{DadAutoPartyFreeformRules.MaximumParticipants}); first row is Party leader.");
         for (var index = 0; index < freeformSelectionOrder.Count; index++)
         {
             var key = freeformSelectionOrder[index];
             ImGui.PushID(key);
-            ImGui.TextUnformatted($"Slot {index + 1}: {ResolveSelectionLabel(key, directory)}");
-            ImGui.SameLine();
+            ImGui.TextWrapped($"{(index == 0 ? "Party leader" : $"Member {index + 1}")}: {ResolveSelectionLabel(key, directory)}");
             ImGui.BeginDisabled(index == 0);
             if (ImGui.SmallButton("Up"))
                 (freeformSelectionOrder[index - 1], freeformSelectionOrder[index]) =
@@ -849,7 +966,7 @@ public sealed class DadAutoPartyWindow : Window
             return;
         if (freeformSelectionOrder.Count >= DadAutoPartyFreeformRules.MaximumParticipants)
         {
-            status = "dad-autoparty-freeform-selection-full";
+            SetStatus("dad-autoparty-freeform-selection-full");
             return;
         }
         freeformSelectionOrder.Add(key);
@@ -954,6 +1071,14 @@ public sealed class DadAutoPartyWindow : Window
     private static string ResolveLocalShareLabel(DadAutoPartyCrewCandidate candidate)
         => $"{candidate.Character.CharacterName}@{candidate.Character.WorldName}";
 
+    private static string ResolveJobAbbreviation(uint jobId)
+    {
+        var sheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>();
+        return sheet != null && sheet.TryGetRow(jobId, out var job)
+            ? job.Abbreviation.ToString()
+            : "Unknown job";
+    }
+
     private static List<uint> ParsePermittedJobs(DadAutoPartyListing listing)
         => listing.AllowedJobIds
             .Select(static value => uint.TryParse(value, out var jobId) ? jobId : 0)
@@ -979,25 +1104,37 @@ public sealed class DadAutoPartyWindow : Window
     private static string RemoteSelectionKey(DadAutoPartyListing listing)
         => $"remote:{listing.ListingId}";
 
-    private void Start(Func<Task<UiOperationResult>> operation)
+    private void SetStatus(string value)
+    {
+        status = value;
+        actionRevision++;
+    }
+
+    private void Start(Func<Task<UiOperationResult>> operation, bool userAction = true)
     {
         if (operationTask is { IsCompleted: false })
         {
-            status = "dad-autoparty-operation-already-running";
+            if (userAction)
+                SetStatus("dad-autoparty-operation-already-running");
             return;
         }
+        operationReportsStatus = userAction;
+        if (userAction)
+            SetStatus("dad-autoparty-operation-running");
+        operationActionRevision = actionRevision;
         operationTask = operation();
-        status = "dad-autoparty-operation-running";
     }
 
     private void ObserveTask()
     {
         if (operationTask == null || !operationTask.IsCompleted)
             return;
+        var reportResult = operationReportsStatus && operationActionRevision == actionRevision;
+        var resultCode = string.Empty;
         if (operationTask.IsCompletedSuccessfully)
         {
             var result = operationTask.Result;
-            status = result.SafeCode;
+            resultCode = result.SafeCode;
             if (!string.IsNullOrWhiteSpace(result.ChallengeCopy))
                 challengeCopy = result.ChallengeCopy;
             if (result.ClearPairingSelection)
@@ -1007,11 +1144,13 @@ public sealed class DadAutoPartyWindow : Window
         }
         else
         {
-            status = operationTask.IsCanceled
+            resultCode = operationTask.IsCanceled
                 ? "dad-autoparty-operation-cancelled"
                 : "dad-autoparty-operation-failed";
         }
-        if (string.Equals(status, "dad-autoparty-purged", StringComparison.Ordinal))
+        if (reportResult)
+            SetStatus(resultCode);
+        if (string.Equals(resultCode, "dad-autoparty-purged", StringComparison.Ordinal))
         {
             challengeCopy = string.Empty;
             bootstrapCopy = string.Empty;

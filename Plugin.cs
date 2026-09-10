@@ -642,6 +642,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public void OpenAutoPartyUi() => autoPartyWindow.IsOpen = true;
 
+    internal void OpenAutoPartyUi(DadAutoPartySection section) => autoPartyWindow.OpenSection(section);
+
     public void OpenSetupWizard() => setupWizardWindow.OpenLanding();
 
     public void OpenSetupWizard(DadGuideFlow flow) => setupWizardWindow.OpenFlow(flow);

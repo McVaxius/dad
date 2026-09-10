@@ -304,6 +304,8 @@ public sealed class MainWindow : Window, IDisposable
             DadUi.EndCard();
         }
 
+        DrawAutoPartySetupButton(configuration);
+
         var refreshInProgress = plugin.PairedDirectoryRefreshInProgress;
         var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
         ImGui.BeginDisabled(refreshInProgress || refreshCooldown > TimeSpan.Zero);
@@ -383,6 +385,31 @@ public sealed class MainWindow : Window, IDisposable
                 CancelOwnedOperation();
         }
 
+    }
+
+    private void DrawAutoPartySetupButton(Configuration configuration)
+    {
+        var setup = DadAutoPartyProgressProjection.Setup(configuration.AutoParty);
+        var color = setup.Section switch
+        {
+            DadAutoPartySection.Setup => new Vector4(.82f, .20f, .18f, 1f),
+            DadAutoPartySection.Pairing => new Vector4(.95f, .78f, .22f, 1f),
+            _ => new Vector4(.24f, .72f, .36f, 1f),
+        };
+        ImGui.PushStyleColor(ImGuiCol.Text, setup.Section == DadAutoPartySection.Setup
+            ? Vector4.One : new Vector4(.04f, .04f, .04f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Button, color);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(color.X * .9f, color.Y * .9f, color.Z * .9f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(color.X * .8f, color.Y * .8f, color.Z * .8f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.NavHighlight, Vector4.One);
+        if (ImGui.Button(setup.ButtonText, new Vector2(-1f, ImGui.GetFrameHeight() * 1.5f)))
+            plugin.OpenAutoPartyUi(setup.Section);
+        ImGui.PopStyleColor(5);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Open the next AutoParty setup section. Green means setup is complete; availability is shown separately.");
+        var endpoint = plugin.AutoPartyEndpointService.Snapshot;
+        ImGui.TextWrapped($"AutoParty: {(configuration.AutoParty.Enabled ? "Enabled" : "Disabled")} | " +
+            $"Mailbox: {endpoint.State}. Setup completion is independent of peer availability.");
     }
 
     private void DrawActiveRunBanner(

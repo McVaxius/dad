@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-09-10 - I327 AutoParty UI and two-owner test guide (local-only, unpublished)
+- Added the full-width red/yellow/green AutoParty setup button beneath the /dad header. It opens Setup, Pairing & sharing,
+  or Party from current registration and active-pairing state; availability and enablement remain separate.
+- Split the detailed AutoParty window into three scrolling tabs with numbered Discord setup, private pairing and sharing,
+  collapsed Community Available, paired-character refresh, job abbreviations, and an explicit Party leader selection.
+- Kept connection status, action feedback, and Owner Stop above the tabs; moved protocol/counter details into diagnostics.
+  Background fingerprint upkeep no longer overwrites user-action results. Existing consent, recovery and disband guards remain.
+- Added the README two-owner registration, pairing, formation and disband test, aligned the in-game guide, and extended
+  focused setup-state and UI regression coverage. Versions, protocol, persistence and sharing authority are unchanged.
+
 ## 2026-09-09 - I322/I318 leveling gear and Beastmaster (local-only, unpublished)
 - Leveling Mode now saves and shares a default-on recommended-gear/current-gearset checkbox. Each worker prepares once
   before repair and queueing; Questionable prepares before reading item level and choosing its dungeon. Failures and the

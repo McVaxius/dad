@@ -6,6 +6,49 @@ namespace dad.Tests;
 
 public sealed class DadMiniAutoPartyProjectionTests
 {
+    [Theory]
+    [InlineData(DadAutoPartyRegistrationState.Unregistered, 0, true, true, "Setup", "AutoParty: Finish Discord setup")]
+    [InlineData(DadAutoPartyRegistrationState.Unregistered, 1, false, false, "Setup", "AutoParty: Finish Discord setup")]
+    [InlineData(DadAutoPartyRegistrationState.BootstrapImported, 0, true, true, "Setup", "AutoParty: Finish Discord setup")]
+    [InlineData(DadAutoPartyRegistrationState.BootstrapImported, 1, true, false, "Setup", "AutoParty: Finish Discord setup")]
+    [InlineData(DadAutoPartyRegistrationState.Active, 0, true, true, "Pairing", "AutoParty: Pair with another DAD")]
+    [InlineData(DadAutoPartyRegistrationState.Active, 0, false, false, "Pairing", "AutoParty: Pair with another DAD")]
+    [InlineData(DadAutoPartyRegistrationState.Active, 2, true, true, "Pairing", "AutoParty: Pair with another DAD")]
+    [InlineData(DadAutoPartyRegistrationState.Active, 1, true, true, "Party", "AutoParty: Setup complete")]
+    [InlineData(DadAutoPartyRegistrationState.Active, 1, true, false, "Party", "AutoParty: Setup complete")]
+    [InlineData(DadAutoPartyRegistrationState.Active, 1, false, false, "Party", "AutoParty: Setup complete")]
+    public void SetupNavigationTracksRegistrationAndTrustIndependentlyOfAvailability(
+        DadAutoPartyRegistrationState registration, int pairingState, bool enabled, bool online,
+        string expectedSection, string expectedLabel)
+    {
+        var configuration = ActiveConfiguration();
+        configuration.RegistrationState = registration;
+        configuration.Enabled = enabled;
+        configuration.BootstrapExpiresAtUtc = DateTime.UtcNow.AddMinutes(5);
+        if (pairingState == 0)
+            configuration.Pairings.Clear();
+        else if (pairingState == 2)
+            configuration.Pairings[0].RevokedAtUtc = DateTime.UtcNow;
+
+        var endpoint = online
+            ? new DadAutoPartyEndpointSnapshot(DadAutoPartyEndpointConnectionState.Ready,
+                "dad-ready", DateTime.UtcNow, DateTime.UtcNow, 0, 0, 0, 1)
+            : DadAutoPartyEndpointSnapshot.Disabled();
+        var availability = DadMiniAutoPartyProjection.Build(
+            enabled, configuration, endpoint,
+            new DadAutoPartyDirectorySnapshot(1, [], online
+                ? new HashSet<string>(["peer-island"], StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal)),
+            new DadCrewFormationStatus(), false, TimeSpan.Zero,
+            DadPairedDirectoryRefreshResult.NotRun(), false, "No active formation.");
+        var setup = DadAutoPartyProgressProjection.Setup(configuration);
+
+        Assert.Equal(expectedSection, setup.Section.ToString());
+        Assert.Equal(expectedLabel, setup.ButtonText);
+        Assert.Equal(enabled, availability.Enabled);
+        Assert.Equal(online && pairingState == 1 ? 1 : 0, availability.OnlinePairingCount);
+    }
+
     [Fact]
     public void ReadyPrivateFormationProjectsExactMiniStatusAndActions()
     {
@@ -121,8 +164,8 @@ public sealed class DadMiniAutoPartyProjectionTests
 
         Assert.Contains("DadGuideFlow.AutoParty", guideFlow, StringComparison.Ordinal);
         Assert.Contains("Complete reciprocal pairing", guideFlow, StringComparison.Ordinal);
-        Assert.Contains("Create first exact formation", guideWindow, StringComparison.Ordinal);
-        Assert.Contains("plugin.OpenAutoPartyUi()", guideWindow, StringComparison.Ordinal);
+        Assert.Contains("Party leader", guideWindow, StringComparison.Ordinal);
+        Assert.Contains("plugin.OpenAutoPartyUi(stepIndex switch", guideWindow, StringComparison.Ordinal);
         Assert.Contains("plugin.TryStartPairedDirectoryRefresh()", mini, StringComparison.Ordinal);
         Assert.Contains("Guarded(\"autoparty-disband\"", mini, StringComparison.Ordinal);
         Assert.Contains("plugin.RequestAutoPartyFormationDisband()", mini, StringComparison.Ordinal);

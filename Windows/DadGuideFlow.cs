@@ -195,12 +195,12 @@ internal static class DadGuideReadiness
             DadGuideFlow.AutoParty,
             "Set up AutoParty",
             [
-                (snapshot.Enabled, "Enable AutoParty in its full window."),
-                (snapshot.EndpointReady, "Register this endpoint and wait for its private mailbox to become ready."),
-                (snapshot.ActivePairingCount > 0, "Complete reciprocal pairing with another DAD."),
-                (snapshot.PrivateDirectoryListingCount > 0, "Refresh the paired private directory until a listing is available."),
-                (firstFormationComplete, "Create the first exact formation in the full AutoParty window."),
-                (snapshot.GuardedDisbandComplete, "Use guarded disband to release the exact held formation."),
+                (snapshot.Enabled, "Open AutoParty > Setup from the /dad header and enable AutoParty."),
+                (snapshot.EndpointReady, "In Setup, register through Discord, import the bot reply, and wait for Active and Ready."),
+                (snapshot.ActivePairingCount > 0, "Complete reciprocal pairing in Pairing & sharing; each owner shares one character."),
+                (snapshot.PrivateDirectoryListingCount > 0, "In Party, refresh paired DAD character lists until the peer character appears."),
+                (firstFormationComplete, "In Party, select two characters, choose the Party leader, and Create party. Verify membership in game."),
+                (snapshot.GuardedDisbandComplete, "In Party, use Disband party for the held formation and verify cleanup on both clients."),
             ]);
     }
 

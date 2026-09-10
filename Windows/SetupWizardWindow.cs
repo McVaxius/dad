@@ -377,44 +377,44 @@ public sealed class SetupWizardWindow : Window, IDisposable
         [
             new GuideStep(
                 "Enable AutoParty",
-                "The opt-in switch for encrypted AutoParty endpoint and formation work.",
+                "Open /dad and use the AutoParty button, then choose Setup.",
                 "AutoParty remains inert until explicitly enabled.",
                 "AutoParty reports Enabled.",
                 status.Enabled,
-                "Open AutoParty and enable it."),
+                "In Setup, enable AutoParty on each participating DAD."),
             new GuideStep(
-                "Register endpoint",
-                "The endpoint identity and private encrypted mailbox assigned by the central bot.",
-                "Registration gives this DAD an authenticated island route without exposing party contracts in public channels.",
+                "Complete Discord setup",
+                "In Setup: generate/copy the challenge, use Discord /autoparty register, and import the bot reply.",
+                "Enable bot DMs first. Each owner uses their own DAD challenge and reply; import remains pending until activation.",
                 "Registration is active and the endpoint reports Ready.",
                 status.EndpointReady,
                 status.EndpointState),
             new GuideStep(
-                "Pair reciprocally",
-                "One verified APP1 fingerprint submitted in each direction.",
+                "Pair with another DAD",
+                "In Pairing & sharing, exchange current fingerprints both ways and share one character each.",
                 "Both owners must establish the exact private trust route before sharing characters.",
                 "At least one reciprocal pairing is active.",
                 status.ActivePairingCount > 0,
-                "Complete reciprocal pairing in the full AutoParty window."),
+                "Both owners select Submit pairing and verify active, online under Paired DADs. Expired fingerprints must be exchanged again."),
             new GuideStep(
-                "Refresh private directory",
-                "The existing guarded paired-directory publication and refresh action.",
-                "Exact formation can select only current private listings authorized by the paired owner.",
+                "Refresh shared characters",
+                "On both DADs, open Party and use Refresh paired DAD character lists.",
+                "An offline peer exposes no usable characters. Check private sharing and the Crew roster if characters are missing.",
                 "At least one private listing from a reciprocal pairing is present.",
                 status.PrivateDirectoryListingCount > 0,
                 status.DirectoryState),
             new GuideStep(
-                "Create first exact formation",
-                "Selection and creation remain in the full AutoParty window.",
-                "The formation freezes exact local and remote identities before party work begins.",
-                "The exact freeform formation reaches GroupReady.",
+                "Create party",
+                "In Party, select the local and peer character and order the intended inviter first as Party leader.",
+                "Create party performs formation only; it does not queue or run a duty.",
+                "Formation reaches RegularGroupReady. Verify the two intended members and leader in game on both clients.",
                 firstFormationComplete,
                 status.FirstBlocker),
             new GuideStep(
-                "Guarded disband",
-                "The existing exact-formation disband action.",
+                "Disband party",
+                "On the initiating DAD, use Party > Disband party once the held formation is ready.",
                 "DAD releases only the held AutoParty formation and refuses unrelated party ownership.",
-                "The exact formation finishes its guarded disband.",
+                "Formation reaches Completed. Verify both characters left the party and temporary participant control was released.",
                 status.GuardedDisbandComplete,
                 status.CanGuardedDisband
                     ? "The exact formation is ready for guarded disband."
@@ -430,15 +430,14 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("Reciprocal pairings", $"{status.ActivePairingCount} active | {status.OnlinePairingCount} online");
         DrawStatusRow("Private directory", status.DirectoryState);
         DrawStatusRow("Exact formation", $"{status.ExactFormationPhase} | {status.ExactFormationSummary}");
-        ImGui.TextWrapped("Registration, pairing, character selection, and party creation stay in the full AutoParty window.");
-        if (DadUi.Button("Open AutoParty", DadUiTone.Accent))
-            plugin.OpenAutoPartyUi();
+        ImGui.TextWrapped("Use two participating owners with compatible versions, access to the configured Discord server, bot DMs enabled, and characters able to party together. Owner Stop immediately vetoes local work; it is separate from normal Disband party cleanup.");
+        if (DadUi.Button("Open AutoParty at this step", DadUiTone.Accent))
+            OpenAutoPartyGuideSection();
 
         if (stepIndex == 3)
         {
-            ImGui.SameLine();
             ImGui.BeginDisabled(!status.DirectoryRefreshEligible);
-            if (DadUi.Button(status.DirectoryRefreshInProgress ? "Refreshing…" : "Refresh paired directory"))
+            if (DadUi.Button(status.DirectoryRefreshInProgress ? "Refreshing…" : "Refresh paired DAD character lists"))
                 plugin.TryStartPairedDirectoryRefresh();
             ImGui.EndDisabled();
             if (status.DirectoryRefreshCooldownRemaining > TimeSpan.Zero)
@@ -447,10 +446,17 @@ public sealed class SetupWizardWindow : Window, IDisposable
         else if (stepIndex == 5)
         {
             ImGui.TextWrapped(status.CanGuardedDisband
-                ? "The exact formation is ready. Use its guarded Disband party action in AutoParty."
+                ? "The held formation is ready. Use Party > Disband party, then verify cleanup on both clients."
                 : status.GuardedDisbandBlocker);
         }
     }
+
+    private void OpenAutoPartyGuideSection() => plugin.OpenAutoPartyUi(stepIndex switch
+    {
+        < 2 => DadAutoPartySection.Setup,
+        2 => DadAutoPartySection.Pairing,
+        _ => DadAutoPartySection.Party,
+    });
 
     private IReadOnlyList<GuideStep> BuildNameDadSteps()
     {
@@ -2246,7 +2252,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 plugin.OpenMainTab(DadMainWindowTab.Presets, DadPresetsWindowTab.Scheduler);
                 break;
             case DadGuideFlow.AutoParty:
-                plugin.OpenAutoPartyUi();
+                OpenAutoPartyGuideSection();
                 break;
         }
     }
