@@ -297,6 +297,10 @@ public sealed class DadDutyIpcService : IDisposable
         {
             "leveling" => leveling,
             "autodutymodeenum" => autoDutyMode,
+            // Compatibility acknowledgements; ADS retains control of actual duty looting.
+            "loottreasure" => "True",
+            "lootbosstreasureonly" => "False",
+            "lootmethodenum" => "AutoDuty",
             _ => DadQuestionableAutoDutyConfigResolver.Resolve(key, combatRotationService.CombatRotationMode),
         };
 
@@ -329,6 +333,11 @@ public sealed class DadDutyIpcService : IDisposable
     private void SetConfig(string key, string value)
     {
         var normalizedKey = key.Trim();
+        if (normalizedKey.Equals("LootTreasure", StringComparison.OrdinalIgnoreCase) ||
+            normalizedKey.Equals("LootBossTreasureOnly", StringComparison.OrdinalIgnoreCase) ||
+            normalizedKey.Equals("LootMethodEnum", StringComparison.OrdinalIgnoreCase))
+            return; // Accept forcing and restoration writes without changing config or session state.
+
         var normalizedValue = value.Trim();
 
         if (normalizedKey.Equals("Unsynced", StringComparison.OrdinalIgnoreCase))

@@ -4,7 +4,9 @@ extern alias DalamudApi;
 using System.Collections;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Text.Json;
 using Bridge = DadRuntime::dad.Services.DadQuestionableReflectionBridge;
+using DutyIpc = DadRuntime::dad.Services.DadDutyIpcService;
 using DalamudApi::Dalamud.Plugin;
 using DalamudApi::Dalamud.Plugin.Services;
 using DalamudApi::Dalamud.Plugin.Ipc;
@@ -16,6 +18,102 @@ public sealed class DadQuestionableRuntimeTests
 {
     private const BindingFlags PrivateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly Type WrapperType = CreateWrapperType();
+
+    [Fact]
+    public void WigglyQuestLootHandshakeUsesFixedResponsesWithoutStateChangesOrOutboundActions()
+    {
+        var handlers = new Dictionary<string, Delegate>();
+        var outbound = new List<string>();
+        object? Unexpected(string call)
+        {
+            outbound.Add(call);
+            throw new InvalidOperationException($"Unexpected outbound action: {call}");
+        }
+        var pi = Proxy<IDalamudPluginInterface>((method, args) => method.Name switch
+        {
+            "GetIpcProvider" => Proxy(method.ReturnType, (call, values) =>
+            {
+                var channel = (string)args![0]!;
+                if (call.Name is "RegisterFunc" or "RegisterAction")
+                    handlers.Add(channel, (Delegate)values![0]!);
+                else if (call.Name is "UnregisterFunc" or "UnregisterAction")
+                    handlers.Remove(channel);
+                else
+                    return Unexpected($"{channel}.{call.Name}");
+                return null;
+            }),
+            "GetIpcSubscriber" => Proxy(method.ReturnType, (call, _) => Unexpected($"{args![0]}.{call.Name}")),
+            _ => Unexpected(method.Name),
+        });
+        var pluginType = typeof(DutyIpc).Assembly.GetType("dad.Plugin")!;
+        var replacements = new Dictionary<string, object>
+        {
+            ["PluginInterface"] = pi,
+            ["Framework"] = Proxy<IFramework>((method, _) => method.Name == "get_IsInFrameworkUpdateThread"
+                ? true : Unexpected(method.Name)),
+            ["CommandManager"] = Proxy<ICommandManager>((method, _) => Unexpected(method.Name)),
+        };
+        var previous = replacements.Keys.ToDictionary(name => name, name => pluginType.GetProperty(name)!.GetValue(null));
+        try
+        {
+            foreach (var (name, replacement) in replacements)
+                pluginType.GetProperty(name)!.SetValue(null, replacement);
+            var log = Proxy<IPluginLog>((_, _) => null);
+            var configuration = new DadRuntime::dad.Configuration { CombatRotationMode = DadRuntime::dad.DadCombatRotationMode.ForceCommands };
+            var combat = new DadRuntime::dad.Services.DadCombatRotationService(configuration, pi, log);
+            var ads = new DadRuntime::dad.Services.DadDutySupportAdsService(pi, log);
+            using var duty = new DutyIpc(pi, null!, null!, null!, ads, combat, log);
+            var get = Assert.IsType<Func<string, string>>(handlers["dad.Duty.GetConfig"]);
+            var set = Assert.IsType<Action<string, string>>(handlers["dad.Duty.SetConfig"]);
+            var stopped = Assert.IsType<Func<bool>>(handlers["dad.Duty.IsStopped"]);
+            set(" Unsynced ", " True ");
+            set(" dutyModeEnum ", " Regular ");
+            set(" leveling ", " Support ");
+            set(" AutoDutyModeEnum ", " Once ");
+            var existingKeys = new[] { "Unsynced", "dutyModeEnum", "leveling", "AutoDutyModeEnum",
+                "AutoManageRotationPluginState", "AutoManageBossModAISettings", "UnknownKey" };
+            var existingResponses = existingKeys.ToDictionary(key => key, get);
+            var savedConfiguration = JsonSerializer.Serialize(configuration);
+            var savedStatus = JsonSerializer.Serialize(duty.GetStatus());
+            var savedFields = typeof(DutyIpc).GetFields(PrivateInstance).Where(field => !field.IsInitOnly)
+                .ToDictionary(field => field, field => field.GetValue(duty));
+            var statusField = typeof(DutyIpc).GetField("status", PrivateInstance)!;
+            var loot = new[] { (Key: "LootTreasure", Expected: "True", Opposite: "False"),
+                (Key: "LootBossTreasureOnly", Expected: "False", Opposite: "True"),
+                (Key: "LootMethodEnum", Expected: "AutoDuty", Opposite: "None") };
+            var original = loot.ToDictionary(item => item.Key, item => get(item.Key));
+            Assert.True(stopped());
+            Assert.Empty(outbound);
+            foreach (var item in loot)
+                Assert.Equal(item.Expected, original[item.Key]);
+
+            // Force the caller's values, try contrary values, then restore its captured values.
+            foreach (var phase in new[] { "force", "opposite", "restore" })
+            foreach (var item in loot)
+            {
+                var value = phase == "force" ? item.Expected : phase == "opposite" ? item.Opposite : original[item.Key];
+                set(phase == "force" ? item.Key : $" \t{item.Key.ToUpperInvariant()} ", $" {value} ");
+                foreach (var expected in loot)
+                {
+                    Assert.Equal(expected.Expected, get(expected.Key));
+                    Assert.Equal(expected.Expected, get($" \t{expected.Key.ToLowerInvariant()} "));
+                }
+                foreach (var (key, response) in existingResponses)
+                    Assert.Equal(response, get(key));
+                Assert.Equal(savedConfiguration, JsonSerializer.Serialize(configuration));
+                Assert.Equal(savedStatus, JsonSerializer.Serialize(statusField.GetValue(duty)));
+                foreach (var (field, valueBefore) in savedFields)
+                    Assert.Equal(valueBefore, field.GetValue(duty));
+                Assert.True(stopped());
+                Assert.Empty(outbound);
+            }
+        }
+        finally
+        {
+            foreach (var (name, value) in previous)
+                pluginType.GetProperty(name)!.SetValue(null, value);
+        }
+    }
 
     [Theory]
     [InlineData(false)]
