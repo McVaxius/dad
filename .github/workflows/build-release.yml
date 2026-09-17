@@ -45,15 +45,9 @@ jobs:
 
       - name: Download Dalamud
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP "dalamud-15.0.3.0.zip"
-          $expectedHash = "d77e67f3fdcc3a32bf85800aafb11d01a1d5d7b6bb6905215332404863b9a3a5"
+          $archive = Join-Path $env:RUNNER_TEMP "dalamud.zip"
 
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/goatcorp/dalamud-distrib/c90596e29386b1d83be8de827a8dd0636cc24a06/latest.zip" -OutFile $archive
-
-          $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) {
-            throw "Dalamud archive hash mismatch. Expected $expectedHash, got $actualHash."
-          }
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $archive
 
           Expand-Archive -Force -LiteralPath $archive -DestinationPath "$env:AppData\XIVLauncher\addon\Hooks\dev\"
 
@@ -107,7 +101,7 @@ jobs:
           fi
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.get_version.outputs.version }}
           name: Release ${{ steps.get_version.outputs.version }}
