@@ -1,5 +1,15 @@
 # dad — changelog
 
+## 2026-09-18 - Shopping List Wizard and finite ADS orders (local-only, unpublished)
+- Added a four-step shopping draft wizard through /dad shopping, the main tabs, Home, /dad wizard, and contextual preset/schedule controls. Saving revalidates the list and exact primary shopper, respects active-work locks, and confirms configuration persistence; Back and Cancel do not save.
+- Carried absolute finite-order credits through frozen associations, ADS IPC, worker results and coordinator persistence. Partial passes allow normal duties and remain eligible at later boundaries; delivery/post-commands wait for fulfillment. Optional-action edits preserve progress and identity changes reset only the affected order.
+- Extended local shopping verification for resumed quantities, cancellation, isolation and fulfillment-only actions. Versions and DevHub state are unchanged; no client deployment or live-client validation.
+
+## 2026-09-18 - I362 wizard and player-guide setup help (local-only, unpublished)
+- Added a visible wizard walkthrough and expanded the player guide's Quick Start for connection/crew setup, preset and
+  schedule creation/editing, step saves, validation, and ADS shopping associations, including exact-shopper and preview rules.
+  Added /dad wizard to Useful Commands. Runtime behavior, configuration, and versions are unchanged.
+
 ## 2026-09-13 - WigglyQuest 7.5.15 loot compatibility (local-only, unpublished)
 - Duty IPC reports fixed LootTreasure=True, LootBossTreasureOnly=False and LootMethodEnum=AutoDuty acknowledgements.
   Writes, including restoration, succeed without changing configuration or session state or issuing commands/ADS calls;

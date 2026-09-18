@@ -18,6 +18,7 @@ public sealed class DadShoppingAssociation
     public string ShopperSlotId { get; set; } = string.Empty;
     public DadAccountKey ShopperAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey ShopperCharacterKey { get; set; } = new(string.Empty);
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
     public bool NonRepeatableRowsFulfilled { get; set; }
     public DateTime? FulfilledAtUtc { get; set; }
@@ -61,6 +62,7 @@ public sealed class DadShoppingAssociation
             ShopperSlotId = ShopperSlotId,
             ShopperAccountKey = ShopperAccountKey,
             ShopperCharacterKey = ShopperCharacterKey,
+            CreditedQuantities = CreditedQuantities == null ? null : new(CreditedQuantities),
             CompletedNonRepeatableRowIds = [..CompletedNonRepeatableRowIds],
             NonRepeatableRowsFulfilled = NonRepeatableRowsFulfilled,
             FulfilledAtUtc = FulfilledAtUtc,
@@ -71,6 +73,7 @@ public sealed class DadShoppingAssociation
 
     public void ResetCompletionState()
     {
+        CreditedQuantities = null;
         CompletedNonRepeatableRowIds = [];
         NonRepeatableRowsFulfilled = false;
         FulfilledAtUtc = null;
@@ -92,6 +95,7 @@ public sealed class DadShoppingRunAssociation
     public string ShopperSlotId { get; set; } = string.Empty;
     public DadAccountKey ShopperAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey ShopperCharacterKey { get; set; } = new(string.Empty);
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
     public bool NonRepeatableRowsFulfilled { get; set; }
     public bool RunAutoRetainerDelivery { get; set; }
@@ -131,6 +135,7 @@ public sealed class DadShoppingRunAssociation
             ShopperSlotId = ShopperSlotId,
             ShopperAccountKey = ShopperAccountKey,
             ShopperCharacterKey = ShopperCharacterKey,
+            CreditedQuantities = CreditedQuantities == null ? null : new(CreditedQuantities),
             CompletedNonRepeatableRowIds = [..CompletedNonRepeatableRowIds],
             NonRepeatableRowsFulfilled = NonRepeatableRowsFulfilled,
             RunAutoRetainerDelivery = RunAutoRetainerDelivery,
@@ -183,6 +188,17 @@ public sealed class DadShoppingFailureRecord
 
 public static class DadShoppingAssociationRules
 {
+    public static Dictionary<string, long>? MergeCreditedQuantities(
+        IReadOnlyDictionary<string, long>? previous, IReadOnlyDictionary<string, long>? current)
+        => current == null ? previous == null ? null : new(previous)
+            : current.ToDictionary(pair => NormalizeAdsGuid(pair.Key), pair =>
+                Math.Max(pair.Value, previous?.GetValueOrDefault(NormalizeAdsGuid(pair.Key)) ?? 0));
+
+    public static bool ValidCreditedQuantities(IReadOnlyDictionary<string, long>? progress)
+        => progress == null || progress.Count <= DadShoppingAssociation.MaxCompletedRowIds &&
+            progress.All(pair => !string.IsNullOrEmpty(NormalizeAdsGuid(pair.Key)) && pair.Value is >= 0 and <= int.MaxValue) &&
+            progress.Keys.Select(NormalizeAdsGuid).Distinct(StringComparer.Ordinal).Count() == progress.Count;
+
     public const int MaximumFailureRecords = 50;
 
     public static string NormalizeAdsGuid(string? value)
@@ -551,6 +567,7 @@ public static class DadShoppingAssociationRules
             ShopperSlotId = normalized.ShopperSlotId,
             ShopperAccountKey = normalized.ShopperAccountKey,
             ShopperCharacterKey = normalized.ShopperCharacterKey,
+            CreditedQuantities = normalized.CreditedQuantities == null ? null : new(normalized.CreditedQuantities),
             CompletedNonRepeatableRowIds = [..normalized.CompletedNonRepeatableRowIds],
             NonRepeatableRowsFulfilled = normalized.NonRepeatableRowsFulfilled,
             RunAutoRetainerDelivery = normalized.RunAutoRetainerDelivery,
@@ -638,6 +655,8 @@ public sealed class DadAdsShopListPresetRequest
     public int Version { get; set; } = 1;
     public string OperationId { get; set; } = string.Empty;
     public string PresetId { get; set; } = string.Empty;
+    public bool SupportsFiniteOrderProgress { get; set; } = true;
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedRowIds { get; set; } = [];
 }
 
@@ -648,6 +667,7 @@ public sealed class DadAdsShopListPreviewResponse
     public string Disposition { get; set; } = string.Empty;
     public long CurrencyAvailable { get; set; }
     public string Message { get; set; } = string.Empty;
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
     public List<DadAdsShopListPreviewRow> Rows { get; set; } = [];
 }
@@ -678,6 +698,7 @@ public sealed class DadAdsShopListStartResponse
     public string PresetId { get; set; } = string.Empty;
     public string Disposition { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
 }
 
@@ -690,6 +711,7 @@ public sealed class DadAdsShopListStatusResponse
     public bool Done { get; set; }
     public bool? Succeeded { get; set; }
     public string Disposition { get; set; } = string.Empty;
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
     public List<string> SkippedRowIds { get; set; } = [];
     public string FailureCode { get; set; } = string.Empty;
@@ -724,6 +746,7 @@ public enum DadAdsShoppingStartOutcome
     Fulfilled = 2,
     Rejected = 3,
     Uncertain = 4,
+    Partial = 5,
 }
 
 public readonly record struct DadAdsShoppingStartResult(
@@ -755,6 +778,7 @@ public sealed class DadShoppingRunResult
     public bool Succeeded { get; set; }
     public bool NonRepeatableRowsFulfilled { get; set; }
     public string Disposition { get; set; } = string.Empty;
+    public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
     public List<DadAdsShopListRowStatus> Rows { get; set; } = [];
     public string FailureCode { get; set; } = string.Empty;
@@ -771,6 +795,7 @@ public sealed class DadShoppingRunResult
             Succeeded = Succeeded,
             NonRepeatableRowsFulfilled = NonRepeatableRowsFulfilled,
             Disposition = Disposition,
+            CreditedQuantities = CreditedQuantities == null ? null : new(CreditedQuantities),
             CompletedNonRepeatableRowIds = [..CompletedNonRepeatableRowIds],
             Rows = Rows.Select(static row => row.Clone()).ToList(),
             FailureCode = FailureCode,

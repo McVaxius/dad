@@ -192,20 +192,20 @@ The proposed in-plugin DAD Hub/community integration is also future design work.
 ## Quick Start
 
 1. Install the same DAD version and every required plugin listed above on each participating game client.
-2. Open DAD with `/dad`, turn on **DAD enabled**, and enable **Allow DAD to automate this character**. Resolve the persistent dependency window on each client.
-3. For multibox use, choose one Coordinator Dad and configure the remaining instances as Client Dads. Apply the same LAN shared secret when using a non-loopback endpoint.
-4. Start every game client that the Plan needs; DAD waits rather than launching a missing process.
-5. Refresh the roster and confirm the intended accounts, characters, jobs, and freshness are visible.
-6. Create or select a preset, choose a supported run type, assign the crew, and set requested jobs, substitutes, loot modes, or Level-seek targets as needed.
-7. Choose **Recheck readiness (does not run)** and resolve the first visible crew, content, or plugin blocker.
-8. Start the preset and watch the main status surface or `/dad mini`.
-9. When the preset is proven, add it to a manual or daily schedule if desired.
+2. Open DAD with `/dad`, turn on **DAD enabled**, and enable **Allow DAD to automate this character**. Resolve the persistent dependency window on each client. Open `/dad wizard` for guided setup. **Save and Next** saves each step; **Back** keeps completed work, and **Finish** completes the guide.
+3. Use **Name this DAD** to label each instance. For multibox use, choose **Set up a Coordinator** on one instance and **Connect a Client** on the others. Match the Coordinator endpoint and apply the same LAN shared secret when using a non-loopback endpoint.
+4. Start every game client that the Plan needs; DAD waits rather than launching a missing process. Use **Build the Crew** to refresh local and connected rosters, assign account ownership, and resolve stale or unassigned Active rows.
+5. Open **Create a Preset** to choose the activity, name, crew, and stop/finish rules, then validate. To edit an existing preset, use the wizard's **Plan** button to select it before opening its guide, and leave **Create a new preset** unchecked. Check it only when creating a new preset. Set requested jobs, substitutes, loot modes, or Level-seek targets as needed.
+6. In **Plan**, choose **Recheck readiness (does not run)** and resolve the first visible crew, content, or plugin blocker. Start the preset when ready and follow progress in the main window or `/dad mini`.
+7. To build or edit a schedule, return to `/dad wizard` and open **Build a Schedule**. Leave **Create a new schedule** unchecked and choose an **Existing schedule** to edit, or check it to create one. Arrange saved presets and repeat counts, choose manual or daily cadence, resolve blockers, and use **Run dry-run** to validate before finishing.
+8. To attach shopping, first prepare the shopping preset in ADS. Use the wizard's **Plan** or **Schedules** button and select the saved Plan or Schedule. Under **ADS SHOPPING**, use **Refresh ADS presets**, choose the **ADS preset** and **Exact shopper**, then **Add association** or **Save association**. A schedule's shopper must be the same exact primary account/character in every referenced Plan. **Preview only** uses the current client's character and does not purchase items.
 
 ## Useful Commands
 
 | Command | Action |
 | --- | --- |
 | `/dad` | Toggle the main DAD window. |
+| `/dad wizard` | Open guided setup, preset editing, and schedule building, with shopping setup instructions. |
 | `/dad config` | Open settings. |
 | `/dad on` / `/dad off` | Enable or disable DAD. |
 | `/dad status` | Print the current run summary to chat. |

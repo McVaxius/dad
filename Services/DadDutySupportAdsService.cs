@@ -204,6 +204,8 @@ public sealed unsafe class DadDutySupportAdsService
                 version = 1,
                 presetId = normalized.PresetId,
                 completedRowIds = normalized.CompletedNonRepeatableRowIds,
+                supportsFiniteOrderProgress = true,
+                creditedQuantities = normalized.CreditedQuantities,
             });
             var responseJson = previewShopListPreset.InvokeFunc(requestJson);
             var preview = DadIpcJson.DeserializeRaw<DadAdsShopListPreviewResponse>(responseJson);
@@ -268,6 +270,8 @@ public sealed unsafe class DadDutySupportAdsService
             }
 
             response.OperationId = response.OperationId.Trim();
+            if (!DadShoppingAssociationRules.ValidCreditedQuantities(response.CreditedQuantities))
+                return new(DadAdsShoppingStartOutcome.Uncertain, null, "ADS returned invalid order progress; polling the exact operation without replay.");
             response.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(response.PresetId);
             response.Disposition = response.Disposition?.Trim().ToLowerInvariant() ?? string.Empty;
             response.Message = response.Message?.Trim() ?? string.Empty;
@@ -283,6 +287,7 @@ public sealed unsafe class DadDutySupportAdsService
                 "started" when response.Accepted => DadAdsShoppingStartOutcome.Accepted,
                 "not-triggered" when !response.Accepted => DadAdsShoppingStartOutcome.NotTriggered,
                 "fulfilled" when !response.Accepted => DadAdsShoppingStartOutcome.Fulfilled,
+                "partial" when !response.Accepted => DadAdsShoppingStartOutcome.Partial,
                 _ => DadAdsShoppingStartOutcome.Rejected,
             };
             return new(outcome, response, string.IsNullOrWhiteSpace(response.Message)
@@ -321,6 +326,8 @@ public sealed unsafe class DadDutySupportAdsService
             }
 
             response.OperationId = response.OperationId.Trim();
+            if (!DadShoppingAssociationRules.ValidCreditedQuantities(response.CreditedQuantities))
+                return new(false, null, "ADS returned invalid finite-order quantities.");
             response.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(response.PresetId);
             response.Disposition = response.Disposition?.Trim().ToLowerInvariant() ?? string.Empty;
             response.CompletedNonRepeatableRowIds = (response.CompletedNonRepeatableRowIds ?? [])

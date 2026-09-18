@@ -201,6 +201,18 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }
         ImGui.Spacing();
 
+        DadUi.Section("Quick start", "Save and Next saves each step. Back keeps completed work; Finish completes the guide.");
+        ImGui.TextWrapped("1. Setup: Use Name this DAD, then Set up a Coordinator on one instance and Connect a Client on the others. Match the endpoint and LAN shared secret. Use Build the Crew to refresh the roster, assign account ownership, and resolve stale rows.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("2. Presets: To edit, use Plan below to select the existing preset before opening Create a Preset; leave Create a new preset unchecked. Check it only when creating a new preset. Choose the activity, name, crew, and stop/finish rules, then validate.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("3. Schedules: Open Build a Schedule. Leave Create a new schedule unchecked to choose an Existing schedule, or check it to create one. Arrange saved presets and repeat counts, choose the cadence, then resolve blockers and use Run dry-run to validate.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("4. Shopping: Open Shopping List Wizard above the /dad tabs, use Add shopping list or Edit shopping list beside a saved preset or schedule, or use /dad shopping. Choose the destination, ADS list, exact shopper and optional actions, then review and Save shopping list. ARR Zodiac and HW Anima Poetics orders are supplied by ADS. Targeted refill maintains ownership thresholds; Spend until currency/capacity follows repeat rules; Fill order over multiple runs remembers credited quantities until fulfilled. Shopping Next and Back keep an unsaved draft; cancel discards it. Preview only uses this client's current character and never purchases items.");
+        if (ImGui.Button("Shopping List Wizard"))
+            plugin.OpenShoppingWizard();
+        ImGui.Spacing();
+
         var flows = new[]
         {
             DadGuideFlow.NameDad,

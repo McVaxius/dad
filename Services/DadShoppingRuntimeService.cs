@@ -48,6 +48,7 @@ public sealed class DadShoppingRuntimeService
     private string cancellationSummary = string.Empty;
     private string startupBlocker = string.Empty;
     private DadShoppingRunResult? currentResult;
+    private Dictionary<string, long>? lastCreditedQuantities;
     private DadAdsShoppingStartOutcome currentStartOutcome;
     private List<string> lastCompletedRowIds = [];
     private List<DadAdsShopListRowStatus> lastRows = [];
@@ -202,6 +203,7 @@ public sealed class DadShoppingRuntimeService
         currentStartOutcome = DadAdsShoppingStartOutcome.Rejected;
         lastCompletedRowIds = [];
         lastRows = [];
+        lastCreditedQuantities = null;
     }
 
     private DadShoppingRuntimeDecision StartCurrent(DateTime now)
@@ -214,6 +216,7 @@ public sealed class DadShoppingRuntimeService
 
         var association = associations[associationIndex];
         operationId = BuildOperationId(association);
+        lastCreditedQuantities = association.CreditedQuantities == null ? null : new(association.CreditedQuantities);
         if (operationId.Length > MaximumOperationIdLength)
         {
             return FailCurrent(
@@ -237,6 +240,7 @@ public sealed class DadShoppingRuntimeService
             OperationId = operationId,
             PresetId = association.PresetId,
             CompletedRowIds = [..association.CompletedNonRepeatableRowIds],
+            CreditedQuantities = association.CreditedQuantities == null ? null : new(association.CreditedQuantities),
         });
         log.Information(
             "[dad][shopping] Start boundary run={RunId} module={ModuleIndex} owner={OwnerKind}:{OwnerId} preset={PresetId} operation={OperationId} outcome={Outcome}.",
@@ -248,7 +252,7 @@ public sealed class DadShoppingRuntimeService
             operationId,
             start.Outcome);
         currentStartOutcome = start.Outcome;
-        MergeEvidence(start.Response?.CompletedNonRepeatableRowIds, null);
+        MergeEvidence(start.Response?.CompletedNonRepeatableRowIds, null, start.Response?.CreditedQuantities);
 
         switch (start.Outcome)
         {
@@ -256,6 +260,7 @@ public sealed class DadShoppingRuntimeService
             case DadAdsShoppingStartOutcome.Uncertain:
             case DadAdsShoppingStartOutcome.Fulfilled:
             case DadAdsShoppingStartOutcome.NotTriggered:
+            case DadAdsShoppingStartOutcome.Partial:
                 phase = RuntimePhase.Polling;
                 return Wait(start.Summary);
             default:
@@ -295,7 +300,7 @@ public sealed class DadShoppingRuntimeService
 
         statusUnreadableSinceUtc = DateTime.MinValue;
         var status = statusResult.Response;
-        MergeEvidence(status.CompletedNonRepeatableRowIds, status.Rows);
+        MergeEvidence(status.CompletedNonRepeatableRowIds, status.Rows, status.CreditedQuantities);
         if (!status.Done)
             return Wait(string.IsNullOrWhiteSpace(status.StatusMessage)
                 ? "ADS shopping is running."
@@ -352,13 +357,14 @@ public sealed class DadShoppingRuntimeService
             NonRepeatableRowsFulfilled = fulfilled,
             Disposition = disposition,
             CompletedNonRepeatableRowIds = completed,
+            CreditedQuantities = lastCreditedQuantities == null ? null : new(lastCreditedQuantities),
             Rows = rows,
             Summary = string.IsNullOrWhiteSpace(status.StatusMessage)
                 ? "ADS shopping completed successfully."
                 : status.StatusMessage,
         };
         results.Add(currentResult);
-        if (string.Equals(disposition, "not-triggered", StringComparison.Ordinal))
+        if (disposition is "not-triggered" or "partial" || status.CreditedQuantities != null && !fulfilled)
             return AdvanceAssociation();
         var verifiedPurchase = rows.Any(static row =>
             row.PurchasedQuantity > 0 &&
@@ -387,7 +393,8 @@ public sealed class DadShoppingRuntimeService
         {
             MergeEvidence(
                 statusResult.Response.CompletedNonRepeatableRowIds,
-                statusResult.Response.Rows);
+                statusResult.Response.Rows,
+                statusResult.Response.CreditedQuantities);
             if (statusResult.Response.Done)
             {
                 CompleteCancellationFailure(cancellationFailureCode, cancellationSummary);
@@ -576,6 +583,7 @@ public sealed class DadShoppingRuntimeService
             Association = association.Clone(),
             Succeeded = false,
             Disposition = "failed",
+            CreditedQuantities = lastCreditedQuantities == null ? null : new(lastCreditedQuantities),
             FailureCode = failureCode,
             Summary = summary,
             FailureMessage = summary,
@@ -586,8 +594,10 @@ public sealed class DadShoppingRuntimeService
 
     private void MergeEvidence(
         IEnumerable<string>? completedRowIds,
-        IEnumerable<DadAdsShopListRowStatus>? rows)
+        IEnumerable<DadAdsShopListRowStatus>? rows,
+        IReadOnlyDictionary<string, long>? creditedQuantities = null)
     {
+        lastCreditedQuantities = DadShoppingAssociationRules.MergeCreditedQuantities(lastCreditedQuantities, creditedQuantities);
         lastCompletedRowIds = lastCompletedRowIds
             .Concat(completedRowIds ?? [])
             .Select(DadShoppingAssociationRules.NormalizeAdsGuid)

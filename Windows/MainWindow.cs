@@ -74,6 +74,8 @@ public sealed class MainWindow : Window, IDisposable
     private string shoppingDraftOwner = string.Empty;
     private string shoppingDraftPresetId = string.Empty;
     private string shoppingDraftShopperSlotId = string.Empty;
+    private DadAccountKey shoppingDraftShopperAccountKey = new(string.Empty);
+    private DadCharacterKey shoppingDraftShopperCharacterKey = new(string.Empty);
     private bool shoppingDraftAutoRetainerDelivery;
     private string shoppingDraftCustomCommand = string.Empty;
     private string shoppingEditorStatus = string.Empty;
@@ -227,6 +229,9 @@ public sealed class MainWindow : Window, IDisposable
         DrawConfigurationPersistenceWarning();
         DrawActiveRunBanner(runState, activityDisplay.Run);
         ImGui.Spacing();
+
+        if (ImGui.Button("Shopping List Wizard", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
+            plugin.OpenShoppingWizard();
 
         if (ImGui.BeginTabBar("dad-main-tabs"))
         {
@@ -573,7 +578,9 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawHomeGuidedTasks()
     {
-        DrawSectionHeader("Guided tasks", "Seven complete workflows with live progress and the first blocker.");
+        DrawSectionHeader("Guided tasks", "Choose a setup guide or create a shopping list association.");
+        if (DadUi.Button("Shopping List Wizard##home-shopping", DadUiTone.Accent))
+            plugin.OpenShoppingWizard();
         var flows = new[]
         {
             DadGuideFlow.NameDad,
@@ -7566,6 +7573,9 @@ public sealed class MainWindow : Window, IDisposable
             "ADS SHOPPING",
             "Optional thin ADS preset association. ADS owns row vendors, prices, and refill math; DAD only freezes the exact shopper and records exact non-repeatable RowIds for this Plan or Schedule.");
         ImGui.TextWrapped("Refill rows trigger when owned is below Y and buy whole bundles until at least X. ADS defaults owned quantity to inventory plus this character's retainers, configurable per row. Repeatable rows are never marked done.");
+        if (ImGui.Button(association == null ? "Add shopping list" : "Edit shopping list"))
+            plugin.OpenShoppingWizard(ownerKind, ownerId);
+        ImGui.TextWrapped("Fill order over multiple runs retains credited quantities through consumption and movement; delivery and post-commands wait for full fulfillment.");
 
         var ownerKey = $"{ownerKind}:{ownerId}";
         if (!string.Equals(shoppingDraftOwner, ownerKey, StringComparison.Ordinal))
@@ -7573,6 +7583,8 @@ public sealed class MainWindow : Window, IDisposable
             shoppingDraftOwner = ownerKey;
             shoppingDraftPresetId = association?.PresetId ?? string.Empty;
             shoppingDraftShopperSlotId = association?.ShopperSlotId ?? string.Empty;
+            shoppingDraftShopperAccountKey = association?.ShopperAccountKey ?? new(string.Empty);
+            shoppingDraftShopperCharacterKey = association?.ShopperCharacterKey ?? new(string.Empty);
             shoppingDraftAutoRetainerDelivery = association?.RunAutoRetainerDelivery ?? false;
             shoppingDraftCustomCommand = association?.CustomCommand ?? string.Empty;
             shoppingEditorStatus = string.Empty;
@@ -7634,11 +7646,17 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         if (string.IsNullOrWhiteSpace(shoppingDraftShopperSlotId) && shopperSlots.Count > 0 && association == null)
+        {
             shoppingDraftShopperSlotId = shopperSlots[0].SlotId;
+            shoppingDraftShopperAccountKey = shopperSlots[0].RequiredAccountKey;
+            shoppingDraftShopperCharacterKey = shopperSlots[0].RequiredCharacterKey;
+        }
         var selectedShopper = shopperSlots.FirstOrDefault(slot => string.Equals(
             slot.SlotId,
             shoppingDraftShopperSlotId,
-            StringComparison.OrdinalIgnoreCase));
+            StringComparison.OrdinalIgnoreCase) &&
+            DadRosterIdentity.SameAccount(slot.RequiredAccountKey, shoppingDraftShopperAccountKey) &&
+            string.Equals(slot.RequiredCharacterKey.Value, shoppingDraftShopperCharacterKey.Value, StringComparison.OrdinalIgnoreCase));
         ImGui.SetNextItemWidth(MathF.Min(460f, ImGui.GetContentRegionAvail().X));
         if (ImGui.BeginCombo(
                 $"Exact shopper##{ownerKey}",
@@ -7648,9 +7666,13 @@ public sealed class MainWindow : Window, IDisposable
         {
             foreach (var slot in shopperSlots)
             {
-                var selected = string.Equals(slot.SlotId, shoppingDraftShopperSlotId, StringComparison.OrdinalIgnoreCase);
+                var selected = slot == selectedShopper;
                 if (ImGui.Selectable($"{FormatShoppingShopper(slot)}##{slot.SlotId}", selected))
+                {
                     shoppingDraftShopperSlotId = slot.SlotId;
+                    shoppingDraftShopperAccountKey = slot.RequiredAccountKey;
+                    shoppingDraftShopperCharacterKey = slot.RequiredCharacterKey;
+                }
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
@@ -7762,11 +7784,8 @@ public sealed class MainWindow : Window, IDisposable
             draft.PresetId = shoppingDraftPresetId;
             draft.PresetName = catalogPreset?.Name ?? current?.PresetName ?? string.Empty;
             draft.ShopperSlotId = shoppingDraftShopperSlotId;
-            if (selectedShopper != null)
-            {
-                draft.ShopperAccountKey = selectedShopper.RequiredAccountKey;
-                draft.ShopperCharacterKey = selectedShopper.RequiredCharacterKey;
-            }
+            draft.ShopperAccountKey = shoppingDraftShopperAccountKey;
+            draft.ShopperCharacterKey = shoppingDraftShopperCharacterKey;
             draft.RunAutoRetainerDelivery = shoppingDraftAutoRetainerDelivery;
             draft.CustomCommand = shoppingDraftCustomCommand;
             DadShoppingAssociationRules.ResetCompletionIfProvenanceChanged(current, draft);

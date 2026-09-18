@@ -2927,6 +2927,7 @@ public sealed class DadCoordinatorService
         DadShoppingRunAssociation association,
         DadShoppingRunResult result)
     {
+        association.CreditedQuantities = DadShoppingAssociationRules.MergeCreditedQuantities(association.CreditedQuantities, result.CreditedQuantities);
         association.CompletedNonRepeatableRowIds = result.CompletedNonRepeatableRowIds
             .Concat(association.CompletedNonRepeatableRowIds)
             .Distinct(StringComparer.Ordinal)
@@ -2948,6 +2949,13 @@ public sealed class DadCoordinatorService
         var changed = !association.CompletedNonRepeatableRowIds.SequenceEqual(merged, StringComparer.Ordinal);
         if (changed)
             association.CompletedNonRepeatableRowIds = merged;
+        var quantities = DadShoppingAssociationRules.MergeCreditedQuantities(association.CreditedQuantities, result.CreditedQuantities);
+        if (quantities != null && (association.CreditedQuantities == null || quantities.Count != association.CreditedQuantities.Count ||
+            quantities.Any(pair => association.CreditedQuantities.GetValueOrDefault(pair.Key, -1) != pair.Value)))
+        {
+            association.CreditedQuantities = quantities;
+            changed = true;
+        }
         if (HasAuthoritativeTerminalShoppingEvidence(result))
         {
             DateTime? fulfilledAtUtc = result.NonRepeatableRowsFulfilled
@@ -2967,7 +2975,8 @@ public sealed class DadCoordinatorService
     }
 
     private static bool HasAuthoritativeTerminalShoppingEvidence(DadShoppingRunResult result)
-        => string.Equals(result.Disposition, "succeeded", StringComparison.OrdinalIgnoreCase) ||
+        => string.Equals(result.Disposition, "partial", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(result.Disposition, "succeeded", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(result.Disposition, "fulfilled", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(result.Disposition, "not-triggered", StringComparison.OrdinalIgnoreCase);
 
@@ -4527,7 +4536,8 @@ public sealed class DadCoordinatorService
             }
 
             var completedRows = association.CompletedNonRepeatableRowIds ?? [];
-            if (completedRows.Count > DadShoppingAssociation.MaxCompletedRowIds ||
+            if (!DadShoppingAssociationRules.ValidCreditedQuantities(association.CreditedQuantities) ||
+                completedRows.Count > DadShoppingAssociation.MaxCompletedRowIds ||
                 completedRows.Distinct(StringComparer.Ordinal).Count() != completedRows.Count ||
                 completedRows.Any(rowId => !string.Equals(
                     rowId,

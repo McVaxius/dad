@@ -118,6 +118,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private readonly SetupWizardWindow setupWizardWindow;
+    private readonly DadShoppingWizardWindow shoppingWizardWindow;
     private readonly DadMiniStatusWindow miniStatusWindow;
     private readonly DadQuickPanelWindow quickPanelWindow;
     private readonly DadClientReconnectWindow clientReconnectWindow;
@@ -489,6 +490,7 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow = new MainWindow(this);
         configWindow = new ConfigWindow(this);
         setupWizardWindow = new SetupWizardWindow(this);
+        shoppingWizardWindow = new DadShoppingWizardWindow(this);
         miniStatusWindow = new DadMiniStatusWindow(this);
         quickPanelWindow = new DadQuickPanelWindow(this);
         clientReconnectWindow = new DadClientReconnectWindow(this);
@@ -499,6 +501,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(mainWindow);
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(setupWizardWindow);
+        WindowSystem.AddWindow(shoppingWizardWindow);
         WindowSystem.AddWindow(miniStatusWindow);
         WindowSystem.AddWindow(quickPanelWindow);
         WindowSystem.AddWindow(clientReconnectWindow);
@@ -514,7 +517,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(PluginInfo.Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} quick, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
+            HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} quick, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} shopping, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -645,6 +648,9 @@ public sealed class Plugin : IDalamudPlugin
     internal void OpenAutoPartyUi(DadAutoPartySection section) => autoPartyWindow.OpenSection(section);
 
     public void OpenSetupWizard() => setupWizardWindow.OpenLanding();
+
+    public void OpenShoppingWizard(DadShoppingAssociationOwnerKind? destinationKind = null, string? destinationId = null)
+        => shoppingWizardWindow.Open(destinationKind, destinationId);
 
     public void OpenSetupWizard(DadGuideFlow flow) => setupWizardWindow.OpenFlow(flow);
 
@@ -1333,11 +1339,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (!TryPrepareShoppingAssociation(draft, group.ShoppingAssociation, out var candidate, out error))
             return false;
-        if (!DadShoppingAssociationRules.TryBindToPlanSlot(candidate, group, out _))
-        {
-            error = "Select one exact primary LAN shopper row.";
+        if (!ValidateShoppingCatalog(candidate, out error))
             return false;
-        }
         DadShoppingAssociationRules.ResetCompletionIfProvenanceChanged(group.ShoppingAssociation, candidate);
         var frozen = new DadShoppingRunAssociation
         {
@@ -1351,6 +1354,7 @@ public sealed class Plugin : IDalamudPlugin
             ShopperAccountKey = candidate.ShopperAccountKey,
             ShopperCharacterKey = candidate.ShopperCharacterKey,
             CompletedNonRepeatableRowIds = [..candidate.CompletedNonRepeatableRowIds],
+            CreditedQuantities = candidate.CreditedQuantities == null ? null : new(candidate.CreditedQuantities),
             NonRepeatableRowsFulfilled = candidate.NonRepeatableRowsFulfilled,
             RunAutoRetainerDelivery = candidate.RunAutoRetainerDelivery,
             CustomCommand = candidate.CustomCommand,
@@ -1359,9 +1363,17 @@ public sealed class Plugin : IDalamudPlugin
             return false;
 
         candidate.UpdatedAtUtc = DateTime.UtcNow;
+        var previousAssociation = group.ShoppingAssociation;
+        var previousUpdatedAt = group.UpdatedAtUtc;
         group.ShoppingAssociation = candidate;
         group.UpdatedAtUtc = candidate.UpdatedAtUtc;
-        Configuration.Save();
+        if (!PersistConfigurationNow())
+        {
+            group.ShoppingAssociation = previousAssociation;
+            group.UpdatedAtUtc = previousUpdatedAt;
+            error = $"Shopping list could not be persisted: {configurationPersistence.GetState().FailureSummary}";
+            return false;
+        }
         InvalidatePlannerPreviewCache("Plan shopping association updated");
         error = string.Empty;
         return true;
@@ -1414,15 +1426,8 @@ public sealed class Plugin : IDalamudPlugin
         var schedule = matches[0];
         if (!TryPrepareShoppingAssociation(draft, schedule.ShoppingAssociation, out var candidate, out error))
             return false;
-        if (!DadShoppingAssociationRules.TryBindToSchedulePlans(
-                candidate,
-                schedule,
-                Configuration.PlannerGroups,
-                out _))
-        {
-            error = "Select one exact shopper row common to every referenced Plan.";
+        if (!ValidateShoppingCatalog(candidate, out error))
             return false;
-        }
 
         DadShoppingAssociationRules.ResetCompletionIfProvenanceChanged(schedule.ShoppingAssociation, candidate);
         candidate.UpdatedAtUtc = DateTime.UtcNow;
@@ -1440,6 +1445,28 @@ public sealed class Plugin : IDalamudPlugin
             error = "Schedule changed before its shopping association could be saved.";
             return false;
         }
+        if (!PersistConfigurationNow())
+        {
+            var index = Configuration.Schedules.FindIndex(value => value.ScheduleId == schedule.ScheduleId);
+            if (index >= 0)
+                Configuration.Schedules[index] = schedule;
+            error = $"Shopping list could not be persisted: {configurationPersistence.GetState().FailureSummary}";
+            return false;
+        }
+        error = string.Empty;
+        return true;
+    }
+
+    private bool ValidateShoppingCatalog(DadShoppingAssociation candidate, out string error)
+    {
+        var result = DutySupportAdsService.GetShopListPresets();
+        var matches = result.Catalog?.Presets.Where(preset => preset.PresetId == candidate.PresetId).ToList();
+        if (!result.Readable || matches?.Count != 1)
+        {
+            error = $"The selected ADS list is unavailable. Refresh ADS lists. {result.Summary}";
+            return false;
+        }
+        candidate.PresetName = matches[0].Name;
         error = string.Empty;
         return true;
     }
@@ -1518,12 +1545,13 @@ public sealed class Plugin : IDalamudPlugin
     {
         candidate = draft?.Clone().Normalize() ?? new DadShoppingAssociation().Normalize();
         error = string.Empty;
-        if (existing != null)
+        if (existing != null && string.Equals(candidate.AssociationId, existing.AssociationId, StringComparison.Ordinal))
         {
             var prior = existing.Clone().Normalize();
             if (Guid.TryParseExact(prior.AssociationId, "N", out var priorId) && priorId != Guid.Empty)
                 candidate.AssociationId = priorId.ToString("N");
             candidate.CompletedNonRepeatableRowIds = [..prior.CompletedNonRepeatableRowIds];
+            candidate.CreditedQuantities = prior.CreditedQuantities == null ? null : new(prior.CreditedQuantities);
             candidate.NonRepeatableRowsFulfilled = prior.NonRepeatableRowsFulfilled;
             candidate.FulfilledAtUtc = prior.FulfilledAtUtc;
         }
@@ -3803,7 +3831,6 @@ public sealed class Plugin : IDalamudPlugin
         group.LevelingMode.Normalize();
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
         group.ShoppingAssociation?.Normalize();
-        DadShoppingAssociationRules.TryBindToPlanSlot(group.ShoppingAssociation, group, out _);
     }
 
     private static DadAccountKey ResolvePlannerAccountKey(DadAcquiredCharacter character)
@@ -4897,6 +4924,11 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (trimmed.Equals("shopping", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenShoppingWizard();
+            return;
+        }
         if (trimmed.Equals("wizard", StringComparison.OrdinalIgnoreCase) ||
             trimmed.Equals("setup", StringComparison.OrdinalIgnoreCase))
         {
