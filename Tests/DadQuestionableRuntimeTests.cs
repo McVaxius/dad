@@ -11,6 +11,8 @@ using DalamudApi::Dalamud.Plugin;
 using DalamudApi::Dalamud.Plugin.Services;
 using DalamudApi::Dalamud.Plugin.Ipc;
 using Xunit;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Client.Enums;
 
 namespace dad.Tests;
 
@@ -19,8 +21,41 @@ public sealed class DadQuestionableRuntimeTests
     private const BindingFlags PrivateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly Type WrapperType = CreateWrapperType();
 
+    private unsafe delegate int ReadSelectedRegularDuty(AgentContentsFinder* agent);
+
     [Fact]
-    public void WigglyQuestLootHandshakeUsesFixedResponsesWithoutStateChangesOrOutboundActions()
+    public unsafe void RegularDutyProofReadsTheOnlyCheckedDutyRatherThanStaleRewardDetails()
+    {
+        var read = typeof(DutyIpc).Assembly.GetType("dad.Services.DadDutyFinderNativeAccess")!
+            .GetMethod("ReadSelectedRegularDutyId", BindingFlags.Static | BindingFlags.NonPublic)!
+            .CreateDelegate<ReadSelectedRegularDuty>();
+        var agent = new AgentContentsFinder();
+        var selected = stackalloc ContentsId[2];
+        selected[0] = new ContentsId { ContentType = ContentsType.Regular, Id = 76 };
+        selected[1] = new ContentsId { ContentType = ContentsType.Regular, Id = 81 };
+        agent.SelectedDuty = selected[0];
+        agent.InterfaceSub.SelectedDutyId = 20021; // Observed stale reward-pane roulette value.
+        agent.SelectedContent.First = selected;
+        agent.SelectedContent.Last = selected + 1;
+        agent.SelectedContent.End = selected + 2;
+
+        Assert.Equal(76, read(&agent));
+        agent.SelectedContent.Last = selected;
+        Assert.Equal(0, read(&agent)); // Browsing the target does not select it.
+        agent.SelectedContent.Last = selected + 2;
+        Assert.Equal(0, read(&agent)); // Never admit several checked duties.
+        agent.SelectedContent.Last = selected + 1;
+        selected[0] = new ContentsId { ContentType = ContentsType.Roulette, Id = 76 };
+        Assert.Equal(0, read(&agent)); // Equal numeric ids cannot mix content types.
+        selected[0] = selected[1];
+        Assert.Equal(81, read(&agent)); // Report the checked duty, not the browsed one.
+        Assert.Equal(0, read(null));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Meta.")]
+    public void WigglyQuestCheckedSettingsAndLootHandshakeDoNotDispatchWork(string prefix)
     {
         var handlers = new Dictionary<string, Delegate>();
         var outbound = new List<string>();
@@ -70,6 +105,16 @@ public sealed class DadQuestionableRuntimeTests
             set(" dutyModeEnum ", " Regular ");
             set(" leveling ", " Support ");
             set(" AutoDutyModeEnum ", " Once ");
+            // WigglyQuest 7.5.26 writes and immediately reads these names
+            // before it will request a duty. Both naming generations must
+            // address the same session values without starting any work.
+            foreach (var (key, value) in new[] { ("AutoDutyModeEnum", "Looping"), ("Unsynced", "True"), ("DutyModeEnum", "Regular") })
+            {
+                set(prefix + key, value);
+                Assert.Equal(value, get(prefix + key));
+                Assert.Equal(value, get(key));
+                Assert.Equal(value, get("Meta." + key));
+            }
             var existingKeys = new[] { "Unsynced", "dutyModeEnum", "leveling", "AutoDutyModeEnum",
                 "AutoManageRotationPluginState", "AutoManageBossModAISettings", "UnknownKey" };
             var existingResponses = existingKeys.ToDictionary(key => key, get);
@@ -81,7 +126,7 @@ public sealed class DadQuestionableRuntimeTests
             var loot = new[] { (Key: "LootTreasure", Expected: "True", Opposite: "False"),
                 (Key: "LootBossTreasureOnly", Expected: "False", Opposite: "True"),
                 (Key: "LootMethodEnum", Expected: "AutoDuty", Opposite: "None") };
-            var original = loot.ToDictionary(item => item.Key, item => get(item.Key));
+            var original = loot.ToDictionary(item => item.Key, item => get(prefix + item.Key));
             Assert.True(stopped());
             Assert.Empty(outbound);
             foreach (var item in loot)
@@ -92,10 +137,11 @@ public sealed class DadQuestionableRuntimeTests
             foreach (var item in loot)
             {
                 var value = phase == "force" ? item.Expected : phase == "opposite" ? item.Opposite : original[item.Key];
-                set(phase == "force" ? item.Key : $" \t{item.Key.ToUpperInvariant()} ", $" {value} ");
+                set(phase == "force" ? prefix + item.Key : $" \t{prefix}{item.Key.ToUpperInvariant()} ", $" {value} ");
                 foreach (var expected in loot)
                 {
                     Assert.Equal(expected.Expected, get(expected.Key));
+                    Assert.Equal(expected.Expected, get(prefix + expected.Key));
                     Assert.Equal(expected.Expected, get($" \t{expected.Key.ToLowerInvariant()} "));
                 }
                 foreach (var (key, response) in existingResponses)

@@ -8,6 +8,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
 {
     private static readonly Vector2 MinimumWindowSize = new(440f, 260f);
     private readonly Plugin plugin;
+    private readonly DadConnectionEditor connectionEditor;
     private Vector2? pendingPosition;
     private bool resetPositionConditionNextDraw;
     private DateTime disableConfirmationExpiresUtc = DateTime.MinValue;
@@ -16,6 +17,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
         : base("DAD Client###DadClientReconnect", ImGuiWindowFlags.NoCollapse)
     {
         this.plugin = plugin;
+        connectionEditor = new DadConnectionEditor(plugin);
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = MinimumWindowSize,
@@ -28,6 +30,8 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
     public void Dispose()
     {
     }
+
+    public override void OnOpen() => connectionEditor.ResetEndpoint(plugin.Configuration);
 
     public void ResetToOrigin() => QueuePosition(new Vector2(1f, 1f));
 
@@ -62,6 +66,9 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
             DadUi.KeyValue("Last disconnect", transport.LastDisconnectReason, 120f);
         if (transport.LastConnectedUtc.HasValue)
             DadUi.KeyValue("Last connected", transport.LastConnectedUtc.Value.ToLocalTime().ToString("G"), 120f);
+
+        if (ImGui.CollapsingHeader("Edit Coordinator address"))
+            connectionEditor.DrawEndpointFields(plugin.Configuration, "dad-reconnect-connection", showApplyActions: true, compact: true);
 
         DadUi.Section("Actions");
         if (DadUi.Button("Open full DAD", DadUiTone.Accent))

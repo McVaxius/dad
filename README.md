@@ -669,6 +669,8 @@ Visual layout and this live Discord/game test require separate acceptance; headl
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.
+  Expand `Edit Coordinator address` to edit the host/IP and port directly in that window; `Apply endpoint changes`
+  saves the address and restarts the connection, while `Revert endpoint draft` discards unapplied edits.
   The guarded `Disable DAD` confirmation is the reconnect window's explicit stop action.
 - Item-level cancel buttons require a confirming second click and affect only the selected run, schedule, or job.
 - `Stop all` requires confirmation within five seconds. The Coordinator snapshots every routable Client Dad,

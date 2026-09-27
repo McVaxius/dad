@@ -69,7 +69,7 @@ internal sealed class VirtualDutyFinder(Func<ulong> contentId, Func<bool> logged
     };
     public DadDutyFinderLiveContentType SelectedType { get; private set; }
     public uint SelectedId { get => Fault == "wrong-selection" && selectedId != 0 ? 99u : selectedId; private set => selectedId = value; }
-    public int InterfaceSelectedId { get; private set; }
+    public int CheckedRegularDutyId { get; private set; }
     public bool HasRouletteSelected => SelectedType == DadDutyFinderLiveContentType.Roulette;
     public void OpenRegularDuty(uint id)
     {
@@ -92,9 +92,10 @@ internal sealed class VirtualDutyFinder(Func<ulong> contentId, Func<bool> logged
         switch ((addon, command))
         {
             case ("ContentsFinder", "12,1"):
-                SelectedType = DadDutyFinderLiveContentType.None; SelectedId = 0; InterfaceSelectedId = 0; break;
+                SelectedType = DadDutyFinderLiveContentType.None; SelectedId = 0; CheckedRegularDutyId = 0; break;
             case ("ContentsFinder", "3,1") when listId != 0:
-                SelectedType = listType; SelectedId = listId; InterfaceSelectedId = (int)listId; break;
+                SelectedType = listType; SelectedId = listId;
+                CheckedRegularDutyId = listType == DadDutyFinderLiveContentType.Regular ? (int)listId : 0; break;
             case ("ContentsFinder", "12,0") when SelectedId != 0:
                 Stage = "queued"; break;
             case ("ContentsFinderConfirm", "8"):

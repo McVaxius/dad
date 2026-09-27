@@ -565,7 +565,7 @@ internal sealed class RuntimeNode : IDisposable
         alliance = allianceService?.GetStatus(), allianceReceiver = allianceService?.BuildUiSnapshot(),
         automation = new { automation.Suppressed, automation.MultiMode, automation.Surface },
         dutyFinder = new { dutyFinder.Stage, isUnrestrictedParty = dutyFinder.ObservedUnrestrictedParty,
-            dutyFinder.SelectedId, dutyFinder.InterfaceSelectedId, dutyFinder.Fault },
+            dutyFinder.SelectedId, dutyFinder.CheckedRegularDutyId, dutyFinder.Fault },
         build = new
         {
             dad = typeof(RuntimeNode).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,

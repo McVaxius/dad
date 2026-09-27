@@ -31,7 +31,7 @@ internal interface IDadDutyFinderNativeAccess
     DadQueueAddonObservation Addon(string name);
     DadDutyFinderLiveContentType SelectedType { get; }
     uint SelectedId { get; }
-    int InterfaceSelectedId { get; }
+    int CheckedRegularDutyId { get; }
     bool HasRouletteSelected { get; }
     void OpenRegularDuty(uint id);
     void OpenRouletteDuty(byte id);
@@ -92,7 +92,16 @@ internal sealed unsafe class DadDutyFinderNativeAccess : IDadDutyFinderNativeAcc
         _ => DadDutyFinderLiveContentType.None,
     };
     public uint SelectedId => AgentContentsFinder.Instance()->SelectedDuty.Id;
-    public int InterfaceSelectedId => AgentContentsFinder.Instance()->InterfaceSub.SelectedDutyId;
+    public int CheckedRegularDutyId => ReadSelectedRegularDutyId(AgentContentsFinder.Instance());
+    internal static int ReadSelectedRegularDutyId(AgentContentsFinder* agent)
+    {
+        // InterfaceSub describes the reward pane and can retain a previous roulette.
+        // Registration must prove exactly one checked regular duty instead.
+        if (agent == null || agent->SelectedContent.Count != 1) return 0;
+        var selected = agent->SelectedContent[0];
+        return selected.ContentType == ContentsType.Regular && selected.Id <= int.MaxValue
+            ? (int)selected.Id : 0;
+    }
     public bool HasRouletteSelected => AgentContentsFinder.Instance()->HasRouletteSelected;
     public void OpenRegularDuty(uint id) => AgentContentsFinder.Instance()->OpenRegularDuty(id);
     public void OpenRouletteDuty(byte id) => AgentContentsFinder.Instance()->OpenRouletteDuty(id);

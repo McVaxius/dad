@@ -292,16 +292,24 @@ public sealed class DadDutyIpcService : IDisposable
         }
     }
 
+    private static string NormalizeConfigKey(string key)
+    {
+        var trimmed = key.Trim();
+        return trimmed.StartsWith("Meta.", StringComparison.OrdinalIgnoreCase) ? trimmed[5..] : trimmed;
+    }
+
     private string GetConfig(string key)
-        => key.Trim().ToLowerInvariant() switch
+        => NormalizeConfigKey(key).ToLowerInvariant() switch
         {
             "leveling" => leveling,
             "autodutymodeenum" => autoDutyMode,
+            "unsynced" => unsynced.ToString(),
+            "dutymodeenum" => dutyMode,
             // Compatibility acknowledgements; ADS retains control of actual duty looting.
             "loottreasure" => "True",
             "lootbosstreasureonly" => "False",
             "lootmethodenum" => "AutoDuty",
-            _ => DadQuestionableAutoDutyConfigResolver.Resolve(key, combatRotationService.CombatRotationMode),
+            _ => DadQuestionableAutoDutyConfigResolver.Resolve(NormalizeConfigKey(key), combatRotationService.CombatRotationMode),
         };
 
     private bool ContentHasPath(uint territoryType)
@@ -332,7 +340,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void SetConfig(string key, string value)
     {
-        var normalizedKey = key.Trim();
+        var normalizedKey = NormalizeConfigKey(key);
         if (normalizedKey.Equals("LootTreasure", StringComparison.OrdinalIgnoreCase) ||
             normalizedKey.Equals("LootBossTreasureOnly", StringComparison.OrdinalIgnoreCase) ||
             normalizedKey.Equals("LootMethodEnum", StringComparison.OrdinalIgnoreCase))

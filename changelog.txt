@@ -1,5 +1,13 @@
 # dad — changelog
 
+## 2026-09-26 - I429 reconnect-window address editing (local-only, unpublished)
+- Added an expandable Edit Coordinator address section to the DAD Client reconnect window, reusing the existing host/IP and port editor with Apply and Revert actions. Applying saves the endpoint and restarts the connection through the existing settings path.
+
+## 2026-09-26 - WigglyQuest 7.5.26 duty settings compatibility (local-only, unpublished)
+- Duty IPC accepts both legacy and Meta-prefixed setting names and reads back the current Unsynced and DutyModeEnum values, allowing WigglyQuest's checked setup to reach the existing DAD duty runner. Setting writes do not dispatch work; fixed loot acknowledgements and ADS loot ownership are preserved.
+- Regular Duty Finder registration verifies the single checked regular duty from the selected-content list. The reward-detail field can retain a previous roulette and incorrectly block a correctly selected duty. Empty, multiple and roulette selections remain blocked; existing identity, mapping and stability checks are retained.
+- Verified the fixes with 60 focused tests, eight lifecycle-lab scenarios, and one live unsynced Battle on the Big Bridge clear, exit and quest continuation through WigglyQuest, DAD, FrenRider and ADS on the selected test client. Other acquisition trials remain unverified; versions are unchanged.
+
 ## 2026-09-18 - Shopping List Wizard and finite ADS orders (local-only, unpublished)
 - Added a four-step shopping draft wizard through /dad shopping, the main tabs, Home, /dad wizard, and contextual preset/schedule controls. Saving revalidates the list and exact primary shopper, respects active-work locks, and confirms configuration persistence; Back and Cancel do not save.
 - Carried absolute finite-order credits through frozen associations, ADS IPC, worker results and coordinator persistence. Partial passes allow normal duties and remain eligible at later boundaries; delivery/post-commands wait for fulfillment. Optional-action edits preserve progress and identity changes reset only the affected order.

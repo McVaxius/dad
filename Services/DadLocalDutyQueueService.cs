@@ -776,8 +776,8 @@ public sealed class DadLocalDutyQueueService : IDisposable, IDadLocalDutyQueueGa
 
             var selectedType = native.SelectedType;
             var selectedId = native.SelectedId;
-            var interfaceSelectedId = native.InterfaceSelectedId >= 0
-                ? (uint)native.InterfaceSelectedId
+            var checkedDutyId = native.CheckedRegularDutyId >= 0
+                ? (uint)native.CheckedRegularDutyId
                 : 0;
             if (!DadDutyFinderMappedMutationRules.HasExactRegularSelectionProof(
                     mapping,
@@ -793,12 +793,12 @@ public sealed class DadLocalDutyQueueService : IDisposable, IDadLocalDutyQueueGa
 
             var interfaceDecision = regularInterfaceProofGate.Observe(
                 DadClock.UtcNow,
-                interfaceSelectedId == target.RowId);
+                checkedDutyId == target.RowId);
             if (interfaceDecision == DadRegularDutyInterfaceProofDecision.Waiting)
             {
                 return MappingWait(
                     content,
-                    $"Waiting for stable exact interface-selected duty proof for {target.ContentType}:{target.RowId}; observed interfaceId={native.InterfaceSelectedId}.");
+                    $"Waiting for exactly one checked duty matching {target.ContentType}:{target.RowId}; observed checkedId={checkedDutyId}.");
             }
 
             if (interfaceDecision == DadRegularDutyInterfaceProofDecision.TimedOut ||
@@ -807,12 +807,12 @@ public sealed class DadLocalDutyQueueService : IDisposable, IDadLocalDutyQueueGa
                     lastSelectionToken,
                     selectedType,
                     selectedId,
-                    interfaceSelectedId,
+                    checkedDutyId,
                     target))
             {
                 return RestartRegularSelectionAttempt(
                     content,
-                    $"Exact interface-selected duty proof timed out or changed for {target.ContentType}:{target.RowId}; observed interfaceId={native.InterfaceSelectedId}. Restarting with a fresh tab hydration.");
+                    $"Exact checked-duty proof timed out or changed for {target.ContentType}:{target.RowId}; observed checkedId={checkedDutyId}. Restarting with a fresh tab hydration.");
             }
 
             if (DadClock.UtcNow < nextRegisterAttemptUtc)
