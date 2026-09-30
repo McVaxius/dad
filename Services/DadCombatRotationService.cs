@@ -36,6 +36,7 @@ public sealed class DadCombatRotationService(
         pluginInterface.GetIpcSubscriber<string, bool>(FrenRiderConfigureAndEnableChannel);
 
     public DadCombatRotationMode CombatRotationMode => configuration.CombatRotationMode;
+    internal Func<bool>? QuestionableDutySettingsGate { get; set; }
 
     public string MissingFrenRiderBlocker => "FrenRider is not loaded; Dad cannot enable FrenRider after duty entry.";
 
@@ -213,6 +214,8 @@ public sealed class DadCombatRotationService(
     {
         try
         {
+            if (command == FrenRiderEnableCommand && QuestionableDutySettingsGate?.Invoke() == false)
+                return DadFrenRiderCommandResult.Failure("Questionable FrenRider duty settings are unavailable; see DAD bridge blocker.");
             if (Plugin.CommandManager.ProcessCommand(command))
                 return DadFrenRiderCommandResult.Success();
 

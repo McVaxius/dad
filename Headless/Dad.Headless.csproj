@@ -13,6 +13,9 @@
   <ItemGroup>
     <Compile Include="../Configuration.cs;../PluginInfo.cs;../Models/*.cs;../Services/*.cs" />
     <Compile Remove="../Services/DadIpcService.cs" />
+    <Compile Include="../../../frenrider/FrenRider/Services/QuestionableDutySettingsOverride.cs" Link="FrenRider/QuestionableDutySettingsOverride.cs" />
+    <Compile Include="../../../frenrider/FrenRider/Models/CharacterConfig.cs" Link="FrenRider/CharacterConfig.cs" />
+    <Compile Include="../../../frenrider/FrenRider/Models/AdsDutyCategory.cs" Link="FrenRider/AdsDutyCategory.cs" />
     <Reference Include="Dalamud;Dalamud.Common;Dalamud.Bindings.ImGui;FFXIVClientStructs;InteropGenerator.Runtime;Lumina;Lumina.Excel;Serilog;Newtonsoft.Json;System.Reactive">
       <HintPath>$(DalamudLibPath)%(Identity).dll</HintPath>
       <Private>true</Private>

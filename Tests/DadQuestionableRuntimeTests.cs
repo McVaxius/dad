@@ -21,6 +21,132 @@ public sealed class DadQuestionableRuntimeTests
     private const BindingFlags PrivateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
     private static readonly Type WrapperType = CreateWrapperType();
 
+    [Fact]
+    public void FrenRiderActivationWaitsForQuestionableSettingsToBeApplied()
+    {
+        var pluginType = typeof(DutyIpc).Assembly.GetType("dad.Plugin")!;
+        var commandProperty = pluginType.GetProperty("CommandManager")!;
+        var previous = commandProperty.GetValue(null);
+        var calls = new List<string>();
+        try
+        {
+            commandProperty.SetValue(null, Proxy<ICommandManager>((method, args) =>
+            {
+                Assert.Equal("ProcessCommand", method.Name);
+                calls.Add((string)args![0]!);
+                return true;
+            }));
+            var config = new DadRuntime::dad.Configuration();
+            var combat = new DadRuntime::dad.Services.DadCombatRotationService(config,
+                Proxy<IDalamudPluginInterface>((method, _) => method.Name == "GetIpcSubscriber"
+                    ? Proxy(method.ReturnType, (_, _) => null) : null), Proxy<IPluginLog>((_, _) => null));
+            var gate = combat.GetType().GetProperty("QuestionableDutySettingsGate", PrivateInstance)!;
+            var accepted = false;
+            gate.SetValue(combat, (Func<bool>)(() => { calls.Add("apply-settings"); return accepted; }));
+            var mode = DadRuntime::dad.DadCombatRotationMode.UseFrenRider;
+            Assert.False(combat.TryApplyDutySupportEntryMode(mode, "blocked-run", out _, out _));
+            Assert.Equal(new[] { "apply-settings" }, calls);
+            accepted = true;
+            Assert.True(combat.TryApplyDutySupportEntryMode(mode, "accepted-run", out _, out _));
+            Assert.Equal(new[] { "apply-settings", "apply-settings", "/fr on" }, calls);
+        }
+        finally { commandProperty.SetValue(null, previous); }
+    }
+
+    [Fact]
+    public void QuestionableDutySettingsAreOwnedIdempotentAndReappliedAfterReload()
+    {
+        var calls = new List<(string Endpoint, object?[] Values)>();
+        var accepted = true;
+        var unavailable = false;
+        var enabled = true;
+        var useFrenRider = true;
+        ulong characterId = 1;
+        var pi = Proxy<IDalamudPluginInterface>((method, args) => method.Name == "GetIpcSubscriber"
+            ? Proxy(method.ReturnType, (call, values) =>
+            {
+                Assert.Equal("InvokeFunc", call.Name);
+                calls.Add(((string)args![0]!, values!));
+                if (unavailable) throw new InvalidOperationException("provider unloaded");
+                return accepted;
+            }) : null);
+        using var bridge = new Bridge(pi, Proxy<IFramework>((_, _) => null), null!, Proxy<IPluginLog>((_, _) => null),
+            () => enabled, useFrenRider: () => useFrenRider, currentCharacterId: () => characterId);
+        bool Maintain(bool patched = true, bool running = true)
+            => (bool)Invoke(bridge, "MaintainFrenRiderDutySettings", patched, running)!;
+        string RunId() => (string)calls.Last().Values[0]!;
+
+        Assert.True(Maintain(patched: false));
+        Assert.True(Maintain(running: false));
+        useFrenRider = false;
+        Assert.True(Maintain());
+        useFrenRider = true;
+        characterId = 0;
+        Assert.True(Maintain());
+        Assert.Empty(calls);
+        characterId = 1;
+        Assert.True(Maintain());
+        Assert.Equal("FrenRider.Dad.ApplyQuestionableDutySettings", calls.Last().Endpoint);
+        var runId = RunId();
+        using (var json = JsonDocument.Parse((string)calls.Last().Values[1]!))
+        {
+            Assert.Equal(10, json.RootElement.EnumerateObject().Count());
+            Assert.True(json.RootElement.GetProperty("AdsSoloEnabled").GetBoolean());
+            Assert.Equal(0, json.RootElement.GetProperty("AdsSoloMaturityThreshold").GetInt32());
+            Assert.Equal(10, json.RootElement.GetProperty("AdsSoloHandoffDelaySeconds").GetInt32());
+            Assert.True(json.RootElement.GetProperty("AdsFourManEnabled").GetBoolean());
+            Assert.Equal(0, json.RootElement.GetProperty("AdsFourManMaturityThreshold").GetInt32());
+            Assert.Equal(2, json.RootElement.GetProperty("AdsFourManHandoffDelaySeconds").GetInt32());
+            Assert.True(json.RootElement.GetProperty("UseAdsLeaveAfterAdsDuty").GetBoolean());
+            Assert.False(json.RootElement.GetProperty("ExitAfterDutyEnds").GetBoolean());
+            Assert.False(json.RootElement.GetProperty("LeaveWhenAllLeft").GetBoolean());
+            Assert.Equal(20, json.RootElement.GetProperty("ExitAfterDutySeconds").GetInt32());
+        }
+        Assert.True(Maintain());
+        Assert.Equal(runId, RunId());
+        unavailable = true;
+        Assert.False(Maintain());
+        Assert.Contains("provider unloaded", bridge.GetStatus().LastBlocker);
+        unavailable = false; // Reloaded provider: same qualifying Questionable run.
+        Assert.True(Maintain());
+        Assert.Equal(runId, RunId());
+        Assert.Empty(bridge.GetStatus().LastBlocker);
+        accepted = false;
+        Assert.False(Maintain());
+        Assert.Contains("rejected", bridge.GetStatus().LastBlocker);
+        Assert.False(Maintain(running: false)); // Rejected release retains ownership for cleanup.
+        accepted = true;
+        Assert.True(Maintain(running: false));
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls.Last().Endpoint);
+        Assert.Equal(runId, RunId());
+        var count = calls.Count;
+        Assert.True(Maintain(running: false));
+        Assert.Equal(count, calls.Count);
+        Assert.True(Maintain());
+        Assert.NotEqual(runId, RunId());
+        characterId = 2;
+        Assert.True(Maintain());
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls[^2].Endpoint);
+        characterId = 0;
+        Assert.True(Maintain());
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls.Last().Endpoint);
+        characterId = 2;
+        Assert.True(Maintain());
+        enabled = false;
+        Assert.True(Maintain());
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls.Last().Endpoint);
+        enabled = true;
+        Assert.True(Maintain());
+        Assert.True(Maintain(patched: false));
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls.Last().Endpoint);
+        Assert.True(Maintain());
+        bridge.Dispose();
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls.Last().Endpoint);
+        count = calls.Count;
+        Assert.True(Maintain());
+        Assert.Equal(count, calls.Count); // Unloaded DAD cannot acquire again.
+    }
+
     private unsafe delegate int ReadSelectedRegularDuty(AgentContentsFinder* agent);
 
     [Fact]

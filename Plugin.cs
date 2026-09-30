@@ -561,7 +561,10 @@ public sealed class Plugin : IDalamudPlugin
                 Title = PluginInfo.DisplayName,
                 Content = message,
                 InitialDuration = TimeSpan.FromSeconds(10),
-            }));
+            }),
+            () => Configuration.CombatRotationMode == DadCombatRotationMode.UseFrenRider,
+            () => ClientState.IsLoggedIn ? PlayerState.ContentId : 0);
+        CombatRotationService.QuestionableDutySettingsGate = QuestionableBridge.EnsureFrenRiderDutySettings;
         DutyIpcService.QuestionableBridgeStatusProvider = QuestionableBridge.GetStatus;
 
         Log.Information("[dad] Plugin loaded.");

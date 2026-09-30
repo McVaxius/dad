@@ -73,6 +73,17 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     private PatchOwnership? ownership;
     private CosmeticPatchOwnership? cosmeticOwnership;
     private readonly DadQuestionableRuntimeWarningGate runtimeWarningGate = new();
+    internal const string ApplyDutySettingsEndpoint = "FrenRider.Dad.ApplyQuestionableDutySettings";
+    internal const string ReleaseDutySettingsEndpoint = "FrenRider.Dad.ReleaseQuestionableDutySettings";
+    internal const string DutySettingsJson = """{"AdsSoloEnabled":true,"AdsSoloMaturityThreshold":0,"AdsSoloHandoffDelaySeconds":10,"AdsFourManEnabled":true,"AdsFourManMaturityThreshold":0,"AdsFourManHandoffDelaySeconds":2,"UseAdsLeaveAfterAdsDuty":true,"ExitAfterDutyEnds":false,"LeaveWhenAllLeft":false,"ExitAfterDutySeconds":20}""";
+    private readonly Func<bool> useFrenRider;
+    private readonly Func<ulong> currentCharacterId;
+    private string? dutySettingsRunId;
+    private ulong dutySettingsCharacterId;
+    private bool dutySettingsApplied;
+    private string dutySettingsBlocker = string.Empty;
+    private string lastLoggedDutySettingsBlocker = string.Empty;
+    private bool disposed;
 
     private sealed class SubscriberTarget
     {
@@ -144,13 +155,17 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         DadDutyIpcService dutyIpcService,
         IPluginLog log,
         Func<bool> isEnabled,
-        Action<string>? runtimeIncompatibilityWarning = null)
+        Action<string>? runtimeIncompatibilityWarning = null,
+        Func<bool>? useFrenRider = null,
+        Func<ulong>? currentCharacterId = null)
     {
         this.pluginInterface = pluginInterface;
         this.framework = framework;
         this.dutyIpcService = dutyIpcService;
         this.log = log;
         this.isEnabled = isEnabled;
+        this.useFrenRider = useFrenRider ?? (() => false);
+        this.currentCharacterId = currentCharacterId ?? (() => 0);
         this.runtimeIncompatibilityWarning = runtimeIncompatibilityWarning ?? (_ => { });
 
         pluginInterface.ActivePluginsChanged += OnActivePluginsChanged;
@@ -161,10 +176,18 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         => status.Clone();
 
     public void ResetCharacterLoadWarning()
-        => runtimeWarningGate.Reset();
+    {
+        runtimeWarningGate.Reset();
+        MaintainFrenRiderDutySettings(false, false);
+        probeRequested = true;
+    }
 
     public void Dispose()
     {
+        if (disposed)
+            return;
+        disposed = true;
+        MaintainFrenRiderDutySettings(false, false);
         framework.Update -= OnFrameworkUpdate;
         pluginInterface.ActivePluginsChanged -= OnActivePluginsChanged;
         for (var attempt = 0; attempt < 3 && cosmeticOwnership != null; attempt++)
@@ -175,7 +198,8 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
     private void OnActivePluginsChanged(IActivePluginsChangedEventArgs args)
     {
-        if (args.AffectedInternalNames.Any(IsQuestionableName))
+        if (args.AffectedInternalNames.Any(name => IsQuestionableName(name) ||
+            string.Equals(name, "FrenRider", StringComparison.OrdinalIgnoreCase)))
         {
             probeRequested = true;
         }
@@ -199,6 +223,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         // Review M19: operator opt-out — restore any owned patches and stop maintaining the bridge.
         if (!isEnabled())
         {
+            MaintainFrenRiderDutySettings(false, false);
             RestoreOwnedCosmeticValue();
             RestoreOwnedValues();
             status.Patched = false;
@@ -209,7 +234,61 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         }
 
         MaintainRuntimeBridge();
+        MaintainFrenRiderDutySettings(status.Patched, status.QuestionableRunning);
         MaintainCosmeticPatch();
+    }
+
+    internal bool EnsureFrenRiderDutySettings()
+    {
+        MaintainBridge();
+        return string.IsNullOrEmpty(dutySettingsBlocker) &&
+               (!(isEnabled() && useFrenRider() && status.Patched && status.QuestionableRunning) || dutySettingsApplied);
+    }
+
+    // Headless tests substitute reflection/running observations at this boundary;
+    // IPC ownership, application and cleanup below remain production code.
+    internal bool MaintainFrenRiderDutySettings(bool patched, bool running)
+    {
+        var characterId = currentCharacterId();
+        var qualifies = !disposed && isEnabled() && useFrenRider() && patched && running && characterId != 0;
+        try
+        {
+            if (dutySettingsRunId != null && (!qualifies || characterId != dutySettingsCharacterId))
+            {
+                if (!pluginInterface.GetIpcSubscriber<string, bool>(ReleaseDutySettingsEndpoint).InvokeFunc(dutySettingsRunId))
+                    throw new InvalidOperationException($"{ReleaseDutySettingsEndpoint} rejected the owning run.");
+                dutySettingsRunId = null;
+                dutySettingsApplied = false;
+            }
+
+            if (qualifies)
+            {
+                dutySettingsRunId ??= Guid.NewGuid().ToString("N");
+                dutySettingsCharacterId = characterId;
+                dutySettingsApplied = pluginInterface.GetIpcSubscriber<string, string, bool>(ApplyDutySettingsEndpoint)
+                    .InvokeFunc(dutySettingsRunId, DutySettingsJson);
+                if (!dutySettingsApplied)
+                    throw new InvalidOperationException($"{ApplyDutySettingsEndpoint} rejected the Questionable duty settings.");
+            }
+
+            if (status.LastBlocker == dutySettingsBlocker)
+                status.LastBlocker = string.Empty;
+            dutySettingsBlocker = string.Empty;
+            lastLoggedDutySettingsBlocker = string.Empty;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            dutySettingsApplied = false;
+            dutySettingsBlocker = $"FrenRider Questionable settings unavailable: {FormatException(ex)}";
+            status.LastBlocker = dutySettingsBlocker;
+            if (!string.Equals(lastLoggedDutySettingsBlocker, dutySettingsBlocker, StringComparison.Ordinal))
+            {
+                lastLoggedDutySettingsBlocker = dutySettingsBlocker;
+                log.Warning(ex, "[dad][QuestionableBridge] {Blocker}", dutySettingsBlocker);
+            }
+            return false;
+        }
     }
 
     private unsafe void MaintainRuntimeBridge()

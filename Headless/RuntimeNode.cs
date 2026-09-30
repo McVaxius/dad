@@ -76,6 +76,18 @@ internal sealed class RuntimeNode : IDisposable
     private readonly DadSchedulerService scheduler;
     private readonly DadPresetProviderService presets;
     private readonly DadDutyIpcService dutyIpc;
+    private readonly DadQuestionableReflectionBridge questionableBridge;
+    private bool questionablePatched;
+    private bool questionableRunning;
+    private readonly FrenRider.Services.QuestionableDutySettingsOverride questionableSettings = new();
+    private readonly FrenRider.Models.CharacterConfig savedFrenRiderConfig = new()
+    {
+        AdsDutyFamilySettingsMigrated = true,
+        AdsSoloEnabled = false, AdsSoloMaturityThreshold = 3, AdsSoloHandoffDelaySeconds = 120,
+        AdsFourManEnabled = false, AdsFourManMaturityThreshold = 3, AdsFourManHandoffDelaySeconds = 120,
+    };
+    private string? questionableSettingsOwner;
+    private string? questionableSettingsJson;
     private readonly Dictionary<string, Delegate> ipcProviders = [];
     private int equippedItemLevel = 100;
     private bool equippedInventoryLoaded = true;
@@ -303,6 +315,10 @@ internal sealed class RuntimeNode : IDisposable
             autoParty.Service.ConfigureOwnerStop(_ => coordinator.CancelActiveRun());
             scheduler.ConfigureAutoPartyAuthorizationGate(autoParty.Service.EvaluateSchedulerAuthorization);
         }
+        questionableBridge = new(Plugin.PluginInterface, ExternalProxy.Create<IFramework>((_, _) => null), dutyIpc, log,
+            () => configuration.QuestionableBridgeEnabled, useFrenRider: () => configuration.CombatRotationMode == DadCombatRotationMode.UseFrenRider,
+            currentCharacterId: () => character.ContentId);
+        combat.QuestionableDutySettingsGate = () => questionableBridge.MaintainFrenRiderDutySettings(questionablePatched, questionableRunning);
         cleanup = new(configuration, scheduler, coordinator, wake, claims, worker, queue, presence, log,
             _ => { }, autoParty?.Service, allianceService, dutyIpc.Cancel);
         transport.ConfigureStopAllHandler(cleanup.RunLocalLifecycleCleanup);
@@ -469,13 +485,23 @@ internal sealed class RuntimeNode : IDisposable
                 Plugin.PluginInterface.GetIpcSubscriber<string, string, object>(DadDutyIpcContract.SetConfig)
                     .InvokeAction(command.GetProperty("key").GetString()!, command.GetProperty("value").GetString()!);
                 break;
+            case "questionable-observe":
+                questionablePatched = command.GetProperty("patched").GetBoolean();
+                questionableRunning = command.GetProperty("running").GetBoolean();
+                questionableBridge.MaintainFrenRiderDutySettings(questionablePatched, questionableRunning);
+                break;
+            case "frenrider-reload":
+                questionableSettings.Clear();
+                events.Enqueue("ipc:FrenRider:reload");
+                questionableBridge.MaintainFrenRiderDutySettings(questionablePatched, questionableRunning);
+                break;
             case "duty-start":
                 Plugin.PluginInterface.GetIpcSubscriber<bool, object>(DadDutyIpcContract.Start).InvokeAction(true);
                 break;
             case "duty-stop":
                 Plugin.PluginInterface.GetIpcSubscriber<object>(DadDutyIpcContract.Stop).InvokeAction();
                 break;
-            case "duty-unload": dutyIpc.Dispose(); break;
+            case "duty-unload": questionableBridge.Dispose(); dutyIpc.Dispose(); break;
             case "start":
                 var request = DadIpcJson.Deserialize<DadRunRequest>(command.GetProperty("request").GetRawText())!;
                 // Runtime-only opaque identities are normally supplied by the planner UI;
@@ -555,6 +581,17 @@ internal sealed class RuntimeNode : IDisposable
         scheduler = scheduler.CurrentState, schedule = configuration.ActiveScheduleRun, wake = wake.GetActiveStatus(), stopAll = transport.LatestStopAllStatus,
         dutyIpc = dutyIpc.GetStatus(), dutyStopped = !ipcProviders.ContainsKey(DadDutyIpcContract.IsStopped) ||
             Plugin.PluginInterface.GetIpcSubscriber<bool>(DadDutyIpcContract.IsStopped).InvokeFunc(), savedPresetCount = configuration.PlannerGroups.Count,
+        questionableSettings = new
+        {
+            owner = questionableSettingsOwner, json = questionableSettingsJson,
+            solo = questionableSettings.Resolve(savedFrenRiderConfig, FrenRider.Models.AdsDutyCategory.Solo, character.CharacterKey),
+            fourMan = questionableSettings.Resolve(savedFrenRiderConfig, FrenRider.Models.AdsDutyCategory.FourMan, character.CharacterKey),
+            savedSolo = savedFrenRiderConfig.GetAdsDutyFamilySettings(FrenRider.Models.AdsDutyCategory.Solo),
+            savedFourMan = savedFrenRiderConfig.GetAdsDutyFamilySettings(FrenRider.Models.AdsDutyCategory.FourMan),
+            exit = questionableSettings.ResolveExit(savedFrenRiderConfig, character.CharacterKey),
+            savedExit = FrenRider.Models.DutyExitSettings.FromConfig(savedFrenRiderConfig),
+            blocker = questionableBridge.GetStatus().LastBlocker,
+        },
         partyMembers = party.Members,
         currentJobId = character.CurrentJobId,
         peers = transport.CurrentTransport.KnownParticipants, polls, events = Drain(events), unexpected = unexpected.ToArray(),
@@ -717,6 +754,23 @@ internal sealed class RuntimeNode : IDisposable
                     return helpers.Invoke(endpoint, values);
                 if (call.Name == "InvokeFunc" && endpoint.StartsWith("FrenRider.Dad.", StringComparison.Ordinal))
                 {
+                    if (endpoint == DadQuestionableReflectionBridge.ApplyDutySettingsEndpoint)
+                    {
+                        var accepted = questionableSettings.Apply((string)values[0]!, (string)values[1]!, character.CharacterKey);
+                        if (accepted)
+                        {
+                            questionableSettingsOwner = (string)values[0]!;
+                            questionableSettingsJson = (string)values[1]!;
+                            events.Enqueue("ipc:FrenRider:questionable-apply");
+                        }
+                        return accepted;
+                    }
+                    if (endpoint == DadQuestionableReflectionBridge.ReleaseDutySettingsEndpoint)
+                    {
+                        var accepted = questionableSettings.Release((string)values[0]!);
+                        if (accepted) events.Enqueue("ipc:FrenRider:questionable-release");
+                        return accepted;
+                    }
                     try { return profileIpc.Invoke(endpoint, values); }
                     catch (Exception ex) { throw Unexpected($"ipc:{endpoint}:{ex.Message}"); }
                 }
@@ -773,6 +827,7 @@ internal sealed class RuntimeNode : IDisposable
     {
         if (shutdownApplied) return;
         shutdownApplied = true;
+        questionableBridge.Dispose();
         cleanup.RunLocalLifecycleCleanup(new DadStopAllRequest { OperationId = "lab-shutdown", Reason = "Synthetic shutdown" });
         dutyIpc.Dispose();
         persistence.ForceFlush();

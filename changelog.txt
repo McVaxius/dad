@@ -1,5 +1,10 @@
 # dad — changelog
 
+## 2026-09-30 - Temporary Questionable FrenRider duty settings (local-only, unpublished)
+- In Use FrenRider mode, a running, successfully patched Questionable/WigglyQuest session temporarily enables Solo and 4-man ADS handoff at maturity 0, with continuous-ready delays of 10 and 2 seconds. It also selects ADS Exit Method, disables both local exit choices and uses a 20-second duty-end delay, matching the selected FTP5 profile. The bridge applies these ten values through owned IPC before /fr on; unavailable or rejected IPC appears in its existing blocker status.
+- Release the override on quest stop, bridge disable/loss, character change/logout or plugin unload, and reapply the same run after FrenRider reload while Questionable remains active. Saved FrenRider profiles, other duty families and ADS readiness/ownership rules are preserved.
+- Extended focused runtime tests and the existing Questionable FrenRider/cancel/unload lifecycle scenarios. Versions are unchanged; no deployment or client-setting edits.
+
 ## 2026-09-26 - I429 reconnect-window address editing (local-only, unpublished)
 - Added an expandable Edit Coordinator address section to the DAD Client reconnect window, reusing the existing host/IP and port editor with Apply and Revert actions. Applying saves the endpoint and restarts the connection through the existing settings path.
 
