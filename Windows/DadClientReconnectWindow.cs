@@ -67,6 +67,10 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
         if (transport.LastConnectedUtc.HasValue)
             DadUi.KeyValue("Last connected", transport.LastConnectedUtc.Value.ToLocalTime().ToString("G"), 120f);
 
+        ImGui.Spacing();
+        ImGui.TextWrapped("If the IP, port, and shared secret are correct, please disable and re-enable DAD on the Coordinator.");
+        ImGui.Spacing();
+
         if (ImGui.CollapsingHeader("Edit Coordinator address"))
             connectionEditor.DrawEndpointFields(plugin.Configuration, "dad-reconnect-connection", showApplyActions: true, compact: true);
 
