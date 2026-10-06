@@ -13,6 +13,7 @@ public sealed class DadPlannerDutyOption
     public int ItemLevelSync { get; set; }
     public bool FixedItemLevelSync { get; set; }
     public bool AllowUndersized { get; set; }
+    public bool IsInDutyFinder { get; set; } = true;
     public bool SupportsDutySupport { get; set; }
     public bool SupportsTrust { get; set; }
     public bool IsHighEndDuty { get; set; }

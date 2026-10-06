@@ -1,3 +1,4 @@
+using AethertekUI.Dalamud;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -8,6 +9,7 @@ namespace dad.Windows;
 
 public sealed class DadDependenciesWindow : Window, IDisposable
 {
+    private readonly MaterialWindowMotion motion = new();
     private static readonly Vector2 MinimumWindowSize = new(520f, 420f);
     private readonly Plugin plugin;
     private Vector2? pendingPosition;
@@ -55,8 +57,14 @@ public sealed class DadDependenciesWindow : Window, IDisposable
             plugin.DependencyService.Snapshot);
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
         ApplyPendingPositionChange();
         var snapshot = plugin.DependencyService.Snapshot;
 
@@ -64,7 +72,7 @@ public sealed class DadDependenciesWindow : Window, IDisposable
         ImGui.Spacing();
         DadUi.Badge("New work paused", DadUiTone.Warning);
         ImGui.SameLine();
-        ImGui.TextWrapped("Active work keeps running. DAD never cancels a run because dependency truth changes.");
+        UiGui.TextWrapped("Active work keeps running. DAD never cancels a run because dependency truth changes.");
         ImGui.Spacing();
 
         foreach (var entry in snapshot.Entries)
@@ -78,7 +86,7 @@ public sealed class DadDependenciesWindow : Window, IDisposable
             };
             DadUi.Badge(FormatState(entry.State), tone);
             ImGui.SameLine();
-            ImGui.TextWrapped(entry.OperatorSummary);
+            UiGui.TextWrapped(entry.OperatorSummary);
 
             if (entry.State is DadDependencyState.Missing or DadDependencyState.InstalledNotLoaded or DadDependencyState.UpdateRequired)
                 DrawInstallerActions(entry);

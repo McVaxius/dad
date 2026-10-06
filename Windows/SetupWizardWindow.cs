@@ -1,3 +1,5 @@
+using AethertekUI;
+using AethertekUI.Dalamud;
 using System.Globalization;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -14,6 +16,7 @@ namespace dad.Windows;
 /// </summary>
 public sealed class SetupWizardWindow : Window, IDisposable
 {
+    private readonly MaterialWindowMotion motion = new();
     private static readonly Vector2 MinimumWindowSize = new(760f, 600f);
     private readonly Plugin plugin;
     private readonly DadConnectionEditor connectionEditor;
@@ -36,6 +39,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private DadPresetPlannerOptions presetPlannerDraft = new();
     private string presetDutySearch = string.Empty;
+    private bool resetPresetDutySearchInput;
     private string presetName = string.Empty;
     private bool presetCreateNew;
     private DadPlannerGroup? presetCrewDraft;
@@ -144,8 +148,14 @@ public sealed class SetupWizardWindow : Window, IDisposable
         currentStepId = DadDebugUiRules.ResolveVisibleCrewStep(currentStepId, plugin.Configuration.DebugUiEnabled);
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
         ApplyPendingPositionChange();
         if (flow == DadGuideFlow.Landing)
         {
@@ -193,23 +203,23 @@ public sealed class SetupWizardWindow : Window, IDisposable
     private void DrawLanding()
     {
         DadUi.Heading("DAD GUIDE", "Choose the job you are trying to finish. Each guide edits the real DAD setup and reports live readiness.");
-        ImGui.TextWrapped("DAD coordinates characters, saved presets, connected-client wake/relog, party assembly, and scheduled runs. It waits for a missing game client to be started manually.");
+        UiGui.TextWrapped("DAD coordinates characters, saved presets, connected-client wake/relog, party assembly, and scheduled runs. It waits for a missing game client to be started manually.");
         if (!string.IsNullOrWhiteSpace(roleRestrictionMessage))
         {
             DadUi.Badge("Connection role is already configured", DadUiTone.Warning);
-            ImGui.TextWrapped(roleRestrictionMessage);
+            UiGui.TextWrapped(roleRestrictionMessage);
         }
         ImGui.Spacing();
 
         DadUi.Section("Quick start", "Save and Next saves each step. Back keeps completed work; Finish completes the guide.");
-        ImGui.TextWrapped("1. Setup: Use Name this DAD, then Set up a Coordinator on one instance and Connect a Client on the others. Match the endpoint and LAN shared secret. Use Build the Crew to refresh the roster, assign account ownership, and resolve stale rows.");
+        UiGui.TextWrapped("1. Setup: Use Name this DAD, then Set up a Coordinator on one instance and Connect a Client on the others. Match the endpoint and LAN shared secret. Use Build the Crew to refresh the roster, assign account ownership, and resolve stale rows.");
         ImGui.Spacing();
-        ImGui.TextWrapped("2. Presets: To edit, use Plan below to select the existing preset before opening Create a Preset; leave Create a new preset unchecked. Check it only when creating a new preset. Choose the activity, name, crew, and stop/finish rules, then validate.");
+        UiGui.TextWrapped("2. Presets: To edit, use Plan below to select the existing preset before opening Create a Preset; leave Create a new preset unchecked. Check it only when creating a new preset. Choose the activity, name, crew, and stop/finish rules, then validate.");
         ImGui.Spacing();
-        ImGui.TextWrapped("3. Schedules: Open Build a Schedule. Leave Create a new schedule unchecked to choose an Existing schedule, or check it to create one. Arrange saved presets and repeat counts, choose the cadence, then resolve blockers and use Run dry-run to validate.");
+        UiGui.TextWrapped("3. Schedules: Open Build a Schedule. Leave Create a new schedule unchecked to choose an Existing schedule, or check it to create one. Arrange saved presets and repeat counts, choose the cadence, then resolve blockers and use Run dry-run to validate.");
         ImGui.Spacing();
-        ImGui.TextWrapped("4. Shopping: Open Shopping List Wizard above the /dad tabs, use Add shopping list or Edit shopping list beside a saved preset or schedule, or use /dad shopping. Choose the destination, ADS list, exact shopper and optional actions, then review and Save shopping list. ARR Zodiac and HW Anima Poetics orders are supplied by ADS. Targeted refill maintains ownership thresholds; Spend until currency/capacity follows repeat rules; Fill order over multiple runs remembers credited quantities until fulfilled. Shopping Next and Back keep an unsaved draft; cancel discards it. Preview only uses this client's current character and never purchases items.");
-        if (ImGui.Button("Shopping List Wizard"))
+        UiGui.TextWrapped("4. Shopping: Open Shopping List Wizard above the /dad tabs, use Add shopping list or Edit shopping list beside a saved preset or schedule, or use /dad shopping. Choose the destination, ADS list, exact shopper and optional actions, then review and Save shopping list. ARR Zodiac and HW Anima Poetics orders are supplied by ADS. Targeted refill maintains ownership thresholds; Spend until currency/capacity follows repeat rules; Fill order over multiple runs remembers credited quantities until fulfilled. Shopping Next and Back keep an unsaved draft; cancel discards it. Preview only uses this client's current character and never purchases items.");
+        if (UiGui.Button("Shopping List Wizard"))
             plugin.OpenShoppingWizard();
         ImGui.Spacing();
 
@@ -238,11 +248,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
                         progress.Ready ? "Ready" : $"{progress.Complete}/{progress.Total} ready",
                         progress.Ready ? DadUiTone.Success : DadUiTone.Warning);
                     DadUi.Heading(progress.Title, FlowSummary(candidate));
-                    ImGui.TextWrapped(progress.Ready ? "Review or change this setup." : $"Next: {progress.NextAction}");
+                    UiGui.TextWrapped(progress.Ready ? "Review or change this setup." : UiText.F("Next: {0}", UiText.T(progress.NextAction)));
                     if (DadUi.Button($"Open guide##dad-guide-open-{candidate}", DadUiTone.Accent))
                         OpenFlow(candidate);
                     if (restricted && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                        ImGui.SetTooltip(restriction);
+                        UiGui.SetTooltip(restriction);
                     DadUi.EndCard();
                 }
                 ImGui.EndDisabled();
@@ -269,7 +279,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private void DrawStepRail(IReadOnlyList<GuideStep> steps)
     {
-        ImGui.TextDisabled("WORKFLOW");
+        UiGui.TextDisabled("WORKFLOW");
         ImGui.Separator();
         for (var index = 0; index < steps.Count; index++)
         {
@@ -279,12 +289,12 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 : index == stepIndex
                     ? DadUiTone.Accent
                     : DadUiTone.Neutral;
-            DadUi.Badge($"{index + 1}. {steps[index].Title}", tone);
-            ImGui.TextDisabled(state);
+            DadUi.Badge($"{index + 1}. {UiText.T(steps[index].Title)}", tone);
+            UiGui.TextDisabled(state);
             if (index <= furthestStep && index != stepIndex)
             {
                 ImGui.SameLine();
-                if (ImGui.SmallButton($"Open##dad-guide-step-{index}"))
+                if (UiGui.SmallButton($"Open##dad-guide-step-{index}"))
                 {
                     stepIndex = index;
                     currentStepId = steps[index].Id;
@@ -297,7 +307,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private void DrawStep(GuideStep step, IReadOnlyList<GuideStep> steps)
     {
-        DadUi.Heading($"{stepIndex + 1}. {step.Title}", step.Controls);
+        DadUi.Heading($"{stepIndex + 1}. {UiText.T(step.Title)}", step.Controls);
         if (DadUi.BeginCard("dad-guide-explanation", 138f))
         {
             DadUi.KeyValue("What it controls", step.Controls, 132f);
@@ -313,7 +323,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         {
             ImGui.Spacing();
             DadUi.Badge("Cannot continue yet", DadUiTone.Danger);
-            ImGui.TextWrapped(validationMessage);
+            UiGui.TextWrapped(validationMessage);
         }
 
         ImGui.Spacing();
@@ -442,7 +452,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("Reciprocal pairings", $"{status.ActivePairingCount} active | {status.OnlinePairingCount} online");
         DrawStatusRow("Private directory", status.DirectoryState);
         DrawStatusRow("Exact formation", $"{status.ExactFormationPhase} | {status.ExactFormationSummary}");
-        ImGui.TextWrapped("Use two participating owners with compatible versions, access to the configured Discord server, bot DMs enabled, and characters able to party together. Owner Stop immediately vetoes local work; it is separate from normal Disband party cleanup.");
+        UiGui.TextWrapped("Use two participating owners with compatible versions, access to the configured Discord server, bot DMs enabled, and characters able to party together. Owner Stop immediately vetoes local work; it is separate from normal Disband party cleanup.");
         if (DadUi.Button("Open AutoParty at this step", DadUiTone.Accent))
             OpenAutoPartyGuideSection();
 
@@ -453,11 +463,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 plugin.TryStartPairedDirectoryRefresh();
             ImGui.EndDisabled();
             if (status.DirectoryRefreshCooldownRemaining > TimeSpan.Zero)
-                ImGui.TextDisabled($"Normal refresh cooldown: {Math.Ceiling(status.DirectoryRefreshCooldownRemaining.TotalSeconds):0}s remaining.");
+                UiGui.TextDisabled($"Normal refresh cooldown: {Math.Ceiling(status.DirectoryRefreshCooldownRemaining.TotalSeconds):0}s remaining.");
         }
         else if (stepIndex == 5)
         {
-            ImGui.TextWrapped(status.CanGuardedDisband
+            UiGui.TextWrapped(status.CanGuardedDisband
                 ? "The held formation is ready. Use Party > Disband party, then verify cleanup on both clients."
                 : status.GuardedDisbandBlocker);
         }
@@ -490,9 +500,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         var accountId = plugin.Configuration.ClientAccountId?.Trim() ?? string.Empty;
         DrawStatusRow("Immutable account ID", FormatText(accountId, "(missing)"));
-        ImGui.TextWrapped("This ID is permanent for this DAD installation. Only the friendly name below changes.");
+        UiGui.TextWrapped("This ID is permanent for this DAD installation. Only the friendly name below changes.");
         ImGui.SetNextItemWidth(MathF.Min(480f, ImGui.GetContentRegionAvail().X));
-        ImGui.InputText("DAD name", ref nameDadAliasDraft, 96);
+        UiGui.InputText("DAD name", ref nameDadAliasDraft, 96);
     }
 
     private void SynchronizeStepSelection(IReadOnlyList<GuideStep> steps)
@@ -778,22 +788,22 @@ public sealed class SetupWizardWindow : Window, IDisposable
         {
             case 0:
                 EnsureBasicsDraft();
-                ImGui.Checkbox("DAD enabled", ref draftPluginEnabled);
-                ImGui.Checkbox("Allow DAD to automate this character", ref draftProfileEnabled);
-                ImGui.TextDisabled("These drafts are applied together when you choose Save and Next.");
+                UiGui.Checkbox("DAD enabled", ref draftPluginEnabled);
+                UiGui.Checkbox("Allow DAD to automate this character", ref draftProfileEnabled);
+                UiGui.TextDisabled("These drafts are applied together when you choose Save and Next.");
                 break;
             case 1:
                 DrawAccountSelector();
                 break;
             case 2:
                 DadUi.Badge(coordinator ? "Coordinator" : "Client", DadUiTone.Info);
-                ImGui.TextWrapped(coordinator
+                UiGui.TextWrapped(coordinator
                     ? "This instance will listen for Clients, own saved schedule execution, assemble parties, and dispatch work."
                     : "This instance will connect to the Coordinator and accept only authenticated work for its owned characters.");
-                ImGui.TextDisabled("The role is applied through DAD's reconnect-safe role setter on Next.");
+                UiGui.TextDisabled("The role is applied through DAD's reconnect-safe role setter on Next.");
                 break;
             case 3:
-                ImGui.TextWrapped(coordinator
+                UiGui.TextWrapped(coordinator
                     ? "Use 127.0.0.1 when all game clients run on this PC. Use a listed LAN interface when Clients run on another PC."
                     : "Enter the exact Coordinator address. Use 127.0.0.1 only when the Coordinator is on this PC.");
                 connectionEditor.DrawEndpointFields(configuration, $"dad-guide-{flow}", showApplyActions: false, compact: true);
@@ -801,10 +811,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 connectionEditor.DrawSharedSecretFields(configuration, $"dad-guide-{flow}", showApplyActions: false, showGenerateAndCopy: false);
                 if (coordinator)
                 {
-                    if (ImGui.Button("Generate secret draft"))
+                    if (UiGui.Button("Generate secret draft"))
                         connectionEditor.GenerateDraftSharedSecret();
                     ImGui.SameLine();
-                    ImGui.TextDisabled("The generated value is not applied until Next.");
+                    UiGui.TextDisabled("The generated value is not applied until Next.");
                 }
                 DrawStatusRow("Draft endpoint", connectionEditor.DraftEndpoint);
                 DrawStatusRow("Draft security", connectionEditor.DraftRequiresSharedSecret
@@ -829,10 +839,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     if (!string.IsNullOrWhiteSpace(transport.LastAuthOrProtocolError))
                         DrawStatusRow("Authentication/protocol", transport.LastAuthOrProtocolError);
                 }
-                if (ImGui.Button("Refresh local roster"))
+                if (UiGui.Button("Refresh local roster"))
                     plugin.RefreshCharacterPoolFromShell();
                 ImGui.SameLine();
-                if (ImGui.Button("Refresh connected roster"))
+                if (UiGui.Button("Refresh connected roster"))
                     plugin.RequestPeerSnapshotsFromShell();
                 break;
             default:
@@ -842,7 +852,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 DrawStatusRow("Role", configuration.RunAsServerDad ? "Coordinator" : "Client");
                 DrawStatusRow("Endpoint", FormatText(transport.ConfiguredEndpoint, "(none)"));
                 DrawStatusRow("Connection", FormatText(transport.ConnectionStatus, transport.Availability));
-                DrawStatusRow("Readiness", progress.Ready ? "Ready" : $"{progress.Complete}/{progress.Total}: {progress.NextAction}");
+                DrawStatusRow("Readiness", progress.Ready ? "Ready" : UiText.F("{0}/{1}: {2}", progress.Complete, progress.Total, UiText.T(progress.NextAction)));
                 break;
         }
     }
@@ -852,16 +862,16 @@ public sealed class SetupWizardWindow : Window, IDisposable
         switch (stepIndex)
         {
             case 0:
-                DrawPresetActivityEditor();
+                DrawPresetActivityEditor(plugin.PresetProviderService);
                 break;
             case 1:
-                ImGui.Checkbox("Create a new preset", ref presetCreateNew);
+                UiGui.Checkbox("Create a new preset", ref presetCreateNew);
                 if (!presetCreateNew && plugin.GetSelectedPlannerGroup() == null)
-                    ImGui.TextDisabled("No saved preset is selected. Choose Create a new preset.");
+                    UiGui.TextDisabled("No saved preset is selected. Choose Create a new preset.");
                 ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-                ImGui.InputText("Preset name", ref presetName, 96);
-                ImGui.TextWrapped("Use a name that explains the job, such as 'Daily Main Scenario Roulette' or 'Solo Trust leveling'. Finishing this guide will not run it.");
-                ImGui.TextWrapped("Saved Plans can be copied as Base64 clipboard shares. Base64 is not encryption, and finish slash commands are preserved verbatim. Imported crew arrives as anonymous placeholders that must be remapped here before validation or run.");
+                UiGui.InputText("Preset name", ref presetName, 96);
+                UiGui.TextWrapped("Use a name that explains the job, such as 'Daily Main Scenario Roulette' or 'Solo Trust leveling'. Finishing this guide will not run it.");
+                UiGui.TextWrapped("Saved Plans can be copied as Base64 clipboard shares. Base64 is not encryption, and finish slash commands are preserved verbatim. Imported crew arrives as anonymous placeholders that must be remapped here before validation or run.");
                 break;
             case 2:
                 DrawPresetCrewDraft();
@@ -878,62 +888,64 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }
     }
 
-    private void DrawPresetActivityEditor()
+    private void DrawPresetActivityEditor(DadPresetProviderService provider)
     {
-        var currentFamily = plugin.PresetProviderService.GetPlannerRunFamilyLabel(presetPlannerDraft.RunFamily);
+        UiGui.TextWrapped("Use the Duty Finder family for guildhests, trials, raids and alliance raids. This selector supports regular Duty Finder content; content that requires Raid Finder or another entry route is unavailable here. Duty Support and Trust list only compatible NPC duties.");
+        var currentFamily = provider.GetPlannerRunFamilyLabel(presetPlannerDraft.RunFamily);
         ImGui.SetNextItemWidth(MathF.Min(300f, ImGui.GetContentRegionAvail().X));
-        if (ImGui.BeginCombo("Run family", currentFamily))
+        if (UiGui.BeginCombo("Run family", currentFamily))
         {
-            foreach (var family in plugin.PresetProviderService.GetPlannerRunFamilies())
+            foreach (var family in provider.GetPlannerRunFamilies())
             {
                 var selected = family == presetPlannerDraft.RunFamily;
-                if (ImGui.Selectable(plugin.PresetProviderService.GetPlannerRunFamilyLabel(family), selected))
+                if (UiGui.Selectable(provider.GetPlannerRunFamilyLabel(family), selected))
                 {
                     presetPlannerDraft.RunFamily = family;
-                    var lane = plugin.PresetProviderService.GetPlannerLaneDefinition(plugin.PresetProviderService.GetDefaultPlannerSubmode(family));
+                    var lane = provider.GetPlannerLaneDefinition(provider.GetDefaultPlannerSubmode(family));
                     ApplyLaneToDraft(lane);
                 }
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
 
-        var currentLane = plugin.PresetProviderService.GetPlannerLaneDefinition(presetPlannerDraft.ActivityMode);
+        var currentLane = provider.GetPlannerLaneDefinition(presetPlannerDraft.ActivityMode);
         ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
-        if (ImGui.BeginCombo("Activity / submode", currentLane.DisplayName))
+        if (UiGui.BeginCombo("Activity / submode", currentLane.DisplayName))
         {
-            foreach (var lane in plugin.PresetProviderService.GetPlannerSubmodes(presetPlannerDraft.RunFamily))
+            foreach (var lane in provider.GetPlannerSubmodes(presetPlannerDraft.RunFamily))
             {
                 var selected = lane.ActivityMode == presetPlannerDraft.ActivityMode;
-                if (ImGui.Selectable($"{lane.DisplayName} | {lane.MaturityLabel}", selected))
+                if (UiGui.Selectable($"{lane.DisplayName} | {lane.MaturityLabel}", selected))
                     ApplyLaneToDraft(lane);
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
+        currentLane = provider.GetPlannerLaneDefinition(presetPlannerDraft.ActivityMode);
         DrawStatusRow("What this lane does", currentLane.Summary);
-        DrawStatusRow("Party size", currentLane.ExpectedPartySize.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Party size", currentLane.ExpectedPartySize.ToString(UiText.Current.Culture));
         DrawStatusRow("Maturity", currentLane.MaturityLabel);
 
         if (presetPlannerDraft.ActivityMode == DadPlannerActivityMode.Msq)
         {
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.62f, 0.28f, 1f));
-            ImGui.TextWrapped(DadLegacyActivityRules.MsqUnsupportedBlocker);
+            UiGui.TextWrapped(DadLegacyActivityRules.MsqUnsupportedBlocker);
             ImGui.PopStyleColor();
         }
 
         if (currentLane.RequiresRouletteSelector)
         {
-            var selected = plugin.PresetProviderService.ResolvePlannerRouletteTarget(presetPlannerDraft.RouletteTarget);
+            var selected = provider.ResolvePlannerRouletteTarget(presetPlannerDraft.RouletteTarget);
             ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-            if (ImGui.BeginCombo("Roulette", selected.Option?.DisplayName ?? "Select roulette"))
+            if (UiGui.BeginCombo("Roulette", selected.Option?.DisplayName ?? "Select roulette"))
             {
-                foreach (var roulette in plugin.PresetProviderService.GetPlannerRouletteOptions())
+                foreach (var roulette in provider.GetPlannerRouletteOptions())
                 {
                     var isSelected = string.Equals(roulette.Key, presetPlannerDraft.RouletteTarget?.Key, StringComparison.OrdinalIgnoreCase);
-                    if (ImGui.Selectable(roulette.DisplayName, isSelected))
+                    if (UiGui.Selectable(roulette.DisplayName, isSelected))
                     {
                         presetPlannerDraft.RouletteTarget = roulette.ToQueueTarget();
                         presetPlannerDraft.DutyUnsynced = false;
@@ -942,33 +954,51 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     if (isSelected)
                         ImGui.SetItemDefaultFocus();
                 }
-                ImGui.EndCombo();
+                UiGui.EndCombo();
             }
         }
         else if (currentLane.RequiresDutySelector)
         {
-            ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-            ImGui.InputText("Search duties", ref presetDutySearch, 128);
-            var selectedDuty = plugin.PresetProviderService.GetPlannerDutyOption(presetPlannerDraft.DutyContentFinderConditionId);
-            ImGui.SetNextItemWidth(MathF.Min(520f, ImGui.GetContentRegionAvail().X));
-            if (ImGui.BeginCombo("Duty", selectedDuty?.SelectionLabel ?? "Select a compatible duty"))
+            if (resetPresetDutySearchInput)
             {
-                foreach (var duty in plugin.PresetProviderService.SearchPlannerDutyOptions(presetPlannerDraft.ActivityMode, presetDutySearch, 96))
+                if (ImGui.GetCurrentContext().ActiveId == ImGui.GetID("Search duties"))
+                    ImGuiP.ClearActiveID();
+                resetPresetDutySearchInput = false;
+            }
+            ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
+            UiGui.InputText("Search duties", ref presetDutySearch, 128);
+            var selectedDuty = provider.GetPlannerDutyOption(presetPlannerDraft.DutyContentFinderConditionId);
+            ImGui.SetNextItemWidth(MathF.Min(520f, ImGui.GetContentRegionAvail().X));
+            if (UiGui.BeginCombo("Duty", selectedDuty?.SelectionLabel ?? "Select a compatible duty"))
+            {
+                var duties = provider.SearchPlannerDutyOptions(presetPlannerDraft.ActivityMode, presetDutySearch, int.MaxValue);
+                if (duties.Count == 0) UiGui.TextDisabled("No duties matched current search.");
+                var clipper = ImGui.ImGuiListClipper();
+                clipper.Begin(duties.Count);
+                if (ImGui.IsWindowAppearing())
                 {
+                    var selectedIndex = duties.ToList().FindIndex(duty => duty.ContentFinderConditionId == presetPlannerDraft.DutyContentFinderConditionId);
+                    if (selectedIndex >= 0) clipper.ForceDisplayRangeByIndices(selectedIndex, selectedIndex + 1);
+                }
+                while (clipper.Step())
+                for (var index = clipper.DisplayStart; index < clipper.DisplayEnd; index++)
+                {
+                    var duty = duties[index];
                     var isSelected = duty.ContentFinderConditionId == presetPlannerDraft.DutyContentFinderConditionId;
-                    if (ImGui.Selectable(duty.SelectionLabel, isSelected))
+                    if (UiGui.Selectable(duty.SelectionLabel, isSelected))
                     {
                         presetPlannerDraft.DutyContentFinderConditionId = duty.ContentFinderConditionId;
                         presetPlannerDraft.DutyDisplayName = duty.DutyDisplayName;
                         presetPlannerDraft.DutyExpectedPartySize = Math.Max(1, duty.QueueSize);
                         if (presetPlannerDraft.ActivityMode is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust)
                             presetPlannerDraft.DutyUnsynced = false;
-                        presetDutySearch = duty.DutyDisplayName;
                     }
                     if (isSelected)
                         ImGui.SetItemDefaultFocus();
                 }
-                ImGui.EndCombo();
+                clipper.End();
+                clipper.Destroy();
+                UiGui.EndCombo();
             }
             if (selectedDuty != null)
                 DrawStatusRow("Duty details", selectedDuty.MetadataSummary);
@@ -979,13 +1009,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         if (presetCrewDraft == null)
         {
-            ImGui.TextWrapped("Save the Name step first so DAD has a stable preset to receive crew rows.");
+            UiGui.TextWrapped("Save the Name step first so DAD has a stable preset to receive crew rows.");
             return;
         }
 
         var nextSlot = DadPlannerSlotRules.NextPrimarySlotNumber(presetCrewDraft.Slots);
         ImGui.BeginDisabled(nextSlot == 0);
-        if (ImGui.Button("Add primary row"))
+        if (UiGui.Button("Add primary row"))
         {
             presetCrewDraft.Slots.Add(new DadPlannerGroupSlot
             {
@@ -996,11 +1026,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.Checkbox("Details##dad-guide-preset-details", ref presetCrewDetails);
+        UiGui.Checkbox("Details##dad-guide-preset-details", ref presetCrewDetails);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Show stable account IDs beside account aliases for this session.");
+            UiGui.SetTooltip("Show stable account IDs beside account aliases for this session.");
         ImGui.SameLine();
-        ImGui.TextDisabled("All rows stay inline and expand with the Guide window's normal scrollbar.");
+        UiGui.TextDisabled("All rows stay inline and expand with the Guide window's normal scrollbar.");
 
         var snapshot = plugin.GetPlannerUiSnapshot(plugin.GetVisibleRunState());
         presetCrewEditor.Draw(snapshot, presetCrewDraft, static _ => { }, "dad-guide-preset", presetCrewDetails);
@@ -1011,43 +1041,43 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var modes = Enum.GetValues<DadPlannerStopMode>();
         var modeIndex = Array.IndexOf(modes, presetStopDraft.Mode);
         modeIndex = Math.Max(0, modeIndex);
-        if (ImGui.Combo("Stop mode", ref modeIndex, modes.Select(static mode => mode.ToString()).ToArray(), modes.Length))
+        if (UiGui.Combo("Stop mode", ref modeIndex, modes.Select(static mode => mode.ToString()).ToArray(), modes.Length))
             presetStopDraft.Mode = modes[modeIndex];
 
         switch (presetStopDraft.Mode)
         {
             case DadPlannerStopMode.TargetLevel:
                 var targetLevel = presetStopDraft.TargetLevel;
-                if (ImGui.InputInt("Target level", ref targetLevel))
+                if (UiGui.InputInt("Target level", ref targetLevel))
                     presetStopDraft.TargetLevel = targetLevel;
                 if (ImGui.IsItemHovered())
                 {
-                    ImGui.SetTooltip(
+                    UiGui.SetTooltip(
                         "The bottom target applies only to the first selected primary character when that row is blank. That row overrides it when set; other nonblank row targets are additive, and all must be proven. Any reads the loaded character's live current job/level; a specific job reads that job's ledger.");
                 }
                 var targetSafetyCap = presetStopDraft.SafetyCap;
-                if (ImGui.InputInt("Safety cap (runs)", ref targetSafetyCap))
+                if (UiGui.InputInt("Safety cap (runs)", ref targetSafetyCap))
                     presetStopDraft.SafetyCap = targetSafetyCap;
                 break;
             case DadPlannerStopMode.ItemTarget:
                 var itemId = (int)Math.Min(int.MaxValue, presetStopDraft.StopItemId);
-                if (ImGui.InputInt("Item ID", ref itemId))
+                if (UiGui.InputInt("Item ID", ref itemId))
                     presetStopDraft.StopItemId = (uint)Math.Max(0, itemId);
                 var targetItemCount = presetStopDraft.StopItemTargetCount;
-                if (ImGui.InputInt("Target item count", ref targetItemCount))
+                if (UiGui.InputInt("Target item count", ref targetItemCount))
                     presetStopDraft.StopItemTargetCount = targetItemCount;
                 var itemSafetyCap = presetStopDraft.SafetyCap;
-                if (ImGui.InputInt("Safety cap (runs)", ref itemSafetyCap))
+                if (UiGui.InputInt("Safety cap (runs)", ref itemSafetyCap))
                     presetStopDraft.SafetyCap = itemSafetyCap;
                 break;
             case DadPlannerStopMode.RestedXpDepleted:
                 var restedSafetyCap = presetStopDraft.SafetyCap;
-                if (ImGui.InputInt("Safety cap (runs)", ref restedSafetyCap))
+                if (UiGui.InputInt("Safety cap (runs)", ref restedSafetyCap))
                     presetStopDraft.SafetyCap = restedSafetyCap;
                 break;
             default:
                 var runs = presetStopDraft.AfterRuns;
-                if (ImGui.InputInt("Runs", ref runs))
+                if (UiGui.InputInt("Runs", ref runs))
                     presetStopDraft.AfterRuns = runs;
                 break;
         }
@@ -1055,43 +1085,43 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("Stop preview", presetStopDraft.Describe());
 
         DadUi.Section("Finish behavior", "Use global defaults or save an explicit preset snapshot.");
-        ImGui.Checkbox("Use global finish defaults", ref presetUseGlobalCompletionDefaults);
+        UiGui.Checkbox("Use global finish defaults", ref presetUseGlobalCompletionDefaults);
         ImGui.BeginDisabled(presetUseGlobalCompletionDefaults);
         var playSound = presetCompletionDraft.PlaySound;
-        if (ImGui.Checkbox("Play completion sound", ref playSound))
+        if (UiGui.Checkbox("Play completion sound", ref playSound))
             presetCompletionDraft.PlaySound = playSound;
         if (presetCompletionDraft.PlaySound)
         {
             var soundId = presetCompletionDraft.SoundEffectId;
-            if (ImGui.InputInt("Sound effect (1-16)", ref soundId))
+            if (UiGui.InputInt("Sound effect (1-16)", ref soundId))
                 presetCompletionDraft.SoundEffectId = soundId;
         }
         presetCompletionDraft.SoundEffectId = Math.Clamp(presetCompletionDraft.SoundEffectId, 1, 16);
         var runCommands = presetCompletionDraft.RunCommands;
-        if (ImGui.Checkbox("Run slash commands", ref runCommands))
+        if (UiGui.Checkbox("Run slash commands", ref runCommands))
             presetCompletionDraft.RunCommands = runCommands;
         if (presetCompletionDraft.RunCommands)
         {
-            ImGui.InputTextMultiline("Commands (one per line)", ref presetCompletionCommands, 2048, new Vector2(-1f, 86f));
+            UiGui.InputTextMultiline("Commands (one per line)", ref presetCompletionCommands, 2048, new Vector2(-1f, 86f));
             DadCompletionCommandRules.TryNormalizeCustomCommands(
                 presetCompletionCommands.Split('\n'),
                 out _,
                 out presetCompletionValidation);
             if (!string.IsNullOrWhiteSpace(presetCompletionValidation))
-                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), presetCompletionValidation);
+                UiGui.TextColored(new Vector4(1f, .35f, .35f, 1f), presetCompletionValidation);
         }
         var utilities = presetCompletionDraft.Utilities ??= new DadPostRunUtilities();
         var openCoffers = utilities.OpenGearCoffers;
-        if (ImGui.Checkbox("Open gear coffers", ref openCoffers))
+        if (UiGui.Checkbox("Open gear coffers", ref openCoffers))
             utilities.OpenGearCoffers = openCoffers;
         var registerCards = utilities.RegisterTripleTriadCards;
-        if (ImGui.Checkbox("Register Triple Triad cards", ref registerCards))
+        if (UiGui.Checkbox("Register Triple Triad cards", ref registerCards))
             utilities.RegisterTripleTriadCards = registerCards;
         var sellCards = utilities.SellTripleTriadCards;
-        if (ImGui.Checkbox("Sell Triple Triad cards", ref sellCards))
+        if (UiGui.Checkbox("Sell Triple Triad cards", ref sellCards))
             utilities.SellTripleTriadCards = sellCards;
         var gcHandIn = utilities.GrandCompanyHandInViaAutoRetainer;
-        if (ImGui.Checkbox("Grand Company hand-in via AutoRetainer", ref gcHandIn))
+        if (UiGui.Checkbox("Grand Company hand-in via AutoRetainer", ref gcHandIn))
             utilities.GrandCompanyHandInViaAutoRetainer = gcHandIn;
         ImGui.EndDisabled();
     }
@@ -1116,7 +1146,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DrawStatusRow("First blocker", FormatText(dependencyBlocker, FormatText(snapshot.SchedulerPreview.BlockedReason, preview.ReadinessSummary)));
         ImGui.BeginDisabled(plugin.GetSelectedPlannerGroup() == null);
         string? justValidated = null;
-        if (ImGui.Button("Recheck readiness (does not run)"))
+        if (UiGui.Button("Recheck readiness (does not run)"))
             justValidated = plugin.ValidateSelectedPlannerPresetReadOnly();
         ImGui.EndDisabled();
         var selectedGroup = plugin.GetSelectedPlannerGroup();
@@ -1125,7 +1155,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             : plugin.GetPlannerValidationFeedback(snapshot.Generation, selectedGroup.GroupId);
         var feedbackText = justValidated ?? feedback?.Summary;
         if (!string.IsNullOrWhiteSpace(feedbackText))
-            ImGui.TextWrapped(feedbackText);
+            UiGui.TextWrapped(feedbackText);
     }
 
     private void DrawPresetReview()
@@ -1134,7 +1164,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var snapshot = plugin.GetPlannerUiSnapshot(plugin.GetVisibleRunState());
         if (group == null)
         {
-            ImGui.TextWrapped("No saved preset is selected.");
+            UiGui.TextWrapped("No saved preset is selected.");
             return;
         }
         DrawStatusRow("Preset", group.DisplayName);
@@ -1149,7 +1179,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             : snapshot.SchedulerPreview.CanStart
                 ? snapshot.SchedulerPreview.ReadyToStart ? "Ready now" : "Saved and wakeable"
                 : FormatText(snapshot.SchedulerPreview.BlockedReason, "Blocked"));
-        ImGui.TextWrapped("Finish closes the guide. It does not enqueue or start this preset.");
+        UiGui.TextWrapped("Finish closes the guide. It does not enqueue or start this preset.");
     }
 
     private void DrawCrewStep()
@@ -1158,10 +1188,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
         switch (currentStepId)
         {
             case DadDebugUiRules.CrewRosterStepId:
-                if (ImGui.Button("Refresh local roster"))
+                if (UiGui.Button("Refresh local roster"))
                     plugin.RefreshCharacterPoolFromShell();
                 ImGui.SameLine();
-                if (ImGui.Button("Build Connected Crew"))
+                if (UiGui.Button("Build Connected Crew"))
                     plugin.RequestPeerSnapshotsFromShell();
                 DrawStatusRow("Roster", FormatText(catalog.Summary, "Not refreshed"));
                 DrawStatusRow("Rows", $"{catalog.Characters.Count} character(s) | {catalog.Accounts.Count} account(s)");
@@ -1177,10 +1207,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 break;
             default:
                 var active = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
-                DrawStatusRow("Accounts", catalog.Accounts.Count.ToString(CultureInfo.InvariantCulture));
-                DrawStatusRow("Active roster", active.Count.ToString(CultureInfo.InvariantCulture));
-                DrawStatusRow("Unassigned", active.Count(static row => row.AccountKey.IsEmpty).ToString(CultureInfo.InvariantCulture));
-                DrawStatusRow("Stale / needs update", active.Count(static row => row.IsStale || row.NeedsRosterUpdate).ToString(CultureInfo.InvariantCulture));
+                DrawStatusRow("Accounts", catalog.Accounts.Count.ToString(UiText.Current.Culture));
+                DrawStatusRow("Active roster", active.Count.ToString(UiText.Current.Culture));
+                DrawStatusRow("Unassigned", active.Count(static row => row.AccountKey.IsEmpty).ToString(UiText.Current.Culture));
+                DrawStatusRow("Stale / needs update", active.Count(static row => row.IsStale || row.NeedsRosterUpdate).ToString(UiText.Current.Culture));
                 if (plugin.Configuration.DebugUiEnabled)
                     DrawStatusRow("Optional launch-profile scaffolding", $"{plugin.Configuration.LaunchProfiles.Count} stored | {plugin.Configuration.LaunchProfiles.Count(static profile => profile.Enabled)} enabled");
                 break;
@@ -1192,7 +1222,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var active = catalog.Characters.Where(static row => row.Visibility == DadRosterVisibility.Active).ToList();
         if (active.Count == 0)
         {
-            ImGui.TextWrapped("No Active rows. Refresh the roster, then use the Crew expert editor to activate the characters you want DAD to use.");
+            UiGui.TextWrapped("No Active rows. Refresh the roster, then use the Crew expert editor to activate the characters you want DAD to use.");
             return;
         }
 
@@ -1203,26 +1233,26 @@ public sealed class SetupWizardWindow : Window, IDisposable
             ImGui.TableSetupColumn("Saved / draft account");
             ImGui.TableSetupColumn("Source");
             ImGui.TableSetupColumn("Save on Next");
-            ImGui.TableHeadersRow();
+            UiGui.TableHeadersRow();
             foreach (var row in active)
             {
                 var identityKey = DadRosterIdentity.BuildKey(row);
                 var assignOnNext = crewOwnershipAssignments.Contains(identityKey);
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value));
+                MaterialText.Text(plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(assignOnNext && account != null
+                UiGui.TextUnformatted(assignOnNext && account != null
                     ? $"{account.AccountAlias} [draft]"
                     : row.AccountKey.IsEmpty
                         ? "Unassigned"
                         : FormatText(row.AccountAlias, row.AccountKey.Value));
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(IsRemoteRosterRow(row) ? "Connected Client" : "This Client");
+                UiGui.TextUnformatted(IsRemoteRosterRow(row) ? "Connected Client" : "This Client");
                 ImGui.TableNextColumn();
                 var canAssign = row.AccountKey.IsEmpty && !IsRemoteRosterRow(row) && account != null;
                 ImGui.BeginDisabled(!canAssign);
-                if (ImGui.Checkbox($"Assign to this account##dad-guide-assign-{identityKey}", ref assignOnNext))
+                if (UiGui.Checkbox($"Assign to this account##dad-guide-assign-{identityKey}", ref assignOnNext))
                 {
                     if (assignOnNext)
                         crewOwnershipAssignments.Add(identityKey);
@@ -1231,12 +1261,12 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 }
                 ImGui.EndDisabled();
                 if (!canAssign && row.AccountKey.IsEmpty && IsRemoteRosterRow(row))
-                    ImGui.TextDisabled("Assign on that Client");
+                    UiGui.TextDisabled("Assign on that Client");
             }
             ImGui.EndTable();
         }
 
-        ImGui.TextDisabled("Checked ownership changes remain drafts until Save and Next.");
+        UiGui.TextDisabled("Checked ownership changes remain drafts until Save and Next.");
     }
 
     private void DrawCrewStaleRows(DadAccountRosterCatalog catalog)
@@ -1253,13 +1283,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadUi.Badge("No stale Active rows", DadUiTone.Success);
             return;
         }
-        if (ImGui.Button("Refresh local roster"))
+        if (UiGui.Button("Refresh local roster"))
             plugin.RefreshCharacterPoolFromShell();
         ImGui.SameLine();
-        if (ImGui.Button("Queue updates for all stale rows"))
+        if (UiGui.Button("Queue updates for all stale rows"))
             QueueRosterUpdate(stale);
 
-        ImGui.TextWrapped("Skip is staged as Ignore on Save and Next. Ignored rows are reversible under Crew -> Ignored. Delete removes only DAD's local cached copy; XADB snapshots and remote authoritative data remain untouched.");
+        UiGui.TextWrapped("Skip is staged as Ignore on Save and Next. Ignored rows are reversible under Crew -> Ignored. Delete removes only DAD's local cached copy; XADB snapshots and remote authoritative data remain untouched.");
         if (!ImGui.BeginTable(
                 "dad-guide-stale-rows",
                 4,
@@ -1275,7 +1305,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.TableSetupColumn("Account / source", ImGuiTableColumnFlags.WidthStretch, 1.1f);
         ImGui.TableSetupColumn("Problem", ImGuiTableColumnFlags.WidthStretch, 1f);
         ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthStretch, 1.35f);
-        ImGui.TableHeadersRow();
+        UiGui.TableHeadersRow();
 
         foreach (var row in stale)
         {
@@ -1293,16 +1323,16 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value));
+            MaterialText.Text(plugin.KrangleService.FormatCharacterKey(row.CharacterKey.Value));
             ImGui.TableNextColumn();
-            ImGui.TextWrapped($"{account} | {source}");
+            UiGui.TextWrapped($"{account} | {source}");
             ImGui.TableNextColumn();
-            ImGui.TextWrapped(staged ? $"{problem} | Ignore on Save and Next" : problem);
+            UiGui.TextWrapped(staged ? $"{problem} | Ignore on Save and Next" : problem);
             ImGui.TableNextColumn();
-            if (ImGui.SmallButton($"Queue update##dad-guide-stale-queue-{rowKey}"))
+            if (UiGui.SmallButton($"Queue update##dad-guide-stale-queue-{rowKey}"))
                 QueueRosterUpdate([row]);
             ImGui.SameLine();
-            if (ImGui.SmallButton($"{(staged ? "Undo" : "Skip")}##dad-guide-stale-skip-{rowKey}"))
+            if (UiGui.SmallButton($"{(staged ? "Undo" : "Skip")}##dad-guide-stale-skip-{rowKey}"))
             {
                 if (staged)
                     crewStagedSkips.Remove(rowKey);
@@ -1321,13 +1351,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private void DrawCrewLaunchProfiles(DadAccountRosterCatalog catalog)
     {
-        if (ImGui.Button("Import launch batches"))
+        if (UiGui.Button("Import launch batches"))
         {
             plugin.ImportLaunchProfilesFromBootDirectory();
             launchProfileDrafts.Clear();
         }
         ImGui.SameLine();
-        ImGui.TextDisabled("Imported batches stay read-only; mapping changes save on Next.");
+        UiGui.TextDisabled("Imported batches stay read-only; mapping changes save on Next.");
         EnsureLaunchProfileDrafts();
         var profiles = plugin.Configuration.LaunchProfiles
             .Where(profile => launchProfileDrafts.ContainsKey(profile.ProfileId))
@@ -1335,7 +1365,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             .ToList();
         if (profiles.Count == 0)
         {
-            ImGui.TextWrapped("No launch-profile metadata was found in the existing configured boot directory. DAD does not execute these batch paths.");
+            UiGui.TextWrapped("No launch-profile metadata was found in the existing configured boot directory. DAD does not execute these batch paths.");
             return;
         }
 
@@ -1347,37 +1377,37 @@ public sealed class SetupWizardWindow : Window, IDisposable
             ImGui.TableSetupColumn("Profile");
             ImGui.TableSetupColumn("Account");
             ImGui.TableSetupColumn("Expected characters");
-            ImGui.TableHeadersRow();
+            UiGui.TableHeadersRow();
             foreach (var launch in profiles)
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 var enabled = launch.Enabled;
-                if (ImGui.Checkbox($"##dad-guide-launch-enabled-{launch.ProfileId}", ref enabled))
+                if (UiGui.Checkbox($"##dad-guide-launch-enabled-{launch.ProfileId}", ref enabled))
                     launch.Enabled = enabled;
                 ImGui.TableNextColumn();
                 var dryRun = launch.DryRun;
-                if (ImGui.Checkbox($"##dad-guide-launch-dry-{launch.ProfileId}", ref dryRun))
+                if (UiGui.Checkbox($"##dad-guide-launch-dry-{launch.ProfileId}", ref dryRun))
                     launch.DryRun = dryRun;
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(launch.DisplayName);
+                MaterialText.Text(launch.DisplayName);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(launch.BatchPath);
+                    UiGui.SetTooltip(launch.BatchPath);
                 ImGui.TableNextColumn();
                 var preview = launch.AccountKey.IsEmpty ? "Select account" : launch.AccountKey.Value;
                 ImGui.SetNextItemWidth(-1f);
-                if (ImGui.BeginCombo($"##dad-guide-launch-account-{launch.ProfileId}", preview))
+                if (UiGui.BeginCombo($"##dad-guide-launch-account-{launch.ProfileId}", preview))
                 {
                     foreach (var option in accountOptions)
                     {
                         var selected = string.Equals(launch.AccountKey.Value, option.AccountKey.Value, StringComparison.OrdinalIgnoreCase);
-                        if (ImGui.Selectable(FormatText(option.DisplayName, option.AccountKey.Value), selected))
+                        if (UiGui.Selectable(FormatText(option.DisplayName, option.AccountKey.Value), selected))
                             launch.AccountKey = option.AccountKey;
                     }
-                    ImGui.EndCombo();
+                    UiGui.EndCombo();
                 }
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(launch.ExpectedCharacterKeys.Count == 0
+                UiGui.TextUnformatted(launch.ExpectedCharacterKeys.Count == 0
                     ? "(none parsed)"
                     : string.Join(", ", launch.ExpectedCharacterKeys.Select(static key => key.Value)));
             }
@@ -1403,15 +1433,15 @@ public sealed class SetupWizardWindow : Window, IDisposable
             case 2:
                 var daily = scheduleCadenceDraft == DadScheduleCadence.DailyReset;
                 ImGui.BeginDisabled(snapshot.ActiveRun.IsActive);
-                if (ImGui.Checkbox("Run once at each FFXIV daily reset", ref daily))
+                if (UiGui.Checkbox("Run once at each FFXIV daily reset", ref daily))
                     scheduleCadenceDraft = daily ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
                 ImGui.EndDisabled();
                 DrawStatusRow("Selected cadence", daily
                     ? $"Daily reset at {DadScheduleRules.DailyResetHourUtc:00}:00 UTC"
                     : "Manual only");
                 if (snapshot.ActiveRun.IsActive)
-                    ImGui.TextDisabled("Cadence is locked while a schedule is active.");
-                ImGui.TextWrapped("Daily mode never bypasses the Coordinator role, active schedule lock, preset validation, wake, or party safety guards.");
+                    UiGui.TextDisabled("Cadence is locked while a schedule is active.");
+                UiGui.TextWrapped("Daily mode never bypasses the Coordinator role, active schedule lock, preset validation, wake, or party safety guards.");
                 break;
             case 3:
                 DrawScheduleBlockerReview(snapshot, schedule);
@@ -1427,16 +1457,16 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private void DrawScheduleIdentity(DadScheduleSnapshot snapshot, DadScheduleDefinition? selectedSchedule)
     {
-        ImGui.Checkbox("Create a new schedule", ref scheduleCreateNew);
+        UiGui.Checkbox("Create a new schedule", ref scheduleCreateNew);
         if (!scheduleCreateNew && snapshot.Schedules.Count > 0)
         {
             ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-            if (ImGui.BeginCombo("Existing schedule", selectedSchedule?.DisplayName ?? "Select schedule"))
+            if (UiGui.BeginCombo("Existing schedule", selectedSchedule?.DisplayName ?? "Select schedule"))
             {
                 foreach (var candidate in snapshot.Schedules)
                 {
                     var selected = string.Equals(candidate.ScheduleId, scheduleId, StringComparison.OrdinalIgnoreCase);
-                    if (ImGui.Selectable(candidate.DisplayName, selected))
+                    if (UiGui.Selectable(candidate.DisplayName, selected))
                     {
                         scheduleId = candidate.ScheduleId;
                         scheduleName = candidate.DisplayName;
@@ -1446,19 +1476,19 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     if (selected)
                         ImGui.SetItemDefaultFocus();
                 }
-                ImGui.EndCombo();
+                UiGui.EndCombo();
             }
         }
         ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-        ImGui.InputText("Schedule name", ref scheduleName, 128);
-        DrawStatusRow("Saved schedules", snapshot.Schedules.Count.ToString(CultureInfo.InvariantCulture));
-        DrawStatusRow("Available presets", plugin.Configuration.PlannerGroups.Count.ToString(CultureInfo.InvariantCulture));
+        UiGui.InputText("Schedule name", ref scheduleName, 128);
+        DrawStatusRow("Saved schedules", snapshot.Schedules.Count.ToString(UiText.Current.Culture));
+        DrawStatusRow("Available presets", plugin.Configuration.PlannerGroups.Count.ToString(UiText.Current.Culture));
 
         ImGui.Spacing();
-        ImGui.TextWrapped("Schedules can be shared through the clipboard as Base64. A Schedule bundles each referenced Plan once while preserving entry order and repeats. Base64 is not encryption; imported anonymous crew must be remapped locally in each Plan before validation or run.");
+        UiGui.TextWrapped("Schedules can be shared through the clipboard as Base64. A Schedule bundles each referenced Plan once while preserving entry order and repeats. Base64 is not encryption; imported anonymous crew must be remapped locally in each Plan before validation or run.");
         var mutationBlocker = plugin.GetShareMutationBlocker();
         ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(mutationBlocker));
-        if (ImGui.SmallButton("Install Daily MSQ + Leveling starter bundle"))
+        if (UiGui.SmallButton("Install Daily MSQ + Leveling starter bundle"))
         {
             var result = plugin.InstallStarterShareBundle();
             scheduleStarterStatus = result.Summary;
@@ -1477,19 +1507,19 @@ public sealed class SetupWizardWindow : Window, IDisposable
             }
         }
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(!string.IsNullOrWhiteSpace(mutationBlocker)
+            UiGui.SetTooltip(!string.IsNullOrWhiteSpace(mutationBlocker)
                 ? mutationBlocker
                 : "Installs only missing stable starter IDs. Existing Plans or Schedule with those IDs are never overwritten.");
         ImGui.EndDisabled();
         if (!string.IsNullOrWhiteSpace(scheduleStarterStatus))
-            ImGui.TextDisabled(scheduleStarterStatus);
+            UiGui.TextDisabled(scheduleStarterStatus);
     }
 
     private void DrawScheduleEntries(DadScheduleDefinition? schedule, bool locked)
     {
         if (schedule == null)
         {
-            ImGui.TextWrapped("Save Schedule identity first.");
+            UiGui.TextWrapped("Save Schedule identity first.");
             return;
         }
         var groups = plugin.Configuration.PlannerGroups
@@ -1497,7 +1527,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             .ToList();
         if (groups.Count == 0)
         {
-            ImGui.TextWrapped("No saved presets are available. Finish Create a Preset first.");
+            UiGui.TextWrapped("No saved presets are available. Finish Create a Preset first.");
             return;
         }
         if (string.IsNullOrWhiteSpace(scheduleAddGroupId) || groups.All(group => !string.Equals(group.GroupId, scheduleAddGroupId, StringComparison.OrdinalIgnoreCase)))
@@ -1508,10 +1538,10 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawSchedulePresetCombo(ref scheduleAddGroupId, groups, "add");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(100f);
-        ImGui.InputInt("Repeat##dad-guide-schedule-add-repeat", ref scheduleRepeatCount);
+        UiGui.InputInt("Repeat##dad-guide-schedule-add-repeat", ref scheduleRepeatCount);
         scheduleRepeatCount = Math.Clamp(scheduleRepeatCount, DadScheduleRules.MinRepeatCount, DadScheduleRules.MaxRepeatCount);
         ImGui.SameLine();
-        if (ImGui.Button("Add preset"))
+        if (UiGui.Button("Add preset"))
         {
             var group = groups.First(candidate => string.Equals(candidate.GroupId, scheduleAddGroupId, StringComparison.OrdinalIgnoreCase));
             schedule.Entries.Add(new DadScheduleEntry
@@ -1525,7 +1555,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
         if (schedule.Entries.Count == 0)
         {
-            ImGui.TextDisabled("No presets in this schedule yet.");
+            UiGui.TextDisabled("No presets in this schedule yet.");
             return;
         }
         if (!ImGui.BeginTable("dad-guide-schedule-entries", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
@@ -1535,13 +1565,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.TableSetupColumn("Repeat");
         ImGui.TableSetupColumn("Order");
         ImGui.TableSetupColumn("Remove");
-        ImGui.TableHeadersRow();
+        UiGui.TableHeadersRow();
         for (var index = 0; index < schedule.Entries.Count; index++)
         {
             var entry = schedule.Entries[index];
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted((index + 1).ToString(CultureInfo.InvariantCulture));
+            UiGui.TextUnformatted((index + 1).ToString(UiText.Current.Culture));
             ImGui.TableNextColumn();
             var entryGroupId = entry.GroupId;
             ImGui.BeginDisabled(locked);
@@ -1557,7 +1587,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             var repeat = entry.RepeatCount;
             ImGui.BeginDisabled(locked);
             ImGui.SetNextItemWidth(88f);
-            if (ImGui.InputInt($"##dad-guide-repeat-{entry.EntryId}", ref repeat))
+            if (UiGui.InputInt($"##dad-guide-repeat-{entry.EntryId}", ref repeat))
             {
                 entry.RepeatCount = Math.Clamp(repeat, DadScheduleRules.MinRepeatCount, DadScheduleRules.MaxRepeatCount);
                 entry.UpdatedAtUtc = DateTime.UtcNow;
@@ -1565,15 +1595,15 @@ public sealed class SetupWizardWindow : Window, IDisposable
             ImGui.EndDisabled();
             ImGui.TableNextColumn();
             ImGui.BeginDisabled(locked || index == 0);
-            var up = ImGui.SmallButton($"Up##dad-guide-up-{entry.EntryId}");
+            var up = UiGui.SmallButton($"Up##dad-guide-up-{entry.EntryId}");
             ImGui.EndDisabled();
             ImGui.SameLine();
             ImGui.BeginDisabled(locked || index >= schedule.Entries.Count - 1);
-            var down = ImGui.SmallButton($"Down##dad-guide-down-{entry.EntryId}");
+            var down = UiGui.SmallButton($"Down##dad-guide-down-{entry.EntryId}");
             ImGui.EndDisabled();
             ImGui.TableNextColumn();
             ImGui.BeginDisabled(locked);
-            var remove = ImGui.SmallButton($"Remove##dad-guide-remove-{entry.EntryId}");
+            var remove = UiGui.SmallButton($"Remove##dad-guide-remove-{entry.EntryId}");
             ImGui.EndDisabled();
             if (up)
             {
@@ -1592,7 +1622,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             }
         }
         ImGui.EndTable();
-        ImGui.TextDisabled("Order and repeat changes remain drafts until Save and Next.");
+        UiGui.TextDisabled("Order and repeat changes remain drafts until Save and Next.");
     }
 
     private void DrawScheduleBlockerReview(DadScheduleSnapshot snapshot, DadScheduleDefinition? schedule)
@@ -1601,9 +1631,9 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var missing = schedule?.Entries.Count(entry => !known.Contains(entry.GroupId)) ?? 0;
         DrawStatusRow("Role", plugin.Configuration.RunAsServerDad ? "Coordinator - live runs allowed" : "Client - builder/dry-run only; live schedules require Coordinator");
         DrawStatusRow("Schedule", schedule?.DisplayName ?? "(none)");
-        DrawStatusRow("Entries", schedule?.Entries.Count.ToString(CultureInfo.InvariantCulture) ?? "0");
-        DrawStatusRow("Total executions", schedule?.Entries.Sum(static entry => entry.RepeatCount).ToString(CultureInfo.InvariantCulture) ?? "0");
-        DrawStatusRow("Missing presets", missing.ToString(CultureInfo.InvariantCulture));
+        DrawStatusRow("Entries", schedule?.Entries.Count.ToString(UiText.Current.Culture) ?? "0");
+        DrawStatusRow("Total executions", schedule?.Entries.Sum(static entry => entry.RepeatCount).ToString(UiText.Current.Culture) ?? "0");
+        DrawStatusRow("Missing presets", missing.ToString(UiText.Current.Culture));
         DrawStatusRow("Runner", snapshot.ActiveRun.IsActive ? snapshot.ActiveRun.Summary : "Idle");
     }
 
@@ -1611,7 +1641,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         if (schedule == null)
         {
-            ImGui.TextWrapped("No schedule selected.");
+            UiGui.TextWrapped("No schedule selected.");
             return;
         }
         var canDryRun = schedule.Entries.Count > 0 && !snapshot.ActiveRun.IsActive;
@@ -1636,7 +1666,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         if (schedule == null)
         {
-            ImGui.TextWrapped("No saved schedule selected.");
+            UiGui.TextWrapped("No saved schedule selected.");
             return;
         }
         var dryRun = snapshot.RecentResults.FirstOrDefault(result => result.DryRun && string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
@@ -1644,7 +1674,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawStatusRow("Order", schedule.Entries.Count == 0 ? "(empty)" : string.Join(" -> ", schedule.Entries.Select(entry => $"{entry.PresetName} x{entry.RepeatCount}")));
         DrawStatusRow("Cadence", schedule.Cadence == DadScheduleCadence.DailyReset ? $"Daily reset at {DadScheduleRules.DailyResetHourUtc:00}:00 UTC" : "Manual only");
         DrawStatusRow("Dry-run", dryRun?.Success == true ? "Ready" : FormatText(dryRun?.BlockedReason, dryRun?.Summary ?? "Not run"));
-        ImGui.TextWrapped("Finish closes the guide. Use Schedules to deliberately run, cancel, rename, duplicate, or delete this schedule.");
+        UiGui.TextWrapped("Finish closes the guide. Use Schedules to deliberately run, cancel, rename, duplicate, or delete this schedule.");
     }
 
     private void TryAdvance(int stepCount)
@@ -1800,8 +1830,6 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 if (target == null)
                     return Reject("The saved preset no longer exists.");
                 presetStopDraft.Normalize();
-                target.StopPolicy = presetStopDraft.Clone();
-                DadSharedPlanRules.ReconcileStopTarget(target);
                 if (presetUseGlobalCompletionDefaults)
                 {
                     target.CompletionActions = null;
@@ -1823,6 +1851,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     presetCompletionDraft.Utilities.GrandCompanyHandInCommand = normalizedGrandCompanyCommand;
                     target.CompletionActions = presetCompletionDraft.Clone();
                 }
+                target.StopPolicy = presetStopDraft.Clone();
+                DadSharedPlanRules.ReconcileStopTarget(target);
                 plugin.TouchPlannerGroup(target);
                 plugin.PlannerOptions.StopPolicy = target.StopPolicy.Clone();
                 plugin.PlannerOptions.CompletionActions = target.CompletionActions?.Clone();
@@ -2053,7 +2083,8 @@ public sealed class SetupWizardWindow : Window, IDisposable
         presetUseGlobalCompletionDefaults = group?.CompletionActions == null;
         presetCompletionDraft = (group?.CompletionActions ?? plugin.Configuration.CompletionActions).Clone();
         presetCompletionCommands = string.Join("\n", presetCompletionDraft.Commands);
-        presetDutySearch = presetPlannerDraft.DutyDisplayName;
+        presetDutySearch = string.Empty;
+        resetPresetDutySearchInput = true;
 
         crewOwnershipAssignments.Clear();
         crewStagedSkips.Clear();
@@ -2087,24 +2118,26 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var accounts = plugin.ConfigManager.GetAllAccounts();
         var selected = accounts.FirstOrDefault(account => string.Equals(account.AccountId, draftAccountId, StringComparison.OrdinalIgnoreCase));
         ImGui.SetNextItemWidth(MathF.Min(480f, ImGui.GetContentRegionAvail().X));
-        if (ImGui.BeginCombo("DAD account", selected == null ? FormatText(draftAccountId, "Select account") : $"{selected.AccountAlias} [{selected.AccountId}]"))
+        if (UiGui.BeginCombo("DAD account", selected == null ? FormatText(draftAccountId, "Select account") : $"{selected.AccountAlias} [{selected.AccountId}]"))
         {
             foreach (var account in accounts)
             {
                 var isSelected = string.Equals(account.AccountId, draftAccountId, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable($"{account.AccountAlias} [{account.AccountId}] | {account.Characters.Count} character(s)", isSelected))
+                if (UiGui.Selectable($"{account.AccountAlias} [{account.AccountId}] | {account.Characters.Count} character(s)", isSelected))
                     draftAccountId = account.AccountId;
                 if (isSelected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         DrawStatusRow("Current runtime account", FormatText(plugin.ConfigManager.CurrentAccountId, "(none)"));
-        ImGui.TextWrapped("Account selection is local to this DAD client. Use Crew after connection setup to resolve roster ownership across the full crew.");
+        UiGui.TextWrapped("Account selection is local to this DAD client. Use Crew after connection setup to resolve roster ownership across the full crew.");
     }
 
     private void ApplyLaneToDraft(DadPlannerLaneDefinition lane)
     {
+        if (presetPlannerDraft.ActivityMode != lane.ActivityMode)
+            presetDutySearch = string.Empty;
         presetPlannerDraft.RunFamily = lane.RunFamily;
         presetPlannerDraft.ActivityMode = lane.ActivityMode;
         presetPlannerDraft.TransportOwner = lane.DefaultTransportOwner;
@@ -2143,13 +2176,13 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var supported = plugin.RosterCatalogService.HasLocalRosterCopy(row);
         var modifierHeld = ImGui.GetIO().KeyCtrl && ImGui.GetIO().KeyShift;
         ImGui.BeginDisabled(!supported || !modifierHeld);
-        var clicked = ImGui.SmallButton($"Delete##dad-guide-stale-delete-{rowKey}");
+        var clicked = UiGui.SmallButton($"Delete##dad-guide-stale-delete-{rowKey}");
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
 
         if (hovered)
         {
-            ImGui.SetTooltip(!supported
+            UiGui.SetTooltip(!supported
                 ? "DAD has no removable local cached copy for this row. Choose Skip or correct the authoritative source data."
                 : modifierHeld
                     ? "Delete DAD's local cached copy now. XADB snapshots and remote authoritative data remain untouched."
@@ -2204,12 +2237,12 @@ public sealed class SetupWizardWindow : Window, IDisposable
         var selected = groups.FirstOrDefault(group => string.Equals(group.GroupId, currentGroupId, StringComparison.OrdinalIgnoreCase));
         var changed = false;
         ImGui.SetNextItemWidth(MathF.Min(360f, ImGui.GetContentRegionAvail().X));
-        if (!ImGui.BeginCombo($"Preset##dad-guide-schedule-preset-{suffix}", selected?.DisplayName ?? "Select preset"))
+        if (!UiGui.BeginCombo($"Preset##dad-guide-schedule-preset-{suffix}", selected?.DisplayName ?? "Select preset"))
             return false;
         foreach (var group in groups)
         {
             var isSelected = string.Equals(group.GroupId, currentGroupId, StringComparison.OrdinalIgnoreCase);
-            if (ImGui.Selectable($"{group.DisplayName}##dad-guide-{suffix}-{group.GroupId}", isSelected))
+            if (UiGui.Selectable($"{group.DisplayName}##dad-guide-{suffix}-{group.GroupId}", isSelected))
             {
                 groupId = group.GroupId;
                 currentGroupId = group.GroupId;
@@ -2218,7 +2251,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             if (isSelected)
                 ImGui.SetItemDefaultFocus();
         }
-        ImGui.EndCombo();
+        UiGui.EndCombo();
         return changed;
     }
 
@@ -2346,7 +2379,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     private static string FormatTime(DateTime? value)
-        => value?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "never";
+        => value?.ToLocalTime().ToString("g", UiText.Current.Culture) ?? "never";
 
     private void QueuePosition(Vector2 position)
     {

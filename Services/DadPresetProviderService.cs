@@ -2278,9 +2278,9 @@ public sealed class DadPresetProviderService
         {
             DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.DutySupportLeveling => option.SupportsDutySupport,
             DadPlannerActivityMode.Trust or DadPlannerActivityMode.TrustLeveling => option.SupportsTrust,
-            DadPlannerActivityMode.Squadron => option.QueueSize == 1,
-            DadPlannerActivityMode.VariantVvd => option.QueueSize <= 4,
-            _ => true,
+            DadPlannerActivityMode.Squadron => option.IsInDutyFinder && option.QueueSize == 1,
+            DadPlannerActivityMode.VariantVvd => option.IsInDutyFinder && option.QueueSize <= 4,
+            _ => option.IsInDutyFinder,
         };
 
     private static bool SupportsTrust(ContentFinderCondition condition, IReadOnlyList<DawnContent> trustDawnRows)
@@ -2379,7 +2379,6 @@ public sealed class DadPresetProviderService
 
         return contentFinderSheet
             .Where(static condition => condition.RowId != 0
-                                       && condition.IsInDutyFinder
                                        && !condition.PvP
                                        && condition.TerritoryType.ValueNullable != null)
             .Select(condition =>
@@ -2395,6 +2394,11 @@ public sealed class DadPresetProviderService
                 var queueSizeInt = Math.Max(1, (int)queueSize);
                 var supportsDutySupport = dutySupportContentIds.Contains(condition.RowId);
                 var supportsTrust = SupportsTrust(condition, trustDawnRows);
+                if (!condition.IsInDutyFinder &&
+                    (!(supportsDutySupport || supportsTrust) ||
+                     condition.TerritoryType.RowId == 0 ||
+                     condition.TerritoryType.Value.ExVersion.ValueNullable == null))
+                    return null;
                 return new DadPlannerDutyOption
                 {
                     ContentFinderConditionId = condition.RowId,
@@ -2408,6 +2412,7 @@ public sealed class DadPresetProviderService
                     ItemLevelSync = condition.ItemLevelSync,
                     FixedItemLevelSync = condition.FixedItemLevelSync,
                     AllowUndersized = condition.AllowUndersized,
+                    IsInDutyFinder = condition.IsInDutyFinder,
                     SupportsDutySupport = supportsDutySupport,
                     SupportsTrust = supportsTrust,
                     IsHighEndDuty = condition.HighEndDuty,
@@ -2415,6 +2420,15 @@ public sealed class DadPresetProviderService
                     {
                         dutyName,
                         shortCode,
+                        condition.ContentType.ValueNullable?.Name.ToString() ?? string.Empty,
+                        condition.ContentType.RowId switch
+                        {
+                            2 => "Dungeons",
+                            3 => "Guildhests",
+                            4 => "Trials",
+                            5 => condition.ContentMemberType.ValueNullable?.PartyCount > 1 ? "Alliance Raids" : "Raids",
+                            _ => string.Empty,
+                        },
                         condition.RowId.ToString(),
                         queueSizeInt.ToString(),
                     }),

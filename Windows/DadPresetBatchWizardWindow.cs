@@ -1,3 +1,4 @@
+using AethertekUI.Dalamud;
 using System.Globalization;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -8,6 +9,7 @@ namespace dad.Windows;
 
 public sealed class DadPresetBatchWizardWindow : Window
 {
+    private readonly MaterialWindowMotion motion = new();
     private readonly Plugin plugin;
     private DadAccountRosterCatalog catalog = new();
     private DadPresetBatchDraft draft = new();
@@ -48,12 +50,18 @@ public sealed class DadPresetBatchWizardWindow : Window
         PositionCondition = ImGuiCond.Always;
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
         DadUi.Heading("BATCH PRESET WIZARD", "Zip rotating accounts across named DC pools, reuse exact anchors, then append ordinary Plans and Schedules only after review.");
-        ImGui.TextDisabled("Session draft only | append-only Apply | exact session-only Undo | 512 Plan/entry limit");
+        UiGui.TextDisabled("Session draft only | append-only Apply | exact session-only Undo | 512 Plan/entry limit");
         ImGui.SameLine();
-        if (ImGui.SmallButton("Reset draft"))
+        if (UiGui.SmallButton("Reset draft"))
             ResetDraft();
 
         DrawStepRail();
@@ -75,7 +83,7 @@ public sealed class DadPresetBatchWizardWindow : Window
         }
 
         ImGui.Separator();
-        ImGui.TextWrapped(status);
+        UiGui.TextWrapped(status);
         DrawNavigation();
     }
 
@@ -86,7 +94,7 @@ public sealed class DadPresetBatchWizardWindow : Window
         {
             if (index > 0)
                 ImGui.SameLine();
-            if (ImGui.SmallButton($"{labels[index]}##dad-batch-step-{index}"))
+            if (UiGui.SmallButton($"{labels[index]}##dad-batch-step-{index}"))
                 stepIndex = index;
         }
     }
@@ -94,7 +102,7 @@ public sealed class DadPresetBatchWizardWindow : Window
     private void DrawAccountsStep()
     {
         DadUi.Heading("ACCOUNTS AND CHARACTERS", "Rotating lanes contribute one ordered character per crew. Anchor lanes contribute one configured character per pool.");
-        ImGui.TextWrapped("Selecting Rotating initially selects every Active character on that account; expand the lane to remove characters. Lane order is slot order.");
+        UiGui.TextWrapped("Selecting Rotating initially selects every Active character on that account; expand the lane to remove characters. Lane order is slot order.");
 
         var accounts = GetAccountKeys();
         foreach (var account in accounts)
@@ -104,9 +112,9 @@ public sealed class DadPresetBatchWizardWindow : Window
             var anchorIndex = draft.AnchorLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
             var rotating = rotatingIndex >= 0;
             var anchor = anchorIndex >= 0;
-            ImGui.TextUnformatted(account.Value);
+            UiGui.TextUnformatted(account.Value);
             ImGui.SameLine();
-            if (ImGui.Checkbox("Rotating", ref rotating))
+            if (UiGui.Checkbox("Rotating", ref rotating))
             {
                 if (rotating)
                 {
@@ -126,7 +134,7 @@ public sealed class DadPresetBatchWizardWindow : Window
                 anchor = false;
             }
             ImGui.SameLine();
-            if (ImGui.Checkbox("Anchor", ref anchor))
+            if (UiGui.Checkbox("Anchor", ref anchor))
             {
                 if (anchor)
                 {
@@ -149,14 +157,14 @@ public sealed class DadPresetBatchWizardWindow : Window
                 rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
                 var lane = draft.RotatingLanes[rotatingIndex];
                 ImGui.SameLine();
-                ImGui.TextDisabled($"{lane.Characters.Count} selected");
-                if (ImGui.TreeNode($"Characters##dad-batch-characters-{account.Value}"))
+                UiGui.TextDisabled($"{lane.Characters.Count} selected");
+                if (UiGui.TreeNode($"Characters##dad-batch-characters-{account.Value}"))
                 {
                     foreach (var character in GetCharacters(account))
                     {
                         var reference = DadRosterIdentity.From(character);
                         var selected = lane.Characters.Any(candidate => DadRosterIdentity.Matches(character, candidate));
-                        if (ImGui.Checkbox($"{character.CharacterKey.Value} [{character.DataCenterName}]##{DadRosterIdentity.BuildKey(character)}", ref selected))
+                        if (UiGui.Checkbox($"{character.CharacterKey.Value} [{character.DataCenterName}]##{DadRosterIdentity.BuildKey(character)}", ref selected))
                         {
                             if (selected)
                                 lane.Characters.Add(reference);
@@ -174,25 +182,25 @@ public sealed class DadPresetBatchWizardWindow : Window
                 ImGui.SameLine();
                 DrawMoveButtons(draft.AnchorLanes, anchorIndex, "anchor");
                 ImGui.SameLine();
-                ImGui.TextDisabled("choose one character per pool in step 2");
+                UiGui.TextDisabled("choose one character per pool in step 2");
             }
             ImGui.PopID();
         }
 
         if (accounts.Count == 0)
-            ImGui.TextDisabled("No exact account roster is available yet. Refresh the DAD roster first.");
+            UiGui.TextDisabled("No exact account roster is available yet. Refresh the DAD roster first.");
     }
 
     private void DrawPoolsStep()
     {
         DadUi.Heading("NAMED DC POOLS AND ANCHORS", "Each selected DC can belong to only one pool. Every rotating lane must supply the requested count in every pool.");
         ImGui.SetNextItemWidth(260f);
-        ImGui.InputText("New pool name", ref newPoolName, DadPresetBatchLimits.MaxTextLength);
+        UiGui.InputText("New pool name", ref newPoolName, DadPresetBatchLimits.MaxTextLength);
         ImGui.SetNextItemWidth(140f);
-        ImGui.InputInt("Crew count", ref newPoolCrewCount);
+        UiGui.InputInt("Crew count", ref newPoolCrewCount);
         DrawDataCenterChecklist(newPoolDataCenters, "new-pool");
         ImGui.BeginDisabled(draft.Pools.Count >= DadPresetBatchLimits.MaxPools);
-        if (ImGui.Button("Add pool"))
+        if (UiGui.Button("Add pool"))
         {
             draft.Pools.Add(new DadPresetBatchPool
             {
@@ -209,18 +217,18 @@ public sealed class DadPresetBatchWizardWindow : Window
         foreach (var pool in draft.Pools.ToList())
         {
             ImGui.PushID(pool.PoolId);
-            if (ImGui.CollapsingHeader($"{pool.DisplayName} | {pool.CrewCount} crews | {pool.DataCenterIds.Count} DC(s)##pool", ImGuiTreeNodeFlags.DefaultOpen))
+            if (UiGui.CollapsingHeader($"{pool.DisplayName} | {pool.CrewCount} crews | {pool.DataCenterIds.Count} DC(s)##pool", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 var name = pool.DisplayName;
                 var count = pool.CrewCount;
                 ImGui.SetNextItemWidth(260f);
-                if (ImGui.InputText("Name", ref name, DadPresetBatchLimits.MaxTextLength))
+                if (UiGui.InputText("Name", ref name, DadPresetBatchLimits.MaxTextLength))
                 {
                     pool.DisplayName = name;
                     InvalidatePreview();
                 }
                 ImGui.SetNextItemWidth(140f);
-                if (ImGui.InputInt("Crews", ref count))
+                if (UiGui.InputInt("Crews", ref count))
                 {
                     pool.CrewCount = Math.Max(1, count);
                     InvalidatePreview();
@@ -235,7 +243,7 @@ public sealed class DadPresetBatchWizardWindow : Window
                 foreach (var anchor in draft.AnchorLanes)
                     DrawAnchorAssignment(anchor, pool);
 
-                if (ImGui.SmallButton("Delete pool"))
+                if (UiGui.SmallButton("Delete pool"))
                 {
                     draft.Pools.Remove(pool);
                     foreach (var anchor in draft.AnchorLanes)
@@ -256,7 +264,7 @@ public sealed class DadPresetBatchWizardWindow : Window
             var selected = draft.Templates.Any(template => string.Equals(template.PlannerGroupId, group.GroupId, StringComparison.OrdinalIgnoreCase));
             var primarySlots = DadPlannerSlotRules.CountPrimarySlots(group.Slots);
             ImGui.PushID(group.GroupId);
-            if (ImGui.Checkbox($"{group.DisplayName} ({primarySlots} primary){(group.IsTemplate ? " [Template]" : string.Empty)}", ref selected))
+            if (UiGui.Checkbox($"{group.DisplayName} ({primarySlots} primary){(group.IsTemplate ? " [Template]" : string.Empty)}", ref selected))
             {
                 if (selected)
                 {
@@ -277,7 +285,7 @@ public sealed class DadPresetBatchWizardWindow : Window
             if (primarySlots != primaryCount)
             {
                 ImGui.SameLine();
-                ImGui.TextDisabled($"needs {primaryCount}");
+                UiGui.TextDisabled($"needs {primaryCount}");
             }
             ImGui.PopID();
         }
@@ -295,34 +303,34 @@ public sealed class DadPresetBatchWizardWindow : Window
             var format = template.PlanNameFormat;
             var schedule = template.ScheduleName;
             ImGui.SetNextItemWidth(260f);
-            if (ImGui.InputText("Activity label", ref activity, DadPresetBatchLimits.MaxTextLength))
+            if (UiGui.InputText("Activity label", ref activity, DadPresetBatchLimits.MaxTextLength))
             {
                 template.ActivityLabel = activity;
                 InvalidatePreview();
             }
             ImGui.SetNextItemWidth(360f);
-            if (ImGui.InputText("Plan name format", ref format, DadPresetBatchLimits.MaxTextLength))
+            if (UiGui.InputText("Plan name format", ref format, DadPresetBatchLimits.MaxTextLength))
             {
                 template.PlanNameFormat = format;
                 InvalidatePreview();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Tokens: {Activity}, {Pool}, {Index}, {Index:00}.");
+                UiGui.SetTooltip("Tokens: {Activity}, {Pool}, {Index}, {Index:00}.");
             ImGui.SetNextItemWidth(300f);
-            if (ImGui.InputText("Schedule name", ref schedule, DadPresetBatchLimits.MaxTextLength))
+            if (UiGui.InputText("Schedule name", ref schedule, DadPresetBatchLimits.MaxTextLength))
             {
                 template.ScheduleName = schedule;
                 InvalidatePreview();
             }
             var repeat = template.RepeatCount;
             ImGui.SetNextItemWidth(140f);
-            if (ImGui.InputInt("Repeat each entry", ref repeat))
+            if (UiGui.InputInt("Repeat each entry", ref repeat))
             {
                 template.RepeatCount = Math.Clamp(repeat, DadScheduleRules.MinRepeatCount, DadScheduleRules.MaxRepeatCount);
                 InvalidatePreview();
             }
             var daily = template.ScheduleCadence == DadScheduleCadence.DailyReset;
-            if (ImGui.Checkbox("DailyReset Schedule", ref daily))
+            if (UiGui.Checkbox("DailyReset Schedule", ref daily))
             {
                 template.ScheduleCadence = daily ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
                 if (!daily)
@@ -332,7 +340,7 @@ public sealed class DadPresetBatchWizardWindow : Window
             ImGui.SameLine();
             ImGui.BeginDisabled(!daily);
             var allDaily = template.SetDailyRewardChecksForAllPrimary;
-            if (ImGui.Checkbox("Set Daily on every primary row", ref allDaily))
+            if (UiGui.Checkbox("Set Daily on every primary row", ref allDaily))
             {
                 template.SetDailyRewardChecksForAllPrimary = allDaily;
                 InvalidatePreview();
@@ -343,7 +351,7 @@ public sealed class DadPresetBatchWizardWindow : Window
 
         ImGui.Separator();
         var combined = draft.CreateCombinedSchedule;
-        if (ImGui.Checkbox("Create interleaved combined Schedule", ref combined))
+        if (UiGui.Checkbox("Create interleaved combined Schedule", ref combined))
         {
             draft.CreateCombinedSchedule = combined;
             InvalidatePreview();
@@ -352,49 +360,49 @@ public sealed class DadPresetBatchWizardWindow : Window
         {
             var name = draft.CombinedScheduleName;
             ImGui.SetNextItemWidth(320f);
-            if (ImGui.InputText("Combined name", ref name, DadPresetBatchLimits.MaxTextLength))
+            if (UiGui.InputText("Combined name", ref name, DadPresetBatchLimits.MaxTextLength))
             {
                 draft.CombinedScheduleName = name;
                 InvalidatePreview();
             }
             var daily = draft.CombinedScheduleCadence == DadScheduleCadence.DailyReset;
-            if (ImGui.Checkbox("Combined DailyReset", ref daily))
+            if (UiGui.Checkbox("Combined DailyReset", ref daily))
             {
                 draft.CombinedScheduleCadence = daily ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
                 InvalidatePreview();
             }
-            ImGui.TextDisabled("Combined order: pool, crew number, then template order.");
+            UiGui.TextDisabled("Combined order: pool, crew number, then template order.");
         }
     }
 
     private void DrawPreviewStep()
     {
         DadUi.Heading("PREVIEW, APPLY, AND EXACT UNDO", "Preview is non-mutating. Apply refuses stale source state; Undo refuses any post-apply Plan or Schedule drift.");
-        if (ImGui.Button("Refresh exact preview"))
+        if (UiGui.Button("Refresh exact preview"))
         {
             catalog = plugin.RosterCatalogService.CurrentCatalog;
             preview = plugin.PresetBatchWizardService.BuildPreview(draft, catalog);
             status = preview.Summary;
         }
         preview ??= plugin.PresetBatchWizardService.BuildPreview(draft, catalog);
-        ImGui.TextWrapped(preview.Summary);
-        ImGui.TextDisabled($"Fingerprint {preview.Fingerprint}");
+        UiGui.TextWrapped(preview.Summary);
+        UiGui.TextDisabled($"Fingerprint {preview.Fingerprint}");
         foreach (var issue in preview.Issues)
         {
             var prefix = issue.IsBlocking ? "BLOCK" : "WARN";
-            ImGui.BulletText($"{prefix} {issue.SafeCode}: {issue.Message}");
+            UiGui.BulletText($"{prefix} {issue.SafeCode}: {issue.Message}");
         }
         if (preview.UnusedCounts.Count > 0)
         {
             var unused = preview.UnusedCounts.Sum(static count => count.UnusedCount);
-            ImGui.TextDisabled($"Unused selected rotating characters: {unused}");
+            UiGui.TextDisabled($"Unused selected rotating characters: {unused}");
         }
         foreach (var schedule in preview.Schedules)
-            ImGui.BulletText($"Schedule: {schedule.DisplayName} | {schedule.Entries.Count} entries | {schedule.Cadence}");
+            UiGui.BulletText($"Schedule: {schedule.DisplayName} | {schedule.Entries.Count} entries | {schedule.Cadence}");
         foreach (var plan in preview.PlannerGroups.Take(12))
-            ImGui.BulletText($"Plan: {plan.DisplayName} | {DadPlannerSlotRules.CountPrimarySlots(plan.Slots)} primary rows");
+            UiGui.BulletText($"Plan: {plan.DisplayName} | {DadPlannerSlotRules.CountPrimarySlots(plan.Slots)} primary rows");
         if (preview.PlannerGroups.Count > 12)
-            ImGui.TextDisabled($"...and {preview.PlannerGroups.Count - 12} more Plans in the frozen preview.");
+            UiGui.TextDisabled($"...and {preview.PlannerGroups.Count - 12} more Plans in the frozen preview.");
 
         var blocker = plugin.GetShareMutationBlocker();
         ImGui.BeginDisabled(!preview.CanApply || !string.IsNullOrWhiteSpace(blocker));
@@ -407,10 +415,10 @@ public sealed class DadPresetBatchWizardWindow : Window
         }
         ImGui.EndDisabled();
         if (!string.IsNullOrWhiteSpace(blocker))
-            ImGui.TextDisabled(blocker);
+            UiGui.TextDisabled(blocker);
 
         ImGui.BeginDisabled(!plugin.PresetBatchWizardService.CanUndo);
-        if (ImGui.Button("Undo last batch Apply exactly"))
+        if (UiGui.Button("Undo last batch Apply exactly"))
         {
             var result = plugin.PresetBatchWizardService.Undo(plugin.PresetBatchWizardService.UndoToken);
             status = result.Summary;
@@ -423,7 +431,7 @@ public sealed class DadPresetBatchWizardWindow : Window
     private bool DrawDataCenterChecklist(HashSet<uint> selected, string id)
     {
         var changed = false;
-        ImGui.TextUnformatted("Data centers");
+        UiGui.TextUnformatted("Data centers");
         foreach (var dataCenter in catalog.Characters
                      .Where(static character => character.Visibility == DadRosterVisibility.Active && character.DataCenterId.HasValue)
                      .GroupBy(static character => character.DataCenterId!.Value)
@@ -437,7 +445,7 @@ public sealed class DadPresetBatchWizardWindow : Window
                      .ThenBy(static item => item.Id))
         {
             var value = selected.Contains(dataCenter.Id);
-            if (ImGui.Checkbox($"{dataCenter.Name} ({dataCenter.Id})##{id}-{dataCenter.Id}", ref value))
+            if (UiGui.Checkbox($"{dataCenter.Name} ({dataCenter.Id})##{id}-{dataCenter.Id}", ref value))
             {
                 if (value)
                     selected.Add(dataCenter.Id);
@@ -461,12 +469,12 @@ public sealed class DadPresetBatchWizardWindow : Window
             ? null
             : GetCharacters(anchor.AccountKey).FirstOrDefault(character => DadRosterIdentity.Matches(character, assignment.Character));
         ImGui.SetNextItemWidth(420f);
-        if (ImGui.BeginCombo($"Anchor {anchor.AccountKey.Value}##anchor-{anchor.AccountKey.Value}", selected?.CharacterKey.Value ?? "(select exact character)"))
+        if (UiGui.BeginCombo($"Anchor {anchor.AccountKey.Value}##anchor-{anchor.AccountKey.Value}", selected?.CharacterKey.Value ?? "(select exact character)"))
         {
             foreach (var character in GetCharacters(anchor.AccountKey))
             {
                 var isSelected = selected != null && DadRosterIdentity.SameRow(selected, character);
-                if (ImGui.Selectable($"{character.CharacterKey.Value} [{character.DataCenterName}]", isSelected))
+                if (UiGui.Selectable($"{character.CharacterKey.Value} [{character.DataCenterName}]", isSelected))
                 {
                     if (assignment == null)
                     {
@@ -479,19 +487,19 @@ public sealed class DadPresetBatchWizardWindow : Window
                 if (isSelected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
     }
 
     private void DrawNavigation()
     {
         ImGui.BeginDisabled(stepIndex == 0);
-        if (ImGui.Button("Back"))
+        if (UiGui.Button("Back"))
             stepIndex--;
         ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.BeginDisabled(stepIndex >= 3);
-        if (ImGui.Button("Next"))
+        if (UiGui.Button("Next"))
             stepIndex++;
         ImGui.EndDisabled();
     }
@@ -499,7 +507,7 @@ public sealed class DadPresetBatchWizardWindow : Window
     private void DrawMoveButtons<T>(List<T> values, int index, string id)
     {
         ImGui.BeginDisabled(index <= 0);
-        if (ImGui.SmallButton($"Up##{id}-up"))
+        if (UiGui.SmallButton($"Up##{id}-up"))
         {
             (values[index - 1], values[index]) = (values[index], values[index - 1]);
             InvalidatePreview();
@@ -507,7 +515,7 @@ public sealed class DadPresetBatchWizardWindow : Window
         ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.BeginDisabled(index < 0 || index >= values.Count - 1);
-        if (ImGui.SmallButton($"Down##{id}-down"))
+        if (UiGui.SmallButton($"Down##{id}-down"))
         {
             (values[index + 1], values[index]) = (values[index], values[index + 1]);
             InvalidatePreview();

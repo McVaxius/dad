@@ -1,3 +1,4 @@
+using AethertekUI;
 using System.Globalization;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -49,7 +50,7 @@ internal sealed class DadPresetCrewEditor
         var actionWidth = ButtonWidth("+ Sub") + style.ItemSpacing.X + ButtonWidth("Remove");
 
         var allianceValidation = DadAlliancePartyFinderRules.ValidateSavedRows(group.Slots);
-        ImGui.TextUnformatted(
+        UiGui.TextUnformatted(
             $"Alliance PF assignments: A {allianceValidation.AllianceACount}/8 | " +
             $"B {allianceValidation.AllianceBCount}/8 | C {allianceValidation.AllianceCCount}/8 | " +
             $"D {allianceValidation.AllianceDCount}/8 | E {allianceValidation.AllianceECount}/8 | " +
@@ -92,15 +93,15 @@ internal sealed class DadPresetCrewEditor
             var slot = group.Slots[index];
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(slot.SlotId);
+            UiGui.TextUnformatted(slot.SlotId);
             if (DadPlannerSlotRules.IsLeaderSlot(slot.SlotId) && !slot.IsSubstitute && ImGui.IsItemHovered())
-                ImGui.SetTooltip("Slot1 is the party leader and inviter for this preset.");
+                UiGui.SetTooltip("Slot1 is the party leader and inviter for this preset.");
 
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(slot.IsSubstitute ? "Substitute" : "Primary");
+            UiGui.TextUnformatted(slot.IsSubstitute ? "Substitute" : "Primary");
             if (ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip(slot.IsSubstitute
+                UiGui.SetTooltip(slot.IsSubstitute
                     ? "This fallback is tried only when the primary row for the same slot cannot resolve."
                     : "Primary rows are resolved before substitutes for the same slot.");
             }
@@ -122,7 +123,7 @@ internal sealed class DadPresetCrewEditor
             DrawJob(plannerSnapshot, group, slot, index, idPrefix, changed);
             ImGui.EndDisabled();
             if (levelingMode && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Leveling Mode selects and freezes the next eligible job from the exact XADB ledger. The saved fixed job is preserved for ordinary runs.");
+                UiGui.SetTooltip("Leveling Mode selects and freezes the next eligible job from the exact XADB ledger. The saved fixed job is preserved for ordinary runs.");
 
             ImGui.TableNextColumn();
             DrawLoot(group, slot, index, idPrefix, changed);
@@ -132,7 +133,7 @@ internal sealed class DadPresetCrewEditor
             DrawLevelSeek(group, slot, index, idPrefix, changed);
             ImGui.EndDisabled();
             if (levelingMode && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Leveling Mode overrides Level seek. This saved target is preserved and becomes active again when Leveling Mode is disabled.");
+                UiGui.SetTooltip("Leveling Mode overrides Level seek. This saved target is preserved and becomes active again when Leveling Mode is disabled.");
 
             if (showDailyReward)
             {
@@ -152,7 +153,7 @@ internal sealed class DadPresetCrewEditor
             ImGui.TableNextColumn();
             if (!slot.IsSubstitute)
             {
-                if (ImGui.SmallButton($"+ Sub##{idPrefix}-sub-{index}"))
+                if (UiGui.SmallButton($"+ Sub##{idPrefix}-sub-{index}"))
                 {
                     group.Slots.Insert(FindSubstituteInsertIndex(group.Slots, index), new DadPlannerGroupSlot
                     {
@@ -170,11 +171,11 @@ internal sealed class DadPresetCrewEditor
                     break;
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Add an explicit fallback on this same physical row group. Primary is tried first, then substitutes in order.");
+                    UiGui.SetTooltip("Add an explicit fallback on this same physical row group. Primary is tried first, then substitutes in order.");
                 ImGui.SameLine();
             }
 
-            if (ImGui.SmallButton($"Remove##{idPrefix}-remove-{index}"))
+            if (UiGui.SmallButton($"Remove##{idPrefix}-remove-{index}"))
             {
                 DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                 group.Slots.RemoveAt(index);
@@ -182,7 +183,7 @@ internal sealed class DadPresetCrewEditor
                 break;
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(slot.IsSubstitute ? "Remove this substitute row." : "Remove this primary row and leave its existing substitutes as saved fallback rows.");
+                UiGui.SetTooltip(slot.IsSubstitute ? "Remove this substitute row." : "Remove this primary row and leave its existing substitutes as saved fallback rows.");
         }
 
         ImGui.EndTable();
@@ -202,18 +203,18 @@ internal sealed class DadPresetCrewEditor
         foreach (var header in headers)
         {
             ImGui.TableNextColumn();
-            ImGui.TableHeader(header);
+            UiGui.TableHeader(header);
             if (header == "Lv." && ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("Level seek target. Leave blank to disable it. The scheduler skips a preset only when every targeted exact row has a known level at or above its target.");
+                UiGui.SetTooltip("Level seek target. Leave blank to disable it. The scheduler skips a preset only when every targeted exact row has a known level at or above its target.");
             }
             else if (header == "Daily" && ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("Per-row opt-in: on a DailyReset Schedule only, inspect this effective character and skip the entry only when every checked row already received the selected roulette reward.");
+                UiGui.SetTooltip("Per-row opt-in: on a DailyReset Schedule only, inspect this effective character and skip the entry only when every checked row already received the selected roulette reward.");
             }
             else if (header == "Alliance" && ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("Explicit A-G subgroup for the debug-only Alliance Party Finder flow. Substitutes inherit their primary row.");
+                UiGui.SetTooltip("Explicit A-G subgroup for the debug-only Alliance Party Finder flow. Substitutes inherit their primary row.");
             }
         }
     }
@@ -226,7 +227,7 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         ImGui.BeginDisabled(slot.IsSubstitute);
-        if (ImGui.BeginCombo(
+        if (UiGui.BeginCombo(
                 $"##{idPrefix}-alliance-{index}",
                 slot.AllianceAssignment == DadAllianceAssignment.None
                     ? "None"
@@ -239,7 +240,7 @@ internal sealed class DadPresetCrewEditor
                              !selected &&
                              !DadAlliancePartyFinderRules.CanAssign(group.Slots, slot.SlotId, assignment);
                 ImGui.BeginDisabled(capped);
-                if (ImGui.Selectable(assignment.ToString(), selected) && !selected && !capped)
+                if (UiGui.Selectable(assignment.ToString(), selected) && !selected && !capped)
                 {
                     foreach (var row in group.Slots.Where(row =>
                                  string.Equals(row.SlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase)))
@@ -249,14 +250,14 @@ internal sealed class DadPresetCrewEditor
                     changed(group);
                 }
                 if (capped && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip($"Alliance {assignment} already has eight primary slots.");
+                    UiGui.SetTooltip($"Alliance {assignment} already has eight primary slots.");
                 ImGui.EndDisabled();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         ImGui.EndDisabled();
         if (slot.IsSubstitute && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip($"Substitutes inherit Alliance {slot.AllianceAssignment} from their primary row.");
+            UiGui.SetTooltip($"Substitutes inherit Alliance {slot.AllianceAssignment} from their primary row.");
     }
 
     private void DrawAccount(
@@ -280,7 +281,7 @@ internal sealed class DadPresetCrewEditor
                     : PairingLabel(pairedIsland, showDetails)
             : selectedAccount == null ? slot.RequiredAccountKey.Value : FormatAccountOption(selectedAccount, showDetails);
         ImGui.SetNextItemWidth(-1f);
-        var open = ImGui.BeginCombo($"##{idPrefix}-account-{index}", preview);
+        var open = UiGui.BeginCombo($"##{idPrefix}-account-{index}", preview);
         var hovered = ImGui.IsItemHovered();
         if (open)
         {
@@ -288,7 +289,7 @@ internal sealed class DadPresetCrewEditor
             {
                 var selected = string.Equals(slot.RequiredAccountKey.Value, option.AccountKey.Value, StringComparison.OrdinalIgnoreCase);
                 var label = $"{FormatAccountOption(option, showDetails)} ({option.AssignedCharacterCount})";
-                if (ImGui.Selectable(label, selected))
+                if (UiGui.Selectable(label, selected))
                 {
                     DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                     var accountChanged = !string.Equals(
@@ -327,7 +328,7 @@ internal sealed class DadPresetCrewEditor
                         pairedIsland.IslandId,
                         pairing.IslandId,
                         StringComparison.Ordinal);
-                    if (!ImGui.Selectable(PairingLabel(pairing, showDetails), selected))
+                    if (!UiGui.Selectable(PairingLabel(pairing, showDetails), selected))
                         continue;
                     DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                     slot.RequiredAccountKey = new DadAccountKey(string.Empty);
@@ -343,10 +344,10 @@ internal sealed class DadPresetCrewEditor
                     QueuePairedDirectoryRequest();
                 }
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         if (hovered)
-            ImGui.SetTooltip(preview);
+            UiGui.SetTooltip(preview);
     }
 
     private void DrawCharacter(
@@ -404,7 +405,7 @@ internal sealed class DadPresetCrewEditor
             new Vector2(pickerLayout.PopupWidth, pickerLayout.PopupMaxHeight));
         if (selectedUseOrange)
             ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
-        var open = ImGui.BeginCombo($"##{idPrefix}-character-{index}", preview);
+        var open = UiGui.BeginCombo($"##{idPrefix}-character-{index}", preview);
         if (selectedUseOrange)
             ImGui.PopStyleColor();
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
@@ -416,9 +417,9 @@ internal sealed class DadPresetCrewEditor
             var filterResult = DadCharacterFilterRules.Apply(
                 allCharacters,
                 plugin.CharacterFilterSessionState);
-            ImGui.TextDisabled($"Showing {filterResult.ResultCount} of {filterResult.TotalCount} character(s)");
+            UiGui.TextDisabled($"Showing {filterResult.ResultCount} of {filterResult.TotalCount} character(s)");
             var showConflictSummary = plugin.Configuration.ShowCharacterConflictSummary;
-            if (ImGui.Checkbox(
+            if (UiGui.Checkbox(
                     $"Show character conflict summary##{idPrefix}-character-conflict-summary-{index}",
                     ref showConflictSummary))
             {
@@ -435,7 +436,7 @@ internal sealed class DadPresetCrewEditor
                     true))
             {
                 var anyRowWidth = PositiveWidth(ImGui.GetContentRegionAvail().X);
-                if (ImGui.Selectable(
+                if (UiGui.Selectable(
                         "Any character on account",
                         slot.RequiredCharacterKey.IsEmpty,
                         ImGuiSelectableFlags.None,
@@ -464,7 +465,7 @@ internal sealed class DadPresetCrewEditor
                         new DadCharacterKey(character.CharacterKey));
                     if (warning.HasConflict)
                         ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
-                    var chosen = ImGui.Selectable(
+                    var chosen = UiGui.Selectable(
                             candidate,
                             selected,
                             ImGuiSelectableFlags.None,
@@ -488,11 +489,11 @@ internal sealed class DadPresetCrewEditor
                 }
             }
             ImGui.EndChild();
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         ImGui.EndDisabled();
         if (hovered)
-            ImGui.SetTooltip(preview);
+            UiGui.SetTooltip(preview);
     }
 
     private void DrawPairedIslandCharacter(
@@ -511,7 +512,7 @@ internal sealed class DadPresetCrewEditor
         var preview = selectedListing?.DisplayLabel ?? "Select authorized shared character";
         ImGui.SetNextItemWidth(-1f);
         ImGui.BeginDisabled(listings.Count == 0);
-        if (ImGui.BeginCombo($"##{idPrefix}-paired-character-{index}", preview))
+        if (UiGui.BeginCombo($"##{idPrefix}-paired-character-{index}", preview))
         {
             foreach (var listing in listings)
             {
@@ -520,7 +521,7 @@ internal sealed class DadPresetCrewEditor
                     listing.OpaqueCharacterId,
                     slot.SharedIdentity?.IdentityToken,
                     StringComparison.Ordinal);
-                if (ImGui.Selectable(
+                if (UiGui.Selectable(
                         $"{listing.DisplayLabel} | jobs {string.Join(", ", jobs)}",
                         selected) &&
                     DadAutoPartyCrewSlotBindingRules.TryBind(
@@ -536,45 +537,45 @@ internal sealed class DadPresetCrewEditor
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         ImGui.EndDisabled();
         if (listings.Count == 0)
         {
-            ImGui.TextDisabled("No current authorized character listings from this Paired DAD.");
+            UiGui.TextDisabled("No current authorized character listings from this Paired DAD.");
             ImGui.SameLine();
             var refreshInProgress = plugin.PairedDirectoryRefreshInProgress;
             var refreshCooldown = plugin.PairedDirectoryRefreshCooldownRemaining;
             ImGui.BeginDisabled(refreshInProgress || refreshCooldown > TimeSpan.Zero);
-            if (ImGui.SmallButton($"Refresh##{idPrefix}-paired-refresh-{index}"))
+            if (UiGui.SmallButton($"Refresh##{idPrefix}-paired-refresh-{index}"))
                 QueuePairedDirectoryRequest();
             ImGui.EndDisabled();
             if (refreshInProgress)
-                ImGui.TextDisabled("Paired DAD refresh is processing...");
+                UiGui.TextDisabled("Paired DAD refresh is processing...");
             else if (refreshCooldown > TimeSpan.Zero)
-                ImGui.TextDisabled(
+                UiGui.TextDisabled(
                     $"Paired DAD refresh available again in {Math.Ceiling(refreshCooldown.TotalSeconds):0}s.");
 
             var publication = plugin.AutoPartyEndpointService.ListingPublicationSnapshot;
             if (publication.Attempted)
             {
-                ImGui.TextDisabled(publication.OperatorStatus);
+                UiGui.TextDisabled(publication.OperatorStatus);
                 var nextAttempt = publication.NextAttemptAtUtc.HasValue
                     ? $"{(publication.Allowed ? "next publication" : "next retry")} " +
-                      publication.NextAttemptAtUtc.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)
+                      publication.NextAttemptAtUtc.Value.ToLocalTime().ToString("T", UiText.Current.Culture)
                     : "next retry not scheduled";
-                ImGui.TextDisabled(
+                UiGui.TextDisabled(
                     $"Published/queued {publication.PublishedOrQueuedListingCount} | " +
-                    $"last attempt {publication.LastAttemptAtUtc!.Value.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} | " +
+                    $"last attempt {publication.LastAttemptAtUtc!.Value.ToLocalTime().ToString("T", UiText.Current.Culture)} | " +
                     $"{nextAttempt}.");
             }
 
             var lastRefresh = plugin.LastPairedDirectoryRefresh;
             if (lastRefresh.CompletedAtUtc != DateTime.MinValue)
-                ImGui.TextDisabled(lastRefresh.OperatorStatus);
+                UiGui.TextDisabled(lastRefresh.OperatorStatus);
         }
         if (slot.SharedIdentity?.BindingId is { Length: > 0 } &&
-            ImGui.SmallButton($"Clear shared##{idPrefix}-paired-clear-{index}"))
+            UiGui.SmallButton($"Clear shared##{idPrefix}-paired-clear-{index}"))
         {
             DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
             slot.RequiredJobId = null;
@@ -598,7 +599,7 @@ internal sealed class DadPresetCrewEditor
         var jobs = listing == null ? [] : ParseAdvertisedJobs(listing);
         if (listing == null || jobs.Count == 0)
         {
-            ImGui.TextDisabled("Unavailable");
+            UiGui.TextDisabled("Unavailable");
             return;
         }
         var selectedJob = jobs.Contains(slot.RequiredJobId ?? 0)
@@ -607,7 +608,7 @@ internal sealed class DadPresetCrewEditor
         var selectedIndex = jobs.IndexOf(selectedJob);
         var labels = jobs.Select(ResolveClassJobAbbrev).ToArray();
         ImGui.SetNextItemWidth(-1f);
-        if (ImGui.Combo($"##{idPrefix}-paired-job-{index}", ref selectedIndex, labels, labels.Length) &&
+        if (UiGui.Combo($"##{idPrefix}-paired-job-{index}", ref selectedIndex, labels, labels.Length) &&
             DadAutoPartyCrewSlotBindingRules.TryBind(
                 plugin.Configuration.AutoParty,
                 slot,
@@ -673,24 +674,24 @@ internal sealed class DadPresetCrewEditor
     {
         var state = plugin.CharacterFilterSessionState;
         var search = state.CharacterSearch;
-        ImGui.TextUnformatted("Search");
+        UiGui.TextUnformatted("Search");
         ImGui.SetNextItemWidth(popupContentWidth);
-        if (ImGui.InputText($"##{idPrefix}-character-search-{index}", ref search, 128))
+        if (UiGui.InputText($"##{idPrefix}-character-search-{index}", ref search, 128))
             state.CharacterSearch = search;
 
         var filterResult = DadCharacterFilterRules.Apply(characters, state);
-        ImGui.TextUnformatted("Data Center");
+        UiGui.TextUnformatted("Data Center");
         ImGui.SetNextItemWidth(popupContentWidth);
-        if (ImGui.BeginCombo(
+        if (UiGui.BeginCombo(
                 $"##{idPrefix}-character-dc-{index}",
                 string.IsNullOrWhiteSpace(state.DataCenterName) ? "All Data Centers" : state.DataCenterName))
         {
-            if (ImGui.Selectable("All Data Centers", string.IsNullOrWhiteSpace(state.DataCenterName)))
+            if (UiGui.Selectable("All Data Centers", string.IsNullOrWhiteSpace(state.DataCenterName)))
                 state.DataCenterName = string.Empty;
             foreach (var dataCenter in filterResult.DataCenters)
             {
                 var selected = string.Equals(state.DataCenterName, dataCenter, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable(dataCenter, selected))
+                if (UiGui.Selectable(dataCenter, selected))
                 {
                     state.DataCenterName = dataCenter;
                     if (!string.IsNullOrWhiteSpace(state.WorldName) &&
@@ -702,31 +703,31 @@ internal sealed class DadPresetCrewEditor
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
 
         filterResult = DadCharacterFilterRules.Apply(characters, state);
-        ImGui.TextUnformatted("World (Server)");
+        UiGui.TextUnformatted("World (Server)");
         ImGui.SetNextItemWidth(popupContentWidth);
-        if (ImGui.BeginCombo(
+        if (UiGui.BeginCombo(
                 $"##{idPrefix}-character-world-{index}",
                 string.IsNullOrWhiteSpace(state.WorldName) ? "All Worlds" : state.WorldName))
         {
-            if (ImGui.Selectable("All Worlds", string.IsNullOrWhiteSpace(state.WorldName)))
+            if (UiGui.Selectable("All Worlds", string.IsNullOrWhiteSpace(state.WorldName)))
                 state.WorldName = string.Empty;
             foreach (var world in filterResult.Worlds)
             {
                 var selected = string.Equals(state.WorldName, world, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable(world, selected))
+                if (UiGui.Selectable(world, selected))
                     state.WorldName = world;
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
 
         ImGui.BeginDisabled(!state.HasFilters);
-        if (ImGui.SmallButton($"Clear Filters##{idPrefix}-character-filter-clear-{index}"))
+        if (UiGui.SmallButton($"Clear Filters##{idPrefix}-character-filter-clear-{index}"))
             state.Clear();
         ImGui.EndDisabled();
     }
@@ -759,7 +760,7 @@ internal sealed class DadPresetCrewEditor
         var preview = !hasRequestedJob
             ? "Any"
             : selectedJob != null
-                ? $"{selectedJob.Abbreviation} {selectedJob.Level.ToString(CultureInfo.InvariantCulture)}"
+                ? $"{selectedJob.Abbreviation} {selectedJob.Level.ToString(UiText.Current.Culture)}"
                 : $"! {ResolveClassJobAbbrev(slot.RequiredJobId!.Value)}";
         var disabled = selectedCharacter == null && !hasRequestedJob;
 
@@ -767,7 +768,7 @@ internal sealed class DadPresetCrewEditor
         ImGui.BeginDisabled(disabled);
         if (invalidSavedJob)
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.4f, 0.35f, 1f));
-        var open = ImGui.BeginCombo($"##{idPrefix}-job-{index}", preview);
+        var open = UiGui.BeginCombo($"##{idPrefix}-job-{index}", preview);
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         if (invalidSavedJob)
             ImGui.PopStyleColor();
@@ -775,7 +776,7 @@ internal sealed class DadPresetCrewEditor
         if (open)
         {
             var anySelected = !hasRequestedJob;
-            if (ImGui.Selectable("Any (use current job)", anySelected))
+            if (UiGui.Selectable("Any (use current job)", anySelected))
             {
                 slot.RequiredJobId = null;
                 changed(group);
@@ -786,7 +787,7 @@ internal sealed class DadPresetCrewEditor
             foreach (var option in options)
             {
                 var selected = option.JobId == slot.RequiredJobId;
-                if (ImGui.Selectable($"{option.Abbreviation} Lv {option.Level.ToString(CultureInfo.InvariantCulture)}", selected))
+                if (UiGui.Selectable($"{option.Abbreviation} Lv {option.Level.ToString(UiText.Current.Culture)}", selected))
                 {
                     slot.RequiredJobId = option.JobId;
                     changed(group);
@@ -794,7 +795,7 @@ internal sealed class DadPresetCrewEditor
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         ImGui.EndDisabled();
 
@@ -807,19 +808,19 @@ internal sealed class DadPresetCrewEditor
                 : learnedSavedJob == null
                     ? "This job is not present in the exact character's learned-job ledger."
                     : $"{learnedSavedJob.Abbreviation} does not match the selected {FormatRole(slot.RequiredRole)} role.";
-            ImGui.SetTooltip($"Invalid saved job #{slot.RequiredJobId!.Value.ToString(CultureInfo.InvariantCulture)}. {reason} Choose Any or a compatible learned job; DAD will not rewrite the saved value until you explicitly change Role or Job.");
+            UiGui.SetTooltip($"Invalid saved job #{slot.RequiredJobId!.Value.ToString(UiText.Current.Culture)}. {reason} Choose Any or a compatible learned job; DAD will not rewrite the saved value until you explicitly change Role or Job.");
         }
         else if (selectedCharacter == null)
         {
-            ImGui.SetTooltip("Select an exact character before choosing a job. Any uses the character's current job.");
+            UiGui.SetTooltip("Select an exact character before choosing a job. Any uses the character's current job.");
         }
         else if (selectedJob != null)
         {
-            ImGui.SetTooltip($"{selectedJob.Abbreviation} at learned level {selectedJob.Level.ToString(CultureInfo.InvariantCulture)}. Choices come from the exact character's durable learned-job ledger.");
+            UiGui.SetTooltip($"{selectedJob.Abbreviation} at learned level {selectedJob.Level.ToString(UiText.Current.Culture)}. Choices come from the exact character's durable learned-job ledger.");
         }
         else
         {
-            ImGui.SetTooltip("Any uses the selected character's current job. The dropdown retains full learned-job details.");
+            UiGui.SetTooltip("Any uses the selected character's current job. The dropdown retains full learned-job details.");
         }
     }
 
@@ -832,13 +833,13 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         ImGui.SetNextItemWidth(-1f);
-        if (!ImGui.BeginCombo($"##{idPrefix}-role-{index}", FormatRole(slot.RequiredRole)))
+        if (!UiGui.BeginCombo($"##{idPrefix}-role-{index}", FormatRole(slot.RequiredRole)))
             return;
 
         foreach (var role in Enum.GetValues<DadPartyRole>())
         {
             var selected = role == slot.RequiredRole;
-            if (ImGui.Selectable(FormatRole(role), selected) && !selected)
+            if (UiGui.Selectable(FormatRole(role), selected) && !selected)
             {
                 var selectedCharacter = ResolveCharacter(plannerSnapshot, slot);
                 var compatibleJobs = FilterJobOptions(BuildJobOptions(selectedCharacter), role);
@@ -859,7 +860,7 @@ internal sealed class DadPresetCrewEditor
             if (selected)
                 ImGui.SetItemDefaultFocus();
         }
-        ImGui.EndCombo();
+        UiGui.EndCombo();
     }
 
     private static void DrawLoot(
@@ -870,12 +871,12 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         ImGui.SetNextItemWidth(-1f);
-        if (ImGui.BeginCombo($"##{idPrefix}-loot-{index}", slot.AdsLootMode.ToString()))
+        if (UiGui.BeginCombo($"##{idPrefix}-loot-{index}", slot.AdsLootMode.ToString()))
         {
             foreach (var mode in Enum.GetValues<DadAdsLootMode>())
             {
                 var selected = mode == slot.AdsLootMode;
-                if (ImGui.Selectable(mode.ToString(), selected))
+                if (UiGui.Selectable(mode.ToString(), selected))
                 {
                     slot.AdsLootMode = mode;
                     changed(group);
@@ -883,10 +884,10 @@ internal sealed class DadPresetCrewEditor
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("NoChange preserves ADS lootMode. Need, Greed, and Pass are patched on the exact selected worker before queueing.");
+            UiGui.SetTooltip("NoChange preserves ADS lootMode. Need, Greed, and Pass are patched on the exact selected worker before queueing.");
     }
 
     private static void DrawLevelSeek(
@@ -896,10 +897,10 @@ internal sealed class DadPresetCrewEditor
         string idPrefix,
         Action<DadPlannerGroup> changed)
     {
-        var text = slot.LevelSeekTarget?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-        var width = ImGui.CalcTextSize("999").X + (ImGui.GetStyle().FramePadding.X * 2f);
+        var text = slot.LevelSeekTarget?.ToString(UiText.Current.Culture) ?? string.Empty;
+        var width = MaterialText.Measure("999").X + (ImGui.GetStyle().FramePadding.X * 2f);
         ImGui.SetNextItemWidth(width);
-        if (ImGui.InputText($"##{idPrefix}-level-{index}", ref text, 4))
+        if (UiGui.InputText($"##{idPrefix}-level-{index}", ref text, 4))
         {
             var trimmed = text.Trim();
             if (trimmed.Length == 0)
@@ -907,7 +908,7 @@ internal sealed class DadPresetCrewEditor
                 slot.LevelSeekTarget = null;
                 changed(group);
             }
-            else if (int.TryParse(trimmed, NumberStyles.None, CultureInfo.InvariantCulture, out var level) && level is >= 1 and <= 999)
+            else if (int.TryParse(trimmed, NumberStyles.None, UiText.Current.Culture, out var level) && level is >= 1 and <= 999)
             {
                 slot.LevelSeekTarget = level;
                 changed(group);
@@ -915,7 +916,7 @@ internal sealed class DadPresetCrewEditor
         }
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip(
+            UiGui.SetTooltip(
                 "With STOP Target level, the first selected primary row inherits the bottom target when blank; its row value overrides it, and other nonblank rows add required targets. Any uses that loaded character's live current job/level; a specific job uses its ledger. With other STOP modes, blank disables this row and the existing Level seek skip requires every targeted exact row.");
         }
     }
@@ -928,14 +929,14 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         var enabled = slot.SkipIfDailyRouletteRewardReceived;
-        if (ImGui.Checkbox($"##{idPrefix}-daily-reward-{index}", ref enabled))
+        if (UiGui.Checkbox($"##{idPrefix}-daily-reward-{index}", ref enabled))
         {
             slot.SkipIfDailyRouletteRewardReceived = enabled;
             changed(group);
         }
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Default off. Used only by a Daily Roulette preset running through a DailyReset Schedule. Uncertain reward truth runs the preset normally.");
+            UiGui.SetTooltip("Default off. Used only by a Daily Roulette preset running through a DailyReset Schedule. Uncertain reward truth runs the preset normally.");
         }
     }
 
@@ -947,7 +948,7 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         ImGui.SetNextItemWidth(-1f);
-        var open = ImGui.BeginCombo($"##{idPrefix}-wake-{index}", CompactWakeLabel(slot.WakePolicy, plugin.Configuration.DebugUiEnabled));
+        var open = UiGui.BeginCombo($"##{idPrefix}-wake-{index}", CompactWakeLabel(slot.WakePolicy, plugin.Configuration.DebugUiEnabled));
         var hovered = ImGui.IsItemHovered();
         if (open)
         {
@@ -956,7 +957,7 @@ internal sealed class DadPresetCrewEditor
                 var selected = policy == slot.WakePolicy;
                 var disabledStub = policy == DadSchedulerWakePolicy.LoadCharacterIfOnline && !selected;
                 ImGui.BeginDisabled(disabledStub);
-                if (ImGui.Selectable(FullWakeLabel(policy, plugin.Configuration.DebugUiEnabled), selected))
+                if (UiGui.Selectable(FullWakeLabel(policy, plugin.Configuration.DebugUiEnabled), selected))
                 {
                     slot.WakePolicy = policy;
                     changed(group);
@@ -964,14 +965,14 @@ internal sealed class DadPresetCrewEditor
                 var optionHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
                 ImGui.EndDisabled();
                 if (optionHovered)
-                    ImGui.SetTooltip(WakeDescription(policy));
+                    UiGui.SetTooltip(WakeDescription(policy));
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         if (hovered)
-            ImGui.SetTooltip(WakeDescription(slot.WakePolicy));
+            UiGui.SetTooltip(WakeDescription(slot.WakePolicy));
     }
 
     private static void DrawLaunchProfile(
@@ -989,11 +990,11 @@ internal sealed class DadPresetCrewEditor
             ? preview
             : $"{selectedProfile.DisplayName} | {selectedProfile.AccountKey}";
         ImGui.SetNextItemWidth(-1f);
-        var open = ImGui.BeginCombo($"##{idPrefix}-profile-{index}", preview);
+        var open = UiGui.BeginCombo($"##{idPrefix}-profile-{index}", preview);
         var hovered = ImGui.IsItemHovered();
         if (open)
         {
-            if (ImGui.Selectable("Auto", string.IsNullOrWhiteSpace(slot.LaunchProfileId)))
+            if (UiGui.Selectable("Auto", string.IsNullOrWhiteSpace(slot.LaunchProfileId)))
             {
                 slot.LaunchProfileId = string.Empty;
                 changed(group);
@@ -1004,7 +1005,7 @@ internal sealed class DadPresetCrewEditor
                 var label = string.IsNullOrWhiteSpace(profile.AccountKey.Value)
                     ? profile.DisplayName
                     : $"{profile.DisplayName} | {profile.AccountKey}";
-                if (ImGui.Selectable(label, selected))
+                if (UiGui.Selectable(label, selected))
                 {
                     slot.LaunchProfileId = profile.ProfileId;
                     changed(group);
@@ -1012,10 +1013,10 @@ internal sealed class DadPresetCrewEditor
                 if (selected)
                     ImGui.SetItemDefaultFocus();
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         if (hovered)
-            ImGui.SetTooltip(fullPreview);
+            UiGui.SetTooltip(fullPreview);
     }
 
     private DadAcquiredCharacter? ResolveCharacter(DadPlannerUiSnapshot plannerSnapshot, DadPlannerGroupSlot slot)
@@ -1073,7 +1074,7 @@ internal sealed class DadPresetCrewEditor
         if (classJobAbbrevCache.TryGetValue(jobId, out var cached))
             return cached;
 
-        var resolved = $"Job {jobId.ToString(CultureInfo.InvariantCulture)}";
+        var resolved = $"Job {jobId.ToString(UiText.Current.Culture)}";
         try
         {
             var sheet = Plugin.DataManager.GetExcelSheet<ClassJob>();
@@ -1131,7 +1132,7 @@ internal sealed class DadPresetCrewEditor
     private static void DrawOrangeText(string message)
     {
         ImGui.PushStyleColor(ImGuiCol.Text, ConflictOrange);
-        ImGui.TextUnformatted(message);
+        UiGui.TextUnformatted(message);
         ImGui.PopStyleColor();
     }
 
@@ -1169,11 +1170,11 @@ internal sealed class DadPresetCrewEditor
         };
 
     private static float FixedTextWidth(string representative)
-        => MathF.Ceiling(ImGui.CalcTextSize(representative).X + 4f);
+        => MathF.Ceiling(MaterialText.Measure(representative).X + 4f);
 
     private static float FixedFrameWidth(string representative)
-        => MathF.Ceiling(ImGui.CalcTextSize(representative).X + (ImGui.GetStyle().FramePadding.X * 2f) + 4f);
+        => MathF.Ceiling(MaterialText.Measure(representative).X + (ImGui.GetStyle().FramePadding.X * 2f) + 4f);
 
     private static float ButtonWidth(string text)
-        => MathF.Ceiling(ImGui.CalcTextSize(text).X + (ImGui.GetStyle().FramePadding.X * 2f));
+        => MathF.Ceiling(MaterialText.Measure(text).X + (ImGui.GetStyle().FramePadding.X * 2f));
 }

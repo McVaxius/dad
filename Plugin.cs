@@ -1,3 +1,8 @@
+using AethertekUI;
+using AethertekUI.Dalamud;
+using Dalamud.Interface.Utility;
+using Dalamud.Bindings.ImGui;
+using System.Numerics;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -47,6 +52,23 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
+
+    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
+
+    private MaterialTextHost shapedText = null!;
+    private DadFonts uiFonts = null!;
+    private UiText uiText = null!;
+    private MaterialTheme uiTheme = null!;
+    private MaterialOptions<string> languageOptions = null!;
+    private string appliedLanguage = string.Empty;
+    private uint appliedAccent;
+    private Vector3 accentDraft;
+    private int checkedFontGeneration = -1;
+    private bool fontIssueLogged;
+    private readonly MaterialWindowFold fontStatusFold = new();
+    private readonly MaterialWindowDecorations fontStatusDecorations = new();
+    private readonly Dictionary<string, MaterialWindowOpacity> windowOpacities = new();
+    private readonly Action<ImGuiWindowPtr> prepareFontStatusDecorations;
 
     public Configuration Configuration { get; }
     public ConfigManager ConfigManager { get; }
@@ -205,6 +227,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
+        prepareFontStatusDecorations = fontStatusDecorations.Prepare;
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(
             Path.Combine(PluginInterface.ConfigDirectory.FullName, "autoparty", "identity"));
@@ -520,7 +543,8 @@ public sealed class Plugin : IDalamudPlugin
             HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} quick, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} shopping, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
-        PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
+        ApplyAppearance();
+        PluginInterface.UiBuilder.Draw += DrawUi;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
         lifecycleUpdateLoop = new DadLifecycleUpdateLoop(CreateLifecycleSteps(), RunFrameworkStep, requireAllSteps: true);
@@ -570,6 +594,124 @@ public sealed class Plugin : IDalamudPlugin
         Log.Information("[dad] Plugin loaded.");
     }
 
+    private void DrawUi()
+    {
+        ApplyAppearance();
+        if (!WindowSystem.Windows.Any(window => window.IsOpen)) return;
+        using var text = uiText.Enter();
+        using var shaping = shapedText.Push();
+        if (!uiFonts.Ready)
+        {
+            if (!fontIssueLogged && uiFonts.LoadException is { } error)
+            { Log.Error(error,"[dad] Required UI fonts failed to load."); fontIssueLogged=true; }
+            DrawFontStatus(uiFonts.LoadException is null);
+            return;
+        }
+        if (checkedFontGeneration != uiFonts.Generation)
+        {
+            try
+            {
+                var generation=uiFonts.Generation;
+                uiFonts.CheckGlyphs(uiText.RequiredText, shapedText.Renderer);
+                checkedFontGeneration=generation;
+            }
+            catch (Exception error)
+            {
+                if (!fontIssueLogged) { Log.Error(error,"[dad] Required UI glyph coverage failed."); fontIssueLogged=true; }
+                DrawFontStatus(false);return;
+            }
+        }
+        DadPresentation.Compact=Configuration.UiCompact;
+        using var theme=MaterialTheme.Push(uiTheme,ImGuiHelpers.GlobalScale,MaterialStyleMode.ColorsOnly);
+        using var geometry=new MaterialStyleScope();
+        var scale=ImGuiHelpers.GlobalScale;
+        geometry.Style(ImGuiStyleVar.WindowPadding,new Vector2(Configuration.UiCompact?10:14)*scale);
+        geometry.Style(ImGuiStyleVar.FramePadding,new Vector2(Configuration.UiCompact?8:12,Configuration.UiCompact?4:6)*scale);
+        geometry.Style(ImGuiStyleVar.ItemSpacing,new Vector2(Configuration.UiCompact?8:12,Configuration.UiCompact?5:8)*scale);
+        geometry.Style(ImGuiStyleVar.CellPadding,new Vector2(Configuration.UiCompact?8:12,Configuration.UiCompact?5:8)*scale);
+        geometry.Style(ImGuiStyleVar.FrameRounding,4*scale);
+        geometry.Style(ImGuiStyleVar.ChildRounding,4*scale);
+        geometry.Style(ImGuiStyleVar.FrameBorderSize,scale);
+        using var font=uiFonts.Push(UiFontRole.Body);
+        using var chrome = MaterialWindowChrome.Push();
+        WindowSystem.Draw();
+        foreach (var window in WindowSystem.Windows)
+            if (window.IsOpen) ApplyWindowOpacity(window.WindowName);
+    }
+
+    private void DrawFontStatus(bool loading)
+    {
+        using var theme = MaterialTheme.Push(uiTheme, ImGuiHelpers.GlobalScale, MaterialStyleMode.ColorsOnly);
+        using var chrome = MaterialWindowChrome.Push();
+        ImGui.SetNextWindowSize(new Vector2(460*ImGuiHelpers.GlobalScale,0));
+        fontStatusFold.PreDraw("DAD##FontStatus", null, null, false, prepareFontStatusDecorations);
+        var visible = ImGui.Begin("DAD##FontStatus",ImGuiWindowFlags.AlwaysAutoResize);
+        try
+        {
+            if (visible)
+            {
+                fontStatusDecorations.Paint();
+                MaterialText.TextWrapped(UiText.T(loading?"Loading UI fonts...":"UI fonts failed to load. See the plugin log."));
+            }
+        }
+        finally
+        {
+            ImGui.End();
+            fontStatusDecorations.Paint();
+            fontStatusFold.PostDraw();
+            ApplyWindowOpacity("DAD##FontStatus");
+        }
+    }
+
+    private void ApplyAppearance()
+    {
+        shapedText ??= new(TextureProvider);
+        var language=UiText.Languages.Any(l=>l.Code==Configuration.UiLanguage)?Configuration.UiLanguage:"en";
+        if (language!=appliedLanguage)
+        {
+            uiFonts?.Dispose();uiText?.Dispose();
+            uiText=new(language,role=>uiFonts!.Push(role));
+            uiFonts=new(PluginInterface.UiBuilder.FontAtlas,uiText.GlyphRanges(),language);
+            languageOptions=new(UiText.Languages.Select(l=>new MaterialOption<string>(l.Code,l.Code,l.Name)).ToArray());
+            appliedLanguage=language;checkedFontGeneration=-1;fontIssueLogged=false;
+        }
+        if (uiTheme is null || appliedAccent!=(Configuration.UiAccentRgb&0xFFFFFF))
+        {
+            appliedAccent=Configuration.UiAccentRgb&0xFFFFFF;
+            uiTheme=DadPresentation.Theme(appliedAccent);
+            var rgb=DadPresentation.Rgb(appliedAccent);accentDraft=new(rgb.X,rgb.Y,rgb.Z);
+        }
+    }
+
+    private float AppearanceLanguageWidth()
+        => Math.Max(112,UiText.Languages.Max(language=>MaterialText.Measure(language.Name).X)/MaterialTheme.Metrics.Scale+44);
+
+    public float AppearanceSelectorWidth() => AppearanceLanguageWidth();
+
+    public void DrawAppearanceSelector(bool includeAccent = true)
+    {
+        var language=appliedLanguage;
+        using var controls=MaterialControls.Push(DadPresentation.Controls(28,18));
+        MaterialLayout.FitNextItemWidth(0,(AppearanceSelectorWidth() + (includeAccent ? 76 : 0))*MaterialTheme.Metrics.Scale);
+        ImGui.BeginGroup();
+        var changed = includeAccent
+            ? MaterialAppearanceSelector.Draw("appearance", ref accentDraft, ref language, languageOptions,
+                new(UiText.T("Color"), UiText.T("Language"), UiText.T("Teal"), UiText.T("Blue"), UiText.T("Pink"), UiText.T("Custom RGB")), languageWidth: AppearanceLanguageWidth())
+            : new MaterialAppearanceChange(false, MaterialAppearanceSelector.DrawLanguage("appearance", ref language, languageOptions, AppearanceLanguageWidth()));
+        ImGui.EndGroup();
+        if (changed.AccentChanged) Configuration.UiAccentRgb=((uint)Math.Clamp((int)MathF.Round(accentDraft.X*255),0,255)<<16)
+            |((uint)Math.Clamp((int)MathF.Round(accentDraft.Y*255),0,255)<<8)|(uint)Math.Clamp((int)MathF.Round(accentDraft.Z*255),0,255);
+        if (changed.LanguageChanged) Configuration.UiLanguage=language;
+        if (changed.AccentChanged || changed.LanguageChanged) Configuration.Save();
+    }
+
+    public void DrawCompactPreference()
+    {
+        var compact=Configuration.UiCompact;
+        if (ImGui.Checkbox("C##dad-compact",ref compact)) { Configuration.UiCompact=compact;Configuration.Save(); }
+        if (ImGui.IsItemHovered()) MaterialText.SetTooltip(UiText.T("Compact mode"));
+    }
+
     public void Dispose()
     {
         RunLocalLifecycleCleanup(new DadStopAllRequest
@@ -586,7 +728,10 @@ public sealed class Plugin : IDalamudPlugin
         PartyInviteGateway.Reset();
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
-        PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
+        PluginInterface.UiBuilder.Draw -= DrawUi;
+        uiFonts?.Dispose();
+        uiText?.Dispose();
+        shapedText?.Dispose();
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         CommandManager.RemoveHandler(PluginInfo.Command);
@@ -5658,5 +5803,59 @@ public sealed class Plugin : IDalamudPlugin
         CharacterIntelligenceService.RefreshLocalCharacterPool("login", logRefresh: false);
         RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool);
         PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint);
+    }
+
+    private void ApplyWindowOpacity(string windowName)
+    {
+        if (!windowOpacities.TryGetValue(windowName, out var opacity))
+            windowOpacities.Add(windowName, opacity = new MaterialWindowOpacity());
+        opacity.Apply(windowName, Configuration.UiWindowOpacityPercent / 100f,
+            Configuration.UiTransparencyEnabled, Configuration.UiAutoFade,
+            Configuration.UiFadedOpacityPercent / 100f, Configuration.UiUnfocusedDelaySeconds);
+    }
+
+    internal void DrawTransparencyToggle()
+    {
+        var enabled = Configuration.UiTransparencyEnabled;
+        if (UiGui.Checkbox("Transparency##MainWindow", ref enabled))
+        { Configuration.UiTransparencyEnabled = enabled; Configuration.Save(); }
+    }
+
+    internal void DrawWindowAppearanceSettings()
+    {
+        if (!MaterialText.CollapsingHeader(UiText.T("Window appearance") + "###UiWindowAppearance")) return;
+        DrawCompactPreference();
+        ImGui.SameLine();
+        MaterialText.Text(UiText.T("Compact mode"));
+        DrawAppearanceSelector();
+        var compactVisible = Configuration.UiCompactVisibleOnMainWindow;
+        if (UiGui.Checkbox("Compact visible on main window", ref compactVisible))
+        { Configuration.UiCompactVisibleOnMainWindow = compactVisible; Configuration.Save(); }
+        var languageVisible = Configuration.UiLanguageVisibleOnMainWindow;
+        if (UiGui.Checkbox("Language visible on main window", ref languageVisible))
+        { Configuration.UiLanguageVisibleOnMainWindow = languageVisible; Configuration.Save(); }
+        var enabled = Configuration.UiTransparencyEnabled;
+        if (UiGui.Checkbox("Transparency", ref enabled))
+        { Configuration.UiTransparencyEnabled = enabled; Configuration.Save(); }
+        MaterialText.Text(UiText.T("Opacity (%)"));
+        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
+        var normalOpacity = Configuration.UiWindowOpacityPercent;
+        if (ImGui.InputInt("##UiWindowOpacityPercent", ref normalOpacity))
+        { Configuration.UiWindowOpacityPercent = normalOpacity; Configuration.Save(); }
+        var autoFade = Configuration.UiAutoFade;
+        if (UiGui.Checkbox("Auto-fade when unfocused", ref autoFade))
+        { Configuration.UiAutoFade = autoFade; Configuration.Save(); }
+        ImGui.BeginDisabled(!autoFade);
+        MaterialText.Text(UiText.T("Unfocused opacity (%)"));
+        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
+        var fadedOpacity = Configuration.UiFadedOpacityPercent;
+        if (ImGui.InputInt("##UiFadedOpacityPercent", ref fadedOpacity))
+        { Configuration.UiFadedOpacityPercent = fadedOpacity; Configuration.Save(); }
+        MaterialText.Text(UiText.T("Unfocused delay (seconds)"));
+        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
+        var delay = Configuration.UiUnfocusedDelaySeconds;
+        if (ImGui.InputInt("##UiUnfocusedDelaySeconds", ref delay))
+        { Configuration.UiUnfocusedDelaySeconds = delay; Configuration.Save(); }
+        ImGui.EndDisabled();
     }
 }

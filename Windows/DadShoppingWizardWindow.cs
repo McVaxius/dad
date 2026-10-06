@@ -1,3 +1,5 @@
+using AethertekUI;
+using AethertekUI.Dalamud;
 using System.Numerics;
 using dad.Models;
 using dad.Services;
@@ -8,6 +10,7 @@ namespace dad.Windows;
 
 public sealed class DadShoppingWizardWindow : Window
 {
+    private readonly MaterialWindowMotion motion = new();
     private readonly Plugin plugin;
     private readonly DadShoppingWizardDraft state = new();
     private DadShoppingAssociationOwnerKind kind => state.DestinationKind;
@@ -47,7 +50,7 @@ public sealed class DadShoppingWizardWindow : Window
 
     private DadPlannerGroup? Plan => plugin.Configuration.PlannerGroups.FirstOrDefault(value => value.GroupId == destinationId);
     private DadScheduleDefinition? Schedule => plugin.Configuration.Schedules.FirstOrDefault(value => value.ScheduleId == destinationId);
-    private string DestinationName => kind == DadShoppingAssociationOwnerKind.Plan ? Plan?.DisplayName ?? "Unavailable preset" : Schedule?.DisplayName ?? "Unavailable schedule";
+    private string DestinationName => kind == DadShoppingAssociationOwnerKind.Plan ? Plan?.DisplayName ?? UiText.T("Unavailable preset") : Schedule?.DisplayName ?? UiText.T("Unavailable schedule");
     private DadAdsShopListPresetSummary? SelectedList => catalog?.Presets.SingleOrDefault(value => value.PresetId == draft.PresetId);
 
     private void SelectDestination(DadShoppingAssociationOwnerKind destinationKind, string id)
@@ -77,15 +80,21 @@ public sealed class DadShoppingWizardWindow : Window
         catalogStatus = result.Summary;
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
-        ImGui.TextUnformatted($"Step {step + 1} of 4 — {Steps[step]}");
-        ImGui.TextWrapped("Choose an ADS list for a saved preset or schedule. Only Save shopping list commits changes. This wizard never starts a run or purchases items.");
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
+        MaterialText.Text(UiText.F("Step {0} of 4 — {1}", step + 1, UiText.T(Steps[step])));
+        UiGui.TextWrapped("Choose an ADS list for a saved preset or schedule. Only Save shopping list commits changes. This wizard never starts a run or purchases items.");
         ImGui.Separator();
         if (saved)
         {
-            ImGui.TextWrapped(status);
-            if (ImGui.Button("Close"))
+            MaterialText.TextWrapped(status);
+            if (UiGui.Button("Close"))
                 IsOpen = false;
             return;
         }
@@ -99,13 +108,13 @@ public sealed class DadShoppingWizardWindow : Window
         }
         ImGui.Spacing();
         if (!string.IsNullOrEmpty(status))
-            ImGui.TextWrapped(status);
+            MaterialText.TextWrapped(status);
         ImGui.Separator();
-        if (ImGui.Button("Cancel"))
+        if (UiGui.Button("Cancel"))
             IsOpen = false;
         ImGui.SameLine();
         ImGui.BeginDisabled(step == 0);
-        if (ImGui.Button("Back"))
+        if (UiGui.Button("Back"))
         {
             state.Back();
             status = string.Empty;
@@ -114,10 +123,10 @@ public sealed class DadShoppingWizardWindow : Window
         ImGui.SameLine();
         if (step < 3)
         {
-            if (ImGui.Button("Next") && ValidateStep(out status))
+            if (UiGui.Button("Next") && ValidateStep(out status))
                 state.Next();
         }
-        else if (ImGui.Button("Save shopping list"))
+        else if (UiGui.Button("Save shopping list"))
         {
             RefreshCatalog();
             if (!ValidateStep(out status))
@@ -130,38 +139,39 @@ public sealed class DadShoppingWizardWindow : Window
                     : plugin.TrySaveScheduleShoppingAssociation(destinationId, candidate, out error);
                 return (accepted, error);
             }, out status);
+            status = UiText.T(status);
             if (saved)
-                status = $"Shopping list saved and persisted for {DestinationName}.";
+                status = UiText.F("Shopping list saved and persisted for {0}.", DestinationName);
         }
     }
 
     private void DrawDestination()
     {
         var selectedKind = (int)kind;
-        if (ImGui.Combo("Destination type", ref selectedKind, new[] { "Saved preset", "Schedule" }, 2))
+        if (UiGui.Combo("Destination type", ref selectedKind, new[] { "Saved preset", "Schedule" }, 2))
             SelectDestination((DadShoppingAssociationOwnerKind)selectedKind, string.Empty);
-        if (ImGui.BeginCombo("Destination", string.IsNullOrEmpty(destinationId) ? "Choose a destination" : DestinationName))
+        if (BeginRawCombo("Destination", string.IsNullOrEmpty(destinationId) ? UiText.T("Choose a destination") : DestinationName))
         {
             var destinations = kind == DadShoppingAssociationOwnerKind.Plan
                 ? plugin.Configuration.PlannerGroups.Where(value => !value.IsTemplate).Select(value => (Id: value.GroupId, Name: value.DisplayName))
                 : plugin.Configuration.Schedules.Select(value => (Id: value.ScheduleId, Name: value.DisplayName));
             foreach (var item in destinations)
-                if (ImGui.Selectable($"{item.Name}##{item.Id}", item.Id == destinationId))
+                if (RawSelectable($"{item.Name}##{item.Id}", item.Id == destinationId))
                     SelectDestination(kind, item.Id);
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
     }
 
     private void DrawList()
     {
-        if (ImGui.Button("Refresh ADS lists"))
+        if (UiGui.Button("Refresh ADS lists"))
             RefreshCatalog();
-        ImGui.TextWrapped(catalogStatus);
-        ImGui.InputText("Search lists", ref search, 160);
-        ImGui.TextWrapped($"Selected: {SelectedList?.Name ?? (string.IsNullOrEmpty(draft.PresetId) ? "None" : "Unavailable — refresh or select another list")}");
+        UiGui.TextWrapped(catalogStatus);
+        UiGui.InputText("Search lists", ref search, 160);
+        MaterialText.TextWrapped(UiText.F("Selected: {0}", SelectedList?.Name ?? UiText.T(string.IsNullOrEmpty(draft.PresetId) ? "None" : "Unavailable — refresh or select another list")));
         foreach (var list in catalog?.Presets.Where(value => value.Name.Contains(search, StringComparison.OrdinalIgnoreCase)) ?? [])
         {
-            if (ImGui.Selectable($"{list.Name}##{list.PresetId}", list.PresetId == draft.PresetId))
+            if (RawSelectable($"{list.Name}##{list.PresetId}", list.PresetId == draft.PresetId))
             {
                 if (draft.PresetId != list.PresetId)
                     draft.ResetCompletionState();
@@ -169,18 +179,18 @@ public sealed class DadShoppingWizardWindow : Window
                 draft.PresetName = list.Name;
             }
         }
-        ImGui.TextWrapped("Targeted refill maintains current ownership thresholds. Spend until currency/capacity follows repeatable-row rules. Fill order over multiple runs remembers credited quantities until all targets are met.");
+        UiGui.TextWrapped("Targeted refill maintains current ownership thresholds. Spend until currency/capacity follows repeatable-row rules. Fill order over multiple runs remembers credited quantities until all targets are met.");
     }
 
     private void DrawShopper()
     {
         var slots = EligibleShoppers();
         var selected = slots.FirstOrDefault(MatchesShopper);
-        if (ImGui.BeginCombo("Exact primary character", selected == null ? "Choose an eligible shopper" : ShopperLabel(selected)))
+        if (BeginRawCombo("Exact primary character", selected == null ? UiText.T("Choose an eligible shopper") : ShopperLabel(selected)))
         {
             foreach (var slot in slots)
             {
-                if (!ImGui.Selectable($"{ShopperLabel(slot)}##{slot.SlotId}", MatchesShopper(slot)))
+                if (!RawSelectable($"{ShopperLabel(slot)}##{slot.SlotId}", MatchesShopper(slot)))
                     continue;
                 if (!MatchesShopper(slot))
                     draft.ResetCompletionState();
@@ -188,41 +198,68 @@ public sealed class DadShoppingWizardWindow : Window
                 draft.ShopperAccountKey = slot.RequiredAccountKey;
                 draft.ShopperCharacterKey = slot.RequiredCharacterKey;
             }
-            ImGui.EndCombo();
+            UiGui.EndCombo();
         }
         if (slots.Count == 0)
-            ImGui.TextWrapped("No eligible exact primary shopper. A schedule requires the same slot, account and character in every referenced Plan.");
-        if (ImGui.CollapsingHeader("Optional delivery and post-command"))
+            UiGui.TextWrapped("No eligible exact primary shopper. A schedule requires the same slot, account and character in every referenced Plan.");
+        if (UiGui.CollapsingHeader("Optional delivery and post-command"))
         {
             var delivery = draft.RunAutoRetainerDelivery;
-            if (ImGui.Checkbox("Run AutoRetainer delivery", ref delivery))
+            if (UiGui.Checkbox("Run AutoRetainer delivery", ref delivery))
                 draft.RunAutoRetainerDelivery = delivery;
             var command = draft.CustomCommand;
-            if (ImGui.InputText("Post-command", ref command, 500))
+            if (UiGui.InputText("Post-command", ref command, 500))
                 draft.CustomCommand = command;
-            ImGui.TextWrapped("For finite orders, these actions wait until every target is fulfilled.");
+            UiGui.TextWrapped("For finite orders, these actions wait until every target is fulfilled.");
         }
     }
 
     private void DrawReview()
     {
-        ImGui.TextWrapped($"Destination: {DestinationName}");
-        ImGui.TextWrapped($"Shopping list: {SelectedList?.Name ?? "Unavailable"}");
-        ImGui.TextWrapped($"Purchase type: {PurchaseType(SelectedList?.Mode)}");
+        MaterialText.TextWrapped(UiText.F("Destination: {0}", DestinationName));
+        MaterialText.TextWrapped(UiText.F("Shopping list: {0}", SelectedList?.Name ?? UiText.T("Unavailable")));
+        MaterialText.TextWrapped(UiText.F("Purchase type: {0}", UiText.T(PurchaseType(SelectedList?.Mode))));
         var shopper = EligibleShoppers().FirstOrDefault(MatchesShopper);
-        ImGui.TextWrapped($"Shopper: {(shopper == null ? "Unavailable or changed — choose again" : ShopperLabel(shopper))}");
-        ImGui.TextWrapped($"AutoRetainer delivery: {(draft.RunAutoRetainerDelivery ? "Yes" : "No")}");
-        ImGui.TextWrapped($"Post-command: {(string.IsNullOrEmpty(draft.CustomCommand) ? "None" : draft.CustomCommand)}");
-        if (ImGui.Button("Preview only — current client's character"))
+        MaterialText.TextWrapped(UiText.F("Shopper: {0}", shopper == null ? UiText.T("Unavailable or changed — choose again") : ShopperLabel(shopper)));
+        MaterialText.TextWrapped(UiText.F("AutoRetainer delivery: {0}", UiText.T(draft.RunAutoRetainerDelivery ? "Yes" : "No")));
+        MaterialText.TextWrapped(UiText.F("Post-command: {0}", string.IsNullOrEmpty(draft.CustomCommand) ? UiText.T("None") : draft.CustomCommand));
+        if (UiGui.Button("Preview only — current client's character"))
         {
             var result = plugin.DutySupportAdsService.PreviewShopListPreset(draft);
-            status = result.Summary + " No purchase or run was started.";
+            status = UiText.T(result.Summary) + UiText.T(" No purchase or run was started.");
         }
     }
 
+    // Model values bypass translation while retaining UiGui's field sizing and original native ID root.
+    private static bool BeginRawCombo(string label, string preview)
+    {
+        var requested = ImGui.CalcItemWidth();
+        var padding = ImGui.GetStyle().FramePadding.X;
+        var minimum = Math.Max(MaterialText.Measure(preview).X + 2 * padding + ImGui.GetFrameHeight(),
+            Math.Max(80 * MaterialTheme.Metrics.Scale, MaterialText.Measure("00000000").X + 2 * padding));
+        UiGui.TextUnformatted(label);
+        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(requested, MathF.Ceiling(minimum)));
+        ImGuiP.PushOverrideID(ImGui.GetID(label));
+        try
+        {
+            var open = MaterialText.BeginCombo("", preview);
+            if (!open) ImGui.PopID();
+            return open;
+        }
+        catch { ImGui.PopID(); throw; }
+    }
+
+    private static bool RawSelectable(string label, bool selected)
+        => MaterialText.Selectable(label, selected, ImGuiSelectableFlags.None,
+            new Vector2(Math.Max(ImGui.GetContentRegionAvail().X, MaterialText.Measure(label.Split("##", 2)[0]).X), 0));
+
     private bool ValidateStep(out string error)
-        => state.Validate(kind == DadShoppingAssociationOwnerKind.Plan ? Plan != null && !Plan.IsTemplate : Schedule != null,
+    {
+        var valid = state.Validate(kind == DadShoppingAssociationOwnerKind.Plan ? Plan != null && !Plan.IsTemplate : Schedule != null,
             catalog?.Presets ?? [], EligibleShoppers(), out error);
+        error = UiText.T(error);
+        return valid;
+    }
 
     private static string ShopperLabel(DadPlannerGroupSlot slot)
         => $"{slot.SlotId} | {slot.RequiredAccountKey.Value} | {slot.RequiredCharacterKey.Value}";

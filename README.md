@@ -23,6 +23,31 @@ Questionable requests another while below its quest target. Its stop request sen
 In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
 The standard route is automatic; Porta Decumana's cutscene route is available for manual selection only.
 
+## Appearance and compact mode
+
+The main header provides **C** (compact mode), an accent swatch and a language selector.
+Settings mirrors these choices. They are saved in DAD's existing configuration and shared by
+all its windows: English, Deutsch, Français, Español, Italiano, Русский, 日本語, 한국어, 简体中文,
+Tiếng Việt, Português (Brasil), Bahasa Indonesia, Polski, Türkçe and हिन्दी.
+Compact mode reduces spacing and row heights while keeping the Mini Status window separate.
+Long translated groups wrap or scroll; stored crew identities, optional columns and run settings are retained.
+
+Main/Home, Mini Status and Quick Commands follow the approved DAD regular/compact mockups.
+Plan, Schedules, Crew, Clients, Status, Settings, guides, shopping/batch wizards, connection and
+AutoParty windows retain their functional layouts with the shared typography, colours and localization.
+Accent changes recolour decorative surfaces, fields and borders; success, warning and stop colours retain
+independent meanings. Preferences default to `UiLanguage=en`, `UiAccentRgb=0xFFAF74` and `UiCompact=false`.
+
+The UI uses managed Segoe UI regular, semibold and bold fonts, Segoe UI Symbol and Dalamud-owned CJK coverage.
+Hindi uses Windows-shaped Nirmala UI text at the original font-role heights, including retained text editors.
+Font loading or required-glyph failures appear explicitly; Windows font files are never distributed.
+Native game font rendering and final mockup fidelity require mcvaxius's game screenshot acceptance.
+
+Local plugin builds also require the private AethertekUI 0.3.0 checkout at `../../aethertekUI` relative
+to `dad.csproj`, SDK **10.0.201**, Windows x64 and Dalamud API 15. The existing DAD batch launcher enters
+the library environment and builds the plugin directly. CI checks out the library separately using this
+repository's read-only `AETHERTEKUI_DEPLOY_KEY`; its compiled library DLL is included in plugin artifacts.
+
 ## Integrated lifecycle verification
 
 `Headless/Dad.Headless.csproj` compiles the same lifecycle services as the plugin and is driven by the standalone lab in

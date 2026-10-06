@@ -1,3 +1,4 @@
+using AethertekUI.Dalamud;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
@@ -6,6 +7,7 @@ namespace dad.Windows;
 
 public sealed class DadClientReconnectWindow : Window, IDisposable
 {
+    private readonly MaterialWindowMotion motion = new();
     private static readonly Vector2 MinimumWindowSize = new(440f, 260f);
     private readonly Plugin plugin;
     private readonly DadConnectionEditor connectionEditor;
@@ -47,8 +49,14 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
             minY + (float)Random.Shared.NextDouble() * MathF.Max(1f, maxY - minY)));
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
         ApplyPendingPositionChange();
         var transport = plugin.TransportService.CurrentTransport;
         var endpoint = plugin.TransportService.GetPreferredAuthorityEndpoint();
@@ -68,10 +76,10 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
             DadUi.KeyValue("Last connected", transport.LastConnectedUtc.Value.ToLocalTime().ToString("G"), 120f);
 
         ImGui.Spacing();
-        ImGui.TextWrapped("If the IP, port, and shared secret are correct, please disable and re-enable DAD on the Coordinator.");
+        UiGui.TextWrapped("If the IP, port, and shared secret are correct, please disable and re-enable DAD on the Coordinator.");
         ImGui.Spacing();
 
-        if (ImGui.CollapsingHeader("Edit Coordinator address"))
+        if (UiGui.CollapsingHeader("Edit Coordinator address"))
             connectionEditor.DrawEndpointFields(plugin.Configuration, "dad-reconnect-connection", showApplyActions: true, compact: true);
 
         DadUi.Section("Actions");
@@ -101,7 +109,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
         if (confirming)
         {
             ImGui.PushStyleColor(ImGuiCol.Text, DadUi.ToneColor(DadUiTone.Warning));
-            ImGui.TextWrapped("Click Confirm disable DAD within five seconds. Reconnect attempts stop only when DAD is disabled.");
+            UiGui.TextWrapped("Click Confirm disable DAD within five seconds. Reconnect attempts stop only when DAD is disabled.");
             ImGui.PopStyleColor();
         }
     }

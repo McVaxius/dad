@@ -1,3 +1,5 @@
+using AethertekUI.Dalamud;
+using AethertekUI;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
@@ -7,6 +9,7 @@ namespace dad.Windows;
 
 public sealed class DadQuickPanelWindow : Window, IDisposable
 {
+    private readonly MaterialWindowMotion motion = new();
     private static readonly Vector2 MinimumWindowSize = new(430f, 250f);
     private readonly Plugin plugin;
     private Vector2? pendingPosition;
@@ -18,7 +21,7 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
     private int rejectedCount;
 
     public DadQuickPanelWindow(Plugin plugin)
-        : base("DAD Quick Commands###DadQuickCommands", ImGuiWindowFlags.None)
+        : base("DAD Quick Commands###DadQuickCommands", ImGuiWindowFlags.HorizontalScrollbar)
     {
         this.plugin = plugin;
         SizeConstraints = new WindowSizeConstraints
@@ -26,7 +29,7 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
             MinimumSize = MinimumWindowSize,
             MaximumSize = new Vector2(900f, 900f),
         };
-        Size = new Vector2(520f, 420f);
+        Size = new Vector2(460f, 330f);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -48,10 +51,18 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
             minY + (float)Random.Shared.NextDouble() * MathF.Max(1f, maxY - minY)));
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
         ApplyPendingPositionChange();
-        DadUi.Heading("Quick Commands", "Send one registered slash command through DAD's authenticated coordinator route.");
+        var windowRootId = ImGui.GetID("");
+        DadUi.IconHeading("Quick Commands",string.Empty,MaterialIcon.Terminal);
+        if (ImGui.IsItemHovered()) UiGui.SetTooltip("Send one registered slash command through DAD's authenticated coordinator route.");
 
         if (!plugin.Configuration.RunAsServerDad)
         {
@@ -60,55 +71,62 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
         }
 
         var targets = GetConnectedClientTargets();
-        ImGui.SetNextItemWidth(-1f);
-        ImGui.InputText("##dad-quick-command", ref command, 256);
-        var validation = ValidateCommand(command, out var submittedCommand);
-        if (!string.IsNullOrWhiteSpace(validation))
-            ImGui.TextDisabled(validation);
-        else
-            ImGui.TextDisabled("Commands resolve through each Client DAD's registered command manager; chat injection is not used.");
-
-        ImGui.Spacing();
-        ImGui.BeginDisabled(targets.Count == 0 || !string.IsNullOrWhiteSpace(validation));
-        if (DadUi.Button($"Send to all ({targets.Count})", DadUiTone.Accent, new Vector2(-1f, 30f)))
-            SendToTargets(targets, submittedCommand);
+        var validation=ValidateCommand(command,out var submittedCommand);
+        var sendLabel=UiText.F("Send to all ({0})",targets.Count);
+        var sendWidth=UiGui.IconButtonWidth($"Send to all ({targets.Count})",sendLabel);
+        var split=ImGui.GetContentRegionAvail().X>=sendWidth+190*MaterialTheme.Metrics.Scale;
+        ImGui.SetNextItemWidth(split?ImGui.GetContentRegionAvail().X-sendWidth-ImGui.GetStyle().ItemSpacing.X:-1);
+        UiGui.InputText("##dad-quick-command",ref command,256);
+        if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(validation)) UiGui.SetTooltip(validation);
+        validation=ValidateCommand(command,out submittedCommand);
+        if (split) ImGui.SameLine();
+        ImGui.BeginDisabled(targets.Count==0 || !string.IsNullOrWhiteSpace(validation));
+        // Preserve the original dynamic English ID while measuring the translated button.
+        if (DadUi.IconButton($"Send to all ({targets.Count})",MaterialIcon.Send,DadUiTone.Accent,new Vector2(split?sendWidth:-1,0),sendLabel)) SendToTargets(targets,submittedCommand);
         ImGui.EndDisabled();
-
-        DadUi.Section("Connected Client DADs", "Only currently routable remote Client DAD sessions are listed.");
-        if (targets.Count == 0)
+        if (!string.IsNullOrWhiteSpace(validation)) UiGui.TextDisabled(validation);
+        if (DadUi.BeginCard("dad-quick-targets"))
         {
-            ImGui.TextDisabled("No connected Client DADs.");
-        }
-        else
-        {
-            foreach (var target in targets)
+            DadUi.Heading("Connected Client DADs",string.Empty);
+            if (targets.Count==0) UiGui.TextDisabled("No connected Client DADs.");
+            var targetWidth=targets.Select(target=>MaterialText.Measure(FormatTarget(target)).X).DefaultIfEmpty(0).Max()+2*ImGui.GetStyle().CellPadding.X;
+            var actionWidth=UiGui.IconButtonWidth("Send")+2*ImGui.GetStyle().CellPadding.X;
+            var targetHeight=targets.Count*(ImGui.GetFrameHeight()+2*ImGui.GetStyle().CellPadding.Y)+ImGui.GetStyle().ScrollbarSize;
+            if (targets.Count>0 && ImGui.BeginTable("dad-quick-target-list",2,ImGuiTableFlags.SizingFixedFit|ImGuiTableFlags.RowBg|ImGuiTableFlags.ScrollX|ImGuiTableFlags.NoSavedSettings,new Vector2(0,targetHeight),Math.Max(ImGui.GetContentRegionAvail().X,targetWidth+actionWidth)))
             {
-                var label = FormatTarget(target);
-                ImGui.TextWrapped(label);
-                ImGui.SameLine();
-                ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(validation));
-                if (ImGui.SmallButton($"Send##dad-quick-send-{target.WorkerSessionId.Value}"))
-                    SendToTargets([target], submittedCommand);
-                ImGui.EndDisabled();
+                ImGui.TableSetupColumn("Character",ImGuiTableColumnFlags.WidthFixed,targetWidth);
+                ImGui.TableSetupColumn("Send",ImGuiTableColumnFlags.WidthFixed,actionWidth);
+                foreach (var target in targets)
+                {
+                    ImGui.TableNextRow();ImGui.TableNextColumn();MaterialText.Text(FormatTarget(target));
+                    ImGui.TableNextColumn();ImGui.BeginDisabled(!string.IsNullOrWhiteSpace(validation));
+                    ImGuiP.PushOverrideID(windowRootId);
+                    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding,new Vector2(ImGui.GetStyle().FramePadding.X,0));
+                    if (UiGui.IconButton($"Send##dad-quick-send-{target.WorkerSessionId.Value}",MaterialIcon.Send)) SendToTargets([target],submittedCommand);
+                    ImGui.PopStyleVar();
+                    ImGui.PopID();
+                    ImGui.EndDisabled();
+                }
+                ImGui.EndTable();
             }
+            DadUi.EndCard();
         }
-
         DadUi.Section("Session status");
         DadUi.KeyValue("Dispatch", $"{queuedCount} queued | {acceptedCount} accepted | {rejectedCount} rejected", 84f);
-        ImGui.TextWrapped(lastStatus);
+        UiGui.TextWrapped(lastStatus);
     }
 
     private void DrawClientReceiverGate()
     {
         DadUi.Section("This Client DAD", "Coordinator commands are rejected unless this existing opt-in is enabled.");
         var allow = plugin.Configuration.AllowRemoteCommandExecution;
-        if (ImGui.Checkbox("Allow authenticated Coordinator registered commands", ref allow))
+        if (UiGui.Checkbox("Allow authenticated Coordinator registered commands", ref allow))
         {
             plugin.Configuration.AllowRemoteCommandExecution = allow;
             plugin.Configuration.Save();
         }
 
-        ImGui.TextWrapped("This existing gate covers quick-panel and configured character-load commands. Only one-line registered slash commands are accepted; DAD disabled or Local-only mode still rejects remote mutation.");
+        UiGui.TextWrapped("This existing gate covers quick-panel and configured character-load commands. Only one-line registered slash commands are accepted; DAD disabled or Local-only mode still rejects remote mutation.");
         DadUi.Badge(
             allow ? "Receiver opted in" : "Receiver off",
             allow ? DadUiTone.Success : DadUiTone.Neutral);
@@ -175,7 +193,7 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
     private string FormatTarget(DadParticipantSnapshot participant)
     {
         var character = participant.ActiveCharacterKey.IsEmpty
-            ? "(no loaded character)"
+            ? UiText.T("(no loaded character)")
             : plugin.KrangleService.FormatCharacterKey(participant.ActiveCharacterKey.Value);
         var account = plugin.KrangleService.FormatAccountLabel(
             participant.ManagedAccountAlias,

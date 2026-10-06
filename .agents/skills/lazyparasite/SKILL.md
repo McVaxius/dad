@@ -67,8 +67,10 @@ isolate larger or uncertain changes. Reuse existing scenario sequencing when
 several checks belong together. For VERMAXION, `/vmx debug` selects ordinary manual
 actions, including their existing scheduling behavior.
 
-When journaling is selected, maintain **one** task checkpoint: update the selected
-plan/status document; otherwise use repository-root `LAZYPARASITE.md`. Record:
+When journaling is selected, maintain **one** task checkpoint in the selected
+existing plan/status document or `TODO.md`; do not create `LAZYPARASITE.md` beside
+an approved work list. Use that fallback only when no checkpoint exists and its
+creation was included in the recorded machinery choice. Record:
 
 - scope, mode, client, permitted operations, decisions, and end state;
 - current changes and Git state, verified results, and still-unverified claims;
@@ -100,6 +102,34 @@ success. Record a justified new attempt explicitly before restarting it.
 
 A forked conversation or copied checkpoint carries context, not proof of working
 tool, client, network, or runtime connections; check required access afresh.
+
+### Keep the selected TODO through compaction
+
+An approved TODO can own both the complete work list and the current checkpoint.
+The cross-plugin UI and DDuck work demonstrated that updating this one file at
+meaningful boundaries preserves decisions and unfinished work after context loss.
+Reuse the selected file; creating a new TODO still requires the machinery choice.
+
+Keep the goal and acceptance criteria, full selected scope, exclusions, approved
+design revisions and settled decisions visible. Give each item its actual state
+(queued, in progress, locally verified, blocked or awaiting runtime acceptance),
+with concise evidence locations and the next action. Keep additions in the same
+list and preserve their requested priority. Record ownership and pending build or
+test identifiers when parallel work needs them; they are context to reconcile,
+not permission to restart an action or proof that an agent is still running.
+
+Update after meaningful progress and before a planned fork, handoff or pause;
+automatic compaction can arrive without warning. On resume, reread this TODO and
+the applicable instructions, then inspect the current Git diff, files and named
+evidence. Reconcile drift before continuing the next authorized unfinished item.
+Carry forward settled approvals without asking again. A checkpoint does not
+replace runtime dispatch markers or establish that a client action completed.
+
+For multiple repositories, let the selected umbrella TODO own the shared goal;
+reuse an existing plugin TODO for plugin-specific details only when selected.
+Cross-reference those owners rather than maintaining duplicate completion rows,
+new trackers or a separate handoff file. Keep implementation, build/test evidence
+and user-controlled runtime or visual acceptance distinct.
 
 ## One attempt per plugin load
 
@@ -511,9 +541,9 @@ required new abstraction.
 > uncertain changes. Pause affected work when a decision, access, or required
 > runtime evidence is missing, and state the exact blocker.
 
-**Resume after a fork**
+**Resume after a fork or compaction**
 
-> Resume $lazyparasite from the selected plan/checkpoint and this conversation.
+> Resume $lazyparasite from the selected TODO/plan checkpoint and this conversation.
 > Reconcile Git, actual build output, expected startup marker, and fresh client
 > evidence. Preserve scope and authorization. Resolve pending or uncertain attempts
 > before another dispatch; do not assume `/fork` repaired connections.
@@ -581,4 +611,4 @@ directly with the canonical source; do not generate hashes.
 | File rotation | Exact byte limit, active plus four older files, UTF-8 boundaries, oldest-only retirement; unrelated files survive. |
 | Logging failure | Latched visible error for open/write/rotation/flush/dispose failure; normal output preserved; lost evidence prevents affected runtime claims. |
 | Unload | Unsubscribe, cancel/stop and quiesce producers before flushing/disposal; retained logs remain. |
-| Resume after fork | Reconcile checkpoint, Git, build identity, access and fresh evidence; carry existing authorization without expanding it. |
+| Resume after fork or compaction | Reread the selected TODO/checkpoint; reconcile Git, build identity, access and fresh evidence; carry existing authorization without expanding it. |

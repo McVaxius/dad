@@ -1,5 +1,107 @@
 # dad — changelog
 
+## 2026-10-06 - v1.0.0.0 release
+
+- Release the verified UI, localization and window-appearance work at version 1.0.0.0. Align project, packaged manifest and repository feed versions and release links.
+- Publish the current project-reference lock entries and remove the obsolete empty win runtime target so Release/x64 locked restore matches the build. Preserve existing package versions and the vendored AutoParty feed.
+
+## 2026-10-06 - Actions shared-library revision
+
+- Pin the existing AethertekUI checkout to published commit 6c193cf06ac67f954c549cafc2033ac0efdd630a so fresh builds receive the Hindi shaping APIs required by this consumer. Preserve existing credentials, build/package paths and release behavior; hosted execution is verified separately against each published commit.
+
+## Unreleased - Main presentation refinements
+
+## Unreleased - Hindi interface
+
+- Append Hindi to the existing fourteen choices and embed all 2,875 interface strings, including displayed authored service messages. Retain existing locale keys, configuration values, native IDs, automation actions and opaque account/profile/duty data.
+- Own Windows-shaped text through the full Draw/font-status lifecycle and disposal. Route retained measurements, captions, tooltips, controls, selectors and single/multiline editors together; validate Devanagari at each original font-role height while retaining the existing native atlas checks for other scripts. Preserve existing non-Hindi layout, original font roles and game-rendered text policy.
+- Reserve leading shaped raster coverage in retained captions and checkbox hit areas. Bound wrapped Hindi layout reservations to their selected width so trailing spaces cannot expand the native horizontal work rectangle; keep exact displayed values and non-Hindi geometry.
+- Exact source/staging equality, key/format-slot coverage and current Debug compilation pass with six inherited warnings and zero errors. Fifteen compiled 2,875-key catalogs and DAD/Lab helpers pass 7,043 checks. Hindi selector/font-role/configuration checks pass 1,550; Main passes 3,811 across four scenes and 64 safe presses; Mini passes 10,540 across eight owner scenes, eight long-directory reflows and 48 safe presses; Shopping passes 9,925 across 624 Draw scenes and 80 safe selectors. The final raw-value regression passes 689 checks. Both densities and 100/150 percent scales are covered with default/narrow widths, native IDs, original font roles and inert observations. Diagnostic Main/Mini renders were inspected; managed-host/game/GPU/IME and conditional runtime acceptance remain separate.
+
+## 2026-10-06 - Window appearance and transparency
+
+- Move colour configuration into the existing Settings Window appearance section, retaining compact/language access there. Independently hide or show the main-window compact and language controls, both visible by default. Add the main Transparency toggle without changing automation actions or native control identities.
+- Persist full-window opacity through the existing configuration: 100% normal opacity, automatic fade enabled, 50% unfocused opacity after 10 seconds. Clamp opacity to 10-100% and delay to 0-3600 seconds. Apply one shared opacity pass per owner after native drawing and motion restoration, including collapsed and font-status windows; retain native chrome, image alpha and owned child/pop-up content.
+- Translate the eight new appearance labels in all 14 existing catalogs. Current-version compilation, focused persistence/focus checks and game acceptance remain pending for this source change.
+
+- Restore the approved Current Run dark inset, short column dividers and plain semantic status text. Balance the five Expert Shortcuts across the available row, enlarge cart/pencil artwork and measure Mini AutoParty captions and values for readable four/two/one-column reflow. Preserve action callbacks, native identities, saved settings, resources and atlas roles. The unchanged launcher builds with six inherited warnings and zero errors. Fourteen-language Mini verification passes 140,139 checks, 112 owner scenes plus 112 long-directory reflows, 4,144 complete captions and 672 safe native presses. Managed-host/game and conditional active-run acceptance remain pending.
+
+- Translate the known operator-phase leaf at fourteen Main display callers while preserving the runtime phase string and raw model values. Correct four Chinese game-character, Phase and Schedules terms; reserve leading caption bearings and localize Mini transport details and AutoParty projections. All fourteen exact 2,867-key catalogs and compiled DAD/Lab helpers pass 6,574 checks, including phase composition and raw-value retention. Refreshed narrow Chinese Main at 150 percent passes 6,507 checks, two density scenes, 110 complete captions and 32 safe presses; diagnostic renders were inspected. Earlier focused English Main evidence predates this phase correction. Managed-host/game acceptance remains separate.
+
+- Translate Shopping wizard steps, owned fallback prompts, purchase mode, delivery Yes/No and empty post-command None explicitly. Preserve saved destination/list names, shopper identities, commands and original native IDs. Add the missing prompts and eight traced catalog/preview forms across fourteen 2,857-key catalogs; translate Setup's authored NextAction and role-guide argument at their known display boundaries. Repair German/Italian boolean and French step values. Source parity and the unchanged Debug/x64 launcher pass; fresh actual-flags Shopping checks pass across all fourteen languages, both densities, scales 1/1.5 and widths 650/900 at 151,159 assertions, 8,736 Draw scenes and 1,120 safe selector presses. Current compiled DAD/Lab embedding and status helpers pass 5,870 checks. Raw values, original IDs and untouched saved configuration are verified. Managed-host/game acceptance remains separate.
+
+- Preserve saved preset names exactly in Crew Tools, translate its owned empty-selection prompt and roster-filter leaves separately, and retain raw world names and client IDs. Correct the Russian pending-runtime label, nine shopping spend-mode labels that retained an English capacity suffix, and the Japanese Settings caption. Current compiled-resource, Main and raw-value regression checks pass; managed-host and game acceptance remain pending.
+
+- Localize AutoParty checklist labels, state/formation rows and fragment captions before native display; retain directory and pairing aliases as raw text. Correct combat Party/readiness labels and remove unrelated text from the affected translated menus. Translate the authored resolved formation mode while keeping the effective preset name raw. Repair eight additional Duty Finder help translations damaged by question-mark substitutions. All fourteen source catalogs contain 2,847 keys with exact key/placeholder and Unicode parity; the delivered Debug/x64 product passes current embedding and native Main checks.
+
+- Match the approved Main card padding, rounded surfaces, scoped typography and compact guide spacing. Measure translated navigation labels and keep the existing native IDs, settings, callbacks and font atlas roles unchanged. Offline reference checks remain separate from managed-host and game acceptance.
+- Translate the three reached AutoParty setup/navigation labels and 65 registration, pairing, mailbox and action-result phrases in all fourteen interface languages through the existing resource lookup. Localize authored Next/Payload values and directory-refresh outcomes at the display boundary while retaining raw safe codes, counts, native IDs and service outputs. Repair the damaged Duty Finder help paragraph in Russian, Japanese, Korean and Simplified Chinese. Source key, placeholder, protocol-token and Unicode checks and current fourteen-language embedding verification pass; full Setup window and managed-host/game verification remain pending.
+
+## 2026-10-05 - Rounded outer window chrome
+
+- Apply the shared theme's rounded outer corners around the existing native window lifecycle, retaining control identities, layout, saved geometry and actions.
+
+- Route the legacy dat.bat build alias through dad.bat so it uses the pinned SDK/library environment, builds only the plugin and retains the launcher’s disabled client-copy path.
+
+## 2026-10-04 - Five additional UI languages (local-only, unpublished)
+
+- Include nonregular duty rows in the shared catalog only when the existing Dawn Duty Support or Trust route supports them. Keep regular Duty Finder, premade and custom pickers restricted to their regular-entry flag; preserve content IDs, metadata, high-end status and NPC capability guards.
+- Clear transient Plan duty search when loading a different saved preset; preserve deliberate search on ordinary duty selection and when reselecting the same preset. Extend the existing offline native checks through fresh saved-configuration loading and the production creator/Main picker callbacks.
+- Reset an active Create a Preset search input when restarting its guide flow so the native edit buffer cannot restore a discarded browsing query. Preserve the original input identity, saved duty metadata and other active controls.
+- Update the standalone Lazyparasite skill and its existing archive to keep one selected TODO through compaction, reconcile current evidence before resuming, and preserve scope, priorities and settled approvals without duplicate trackers.
+- Verify the complete six-step preset wizard across all fourteen UI languages and both densities: 200 native checks per locale, including production save, recheck and finish callbacks. Diagnostic fonts and supplied planner observations remain separate from reference, managed-host and game acceptance.
+- Reject malformed preset finish commands before changing the saved stop policy or shared target state. Both custom-command and Grand Company command rejection paths passed the actual production commit callback checks with memory-only persistence.
+- Explain the supported regular Duty Finder catalog in both Plan and Create a Preset in all fourteen languages. Content requiring Raid Finder or another entry route remains unavailable; regular, Duty Support and Trust queue behavior is preserved.
+- Gate leveling display patterns by their required literal text before creating a lazy matcher. Keep the matching order, patterns, 20 ms timeout, captures and raw boundaries unchanged. The cold joined-blocker regression now creates two relevant matchers instead of 23; 336 cold/warm and opaque CRLF/LF-tail checks passed across fourteen languages.
+- Restore source-required boundary spaces in joined messages from the eight original non-English catalogs, and keep the crew sizing examples `Slot56` and `WHM 100` opaque. Preserve separate headings and unrelated translations. Fresh compiled-resource checks passed 4,764 cases across fourteen locales; the native creator editor passed 2,800 checks across fourteen locales and both densities, plus 11 Plan callback checks. Diagnostic fonts and supplied content remain separate from full-wizard, managed-host and game acceptance.
+- Append Vietnamese, Brazilian Portuguese, Indonesian, Polish and Turkish to the existing language choices. Each embedded catalog contains all 2,777 controls, authored service messages and diagnostics; preserve commands, external names, IDs, raw captures and existing configuration values.
+- Retain lazy display-message matchers after the existing prefix gate, including the separate leveling parsers and their lookahead rules. Matching order, captures and LF/CRLF behavior are unchanged.
+- Fresh Debug/x64 compilation passed with six inherited service warnings. Actual compiled DAD/Lab checks passed 3,854 cases across fourteen locales; added-locale selector/save/configuration and glyph checks passed 8,415 cases in all five original font roles, both densities, scales 1/1.5 and widths 360/600/900. These are offline checks; complete-window, managed-font and game visual acceptance remain pending.
+
+## 2026-10-03 - UI message repairs
+
+- Keep duty browsing queries separate from selected duty names in Plan and Create a Preset. Switching lanes or explicitly clearing the Plan duty selector clears the transient query; opening a saved preset starts unfiltered. Preserve saved duty choices, native control identities and queue eligibility.
+
+- Remove the silent 96-duty browsing limit from Create a Preset and Plan while retaining native clipping and selected-duty focus. Explain regular Duty Finder versus NPC-only choices in all nine languages, and include canonical Guildhest/trial/raid/alliance-raid category search terms alongside native names. Saved modes, IDs and execution eligibility stay intact. Verified actual creator typing, mode changes, exact selection, saved-choice focus, uncapped browsing and NPC filtering across nine languages and both densities with a supplied catalog and diagnostic fonts; managed-host and game acceptance remain open.
+
+- Include the native duty category in preset duty search so Guildhests can be found by category in regular Duty Finder lanes. Keep duty IDs, saved presets, NPC-lane filters and queue eligibility unchanged.
+
+- Translate the reached Home shopping description in all nine UI languages without replacing existing catalog values. Use non-backtracking matching for general display-message templates so unmatched UI text cannot trigger catastrophic backtracking; retain the separate leveling parser and its lookahead rules.
+- Translate reached Leveling Mode lifecycle, exact roster refresh and schedule-status wrappers in all nine UI languages. Localize source-traced nested summaries and readiness enums while preserving group/character/request identities, padded counts and raw multiline exception details.
+
+- Translate reached Leveling Mode compiler and scheduler summaries in all nine UI languages, including joined slot/ledger details. Scope the character envelope to compiler display copies; preserve duty/character names, job abbreviations, formatted counts and raw exceptions. Correct the Leveling Mode and unknown glossary entries.
+
+- Translate 42 reached title-login, movie-dismissal and coordinator-disconnection summaries in all nine UI languages. Localize the observed readiness label without changing service messages, native title tokens, one-time mutations or login safety gates.
+- Translate reached planner-preview status wrappers and their authored nested readiness/capability summaries. Keep non-live character selections opaque and preserve direct-start/scheduler gates.
+
+- Fill 235 empty localized control/status values and 18 reached wake-readiness/validation phrases in the nine UI catalogs. Reject empty resource values and keep service/log messages and opaque identities unchanged.
+
+- Translate 40 source-reached wake-takeover summaries and explicitly localize Mini status enums, conditions, nested summaries and durations. Keep participant, owner, account, character and operation identities raw; native action IDs and service behavior are unchanged.
+
+- Add the displayed planned-module count and 22 coordinator/worker status templates to all nine UI catalogs after tracing their status getters. Include the completion summary's trimmed empty-detail variant. Translate only source-traced role/module and authored nested safety/summary arguments; counts, slot identities and raw external details remain exact. Service messages retain their original identity.
+- Correct the Korean Worker and party-snapshot labels after actual displayed-label verification found text assigned to the adjacent resource row.
+- Repair five French labels/messages with corrupted placeholders. Preserve ADS, DAD, LAN, IPC and the existing roster-name placeholder; runtime messages and automation are unchanged.
+- Preserve empty service arguments, numbered placeholders and already-formatted values without reparsing IDs or numbers. Typed UI values retain selected-culture formatting.
+
+## 2026-10-03 - Approved UI adoption (local-only, unpublished)
+
+- Restore the small DAD title mark and selected primary-tab accent underline. Keep Mini navigation within its connection card and show activity status with phase/module details on hover; place the guarded Cancel action alongside task/progress/elapsed values when their measured widths fit, retaining the prior action IDs and narrow-pane reflow.
+
+- Repair translated native field widths and combo scopes, retain the original zero-step integer defaults, and show the current Main title version without changing window IDs. Reflow complete controls, keep finite captions on one line, provide native horizontal access, and restore approved Main/Mini/Quick action and section artwork. Runtime selection, saved preferences and guarded actions are preserved; local native verification remains separate from managed-host/game visual acceptance.
+- Reworked Main/Home, Mini Status and Quick Commands around the approved regular and compact designs. Retained native interactions, coordinator/receiver gates, guarded stop/disband behavior, account/character identities and existing auxiliary workflows.
+- Preserve the original control ID roots when moving shell, guide, shortcut and mini actions into presentation cards. Current Run distinguishes waiting, cancelled and failure states from success.
+- Added shared compact mode, top accent/language selectors and mirrored Settings preferences through the existing save path. Relative OKLCH colours cover decorative surfaces and controls while success/warning/stop meanings stay independent.
+- Added nine embedded keyed language resources and UI-local number/date formatting; logs, commands and external names retain their values. Managed Segoe UI weights merge host-managed CJK/symbol glyphs, use the verified Korean face, and check selected, English fallback and support text together, with explicit font readiness/error handling and disposal.
+- Added the sibling AethertekUI reference and library artifact payload without version changes. Debug/x64 plugin build and native resource/source validation passed; no tests, installation or client operations. Game font/layout acceptance remains pending.
+
+
+
+## 2026-10-02 - Build and release repair
+
+- Pin GitHub builds to SDK 10.0.201 and pass the downloaded Dalamud library path. Restore and build plugin projects with matching configuration, platform and runtime; stop on restore failure.
+- Keep build tokens read-only and release writes in a separate job. Use packaged manifest versions for untagged releases.
+- Local launchers build the plugin directly in the pinned environment and return its exit status.
+
 ## 2026-09-30 - Temporary Questionable FrenRider duty settings (local-only, unpublished)
 - In Use FrenRider mode, a running, successfully patched Questionable/WigglyQuest session temporarily enables Solo and 4-man ADS handoff at maturity 0, with continuous-ready delays of 10 and 2 seconds. It also selects ADS Exit Method, disables both local exit choices and uses a 20-second duty-end delay, matching the selected FTP5 profile. The bridge applies these ten values through owned IPC before /fr on; unavailable or rejected IPC appears in its existing blocker status.
 - Release the override on quest stop, bridge disable/loss, character change/logout or plugin unload, and reapply the same run after FrenRider reload while Questionable remains active. Saved FrenRider profiles, other duty families and ADS readiness/ownership rules are preserved.

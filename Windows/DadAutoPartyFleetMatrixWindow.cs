@@ -1,3 +1,5 @@
+using AethertekUI;
+using AethertekUI.Dalamud;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
@@ -8,6 +10,7 @@ namespace dad.Windows;
 
 public sealed class DadAutoPartyFleetMatrixWindow : Window
 {
+    private readonly MaterialWindowMotion motion = new();
     private readonly Plugin plugin;
     private string tsvDraft = DadAutoPartyFleetTsv.Header + "\r\n";
     private string status = "Fleet/Crew Matrix is disabled. Preview is available; apply is not.";
@@ -39,36 +42,44 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
         preview = plugin.AutoPartyFleetMatrixService.BuildPreview();
     }
 
+    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+
+    public override void PostDraw() => motion.Restore(this);
+
     public override void Draw()
     {
+        motion.DrawChrome();
+        UiGui.Title(WindowName.Split("##",2)[0]);
         var matrix = plugin.Configuration.AutoPartyFleet;
         DadUi.Heading("Fleet / Crew Matrix", "Build deterministic DAD Plans and Schedules from bounded local inventory and ordered Crew Sets.");
         DadUi.Badge(matrix.Enabled ? "Matrix apply enabled" : "Matrix apply disabled", matrix.Enabled ? DadUiTone.Warning : DadUiTone.Neutral);
         ImGui.SameLine();
-        ImGui.TextWrapped("Discord transport, pairing, and typed execution keep their separate disabled gates.");
+        UiGui.TextWrapped("Discord transport, pairing, and typed execution keep their separate disabled gates.");
 
         var enabled = matrix.Enabled;
-        if (ImGui.Checkbox("Allow local Matrix apply", ref enabled))
+        if (UiGui.Checkbox("Allow local Matrix apply", ref enabled))
         {
             var result = plugin.AutoPartyFleetMatrixService.SetEnabled(enabled);
             status = result.Summary;
         }
-        ImGui.TextDisabled($"Revision {matrix.Revision} | {matrix.Rows.Count}/{DadAutoPartyFleetLimits.MaxFleetRows} rows | {matrix.CrewSets.Count}/{DadAutoPartyFleetLimits.MaxCrewSets} Crew Sets | {matrix.Blueprints.Count}/{DadAutoPartyFleetLimits.MaxBlueprints} blueprints");
+        UiGui.TextDisabled($"Revision {matrix.Revision} | {matrix.Rows.Count}/{DadAutoPartyFleetLimits.MaxFleetRows} rows | {matrix.CrewSets.Count}/{DadAutoPartyFleetLimits.MaxCrewSets} Crew Sets | {matrix.Blueprints.Count}/{DadAutoPartyFleetLimits.MaxBlueprints} blueprints");
         ImGui.Separator();
+
+        using var tabLineHeight=MaterialText.PushLineHeight(new[]{"Matrix TSV","Blueprints","Preview / Apply"}.Select(UiText.T).ToArray());
 
         if (ImGui.BeginTabBar("DadFleetTabs"))
         {
-            if (ImGui.BeginTabItem("Matrix TSV"))
+            if (UiGui.BeginTabItem("Matrix TSV"))
             {
                 DrawTsvEditor();
                 ImGui.EndTabItem();
             }
-            if (ImGui.BeginTabItem("Blueprints"))
+            if (UiGui.BeginTabItem("Blueprints"))
             {
                 DrawBlueprints();
                 ImGui.EndTabItem();
             }
-            if (ImGui.BeginTabItem("Preview / Apply"))
+            if (UiGui.BeginTabItem("Preview / Apply"))
             {
                 DrawPreviewAndApply();
                 ImGui.EndTabItem();
@@ -77,17 +88,17 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
         }
 
         ImGui.Separator();
-        ImGui.TextWrapped(status);
+        UiGui.TextWrapped(status);
     }
 
     private void DrawTsvEditor()
     {
-        ImGui.TextWrapped("Exact 9-column portable TSV. DAD account/character bindings never export. Unsafe spreadsheet formula prefixes, duplicate IDs, control characters, partial Crew assignments, and oversized input are rejected.");
-        ImGui.InputTextMultiline("##DadFleetTsv", ref tsvDraft, DadAutoPartyFleetLimits.MaxTsvBytes, new Vector2(-1f, 360f));
-        if (ImGui.Button("Reload current export"))
+        UiGui.TextWrapped("Exact 9-column portable TSV. DAD account/character bindings never export. Unsafe spreadsheet formula prefixes, duplicate IDs, control characters, partial Crew assignments, and oversized input are rejected.");
+        UiGui.InputTextMultiline("##DadFleetTsv", ref tsvDraft, DadAutoPartyFleetLimits.MaxTsvBytes, new Vector2(-1f, 360f));
+        if (UiGui.Button("Reload current export"))
             RefreshTsv();
         ImGui.SameLine();
-        if (ImGui.Button("Merge current DAD roster"))
+        if (UiGui.Button("Merge current DAD roster"))
         {
             var result = plugin.AutoPartyFleetMatrixService.MergeLocalRoster(plugin.CharacterIntelligenceService.CurrentPool.Characters);
             status = result.Summary;
@@ -95,13 +106,13 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
                 RefreshTsv();
         }
         ImGui.SameLine();
-        if (ImGui.Button("Validate only"))
+        if (UiGui.Button("Validate only"))
         {
             var parsed = DadAutoPartyFleetTsv.Parse(tsvDraft);
             status = parsed.Summary;
         }
         ImGui.SameLine();
-        if (ImGui.Button("Import Matrix draft"))
+        if (UiGui.Button("Import Matrix draft"))
         {
             var result = plugin.AutoPartyFleetMatrixService.ImportTsv(tsvDraft);
             status = result.Summary;
@@ -115,14 +126,14 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
 
     private void DrawBlueprints()
     {
-        ImGui.TextWrapped("A blueprint generates one canonical Plan per selected Crew Set and, optionally, one Schedule containing those Plans in stable Crew Set order.");
-        ImGui.InputText("Blueprint name", ref blueprintName, DadAutoPartyFleetLimits.MaxTextLength);
-        ImGui.InputText("Duty name", ref dutyName, DadAutoPartyFleetLimits.MaxTextLength);
-        ImGui.InputInt("Content Finder condition ID", ref dutyId);
-        ImGui.InputInt("Repeat count", ref repeatCount);
-        ImGui.Checkbox("Daily-reset Schedule", ref dailyReset);
-        ImGui.Checkbox("Unsynced duty", ref dutyUnsynced);
-        if (ImGui.Button("Add blueprint for all Crew Sets"))
+        UiGui.TextWrapped("A blueprint generates one canonical Plan per selected Crew Set and, optionally, one Schedule containing those Plans in stable Crew Set order.");
+        UiGui.InputText("Blueprint name", ref blueprintName, DadAutoPartyFleetLimits.MaxTextLength);
+        UiGui.InputText("Duty name", ref dutyName, DadAutoPartyFleetLimits.MaxTextLength);
+        UiGui.InputInt("Content Finder condition ID", ref dutyId);
+        UiGui.InputInt("Repeat count", ref repeatCount);
+        UiGui.Checkbox("Daily-reset Schedule", ref dailyReset);
+        UiGui.Checkbox("Unsynced duty", ref dutyUnsynced);
+        if (UiGui.Button("Add blueprint for all Crew Sets"))
             AddBlueprint();
 
         ImGui.Separator();
@@ -130,8 +141,8 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
         {
             ImGui.PushID(blueprint.BlueprintId);
             DadUi.Section(blueprint.DisplayName);
-            ImGui.TextWrapped($"{blueprint.DutyDisplayName} ({blueprint.DutyContentFinderConditionId}) | {blueprint.CrewSetIds.Count} Crew Set(s) | repeat {blueprint.RepeatCount} | {blueprint.ScheduleCadence}");
-            if (ImGui.Button("Delete blueprint"))
+            UiGui.TextWrapped($"{blueprint.DutyDisplayName} ({blueprint.DutyContentFinderConditionId}) | {blueprint.CrewSetIds.Count} Crew Set(s) | repeat {blueprint.RepeatCount} | {blueprint.ScheduleCadence}");
+            if (UiGui.Button("Delete blueprint"))
             {
                 var result = plugin.AutoPartyFleetMatrixService.RemoveBlueprint(blueprint.BlueprintId);
                 status = result.Summary;
@@ -143,20 +154,20 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
 
     private void DrawPreviewAndApply()
     {
-        if (ImGui.Button("Refresh non-mutating preview"))
+        if (UiGui.Button("Refresh non-mutating preview"))
         {
             preview = plugin.AutoPartyFleetMatrixService.BuildPreview();
             status = preview.Summary;
         }
         preview ??= plugin.AutoPartyFleetMatrixService.BuildPreview();
-        ImGui.TextWrapped(preview.Summary);
-        ImGui.TextDisabled($"Fingerprint: {preview.Fingerprint}");
+        UiGui.TextWrapped(preview.Summary);
+        UiGui.TextDisabled($"Fingerprint: {preview.Fingerprint}");
         foreach (var issue in preview.Issues)
-            ImGui.BulletText($"{issue.SafeCode}: {issue.Message}");
+            UiGui.BulletText($"{issue.SafeCode}: {issue.Message}");
         foreach (var group in preview.PlannerGroups)
-            ImGui.BulletText($"Plan: {group.DisplayName} | {group.Slots.Count} slots | queue authority {group.QueueAuthority}");
+            UiGui.BulletText($"Plan: {group.DisplayName} | {group.Slots.Count} slots | queue authority {group.QueueAuthority}");
         foreach (var schedule in preview.Schedules)
-            ImGui.BulletText($"Schedule: {schedule.DisplayName} | {schedule.Entries.Count} entries | {schedule.Cadence}");
+            UiGui.BulletText($"Schedule: {schedule.DisplayName} | {schedule.Entries.Count} entries | {schedule.Cadence}");
 
         ImGui.BeginDisabled(!plugin.Configuration.AutoPartyFleet.Enabled || !preview.CanApply);
         if (DadUi.Button("Apply Plans + Schedules atomically", DadUiTone.Warning, new Vector2(-1f, 34f)))
@@ -169,7 +180,7 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
 
         var undo = plugin.Configuration.AutoPartyFleet.UndoSnapshot;
         ImGui.BeginDisabled(undo == null);
-        if (ImGui.Button("Undo last Matrix apply exactly"))
+        if (UiGui.Button("Undo last Matrix apply exactly"))
         {
             var result = plugin.AutoPartyFleetMatrixService.Undo(undo?.UndoToken);
             status = result.Summary;

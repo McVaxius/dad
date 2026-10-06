@@ -45,8 +45,16 @@
         "type": "Transitive",
         "resolved": "10.0.9",
         "contentHash": "1iRjljxTMvQ1EtArg6kkj+9PV5LthrtlH//GM+MLez5L9jmZFDXGoH9lNiUpOeYY3sB60CgFVRnGctcmHEKqRw=="
+      },
+      "aethertekui": {
+        "type": "Project"
+      },
+      "aethertekui.dalamud": {
+        "type": "Project",
+        "dependencies": {
+          "AethertekUI": "[0.3.0, )"
+        }
       }
-    },
-    "net10.0-windows7.0/win": {}
+    }
   }
 }

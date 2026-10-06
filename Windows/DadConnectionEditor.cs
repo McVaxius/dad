@@ -69,19 +69,19 @@ internal sealed class DadConnectionEditor
     {
         EnsureEndpointDraft(configuration);
 
-        ImGui.TextUnformatted(configuration.RunAsServerDad ? "Listen host" : "Coordinator host");
+        UiGui.TextUnformatted(configuration.RunAsServerDad ? "Listen host" : "Coordinator host");
         var comboWidth = ImGui.GetFontSize() * (compact ? 10f : 13f);
         var hostInputWidth = MathF.Max(
             compact ? 150f : 180f,
             ImGui.GetContentRegionAvail().X - comboWidth - ImGui.GetStyle().ItemSpacing.X);
         ImGui.SetNextItemWidth(hostInputWidth);
-        ImGui.InputText($"##{idPrefix}-host", ref draftHost, 128);
+        UiGui.InputText($"##{idPrefix}-host", ref draftHost, 128);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(comboWidth);
         DrawEndpointHostDropdown(idPrefix);
 
         ImGui.SetNextItemWidth(ImGui.GetFontSize() * 8f);
-        ImGui.InputInt(
+        UiGui.InputInt(
             configuration.RunAsServerDad
                 ? $"Listen port##{idPrefix}-port"
                 : $"Coordinator port##{idPrefix}-port",
@@ -90,16 +90,16 @@ internal sealed class DadConnectionEditor
 
         var pending = HasPendingEndpointChanges(configuration);
         if (pending)
-            ImGui.TextDisabled("Endpoint draft has unapplied changes.");
+            UiGui.TextDisabled("Endpoint draft has unapplied changes.");
 
         if (!showApplyActions)
             return pending;
 
-        if (ImGui.Button($"Apply endpoint changes##{idPrefix}-apply"))
+        if (UiGui.Button($"Apply endpoint changes##{idPrefix}-apply"))
             CommitEndpoint(configuration);
         ImGui.SameLine();
         ImGui.BeginDisabled(!pending);
-        if (ImGui.Button($"Revert endpoint draft##{idPrefix}-revert"))
+        if (UiGui.Button($"Revert endpoint draft##{idPrefix}-revert"))
             ResetEndpoint(configuration);
         ImGui.EndDisabled();
         return pending;
@@ -114,7 +114,7 @@ internal sealed class DadConnectionEditor
         EnsureSharedSecretDraft(configuration);
 
         ImGui.SetNextItemWidth(MathF.Min(420f, ImGui.GetContentRegionAvail().X));
-        ImGui.InputText(
+        UiGui.InputText(
             configuration.RunAsServerDad
                 ? $"Shared secret##{idPrefix}-secret"
                 : $"Paste shared secret##{idPrefix}-secret",
@@ -123,15 +123,15 @@ internal sealed class DadConnectionEditor
 
         var pending = HasPendingSharedSecretChanges(configuration);
         if (pending)
-            ImGui.TextDisabled("Shared secret draft has unapplied changes.");
+            UiGui.TextDisabled("Shared secret draft has unapplied changes.");
 
         if (showApplyActions)
         {
-            if (ImGui.Button($"Apply shared secret##{idPrefix}-apply-secret"))
+            if (UiGui.Button($"Apply shared secret##{idPrefix}-apply-secret"))
                 CommitSharedSecret(configuration);
             ImGui.SameLine();
             ImGui.BeginDisabled(!pending);
-            if (ImGui.Button($"Revert shared secret##{idPrefix}-revert-secret"))
+            if (UiGui.Button($"Revert shared secret##{idPrefix}-revert-secret"))
                 ResetSharedSecret(configuration);
             ImGui.EndDisabled();
         }
@@ -140,7 +140,7 @@ internal sealed class DadConnectionEditor
         {
             if (showApplyActions)
                 ImGui.SameLine();
-            if (ImGui.Button($"Generate LAN shared secret##{idPrefix}-generate"))
+            if (UiGui.Button($"Generate LAN shared secret##{idPrefix}-generate"))
             {
                 draftSharedSecret = plugin.GenerateAndApplyTransportSharedSecret();
                 ResetSharedSecret(configuration);
@@ -148,7 +148,7 @@ internal sealed class DadConnectionEditor
 
             ImGui.SameLine();
             ImGui.BeginDisabled(string.IsNullOrWhiteSpace(configuration.TransportSharedSecret));
-            if (ImGui.Button($"Copy shared secret##{idPrefix}-copy"))
+            if (UiGui.Button($"Copy shared secret##{idPrefix}-copy"))
             {
                 ImGui.SetClipboardText(configuration.TransportSharedSecret);
                 plugin.PrintStatus("Copied LAN shared secret.");
@@ -253,19 +253,19 @@ internal sealed class DadConnectionEditor
         var current = options.FirstOrDefault(option =>
             string.Equals(option.Host, DraftHost, StringComparison.OrdinalIgnoreCase));
         var preview = current?.Label ?? "Select IP/host";
-        if (!ImGui.BeginCombo($"##{idPrefix}-host-options", preview))
+        if (!UiGui.BeginCombo($"##{idPrefix}-host-options", preview))
             return;
 
         foreach (var option in options)
         {
             var selected = string.Equals(option.Host, DraftHost, StringComparison.OrdinalIgnoreCase);
-            if (ImGui.Selectable($"{option.Label}##{idPrefix}-{option.Host}", selected))
+            if (UiGui.Selectable($"{option.Label}##{idPrefix}-{option.Host}", selected))
                 draftHost = option.Host;
             if (selected)
                 ImGui.SetItemDefaultFocus();
         }
 
-        ImGui.EndCombo();
+        UiGui.EndCombo();
     }
 
     private IReadOnlyList<DadEndpointHostOption> GetEndpointHostOptions()
