@@ -11,26 +11,43 @@ env:
   PLUGIN_NAME: dad
   PROJECT_PATH: dad.csproj
   INTERNAL_NAME: dad
-  RELEASE_DIR: bin\x64\Release\dad
+  RELEASE_DIR: dad\dad\bin\x64\Release\dad
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    defaults:
+      run:
+        working-directory: dad/dad
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          path: dad/dad
           submodules: recursive
+          persist-credentials: false
+
+      - name: Checkout AethertekUI
+        uses: actions/checkout@v4
+        with:
+          repository: McVaxius/aethertekUI
+          ref: 6c193cf06ac67f954c549cafc2033ac0efdd630a
+          path: aethertekUI
+          ssh-key: ${{ secrets.AETHERTEKUI_DEPLOY_KEY }}
+          persist-credentials: false
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.201"
 
       - name: Configure AutoParty NuGet source
         shell: pwsh
         run: |
-          $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE "dad/dad/.github/nuget"
           $package = Join-Path $packageDir "Dad.AutoParty.Protocol.0.2.0-preview.8.nupkg"
           $expectedHash = "57180c2d3641cfaa664d4bff9acf5196e1fab72eef8d31e70116dab9f5f4a650"
 
@@ -53,13 +70,17 @@ jobs:
 
       - name: Restore
         run: |
-          $packageDir = Join-Path $env:GITHUB_WORKSPACE ".github\nuget"
+          $dalamudLibPath = "$env:AppData/XIVLauncher/addon/Hooks/dev"
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE "dad/dad/.github/nuget"
           $nugetSource = "https://api.nuget.org/v3/index.json"
-          dotnet restore "${{ env.PROJECT_PATH }}" -r win --locked-mode --source $nugetSource --source $packageDir
+          dotnet restore "${{ env.PROJECT_PATH }}" --locked-mode --source $nugetSource --source $packageDir -p:Configuration=Release -p:Platform=x64 -p:DalamudLibPath="$dalamudLibPath"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build
         run: |
-          dotnet build "${{ env.PROJECT_PATH }}" --configuration Release -p:Platform=x64 -p:DadDevPluginOutput= --no-restore
+          $dalamudLibPath = "$env:AppData/XIVLauncher/addon/Hooks/dev"
+          dotnet build "${{ env.PROJECT_PATH }}" --configuration Release -p:Platform=x64 -p:DadDevPluginOutput= --no-restore -p:DalamudLibPath="$dalamudLibPath"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
 
