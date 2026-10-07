@@ -845,6 +845,7 @@ public sealed class DadPresetProviderService
             RequestedAtUtc = requestedAtUtc ?? DateTime.UtcNow,
             RequestedBy = previewOnly ? "planner-preview" : selectedGroup == null ? "planner" : $"planner-group:{selectedGroup.DisplayName}",
             StopPolicy = plannerPreview.StopPolicy.Clone().Normalize(),
+            RefreshRecommendedGear = selectedGroup?.LevelingMode?.RefreshRecommendedGear ?? true,
             CompletionActions = ResolvePlannerCompletionActions(options, effectiveSelectedGroup, completionFallback),
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, effectiveSelectedGroup, lane, requestedPartySize),
         };

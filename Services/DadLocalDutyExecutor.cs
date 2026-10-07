@@ -113,6 +113,8 @@ public sealed class DadLocalDutyExecutor(
             enteredDuty,
             dutyCompleted,
             freshCompletionEvidence);
+        if (freshCompletionEvidence)
+            combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
         var exitDecision = DadDutyLifecycleRules.EvaluateExit(
             enteredDuty,
@@ -202,6 +204,7 @@ public sealed class DadLocalDutyExecutor(
 
     private void Fail(string reason)
     {
+        combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         status.Phase = DadRunPhase.Finalizing;
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
@@ -231,7 +234,10 @@ public sealed class DadLocalDutyExecutor(
     private DadRunStepResultDto BeginOrUpdatePostDutyStabilizing(DateTime now)
     {
         if (postDutyStabilizeUntilUtc == DateTime.MinValue)
+        {
+            combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
             postDutyStabilizeUntilUtc = now + PostDutyStabilizeDuration;
+        }
 
         return UpdatePostDutyStabilizing(now);
     }
@@ -299,7 +305,9 @@ public sealed class DadLocalDutyExecutor(
             status.RunId,
             DadModuleId.Duty,
             DadClock.UtcNow,
-            out entryAutomationSummary);
+            out entryAutomationSummary,
+            resolvedContent?.ContentFinderConditionId ?? 0,
+            enforceDungeonTargeting: !dutyCompleted);
         if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
             return true;
 
@@ -319,6 +327,7 @@ public sealed class DadLocalDutyExecutor(
 
     private void ClearRuntimeState()
     {
+        combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         runStartedAtUtc = DateTime.MinValue;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
         exitCompletionGraceUntilUtc = DateTime.MinValue;

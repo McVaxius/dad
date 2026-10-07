@@ -20,12 +20,15 @@ public sealed class DadShareServiceTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void PlanRoundTripPreservesShareableFieldsAndExcludesMachineLocalState(bool refreshGear)
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void PlanRoundTripPreservesShareableFieldsAndExcludesMachineLocalState(bool levelingMode, bool refreshGear)
     {
         var service = CreateService();
         var source = BuildPlan(PlanA, "Alice Example Plan for Primary Account");
+        source.LevelingMode.Enabled = levelingMode;
         source.LevelingMode.RefreshRecommendedGear = refreshGear;
         var originalCreated = source.CreatedAtUtc;
         var commands = source.CompletionActions!.Commands.ToArray();
@@ -39,7 +42,7 @@ public sealed class DadShareServiceTests
         Assert.Equal(source.RunFamily, transfer.RunFamily);
         Assert.Equal(source.RouletteTarget.RouletteId, transfer.RouletteTarget.RouletteId);
         Assert.Equal(source.StopPolicy.Mode, transfer.StopPolicy.Mode);
-        Assert.True(transfer.LevelingMode.Enabled);
+        Assert.Equal(levelingMode, transfer.LevelingMode.Enabled);
         Assert.Equal(refreshGear, transfer.LevelingMode.RefreshRecommendedGear);
         Assert.Equal(source.LevelingMode.GoalLevel, transfer.LevelingMode.GoalLevel);
         Assert.Equal(source.LevelingMode.JobOrder, transfer.LevelingMode.JobOrder);
@@ -92,7 +95,7 @@ public sealed class DadShareServiceTests
         Assert.True(DadSharedPlanRules.HasUnresolvedPlaceholders(imported));
         Assert.True(imported.Slots[0].SkipIfDailyRouletteRewardReceived);
         Assert.False(imported.Slots[1].SkipIfDailyRouletteRewardReceived);
-        Assert.True(imported.LevelingMode.Enabled);
+        Assert.Equal(levelingMode, imported.LevelingMode.Enabled);
         Assert.Equal(refreshGear, imported.LevelingMode.RefreshRecommendedGear);
         Assert.Equal(DadLevelingJobOrder.HighestBelowGoal, imported.LevelingMode.JobOrder);
         Assert.Equal((uint)777, Assert.Single(imported.LevelingMode.DutyThresholds).ContentFinderConditionId);

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Reflection;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
 using dad.Models;
@@ -153,6 +154,42 @@ public sealed class MainWindow : Window, IDisposable
         };
         Size = new Vector2(1080f,900f);
         SizeCondition = ImGuiCond.FirstUseEver;
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.Cog, Priority = 0, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) plugin.OpenConfigUi(); },
+            ShowTooltip = () => UiGui.SetTooltip("Settings"),
+        });
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.WindowMinimize, Priority = -10, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) plugin.OpenMiniStatusUi(); },
+            ShowTooltip = () => UiGui.SetTooltip("DAD Mini Status"),
+        });
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.Terminal, Priority = -20, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) plugin.ToggleQuickPanelUi(); },
+            ShowTooltip = () => UiGui.SetTooltip("Quick Commands"),
+        });
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.PowerOff, Priority = -30, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) plugin.SetPluginEnabled(!plugin.Configuration.PluginEnabled); },
+            ShowTooltip = () => UiGui.SetTooltip(plugin.Configuration.PluginEnabled ? "Enabled" : "Disabled"),
+        });
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.Play, Priority = -40, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) RunOnlineParticipants(); },
+            ShowTooltip = () => MaterialText.SetTooltip(UiText.T("Run now — online participants") + "\n" + UiText.T(CurrentPlannerActions().RunTooltip)),
+        });
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.Stop, Priority = -50, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) CancelPresetOperation(); },
+            ShowTooltip = () => MaterialText.SetTooltip(UiText.T("Cancel preset operation") + "\n" + UiText.T(CurrentPlannerActions().CancelTooltip)),
+        });
     }
 
     public void Dispose() { }
@@ -215,7 +252,7 @@ public sealed class MainWindow : Window, IDisposable
         captions.Color(ImGuiCol.TextDisabled,DadUi.Muted);
         motion.DrawChrome();
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
-        UiGui.Title(WindowName.Split("##",2)[0],$"{PluginInfo.DisplayName} {version}");
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0],$"{PluginInfo.DisplayName} {version}",this);
         ApplyPendingPositionChange();
         var windowRootId = ImGui.GetID("");
 
@@ -4696,7 +4733,7 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.BeginDisabled(!directRunEnabled);
         if (UiGui.Button("Run now — online participants", new Vector2(runButtonWidth, 0f)))
-            plugin.StartPlannerRunFromShell();
+            RunOnlineParticipants();
         var directRunHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
         if (directRunHovered)
@@ -4753,7 +4790,7 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.BeginDisabled(!cancelEnabled);
         if (DadUi.Button("Cancel preset operation", DadUiTone.Danger, new Vector2(runButtonWidth, 0f)))
-            CancelOwnedOperation(schedulerJobToCancel, "Planner");
+            CancelPresetOperation();
         var cancelHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         ImGui.EndDisabled();
         if (cancelHovered)
@@ -4780,6 +4817,52 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TreePop();
         }
 
+    }
+
+    private (bool CanRun, bool CanCancel, DadScheduledCrewJob? Job, string RunTooltip, string CancelTooltip) CurrentPlannerActions()
+    {
+        var preview = plugin.BuildPlannerRunRequestPreview();
+        var runState = plugin.GetVisibleRunState();
+        var activeRun = GetActiveRun(runState);
+        var selectedGroup = plugin.GetSelectedPlannerGroup();
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        var cleanupJob = selectedGroup == null ? null : plugin.SchedulerService.GetPendingTakeoverCleanupJob(selectedGroup.GroupId);
+        var selectedJob = selectedGroup == null ? null : queue.ActiveJob is { } activeJob
+            && string.Equals(activeJob.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase) ? activeJob
+            : queue.PendingJobs.FirstOrDefault(job => string.Equals(job.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase)) ?? cleanupJob;
+        var cleanupPending = plugin.SchedulerService.HasPendingCancellationCleanup
+            || plugin.RunCoordinatorService.HasPendingCancellationCleanup
+            || activeRun.CancellationState is DadRunCancellationState.Requested or DadRunCancellationState.Cancelling;
+        var jobToCancel = queue.ActiveJob ?? (selectedGroup == null ? null : queue.PendingJobs.FirstOrDefault(job =>
+            string.Equals(job.GroupId, selectedGroup.GroupId, StringComparison.OrdinalIgnoreCase))) ?? cleanupJob;
+        var directRunActive = jobToCancel == null && Plugin.IsBusy(activeRun)
+            && (string.Equals(activeRun.RequestedBy, "planner", StringComparison.OrdinalIgnoreCase)
+                || activeRun.RequestedBy.StartsWith("planner-group:", StringComparison.OrdinalIgnoreCase));
+        var canRun = !IsPlannerLocked(runState) && !cleanupPending && queue.ActiveJob == null && selectedJob == null && preview.CanStart;
+        var canCancel = !cleanupPending && (jobToCancel != null || directRunActive);
+        var runTooltip = cleanupPending
+            ? "Cancellation cleanup is awaiting exact acknowledgement before another preset operation can start."
+            : selectedJob != null ? $"This preset already has an active or pending scheduler job. Job ID {selectedJob.JobId}."
+            : IsPlannerLocked(runState) ? FormatText(activeRun.Summary, preview.StatusSummary)
+            : preview.CanStart ? "Starts the existing direct Planner request for online participants only. It does not enter the scheduler, wake, relog, or request VERMAXION takeover."
+            : FormatText(preview.BlockedReason, preview.StatusSummary);
+        var cancelTooltip = cleanupPending
+            ? "Cancellation was requested. Another start remains blocked until exact cleanup acknowledgement arrives."
+            : jobToCancel != null ? $"Cancels the scheduler owner by exact Job ID {jobToCancel.JobId}; takeover cleanup must acknowledge before another start."
+            : directRunActive ? "Cancels the active direct Planner run through the run coordinator owner."
+            : "No active or pending preset operation is available to cancel.";
+        return (canRun, canCancel, jobToCancel, runTooltip, cancelTooltip);
+    }
+
+    internal void RunOnlineParticipants()
+    {
+        if (CurrentPlannerActions().CanRun) plugin.StartPlannerRunFromShell();
+    }
+
+    internal void CancelPresetOperation()
+    {
+        var actions = CurrentPlannerActions();
+        if (actions.CanCancel) CancelOwnedOperation(actions.Job, "Planner");
     }
 
     private void CancelOwnedOperation(DadScheduledCrewJob? fallbackSchedulerJob = null, string source = "DAD UI")
@@ -7402,6 +7485,15 @@ public sealed class MainWindow : Window, IDisposable
                 : DadLevelingModeActivationRules.ValidLaneSummary);
         }
 
+        var refreshGear = options.RefreshRecommendedGear;
+        if (UiGui.Checkbox("Equip recommended gear and update current gearset", ref refreshGear))
+        {
+            options.RefreshRecommendedGear = refreshGear;
+            plugin.TouchPlannerGroup(group);
+        }
+        if (ImGui.IsItemHovered())
+            UiGui.SetTooltip("Each worker prepares gear once before repair and queueing. Errors or a five-second timeout continue the duty without retrying.");
+
         if (!options.Enabled)
         {
             UiGui.TextDisabled("Disabled. Fixed job, fixed duty, Level seek, and ordinary stop policy remain unchanged.");
@@ -7445,15 +7537,6 @@ public sealed class MainWindow : Window, IDisposable
             }
             UiGui.EndCombo();
         }
-
-        var refreshGear = options.RefreshRecommendedGear;
-        if (UiGui.Checkbox("Equip recommended gear and update current gearset", ref refreshGear))
-        {
-            options.RefreshRecommendedGear = refreshGear;
-            plugin.TouchPlannerGroup(group);
-        }
-        if (ImGui.IsItemHovered())
-            UiGui.SetTooltip("Each worker prepares gear once before repair and queueing. Errors or a five-second timeout continue the duty without retrying.");
 
         var dutyOptions = supported
             ? plugin.PresetProviderService.SearchPlannerDutyOptions(childLane, string.Empty, 4096)

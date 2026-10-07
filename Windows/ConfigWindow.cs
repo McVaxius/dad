@@ -20,7 +20,7 @@ public sealed class ConfigWindow : Window, IDisposable
         "NPC, excluding inns",
         "Nearby NPC, no teleport/inn",
     };
-    private const string CommunityDiscordUrl = "https://discord.gg/VsXqydsvpu";
+    private const string CommunityDiscordUrl = "https://discord.gg/ac6gjDvR8R";
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
     private readonly Plugin plugin;
     private readonly DadConnectionEditor connectionEditor;

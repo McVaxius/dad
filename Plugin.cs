@@ -722,6 +722,7 @@ public sealed class Plugin : IDalamudPlugin
             Reason = "DAD unloading.",
         });
         autoPartyInboundRuntime.ReleaseAllInboundFrenRiderProfiles();
+        CombatRotationService.ReleaseOwnedDungeonRsrAggro();
         KranglerPrivacyLeaseService.Dispose();
         backgroundCancellation.Cancel();
         backgroundTasks.Dispose();

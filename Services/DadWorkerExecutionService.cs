@@ -168,6 +168,7 @@ public sealed class DadWorkerExecutionService
             if (activeCommand != null &&
                 string.Equals(activeCommand.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
             {
+                combatRotationService.ReleaseDungeonRsrAggro(activeCommand.RunId);
                 gearPreparation.Reset();
                 if (cancellationPending)
                 {
@@ -281,6 +282,7 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            combatRotationService.ReleaseOwnedDungeonRsrAggro();
             if (cancellationPending && activeCommand != null)
             {
                 pendingCommands.DrainAll();
@@ -860,7 +862,8 @@ public sealed class DadWorkerExecutionService
                 participantCombatRotationMode == DadCombatRotationMode.UseFrenRider,
                 exactRequestedDutyEntered,
                 DadClock.UtcNow,
-                combatRotationService.TryConfigureAndEnableParticipant,
+                nameAtWorld => combatRotationService.TryConfigureAndEnableDungeonParticipant(
+                    nameAtWorld, activeCommand.RunId, participantQueueContent.ContentFinderConditionId),
                 out var handoffSummary);
             if (handoffStatus == DadParticipantFrenRiderHandoffStatus.Failed)
             {
@@ -1127,6 +1130,8 @@ public sealed class DadWorkerExecutionService
 
     private void Finish(DadWorkerExecutionState state, bool success, string summary, string failureReason)
     {
+        if (activeCommand != null)
+            combatRotationService.ReleaseDungeonRsrAggro(activeCommand.RunId);
         gearPreparation.Reset();
         if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
             queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);

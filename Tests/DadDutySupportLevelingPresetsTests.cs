@@ -1,4 +1,5 @@
 extern alias DadRuntime;
+using System.Text.Json;
 using Xunit;
 using DadRuntime::dad.Models;
 using DadRuntime::dad.Services;
@@ -7,6 +8,8 @@ namespace dad.Tests;
 
 public sealed class DadDutySupportLevelingPresetsTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     private static readonly DadPlannerDutyOption[] Catalog =
     [
         new() { TerritoryType = 1036, ContentFinderConditionId = 4, DutyDisplayName = "First", JobLevelRequired = 15, SupportsDutySupport = true },
@@ -86,6 +89,51 @@ public sealed class DadDutySupportLevelingPresetsTests
         Assert.Equal(DadSchedulerWakePolicy.AlreadyOnlineOnly, slot.WakePolicy);
         group.StopPolicy.AfterRuns = 3;
         Assert.Equal(3, group.StopPolicy.AfterRuns);
+    }
+
+    [Fact]
+    public void OrdinaryPresetWithMissingGearPreferenceDefaultsToPreparingGear()
+    {
+        var group = JsonSerializer.Deserialize<DadPlannerGroup>(
+            """{"GroupId":"i462-default","ActivityMode":1,"DutyContentFinderConditionId":4}""", JsonOptions)!;
+        var provider = new DadPresetProviderService(new DadModuleRegistry(), () => [], dutyCatalogProvider: () => Catalog);
+        var preview = provider.BuildPlannerRunRequestPreview(new(), provider.BuildOptionsForGroup(group, null), selectedGroup: group);
+
+        Assert.NotNull(group.LevelingMode);
+        Assert.False(group.LevelingMode.Enabled);
+        Assert.True(group.LevelingMode.RefreshRecommendedGear);
+        Assert.NotNull(preview.Request);
+        Assert.True(preview.Request.RefreshRecommendedGear);
+        Assert.False(JsonSerializer.Deserialize<DadRunRequest>("{}", JsonOptions)!.RefreshRecommendedGear);
+    }
+
+    [Theory]
+    [InlineData(DadPlannerActivityMode.DutySupport, true)]
+    [InlineData(DadPlannerActivityMode.DutySupport, false)]
+    [InlineData(DadPlannerActivityMode.Trust, true)]
+    [InlineData(DadPlannerActivityMode.Trust, false)]
+    [InlineData(DadPlannerActivityMode.LocalDuty, true)]
+    [InlineData(DadPlannerActivityMode.LocalDuty, false)]
+    public void OrdinaryPlannerRequestPreservesSavedGearPreference(DadPlannerActivityMode lane, bool refreshGear)
+    {
+        var group = new DadPlannerGroup
+        {
+            GroupId = "i462-saved",
+            ActivityMode = lane,
+            DutyContentFinderConditionId = 4,
+            LevelingMode = new() { Enabled = false, RefreshRecommendedGear = refreshGear },
+        };
+        var restored = JsonSerializer.Deserialize<DadPlannerGroup>(JsonSerializer.Serialize(group, JsonOptions), JsonOptions)!;
+        var provider = new DadPresetProviderService(new DadModuleRegistry(), () => [], dutyCatalogProvider: () => Catalog);
+        var preview = provider.BuildPlannerRunRequestPreview(new(), provider.BuildOptionsForGroup(restored, null), selectedGroup: restored);
+        Assert.NotNull(preview.Request);
+        var frozen = JsonSerializer.Deserialize<DadRunRequest>(JsonSerializer.Serialize(preview.Request, JsonOptions), JsonOptions)!;
+
+        Assert.NotNull(restored.LevelingMode);
+        Assert.False(restored.LevelingMode.Enabled);
+        Assert.Equal(refreshGear, restored.LevelingMode.RefreshRecommendedGear);
+        Assert.Equal(refreshGear, preview.Request.RefreshRecommendedGear);
+        Assert.Equal(refreshGear, frozen.RefreshRecommendedGear);
     }
 
     private static IReadOnlyList<DadPlannerDutyOption> Lookup(uint territory)

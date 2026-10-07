@@ -8,8 +8,29 @@ internal sealed class VirtualProfileIpc(Action<string> record)
 {
     internal const string ProfileJson = "{\"label\":\"Synthetic shared profile\",\"enabled\":true}";
     private string? activeOwnership;
+    public string? DungeonRunId { get; private set; }
     public object Invoke(string endpoint, object?[] values)
     {
+        if (endpoint == "FrenRider.Dad.AcquireDungeonRsrAggro")
+        {
+            if (values is not [string runId, uint contentId])
+                throw new InvalidOperationException("Invalid synthetic dungeon targeting acquisition.");
+            record($"ipc:{endpoint}:{runId}:{contentId}");
+            if (string.IsNullOrWhiteSpace(runId) || contentId != 4 || DungeonRunId != null && DungeonRunId != runId)
+                return false;
+            DungeonRunId = runId;
+            return true;
+        }
+        if (endpoint == "FrenRider.Dad.ReleaseDungeonRsrAggro")
+        {
+            if (values is not [string runId])
+                throw new InvalidOperationException("Invalid synthetic dungeon targeting release.");
+            record($"ipc:{endpoint}:{runId}");
+            if (DungeonRunId != null && DungeonRunId != runId)
+                return false;
+            DungeonRunId = null;
+            return true;
+        }
         if (values is not [string json]) throw new InvalidOperationException("Invalid synthetic FrenRider payload.");
         record($"ipc:{endpoint}:{json}");
         if (endpoint == "FrenRider.Dad.ConfigureAndEnable")

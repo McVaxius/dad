@@ -30,8 +30,12 @@ public sealed class DadSchedulerGroupCloneRulesTests
         Assert.Equal(1, source.TimeoutSeconds);
     }
 
-    [Fact]
-    public void SchedulerClonePreservesExactRouletteTargetAndOwnsDeepCopies()
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void SchedulerClonePreservesExactRouletteTargetAndOwnsDeepCopies(bool levelingMode, bool refreshGear)
     {
         var target = new DadQueueTarget
         {
@@ -54,7 +58,8 @@ public sealed class DadSchedulerGroupCloneRulesTests
             StopPolicy = new DadRunStopPolicy { AfterRuns = 2 },
             LevelingMode = new DadLevelingModeOptions
             {
-                Enabled = true,
+                Enabled = levelingMode,
+                RefreshRecommendedGear = refreshGear,
                 GoalLevel = 90,
                 JobOrder = DadLevelingJobOrder.HighestBelowGoal,
                 DutyThresholds =
@@ -96,7 +101,8 @@ public sealed class DadSchedulerGroupCloneRulesTests
         Assert.NotSame(source.StopPolicy, clone.StopPolicy);
         Assert.NotSame(source.LevelingMode, clone.LevelingMode);
         Assert.NotSame(source.LevelingMode.DutyThresholds[0], clone.LevelingMode.DutyThresholds[0]);
-        Assert.True(clone.LevelingMode.Enabled);
+        Assert.Equal(levelingMode, clone.LevelingMode.Enabled);
+        Assert.Equal(refreshGear, clone.LevelingMode.RefreshRecommendedGear);
         Assert.Equal(90, clone.LevelingMode.GoalLevel);
         Assert.Equal(DadLevelingJobOrder.HighestBelowGoal, clone.LevelingMode.JobOrder);
         Assert.Equal((uint)777, Assert.Single(clone.LevelingMode.DutyThresholds).ContentFinderConditionId);

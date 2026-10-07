@@ -2,6 +2,7 @@ using AethertekUI.Dalamud;
 using AethertekUI;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
 using dad.Models;
 
@@ -31,6 +32,18 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
         };
         Size = new Vector2(460f, 330f);
         SizeCondition = ImGuiCond.FirstUseEver;
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.WindowMaximize, Priority = 0, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) plugin.OpenMainUi(); },
+            ShowTooltip = () => UiGui.SetTooltip("Open full DAD"),
+        });
+        TitleBarButtons.Add(new()
+        {
+            Icon = FontAwesomeIcon.Cog, Priority = -10, IconOffset = new(2, 1),
+            Click = button => { if (button == ImGuiMouseButton.Left) plugin.OpenConfigUi(); },
+            ShowTooltip = () => UiGui.SetTooltip("Settings"),
+        });
     }
 
     public void Dispose()
@@ -58,7 +71,7 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0],null,this);
         ApplyPendingPositionChange();
         var windowRootId = ImGui.GetID("");
         DadUi.IconHeading("Quick Commands",string.Empty,MaterialIcon.Terminal);

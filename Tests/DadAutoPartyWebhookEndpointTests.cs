@@ -565,8 +565,8 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("userAction: false", source, StringComparison.Ordinal);
         Assert.Contains("operationReportsStatus && operationActionRevision == actionRevision", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ready for the next action", source, StringComparison.Ordinal);
-        Assert.Contains("ImGui.CollapsingHeader(\"Community Available\")", source, StringComparison.Ordinal);
-        Assert.Contains("ImGui.CollapsingHeader(\"Diagnostics", source, StringComparison.Ordinal);
+        Assert.Contains("UiGui.CollapsingHeader(\"Community Available\")", source, StringComparison.Ordinal);
+        Assert.Contains("UiGui.CollapsingHeader(\"Diagnostics", source, StringComparison.Ordinal);
         Assert.Contains("plugin.TryStartPairedDirectoryRefresh()", source, StringComparison.Ordinal);
         Assert.Contains("jobs.Select(ResolveJobAbbreviation)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("job => job.ToString()", source, StringComparison.Ordinal);
@@ -592,6 +592,7 @@ public sealed class DadAutoPartyWebhookEndpointTests
         var pluginSource = ReadRepositorySource("Plugin.cs");
         var endpointSource = ReadRepositorySource("Services", "DadAutoPartyEndpointService.cs");
         var mainSource = ReadRepositorySource("Windows", "MainWindow.cs");
+        var autoPartySource = ReadRepositorySource("Windows", "DadAutoPartyWindow.cs");
         var crewSource = ReadRepositorySource("Windows", "DadPresetCrewEditor.cs");
 
         var publish = endpointSource.IndexOf(
@@ -607,11 +608,21 @@ public sealed class DadAutoPartyWebhookEndpointTests
         Assert.Contains("TimeSpan.FromSeconds(60)", endpointSource, StringComparison.Ordinal);
         Assert.Contains("PairedDirectoryRefreshCooldown = TimeSpan.FromSeconds(60)", pluginSource, StringComparison.Ordinal);
         Assert.Contains("RefreshPairedDirectoryAsync(backgroundCancellation.Token)", pluginSource, StringComparison.Ordinal);
-        Assert.Contains("PublishedListingCount", mainSource, StringComparison.Ordinal);
-        Assert.Contains("ReceivedListingCount", mainSource, StringComparison.Ordinal);
+        Assert.Contains("PublishedListingCount", autoPartySource, StringComparison.Ordinal);
+        Assert.Contains("ReceivedListingCount", autoPartySource, StringComparison.Ordinal);
         Assert.Contains("Refresh paired DAD character lists", mainSource, StringComparison.Ordinal);
-        Assert.Contains("Math.Ceiling(refreshCooldown.TotalSeconds)", mainSource, StringComparison.Ordinal);
-        Assert.Contains("new Vector2(-1f, 34f)", mainSource, StringComparison.Ordinal);
+        Assert.Contains("plugin.PairedDirectoryRefreshInProgress || plugin.PairedDirectoryRefreshCooldownRemaining>TimeSpan.Zero", mainSource, StringComparison.Ordinal);
+        Assert.Contains("plugin.TryStartPairedDirectoryRefresh();", mainSource, StringComparison.Ordinal);
+        var refreshStart = autoPartySource.IndexOf("private void DrawPairedCharacterRefresh()", StringComparison.Ordinal);
+        Assert.True(refreshStart >= 0);
+        var refreshEnd = autoPartySource.IndexOf("private void ObserveDirectoryRefresh()", refreshStart, StringComparison.Ordinal);
+        Assert.True(refreshEnd > refreshStart);
+        var refreshSource = autoPartySource[refreshStart..refreshEnd];
+        Assert.Contains("ImGui.BeginDisabled(plugin.PairedDirectoryRefreshInProgress || refreshCooldown > TimeSpan.Zero)", refreshSource, StringComparison.Ordinal);
+        Assert.Contains("Refresh paired DAD character lists", refreshSource, StringComparison.Ordinal);
+        Assert.Contains("Math.Ceiling(refreshCooldown.TotalSeconds)", refreshSource, StringComparison.Ordinal);
+        Assert.Contains("new Vector2(-1f, ImGui.GetFrameHeight())", refreshSource, StringComparison.Ordinal);
+        Assert.Contains("plugin.TryStartPairedDirectoryRefresh()", refreshSource, StringComparison.Ordinal);
         Assert.Contains("plugin.TryStartPairedDirectoryRefresh();", crewSource, StringComparison.Ordinal);
         Assert.DoesNotContain(".GetAwaiter().GetResult()", crewSource, StringComparison.Ordinal);
     }

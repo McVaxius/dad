@@ -224,6 +224,9 @@ internal static class UiGui
         var open=ImGui.BeginPopupModal(original,flags|ImGuiWindowFlags.HorizontalScrollbar);if(open) Title(original.Split("##",2)[0]);return open;
     }
     internal static void Title(string original,string? display=null)
+        => TitleWithButtons(original,display,null);
+
+    internal static void TitleWithButtons(string original,string? display,Dalamud.Interface.Windowing.Window? owner)
     {
         var translated=display ?? UiText.T(original);
         var brand=original.StartsWith("DAD",StringComparison.Ordinal);
@@ -235,6 +238,12 @@ internal static class UiGui
         using var font=UiText.Font(UiFontRole.Body);
         var rightButtons=fontSize+style.FramePadding.X*2;
         if ((flags & (ImGuiWindowFlags.NoCollapse|ImGuiWindowFlags.Modal))==0 && style.WindowMenuButtonPosition==ImGuiDir.Right) rightButtons+=fontSize+style.ItemInnerSpacing.X;
+        if(owner is not null)
+        {
+            var buttons=owner.TitleBarButtons.Count(button=>!owner.IsClickthrough||button.AvailableClickthrough);
+            if(owner.AllowPinning||owner.AllowClickthrough||owner.AllowBackgroundBlur) buttons++;
+            rightButtons+=buttons*(fontSize+style.ItemInnerSpacing.X);
+        }
         var edge=ImGui.GetWindowPos()+new Vector2(Math.Max(0,ImGui.GetWindowSize().X-rightButtons),height);
         var dl=ImGui.GetWindowDrawList();dl.PushClipRect(new Vector2(Math.Min(p.X,edge.X),p.Y),edge,false);
         var background=style.Colors[(int)(ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)?ImGuiCol.TitleBgActive:ImGuiCol.TitleBg)];

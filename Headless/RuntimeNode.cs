@@ -246,7 +246,10 @@ internal sealed class RuntimeNode : IDisposable
         npcDutyQueue = new(log, dutyFinder, new VirtualNpcDutyNative(dutyFinder, () => character.CurrentJobId ?? 0, events.Enqueue, Unexpected));
         helpers = new(events.Enqueue);
         var ads = new DadDutySupportAdsService(Plugin.PluginInterface, log);
-        var combat = new DadCombatRotationService(configuration, Plugin.PluginInterface, log);
+        var dungeonRsrScope = input.TryGetProperty("dungeonRsrScope", out var scope) && scope.GetBoolean();
+        var combat = new DadCombatRotationService(configuration, Plugin.PluginInterface, log,
+            expected => dungeonRsrScope && dutyFinder.Stage == "duty" && dutyFinder.IsLoggedIn && !dutyFinder.Loading
+                && (expected == 0 || expected == 4) ? 4u : 0u);
         presence.ConfigureCombatRotationService(combat);
         presence.ConfigureLootGoblinReadinessProvider(() => new DadLootGoblinIpcService(Plugin.PluginInterface).IsReady());
         queue = new DadQueueExecutionService(new(), new(Plugin.PluginInterface), new(Plugin.PluginInterface),
@@ -578,6 +581,7 @@ internal sealed class RuntimeNode : IDisposable
     public object Snapshot() => new
     {
         participant = presence.BuildSnapshotCopy(), worker = worker.GetStatus(), coordinator = coordinator.GetLocalResult(),
+        dungeonRsrAggroOwner = profileIpc.DungeonRunId,
         scheduler = scheduler.CurrentState, schedule = configuration.ActiveScheduleRun, wake = wake.GetActiveStatus(), stopAll = transport.LatestStopAllStatus,
         dutyIpc = dutyIpc.GetStatus(), dutyStopped = !ipcProviders.ContainsKey(DadDutyIpcContract.IsStopped) ||
             Plugin.PluginInterface.GetIpcSubscriber<bool>(DadDutyIpcContract.IsStopped).InvokeFunc(), savedPresetCount = configuration.PlannerGroups.Count,

@@ -15,13 +15,20 @@ public enum DadFrenRiderPluginState
 public sealed class DadCombatRotationService(
     Configuration configuration,
     IDalamudPluginInterface pluginInterface,
-    IPluginLog log)
+    IPluginLog log,
+    Func<uint, uint>? dungeonScopeResolver)
 {
+    public DadCombatRotationService(Configuration configuration,
+        IDalamudPluginInterface pluginInterface, IPluginLog log)
+        : this(configuration, pluginInterface, log, null) { }
+
     private const string FrenRiderInternalName = "FrenRider";
     private const string FrenRiderDisplayName = "Fren Rider";
 
     public const string FrenRiderEnableCommand = "/fr on";
     public const string FrenRiderConfigureAndEnableChannel = "FrenRider.Dad.ConfigureAndEnable";
+    internal const string AcquireDungeonRsrAggroChannel = "FrenRider.Dad.AcquireDungeonRsrAggro";
+    internal const string ReleaseDungeonRsrAggroChannel = "FrenRider.Dad.ReleaseDungeonRsrAggro";
     public const string BossModRotationCommand = "/bmrai on";
     public const string AutoRotationCommand = "/rotation auto";
 
@@ -34,6 +41,15 @@ public sealed class DadCombatRotationService(
     private readonly DadFrenRiderEntryEnableGate frenRiderEntryEnableGate = new();
     private readonly ICallGateSubscriber<string, bool> frenRiderConfigureAndEnable =
         pluginInterface.GetIpcSubscriber<string, bool>(FrenRiderConfigureAndEnableChannel);
+    private readonly ICallGateSubscriber<string, uint, bool> acquireDungeonRsrAggro =
+        pluginInterface.GetIpcSubscriber<string, uint, bool>(AcquireDungeonRsrAggroChannel);
+    private readonly ICallGateSubscriber<string, bool> releaseDungeonRsrAggro =
+        pluginInterface.GetIpcSubscriber<string, bool>(ReleaseDungeonRsrAggroChannel);
+    private readonly Func<uint, uint> resolveDungeonScope =
+        dungeonScopeResolver ?? DadGameStateReader.GetFourPlayerDungeonContentFinderConditionId;
+    private string dungeonRsrAggroAttemptRunId = string.Empty;
+    private uint dungeonRsrAggroAttemptContentId;
+    private string dungeonRsrAggroOwnedRunId = string.Empty;
 
     public DadCombatRotationMode CombatRotationMode => configuration.CombatRotationMode;
     internal Func<bool>? QuestionableDutySettingsGate { get; set; }
@@ -77,8 +93,12 @@ public sealed class DadCombatRotationService(
         string runId,
         DadModuleId moduleId,
         DateTime now,
-        out string summary)
+        out string summary,
+        uint expectedContentFinderConditionId = 0,
+        bool enforceDungeonTargeting = true)
     {
+        if (enforceDungeonTargeting)
+            TryAcquireDungeonRsrAggro(runId, expectedContentFinderConditionId);
         var result = frenRiderEntryEnableGate.Apply(
             runId,
             FormatDutyOperation(moduleId),
@@ -152,6 +172,77 @@ public sealed class DadCombatRotationService(
             return DadFrenRiderCommandResult.Failure(failure);
         }
     }
+
+    internal DadFrenRiderCommandResult TryConfigureAndEnableDungeonParticipant(
+        string nameAtWorld, string runId, uint expectedContentFinderConditionId)
+    {
+        TryAcquireDungeonRsrAggro(runId, expectedContentFinderConditionId);
+        return TryConfigureAndEnableParticipant(nameAtWorld);
+    }
+
+    private void TryAcquireDungeonRsrAggro(string runId, uint expectedContentFinderConditionId)
+    {
+        if (string.IsNullOrWhiteSpace(runId))
+            return;
+        var contentId = resolveDungeonScope(expectedContentFinderConditionId);
+        if (contentId == 0 || dungeonRsrAggroAttemptRunId == runId && dungeonRsrAggroAttemptContentId == contentId)
+            return;
+        dungeonRsrAggroAttemptRunId = runId;
+        dungeonRsrAggroAttemptContentId = contentId;
+        if (!string.IsNullOrEmpty(dungeonRsrAggroOwnedRunId) && dungeonRsrAggroOwnedRunId != runId)
+        {
+            log.Warning("[dad][CombatRotation] A different run still owns dungeon RSR targeting; its ownership is preserved.");
+            return;
+        }
+        var priorOwner = dungeonRsrAggroOwnedRunId;
+        // A thrown acknowledgement can follow acceptance. Keep the exact run for safe cleanup.
+        dungeonRsrAggroOwnedRunId = runId;
+        try
+        {
+            if (acquireDungeonRsrAggro.InvokeFunc(runId, contentId))
+            {
+                dungeonRsrAggroOwnedRunId = runId;
+                log.Information("[dad][CombatRotation] FrenRider accepted run-owned dungeon RSR targeting; application retains its existing safety holds.");
+            }
+            else
+            {
+                dungeonRsrAggroOwnedRunId = priorOwner;
+                log.Warning("[dad][CombatRotation] FrenRider did not accept dungeon RSR targeting ownership; its current engine and operating mode remain effective.");
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad][CombatRotation] Dungeon RSR targeting acquisition acknowledgement is unavailable; matching-run cleanup remains required and the existing FrenRider handoff is preserved.");
+        }
+    }
+
+    internal bool ReleaseDungeonRsrAggro(string runId)
+    {
+        if (dungeonRsrAggroAttemptRunId == runId)
+        {
+            dungeonRsrAggroAttemptRunId = string.Empty;
+            dungeonRsrAggroAttemptContentId = 0;
+        }
+        if (string.IsNullOrEmpty(dungeonRsrAggroOwnedRunId) || dungeonRsrAggroOwnedRunId != runId)
+            return true;
+        try
+        {
+            if (releaseDungeonRsrAggro.InvokeFunc(runId))
+            {
+                dungeonRsrAggroOwnedRunId = string.Empty;
+                return true;
+            }
+            log.Warning("[dad][CombatRotation] FrenRider rejected matching-run dungeon RSR targeting release; restoration is unverified.");
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "[dad][CombatRotation] Matching-run dungeon RSR targeting release is unavailable; restoration is unverified.");
+        }
+        return false;
+    }
+
+    internal bool ReleaseOwnedDungeonRsrAggro()
+        => ReleaseDungeonRsrAggro(dungeonRsrAggroOwnedRunId);
 
     public bool TryApplyDutySupportEntryMode(
         DadCombatRotationMode mode,

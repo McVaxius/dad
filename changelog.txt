@@ -1,5 +1,30 @@
 # dad — changelog
 
+## Unreleased - Managed CJK font atlas
+
+- Merge one bundled CJK face per font role, selecting the active language's regional forms. Set both managed atlas dimensions to 4096 on every rebuild; preserve font heights, required glyph ranges, symbol merges and host-language coverage.
+- Current compilation and guarded production callback/rebuild checks pass, together with bounded native glyph checks for the checked text. Managed-host readiness, complete displayed glyph coverage, language/scale host rebuilds and game/GPU acceptance remain unverified.
+
+## Unreleased - Four-player dungeon RSR targeting
+
+- Acquire matching-run FrenRider RSR targeting before the existing leader and follower duty-entry handoffs. Verify native four-player dungeon identity, preserve other engines and operating modes on rejection, and retain existing suppression holds.
+- Release the exact owned run on completion, exit, cancellation, failure and before temporary-profile teardown or unload. Report rejected or unavailable restoration without claiming success; saved FrenRider profiles remain unchanged.
+
+## Unreleased - Native titlebar shortcuts
+
+- Add Main's Settings, Mini Status, Quick Commands, Enabled, online-participant Run now and exact-owner Cancel shortcuts. Recheck current planner, queue and cancellation-cleanup gates on action; share the guarded handlers with retained body controls. Mini Status and Quick Commands add Main/Settings navigation while keeping every body action. Reserve native icon space in custom titles and preserve window identities, motion, opacity and saved geometry. No titlebar wake/relog, remote Send or confirmed Stop action is added.
+- Keep the existing planner action-routing source check aligned with those shared handlers, retaining the distinct direct, scheduler and exact-owner cancellation assertions.
+- Align the existing AutoParty UI checks with translated collapsible headers and the current paired-directory status owner, retaining Main's guarded refresh shortcut and publication-before-directory ordering.
+
+## Unreleased - Community invite
+
+- Update the Settings community link and website link, displayed invite and clipboard destinations to https://discord.gg/ac6gjDvR8R.
+
+## Unreleased - Recommended gear before ordinary runs
+
+- Reuse each preset's default-on recommended gear preference for ordinary starts, schedules and repeated runs. The existing checkbox is available with Leveling Mode off; explicitly saved off values remain effective.
+- Keep the existing worker preparation after character, job and world-safety checks and before repair/queueing. Equip once, update the current saved gearset, and warn and continue without retrying on failure or the five-second timeout.
+
 ## 2026-10-06 - v1.0.0.0 release
 
 - Release the verified UI, localization and window-appearance work at version 1.0.0.0. Align project, packaged manifest and repository feed versions and release links.

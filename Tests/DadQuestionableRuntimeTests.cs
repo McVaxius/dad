@@ -22,6 +22,156 @@ public sealed class DadQuestionableRuntimeTests
     private static readonly Type WrapperType = CreateWrapperType();
 
     [Fact]
+    public void DungeonTargetingPrecedesLeaderActivationAndReacquiresForTheNextDuty()
+    {
+        using var fixture = new DungeonTargetingFixture();
+        Assert.Equal("Sent", fixture.Enable("run-a"));
+        Assert.Equal("AlreadySent", fixture.Enable("run-a"));
+        Assert.Equal(new[] { "acquire:run-a:4", "/fr on" }, fixture.Events);
+        Assert.True(fixture.Release("different-run"));
+        Assert.Equal(2, fixture.Events.Count);
+        Assert.True(fixture.Release("run-a"));
+        Assert.True(fixture.Release("run-a"));
+        fixture.Enable("run-a", completed: true);
+        Assert.Equal(new[] { "acquire:run-a:4", "/fr on", "release:run-a" }, fixture.Events);
+        fixture.Enable("run-a");
+        Assert.Equal("acquire:run-a:4", fixture.Events[^1]);
+        Assert.Equal(1, fixture.Events.Count(value => value == "/fr on"));
+        Assert.True(fixture.Release("run-a"));
+        Assert.Equal("Sent", fixture.Enable("run-b"));
+        Assert.Equal(new[] { "acquire:run-b:4", "/fr on" }, fixture.Events.TakeLast(2));
+        Assert.Equal(DadRuntime::dad.DadCombatRotationMode.UseFrenRider, fixture.Configuration.CombatRotationMode);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void EveryDungeonRoleAcquiresBeforeItsExistingHandoff(int role)
+    {
+        using var fixture = new DungeonTargetingFixture();
+        if (role == 0)
+            fixture.Enable("four-role-run");
+        else
+        {
+            var result = fixture.Invoke("TryConfigureAndEnableDungeonParticipant", "Synthetic Leader@World", "four-role-run", 4u)!;
+            Assert.True((bool)result.GetType().GetProperty("Succeeded")!.GetValue(result)!);
+        }
+        Assert.Equal("acquire:four-role-run:4", fixture.Events[0]);
+        Assert.Equal(role == 0 ? "/fr on" : "configure:Synthetic Leader@World", fixture.Events[1]);
+        Assert.True(fixture.Release("four-role-run"));
+        Assert.Equal("release:four-role-run", fixture.Events[^1]);
+    }
+
+    [Fact]
+    public void UnrelatedDutyAndDeliberateOffModesNeverAcquireDungeonTargeting()
+    {
+        using var fixture = new DungeonTargetingFixture();
+        fixture.ScopeAvailable = false;
+        fixture.Enable("unrelated-duty");
+        Assert.Equal(new[] { "/fr on" }, fixture.Events);
+        Assert.True(fixture.Combat.TryApplyDutySupportEntryMode(DadRuntime::dad.DadCombatRotationMode.DoNothing,
+            "off-run", out _, out _));
+        Assert.True(fixture.Combat.TryApplyDutySupportEntryMode(DadRuntime::dad.DadCombatRotationMode.ForceCommands,
+            "force-run", out _, out _));
+        Assert.Equal(new[] { "/fr on", "/bmrai on", "/rotation auto" }, fixture.Events);
+        Assert.True(fixture.Release("unrelated-duty"));
+        Assert.DoesNotContain(fixture.Events, value => value.StartsWith("release:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RejectedProviderPreservesNormalHandoffWithoutInventingOwnership()
+    {
+        using var fixture = new DungeonTargetingFixture { AcquireAccepted = false };
+        Assert.Equal("Sent", fixture.Enable("non-rsr-run"));
+        fixture.Enable("non-rsr-run");
+        Assert.True(fixture.Release("non-rsr-run"));
+        Assert.Equal(new[] { "acquire:non-rsr-run:4", "/fr on" }, fixture.Events);
+        Assert.True(fixture.WarningCount > 0);
+    }
+
+    [Fact]
+    public void LostAcquisitionAcknowledgementRetainsExactCleanupAndReportsFailedRelease()
+    {
+        using var fixture = new DungeonTargetingFixture { ThrowAcquisition = true, ReleaseAccepted = false };
+        Assert.Equal("Sent", fixture.Enable("uncertain-run"));
+        Assert.False(fixture.Release("uncertain-run"));
+        var count = fixture.Events.Count;
+        Assert.True(fixture.Release("foreign-run"));
+        Assert.Equal(count, fixture.Events.Count);
+        fixture.Enable("another-run");
+        Assert.DoesNotContain("acquire:another-run:4", fixture.Events);
+        fixture.ReleaseAccepted = true;
+        Assert.True(fixture.Release("uncertain-run"));
+        fixture.ThrowAcquisition = false;
+        fixture.Enable("fresh-run");
+        Assert.Contains("acquire:fresh-run:4", fixture.Events);
+        Assert.True(fixture.WarningCount >= 3);
+    }
+
+    private sealed class DungeonTargetingFixture : IDisposable
+    {
+        private readonly PropertyInfo commandProperty = typeof(DutyIpc).Assembly.GetType("dad.Plugin")!.GetProperty("CommandManager")!;
+        private readonly object? previousCommands;
+        public readonly List<string> Events = [];
+        public readonly DadRuntime::dad.Configuration Configuration = new()
+            { CombatRotationMode = DadRuntime::dad.DadCombatRotationMode.UseFrenRider };
+        public readonly DadRuntime::dad.Services.DadCombatRotationService Combat;
+        public bool ScopeAvailable = true;
+        public bool AcquireAccepted = true;
+        public bool ThrowAcquisition;
+        public bool ReleaseAccepted = true;
+        public int WarningCount;
+
+        public DungeonTargetingFixture()
+        {
+            previousCommands = commandProperty.GetValue(null);
+            commandProperty.SetValue(null, Proxy<ICommandManager>((method, args) =>
+            {
+                Assert.Equal("ProcessCommand", method.Name);
+                Events.Add((string)args![0]!);
+                return true;
+            }));
+            var pi = Proxy<IDalamudPluginInterface>((method, args) =>
+            {
+                Assert.Equal("GetIpcSubscriber", method.Name);
+                var endpoint = (string)args![0]!;
+                return Proxy(method.ReturnType, (call, values) =>
+                {
+                    Assert.Equal("InvokeFunc", call.Name);
+                    if (endpoint == "FrenRider.Dad.AcquireDungeonRsrAggro")
+                    {
+                        Assert.IsType<uint>(values![1]);
+                        Events.Add($"acquire:{values[0]}:{values[1]}");
+                        if (ThrowAcquisition) throw new IOException("Synthetic acknowledgement lost after acceptance.");
+                        return AcquireAccepted;
+                    }
+                    if (endpoint == "FrenRider.Dad.ReleaseDungeonRsrAggro")
+                    {
+                        Events.Add($"release:{values![0]}");
+                        return ReleaseAccepted;
+                    }
+                    Assert.Equal("FrenRider.Dad.ConfigureAndEnable", endpoint);
+                    Events.Add($"configure:{values![0]}");
+                    return true;
+                });
+            });
+            Combat = new(Configuration, pi, Proxy<IPluginLog>((method, _) =>
+                { if (method.Name == "Warning") WarningCount++; return null; }),
+                expected => ScopeAvailable && (expected == 0 || expected == 4) ? 4u : 0u);
+        }
+
+        public object? Invoke(string method, params object?[] args)
+            => Combat.GetType().GetMethod(method, PrivateInstance)!.Invoke(Combat, args);
+        public string Enable(string runId, bool completed = false)
+            => Invoke("TryEnableFrenRiderAfterDutyEntry", runId, DadRuntime::dad.Models.DadModuleId.Duty,
+                DateTime.UtcNow, null, 4u, !completed)!.ToString()!;
+        public bool Release(string runId) => (bool)Invoke("ReleaseDungeonRsrAggro", runId)!;
+        public void Dispose() => commandProperty.SetValue(null, previousCommands);
+    }
+
+    [Fact]
     public void FrenRiderActivationWaitsForQuestionableSettingsToBeApplied()
     {
         var pluginType = typeof(DutyIpc).Assembly.GetType("dad.Plugin")!;

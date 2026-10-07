@@ -265,14 +265,14 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         var action = windowSource[actionStart..actionEnd];
 
         var directLabel = action.IndexOf("Run now — online participants", StringComparison.Ordinal);
-        var directStart = action.IndexOf("plugin.StartPlannerRunFromShell();", directLabel, StringComparison.Ordinal);
+        var directStart = action.IndexOf("RunOnlineParticipants();", directLabel, StringComparison.Ordinal);
         var schedulerLabel = action.IndexOf("Wake/relog and run", directStart, StringComparison.Ordinal);
         var schedulerStart = action.IndexOf(
             "EnqueueSelectedPreset(DadSchedulerJobType.ScheduledPreset",
             schedulerLabel,
             StringComparison.Ordinal);
         var ownerAwareCancel = action.IndexOf(
-            "CancelOwnedOperation(schedulerJobToCancel, \"Planner\");",
+            "CancelPresetOperation();",
             StringComparison.Ordinal);
 
         Assert.True(actionStart >= 0);
@@ -287,6 +287,19 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.Contains("DadRunCancellationState.Cancelling", action, StringComparison.Ordinal);
         Assert.Contains("Cancel preset operation", action, StringComparison.Ordinal);
         Assert.True(ownerAwareCancel > schedulerStart);
+
+        // Body and collapsed-title actions share fresh admission checks; scheduler
+        // dispatch remains in the separate Wake/relog action above.
+        var sharedStart = windowSource.IndexOf("private (bool CanRun, bool CanCancel,", actionStart, StringComparison.Ordinal);
+        Assert.True(sharedStart > actionStart && sharedStart < cancelOwnerStart);
+        var sharedActions = windowSource[sharedStart..cancelOwnerStart];
+        Assert.Contains("if (CurrentPlannerActions().CanRun) plugin.StartPlannerRunFromShell();", sharedActions, StringComparison.Ordinal);
+        Assert.Contains("if (actions.CanCancel) CancelOwnedOperation(actions.Job, \"Planner\");", sharedActions, StringComparison.Ordinal);
+        Assert.Contains("HasPendingCancellationCleanup", sharedActions, StringComparison.Ordinal);
+        Assert.Contains("DadRunCancellationState.Cancelling", sharedActions, StringComparison.Ordinal);
+        Assert.Contains("!IsPlannerLocked(runState)", sharedActions, StringComparison.Ordinal);
+        Assert.Contains("preview.CanStart", sharedActions, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueSelectedPreset", sharedActions, StringComparison.Ordinal);
 
         var cancelOwnerEnd = windowSource.IndexOf(
             "private static string ResolveSchedulerJobPhase(",
@@ -322,7 +335,9 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         var shellHeader = windowSource[shellHeaderStart..activeBannerStart];
         var activeBanner = windowSource[activeBannerStart..configurationWarningStart];
 
-        Assert.Contains("CancelOwnedOperation();", shellHeader, StringComparison.Ordinal);
+        // The retained header contains navigation; cancellation remains in the
+        // active-run banner and the independently guarded Planner action strip.
+        Assert.DoesNotContain("CancelOwnedOperation(", shellHeader, StringComparison.Ordinal);
         Assert.Contains("CancelOwnedOperation();", activeBanner, StringComparison.Ordinal);
         Assert.DoesNotContain("CancelActiveRunFromShell", shellHeader, StringComparison.Ordinal);
         Assert.DoesNotContain("CancelActiveRunFromShell", activeBanner, StringComparison.Ordinal);

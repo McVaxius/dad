@@ -648,6 +648,11 @@ internal sealed class DadAutoPartyInboundRuntime(
         DadAutoPartyInboundExecutionContext context,
         out string safeCode)
     {
+        if (!CombatRotationService.ReleaseDungeonRsrAggro(context.ExecutionPlan.RunId))
+        {
+            safeCode = "dad-frenrider-dungeon-targeting-release-unverified";
+            return false;
+        }
         var ownership = BuildFrenRiderProfileOwnership(operation, context);
         DadFrenRiderProfileApplicationResult? outcome;
         lock (inboundFrenRiderProfileGate)
@@ -668,6 +673,8 @@ internal sealed class DadAutoPartyInboundRuntime(
 
     public void ReleaseAllInboundFrenRiderProfiles()
     {
+        if (!CombatRotationService.ReleaseOwnedDungeonRsrAggro())
+            return;
         inboundWorkerCommands.Clear();
         DadFrenRiderProfileOwnership[] temporary;
         lock (inboundFrenRiderProfileGate)
@@ -709,6 +716,13 @@ internal sealed class DadAutoPartyInboundRuntime(
         DadFrenRiderProfileApplicationResult? outcome;
         lock (inboundFrenRiderProfileGate)
             inboundFrenRiderProfileOutcomes.TryGetValue(ownership, out outcome);
+        if (outcome?.Outcome == DadFrenRiderProfileApplicationOutcome.TemporaryApplied &&
+            !CombatRotationService.ReleaseDungeonRsrAggro(target.Target?.RunId ?? string.Empty))
+        {
+            Log.Warning(
+                "[dad][FrenRiderProfile] Dungeon targeting restoration is unverified after proposal expiry; the temporary profile is retained.");
+            return;
+        }
         if (outcome?.Outcome == DadFrenRiderProfileApplicationOutcome.TemporaryApplied &&
             !FrenRiderProfileTransferService.ReleaseTemporary(ownership, out var safeCode))
         {

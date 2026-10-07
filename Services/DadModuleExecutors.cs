@@ -369,7 +369,10 @@ public sealed class DadDutySupportExecutor(
             dutyCompleted,
             freshCompletionEvidence);
         if (!completionWasObserved && dutyCompleted)
+        {
             dutyCompletedAtUtc = now;
+            combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
+        }
 
         var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
         var exitDecision = DadDutyLifecycleRules.EvaluateExit(
@@ -480,6 +483,7 @@ public sealed class DadDutySupportExecutor(
     {
         if (UsesAdsDutyFlow())
             StopAdsBeforeDutyIfNeeded();
+        combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         status.Phase = DadRunPhase.Finalizing;
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
@@ -560,7 +564,10 @@ public sealed class DadDutySupportExecutor(
     private DadRunStepResultDto BeginOrUpdatePostDutyStabilizing(DateTime now)
     {
         if (postDutyStabilizeUntilUtc == DateTime.MinValue)
+        {
+            combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
             postDutyStabilizeUntilUtc = now + PostDutyStabilizeDuration;
+        }
 
         return UpdatePostDutyStabilizing(now);
     }
@@ -639,7 +646,9 @@ public sealed class DadDutySupportExecutor(
                 status.RunId,
                 DadModuleId.DutySupport,
                 DadClock.UtcNow,
-                out entryAutomationSummary);
+                out entryAutomationSummary,
+                resolvedContent?.ContentFinderConditionId ?? 0,
+                enforceDungeonTargeting: !dutyCompleted);
             if (entryEnableStatus != DadFrenRiderEntryEnableStatus.PendingRetry)
                 entryAutomationAttempted = true;
             if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
@@ -691,6 +700,7 @@ public sealed class DadDutySupportExecutor(
     {
         runStartedAtUtc = DateTime.MinValue;
         dutyCompletedAtUtc = DateTime.MinValue;
+        combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         nextLeaveAttemptUtc = DateTime.MinValue;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
         exitCompletionGraceUntilUtc = DateTime.MinValue;
@@ -1010,6 +1020,8 @@ public sealed class DadTrustExecutor(
             dutyCompleted,
             freshCompletionEvidence);
         var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
+        if (freshCompletionEvidence)
+            combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         var exitDecision = DadDutyLifecycleRules.EvaluateExit(
             enteredDuty,
             dutyCompleted,
@@ -1100,6 +1112,7 @@ public sealed class DadTrustExecutor(
     private void Fail(string reason)
     {
         status.Phase = DadRunPhase.Finalizing;
+        combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         status.Status = DadRunStatus.Failed;
         status.IsActive = false;
         status.CanStart = false;
@@ -1128,7 +1141,10 @@ public sealed class DadTrustExecutor(
     private DadRunStepResultDto BeginOrUpdatePostDutyStabilizing(DateTime now)
     {
         if (postDutyStabilizeUntilUtc == DateTime.MinValue)
+        {
+            combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
             postDutyStabilizeUntilUtc = now + PostDutyStabilizeDuration;
+        }
 
         return UpdatePostDutyStabilizing(now);
     }
@@ -1195,7 +1211,9 @@ public sealed class DadTrustExecutor(
                 status.RunId,
                 DadModuleId.Trust,
                 DadClock.UtcNow,
-                out entryAutomationSummary);
+                out entryAutomationSummary,
+                resolvedContent?.ContentFinderConditionId ?? 0,
+                enforceDungeonTargeting: !dutyCompleted);
             if (entryEnableStatus != DadFrenRiderEntryEnableStatus.Failed)
                 return true;
 
@@ -1226,6 +1244,7 @@ public sealed class DadTrustExecutor(
     {
         runStartedAtUtc = DateTime.MinValue;
         postDutyStabilizeUntilUtc = DateTime.MinValue;
+        combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
         exitCompletionGraceUntilUtc = DateTime.MinValue;
         enteredDuty = false;
         dutyCompleted = false;
