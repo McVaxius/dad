@@ -1,5 +1,10 @@
 # dad — changelog
 
+## Unreleased - Button sizing
+
+- Use local Toolbar metrics for ordinary and icon buttons and natural heights for single-label action helpers. Grow for the active font and original icons while retaining requested widths and small/dense control sizing.
+- Current Debug/x64 compilation passes. Final actual-product native checks pass 10452 assertions across 64 focused scenes and 144 pointer activations, with integer exit 0 in all 4 routes. Coverage uses English/Hindi captions, original exercised font roles, both densities, 100/150 percent scale and enlarged text; game/GPU acceptance remains separate.
+
 ## Unreleased - Managed CJK font atlas
 
 - Merge one bundled CJK face per font role, selecting the active language's regional forms. Set both managed atlas dimensions to 4096 on every rebuild; preserve font heights, required glyph ranges, symbol merges and host-language coverage.

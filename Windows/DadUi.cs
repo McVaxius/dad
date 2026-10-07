@@ -223,10 +223,10 @@ internal static class DadUi
     {
         // Retain the previous helper's native ID while allowing the design's shorter visible label.
         var translated=UiText.T(label);
-        return UiGui.Button(id,new Vector2(MaterialText.Measure(translated).X+24*MaterialTheme.Metrics.Scale,(DadPresentation.Compact?38:44)*MaterialTheme.Metrics.Scale),translated);
+        return UiGui.Button(id,new Vector2(MaterialText.Measure(translated).X+24*MaterialTheme.Metrics.Scale,0),translated);
     }
     public static bool IconAction(string id,string label,MaterialIcon icon,float logicalWidth=0)
-        => UiGui.IconButton(id,icon,new Vector2(logicalWidth*MaterialTheme.Metrics.Scale,(DadPresentation.Compact?38:44)*MaterialTheme.Metrics.Scale),UiText.T(label));
+        => UiGui.IconButton(id,icon,new Vector2(logicalWidth*MaterialTheme.Metrics.Scale,0),UiText.T(label));
 
     public static bool Tile(string id,string title,string detail,MaterialIcon icon,float logicalHeight,bool emphasized=false)
     {

@@ -36,8 +36,11 @@ internal static class UiGui
     internal static bool Button(string original,Vector2 size=default,string? display=null)
     {
         var translated=display ?? Visible(original);
+        using var controls = ImGui.GetStyle().FramePadding.Y == 0 || MaterialControls.Context == MaterialControlContext.Dense
+            ? default(MaterialControls.ControlScope) : MaterialControls.Push(MaterialControlContext.Toolbar);
+        using var lineHeight=MaterialText.PushLineHeight(translated);
         size.X=MaterialLayout.FitNextItemWidth(size.X,MathF.Ceiling(MaterialText.Measure(translated).X+ImGui.GetStyle().FramePadding.X*2));
-        if (MaterialText.RequiresShaping(translated)) size.Y=Math.Max(size.Y,MaterialText.Measure(translated).Y+2*ImGui.GetStyle().FramePadding.Y);
+        size.Y=Math.Max(size.Y,ImGui.GetFrameHeight());
         ImGui.PushStyleColor(ImGuiCol.Text,Vector4.Zero);
         var clicked=ImGui.Button(original,size);ImGui.PopStyleColor();
         var min=ImGui.GetItemRectMin();var max=ImGui.GetItemRectMax();
@@ -52,9 +55,12 @@ internal static class UiGui
     internal static bool IconButton(string original,MaterialIcon icon,Vector2 size=default,string? display=null)
     {
         var scale=MaterialTheme.Metrics.Scale;var text=display ?? Visible(original);
+        using var controls = MaterialControls.Context == MaterialControlContext.Dense
+            ? default(MaterialControls.ControlScope) : MaterialControls.Push(MaterialControlContext.Toolbar);
+        using var lineHeight=MaterialText.PushLineHeight(text);
         size.X=MaterialLayout.FitNextItemWidth(size.X,MathF.Ceiling(IconButtonWidth(original,display)));
-        size.Y=Math.Max(size.Y,ImGui.GetFrameHeight());
-        if (MaterialText.RequiresShaping(text)) size.Y=Math.Max(size.Y,MaterialText.Measure(text).Y+2*ImGui.GetStyle().FramePadding.Y);
+        var vertical=MaterialControls.Context==MaterialControlContext.Dense?DadPresentation.Compact?1:2:DadPresentation.Compact?2:4;
+        size.Y=Math.Max(size.Y,Math.Max(ImGui.GetFrameHeight(),(20+2*vertical)*scale));
         var foreground=ImGui.GetStyle().Colors[(int)ImGuiCol.Text];
         ImGui.PushStyleColor(ImGuiCol.Text,Vector4.Zero);var clicked=ImGui.Button(original,size);ImGui.PopStyleColor();
         var min=ImGui.GetItemRectMin();var max=ImGui.GetItemRectMax();
