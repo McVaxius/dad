@@ -613,6 +613,13 @@ public sealed class Plugin : IDalamudPlugin
             {
                 var generation=uiFonts.Generation;
                 uiFonts.CheckGlyphs(uiText.RequiredText, shapedText.Renderer);
+                var hindiLabel = UiText.Languages.Single(l => l.Code == "hi").Name;
+                var hindiAvailable = true;
+                foreach (var size in Enum.GetValues<UiFontRole>())
+                    hindiAvailable &= shapedText.Renderer.TryCheckGlyphs([hindiLabel], DadPresentation.AtlasHeight(size) * ImGui.GetIO().FontGlobalScale, out _);
+                languageOptions.Replace(UiText.Languages.Select(l => new MaterialOption<string>(l.Code, l.Code,
+                    l.Code == "hi" && !hindiAvailable ? "Hindi (unavailable)" : l.Name,
+                    l.Code == "hi" && !hindiAvailable)).ToArray());
                 checkedFontGeneration=generation;
             }
             catch (Exception error)
@@ -651,7 +658,13 @@ public sealed class Plugin : IDalamudPlugin
             if (visible)
             {
                 fontStatusDecorations.Paint();
-                MaterialText.TextWrapped(UiText.T(loading?"Loading UI fonts...":"UI fonts failed to load. See the plugin log."));
+                ImGui.TextWrapped(appliedLanguage == "hi" && !loading ? "Hindi UI fonts are unavailable. Use English to continue."
+                    : loading ? "Loading UI fonts..." : "UI fonts failed to load. See the plugin log.");
+                if (appliedLanguage == "hi" && !loading && ImGui.Button("Use English"))
+                {
+                    Configuration.UiLanguage = "en";
+                    Configuration.Save();
+                }
             }
         }
         finally
@@ -684,7 +697,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private float AppearanceLanguageWidth()
-        => Math.Max(112,UiText.Languages.Max(language=>MaterialText.Measure(language.Name).X)/MaterialTheme.Metrics.Scale+44);
+        => Math.Max(112,UiText.Languages.Max(language=>MaterialText.Measure(languageOptions.LabelFor(language.Code)).X)/MaterialTheme.Metrics.Scale+44);
 
     public float AppearanceSelectorWidth() => AppearanceLanguageWidth();
 

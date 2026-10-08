@@ -25,6 +25,10 @@ The standard route is automatic; Porta Decumana's cutscene route is available fo
 
 ## Appearance and compact mode
 
+Hindi uses installed shaping fonts. The source now leaves other languages usable when the Hindi menu caption is unavailable, showing a disabled ASCII `Hindi (unavailable)` option. Required text for a selected Hindi UI still requires full validation; on failure, the readable status offers **Use English**, saving English only after an explicit press. Native verification and Linux/Wine acceptance remain pending for this change.
+
+Settings owns shared colour, UI language, compact spacing and window transparency/fade; optional Main selectors change the same saved preferences. Main branding and Main/Mini Status titles use the packaged DAD icon in its original colours, including collapsed titles. Configure presets, crews and schedules through their existing pages; appearance choices retain run, job and crew settings.
+
 The main header provides **C** (compact mode), an accent swatch and a language selector.
 Settings mirrors these choices. They are saved in DAD's existing configuration and shared by
 all its windows: English, Deutsch, Français, Español, Italiano, Русский, 日本語, 한국어, 简体中文,

@@ -6,9 +6,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.0.0.2</Version>
-    <FileVersion>1.0.0.2</FileVersion>
-    <AssemblyVersion>1.0.0.2</AssemblyVersion>
+    <Version>1.0.0.3</Version>
+    <FileVersion>1.0.0.3</FileVersion>
+    <AssemblyVersion>1.0.0.3</AssemblyVersion>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
@@ -29,6 +29,7 @@
   <ItemGroup>
     <None Include="dad.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="images\icon.png" LogicalName="dad.images.icon.png" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.8]" />

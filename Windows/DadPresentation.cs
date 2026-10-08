@@ -8,6 +8,17 @@ internal enum UiFontRole { Body, BodyStrong, Title, Caption, Small }
 
 internal static class DadPresentation
 {
+    // Dalamud owns the shared texture through render submission; callers borrow its wrapper.
+    internal static Dalamud.Interface.Textures.TextureWraps.IDalamudTextureWrap? OriginalIcon
+        => Plugin.TextureProvider.GetFromManifestResource(typeof(Plugin).Assembly, "dad.images.icon.png").GetWrapOrDefault();
+
+    internal static void DrawPluginIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max)
+    {
+        var texture = OriginalIcon;
+        if (texture is not null)
+            MaterialCanvas.DrawImage(drawList, texture.Handle, new Vector2(texture.Width, texture.Height), min, max);
+    }
+
     // Approved DAD-review-v2 / DAD-compact-review-v1: native chrome; logical pixel measurements.
     internal static bool Compact { get; set; }
     internal static float HeaderHeight => Compact ? 66 : 72;

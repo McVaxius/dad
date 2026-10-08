@@ -229,6 +229,35 @@ internal static class UiGui
         ImGui.SetNextWindowSize(new Vector2(520*MaterialTheme.Metrics.Scale,0),ImGuiCond.Always);
         var open=ImGui.BeginPopupModal(original,flags|ImGuiWindowFlags.HorizontalScrollbar);if(open) Title(original.Split("##",2)[0]);return open;
     }
+    internal static void ReserveTitleSpace(Dalamud.Interface.Windowing.Window owner, string display, float minimumWidth)
+    {
+        var style = ImGui.GetStyle();
+        var fontSize = ImGui.GetFontSize();
+        var count = owner.TitleBarButtons.Count(button => !owner.IsClickthrough || button.AvailableClickthrough);
+        if (owner.AllowPinning || owner.AllowClickthrough || owner.AllowBackgroundBlur) count++;
+        if (owner.ShowCloseButton) count++;
+        if ((owner.Flags & (ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.Modal)) == 0
+            && style.WindowMenuButtonPosition != ImGuiDir.None) count++;
+        var required = (MaterialText.Measure(display).X + (count + 1) * (fontSize + style.ItemInnerSpacing.X)
+            + style.FramePadding.X * 2 + style.ItemInnerSpacing.X) / ImGui.GetIO().FontGlobalScale;
+        var bounds = owner.SizeConstraints ?? new Dalamud.Interface.Windowing.WindowSizeConstraints();
+        bounds.MinimumSize = new(Math.Max(minimumWidth, required), bounds.MinimumSize.Y);
+        owner.SizeConstraints = bounds;
+    }
+
+    internal static void PaintTitleWithImage(Dalamud.Interface.Windowing.Window owner, string display)
+    {
+        var window = ImGuiP.FindWindowByName(owner.WindowName);
+        if (window.IsNull) return;
+        var count = owner.TitleBarButtons.Count(button => !owner.IsClickthrough || button.AvailableClickthrough);
+        if (owner.AllowPinning || owner.AllowClickthrough || owner.AllowBackgroundBlur) count++;
+        var extraRightWidth = count * (ImGuiP.CalcFontSize(window) + ImGui.GetStyle().ItemInnerSpacing.X);
+        var texture = DadPresentation.OriginalIcon;
+        using var font = UiText.Font(UiFontRole.Body);
+        MaterialWindowHeader.PaintTitle(window, display, texture?.Handle ?? default,
+            texture is null ? Vector2.Zero : new Vector2(texture.Width, texture.Height), extraRightWidth, owner.ShowCloseButton);
+    }
+
     internal static void Title(string original,string? display=null)
         => TitleWithButtons(original,display,null);
 

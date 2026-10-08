@@ -60,14 +60,21 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
             viewport.WorkPos.Y + 1f + (float)Random.Shared.NextDouble() * MathF.Max(1f, maxY - viewport.WorkPos.Y - 1f)));
     }
 
-    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    public override void PreDraw()
+    {
+        UiGui.ReserveTitleSpace(this, UiText.T(WindowName.Split("##", 2)[0]), MinimumWindowSize.X);
+        motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    }
 
-    public override void PostDraw() => motion.Restore(this);
+    public override void PostDraw()
+    {
+        motion.Restore(this);
+        UiGui.PaintTitleWithImage(this, UiText.T(WindowName.Split("##", 2)[0]));
+    }
 
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.TitleWithButtons(WindowName.Split("##",2)[0],null,this);
         ApplyPendingPositionChange();
         var snapshot = plugin.BuildMiniStatusSnapshot();
         DrawHeader(snapshot);

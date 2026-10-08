@@ -242,9 +242,17 @@ public sealed class MainWindow : Window, IDisposable
         resetPositionConditionNextDraw = true;
     }
 
-    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    public override void PreDraw()
+    {
+        UiGui.ReserveTitleSpace(this, PluginInfo.DisplayName + " " + (typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "0.0.0.0"), MinimumWindowSize.X);
+        motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    }
 
-    public override void PostDraw() => motion.Restore(this);
+    public override void PostDraw()
+    {
+        motion.Restore(this);
+        UiGui.PaintTitleWithImage(this, PluginInfo.DisplayName + " " + (typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "0.0.0.0"));
+    }
 
     public override void Draw()
     {
@@ -252,7 +260,6 @@ public sealed class MainWindow : Window, IDisposable
         captions.Color(ImGuiCol.TextDisabled,DadUi.Muted);
         motion.DrawChrome();
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
-        UiGui.TitleWithButtons(WindowName.Split("##",2)[0],$"{PluginInfo.DisplayName} {version}",this);
         ApplyPendingPositionChange();
         var windowRootId = ImGui.GetID("");
 
@@ -358,7 +365,11 @@ public sealed class MainWindow : Window, IDisposable
         var origin=ImGui.GetCursorScreenPos();
         var contentWidth=ImGui.GetContentRegionAvail().X;
         using (UiText.Font(UiFontRole.Title))
-        { ImGui.PushStyleColor(ImGuiCol.Text,DadUi.Accent);MaterialText.Text("dad");ImGui.PopStyleColor(); }
+        {
+            var logoSize = MaterialText.Measure("dad");
+            DadPresentation.DrawPluginIcon(ImGui.GetWindowDrawList(), origin, origin + logoSize);
+            ImGui.Dummy(logoSize);
+        }
         ImGui.SameLine();
         ImGui.BeginGroup();
         using (UiText.Font(UiFontRole.BodyStrong))

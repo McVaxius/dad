@@ -36,7 +36,7 @@ internal sealed class UiText : IDisposable
         Resources=manager.GetResourceSet(CultureInfo.InvariantCulture,true,false) ?? throw new MissingManifestResourceException(Language);
         englishManager=new ResourceManager("dad.Localization.Strings_en",typeof(UiText).Assembly);
         var english=englishManager.GetResourceSet(CultureInfo.InvariantCulture,true,false) ?? throw new MissingManifestResourceException("en");
-        RequiredText=Values(Resources).Concat(Values(english)).Concat(Languages.Select(l=>l.Name)).Append("\u2661").Distinct().ToArray();
+        RequiredText=Values(Resources).Concat(Values(english)).Concat(Languages.Where(l => l.Code != "hi").Select(l=>l.Name)).Append("\u2661").Distinct().ToArray();
         labels=english.Cast<DictionaryEntry>().ToDictionary(entry=>(string)entry.Value!,entry=>(string)entry.Key,StringComparer.Ordinal);
         if (labels.Count!=Resources.Cast<DictionaryEntry>().Count() || labels.Values.Any(key=>string.IsNullOrEmpty(Resources.GetString(key,false))))
             throw new MissingManifestResourceException("Incomplete DAD UI translations for "+Language);
