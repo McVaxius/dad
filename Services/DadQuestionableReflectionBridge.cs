@@ -1,8 +1,11 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Fate;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace dad.Services;
 
@@ -84,6 +87,10 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     private string dutySettingsBlocker = string.Empty;
     private string lastLoggedDutySettingsBlocker = string.Empty;
     private bool disposed;
+    private (ulong Character, uint Territory, uint Content) soloDutySession;
+    private bool soloDutyEnableConsumed;
+    private bool matchingSoloDuty;
+    private string soloDutyEnableFailure = string.Empty;
 
     private sealed class SubscriberTarget
     {
@@ -234,7 +241,10 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         }
 
         MaintainRuntimeBridge();
-        MaintainFrenRiderDutySettings(status.Patched, status.QuestionableRunning);
+        var solo = isEnabled() && useFrenRider() && status.Patched
+            ? ReadQuestionableSoloDuty() : default;
+        MaintainQuestionableSoloDuty(solo.InDuty, solo.Ready, solo.MatchesQuest,
+            solo.Territory, solo.Content, status.Patched, status.QuestionableRunning);
         MaintainCosmeticPatch();
     }
 
@@ -242,7 +252,122 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     {
         MaintainBridge();
         return string.IsNullOrEmpty(dutySettingsBlocker) &&
-               (!(isEnabled() && useFrenRider() && status.Patched && status.QuestionableRunning) || dutySettingsApplied);
+               (!(isEnabled() && useFrenRider() && status.Patched && (status.QuestionableRunning || matchingSoloDuty)) || dutySettingsApplied);
+    }
+
+    // Solo quest battles bypass AutoDuty.Run, including Questionable's manual-entry pause.
+    // Apply the existing overrides first, then use the ordinary /fr on action once per entry.
+    internal bool MaintainQuestionableSoloDuty(bool inDuty, bool ready, bool matchesQuest,
+        uint territory, uint content, bool patched, bool running, Func<bool>? enable = null)
+    {
+        var character = currentCharacterId();
+        if (character == 0 || soloDutySession.Character != character || !inDuty && ready)
+        {
+            soloDutySession = default;
+            soloDutyEnableConsumed = false;
+            matchingSoloDuty = false;
+            soloDutyEnableFailure = string.Empty;
+        }
+        var eligible = !disposed && isEnabled() && useFrenRider() && patched && inDuty
+            && ready && matchesQuest && character != 0 && territory != 0 && content != 0;
+        if (eligible && soloDutySession != (character, territory, content))
+        {
+            soloDutySession = (character, territory, content);
+            soloDutyEnableConsumed = false;
+            soloDutyEnableFailure = string.Empty;
+        }
+        // Keep settings across cutscenes/loading in this same confirmed duty session.
+        matchingSoloDuty = eligible || inDuty && soloDutySession != default
+            && soloDutySession.Character == character && (territory == 0 || soloDutySession.Territory == territory)
+            && (content == 0 || soloDutySession.Content == content);
+        if (!MaintainFrenRiderDutySettings(patched, running || matchingSoloDuty))
+            return false;
+        if (!eligible || soloDutyEnableConsumed || !dutySettingsApplied)
+        {
+            if (matchingSoloDuty && soloDutyEnableFailure.Length != 0)
+                status.LastBlocker = soloDutyEnableFailure;
+            return true;
+        }
+
+        soloDutyEnableConsumed = true; // A Stop or an uncertain result must never re-enable this entry.
+        try
+        {
+            if (!(enable ?? (() => Plugin.CommandManager.ProcessCommand(DadCombatRotationService.FrenRiderEnableCommand)))())
+                throw new InvalidOperationException("Command manager rejected /fr on.");
+            log.Information("[dad][QuestionableBridge][I490-solo-01] Enabled FrenRider for matching solo quest duty {Territory}/{Content}; existing ADS readiness delay applies.", territory, content);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            dutySettingsBlocker = $"Questionable solo handoff failed: {FormatException(ex)}";
+            soloDutyEnableFailure = dutySettingsBlocker;
+            status.LastBlocker = dutySettingsBlocker;
+            log.Warning(ex, "[dad][QuestionableBridge] {Blocker}", dutySettingsBlocker);
+            return false;
+        }
+    }
+
+    private unsafe (bool InDuty, bool Ready, bool MatchesQuest, uint Territory, uint Content) ReadQuestionableSoloDuty()
+    {
+        var inDuty = Plugin.Condition[ConditionFlag.BoundByDuty] || Plugin.Condition[ConditionFlag.BoundByDuty56]
+            || Plugin.Condition[ConditionFlag.BoundByDuty95];
+        var game = GameMain.Instance();
+        var territory = game == null ? 0u : game->CurrentTerritoryTypeId;
+        var content = game == null ? 0u : game->CurrentContentFinderConditionId;
+        var ready = Plugin.ClientState.IsLoggedIn && Plugin.ObjectTable.LocalPlayer?.CurrentHp > 0
+            && !Plugin.Condition[ConditionFlag.Unconscious] && !Plugin.Condition[ConditionFlag.BetweenAreas]
+            && !Plugin.Condition[ConditionFlag.BetweenAreas51] && !Plugin.Condition[ConditionFlag.WatchingCutscene]
+            && !Plugin.Condition[ConditionFlag.WatchingCutscene78] && !Plugin.Condition[ConditionFlag.OccupiedInCutSceneEvent];
+        if (!inDuty || !ready || territory == 0 || content == 0 || territory != Plugin.ClientState.TerritoryType)
+            return (inDuty, ready, false, territory, content);
+        try
+        {
+            var exposed = FindLoadedQuestionable();
+            if (exposed == null)
+                return (inDuty, ready, false, territory, content);
+            var instance = ResolveQuestionableInstance(exposed);
+            var provider = (IServiceProvider)RequireField(instance.GetType(), "_serviceProvider").GetValue(instance)!;
+            var assembly = instance.GetType().Assembly;
+            var controllerType = assembly.GetType("Questionable.Controller.QuestController", true)!;
+            var controller = provider.GetService(controllerType)!;
+            var dataType = assembly.GetType("Questionable.Data.TerritoryData", true)!;
+            var data = provider.GetService(dataType)!;
+            return (inDuty, ready, MatchesSoloQuestStep(controller, data, territory, content), territory, content);
+        }
+        catch (Exception ex)
+        {
+            var blocker = $"Questionable solo duty identity unavailable: {FormatException(ex)}";
+            if (lastLoggedDutySettingsBlocker != blocker)
+            {
+                lastLoggedDutySettingsBlocker = blocker;
+                log.Warning("[dad][QuestionableBridge] {Blocker}", blocker);
+            }
+            return (inDuty, ready, false, territory, content);
+        }
+    }
+
+    internal static bool MatchesSoloQuestStep(object controller, object data, uint territory, uint content)
+    {
+        var controllerType = controller.GetType();
+        var progress = RequireProperty(controllerType, "CurrentQuest").GetValue(controller);
+        if (territory == 0 || content == 0 || progress == null ||
+            !ReferenceEquals(progress, RequireProperty(controllerType, "StartedQuest").GetValue(controller)))
+            return false;
+        var next = controllerType.GetMethod("GetNextStep", InstanceProperties)!.Invoke(controller, null) as ITuple;
+        var step = next?[1];
+        if (step == null || RequireProperty(step.GetType(), "InteractionType").GetValue(step)?.ToString() != "SinglePlayerDuty")
+            return false;
+        var quest = RequireProperty(progress.GetType(), "Quest").GetValue(progress)!;
+        var questId = RequireProperty(quest.GetType(), "Id").GetValue(quest);
+        var index = quest.GetType().GetMethod("QuestBattleOrdinal", InstanceProperties)!.Invoke(quest, [step]);
+        if (index is not byte)
+            return false;
+        object?[] args = [questId, index, null];
+        if (data.GetType().GetMethod("TryGetContentFinderConditionForSoloInstance", InstanceProperties)!.Invoke(data, args) is not true || args[2] == null)
+            return false;
+        var duty = args[2]!;
+        return territory == Convert.ToUInt32(RequireProperty(duty.GetType(), "TerritoryId").GetValue(duty))
+            && content == Convert.ToUInt32(RequireProperty(duty.GetType(), "ContentFinderConditionId").GetValue(duty));
     }
 
     // Headless tests substitute reflection/running observations at this boundary;

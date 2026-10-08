@@ -591,7 +591,7 @@ public sealed class Plugin : IDalamudPlugin
         CombatRotationService.QuestionableDutySettingsGate = QuestionableBridge.EnsureFrenRiderDutySettings;
         DutyIpcService.QuestionableBridgeStatusProvider = QuestionableBridge.GetStatus;
 
-        Log.Information("[dad] Plugin loaded.");
+        Log.Information("[dad] Plugin loaded. build=I490-solo-01");
     }
 
     private void DrawUi()

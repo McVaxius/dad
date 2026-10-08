@@ -23,6 +23,12 @@ Questionable requests another while below its quest target. Its stop request sen
 In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
 The standard route is automatic; Porta Decumana's cutscene route is available for manual selection only.
 
+With the Questionable bridge enabled and **Use FrenRider** selected, entering a solo duty that exactly matches
+Questionable's current quest step applies the temporary ADS settings and enables FrenRider once. This also works
+when Questionable is paused at that step. ADS starts after FrenRider's existing ten seconds of continuous readiness;
+loading, cutscenes and death reset that delay. `/fr off` remains stopped for the current entry; unrelated duties are
+not enabled by this solo handoff.
+
 ## Appearance and compact mode
 
 Hindi uses installed shaping fonts. The source now leaves other languages usable when the Hindi menu caption is unavailable, showing a disabled ASCII `Hindi (unavailable)` option. Required text for a selected Hindi UI still requires full validation; on failure, the readable status offers **Use English**, saving English only after an explicit press. Native verification and Linux/Wine acceptance remain pending for this change.

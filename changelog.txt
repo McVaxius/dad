@@ -4,6 +4,10 @@
 
 # dad — changelog
 
+## Unreleased - I490 solo quest handoff
+
+- I490: Match Questionable's current solo-duty quest step against its live territory/CFC, including a paused manual-entry step. Keep the temporary ADS family settings through that duty and send the existing /fr on action once after entry, before FrenRider's normal ten-second readiness handoff. Do not enable for unrelated, simulated, loading or cutscene states, or repeat after a Stop/rejected enable in the same entry.
+
 ## Unreleased - Hindi font availability and recovery
 
 - Treat the Hindi language-menu caption as optional while retaining mandatory selected/English catalogue checks. Refresh the stable Hindi option's availability with the existing font generation; unavailable captions use disabled ASCII `Hindi (unavailable)` without blocking ordinary languages.

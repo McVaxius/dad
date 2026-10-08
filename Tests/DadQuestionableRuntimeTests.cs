@@ -297,6 +297,97 @@ public sealed class DadQuestionableRuntimeTests
         Assert.Equal(count, calls.Count); // Unloaded DAD cannot acquire again.
     }
 
+    [Fact]
+    public void PausedMatchingSoloDutyAppliesSettingsBeforeOneEnableAndHonorsStops()
+    {
+        var controller = new SoloControllerFixture();
+        var data = new SoloTerritoryFixture();
+        bool Matches(uint territory = 404, uint content = 90) => (bool)typeof(Bridge)
+            .GetMethod("MatchesSoloQuestStep", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [controller, data, territory, content])!;
+        Assert.True(Matches());
+        Assert.False(Matches(405));
+        Assert.False(Matches(content: 91));
+        Assert.False(Matches(content: 0));
+        controller.Step.SinglePlayerDutyIndex = 1;
+        Assert.False(Matches()); // The other battle in this quest must not claim this instance.
+        controller.Step.SinglePlayerDutyIndex = 0;
+        controller.Step.InteractionType = "Duty";
+        Assert.False(Matches());
+        controller.Step.InteractionType = "SinglePlayerDuty";
+        controller.CurrentQuest = new SoloProgressFixture();
+        Assert.False(Matches()); // Simulated/next/gathering quest progress is not normal quest ownership.
+        var calls = new List<string>();
+        var accepted = true;
+        var useFrenRider = true;
+        ulong character = 1;
+        var pi = Proxy<IDalamudPluginInterface>((method, args) => method.Name == "GetIpcSubscriber"
+            ? Proxy(method.ReturnType, (_, _) => { calls.Add((string)args![0]!); return accepted; }) : null);
+        using var bridge = new Bridge(pi, Proxy<IFramework>((_, _) => null), null!, Proxy<IPluginLog>((_, _) => null),
+            () => true, useFrenRider: () => useFrenRider, currentCharacterId: () => character);
+        bool Observe(bool inDuty = true, bool ready = true, bool matches = true, bool patched = true,
+            uint content = 90, Func<bool>? enable = null)
+            => (bool)Invoke(bridge, "MaintainQuestionableSoloDuty", inDuty, ready, matches, 404u, content,
+                patched, false, enable ?? (() => { calls.Add("/fr on"); return true; }))!;
+        Assert.True(Observe(inDuty: false));
+        Assert.True(Observe(matches: false));
+        Assert.True(Observe(ready: false));
+        Assert.True(Observe(patched: false));
+        useFrenRider = false;
+        Assert.True(Observe());
+        Assert.Empty(calls);
+        useFrenRider = true;
+        accepted = false;
+        Assert.False(Observe());
+        Assert.DoesNotContain("/fr on", calls);
+        accepted = true;
+        Assert.True(Observe());
+        Assert.Equal(new[] { "FrenRider.Dad.ApplyQuestionableDutySettings", "/fr on" }, calls.TakeLast(2));
+        Assert.True(Observe()); // Operator /fr off is never undone by another framework update.
+        Assert.True(Observe(ready: false)); // Loading/cutscenes retain this exact duty session.
+        Assert.True(Observe());
+        Assert.Equal(1, calls.Count(call => call == "/fr on"));
+        Assert.True(Observe(inDuty: false));
+        Assert.Equal("FrenRider.Dad.ReleaseQuestionableDutySettings", calls[^1]);
+        Assert.True(Observe()); // Same duty re-entry is a new session.
+        Assert.Equal(2, calls.Count(call => call == "/fr on"));
+        Assert.False(Observe(content: 91, enable: () => { calls.Add("rejected-enable"); return false; }));
+        Assert.True(Observe(content: 91)); // No blind resubmission of rejected/uncertain enable.
+        Assert.Equal(2, calls.Count(call => call == "/fr on"));
+        character = 2;
+        Assert.True(Observe(content: 91));
+        Assert.Equal(3, calls.Count(call => call == "/fr on"));
+        bridge.Dispose();
+        Assert.True(Observe(content: 91));
+        Assert.Equal(3, calls.Count(call => call == "/fr on"));
+    }
+
+    public sealed class SoloControllerFixture
+    {
+        public SoloProgressFixture StartedQuest { get; } = new();
+        public SoloProgressFixture CurrentQuest { get; set; }
+        public SoloStepFixture Step { get; } = new();
+        public SoloControllerFixture() => CurrentQuest = StartedQuest;
+        public (object?, SoloStepFixture?, bool) GetNextStep() => (null, Step, true);
+    }
+    public sealed class SoloProgressFixture { public SoloQuestFixture Quest { get; } = new(); }
+    public sealed class SoloQuestFixture
+    {
+        public string Id => "126";
+        public byte? QuestBattleOrdinal(SoloStepFixture step) => step.SinglePlayerDutyIndex;
+    }
+    public sealed class SoloStepFixture
+    {
+        public string InteractionType { get; set; } = "SinglePlayerDuty";
+        public byte SinglePlayerDutyIndex { get; set; }
+    }
+    public sealed class SoloTerritoryFixture
+    {
+        public bool TryGetContentFinderConditionForSoloInstance(string quest, byte index, out SoloContentFixture? duty)
+        { duty = quest == "126" && index == 0 ? new() : null; return duty != null; }
+    }
+    public sealed class SoloContentFixture { public uint TerritoryId => 404; public uint ContentFinderConditionId => 90; }
+
     private unsafe delegate int ReadSelectedRegularDuty(AgentContentsFinder* agent);
 
     [Fact]

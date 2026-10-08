@@ -493,6 +493,14 @@ internal sealed class RuntimeNode : IDisposable
                 questionableRunning = command.GetProperty("running").GetBoolean();
                 questionableBridge.MaintainFrenRiderDutySettings(questionablePatched, questionableRunning);
                 break;
+            case "questionable-solo-observe":
+                questionableBridge.MaintainQuestionableSoloDuty(
+                    command.GetProperty("inDuty").GetBoolean(), command.GetProperty("ready").GetBoolean(),
+                    command.GetProperty("matchesQuest").GetBoolean(), 404u, 90u, true, false);
+                break;
+            case "questionable-solo-stop":
+                Plugin.CommandManager.ProcessCommand("/fr off");
+                break;
             case "frenrider-reload":
                 questionableSettings.Clear();
                 events.Enqueue("ipc:FrenRider:reload");
