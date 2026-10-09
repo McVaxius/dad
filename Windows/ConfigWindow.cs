@@ -95,8 +95,6 @@ public sealed class ConfigWindow : Window, IDisposable
         ApplyPendingPositionChange();
 
         var configuration = plugin.Configuration;
-        plugin.DrawWindowAppearanceSettings(); ImGui.Spacing();
-
         DadUi.Heading("DAD SETTINGS", "Everyday setup first; advanced and debug details stay close when you need them.");
         DadUi.Badge(configuration.PluginEnabled ? "DAD enabled" : "DAD paused",
             configuration.PluginEnabled ? DadUiTone.Success : DadUiTone.Warning);
@@ -107,8 +105,9 @@ public sealed class ConfigWindow : Window, IDisposable
             configuration.DebugUiEnabled ? DadUiTone.Warning : DadUiTone.Neutral);
         ImGui.Spacing();
 
-        using var tabLineHeight=MaterialText.PushLineHeight(new[]{"Core & Connection","Accounts","Combat","Safety & Finish","About & Support"}.Select(UiText.T).ToArray());
+        using var tabLineHeight=MaterialText.PushLineHeight(new[]{"Core & Connection","Accounts","Combat","Safety & Finish","Window appearance","About & Support"}.Select(UiText.T).ToArray());
 
+        var appearanceRoot = ImGui.GetID("");
         if (ImGui.BeginTabBar("dad-config-tabs",ImGuiTabBarFlags.FittingPolicyScroll))
         {
             if (UiGui.BeginTabItem("Core & Connection"))
@@ -135,6 +134,12 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
+            if (UiGui.BeginTabItem("Window appearance", ImGuiTabItemFlags.NoPushId))
+            {
+                ImGuiP.PushOverrideID(appearanceRoot);
+                try { plugin.DrawWindowAppearanceSettings(); }
+                finally { ImGui.PopID(); ImGui.EndTabItem(); }
+            }
             if (UiGui.BeginTabItem("About & Support"))
             {
                 DrawAboutTab();
