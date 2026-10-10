@@ -37,16 +37,20 @@ internal sealed class DadPresetCrewEditor
         var showDailyReward = group.ActivityMode == DadPlannerActivityMode.DailyRoulette;
         var levelingMode = group.LevelingMode?.Enabled == true;
 
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
+        using var tightRows = MaterialTable.PushTightRows();
+        using var cellFields = UiGui.PushCellFields();
+
         var style = ImGui.GetStyle();
         var slotWidth = FixedTextWidth("Slot56");
-        var typeWidth = FixedTextWidth("Substitute");
-        var allianceWidth = FixedFrameWidth("Alliance");
-        var jobWidth = FixedFrameWidth("WHM 100");
-        var roleWidth = FixedFrameWidth("PhysicalRanged");
-        var lootWidth = FixedFrameWidth("NoChange");
+        var typeWidth = MathF.Max(FixedTextWidth("Primary"), FixedTextWidth("Substitute"));
+        var allianceWidth = ComboWidth("Alliance");
+        var jobWidth = ComboWidth("WHM 100");
+        var roleWidth = Enum.GetValues<DadPartyRole>().Max(role => ComboWidth(FormatRole(role)));
+        var lootWidth = Enum.GetValues<DadAdsLootMode>().Max(mode => ComboWidth(mode.ToString()));
         var levelWidth = FixedFrameWidth("999");
         var rewardWidth = FixedFrameWidth("Daily");
-        var wakeWidth = MathF.Max(FixedFrameWidth("Online"), FixedFrameWidth("Wake/relog"));
+        var wakeWidth = MathF.Max(ComboWidth("Online"), ComboWidth("Wake/relog"));
         var actionWidth = ButtonWidth("+ Sub") + style.ItemSpacing.X + ButtonWidth("Remove");
 
         var allianceValidation = DadAlliancePartyFinderRules.ValidateSavedRows(group.Slots);
@@ -56,7 +60,6 @@ internal sealed class DadPresetCrewEditor
             $"D {allianceValidation.AllianceDCount}/8 | E {allianceValidation.AllianceECount}/8 | " +
             $"F {allianceValidation.AllianceFCount}/8 | G {allianceValidation.AllianceGCount}/8");
 
-        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(2f, 2f));
         var tableOpen = ImGui.BeginTable(
             $"{idPrefix}-crew-rows",
             DadDebugUiRules.PresetCrewColumnCount(showProfile, showDailyReward),
@@ -67,7 +70,6 @@ internal sealed class DadPresetCrewEditor
             ImGuiTableFlags.NoSavedSettings);
         if (!tableOpen)
         {
-            ImGui.PopStyleVar();
             return;
         }
 
@@ -93,11 +95,13 @@ internal sealed class DadPresetCrewEditor
             var slot = group.Slots[index];
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
+            ImGui.AlignTextToFramePadding();
             UiGui.TextUnformatted(slot.SlotId);
             if (DadPlannerSlotRules.IsLeaderSlot(slot.SlotId) && !slot.IsSubstitute && ImGui.IsItemHovered())
                 UiGui.SetTooltip("Slot1 is the party leader and inviter for this preset.");
 
             ImGui.TableNextColumn();
+            ImGui.AlignTextToFramePadding();
             UiGui.TextUnformatted(slot.IsSubstitute ? "Substitute" : "Primary");
             if (ImGui.IsItemHovered())
             {
@@ -153,7 +157,7 @@ internal sealed class DadPresetCrewEditor
             ImGui.TableNextColumn();
             if (!slot.IsSubstitute)
             {
-                if (UiGui.SmallButton($"+ Sub##{idPrefix}-sub-{index}"))
+                if (UiGui.Button($"+ Sub##{idPrefix}-sub-{index}"))
                 {
                     group.Slots.Insert(FindSubstituteInsertIndex(group.Slots, index), new DadPlannerGroupSlot
                     {
@@ -175,7 +179,7 @@ internal sealed class DadPresetCrewEditor
                 ImGui.SameLine();
             }
 
-            if (UiGui.SmallButton($"Remove##{idPrefix}-remove-{index}"))
+            if (UiGui.Button($"Remove##{idPrefix}-remove-{index}"))
             {
                 DadAutoPartyCrewSlotBindingRules.Clear(plugin.Configuration.AutoParty, slot);
                 group.Slots.RemoveAt(index);
@@ -187,7 +191,6 @@ internal sealed class DadPresetCrewEditor
         }
 
         ImGui.EndTable();
-        ImGui.PopStyleVar();
     }
 
     private static void DrawHeaders(bool showProfile, bool showDailyReward)
@@ -227,6 +230,7 @@ internal sealed class DadPresetCrewEditor
         Action<DadPlannerGroup> changed)
     {
         ImGui.BeginDisabled(slot.IsSubstitute);
+        ImGui.SetNextItemWidth(-1f);
         if (UiGui.BeginCombo(
                 $"##{idPrefix}-alliance-{index}",
                 slot.AllianceAssignment == DadAllianceAssignment.None
@@ -1170,11 +1174,14 @@ internal sealed class DadPresetCrewEditor
         };
 
     private static float FixedTextWidth(string representative)
-        => MathF.Ceiling(MaterialText.Measure(representative).X + 4f);
+        => MathF.Ceiling(MaterialText.Measure(UiText.T(representative)).X + 4f * MaterialTheme.Metrics.Scale);
 
     private static float FixedFrameWidth(string representative)
-        => MathF.Ceiling(MaterialText.Measure(representative).X + (ImGui.GetStyle().FramePadding.X * 2f) + 4f);
+        => MathF.Ceiling(MaterialText.Measure(UiText.T(representative)).X + (ImGui.GetStyle().FramePadding.X * 2f) + 4f * MaterialTheme.Metrics.Scale);
+
+    private static float ComboWidth(string representative)
+        => FixedFrameWidth(representative) + ImGui.GetFrameHeight();
 
     private static float ButtonWidth(string text)
-        => MathF.Ceiling(MaterialText.Measure(text).X + (ImGui.GetStyle().FramePadding.X * 2f));
+        => MathF.Ceiling(MaterialText.Measure(UiText.T(text)).X + (ImGui.GetStyle().FramePadding.X * 2f));
 }

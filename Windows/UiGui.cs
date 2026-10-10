@@ -8,6 +8,17 @@ namespace dad.Windows;
 // Fields use the original ID with an empty native label; other widgets paint translated ink.
 internal static class UiGui
 {
+    private static bool cellFields;
+    private static uint cellFieldsWindow;
+    private static bool InCell => cellFields && ImGuiP.GetCurrentWindow().ID == cellFieldsWindow;
+    internal static CellFieldScope PushCellFields() => new();
+    internal ref struct CellFieldScope
+    {
+        private readonly bool previous;
+        private readonly uint previousWindow;
+        public CellFieldScope() { previous = cellFields; previousWindow = cellFieldsWindow; cellFields = true; cellFieldsWindow = ImGuiP.GetCurrentWindow().ID; }
+        public void Dispose() { cellFields = previous; cellFieldsWindow = previousWindow; }
+    }
     internal static void TextUnformatted(string text) => MaterialText.Text(UiText.T(text));
     internal static void TextWrapped(string text) => TextWrappedRaw(UiText.T(text));
     internal static void TextWrappedRaw(string text)
@@ -39,7 +50,8 @@ internal static class UiGui
         using var controls = ImGui.GetStyle().FramePadding.Y == 0 || MaterialControls.Context == MaterialControlContext.Dense
             ? default(MaterialControls.ControlScope) : MaterialControls.Push(MaterialControlContext.Toolbar);
         using var lineHeight=MaterialText.PushLineHeight(translated);
-        size.X=MaterialLayout.FitNextItemWidth(size.X,MathF.Ceiling(MaterialText.Measure(translated).X+ImGui.GetStyle().FramePadding.X*2));
+        var minimum = MathF.Ceiling(MaterialText.Measure(translated).X+ImGui.GetStyle().FramePadding.X*2);
+        size.X=InCell ? minimum : MaterialLayout.FitNextItemWidth(size.X,minimum);
         size.Y=Math.Max(size.Y,ImGui.GetFrameHeight());
         ImGui.PushStyleColor(ImGuiCol.Text,Vector4.Zero);
         var clicked=ImGui.Button(original,size);ImGui.PopStyleColor();
@@ -178,6 +190,15 @@ internal static class UiGui
     {
         // Capture the caller's pending width before the separate caption consumes NextItemWidth.
         var requested=requestedWidth ?? ImGui.CalcItemWidth();
+        if (InCell)
+        {
+            // A crew cell owns its position and width; never reflow it to a second line.
+            var cellWidth = Math.Max(1, ImGui.GetContentRegionAvail().X);
+            var fitted = requested < 0 ? cellWidth : Math.Clamp(requested, 1, cellWidth);
+            ImGui.SetNextItemWidth(fitted);
+            ImGuiP.PushOverrideID(ImGui.GetID(label));
+            return fitted;
+        }
         minimum=Math.Max(minimum,Math.Max(80*MaterialTheme.Metrics.Scale,MaterialText.Measure("00000000").X+2*ImGui.GetStyle().FramePadding.X));
         if (hasStepButtons) minimum+=2*(ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X);
         if (label.Split("##",2)[0].Length>0) MaterialText.Text(Visible(label));

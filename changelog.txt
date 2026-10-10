@@ -1,3 +1,7 @@
+2026-10-10 - Aligned preset crew rows (I524)
+
+- Keep crew editors on one tight row with adjacent + Sub and Remove actions. Fit fields to their cells, retain readable editor padding and optional Daily/Profile columns, and preserve editing and callbacks without adding horizontal scrolling.
+
 2026-10-10 - Compact defaults and main appearance controls (I521)
 
 - Apply Compact on once, with main Compact and Transparency controls hidden. Keep independent visibility choices in Appearance settings and preserve later preferences, opacity, planning state and unknown saved fields. Use the existing persistence coordinator; release 1.0.0.6 -> 1.0.0.7.
