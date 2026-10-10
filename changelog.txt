@@ -1,5 +1,6 @@
 2026-10-09 - Tight compact list grids (I503/I509)
 
+
 - Apply adjacent compact rows to account aliases, launch profiles, crew/schedule/slot lists and histories while retaining inline edits, review actions and nonmodal import confirmation.
 
 2026-10-09 - Separate XA Slave log-tools shortcut (I512)
