@@ -237,6 +237,7 @@ public sealed class Plugin : IDalamudPlugin
             Configuration,
             autoPartyIdentityStore,
             autoPartyWebhookStore);
+        configurationChanged |= Configuration.ApplyCompactDefaults();
         backgroundTasks = new DadBackgroundTaskObserver(Log, "plugin");
         configurationPersistence = new DadConfigurationPersistenceCoordinator(
             () => PluginInterface.SavePluginConfig(Configuration),
@@ -312,6 +313,7 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Save,
             () => Configuration.PluginEnabled,
             autoPartyWebhookStore);
+        configurationChanged |= Configuration.ApplyCompactDefaults();
         FrenRiderProfileTransferService = new DadFrenRiderProfileTransferService(PluginInterface, Log);
         AutoPartyParticipantBridge = new DadAutoPartyParticipantBridge(
             Configuration.AutoParty,
@@ -5845,6 +5847,9 @@ public sealed class Plugin : IDalamudPlugin
         var compactVisible = Configuration.UiCompactVisibleOnMainWindow;
         if (UiGui.Checkbox("Compact visible on main window", ref compactVisible))
         { Configuration.UiCompactVisibleOnMainWindow = compactVisible; Configuration.Save(); }
+        var transparencyVisible = Configuration.UiTransparencyVisibleOnMainWindow;
+        if (UiGui.Checkbox("Transparency visible on main window", ref transparencyVisible))
+        { Configuration.UiTransparencyVisibleOnMainWindow = transparencyVisible; Configuration.Save(); }
         var languageVisible = Configuration.UiLanguageVisibleOnMainWindow;
         if (UiGui.Checkbox("Language visible on main window", ref languageVisible))
         { Configuration.UiLanguageVisibleOnMainWindow = languageVisible; Configuration.Save(); }

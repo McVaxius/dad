@@ -783,3 +783,5 @@ See `changelog.txt` for the full history. Durable design/review notes live in th
 Use **Copy / ZIP Dalamud log** in Settings > About & Support to create a local ZIP and open its folder. At 100 MiB or above, the first click warns that logging may have stopped and recent activity may be missing; click **Export capped log anyway** only if you still want that snapshot. Share the ZIP manually and remove exports when no longer needed. **Open Export Folder** reopens the completed export’s folder.
 
 When XA Slave is loaded, **Open XA Slave log tools** opens its **Utility > XA Mods** panel, which contains Dalamud Log Cleaner. The existing **Copy / ZIP Dalamud log** action remains separate. Opening the panel does not run cleanup or change XA Slave settings.
+
+Compact mode defaults on. Main Compact and Transparency controls start hidden; Appearance settings keeps density, transparency and independent main-control visibility choices. A one-time migration preserves unrelated settings, and later loads retain your choices.

@@ -388,8 +388,11 @@ public sealed class MainWindow : Window, IDisposable
             DadUi.SameLineIfFits((ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X+MaterialText.Measure("C").X)/scale);
             plugin.DrawCompactPreference();
         }
-        DadUi.SameLineIfFits((ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X+MaterialText.Measure(UiText.T("Transparency")).X)/scale);
-        plugin.DrawTransparencyToggle();
+        if (configuration.UiTransparencyVisibleOnMainWindow)
+        {
+            DadUi.SameLineIfFits((ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X+MaterialText.Measure(UiText.T("Transparency")).X)/scale);
+            plugin.DrawTransparencyToggle();
+        }
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.RunAsServerDad?"Coordinator":"Client"));
         DadUi.IconBadge(configuration.RunAsServerDad?"Coordinator":"Client",configuration.RunAsServerDad?MaterialIcon.Crown:MaterialIcon.Person,DadUiTone.Accent);
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.PluginEnabled?"Enabled":"Paused"));
