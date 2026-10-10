@@ -12,6 +12,7 @@ namespace dad.Windows;
 
 public sealed class ConfigWindow : Window, IDisposable
 {
+    private readonly AethertekUI.Dalamud.MaterialSupportLog supportLog = new();
     private readonly MaterialWindowMotion motion = new();
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
     private static readonly string[] PreDutyRepairModes =
@@ -751,6 +752,7 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
         }
 
+        using var tightRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-account-aliases", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
             DrawDeleteAccountPopup();
@@ -953,6 +955,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawAboutTab()
     {
+        supportLog.Draw(Plugin.PluginInterface, key => UiText.T(key),
+            path => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = path, UseShellExecute = true }), ex => Plugin.Log.Error(ex, "Dalamud log export failed."), Plugin.CommandManager);
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         DadUi.Heading($"{PluginInfo.DisplayName} v{version}", "Build a crew once, then turn repeat duties into a repeatable plan.");
         DadUi.Badge("Crew orchestration", DadUiTone.Accent);

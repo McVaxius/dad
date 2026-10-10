@@ -777,3 +777,9 @@ Visual layout and this live Discord/game test require separate acceptance; headl
 
 See `changelog.txt` for the full history. Durable design/review notes live in the XIV KB under
 `Dhog/Dad/` (e.g. `DAD_FIX_IMPLEMENTATION_GUIDE_2026-06-26.md`).
+
+## Support logs
+
+Use **Copy / ZIP Dalamud log** in Settings > About & Support to create a local ZIP and open its folder. At 100 MiB or above, the first click warns that logging may have stopped and recent activity may be missing; click **Export capped log anyway** only if you still want that snapshot. Share the ZIP manually and remove exports when no longer needed. **Open Export Folder** reopens the completed export’s folder.
+
+When XA Slave is loaded, **Open XA Slave log tools** opens its **Utility > XA Mods** panel, which contains Dalamud Log Cleaner. The existing **Copy / ZIP Dalamud log** action remains separate. Opening the panel does not run cleanup or change XA Slave settings.

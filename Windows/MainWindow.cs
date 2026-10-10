@@ -346,6 +346,9 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndTabBar();
         }
 
+        DrawScheduleImportConfirmation();
+        DrawPlannerImportConfirmation();
+
         pendingMainTab = null;
         pendingPresetsTab = null;
         pendingStatusTab = null;
@@ -1637,6 +1640,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
+        using var tightProfileRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-unified-launch-profiles", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
             return;
 
@@ -2021,6 +2025,7 @@ public sealed class MainWindow : Window, IDisposable
                          ImGuiTableFlags.ScrollY;
         if (showProvenance)
             tableFlags |= ImGuiTableFlags.ScrollX;
+        using var tightRosterRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-crew-roster", columnCount, tableFlags, new Vector2(0f, 430f)))
             return;
 
@@ -2470,7 +2475,6 @@ public sealed class MainWindow : Window, IDisposable
                     plugin.Configuration.Schedules);
                 pendingScheduleShareCommandsConfirmed = false;
                 scheduleShareStatus = string.Empty;
-                ImGui.OpenPopup("Confirm Schedule import##dad-share-schedule-confirm");
             }
             else
             {
@@ -2499,7 +2503,6 @@ public sealed class MainWindow : Window, IDisposable
             UiGui.TextDisabled(scheduleShareStatus);
 
         DrawScheduleShareDetailsPopup(schedule);
-        DrawScheduleImportConfirmation();
     }
 
     private void DrawScheduleShareDetailsPopup(DadScheduleDefinition? schedule)
@@ -2550,8 +2553,25 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawScheduleImportConfirmation()
     {
-        if (!UiGui.BeginPopupModal("Confirm Schedule import##dad-share-schedule-confirm", ImGuiWindowFlags.AlwaysAutoResize))
+        if (pendingScheduleShareImport == null)
             return;
+
+        var open = true;
+        ImGui.SetNextWindowSize(new Vector2(520 * MaterialTheme.Metrics.Scale, 0), ImGuiCond.Always);
+        var visible = ImGui.Begin("Confirm Schedule import##dad-share-schedule-confirm", ref open,
+            ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.NoCollapse);
+        if (!visible || !open)
+        {
+            ImGui.End();
+            if (!open)
+            {
+                pendingScheduleShareImport = null;
+                pendingScheduleSharePreview = null;
+                pendingScheduleShareCommandsConfirmed = false;
+            }
+            return;
+        }
+        UiGui.Title("Confirm Schedule import");
 
         var preview = pendingScheduleSharePreview;
         if (preview == null || pendingScheduleShareImport == null)
@@ -2589,7 +2609,6 @@ public sealed class MainWindow : Window, IDisposable
             pendingScheduleShareImport = null;
             pendingScheduleSharePreview = null;
             pendingScheduleShareCommandsConfirmed = false;
-            ImGui.CloseCurrentPopup();
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
@@ -2598,11 +2617,10 @@ public sealed class MainWindow : Window, IDisposable
             pendingScheduleShareImport = null;
             pendingScheduleSharePreview = null;
             pendingScheduleShareCommandsConfirmed = false;
-            ImGui.CloseCurrentPopup();
         }
         if (!string.IsNullOrWhiteSpace(mutationBlocker))
             UiGui.TextDisabled(mutationBlocker);
-        ImGui.EndPopup();
+        ImGui.End();
     }
 
     private void DrawScheduleEntryEditor(
@@ -2656,6 +2674,7 @@ public sealed class MainWindow : Window, IDisposable
         if (!string.IsNullOrWhiteSpace(skipBadges.HistoryNotice))
             DadUi.Badge(skipBadges.HistoryNotice, DadUiTone.Neutral);
 
+        using var tightScheduleRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-schedule-entries", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
@@ -2825,6 +2844,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
+        using var tightHistoryRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-schedule-history", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
@@ -2925,6 +2945,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
+        using var tightSchedulerHistoryRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-scheduler-history", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
@@ -2991,6 +3012,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
+        using var tightSlotRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-active-scheduler-slots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
@@ -3053,6 +3075,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
+        using var tightRunHistoryRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-run-history", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
             return;
         ImGui.TableSetupColumn("Completed");
@@ -3394,6 +3417,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
+        using var tightAccountRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-roster-account-tools", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
             DrawDeleteAccountPopup(catalog);
@@ -6501,6 +6525,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPlannerRosterSlots(DadActivityPreset plannerPreview)
     {
         UiGui.TextUnformatted("Roster slots");
+        using var tightRosterSlotRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
         if (!ImGui.BeginTable("dad-roster-slots", 8, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
@@ -8155,7 +8180,6 @@ public sealed class MainWindow : Window, IDisposable
                     plugin.Configuration.Schedules);
                 pendingPlannerShareCommandsConfirmed = false;
                 plannerShareStatus = string.Empty;
-                ImGui.OpenPopup("Confirm Plan import##dad-share-plan-confirm");
             }
             else
             {
@@ -8184,7 +8208,6 @@ public sealed class MainWindow : Window, IDisposable
             UiGui.TextDisabled(plannerShareStatus);
 
         DrawPlannerShareDetailsPopup(selectedGroup);
-        DrawPlannerImportConfirmation();
     }
 
     private void DrawPlannerShareDetailsPopup(DadPlannerGroup? selectedGroup)
@@ -8233,8 +8256,25 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawPlannerImportConfirmation()
     {
-        if (!UiGui.BeginPopupModal("Confirm Plan import##dad-share-plan-confirm", ImGuiWindowFlags.AlwaysAutoResize))
+        if (pendingPlannerShareImport == null)
             return;
+
+        var open = true;
+        ImGui.SetNextWindowSize(new Vector2(520 * MaterialTheme.Metrics.Scale, 0), ImGuiCond.Always);
+        var visible = ImGui.Begin("Confirm Plan import##dad-share-plan-confirm", ref open,
+            ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.NoCollapse);
+        if (!visible || !open)
+        {
+            ImGui.End();
+            if (!open)
+            {
+                pendingPlannerShareImport = null;
+                pendingPlannerSharePreview = null;
+                pendingPlannerShareCommandsConfirmed = false;
+            }
+            return;
+        }
+        UiGui.Title("Confirm Plan import");
 
         var preview = pendingPlannerSharePreview;
         if (preview == null || pendingPlannerShareImport == null)
@@ -8270,7 +8310,6 @@ public sealed class MainWindow : Window, IDisposable
             pendingPlannerShareImport = null;
             pendingPlannerSharePreview = null;
             pendingPlannerShareCommandsConfirmed = false;
-            ImGui.CloseCurrentPopup();
         }
         ImGui.EndDisabled();
         ImGui.SameLine();
@@ -8279,11 +8318,10 @@ public sealed class MainWindow : Window, IDisposable
             pendingPlannerShareImport = null;
             pendingPlannerSharePreview = null;
             pendingPlannerShareCommandsConfirmed = false;
-            ImGui.CloseCurrentPopup();
         }
         if (!string.IsNullOrWhiteSpace(mutationBlocker))
             UiGui.TextDisabled(mutationBlocker);
-        ImGui.EndPopup();
+        ImGui.End();
     }
 
     private static void DrawShareReplacementSummary(DadShareImportPreview preview)
