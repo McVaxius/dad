@@ -267,6 +267,9 @@ internal static class UiGui
     }
 
     internal static void PaintTitleWithImage(Dalamud.Interface.Windowing.Window owner, string display)
+        => PaintTitleWithImageAndStatus(owner, display, null);
+
+    internal static void PaintTitleWithImageAndStatus(Dalamud.Interface.Windowing.Window owner, string display, MaterialTitlebarStatus? status)
     {
         var window = ImGuiP.FindWindowByName(owner.WindowName);
         if (window.IsNull) return;
@@ -275,8 +278,13 @@ internal static class UiGui
         var extraRightWidth = count * (ImGuiP.CalcFontSize(window) + ImGui.GetStyle().ItemInnerSpacing.X);
         var texture = DadPresentation.OriginalIcon;
         using var font = UiText.Font(UiFontRole.Body);
-        MaterialWindowHeader.PaintTitle(window, display, texture?.Handle ?? default,
-            texture is null ? Vector2.Zero : new Vector2(texture.Width, texture.Height), extraRightWidth, owner.ShowCloseButton);
+        var imageSize = texture is null ? Vector2.Zero : new Vector2(texture.Width, texture.Height);
+        if (status is { } runtime)
+            MaterialWindowHeader.PaintTitleWithStatus(window, display, texture?.Handle ?? default,
+                imageSize, runtime, extraRightWidth, owner.ShowCloseButton);
+        else
+            MaterialWindowHeader.PaintTitle(window, display, texture?.Handle ?? default,
+                imageSize, extraRightWidth, owner.ShowCloseButton);
     }
 
     internal static void Title(string original,string? display=null)

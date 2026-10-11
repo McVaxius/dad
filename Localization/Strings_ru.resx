@@ -8691,4 +8691,7 @@
   <data name="Opens XA Slave&apos;s Utility &gt; XA Mods panel, which contains Dalamud Log Cleaner." xml:space="preserve"><value>Открывает панель Utility &gt; XA Mods в XA Slave, содержащую Dalamud Log Cleaner.</value></data>
   <data name="XA Slave log tools could not be opened." xml:space="preserve"><value>Не удалось открыть инструменты журналов XA Slave.</value></data>
   <data name="Transparency visible on main window" xml:space="preserve"><value>Показывать прозрачность в главном окне</value></data>
+  <data name="I536.0" xml:space="preserve"><value>Показывать статус в заголовке</value></data>
+  <data name="I536.1" xml:space="preserve"><value>Подробный статус в заголовке</value></data>
+  <data name="I536.6" xml:space="preserve"><value>Группа готова</value></data>
 </root>

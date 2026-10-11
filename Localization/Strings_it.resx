@@ -8700,4 +8700,7 @@ Tempo di recupero di</value>
   <data name="Opens XA Slave&apos;s Utility &gt; XA Mods panel, which contains Dalamud Log Cleaner." xml:space="preserve"><value>Apre il pannello Utility &gt; XA Mods di XA Slave, che contiene Dalamud Log Cleaner.</value></data>
   <data name="XA Slave log tools could not be opened." xml:space="preserve"><value>Impossibile aprire gli strumenti di log XA Slave.</value></data>
   <data name="Transparency visible on main window" xml:space="preserve"><value>Mostra trasparenza nella finestra principale</value></data>
+  <data name="I536.0" xml:space="preserve"><value>Mostra lo stato nella barra del titolo</value></data>
+  <data name="I536.1" xml:space="preserve"><value>Stato dettagliato nella barra del titolo</value></data>
+  <data name="I536.6" xml:space="preserve"><value>Gruppo pronto</value></data>
 </root>

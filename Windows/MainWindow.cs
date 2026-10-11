@@ -251,7 +251,6 @@ public sealed class MainWindow : Window, IDisposable
     public override void PostDraw()
     {
         motion.Restore(this);
-        UiGui.PaintTitleWithImage(this, PluginInfo.DisplayName + " " + (typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "0.0.0.0"));
     }
 
     public override void Draw()

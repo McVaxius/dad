@@ -8670,4 +8670,7 @@
   <data name="Opens XA Slave&apos;s Utility &gt; XA Mods panel, which contains Dalamud Log Cleaner." xml:space="preserve"><value>打开XA Slave的Utility &gt; XA Mods面板，其中包含Dalamud Log Cleaner。</value></data>
   <data name="XA Slave log tools could not be opened." xml:space="preserve"><value>无法打开XA Slave日志工具。</value></data>
   <data name="Transparency visible on main window" xml:space="preserve"><value>在主窗口显示透明度</value></data>
+  <data name="I536.0" xml:space="preserve"><value>显示标题栏状态</value></data>
+  <data name="I536.1" xml:space="preserve"><value>详细标题栏状态</value></data>
+  <data name="I536.6" xml:space="preserve"><value>队伍就绪</value></data>
 </root>

@@ -69,7 +69,6 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     public override void PostDraw()
     {
         motion.Restore(this);
-        UiGui.PaintTitleWithImage(this, UiText.T(WindowName.Split("##", 2)[0]));
     }
 
     public override void Draw()

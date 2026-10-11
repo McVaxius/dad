@@ -616,7 +616,36 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawAppearanceTitleBarPopups()
     {
+        var status = TitlebarStatus();
+        foreach (var owner in appearanceTitleBars.Keys)
+        {
+            if (!owner.IsOpen) continue;
+            var title = owner is MainWindow ? PluginInfo.DisplayName + " " + (typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "0.0.0.0")
+                : UiText.T(owner.WindowName.Split("##", 2)[0]);
+            UiGui.PaintTitleWithImageAndStatus(owner, title, status);
+        }
         foreach (var actions in appearanceTitleBars.Values) actions.DrawPopups();
+    }
+
+    private MaterialTitlebarStatus? TitlebarStatus()
+    {
+        if (!Configuration.UiShowTitlebarStatus) return null;
+        var snapshot = BuildMiniStatusSnapshot();
+        var run = snapshot.DisplayRun;
+        var state = UiText.T(run.Status.ToString());
+        var stage = UiText.T(DadOperatorPhaseText.GetPhaseLabel(run));
+        var progress = run.TotalTaskCount > 0 ? $"{run.CompletedTaskCount}/{run.TotalTaskCount}" : string.Empty;
+        var slots = snapshot.SchedulerQueue.ActiveState.Slots;
+        var crew = snapshot.SchedulerQueue.ActiveState.IsActive && slots.Count > 0
+            ? UiText.T("Crew ready") + $": {slots.Count(slot => slot.Ready)}/{slots.Count}" : string.Empty;
+        var concise = string.Join(" | ", new[] { state, progress, crew }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        var action = FormatOperatorTextForChat(UiText.T(run.ActiveTaskName));
+        var detailed = string.Join(" | ", new[] { concise, stage, action, UiText.T(run.BlockedReason) }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        var tooltip = FormatOperatorTextForChat(string.Join("\n", detailed, UiText.T(run.ActiveTaskStatus), UiText.T(run.Summary),
+            UiText.T(run.BlockedReason), UiText.T(run.FailureReason), UiText.T(snapshot.SchedulerQueue.ActiveState.Summary),
+            UiText.T(snapshot.SchedulerQueue.ActiveState.BlockedReason)));
+        Vector4? color = run.Status is DadRunStatus.Failed or DadRunStatus.TimedOut ? MaterialTheme.Current.Colors.Error : null;
+        return new(Configuration.UiDetailedTitlebarStatus ? detailed : concise, state, tooltip, color);
     }
 
     private void DrawTitleColour()
@@ -5883,6 +5912,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawWindowAppearanceEditor()
     {
+        var showStatus = Configuration.UiShowTitlebarStatus;
+        if (UiGui.Checkbox("Show titlebar status###UiShowTitlebarStatus", ref showStatus))
+        { Configuration.UiShowTitlebarStatus = showStatus; Configuration.Save(); }
+        var detailedStatus = Configuration.UiDetailedTitlebarStatus;
+        if (UiGui.Checkbox("Detailed titlebar status###UiDetailedTitlebarStatus", ref detailedStatus))
+        { Configuration.UiDetailedTitlebarStatus = detailedStatus; Configuration.Save(); }
         DrawCompactPreference();
         ImGui.SameLine();
         MaterialText.Text(UiText.T("Compact mode"));
