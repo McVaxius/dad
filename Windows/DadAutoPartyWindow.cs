@@ -102,7 +102,7 @@ public sealed class DadAutoPartyWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ObserveTask();
         ObserveDirectoryRefresh();
         var configuration = plugin.Configuration.AutoParty;

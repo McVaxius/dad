@@ -49,7 +49,7 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         var matrix = plugin.Configuration.AutoPartyFleet;
         DadUi.Heading("Fleet / Crew Matrix", "Build deterministic DAD Plans and Schedules from bounded local inventory and ordered Crew Sets.");
         DadUi.Badge(matrix.Enabled ? "Matrix apply enabled" : "Matrix apply disabled", matrix.Enabled ? DadUiTone.Warning : DadUiTone.Neutral);

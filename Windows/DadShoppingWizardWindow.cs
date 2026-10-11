@@ -87,7 +87,7 @@ public sealed class DadShoppingWizardWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         MaterialText.Text(UiText.F("Step {0} of 4 — {1}", step + 1, UiText.T(Steps[step])));
         UiGui.TextWrapped("Choose an ADS list for a saved preset or schedule. Only Save shopping list commits changes. This wizard never starts a run or purchases items.");
         ImGui.Separator();

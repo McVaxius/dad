@@ -92,7 +92,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
 
         var configuration = plugin.Configuration;

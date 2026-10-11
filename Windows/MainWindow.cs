@@ -383,25 +383,10 @@ public sealed class MainWindow : Window, IDisposable
         using var controls=new MaterialStyleScope();
         controls.Style(ImGuiStyleVar.FramePadding,new Vector2(4,2)*scale);
         controls.Style(ImGuiStyleVar.ItemSpacing,new Vector2(6,DadPresentation.Compact?5:8)*scale);
-        if (configuration.UiCompactVisibleOnMainWindow)
-        {
-            DadUi.SameLineIfFits((ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X+MaterialText.Measure("C").X)/scale);
-            plugin.DrawCompactPreference();
-        }
-        if (configuration.UiTransparencyVisibleOnMainWindow)
-        {
-            DadUi.SameLineIfFits((ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X+MaterialText.Measure(UiText.T("Transparency")).X)/scale);
-            plugin.DrawTransparencyToggle();
-        }
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.RunAsServerDad?"Coordinator":"Client"));
         DadUi.IconBadge(configuration.RunAsServerDad?"Coordinator":"Client",configuration.RunAsServerDad?MaterialIcon.Crown:MaterialIcon.Person,DadUiTone.Accent);
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.PluginEnabled?"Enabled":"Paused"));
         DadUi.Badge(configuration.PluginEnabled?"Enabled":"Paused",configuration.PluginEnabled?DadUiTone.Success:DadUiTone.Neutral);
-        if (configuration.UiLanguageVisibleOnMainWindow)
-        {
-            DadUi.SameLineIfFits(plugin.AppearanceSelectorWidth());
-            plugin.DrawAppearanceSelector(false);
-        }
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Settings"));
         if (DadUi.IconButton("Settings",MaterialIcon.Settings,DadUiTone.Neutral,new Vector2(0,28*scale))) plugin.ToggleConfigUi();
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Guide"));

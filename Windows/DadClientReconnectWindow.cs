@@ -56,7 +56,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
         var transport = plugin.TransportService.CurrentTransport;
         var endpoint = plugin.TransportService.GetPreferredAuthorityEndpoint();

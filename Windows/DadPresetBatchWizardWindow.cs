@@ -57,7 +57,7 @@ public sealed class DadPresetBatchWizardWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
-        UiGui.Title(WindowName.Split("##",2)[0]);
+        UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         DadUi.Heading("BATCH PRESET WIZARD", "Zip rotating accounts across named DC pools, reuse exact anchors, then append ordinary Plans and Schedules only after review.");
         UiGui.TextDisabled("Session draft only | append-only Apply | exact session-only Undo | 512 Plan/entry limit");
         ImGui.SameLine();
