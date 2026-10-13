@@ -175,6 +175,8 @@ public enum DadAssemblyInstructionKind
 
 public sealed class DadRunWaitPolicy
 {
+    public DadRunWaitPolicy Clone() => (DadRunWaitPolicy)MemberwiseClone();
+
     public int ParticipantReadyTimeoutSeconds { get; set; } = 300;
     public int AssemblyTimeoutSeconds { get; set; } = 120;
     public int HeartbeatStaleSeconds { get; set; } = 12;
@@ -199,6 +201,20 @@ public sealed class DadRunWaitPolicy
 
 public sealed class DadOrchestrationIntent
 {
+    public DadOrchestrationIntent Clone()
+    {
+        var clone = (DadOrchestrationIntent)MemberwiseClone();
+        clone.RosterIntent = RosterIntent.Clone();
+        clone.PreferredAccountKeys = [..PreferredAccountKeys];
+        clone.RequiredAccountKeys = [..RequiredAccountKeys];
+        clone.PreferredRosterCharacters = PreferredRosterCharacters.Select(static character => character.Clone()).ToList();
+        clone.RequiredRosterCharacters = RequiredRosterCharacters.Select(static character => character.Clone()).ToList();
+        clone.PreferredCharacterKeys = [..PreferredCharacterKeys];
+        clone.RequiredCharacterKeys = [..RequiredCharacterKeys];
+        clone.WaitPolicy = WaitPolicy.Clone();
+        return clone;
+    }
+
     public DadAuthorityMode AuthorityMode { get; set; } = DadAuthorityMode.ServerDad;
     public bool LocalOnlyOverride { get; set; }
     public DadModuleId ModuleTarget { get; set; } = DadModuleId.None;
@@ -226,6 +242,8 @@ public sealed class DadOrchestrationIntent
 
 public sealed class DadRosterIntent
 {
+    public DadRosterIntent Clone() => (DadRosterIntent)MemberwiseClone();
+
     public int ExpectedPartySize { get; set; } = 1;
     public bool RequireRemoteParticipants { get; set; }
     public bool AllowStoredXadbFallback { get; set; } = true;

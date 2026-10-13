@@ -133,7 +133,7 @@ public sealed class DadRunResult
         FailureReason = FailureReason,
         Summary = Summary,
         ScheduleFailureKind = ScheduleFailureKind,
-        Request = DadIpcJson.DeepClone(Request),
+        Request = Request?.Clone(),
         StopProgress = StopProgress.Clone(),
         CurrentExecutorStatus = CurrentExecutorStatus.Clone(),
         Participants = Participants.Select(static participant => participant.Clone()).ToList(),

@@ -2,6 +2,8 @@ namespace dad.Models;
 
 public sealed class DadTimeWindow
 {
+    public DadTimeWindow Clone() => (DadTimeWindow)MemberwiseClone();
+
     public string StartLocal { get; set; } = "00:00";
     public string EndLocal { get; set; } = "23:59";
 

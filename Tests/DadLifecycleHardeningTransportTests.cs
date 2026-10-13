@@ -186,19 +186,73 @@ public sealed class DadLifecycleHardeningTransportTests
             Request = new DadRunRequest
             {
                 RequestedBy = "original",
+                Dungeon = new DadDungeonTask { Count = 7, SelectedDungeon = "test dungeon" },
+                Msq = new DadMsqTask(),
+                DutySupport = new DadDutySupportTask(),
+                Trust = new DadTrustTask(),
+                PremadeDuty = new DadPremadeDutyTask(),
+                DailyMsq = new DadDailyMsqTask(),
+                Blunderville = new DadBlundervilleTask(),
+                Mogtome = new DadMogtomeTask(),
+                Commendation = new DadCommendationTask(),
+                Astrope = new DadAstropeTask(),
+                CustomDuty = new DadCustomDutyTask(),
+                Squadron = new DadSquadronTask(),
+                VariantVvd = new DadVariantVvdTask(),
+                LootGoblin = new DadLootGoblinTask(),
+                CompletionActions = new DadCompletionActions { Commands = ["/test"] },
+                ShoppingAssociations = [new DadShoppingRunAssociation { CreditedQuantities = new() { ["row"] = 1 } }],
+                StopPolicy = new DadRunStopPolicy { ResolvedLevelTargets = [new DadResolvedLevelTarget { TargetLevel = 80 }] },
                 Orchestration = new DadOrchestrationIntent
                 {
                     RequiredCharacterKeys = [new DadCharacterKey("Alpha@World")],
+                    PreferredRosterCharacters = [new DadRosterCharacterRef { RequiredJobId = 19 }],
+                    RequiredRosterCharacters = [new DadRosterCharacterRef { RequiredJobId = 24 }],
                 },
             },
         };
 
         var clone = original.Clone();
+        Assert.Equal(DadIpcJson.Serialize(original), DadIpcJson.Serialize(clone));
+        foreach (var property in typeof(DadRunRequest).GetProperties())
+        {
+            if (!property.PropertyType.IsValueType && property.PropertyType != typeof(string)
+                && property.GetValue(original.Request) is { } value)
+                Assert.NotSame(value, property.GetValue(clone.Request));
+        }
         clone.Request!.RequestedBy = "clone";
         clone.Request.Orchestration.RequiredCharacterKeys[0] = new DadCharacterKey("Beta@World");
+        clone.Request.Orchestration.PreferredRosterCharacters[0].RequiredJobId = 20;
+        clone.Request.Orchestration.RequiredRosterCharacters[0].RequiredJobId = 21;
+        clone.Request.Orchestration.RosterIntent.ExpectedPartySize = 8;
+        clone.Request.Orchestration.WaitPolicy.AssemblyTimeoutSeconds = 999;
+        clone.Request.CompletionActions!.Commands[0] = "/changed";
+        clone.Request.ShoppingAssociations[0].CreditedQuantities!["row"] = 9;
+        clone.Request.StopPolicy.ResolvedLevelTargets[0].TargetLevel = 90;
+        clone.Request.PreDutyRepairPolicy.Enabled = !original.Request!.PreDutyRepairPolicy.Enabled;
+        clone.Request.Dungeon!.Count = 99;
+        clone.Request.DailyMsq!.QueueTarget.DisplayName = "changed";
+        clone.Request.Commendation!.QueueTarget.DisplayName = "changed";
+        clone.Request.Astrope!.QueueTarget.DisplayName = "changed";
+        clone.Request.Astrope.ValidLocalTimeWindow.StartLocal = "12:00";
+        clone.Request.CustomDuty!.QueueTarget.DisplayName = "changed";
 
         Assert.Equal("original", original.Request!.RequestedBy);
         Assert.Equal("Alpha@World", original.Request.Orchestration.RequiredCharacterKeys[0].Value);
+        Assert.Equal(19u, original.Request.Orchestration.PreferredRosterCharacters[0].RequiredJobId);
+        Assert.Equal(24u, original.Request.Orchestration.RequiredRosterCharacters[0].RequiredJobId);
+        Assert.Equal(1, original.Request.Orchestration.RosterIntent.ExpectedPartySize);
+        Assert.Equal(120, original.Request.Orchestration.WaitPolicy.AssemblyTimeoutSeconds);
+        Assert.Equal("/test", original.Request.CompletionActions!.Commands[0]);
+        Assert.Equal(1, original.Request.ShoppingAssociations[0].CreditedQuantities!["row"]);
+        Assert.Equal(80, original.Request.StopPolicy.ResolvedLevelTargets[0].TargetLevel);
+        Assert.NotEqual(original.Request.PreDutyRepairPolicy.Enabled, clone.Request.PreDutyRepairPolicy.Enabled);
+        Assert.Equal(7, original.Request.Dungeon!.Count);
+        Assert.Equal("Main Scenario Roulette", original.Request.DailyMsq!.QueueTarget.DisplayName);
+        Assert.Equal("Under the Armour", original.Request.Commendation!.QueueTarget.DisplayName);
+        Assert.Equal("Mentor Roulette", original.Request.Astrope!.QueueTarget.DisplayName);
+        Assert.Equal("00:00", original.Request.Astrope.ValidLocalTimeWindow.StartLocal);
+        Assert.Equal(string.Empty, original.Request.CustomDuty!.QueueTarget.DisplayName);
     }
 
     [Fact]

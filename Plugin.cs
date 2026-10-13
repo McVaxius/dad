@@ -4339,7 +4339,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         LogAuthorityTransportChanges();
         var localRun = RunCoordinatorService.GetLocalResult();
-        var authorityRun = GetAuthorityRunForUi(forceAuthorityRefresh);
+        var authorityRun = GetAuthorityRunForUi(localRun, forceAuthorityRefresh);
         var authorityView = BuildAuthorityView(localRun, authorityRun);
         var isRemoteAuthorityView = authorityView.Kind is not DadAuthorityViewKind.LocalOnly and not DadAuthorityViewKind.NoRemoteAuthority;
         var visibleRun = localRun.Status != DadRunStatus.Idle ? localRun : authorityView.PreferredRun;
@@ -4572,13 +4572,12 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private DadRunResult GetAuthorityRunForUi(bool forceRefresh)
+    private DadRunResult GetAuthorityRunForUi(DadRunResult localRun, bool forceRefresh)
     {
-        var localRun = RunCoordinatorService.GetLocalResult();
         if (RunCoordinatorService.IsServerDad || !Configuration.PluginEnabled || Configuration.LocalOnlyModeEnabled)
         {
             ResetAuthorityCache(clearFreshness: true);
-            return localRun;
+            return localRun.Clone();
         }
 
         var transport = TransportService.CurrentTransport;
@@ -4630,7 +4629,10 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         if (cached != null)
-            return CloneAuthorityRun(cached);
+        {
+            ApplyKnownAuthorityMetadata(cached);
+            return cached;
+        }
 
         return BuildUnavailableAuthorityResult(
             refreshInFlight ? "Dad Coordinator status refresh pending." : "Dad Coordinator status refresh unavailable.",
@@ -4642,13 +4644,6 @@ public sealed class Plugin : IDalamudPlugin
             authorityEndpoint,
             transport.AuthorityWorkerSessionId,
             transport.AuthorityRole);
-    }
-
-    private DadRunResult CloneAuthorityRun(DadRunResult authorityRun)
-    {
-        var clone = authorityRun.Clone();
-        ApplyKnownAuthorityMetadata(clone);
-        return clone;
     }
 
     private void ResetAuthorityCache(bool clearFreshness)

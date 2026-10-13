@@ -55,6 +55,31 @@ public sealed class DadRunRequest
     public DadVariantVvdTask? VariantVvd { get; set; }
     public DadLootGoblinTask? LootGoblin { get; set; }
 
+    public DadRunRequest Clone()
+    {
+        var clone = (DadRunRequest)MemberwiseClone();
+        clone.StopPolicy = StopPolicy.Clone();
+        clone.PreDutyRepairPolicy = PreDutyRepairPolicy.Clone();
+        clone.CompletionActions = CompletionActions?.Clone();
+        clone.ShoppingAssociations = ShoppingAssociations.Select(static association => association.Clone()).ToList();
+        clone.Orchestration = Orchestration.Clone();
+        clone.Dungeon = Dungeon?.Clone();
+        clone.Msq = Msq?.Clone();
+        clone.DutySupport = DutySupport?.Clone();
+        clone.Trust = Trust?.Clone();
+        clone.PremadeDuty = PremadeDuty?.Clone();
+        clone.DailyMsq = DailyMsq?.Clone();
+        clone.Blunderville = Blunderville?.Clone();
+        clone.Mogtome = Mogtome?.Clone();
+        clone.Commendation = Commendation?.Clone();
+        clone.Astrope = Astrope?.Clone();
+        clone.CustomDuty = CustomDuty?.Clone();
+        clone.Squadron = Squadron?.Clone();
+        clone.VariantVvd = VariantVvd?.Clone();
+        clone.LootGoblin = LootGoblin?.Clone();
+        return clone;
+    }
+
     public int GetConfiguredTaskCount()
     {
         var count = 0;
@@ -415,6 +440,8 @@ public sealed class DadRunStopPolicy
 
 public sealed class DadDungeonTask
 {
+    public DadDungeonTask Clone() => (DadDungeonTask)MemberwiseClone();
+
     public int Count { get; set; } = 1;
     public string Frequency { get; set; } = DadRunRequestOptions.FrequencyPerArRun;
     public uint ContentFinderConditionId { get; set; }
@@ -427,6 +454,13 @@ public sealed class DadDungeonTask
 
 public sealed class DadDailyMsqTask
 {
+    public DadDailyMsqTask Clone()
+    {
+        var clone = (DadDailyMsqTask)MemberwiseClone();
+        clone.QueueTarget = QueueTarget.Clone();
+        return clone;
+    }
+
     public string LanPartyPreset { get; set; } = "Daily MSQ";
     public DadQueueTarget QueueTarget { get; set; } = new()
     {
@@ -438,6 +472,8 @@ public sealed class DadDailyMsqTask
 
 public sealed class DadMsqTask
 {
+    public DadMsqTask Clone() => (DadMsqTask)MemberwiseClone();
+
     public string Preset { get; set; } = "MSQ";
     public string LegacyQueuePreset { get; set; } = "Daily MSQ";
     public uint ContentFinderConditionId { get; set; }
@@ -448,6 +484,8 @@ public sealed class DadMsqTask
 
 public sealed class DadDutySupportTask
 {
+    public DadDutySupportTask Clone() => (DadDutySupportTask)MemberwiseClone();
+
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
@@ -456,6 +494,8 @@ public sealed class DadDutySupportTask
 
 public sealed class DadTrustTask
 {
+    public DadTrustTask Clone() => (DadTrustTask)MemberwiseClone();
+
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
@@ -465,6 +505,8 @@ public sealed class DadTrustTask
 
 public sealed class DadPremadeDutyTask
 {
+    public DadPremadeDutyTask Clone() => (DadPremadeDutyTask)MemberwiseClone();
+
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public bool Unsynced { get; set; }
@@ -474,6 +516,8 @@ public sealed class DadPremadeDutyTask
 
 public sealed class DadBlundervilleTask
 {
+    public DadBlundervilleTask Clone() => (DadBlundervilleTask)MemberwiseClone();
+
     public string Mode { get; set; } = DadBlundervilleModes.FixedEmoteRun;
     public string EmoteCommand { get; set; } = string.Empty;
     public string CompletionPolicy { get; set; } = DadBlundervillePolicies.FailOrLeaveAfterEmote;
@@ -482,6 +526,8 @@ public sealed class DadBlundervilleTask
 
 public sealed class DadMogtomeTask
 {
+    public DadMogtomeTask Clone() => (DadMogtomeTask)MemberwiseClone();
+
     public string Preset { get; set; } = "Daily MSQ";
     public string DutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public int Attempts { get; set; } = 1;
@@ -489,6 +535,13 @@ public sealed class DadMogtomeTask
 
 public sealed class DadCommendationTask
 {
+    public DadCommendationTask Clone()
+    {
+        var clone = (DadCommendationTask)MemberwiseClone();
+        clone.QueueTarget = QueueTarget.Clone();
+        return clone;
+    }
+
     public DadQueueTarget QueueTarget { get; set; } = new()
     {
         Kind = DadQueueTargetKind.DutyFinderDuty,
@@ -504,6 +557,14 @@ public sealed class DadCommendationTask
 
 public sealed class DadAstropeTask
 {
+    public DadAstropeTask Clone()
+    {
+        var clone = (DadAstropeTask)MemberwiseClone();
+        clone.QueueTarget = QueueTarget.Clone();
+        clone.ValidLocalTimeWindow = ValidLocalTimeWindow.Clone();
+        return clone;
+    }
+
     public DadQueueTarget QueueTarget { get; set; } = new()
     {
         Kind = DadQueueTargetKind.Roulette,
@@ -516,6 +577,13 @@ public sealed class DadAstropeTask
 
 public sealed class DadCustomDutyTask
 {
+    public DadCustomDutyTask Clone()
+    {
+        var clone = (DadCustomDutyTask)MemberwiseClone();
+        clone.QueueTarget = QueueTarget.Clone();
+        return clone;
+    }
+
     public DadQueueTarget QueueTarget { get; set; } = new();
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
@@ -526,6 +594,8 @@ public sealed class DadCustomDutyTask
 
 public sealed class DadSquadronTask
 {
+    public DadSquadronTask Clone() => (DadSquadronTask)MemberwiseClone();
+
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int Attempts { get; set; } = 1;
@@ -533,6 +603,8 @@ public sealed class DadSquadronTask
 
 public sealed class DadVariantVvdTask
 {
+    public DadVariantVvdTask Clone() => (DadVariantVvdTask)MemberwiseClone();
+
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;
     public int ExpectedPartySize { get; set; } = 1;
@@ -542,6 +614,8 @@ public sealed class DadVariantVvdTask
 
 public sealed class DadLootGoblinTask
 {
+    public DadLootGoblinTask Clone() => (DadLootGoblinTask)MemberwiseClone();
+
     private int expectedPartySize = 1;
 
     public int ExpectedPartySize

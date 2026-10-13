@@ -1,3 +1,8 @@
+2026-10-13 - Direct run-status copies
+
+- Copy run requests directly instead of repeatedly serializing, validating and parsing them to display status. Keep nested settings and task snapshots independent, and retain wire validation for incoming data.
+- Reuse the local result already obtained by each status query and apply authority metadata to its existing isolated cache copy, avoiding duplicate coordinator projections and authority copies.
+
 2026-10-11 - Native titlebar runtime status (I536)
 
 - Show the active operation, phase, completed/total tasks and observed crew readiness in native titlebars. Retain packaged icons in Settings and auxiliary windows.
