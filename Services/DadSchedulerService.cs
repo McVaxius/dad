@@ -52,6 +52,7 @@ public sealed class DadSchedulerService
     private Action? cancelActiveLevelingChild;
     private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
     private Func<string>? admissionBlockerProvider;
+    private Func<string>? localDutySupportAdmissionBlockerProvider;
     private Func<DadRunRequest, DadRunResult>? startCrewRegularParty;
     private Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus>? createCrewAllianceParty;
     private Func<DadAlliancePartyFinderStatus>? getCrewAllianceStatus;
@@ -175,6 +176,40 @@ public sealed class DadSchedulerService
 
     public DadSchedulerPresetState CurrentState => BuildVisibleState();
 
+    public bool CanRunPresetHere(DadPlannerGroup? group)
+        => configuration.RunAsServerDad || DadLocalDutySupportRules.CanRunPreset(group, configuration.ClientAccountId);
+
+    public bool CanRunScheduleHere(DadScheduleDefinition? schedule)
+        => configuration.RunAsServerDad || DadLocalDutySupportRules.CanRunSchedule(
+            schedule, configuration.PlannerGroups, configuration.ClientAccountId);
+
+    internal bool HasLocalDutySupportSchedulerWork
+        => !configuration.RunAsServerDad &&
+           (IsLocalDutySupportExecutionActive ||
+            // Keep servicing an active schedule so a newly invalid/mixed definition
+            // can be rejected below rather than silently freezing its cursor.
+            configuration.ActiveScheduleRun is { IsActive: true } ||
+            configuration.SchedulerQueue.Any(job => DadLocalDutySupportRules.CanRunQueuedJob(
+                job, configuration.PlannerGroups.FirstOrDefault(group => group.GroupId == job.GroupId), configuration.ClientAccountId)) ||
+            configuration.PlannerGroups.Any(group => group.ScheduleEnabled && CanRunPresetHere(group)) ||
+            configuration.Schedules.Any(schedule => schedule.Cadence == DadScheduleCadence.DailyReset && CanRunScheduleHere(schedule)));
+
+    private bool IsLocalDutySupportExecutionActive
+        => !configuration.RunAsServerDad && currentState.IsActive &&
+           DadLocalDutySupportRules.CanRunPreset(
+               levelingOperation?.SourceGroup ??
+               configuration.PlannerGroups.FirstOrDefault(group => group.GroupId == currentState.GroupId),
+               configuration.ClientAccountId);
+
+    internal bool OwnsLocalDutySupportTakeover(string? schedulerRunId)
+        => IsLocalDutySupportExecutionActive && !string.IsNullOrWhiteSpace(schedulerRunId) &&
+           string.Equals(currentState.SchedulerRunId, schedulerRunId, StringComparison.Ordinal);
+
+    private string GetAdmissionBlocker(bool localDutySupport)
+        => !configuration.RunAsServerDad && localDutySupport
+            ? localDutySupportAdmissionBlockerProvider?.Invoke() ?? string.Empty
+            : admissionBlockerProvider?.Invoke() ?? string.Empty;
+
     private bool IsSchedulerActive
         => levelingOperation != null || currentState.IsActive || IsCrewFormationActive;
 
@@ -197,6 +232,9 @@ public sealed class DadSchedulerService
 
     public void ConfigureAdmissionBlocker(Func<string> blockerProvider)
         => admissionBlockerProvider = blockerProvider ?? throw new ArgumentNullException(nameof(blockerProvider));
+
+    internal void ConfigureLocalDutySupportAdmission(Func<string> blockerProvider)
+        => localDutySupportAdmissionBlockerProvider = blockerProvider ?? throw new ArgumentNullException(nameof(blockerProvider));
 
     internal bool HasPendingCancellationCleanup => HasPendingCleanup;
 
@@ -690,6 +728,7 @@ public sealed class DadSchedulerService
         NormalizeQueue();
         NormalizeHistory();
         configuration.ActiveScheduleRun ??= new DadScheduleRunState();
+        var schedule = FindSchedule(scheduleId);
         if (IsCrewFormationActive)
         {
             return DadScheduleRules.BlockRun(new DadScheduleRunState
@@ -700,7 +739,7 @@ public sealed class DadSchedulerService
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
             }, "Crew Formation is active; schedules cannot start until it releases scheduler ownership.", DadClock.UtcNow);
         }
-        if (!dryRun && !configuration.RunAsServerDad)
+        if (!dryRun && !CanRunScheduleHere(schedule))
         {
             return DadScheduleRules.BlockRun(new DadScheduleRunState
             {
@@ -708,10 +747,10 @@ public sealed class DadSchedulerService
                 ScheduleId = scheduleId?.Trim() ?? string.Empty,
                 ScheduleName = "Schedule",
                 RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "schedule" : requestedBy.Trim(),
-                }, "Only Dad Coordinator may run schedules.", DadClock.UtcNow);
+                }, DadLocalDutySupportRules.CoordinatorOnlyReason, DadClock.UtcNow);
         }
 
-        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        var admissionBlocker = GetAdmissionBlocker(CanRunScheduleHere(schedule));
         if (!string.IsNullOrWhiteSpace(admissionBlocker))
         {
             return DadScheduleRules.BlockRun(new DadScheduleRunState
@@ -738,7 +777,6 @@ public sealed class DadSchedulerService
             }, $"Schedule '{configuration.ActiveScheduleRun.ScheduleName}' is already active as run {configuration.ActiveScheduleRun.RunId}.", DadClock.UtcNow);
         }
 
-        var schedule = FindSchedule(scheduleId);
         if (schedule == null)
         {
             return DadScheduleRules.BlockRun(new DadScheduleRunState
@@ -842,6 +880,11 @@ public sealed class DadSchedulerService
         if (schedule == null)
         {
             result.Summary = "The failed run's Schedule disappeared.";
+            return result;
+        }
+        if (!CanRunScheduleHere(schedule))
+        {
+            result.Summary = DadLocalDutySupportRules.CoordinatorOnlyReason;
             return result;
         }
         if (!DadScheduleRules.TryCreateRetryState(
@@ -1242,7 +1285,10 @@ public sealed class DadSchedulerService
         bool dryRun,
         DadScheduledCrewJob? job = null)
     {
-        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        var admissionBlocker = !CanRunPresetHere(group) ||
+                              !configuration.RunAsServerDad && job != null && job.JobType != DadSchedulerJobType.ScheduledPreset
+            ? DadLocalDutySupportRules.CoordinatorOnlyReason
+            : GetAdmissionBlocker(CanRunPresetHere(group));
         if (!string.IsNullOrWhiteSpace(admissionBlocker))
         {
             var blockedJob = job?.Clone() ?? new DadScheduledCrewJob
@@ -1773,6 +1819,11 @@ public sealed class DadSchedulerService
         UpdatePendingEarlyAssignmentCancellations();
         UpdatePendingRewardProbeCancellations();
         LogSchedulerPhaseTransition();
+        if (!configuration.RunAsServerDad && currentState.IsActive && !IsLocalDutySupportExecutionActive)
+        {
+            BlockActive(DadLocalDutySupportRules.CoordinatorOnlyReason);
+            return;
+        }
         TickScheduleEnqueue();
 
         var visibleRun = visibleRunProvider?.Invoke() ?? DadRunResult.Idle();
@@ -2852,7 +2903,7 @@ public sealed class DadSchedulerService
 
     public void TickScheduleEnqueue()
     {
-        if (!configuration.RunAsServerDad || IsCrewFormationActive)
+        if (IsCrewFormationActive)
             return;
 
         NormalizeQueue();
@@ -2864,6 +2915,7 @@ public sealed class DadSchedulerService
 
         foreach (var group in configuration.PlannerGroups
                      .Where(static group => group.ScheduleEnabled)
+                     .Where(CanRunPresetHere)
                      .OrderByDescending(static group => group.SchedulePriority)
                      .ThenBy(static group => group.NextEligibleTimeUtc ?? DateTime.MinValue))
         {
@@ -2915,9 +2967,7 @@ public sealed class DadSchedulerService
 
     private bool TryStartDueDailySchedule(DateTime now)
     {
-        if (!configuration.RunAsServerDad)
-            return false;
-        if (!string.IsNullOrWhiteSpace(admissionBlockerProvider?.Invoke()))
+        if (!string.IsNullOrWhiteSpace(GetAdmissionBlocker(HasLocalDutySupportSchedulerWork)))
             return false;
 
         NormalizeSchedules();
@@ -2927,6 +2977,7 @@ public sealed class DadSchedulerService
 
         var schedule = configuration.Schedules
             .Where(schedule => DadScheduleRules.IsDailyResetDue(schedule, now))
+            .Where(CanRunScheduleHere)
             .OrderBy(static schedule => schedule.LastDailyResetUtc ?? DateTime.MinValue)
             .ThenBy(static schedule => schedule.CreatedAtUtc)
             .FirstOrDefault();
@@ -3057,13 +3108,15 @@ public sealed class DadSchedulerService
         NormalizeQueue();
         if (!DadSchedulerSubmissionRules.CanStartNextQueuedJob(HasPendingCleanup))
             return false;
-        var admissionBlocker = admissionBlockerProvider?.Invoke() ?? string.Empty;
+        var admissionBlocker = GetAdmissionBlocker(HasLocalDutySupportSchedulerWork);
         if (!string.IsNullOrWhiteSpace(admissionBlocker))
             return false;
 
         var now = DadClock.UtcNow;
         var nextJob = configuration.SchedulerQueue
             .Where(static job => job.Enabled)
+            .Where(job => configuration.RunAsServerDad || DadLocalDutySupportRules.CanRunQueuedJob(
+                job, groupResolver(job.GroupId), configuration.ClientAccountId))
             .Where(job => !job.NextEligibleTimeUtc.HasValue || job.NextEligibleTimeUtc.Value <= now)
             .OrderByDescending(static job => job.Priority)
             .ThenBy(static job => job.CreatedAtUtc)
@@ -5306,6 +5359,13 @@ public sealed class DadSchedulerService
             BlockActiveScheduleRun(
                 $"Schedule '{state.ScheduleName}' could not be resolved.",
                 DadScheduleFailureKind.SchedulerStateDisappeared);
+            return;
+        }
+
+        if (!CanRunScheduleHere(schedule))
+        {
+            BlockActiveScheduleRun(DadLocalDutySupportRules.CoordinatorOnlyReason,
+                DadScheduleFailureKind.PreStartRejected);
             return;
         }
 

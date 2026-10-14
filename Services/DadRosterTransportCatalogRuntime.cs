@@ -484,7 +484,17 @@ public static class DadRosterTransportCatalogRuntime
             Warnings = [..participant.Warnings],
         };
 
-        var projection = DadPeerRuntimeProjectionRules.Evaluate(participant, character);
+        var isExactLocalRuntimeOwner =
+            !currentTransport.LocalWorkerSessionId.IsEmpty &&
+            !participant.WorkerSessionId.IsEmpty &&
+            !string.IsNullOrWhiteSpace(currentTransport.LocalClientInstanceId) &&
+            !string.IsNullOrWhiteSpace(participant.ClientInstanceId) &&
+            DadRosterRuntimeSourceProjectionRules.MatchesExactOwner(
+                participant.WorkerSessionId,
+                participant.ClientInstanceId,
+                currentTransport.LocalWorkerSessionId,
+                currentTransport.LocalClientInstanceId);
+        var projection = DadPeerRuntimeProjectionRules.Evaluate(participant, character, isExactLocalRuntimeOwner);
         row.Blockers = projection.Blockers;
         return true;
     }

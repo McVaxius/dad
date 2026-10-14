@@ -27,9 +27,10 @@ public static class DadSchedulerRoutingRules
         bool standaloneDisbandActive,
         bool visibleRunActive,
         bool schedulerCleanupPending,
-        bool coordinatorCleanupPending)
+        bool coordinatorCleanupPending,
+        bool localDutySupport = false)
     {
-        if (!isCoordinator)
+        if (!isCoordinator && !localDutySupport)
             return "Only Dad Coordinator may admit scheduler work.";
         if (schedulerActive)
             return "A scheduler preset is already active.";

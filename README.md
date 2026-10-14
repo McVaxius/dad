@@ -607,6 +607,37 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   The local Create readiness row shows the first exact blocker and disables the button on Client Dads or any other failed
   prerequisite; rejected attempts remain visible and are audited.
 
+## Own-account Duty Support on Client Dads
+
+Client Dads may start saved solo Duty Support presets and schedules containing only those presets for their own
+stable account. Each preset must have one exact Slot1 character; any substitutes must stay on that same account.
+This includes the existing local Wake/relog, requested-job, LevelSeek, repeat, cadence, cancellation and failed-entry
+resume paths. A Coordinator connection is not required for a locally owned takeover; foreign takeover still yields
+when its Coordinator disconnects. Mixed schedules, foreign/unbound accounts, multiplayer, templates, registered-island
+identities, shopping-associated plans and non-preset queue jobs retain their Coordinator requirement.
+This does not promote the Client to Coordinator, change hub ports or enable the global Local Only switch. Local NPC
+execution continues to use its internal LocalOnly authority, with exact owner-aware roster validation.
+
+For independent multibox leveling, keep each instance in the Client role and bind its saved presets to that
+instance's own stable account ID, not merely a matching account alias. Select **Duty Support** with one primary
+Slot1 character and party size 1. Build a schedule entirely from those saved presets; characters may differ between
+entries as long as their account is the same. No shared Coordinator or port change is required for these solo runs.
+Use **Wake/relog and run** for a saved preset, or **Run now** in Schedules. Keep the global **Keep runs on this client
+only** setting off when using the normal typed Wake/relog pipeline. That setting is not the permission for Client
+Duty Support and is not the same as the frozen solo request's internal `LocalOnly` authority.
+
+Admission, queued-preset selection, automatic preset cadence, daily schedules and failed-entry resume all use the
+same own-account policy. Missing or duplicate schedule references fail closed. If an active schedule becomes mixed
+or loses its valid bindings, it stops with a visible blocker rather than dispatching Coordinator-only work.
+Existing busy-run, party-formation, disband and cancellation-cleanup guards still apply. A locally owned takeover
+must match the active scheduler run ID; this exception does not keep a foreign Coordinator takeover alive.
+
+If a Client cannot start, check the exact account binding and every schedule entry before changing transport
+settings. Missing dependencies, stale or unavailable runtime truth, genuine character blockers and unfinished
+cleanup still require resolution. After resolving an ordinary failed entry, use **Resume from failed entry** while
+idle; cancelled schedules remain terminal. `/dad report` includes a diagnostic build marker, load time and process
+ID to distinguish the running DLL from an older build. Review reports for personal data before sharing them.
+
 ## Operator status and cancellation
 
 - `/dad status` keeps its existing behavior and prints the live shell report to chat.
@@ -666,6 +697,9 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   evidence used by execution. Pre-wake evaluation uses the planner's merged live and durable offline roster snapshot,
   including the selected job's XADB ledger, so proven satisfied targets can skip without logging in that character.
   NPC-duty preflight also checks the explicitly requested job rather than borrowing the currently equipped job's level.
+  A local NPC job assignment's internal `LocalOnly` authority does not isolate its own runtime roster row: both worker
+  and client IDs must exactly match the consuming client. Peer LocalOnly authority and stale, unavailable, ineligible,
+  or genuinely blocked local truth remain blocking; the global Local Only switch is not changed by this rule.
   After required job changes and exact worker readiness, DAD repeats the frozen evaluation
   from fresh local/peer truth before it can dispatch; missing characters, unknown levels, missing presets, and
   untargeted rows stay normal.

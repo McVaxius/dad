@@ -5,6 +5,28 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void ClientDutySupportPermissionIsWiredThroughUiQueueScheduleAndExactOwnedWake()
+    {
+        var plugin = ReadRepositorySource("Plugin.cs");
+        var scheduler = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var window = ReadRepositorySource("Windows", "MainWindow.cs");
+        var handlers = ReadRepositorySource("Services", "DadRuntimeHandlers.cs");
+        var headless = ReadRepositorySource("Headless", "RuntimeNode.cs");
+
+        Assert.Contains("ConfigureLocalDutySupportAdmission(GetLocalDutySupportAdmissionBlocker)", plugin);
+        Assert.Contains("ConfigureLocalDutySupportAdmission", headless);
+        Assert.Contains("CanRunScheduleHere(schedule)", window);
+        Assert.Contains("CanRunPresetHere(selectedGroup)", window);
+        Assert.Contains(".Where(CanRunScheduleHere)", scheduler);
+        Assert.Contains(".Where(CanRunPresetHere)", scheduler);
+        Assert.Contains("DadLocalDutySupportRules.CanRunQueuedJob(", scheduler);
+        Assert.Contains("if (!CanRunScheduleHere(schedule))", scheduler);
+        Assert.Contains("HasLocalDutySupportSchedulerWork", handlers);
+        Assert.Contains("OwnsLocalDutySupportTakeover(WakeTakeoverService.GetActiveStatus()?.SchedulerRunId)", plugin);
+        Assert.Contains("currentState.SchedulerRunId, schedulerRunId", scheduler);
+    }
+
+    [Fact]
     public void CoordinatorCuratesRunStartPoolBeforePlanningAndManifestBinding()
     {
         var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
@@ -281,7 +303,7 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.True(directStart > directLabel);
         Assert.True(schedulerLabel > directStart);
         Assert.True(schedulerStart > schedulerLabel);
-        Assert.Contains("plugin.Configuration.RunAsServerDad &&", action, StringComparison.Ordinal);
+        Assert.Contains("plugin.SchedulerService.CanRunPresetHere(selectedGroup) &&", action, StringComparison.Ordinal);
         Assert.Contains("!cancellationCleanupPending", action, StringComparison.Ordinal);
         Assert.Contains("visibleCoordinatorCleanupPending", action, StringComparison.Ordinal);
         Assert.Contains("DadRunCancellationState.Cancelling", action, StringComparison.Ordinal);
@@ -351,14 +373,16 @@ public sealed class DadReliabilityIntegrationSourceContractTests
             enqueueStart,
             StringComparison.Ordinal);
         var enqueue = pluginSource[enqueueStart..enqueueEnd];
-        var clientGuard = enqueue.IndexOf("if (!Configuration.RunAsServerDad)", StringComparison.Ordinal);
+        var clientGuard = enqueue.IndexOf("if (!Configuration.RunAsServerDad &&", StringComparison.Ordinal);
         var queueMutation = enqueue.IndexOf(
             "SchedulerService.EnqueueScheduledPresetWithDisposition(group, request)",
             StringComparison.Ordinal);
 
         Assert.True(clientGuard >= 0);
         Assert.True(queueMutation > clientGuard);
-        Assert.Contains("Use Planner on the Coordinator", enqueue, StringComparison.Ordinal);
+        Assert.Contains("request.JobType != DadSchedulerJobType.ScheduledPreset", enqueue, StringComparison.Ordinal);
+        Assert.Contains("!SchedulerService.CanRunPresetHere(group)", enqueue, StringComparison.Ordinal);
+        Assert.Contains("DadLocalDutySupportRules.CoordinatorOnlyReason", enqueue, StringComparison.Ordinal);
 
         var directMethodStart = pluginSource.IndexOf(
             "public DadRunResult StartPlannerRunFromShell()",

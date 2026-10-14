@@ -7,6 +7,98 @@ namespace dad.Tests;
 public sealed class DadRosterTransportCatalogRuntimeTests
 {
     [Fact]
+    public void LocalNpcJobAssignmentDoesNotIsolateItsOwnRuntimeRow()
+    {
+        var participant = Snapshot("local-client", "local-worker", "local-account", "Local Character@World", 101);
+        participant.State = DadParticipantState.Ready;
+        var slot = new DadSchedulerSlotState
+        {
+            SlotId = "Slot1",
+            RequiredAccountKey = participant.ManagedAccountKey,
+            RequiredCharacterKey = participant.ActiveCharacterKey,
+            RequiredJobId = 26,
+        };
+        var request = new DadRunRequest
+        {
+            RequestId = "local-npc-request",
+            Orchestration = new DadOrchestrationIntent
+            {
+                LocalOnlyOverride = true,
+                AuthorityMode = DadAuthorityMode.LocalOnly,
+            },
+        };
+        var assignment = Assert.Single(DadEarlyRequestedJobAssignmentRules.Build(
+            request, [slot], participant.WorkerSessionId));
+        participant.AuthorityMode = assignment.AuthorityMode;
+
+        var row = Assert.Single(DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("local-client", "local-worker", participant)).Characters);
+
+        Assert.Equal(DadCharacterSource.LocalRuntime, row.Source);
+        Assert.Empty(row.Blockers);
+        Assert.True(row.IsCurrent);
+    }
+
+    [Theory]
+    [InlineData("other-client", "other-worker")]
+    [InlineData("local-client", "other-worker")]
+    [InlineData("other-client", "local-worker")]
+    public void LocalNpcAllowanceRequiresBothExactConsumerIdentities(string clientId, string workerId)
+    {
+        var participant = Snapshot(clientId, workerId, "account", "Character@World", 101);
+        participant.State = DadParticipantState.Ready;
+        participant.AuthorityMode = DadAuthorityMode.LocalOnly;
+        participant.IsLocalClient = true; // A producer-side flag is not consumer ownership proof.
+
+        var row = Assert.Single(DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("local-client", "local-worker", participant)).Characters);
+
+        Assert.Contains(row.Blockers, blocker => blocker.Contains("local-only/isolated", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void LocalNpcAllowanceDoesNotBypassUnavailableIneligibleOrBlockedTruth(int failure)
+    {
+        var participant = Snapshot("local-client", "local-worker", "account", "Character@World", 101);
+        participant.State = DadParticipantState.Ready;
+        participant.AuthorityMode = DadAuthorityMode.LocalOnly;
+        switch (failure)
+        {
+            case 0: participant.IsAvailable = false; break;
+            case 1: participant.IsEligibleForRun = false; break;
+            case 2:
+                participant.Character.Readiness = DadReadinessState.Blocked;
+                participant.Character.Blockers = ["Content ID unavailable."];
+                break;
+        }
+
+        var row = Assert.Single(DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("local-client", "local-worker", participant)).Characters);
+
+        Assert.NotEmpty(row.Blockers);
+    }
+
+    [Fact]
+    public void FreshLocalNpcRowReplacesPriorCachedIsolationBlocker()
+    {
+        var participant = Snapshot("local-client", "local-worker", "account", "Character@World", 101);
+        participant.State = DadParticipantState.Ready;
+        participant.AuthorityMode = DadAuthorityMode.LocalOnly;
+        var incoming = Assert.Single(DadRosterTransportCatalogRuntime.BuildLiveConnectedCatalog(
+            Transport("local-client", "local-worker", participant)).Characters);
+        var cached = incoming.Clone();
+        cached.Source = DadCharacterSource.XadbOnly;
+        cached.IsCurrent = false;
+        cached.Blockers = ["Peer runtime is local-only/isolated from Dad Coordinator work."];
+
+        Assert.True(DadRosterTransportCatalogRuntime.ReplaceSourceBlockersFromSupersedingRuntime(cached, incoming));
+        Assert.Empty(cached.Blockers);
+    }
+
+    [Fact]
     public void ProducerSideIsLocalFlagCannotMakePeerLocalOnCoordinator()
     {
         var venat = Snapshot("client-w", "worker-w", "acct-w", "Venat@Alpha", 101);

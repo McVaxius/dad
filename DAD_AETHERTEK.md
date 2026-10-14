@@ -165,6 +165,33 @@ DAD also does not treat missing proof as success. Depending on context, an unkno
 
 DAD does not start a missing FFXIV process and does not execute stored `.bat` paths. Launch-profile/account metadata remains compatibility scaffolding visible only with `/dad debug`; it is optional, is never required to finish Build the Crew, and is preserved when hidden. Everyday **Wake/relog** waits for the same-account client and can coordinate takeover or relog after that client exists.
 
+A Client Dad can also run its own saved solo **Duty Support** presets and a Schedule containing only those presets,
+including character switches on that same account. No second Coordinator is needed for these independent solo runs.
+Every preset must bind one Slot1 character to this Client's exact account; mixed activities, other accounts, unresolved
+identities, multiplayer and shopping-associated plans still require a Coordinator. Keep the global **Keep runs on this
+client only** switch off for the normal typed Wake/relog path; a solo duty's internal LocalOnly authority is separate.
+
+### Independent Duty Support Setup
+
+1. On each running game client, enable DAD and character automation, resolve required-plugin readiness, and leave
+   **This client coordinates the crew** unchecked. A Coordinator connection is not needed for its own solo schedule.
+2. Save each preset as **Duty Support**, party size 1, with exactly one primary Slot1 character bound to this
+   instance's own account. Account ownership is checked by stable ID, not by the displayed alias. Any substitutes
+   must use the same account and Slot1.
+3. Add only those presets to the schedule in the desired order. Different characters on this account are allowed;
+   other accounts, missing preset references or a single non-Duty-Support entry make it Coordinator-only.
+4. Leave **Keep runs on this client only** off for typed Wake/relog. Start the saved preset with **Wake/relog and run**
+   or the schedule with **Run now**. Each account executes and switches characters independently; normal job,
+   Level-seek, readiness and takeover safety checks still apply.
+5. Use **Cancel** to stop the selected schedule. Resolve a failed entry's blocker and wait for idle cleanup before
+   **Resume from failed entry**. Cancellation is terminal and never resumes automatically.
+
+Do not change ports merely to enable solo Client scheduling. If readiness fails, inspect the first exact blocker:
+account bindings, plugin availability, character state and cancellation cleanup remain required. DAD recognizes its
+own local NPC runtime even when the solo request uses internal LocalOnly authority; it does not accept an isolated
+peer or stale/unavailable character as ready. `/dad report` shows the loaded diagnostic build and load time for
+troubleshooting. Review the report for personal identifiers before sharing it.
+
 ## Planner-Visible, Not Live Yet
 
 The planner also shows future or research-backed lanes so their configuration shape can be reviewed. Their live executors remain intentionally blocked:

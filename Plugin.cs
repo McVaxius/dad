@@ -206,6 +206,8 @@ public sealed class Plugin : IDalamudPlugin
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
     private bool standaloneCrewDisbandActive;
     private string standaloneCrewDisbandSummary = "No standalone disband is active.";
+    private const string LocalNpcProjectionBuildMarker = "lp-client-duty-support-20261014-02";
+    private readonly DateTime pluginLoadedAtUtc = DateTime.UtcNow;
 
     private sealed class DebouncedUiWrite
     {
@@ -488,6 +490,7 @@ public sealed class Plugin : IDalamudPlugin
         SchedulerService.ConfigureAutoPartyAuthorizationGate(
             AutoPartyService.EvaluateSchedulerAuthorization);
         SchedulerService.ConfigureAdmissionBlocker(GetSchedulerAdmissionBlocker);
+        SchedulerService.ConfigureLocalDutySupportAdmission(GetLocalDutySupportAdmissionBlocker);
         runtimeReadinessObserver = new(PresenceService, CharacterIntelligenceService, TransportService,
             SchedulerService, AutoRetainerIpcService, WakeTakeoverService, InvalidatePlannerPreviewCache);
         SchedulerService.ConfigureCrewFormation(
@@ -593,7 +596,8 @@ public sealed class Plugin : IDalamudPlugin
         CombatRotationService.QuestionableDutySettingsGate = QuestionableBridge.EnsureFrenRiderDutySettings;
         DutyIpcService.QuestionableBridgeStatusProvider = QuestionableBridge.GetStatus;
 
-        Log.Information("[dad] Plugin loaded. build=I490-solo-01; ui=devhub-I503-I512-import-20261009-02");
+        Log.Information("[dad] Plugin loaded. build=I490-solo-01; ui=devhub-I503-I512-import-20261009-02; diagnosticBuild={DiagnosticBuild}; loadedAt={LoadedAt}; pid={Pid}; worker={Worker}.",
+            LocalNpcProjectionBuildMarker, pluginLoadedAtUtc, Environment.ProcessId, PresenceService.WorkerSessionId);
     }
 
     private readonly System.Collections.Generic.Dictionary<Dalamud.Interface.Windowing.Window, AethertekUI.Dalamud.MaterialAppearanceTitleBar> appearanceTitleBars = new();
@@ -3447,8 +3451,14 @@ public sealed class Plugin : IDalamudPlugin
         => DadRuntimeHandlers.SchedulerAdmissionBlocker(Configuration, SchedulerService,
             RunCoordinatorService, standaloneCrewDisbandActive, GetVisibleRunState().VisibleRun);
 
+    private string GetLocalDutySupportAdmissionBlocker()
+        => DadRuntimeHandlers.SchedulerAdmissionBlocker(Configuration, SchedulerService,
+            RunCoordinatorService, standaloneCrewDisbandActive, GetVisibleRunState().VisibleRun, localDutySupport: true);
+
     private bool CanAdmitSchedulerWork()
-        => string.IsNullOrWhiteSpace(GetSchedulerAdmissionBlocker());
+        => string.IsNullOrWhiteSpace(SchedulerService.HasLocalDutySupportSchedulerWork
+            ? GetLocalDutySupportAdmissionBlocker()
+            : GetSchedulerAdmissionBlocker());
 
     private bool CanUpdateSchedulerLifecycle()
         => DadRuntimeHandlers.CanUpdateScheduler(Configuration, SchedulerService,
@@ -3471,7 +3481,9 @@ public sealed class Plugin : IDalamudPlugin
             return DadIpcJson.Serialize(DadRunResult.Rejected(null, rejectionReason));
         }
 
-        var admissionBlocker = GetSchedulerAdmissionBlocker();
+        var admissionBlocker = !Configuration.RunAsServerDad && SchedulerService.CanRunPresetHere(group)
+            ? GetLocalDutySupportAdmissionBlocker()
+            : GetSchedulerAdmissionBlocker();
         if (!string.IsNullOrWhiteSpace(admissionBlocker))
             return DadIpcJson.Serialize(DadRunResult.Rejected(null, admissionBlocker));
 
@@ -3682,13 +3694,6 @@ public sealed class Plugin : IDalamudPlugin
             request = new DadScheduledPresetRequest { GroupId = fallbackId };
         }
 
-        if (!Configuration.RunAsServerDad)
-        {
-            var rejected = SchedulerService.GetQueueSnapshot();
-            rejected.Summary = "Only Dad Coordinator may admit scheduler work. Use Planner on the Coordinator for Wake/relog and run.";
-            return DadIpcJson.Serialize(rejected);
-        }
-
         var groupId = string.IsNullOrWhiteSpace(request.GroupId)
             ? PlannerOptions.SelectedPlannerGroupId
             : request.GroupId;
@@ -3700,6 +3705,14 @@ public sealed class Plugin : IDalamudPlugin
                 ActiveState = SchedulerService.CurrentState,
                 PendingJobs = SchedulerService.GetQueueSnapshot().PendingJobs,
             });
+        }
+
+        if (!Configuration.RunAsServerDad &&
+            (request.JobType != DadSchedulerJobType.ScheduledPreset || !SchedulerService.CanRunPresetHere(group)))
+        {
+            var rejected = SchedulerService.GetQueueSnapshot();
+            rejected.Summary = DadLocalDutySupportRules.CoordinatorOnlyReason;
+            return DadIpcJson.Serialize(rejected);
         }
 
         var enqueue = SchedulerService.EnqueueScheduledPresetWithDisposition(group, request);
@@ -5718,6 +5731,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 $"# Dad issue report ({DateTime.UtcNow:u})",
                 $"{PluginInfo.DisplayName} v{version} — character names / account ids anonymized (numpty0 / acct0 / ...).",
+                $"Diagnostic build: {LocalNpcProjectionBuildMarker}; loadedAtUtc={pluginLoadedAtUtc:O}; pid={Environment.ProcessId}.",
                 string.Empty,
                 "## Config",
                 $"- PluginEnabled={Configuration.PluginEnabled} ServerDad={Configuration.RunAsServerDad} LocalOnly={Configuration.LocalOnlyModeEnabled} Advanced={Configuration.AdvancedModeEnabled} PartyValidationOverride={Configuration.PartyValidationOverrideEnabled} AllowRemoteCmd={Configuration.AllowRemoteCommandExecution}",
@@ -5828,7 +5842,8 @@ public sealed class Plugin : IDalamudPlugin
         ["PartyInviteAcceptance"] = PartyInviteGateway.UpdateAcceptance,
         ["WakeTakeover"] = () =>
         {
-            if (!Configuration.RunAsServerDad && !TransportService.CurrentTransport.AuthorityRoutable)
+            if (!Configuration.RunAsServerDad && !TransportService.CurrentTransport.AuthorityRoutable &&
+                !SchedulerService.OwnsLocalDutySupportTakeover(WakeTakeoverService.GetActiveStatus()?.SchedulerRunId))
                 WakeTakeoverService.OnCoordinatorDisconnected();
             WakeTakeoverService.Update();
         },

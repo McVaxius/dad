@@ -37,17 +37,19 @@ internal static class DadRuntimeHandlers
             }, registrationIdentity: () => (configuration.AutoParty.RegisteredOwnerId, configuration.AutoParty.RegisteredIslandId));
 
     internal static string SchedulerAdmissionBlocker(Configuration configuration,
-        DadSchedulerService scheduler, DadCoordinatorService coordinator, bool disbandActive, DadRunResult visibleRun)
+        DadSchedulerService scheduler, DadCoordinatorService coordinator, bool disbandActive, DadRunResult visibleRun,
+        bool localDutySupport = false)
         => DadSchedulerRoutingRules.GetAdmissionBlocker(configuration.RunAsServerDad,
             scheduler.CurrentState.IsActive, scheduler.IsCrewFormationActive, disbandActive,
             visibleRun.Status is DadRunStatus.Queued or DadRunStatus.WaitingForParticipants or DadRunStatus.Running,
-            scheduler.HasPendingCancellationCleanup, coordinator.HasPendingCancellationCleanup);
+            scheduler.HasPendingCancellationCleanup, coordinator.HasPendingCancellationCleanup, localDutySupport);
 
     internal static bool CanUpdateScheduler(Configuration configuration, DadSchedulerService scheduler,
         DadCoordinatorService coordinator, bool disbandActive, DadRunResult visibleRun)
-        => configuration.RunAsServerDad && !disbandActive &&
+        => (configuration.RunAsServerDad || scheduler.HasLocalDutySupportSchedulerWork) && !disbandActive &&
            (scheduler.IsCrewFormationActive || scheduler.CurrentState.IsActive ||
-            string.IsNullOrWhiteSpace(SchedulerAdmissionBlocker(configuration, scheduler, coordinator, disbandActive, visibleRun)));
+            string.IsNullOrWhiteSpace(SchedulerAdmissionBlocker(configuration, scheduler, coordinator, disbandActive,
+                visibleRun, scheduler.HasLocalDutySupportSchedulerWork)));
 
     internal static void UpdateScheduler(Configuration configuration, DadSchedulerService scheduler,
         DadCoordinatorService coordinator, bool disbandActive, Func<DadRunResult> visibleRun,
