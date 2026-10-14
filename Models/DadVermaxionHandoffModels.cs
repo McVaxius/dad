@@ -318,6 +318,7 @@ public enum DadVermaxionMutationAuthorization
     None = 0,
     Granted = 1,
     CompatibilityIdle = 2,
+    AutoRetainerIdle = 3,
 }
 
 public readonly record struct DadVermaxionCompatibilityEvidence(
@@ -358,6 +359,23 @@ public static class DadVermaxionAuthorityRules
         var authoritative = reservation.IsAuthoritativeFor(operationToken);
         if (!authoritative)
         {
+            // With no VERMAXION owner, an idle AR can be taken over through its
+            // suppression lease. There may be no future character-task callback.
+            if (reservation.State == DadVermaxionReservationState.NotLoaded &&
+                legacyStatus.Kind == DadVermaxionReadinessKind.NotLoaded &&
+                compatibilityEvidence.AutoRetainerReadableIdle &&
+                compatibilityEvidence.SuppressionReadableAndAvailable)
+            {
+                return new DadVermaxionAuthorityView(
+                    false,
+                    false,
+                    "AutoRetainerIdleHandoff",
+                    "IdleVerified",
+                    "VERMAXION is not loaded; AutoRetainer is readable and idle.",
+                    DadVermaxionMutationAuthorization.AutoRetainerIdle,
+                    compatibilityEvidence);
+            }
+
             return new DadVermaxionAuthorityView(
                 false,
                 legacyStatus.IsHeld,

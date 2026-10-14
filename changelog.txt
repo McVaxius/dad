@@ -1,3 +1,10 @@
+2026-10-14 - Own-account Duty Support scheduling on Client Dads
+
+- Let Client Dads start their own saved solo Duty Support presets and pure own-account schedules, including local Wake/relog, requested jobs, Level-seek, repeats, cadence and failed-entry resume. Keep mixed/foreign-account work, multiplayer, templates, shared identities, shopping and other queued job types Coordinator-only.
+- Preserve busy-run, disband and cleanup guards. Keep only an exact locally owned scheduler takeover alive without a Coordinator connection; foreign takeover retains disconnect handling.
+- Recognize internal LocalOnly authority on the exact local worker/client roster row without accepting isolated peers or stale, unavailable, ineligible or genuinely blocked character truth. Add scoped regressions and loaded-build diagnostics to the existing issue report.
+- Expand the README and player guide with setup, authority boundaries and recovery. On 2026-10-14 the operator confirmed correct run starts on both game clients and, earlier, preset-to-preset switching; this is not evidence of every cadence, recovery or full-schedule completion path. No release version, protocol, preset export or FrenRider change.
+
 2026-10-13 - Direct run-status copies
 
 - Copy run requests directly instead of repeatedly serializing, validating and parsing them to display status. Keep nested settings and task snapshots independent, and retain wire validation for incoming data.

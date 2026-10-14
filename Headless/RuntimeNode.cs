@@ -327,6 +327,8 @@ internal sealed class RuntimeNode : IDisposable
         transport.ConfigureStopAllHandler(cleanup.RunLocalLifecycleCleanup);
         scheduler.ConfigureAdmissionBlocker(() => DadRuntimeHandlers.SchedulerAdmissionBlocker(
             configuration, scheduler, coordinator, false, coordinator.GetLocalResult()));
+        scheduler.ConfigureLocalDutySupportAdmission(() => DadRuntimeHandlers.SchedulerAdmissionBlocker(
+            configuration, scheduler, coordinator, false, coordinator.GetLocalResult(), localDutySupport: true));
         var readiness = new DadRuntimeReadinessObserver(presence, intelligence, transport, scheduler, autoRetainer, wake);
         transport.ConfigureRuntimeReadinessHandler(readiness.ObserveRemote);
         presence.ConfigureParticipantResolver(id => transport.CurrentTransport.KnownParticipants.FirstOrDefault(p => p.WorkerSessionId == id));

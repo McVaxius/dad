@@ -10,7 +10,8 @@ public static class DadPeerRuntimeProjectionRules
 {
     public static DadPeerRuntimeProjection Evaluate(
         DadParticipantSnapshot participant,
-        DadAcquiredCharacter character)
+        DadAcquiredCharacter character,
+        bool isExactLocalRuntimeOwner = false)
     {
         var blockers = character.Blockers
             .Where(static blocker => !string.IsNullOrWhiteSpace(blocker))
@@ -34,7 +35,9 @@ public static class DadPeerRuntimeProjectionRules
             readiness = DadReadinessState.Unavailable;
             Add(blockers, "Peer runtime is not eligible for Dad work.");
         }
-        else if (participant.AuthorityMode == DadAuthorityMode.LocalOnly)
+        // Local NPC assignments intentionally use LocalOnly authority. That excludes
+        // a peer from remote work, but must not exclude the consuming worker itself.
+        else if (participant.AuthorityMode == DadAuthorityMode.LocalOnly && !isExactLocalRuntimeOwner)
         {
             readiness = DadReadinessState.Unavailable;
             Add(blockers, "Peer runtime is local-only/isolated from Dad Coordinator work.");

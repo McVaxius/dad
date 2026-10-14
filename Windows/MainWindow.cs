@@ -2213,12 +2213,12 @@ public sealed class MainWindow : Window, IDisposable
                     ? "A schedule is already running."
                     : Plugin.IsBusy(runState.VisibleRun)
                         ? "A DAD run is active."
-                        : !plugin.Configuration.RunAsServerDad
-                            ? "Live schedule execution requires the Coordinator role."
+                        : !plugin.SchedulerService.CanRunScheduleHere(schedule)
+                            ? DadLocalDutySupportRules.CoordinatorOnlyReason
                             : string.Empty;
         var lastDryRun = snapshot.RecentResults.FirstOrDefault(result =>
             result.DryRun && string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
-        var canRunSchedule = plugin.Configuration.RunAsServerDad &&
+        var canRunSchedule = plugin.SchedulerService.CanRunScheduleHere(schedule) &&
                               schedule.Entries.Count > 0 &&
                               missingPresetCount == 0 &&
                               !activeScheduleLocked &&
@@ -4710,7 +4710,7 @@ public sealed class MainWindow : Window, IDisposable
                                requestPreview.CanStart;
         var wakeRunEnabled = !plannerLocked &&
                              !cancellationCleanupPending &&
-                             plugin.Configuration.RunAsServerDad &&
+                             plugin.SchedulerService.CanRunPresetHere(selectedGroup) &&
                              selectedGroup != null &&
                              selectedSchedulerJob == null &&
                              schedulerPreview.CanStart;
@@ -4731,8 +4731,8 @@ public sealed class MainWindow : Window, IDisposable
         DrawStatusRow("Run now readiness", requestPreview.CanStart
             ? "Ready for the currently online participants."
             : FormatText(requestPreview.BlockedReason, requestPreview.StatusSummary));
-        DrawStatusRow("Wake/relog readiness", !plugin.Configuration.RunAsServerDad
-            ? "Coordinator only — use Planner on the Dad Coordinator."
+        DrawStatusRow("Wake/relog readiness", !plugin.SchedulerService.CanRunPresetHere(selectedGroup)
+            ? DadLocalDutySupportRules.CoordinatorOnlyReason
             : !string.IsNullOrWhiteSpace(dependencyBlocker)
                 ? "Waiting for required plugins."
                 : schedulerPreview.CanStart
@@ -4777,8 +4777,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
         if (wakeRunHovered)
         {
-            var wakeTooltip = !plugin.Configuration.RunAsServerDad
-                ? "Wake/relog and run is available only on the Dad Coordinator. Use Planner on the Coordinator."
+            var wakeTooltip = !plugin.SchedulerService.CanRunPresetHere(selectedGroup)
+                ? DadLocalDutySupportRules.CoordinatorOnlyReason
                 : selectedGroup == null
                     ? "Select a saved preset before using Wake/relog and run."
                     : cancellationCleanupPending

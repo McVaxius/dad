@@ -333,6 +333,37 @@ public sealed class DadVermaxionHandoffTests
         Assert.Contains("renewing handoff", second.Summary, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NoVermaxionAllowsIdleSuppressionHandoffBeforeDisablingMultiMode(bool multiModeEnabled)
+    {
+        var status = DadVermaxionStatusParser.Parse(false, null, Now);
+        var evidence = DadVermaxionCompatibilityEvidence.Evaluate(status, true, false, multiModeEnabled, true, false, false);
+
+        var result = DadVermaxionAuthorityRules.Resolve("op", DadVermaxionReservationParser.NotLoaded(Now), status, evidence);
+
+        Assert.Equal(DadVermaxionMutationAuthorization.AutoRetainerIdle, result.MutationAuthorization);
+        Assert.False(result.Held);
+        Assert.False(result.Authoritative);
+    }
+
+    [Theory]
+    [InlineData(false, false, true, false, false)]
+    [InlineData(true, true, true, false, false)]
+    [InlineData(true, false, false, false, false)]
+    [InlineData(true, false, true, true, false)]
+    public void NoVermaxionIdleHandoffRequiresReadableUnownedOrDadOwnedAr(
+        bool arAvailable, bool arBusy, bool suppressionReadable, bool suppressed, bool dadOwned)
+    {
+        var status = DadVermaxionStatusParser.Parse(false, null, Now);
+        var evidence = DadVermaxionCompatibilityEvidence.Evaluate(status, arAvailable, arBusy, false, suppressionReadable, suppressed, dadOwned);
+
+        var result = DadVermaxionAuthorityRules.Resolve("op", DadVermaxionReservationParser.NotLoaded(Now), status, evidence);
+
+        Assert.Equal(DadVermaxionMutationAuthorization.None, result.MutationAuthorization);
+    }
+
     private static DadVermaxionReservationStatus UnavailableReservation()
         => new()
         {

@@ -31,7 +31,7 @@ A DAD preset combines the activity with the characters who should perform it. Ea
 - an ADS loot preference: no change, Need, Greed, or Pass;
 - an optional Level seek target.
 
-Level seek is useful for leveling schedules. With **STOP: Target level**, the bottom target applies only to the first selected primary character when that row is blank. A value on that row overrides the bottom target, while every other nonblank row value adds another required target. DAD skips or stops only when all resolved targets are proven. **Any** uses the loaded character's live current job and level; a selected job uses that job's ledger. Missing evidence and levels 0 or 1 are unknown, so the preset continues under its existing safety cap. DAD freezes the resolved characters, jobs, and targets before wake or relog, checks them again after exact readiness and requested-job preparation, and refreshes the evidence after each completed run.
+Level seek is useful for leveling schedules. With **STOP: Target level**, the bottom target applies only to the first selected primary character when that row is blank. A value on that row overrides the bottom target, while every other nonblank row value adds another required target. DAD skips or stops only when all resolved targets are proven. **Any** uses the loaded character's live current job and level; a selected job uses that job's ledger. Pre-wake checks use the planner's merged live and stored roster, including XADB job levels, so a proven satisfied selected-job target can skip even when another character is logged in. Missing evidence and levels 0 or 1 are unknown, so the preset continues under its existing safety cap. DAD freezes the resolved characters, jobs, and targets before wake or relog, checks them again after exact readiness and requested-job preparation, and refreshes the evidence after each completed run.
 
 With other STOP modes, the existing row Level-seek rule is unchanged: DAD skips only when every targeted, bound primary row has a known job level at or above its target. Unknown or below-target rows keep the preset runnable; untargeted and empty placeholder rows are ignored.
 
@@ -140,7 +140,7 @@ The **DAD Dependencies** window stays open while local DAD is enabled and any re
 
 - **XA Database** can provide stored roster and job-level truth. Local runtime and connected DAD snapshots also contribute current roster state.
 - **AutoRetainer** is observed so DAD does not relog or take over while retainer work is still active.
-- **VERMAXION** provides reservation and handoff safety around post-processing, and can launch a selected DAD preset or schedule through DAD's public IPC.
+- **VERMAXION** optionally provides reservation and handoff safety around post-processing, and can launch a selected DAD preset or schedule through DAD's public IPC. When it is confirmed absent, DAD can use readable idle AutoRetainer with its own verified suppression lease; no new character-postprocess callback is required. Busy, unreadable, or conflicting ownership still blocks takeover. The title-login path likewise accepts freshly confirmed VERMAXION absence without bypassing its other safety gates.
 - **Lifestream** supports configured character relog handling.
 - **Fren Rider** is an unconditional DAD dependency and is the default in-duty owner for movement, combat coordination, and exit behavior when that mode is selected.
 - **AI Duty Solver (ADS)** is an unconditional DAD dependency and applies the selected loot configuration to exact workers before multiplayer queue mutation.
@@ -164,6 +164,33 @@ DAD is not a standalone combat bot. It owns planning, readiness, party formation
 DAD also does not treat missing proof as success. Depending on context, an unknown job level stays visible as a blocker or keeps a Level-seek entry runnable; stale characters, ambiguous Duty Finder rows, mismatched workers, unavailable helpers, and unsafe world state remain blocked until trustworthy state is available.
 
 DAD does not start a missing FFXIV process and does not execute stored `.bat` paths. Launch-profile/account metadata remains compatibility scaffolding visible only with `/dad debug`; it is optional, is never required to finish Build the Crew, and is preserved when hidden. Everyday **Wake/relog** waits for the same-account client and can coordinate takeover or relog after that client exists.
+
+A Client Dad can also run its own saved solo **Duty Support** presets and a Schedule containing only those presets,
+including character switches on that same account. No second Coordinator is needed for these independent solo runs.
+Every preset must bind one Slot1 character to this Client's exact account; mixed activities, other accounts, unresolved
+identities, multiplayer and shopping-associated plans still require a Coordinator. Keep the global **Keep runs on this
+client only** switch off for the normal typed Wake/relog path; a solo duty's internal LocalOnly authority is separate.
+
+### Independent Duty Support Setup
+
+1. On each running game client, enable DAD and character automation, resolve required-plugin readiness, and leave
+   **This client coordinates the crew** unchecked. A Coordinator connection is not needed for its own solo schedule.
+2. Save each preset as **Duty Support**, party size 1, with exactly one primary Slot1 character bound to this
+   instance's own account. Account ownership is checked by stable ID, not by the displayed alias. Any substitutes
+   must use the same account and Slot1.
+3. Add only those presets to the schedule in the desired order. Different characters on this account are allowed;
+   other accounts, missing preset references or a single non-Duty-Support entry make it Coordinator-only.
+4. Leave **Keep runs on this client only** off for typed Wake/relog. Start the saved preset with **Wake/relog and run**
+   or the schedule with **Run now**. Each account executes and switches characters independently; normal job,
+   Level-seek, readiness and takeover safety checks still apply.
+5. Use **Cancel** to stop the selected schedule. Resolve a failed entry's blocker and wait for idle cleanup before
+   **Resume from failed entry**. Cancellation is terminal and never resumes automatically.
+
+Do not change ports merely to enable solo Client scheduling. If readiness fails, inspect the first exact blocker:
+account bindings, plugin availability, character state and cancellation cleanup remain required. DAD recognizes its
+own local NPC runtime even when the solo request uses internal LocalOnly authority; it does not accept an isolated
+peer or stale/unavailable character as ready. `/dad report` shows the loaded diagnostic build and load time for
+troubleshooting. Review the report for personal identifiers before sharing it.
 
 ## Planner-Visible, Not Live Yet
 
